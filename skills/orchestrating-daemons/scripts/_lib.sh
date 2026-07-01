@@ -2,10 +2,14 @@
 # _lib.sh — shared helpers for the orchestrating-daemons toolkit.
 # Sourced by daemon-*.sh. Not meant to be run directly.
 #
-# A "daemon" is a durable, resumable headless `claude` session identified by a
-# stable UUID. Each daemon has one metadata file and one latest-reply file under
-# the registry dir. One turn per daemon runs at a time, so per-daemon files never
-# race (different daemons touch different files; no locking needed).
+# A "daemon" is a durable background `claude` session spawned with `claude --bg`
+# (so it is an independent process, visible in `claude agents`, and survives this
+# orchestrator ending). It is continued IN PLACE with `claude -p --resume` after
+# `claude stop` releases the bg ownership lock — same session id, no fork.
+#
+# Each daemon has one metadata file (<uuid>.json) and one latest-reply file
+# (<uuid>.reply.txt, plain text) under the registry dir. One turn per daemon runs
+# at a time, so per-daemon files never race.
 
 set -euo pipefail
 
@@ -13,16 +17,18 @@ set -euo pipefail
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 mkdir -p "$DAEMON_HOME"
 
-# Default per-turn wall-clock cap (seconds). A turn that blocks longer (e.g. on a
-# permission wall no one can answer) is killed so its background shell can't hang
-# forever. Override with DAEMON_TIMEOUT.
+# Per-turn wall-clock cap (seconds) for resume turns; and how long to wait for a
+# spawned daemon's first turn to finish. Override with DAEMON_TIMEOUT.
 DAEMON_TIMEOUT="${DAEMON_TIMEOUT:-900}"
 
 _now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 _meta_path()  { printf '%s/%s.json' "$DAEMON_HOME" "$1"; }
-_reply_path() { printf '%s/%s.reply.json' "$DAEMON_HOME" "$1"; }
+_reply_path() { printf '%s/%s.reply.txt' "$DAEMON_HOME" "$1"; }
 _err_path()   { printf '%s/%s.err' "$DAEMON_HOME" "$1"; }
+
+# Strip ANSI color codes (the `claude --bg` banner is colored even when piped).
+_strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
 # Portable timeout: macOS ships neither `timeout` nor `gtimeout` by default.
 _timeout() {
@@ -81,38 +87,10 @@ except Exception:
 PY
 }
 
-# Return 0 if a daemon's latest reply file is a successful result turn, else 1.
-_reply_ok() {
-  local path; path="$(_reply_path "$1")"
-  [ -f "$path" ] || return 1
-  DAEMON_REPLY_PATH="$path" python3 - <<'PY'
-import json, os, sys
-try:
-    d = json.load(open(os.environ["DAEMON_REPLY_PATH"]))
-except Exception:
-    sys.exit(1)
-sys.exit(0 if d.get("type") == "result" and not d.get("is_error") else 1)
-PY
-}
-
-# Extract the assistant reply text (.result) from a claude -p JSON reply file.
-# Prints a diagnostic string if the file is missing or not the success shape.
+# Print a daemon's latest reply (plain text), or a placeholder.
 _reply_text() {
-  local uuid="$1" path
-  path="$(_reply_path "$uuid")"
-  [ -f "$path" ] || { printf '(no reply yet)'; return 0; }
-  DAEMON_REPLY_PATH="$path" python3 - <<'PY'
-import json, os
-try:
-    with open(os.environ["DAEMON_REPLY_PATH"]) as f:
-        d = json.load(f)
-except Exception as e:
-    print(f"(unparseable reply: {e})"); raise SystemExit
-if d.get("type") == "result" and not d.get("is_error"):
-    print(d.get("result", "").strip())
-else:
-    print(f"(error turn: {d.get('subtype') or d.get('result') or d})")
-PY
+  local p; p="$(_reply_path "$1")"
+  if [ -f "$p" ]; then cat "$p"; else printf '(no reply yet)'; fi
 }
 
 # Resolve a short id (or full UUID prefix) to a full UUID by matching registry
@@ -141,9 +119,52 @@ PY
   printf '%s' "$match"
 }
 
-# Resolve the on-disk transcript path for a daemon in a given cwd (fallback reader).
+# The on-disk transcript path for a daemon in a given cwd.
 _transcript_path() {
   local uuid="$1" cwd="$2" munged
   munged="$(printf '%s' "$cwd" | sed 's#/#-#g')"
   printf '%s/.claude/projects/%s/%s.jsonl' "$HOME" "$munged" "$uuid"
+}
+
+# Print the last assistant text turn from a daemon's transcript (how we read the
+# reply of a `--bg` turn, since --bg returns no stdout result to us).
+_transcript_reply() {
+  local uuid="$1" cwd="$2" f
+  f="$(_transcript_path "$uuid" "$cwd")"
+  [ -f "$f" ] || { printf ''; return 0; }
+  DAEMON_TX="$f" python3 - <<'PY'
+import json, os
+rows = [json.loads(l) for l in open(os.environ["DAEMON_TX"]) if l.strip()]
+for r in reversed(rows):
+    if r.get("type") == "assistant":
+        c = r.get("message", {}).get("content")
+        t = " ".join(b.get("text", "") for b in c
+                     if isinstance(b, dict) and b.get("type") == "text") if isinstance(c, list) else str(c)
+        if t.strip():
+            print(t.strip()); break
+PY
+}
+
+# Poll `claude agents` until short id <1> reaches a terminal/actionable state.
+# Echoes "<full-uuid> <state>". Returns non-zero on timeout (echoes best-known).
+_poll_until_done() {
+  local short="$1" max="${2:-120}" i uuid state
+  for ((i = 0; i < max; i++)); do
+    read -r uuid state < <(claude agents --json --all 2>/dev/null | DAEMON_SHORT="$short" python3 -c '
+import json, os, sys
+s = os.environ["DAEMON_SHORT"]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = []
+for a in d:
+    if a.get("id") == s:
+        print(a.get("sessionId", ""), a.get("state", "")); break
+') || true
+    case "$state" in
+      done | blocked | error) printf '%s %s' "$uuid" "$state"; return 0 ;;
+    esac
+    sleep 2
+  done
+  printf '%s %s' "${uuid:-}" "${state:-timeout}"; return 1
 }

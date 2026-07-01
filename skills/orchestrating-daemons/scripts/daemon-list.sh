@@ -27,12 +27,10 @@ for p in glob.glob(os.path.join(home, "*.json")):
         continue
     uuid = m.get("uuid", "")
     reply = ""
-    rp = os.path.join(home, f"{uuid}.reply.json")
+    rp = os.path.join(home, f"{uuid}.reply.txt")
     if os.path.exists(rp):
         try:
-            d = json.load(open(rp))
-            if d.get("type") == "result" and not d.get("is_error"):
-                reply = " ".join(d.get("result", "").split())
+            reply = " ".join(open(rp).read().split())
         except Exception:
             pass
     rows.append((m.get("updated", ""), m.get("name", "?"), uuid, m.get("status", "?"),
