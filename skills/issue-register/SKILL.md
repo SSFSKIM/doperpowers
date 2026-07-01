@@ -10,7 +10,7 @@ Turn a messy pile of idea notes into a clustered, well-articulated **pre-spec is
 It takes MANY raw notes (some independent, some related), clusters them into shippable groups, grills each to pre-spec, and writes a durable map with the links between groups and slices preserved.
 
 <HARD-GATE>
-Do NOT propose solutions, approaches, or architecture. Do NOT write a spec, write code, or publish implementation issues. Only clarify, cluster, and articulate to **pre-spec** — problem, intent, constraints, success criteria. Solution space begins the moment you say "we could build it as X" or "here are 2-3 approaches" — stop before that, for EVERY cluster, regardless of how obvious the solution seems. This applies to every idea regardless of perceived simplicity.
+Do NOT write a spec, write code, or publish implementation issues. Only clarify, cluster, and articulate to **pre-spec** — problem, intent, constraints, success criteria. Solution space begins the moment you say "we could build it as X" or "here are 2-3 approaches" — stop before that, for EVERY cluster, regardless of how obvious the solution seems. This applies to every idea regardless of perceived simplicity.
 </HARD-GATE>
 
 ## Anti-Pattern: "These Notes Are Clear Enough"
@@ -66,15 +66,25 @@ digraph issue_register {
 }
 ```
 
-## Clarifying & Grilling Each Cluster (pre-spec)
+## Understanding the Idea
 
-Borrow brainstorming's front-half procedure, run with grilling's relentlessness — but never cross into solution space.
+*Vendored verbatim from the `brainstorming` skill (front-half only) so this skill is self-contained. Applied per cluster, kept strictly pre-spec — stop before approaches/design.*
 
-- **Assess scope first.** If one "idea" actually describes multiple independent subsystems, that is a signal to split it into separate clusters — don't refine the details of something that needs decomposing first.
-- **Interview relentlessly about the *problem*** — never the solution. Walk each branch of the idea, resolving dependencies between decisions one at a time. For each question, provide your recommended answer.
-- **One question per message.** Multiple questions at once is bewildering. Prefer multiple-choice when it sharpens the answer; open-ended is fine too.
-- **If the codebase can answer it, explore instead of asking.**
-- **Sharpen fuzzy or overloaded terms** into precise ones ("you say 'account' — Customer or User? Those are different things").
+- Check out the current project state first (files, docs, recent commits)
+- Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
+- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? **In this skill that decomposition IS the clustering — each piece becomes a cluster/work-item in the register, not a spec. Do NOT continue into brainstorming's design flow here.**
+- For appropriately-scoped clusters, ask questions one at a time to refine the idea
+- Prefer multiple choice questions when possible, but open-ended is fine too
+- Only one question per message - if a topic needs more exploration, break it into multiple questions
+- Focus on understanding: purpose, constraints, success criteria
+
+## Grilling a Cluster (the relentless interview)
+
+Interview relentlessly about every aspect of the cluster until you reach a shared understanding of the *problem* — never the solution. Walk down each branch of the idea, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+
+- Ask questions **one at a time**, waiting for feedback before continuing. Multiple questions at once is bewildering.
+- If a question can be answered by exploring the codebase, explore instead of asking.
+- Sharpen fuzzy or overloaded terms into precise ones ("you say 'account' — Customer or User? Those are different things").
 - **Triage the grilling:** grill what is fuzzy or important; don't grind already-clear or low-priority notes to death across a large dump.
 - **Stay at pre-spec:** purpose, constraints, success criteria. The moment talk turns to *how to build it*, stop and record it as a downstream question — do not answer it here.
 
