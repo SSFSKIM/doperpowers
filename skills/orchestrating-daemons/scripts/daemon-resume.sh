@@ -7,7 +7,9 @@
 # it from the active `claude agents` view), then `claude --bg --resume <current>`
 # to fork a fresh bg agent that carries the full conversation forward. The new
 # turn gets its own short/uuid; the registry chains them via the `current` field,
-# so the daemon keeps one stable id while its human-visible short changes.
+# so the daemon keeps one stable id while its human-visible short changes. Once
+# the fork is confirmed, the superseded turn's session is purged (jobs entry +
+# transcript) so the dashboard shows one session per daemon.
 #
 # Because the forked turn is a native `--bg` agent, it is visible in
 # `claude agents` (kind=background) and survives this orchestrator ending — the
@@ -82,6 +84,8 @@ if [ "$poll_rc" -ne 0 ]; then
     # or bump turns; no final reply has landed. daemon-reply.sh reads the CURRENT
     # session's transcript, so it will surface the reply once the turn finishes.
     _meta_set "$uuid" current "$newuuid" short "$newshort" status "working" updated "$(_now)"
+    # The fork is confirmed live — the superseded turn's session can go.
+    if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur"; fi
     echo "resume: watcher expired after $((DAEMON_TIMEOUT / 2)) polls; forked turn $newshort ($newuuid) is still running (status=working)." >&2
     echo "        run daemon-reply.sh $uuid once it lands to read the reply." >&2
   else
@@ -102,6 +106,11 @@ status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error
 _transcript_reply "$newuuid" > "$(_reply_path "$uuid")"
 _meta_set "$uuid" current "$newuuid" short "$newshort" \
   status "$status" updated "$(_now)" turns "$((turns + 1))"
+
+# Purge the superseded turn: drop its dashboard (jobs) entry and transcript so
+# `claude agents` shows exactly one session per daemon — the current turn. The
+# fork carried the full conversation forward, so nothing is lost.
+if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur"; fi
 
 echo "daemon resumed: $name  [$newshort / $uuid]  status=$(_meta_get "$uuid" status)  turns=$(_meta_get "$uuid" turns)  current=$newuuid"
 echo "--- reply ---"

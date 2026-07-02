@@ -172,6 +172,27 @@ if pending:
 PY
 }
 
+# Purge a superseded turn's session once its forked successor is CONFIRMED:
+# remove its ~/.claude/jobs/<short> entry (which backs the `claude agents`
+# dashboard, including the completed list) and its transcript. Safe because a
+# fork physically copies the full conversation into the successor's transcript
+# (verified live). Failure paths must NEVER call this — the old session is the
+# only recovery point when a fork goes wrong.
+_session_purge() {
+  local short="$1" uuid="$2" tx
+  case "$short" in
+    "" | *[!0-9a-f]*) : ;;  # jobs dirs are 8-hex shorts; never rm -rf odd input
+    *) [ "${#short}" -eq 8 ] && rm -rf "$HOME/.claude/jobs/$short" ;;
+  esac
+  case "$uuid" in
+    "" | *[!0-9a-f-]*) : ;;
+    *)
+      tx="$(_transcript_path "$uuid")"
+      [ -n "$tx" ] && rm -f "$tx" ;;
+  esac
+  return 0
+}
+
 # Poll `claude agents` until short id <1> reaches a terminal/actionable state.
 # Echoes "<full-uuid> <state> <cwd>" (cwd is the daemon's ACTUAL working dir —
 # the worktree path when spawned with --worktree). Non-zero on timeout.

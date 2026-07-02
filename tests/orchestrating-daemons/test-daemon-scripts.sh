@@ -219,6 +219,7 @@ assert_contains "$("$SCRIPTS_DIR/daemon-list.sh" awaiting-human)" "researcher" "
 echo "resume:"
 meta_field() { sed -n "s/.*\"$1\": \"\([^\"]*\)\".*/\1/p" "$DAEMON_HOME/$UUID.json"; }
 
+mkdir -p "$HOME/.claude/jobs/$SHORT"   # the first turn's dashboard (jobs) entry
 RESUME_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$SHORT" "stay in scope please")"
 # The forked turn's reply proves it carried the ORIGINAL session forward.
 assert_contains "$RESUME_OUT" "FORKED:$UUID:ANSWER:stay in scope please" "resume returns the forked follow-up reply"
@@ -233,8 +234,11 @@ assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT" "resume stops
 # The reply file stays keyed by the ORIGINAL uuid.
 assert_file_exists "$DAEMON_HOME/$UUID.reply.txt" "reply file keyed by the original uuid"
 assert_contains "$(cat "$DAEMON_HOME/$UUID.reply.txt")" "FORKED:$UUID:ANSWER:stay in scope please" "reply file holds the fork reply"
-# Two sessions forked → the original transcript AND the new one both exist.
-assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$UUID.jsonl" 2>/dev/null | head -1)" "original session transcript still exists"
+# The superseded turn is PURGED once the fork is confirmed: its dashboard
+# (jobs) entry and transcript are gone; the fork carried the content forward.
+assert_file_absent "$HOME/.claude/jobs/$SHORT" "resume purges the old turn's dashboard jobs entry"
+[ -z "$(ls "$HOME/.claude/projects/"*"/$UUID.jsonl" 2>/dev/null)" ] && pass "resume purges the old turn's transcript" \
+    || fail "resume purges the old turn's transcript"
 assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$CUR1.jsonl" 2>/dev/null | head -1)" "forked session has its own transcript"
 # _resolve_uuid maps the CURRENT short id back to the daemon's stable key.
 assert_equals "$(source "$SCRIPTS_DIR/_lib.sh"; _resolve_uuid "$SHORT1")" "$UUID" "_resolve_uuid resolves a daemon by its current short id"
@@ -245,6 +249,8 @@ RESUME2_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$SHORT1" "one more thing")"
 assert_contains "$RESUME2_OUT" "FORKED:$CUR1:ANSWER:one more thing" "second resume forks from the previous current (chain)"
 assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"turns": "3"' "second resume increments turns again"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT1" "second resume stops the previous turn's short"
+[ -z "$(ls "$HOME/.claude/projects/"*"/$CUR1.jsonl" 2>/dev/null)" ] && pass "second resume purges the middle turn's transcript" \
+    || fail "second resume purges the middle turn's transcript"
 SHORT2="$(meta_field short)"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "$SHORT2" "list SHORT column shows the current turn's short"
 
@@ -278,6 +284,7 @@ spawn_uuid()  { printf '%s' "$1" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*
 # must not be silently advanced past a launch that never happened.
 A_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "failfork" "seed-a" "$WORK")"
 A_SHORT="$(spawn_short "$A_OUT")"; A_UUID="$(spawn_uuid "$A_OUT")"
+mkdir -p "$HOME/.claude/jobs/$A_SHORT"
 A_RC=0
 STUB_FAIL_BG=1 "$SCRIPTS_DIR/daemon-resume.sh" "$A_SHORT" "go" >/dev/null 2>&1 || A_RC=$?
 [ "$A_RC" -ne 0 ] && pass "fork launch failure makes resume exit nonzero" \
@@ -286,6 +293,9 @@ A_META="$(cat "$DAEMON_HOME/$A_UUID.json")"
 assert_contains "$A_META" '"status": "error"' "fork launch failure sets status=error"
 assert_contains "$A_META" "\"current\": \"$A_UUID\"" "fork launch failure leaves current unchanged (no phantom advance)"
 assert_contains "$A_META" '"turns": "1"' "fork launch failure does not bump turns"
+[ -d "$HOME/.claude/jobs/$A_SHORT" ] && pass "fork launch failure purges nothing (jobs entry kept)" \
+    || fail "fork launch failure purges nothing (jobs entry kept)"
+assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$A_UUID.jsonl" 2>/dev/null | head -1)" "fork launch failure keeps the old transcript"
 
 # (b) The fork launches but the turn is still running when the watcher expires.
 # The chain must advance to the NEW session (current/short) with status=working
@@ -294,6 +304,7 @@ assert_contains "$A_META" '"turns": "1"' "fork launch failure does not bump turn
 B_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "slowfork" "seed-b" "$WORK")"
 B_SHORT="$(spawn_short "$B_OUT")"; B_UUID="$(spawn_uuid "$B_OUT")"
 printf 'SENTINEL-REPLY-DO-NOT-OVERWRITE' > "$DAEMON_HOME/$B_UUID.reply.txt"
+mkdir -p "$HOME/.claude/jobs/$B_SHORT"
 B_RC=0
 STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-resume.sh" "$B_SHORT" "long task" >/dev/null 2>&1 || B_RC=$?
 [ "$B_RC" -ne 0 ] && pass "watcher timeout makes resume exit nonzero" \
@@ -308,6 +319,7 @@ B_SHORT_NEW="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$B_UUID.js
     || fail "watcher timeout advances short to the new turn"
 assert_contains "$B_META" '"turns": "1"' "watcher timeout does not bump turns"
 assert_equals "$(cat "$DAEMON_HOME/$B_UUID.reply.txt")" "SENTINEL-REPLY-DO-NOT-OVERWRITE" "watcher timeout leaves the reply file untouched"
+assert_file_absent "$HOME/.claude/jobs/$B_SHORT" "confirmed-but-running fork still purges the superseded turn"
 
 # (c) The old turn is stopped BEFORE the fork launches (never stop an in-flight
 # turn after forking). Assert the ordering in calls.log for a fresh daemon.
