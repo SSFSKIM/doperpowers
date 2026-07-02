@@ -67,6 +67,8 @@ Daemons run unattended, so the prompt does the guardrail work. In every spawn pr
 
 The scripts spawn with `--permission-mode auto` — the LLM classifier auto-approves safe tool use and gates genuinely unsafe ops. **Do not add `--dangerously-skip-permissions` to dodge overnight prompts.** A gated op is a *feature*: the daemon goes `blocked` (the scripts report `status=blocked`), which your rubric turns into an escalation. Bypassing hands an unattended process the power to do something irreversible with no one watching.
 
+A daemon also goes `blocked` when it calls **AskUserQuestion** — headless, nobody can click an option. The recorded reply renders the pending question and its options; answer it as plain text with `daemon-resume.sh <id> "<answer>"` (the pending tool call is interrupted and your text arrives as the next user message — daemons handle this fine).
+
 ## Common mistakes
 
 - **`-p --resume`-ing a live `--bg` daemon directly** — it's refused (*"currently running as a background agent"*). `daemon-resume.sh` runs `claude stop` first to release the ownership lock, then resumes in place. Never hand-roll this. And `--bg --resume` would *fork* a new id — never use it to continue.

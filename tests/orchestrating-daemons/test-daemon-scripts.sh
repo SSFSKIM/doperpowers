@@ -135,6 +135,28 @@ assert_contains "$LIB_OUT" "backgrounded · abc12345 · x" "_strip_ansi removes 
 assert_contains "$LIB_OUT" "resolve_full=11111111-aaaa-4000-8000-000000000000" "_resolve_uuid resolves a full uuid"
 assert_contains "$LIB_OUT" "resolve_short=22222222-bbbb-4000-8000-000000000000" "_resolve_uuid resolves a short id"
 assert_contains "$LIB_OUT" "resolve_missing_rc=1" "_resolve_uuid fails on unknown id"
+
+# A daemon can end a turn blocked on an AskUserQuestion tool call (observed
+# live: `claude agents` shows state=blocked, and the question text lives in the
+# tool_use input, not in any text block). _transcript_reply must surface it —
+# otherwise the recorded reply is empty and the question is invisible.
+ASKQ_UUID="33333333-cccc-4000-8000-000000000000"
+ASKQ_TX="$HOME/.claude/projects/fake-proj/$ASKQ_UUID.jsonl"
+mkdir -p "$(dirname "$ASKQ_TX")"
+python3 - "$ASKQ_TX" <<'PY'
+import json, sys
+row = {"type": "assistant", "message": {"content": [
+    {"type": "text", "text": "Before I pick, one question."},
+    {"type": "tool_use", "name": "AskUserQuestion",
+     "input": {"questions": [{"question": "Which color should the widget be?",
+                              "options": [{"label": "Red"}, {"label": "Blue"}]}]}}]}}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+ASKQ_OUT="$(source "$SCRIPTS_DIR/_lib.sh"; _transcript_reply "$ASKQ_UUID")"
+assert_contains "$ASKQ_OUT" "Which color should the widget be?" "pending AskUserQuestion question surfaced in reply"
+assert_contains "$ASKQ_OUT" "Red / Blue" "pending question options rendered"
+assert_contains "$ASKQ_OUT" "Before I pick, one question." "turn text still printed alongside the pending question"
+assert_contains "$ASKQ_OUT" "daemon-resume.sh" "reply points at the answer path"
 rm -rf "${DAEMON_HOME:?}"/*
 
 # ---- 2) spawn (claude --bg) --------------------------------------------------

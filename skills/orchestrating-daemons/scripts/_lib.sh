@@ -135,13 +135,31 @@ _transcript_reply() {
   DAEMON_TX="$f" python3 - <<'PY'
 import json, os
 rows = [json.loads(l) for l in open(os.environ["DAEMON_TX"]) if l.strip()]
+text = ""
 for r in reversed(rows):
     if r.get("type") == "assistant":
         c = r.get("message", {}).get("content")
         t = " ".join(b.get("text", "") for b in c
                      if isinstance(b, dict) and b.get("type") == "text") if isinstance(c, list) else str(c)
         if t.strip():
-            print(t.strip()); break
+            text = t.strip(); break
+# A turn can end blocked on an AskUserQuestion tool call. The question lives in
+# the tool_use INPUT, not in text — without rendering it here the reply would be
+# empty and the orchestrator would have to dig the transcript by hand.
+pending = []
+last = next((r for r in reversed(rows) if r.get("type") == "assistant"), None)
+if last:
+    c = last.get("message", {}).get("content")
+    for b in (c if isinstance(c, list) else []):
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion":
+            for q in (b.get("input") or {}).get("questions", []):
+                opts = " / ".join(o.get("label", "") for o in q.get("options", []) if isinstance(o, dict))
+                pending.append("Q: %s%s" % (q.get("question", ""), ("\n   options: " + opts) if opts else ""))
+if text:
+    print(text)
+if pending:
+    print('[pending AskUserQuestion — daemon is blocked on it; answer with daemon-resume.sh <id> "<answer>"]')
+    print("\n".join(pending))
 PY
 }
 

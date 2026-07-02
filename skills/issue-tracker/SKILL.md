@@ -88,7 +88,9 @@ turn with a single-line JSON proposal block:
 Escalation: waiting on an action/precondition (credentials, access, another
 ticket's work) → propose "blocked". Waiting on knowledge or a human
 taste/product decision → propose "needs-info". State the question crisply and
-END YOUR TURN — never guess above your scope, never expand it.
+END YOUR TURN — never guess above your scope, never expand it. Ask questions
+in PLAIN TEXT, never via the AskUserQuestion tool — you run headless; your
+turn replies are read as text.
 ```
 
 ## Ticket markdown
