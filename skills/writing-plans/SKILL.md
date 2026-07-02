@@ -51,6 +51,10 @@ independently testable deliverable.
 - "Run the tests and make sure they pass" - step
 - "Commit" - step
 
+## Spike Tasks
+
+If the spec declares a prototyping milestone (superpowers:living-specs), plan it as a spike task: the deliverable is knowledge, not shipped code. State the question the spike answers, the exact steps to build and run it, what to observe, and the spec's promote-or-discard criteria verbatim. Spike tasks skip the TDD cycle — their steps are build → run → record. The final step routes the verdict into the spec's `## Surprises & Discoveries` or `## Decision Log` and applies the criteria: promote (follow-up tasks harden it with tests) or discard (delete the prototype code; the knowledge stays in the spec).
+
 ## Plan Document Header
 
 **Every plan MUST start with this header:**

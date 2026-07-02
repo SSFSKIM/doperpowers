@@ -150,6 +150,9 @@ Behavioral (observed on the next real feature, this one included):
 - Observation: Current-generation models need fewer composition guardrails — measured in this repo, supporting the "prose over guardrails" premise of this design.
   Evidence: positive-instruction-redesign spec: 40/40 generated plans clean of placeholders under deliberate pressure; disposition "leave the No Placeholders section exactly as it is… do NOT open the follow-up PR."
 
+- Observation: Adopting a feature at one layer requires an explicit receiving structure at the next layer — declaring is not wiring.
+  Evidence: this spec said "writing-plans turns spike milestones into spike tasks," but writing-plans had no guidance for a task whose deliverable is knowledge (its task format is all TDD cycle); the gap surfaced only in a post-finish completeness review. Fixed by adding a Spike Tasks section to writing-plans.
+
 ## Outcomes & Retrospective
 
 **2026-07-03, at finish.** Everything in the design shipped, same-day: the vendored `references/PLANS.md` (char-for-char; its git history shows exactly one commit), the `living-specs` adapter skill with the disposition map, and all four hooks (`brainstorming`, `writing-plans`, `subagent-driven-development`, `finishing-a-development-branch`) — every structural verification check passed on the first sweep.
@@ -164,3 +167,4 @@ Remains: behavioral acceptance on the next real brainstorm (does a fresh session
 - 2026-07-03: Verification hardened during plan-writing (the first hostile read, as the doctrine predicts): the vendored-file check `git diff HEAD` was ineffective — it passes even after a modifying commit — replaced with a `git log` single-commit check.
 - 2026-07-03: Outcomes & Retrospective written at finish via the newly installed finishing hook — the feature closing its own loop.
 - 2026-07-03: Decision Log extended — separate-skill-vs-fold-into-brainstorming challenged by the human partner after implementation; rationale for the standing choice was undocumented (exactly the gap this regime exists to close), now recorded.
+- 2026-07-03: Post-finish completeness review found the spike-milestone path declared but not received — writing-plans gained a Spike Tasks section; Surprises & Discoveries entry added.
