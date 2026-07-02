@@ -63,6 +63,14 @@ An isolated daemon's finished work is a *committed branch, not merged*. Integrat
 
 Daemons run unattended, so the prompt does the guardrail work. In every spawn prompt: **state the scope explicitly, name the deliverable, and tell the daemon to END ITS TURN clearly stating any decision that is above its scope rather than guessing.** A daemon that stops and asks cleanly is one whose reply you can classify in seconds.
 
+## Long turns
+
+Autonomous work runs as long as it needs — never pace a daemon around a timer. `DAEMON_TIMEOUT` (default 18000s = 5h, `0` = no cap) is a **hang backstop**, not a budget: it bounds resume turns and the spawn watcher's wait. Notes for long turns:
+
+- A spawned daemon's **first turn is never killed** by the toolkit — on a very long turn the watcher just stops watching; the daemon keeps working, and `daemon-reply.sh <id>` reads the reply straight from the transcript once the turn lands.
+- Running a turn under a non-persistent **Monitor**? Its own cap maxes out at 1h — arm it with `persistent: true` for anything longer.
+- An in-flight **resume** turn is a child of your session: if the orchestrator session dies, that turn dies with it. Committed work survives; resume the daemon to continue.
+
 ## Permissions
 
 The scripts spawn with `--permission-mode auto` — the LLM classifier auto-approves safe tool use and gates genuinely unsafe ops. **Do not add `--dangerously-skip-permissions` to dodge overnight prompts.** A gated op is a *feature*: the daemon goes `blocked` (the scripts report `status=blocked`), which your rubric turns into an escalation. Bypassing hands an unattended process the power to do something irreversible with no one watching.

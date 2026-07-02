@@ -17,9 +17,11 @@ set -euo pipefail
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 mkdir -p "$DAEMON_HOME"
 
-# Per-turn wall-clock cap (seconds) for resume turns; and how long to wait for a
-# spawned daemon's first turn to finish. Override with DAEMON_TIMEOUT.
-DAEMON_TIMEOUT="${DAEMON_TIMEOUT:-900}"
+# Wall-clock backstop (seconds) for resume turns, and how long spawn's watcher
+# waits for the first turn. Autonomous daemons do long work — this is a hang
+# backstop, NOT a pacing tool. Default 5 hours; 0 disables it entirely.
+# Override per-invocation with DAEMON_TIMEOUT.
+DAEMON_TIMEOUT="${DAEMON_TIMEOUT:-18000}"
 
 _now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -31,9 +33,12 @@ _err_path()   { printf '%s/%s.err' "$DAEMON_HOME" "$1"; }
 _strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
 # Portable timeout: macOS ships neither `timeout` nor `gtimeout` by default.
+# secs=0 means no cap — run the command bare.
 _timeout() {
   local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then
+  if [ "$secs" = "0" ]; then
+    "$@"
+  elif command -v timeout >/dev/null 2>&1; then
     timeout "$secs" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$secs" "$@"
@@ -166,9 +171,10 @@ PY
 # Poll `claude agents` until short id <1> reaches a terminal/actionable state.
 # Echoes "<full-uuid> <state> <cwd>" (cwd is the daemon's ACTUAL working dir —
 # the worktree path when spawned with --worktree). Non-zero on timeout.
+# max=0 polls with no iteration cap (pairs with DAEMON_TIMEOUT=0).
 _poll_until_done() {
-  local short="$1" max="${2:-120}" i uuid state cwd
-  for ((i = 0; i < max; i++)); do
+  local short="$1" max="${2:-120}" i=0 uuid state cwd
+  while :; do
     read -r uuid state cwd < <(claude agents --json --all 2>/dev/null | DAEMON_SHORT="$short" python3 -c '
 import json, os, sys
 s = os.environ["DAEMON_SHORT"]
@@ -183,6 +189,8 @@ for a in d:
     case "$state" in
       done | blocked | error) printf '%s %s %s' "$uuid" "$state" "$cwd"; return 0 ;;
     esac
+    i=$((i + 1))
+    if [ "$max" -gt 0 ] && [ "$i" -ge "$max" ]; then break; fi
     sleep 2
   done
   printf '%s %s %s' "${uuid:-}" "${state:-timeout}" "${cwd:-}"; return 1

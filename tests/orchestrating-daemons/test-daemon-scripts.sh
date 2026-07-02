@@ -157,6 +157,25 @@ assert_contains "$ASKQ_OUT" "Which color should the widget be?" "pending AskUser
 assert_contains "$ASKQ_OUT" "Red / Blue" "pending question options rendered"
 assert_contains "$ASKQ_OUT" "Before I pick, one question." "turn text still printed alongside the pending question"
 assert_contains "$ASKQ_OUT" "daemon-resume.sh" "reply points at the answer path"
+
+# DAEMON_TIMEOUT=0 disables the wall-clock backstop: _timeout 0 runs the
+# command bare, and _poll_until_done 0 polls without an iteration cap.
+{ echo "short=eeeeeeee"; echo "uuid=eeeeeeee-0000-4000-8000-000000000000"
+  echo "name=z"; echo "state=done"; echo "status="; echo "cwd=/tmp"; } > "$STUB_STATE/agents/eeeeeeee"
+NOCAP_OUT="$(
+  source "$SCRIPTS_DIR/_lib.sh"
+  _timeout 0 echo "no-cap passthrough"
+  _poll_until_done eeeeeeee 0
+)"
+assert_contains "$NOCAP_OUT" "no-cap passthrough" "_timeout 0 runs the command uncapped"
+assert_contains "$NOCAP_OUT" "eeeeeeee-0000-4000-8000-000000000000 done" "_poll_until_done 0 has no iteration cap"
+rm -f "$STUB_STATE/agents/eeeeeeee"
+
+# daemon-reply falls back to the live transcript when the recorded reply file
+# is missing/empty (spawn watcher gave up before a long first turn finished).
+(source "$SCRIPTS_DIR/_lib.sh"; _meta_set "$ASKQ_UUID" name lagged task probe status idle turns 1)
+LAG_OUT="$("$SCRIPTS_DIR/daemon-reply.sh" 33333333)"
+assert_contains "$LAG_OUT" "Before I pick, one question." "daemon-reply falls back to the transcript when the reply file is absent"
 rm -rf "${DAEMON_HOME:?}"/*
 
 # ---- 2) spawn (claude --bg) --------------------------------------------------
