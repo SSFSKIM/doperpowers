@@ -41,7 +41,12 @@ def die(msg):
     sys.exit(1)
 
 env = os.environ
-title, category, state, note = env["T_TITLE"], env["T_CATEGORY"], env["T_STATE"], env["T_NOTE"]
+# Titles are one line: collapse newlines/whitespace runs so a title can never
+# spoof extra rows in line-oriented views (board-list).
+title = " ".join(env["T_TITLE"].split())
+category, state, note = env["T_CATEGORY"], env["T_STATE"], env["T_NOTE"]
+if not title:
+    die("title must be non-empty")
 if category not in ("bug", "enhancement"):
     die("category must be bug|enhancement")
 BIRTH = ("ready-for-agent", "needs-info", "blocked", "deferred")

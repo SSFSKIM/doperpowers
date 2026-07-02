@@ -40,6 +40,9 @@ for tid, n in sorted(tickets.items(), key=lambda kv: int(kv[0][1:])):
     if not os.path.exists(os.path.join(board_dir, n["md"])):
         tags.append("MISSING-MD")
     extra = ("  [%s]" % " ".join(tags)) if tags else ""
-    note = ("  — %s" % n["note"]) if n.get("note") else ""
-    print("%-5s %-15s %-11s %s%s%s" % (tid, n["state"], n["category"], n["title"], extra, note))
+    # One row per ticket: flatten embedded newlines (in a hand-edited title or a
+    # multi-line note) so no field can spoof extra board rows.
+    title = " ".join(str(n["title"]).split())
+    note = ("  — %s" % " ".join(str(n["note"]).split())) if n.get("note") else ""
+    print("%-5s %-15s %-11s %s%s%s" % (tid, n["state"], n["category"], title, extra, note))
 PY

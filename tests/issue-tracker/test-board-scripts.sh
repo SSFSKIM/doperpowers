@@ -284,6 +284,22 @@ run board-transition.sh T13 ready-for-agent >/dev/null
 note="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T13']['note'])")"
 assert_equals "$note" "None" "stale note cleared on the next transition"
 
+# ---- Deferred minors: one-line titles, spoof-proof list rows -------------------
+echo "board-register / board-list (one-line display):"
+
+# A newline smuggled into a title or note must not spoof extra board-list rows.
+out="$(run board-register.sh "$(printf 'Spoof\nT99 done bug FAKE')" enhancement)"   # T14
+assert_contains "$out" "T14" "newline title registers"
+title="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T14']['title'])")"
+assert_equals "$title" "Spoof T99 done bug FAKE" "title normalized to one line at registration"
+run board-transition.sh T14 blocked "$(printf 'line one\nline two')" >/dev/null
+rows="$(run board-list.sh | wc -l | tr -d ' ')"
+assert_equals "$rows" "14" "board-list prints exactly one row per ticket"
+out="$(run board-list.sh blocked)"
+assert_contains "$out" "line one line two" "multi-line note flattened, not truncated, in display"
+
+assert_fails run board-register.sh "$(printf ' \n\t ')" bug     # whitespace-only title
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
