@@ -88,6 +88,42 @@ assert_fails run board-register.sh "Bad" bug --state in-progress      # not a bi
 
 [ -f "$BOARD/map.json.tmp" ] && fail "no tmp litter" || pass "no tmp litter after writes"
 
+# ---- Task 2: transition legality, notes, sweeps, log --------------------------
+echo "board-transition:"
+
+# Board so far: T1 ready (epic-to-be), T2 deferred, T3 ready (parent T1, blocked_by T2)
+assert_fails run board-transition.sh T1 "done"               # illegal ready→done
+assert_fails run board-transition.sh T1 blocked              # note required
+assert_fails run board-transition.sh T1 ready-for-agent      # same-state
+assert_fails run board-transition.sh T99 "done"              # unknown ticket
+assert_fails run board-transition.sh T1 shipping             # unknown state
+
+out="$(run board-transition.sh T3 in-progress)"
+assert_contains "$out" "T3: ready-for-agent → in-progress" "transition applied"
+assert_contains "$out" "T1: ready-for-agent → in-progress" "epic parent pulled to in-progress"
+
+out="$(run board-transition.sh T3 in-review "" --branch worktree-t3 --pr "PR#12")"
+pr="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['pr'])")"
+assert_equals "$pr" "PR#12" "pr recorded on in-review"
+
+out="$(run board-transition.sh T2 ready-for-agent)"    # revive the deferred blocker
+out="$(run board-transition.sh T2 in-progress)"
+out="$(run board-transition.sh T2 "done")"
+assert_contains "$out" "T2: in-progress → done" "blocker done"
+
+out="$(run board-transition.sh T3 "done")"
+assert_contains "$out" "T1: in-progress → done" "epic auto-closed when all children terminal"
+
+# done unblocks dependents: T7 blocked_by the not-yet-done T6
+run board-register.sh "Blocker" bug >/dev/null                       # T6
+run board-register.sh "Dependent" bug --blocked-by T6 >/dev/null     # T7
+run board-transition.sh T6 in-progress >/dev/null
+out="$(run board-transition.sh T6 "done")"
+assert_contains "$out" "now eligible: T7" "done sweep reports newly eligible dependents"
+
+lines="$(wc -l < "$BOARD/log.jsonl" | tr -d ' ')"
+assert_equals "$lines" "17" "every applied change logged (7 births + 10 transitions)"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
