@@ -66,7 +66,7 @@ for f in glob.glob(os.path.join(sys.argv[1], '*')):
     m = dict(l.strip().split('=', 1) for l in open(f) if '=' in l)
     out.append({"id": m.get("short"), "sessionId": m.get("uuid"), "kind": "background",
                 "name": m.get("name"), "state": m.get("state", "done"),
-                "status": m.get("status", "")})
+                "status": m.get("status", ""), "cwd": m.get("cwd", "")})
 print(json.dumps(out))
 PY
     exit 0 ;;
@@ -75,13 +75,14 @@ esac
 
 args=("$@")
 prompt="${args[$((${#args[@]} - 1))]}"
-has_bg=0; is_p=0; name=""; resume_uuid=""; i=0
+has_bg=0; is_p=0; name=""; resume_uuid=""; worktree=""; i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --bg) has_bg=1 ;;
     -p|--print) is_p=1 ;;
     -n) i=$((i + 1)); name="${args[$i]}" ;;
     --resume) i=$((i + 1)); resume_uuid="${args[$i]}" ;;
+    --worktree) i=$((i + 1)); worktree="${args[$i]}" ;;
   esac
   i=$((i + 1))
 done
@@ -100,7 +101,9 @@ if [ $has_bg -eq 1 ]; then
   n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
-  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=done"; echo "status="; } > "$STUB_STATE/agents/$short"
+  # --worktree makes the daemon's real cwd the worktree path (what agents reports).
+  cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
+  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=done"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
   write_asst "$uuid" "ANSWER:$prompt"
   printf 'backgrounded · \033[36m%s\033[39m · %s\n' "$short" "$name"
   exit 0
@@ -169,6 +172,18 @@ echo "retire:"
 assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"status": "retired"' "retire marks the daemon retired"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" purge >/dev/null
 assert_file_absent "$DAEMON_HOME/$UUID.json" "retire purge removes the registry record"
+
+# ---- 6) worktree isolation (native --worktree threading) ---------------------
+echo "worktree isolation:"
+WT_REPO="$TEST_ROOT/wtrepo"; mkdir -p "$WT_REPO"
+WT_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "featdaemon" "build the feature" "$WT_REPO" "featdaemon")"
+assert_contains "$WT_OUT" "branch worktree-featdaemon" "spawn reports the isolated branch"
+WT_SHORT="$(printf '%s' "$WT_OUT" | sed -n 's/.*\[\([0-9a-f]*\) \/ .*/\1/p' | head -1)"
+WT_UUID="$(printf '%s' "$WT_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+WT_META="$(cat "$DAEMON_HOME/$WT_UUID.json")"
+assert_contains "$WT_META" '"worktree": "featdaemon"' "spawn records the worktree name"
+assert_contains "$WT_META" '.claude/worktrees/featdaemon' "spawn records the worktree cwd reported by claude agents"
+assert_contains "$("$SCRIPTS_DIR/daemon-retire.sh" "$WT_SHORT")" "branch worktree-featdaemon" "retire surfaces the isolated branch to merge"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
