@@ -69,6 +69,15 @@ assert_contains "$out" "T3" "third register allocates T3"
 parent="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['parent'])")"
 assert_equals "$parent" "T1" "parent edge stored"
 
+loglines="$(wc -l < "$BOARD/log.jsonl" | tr -d ' ')"
+assert_equals "$loglines" "3" "log.jsonl has exactly 3 lines after the three registers"
+
+out="$(run board-register.sh "Needs more detail" bug --state needs-info --note "what info")"
+assert_contains "$out" "T4" "needs-info with --note succeeds (T4)"
+
+out="$(run board-register.sh "This is a very long ticket title that should be truncated in the slug" enhancement)"
+assert_equals "$out" "T5 tickets/T5-this-is-a-very-long-ticket-title-that-sh.md" "long title slug capped at 40 chars"
+
 assert_fails run board-register.sh "Bad" gadget                       # bad category
 assert_fails run board-register.sh "Bad" bug --state blocked          # blocked without note
 assert_fails run board-register.sh "Bad" bug --parent T99             # dangling ref

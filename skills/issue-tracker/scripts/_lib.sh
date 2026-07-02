@@ -38,10 +38,13 @@ LOG="$BOARD_DIR/log.jsonl"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 
 # Lazy bootstrap: first register creates the data dir + an empty map.
+# Atomic like every other map write: tmp then rename — mv within the same
+# directory is rename(2), so a crash can never leave a partial map.json.
 _board_init() {
   [ -f "$MAP" ] && return 0
   mkdir -p "$BOARD_DIR/tickets"
-  printf '{\n  "version": 1,\n  "next_id": 1,\n  "tickets": {}\n}\n' > "$MAP"
+  printf '{\n  "version": 1,\n  "next_id": 1,\n  "tickets": {}\n}\n' > "$MAP.tmp"
+  mv "$MAP.tmp" "$MAP"
 }
 
 # Run an inline python3 board operation with the board paths exported.
