@@ -105,6 +105,8 @@ assert_contains "$out" "T1: ready-for-agent → in-progress" "epic parent pulled
 out="$(run board-transition.sh T3 in-review "" --branch worktree-t3 --pr "PR#12")"
 pr="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['pr'])")"
 assert_equals "$pr" "PR#12" "pr recorded on in-review"
+branch="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['branch'])")"
+assert_equals "$branch" "worktree-t3" "branch recorded on in-review"
 
 out="$(run board-transition.sh T2 ready-for-agent)"    # revive the deferred blocker
 out="$(run board-transition.sh T2 in-progress)"
@@ -270,6 +272,17 @@ printf '%s' "$out" | grep -Fq "apply: board-transition.sh T12" \
 err="$( { run board-transition.sh T11 in-progress --branch; } 2>&1 1>/dev/null || true )"
 assert_contains "$err" "--branch" "missing option operand names the option in the error"
 assert_fails run board-transition.sh T11 in-progress --branch
+
+# ---- Deferred minors: stale-note clearing ------------------------------------
+echo "board-transition (stale notes):"
+
+# A note travels with the state that required it; the next move clears it.
+run board-register.sh "Stale note ticket" bug --state blocked --note "waiting on API key" >/dev/null  # T13
+note="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T13']['note'])")"
+assert_equals "$note" "waiting on API key" "birth note stored"
+run board-transition.sh T13 ready-for-agent >/dev/null
+note="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T13']['note'])")"
+assert_equals "$note" "None" "stale note cleared on the next transition"
 
 # ---- summary -----------------------------------------------------------------
 echo
