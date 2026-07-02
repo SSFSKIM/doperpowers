@@ -1,6 +1,6 @@
 ---
 name: issue-register
-description: Use when you have a pile of raw idea notes, a brain-dump, several half-formed ideas, or a single underdeveloped/unclear idea that needs to be clarified and organized before any design — especially when it is unclear which ideas are independent, how they cluster, or which are worth pursuing. Use before brainstorming or grill-with-docs, when you are not yet down to a single well-scoped idea.
+description: Use when you have a pile of raw idea notes, a brain-dump, or several half-formed ideas that need to be clarified and organized before any design — especially when it is unclear which ideas are independent, how they cluster, or which are worth pursuing. Use before brainstorming or grill-with-docs, when you are not yet down to a single well-scoped idea.
 ---
 
 # Issue Register
@@ -19,7 +19,7 @@ Every idea dump goes through clustering and clarification, even a short one. "Ob
 
 ## When to Use
 
-- A brain-dump, notes file, several half-formed ideas, or a single underdeveloped/unclear idea.
+- A brain-dump, notes file, or several half-formed ideas.
 - Unclear which ideas are independent, how they group, or which are worth pursuing.
 
 **When NOT to use:**
@@ -37,7 +37,7 @@ You MUST create a task for each item and complete them in order:
 4. **Clarify & grill each cluster to pre-spec** — relentlessly, one question at a time (see below). Sharpen fuzzy terms. Re-cluster as understanding sharpens.
 5. **Nested slicing (only if a cluster is truly big/complex)** — split into child work-items, each still pre-spec. PRESERVE THE LINK: stable IDs + explicit parent refs.
 6. **Write the register** — produce the map artifact (template below). Map-first (markdown); export to a tracker only if asked.
-7. **Stop & hand off** — present the reviewed map. Per work-item the next step is depth elsewhere (`/grill-with-docs` or `brainstorming` → `/to-prd` → `/to-issues`). Do NOT cross the seam here.
+7. **Stop & hand off** — present the reviewed map. Per work-item the next step is depth elsewhere (`/grill-with-docs` or `brainstorming` → `/to-prd` → `/to-issues`). When handing one off, pass its **register path + stable ID** (and parent ID if a child) so the link survives the boundary — the downstream work traces back to its register entry. Do NOT cross the seam here.
 
 ## Process Flow
 
@@ -121,6 +121,7 @@ Deliberately **NOT** in a work-item: solution, architecture, tech choices, file 
 | Turning it into a design/spec (brainstorming's telos leaking in) | This skill's terminal state is a pre-spec map, NOT a design. Hand off for design. |
 | One-idea tunnel vision (treating the whole dump as a single project) | It is usually several. Cluster first. |
 | Losing links when slicing (orphaned children) | Stable IDs + parent refs, always. |
+| Dropping the link at handoff | Pass the register path + work-item ID (and parent ID) downstream so the graph survives the boundary. |
 | Grilling everything to death | Triage: grill what is fuzzy or important. |
 | Silent drops or merges (notes vanishing into vague clusters) | Every note → one work-item, or explicitly parked. |
 | Publishing implementation issues | That is `/to-issues`' job. The register is pre-spec. |
@@ -129,5 +130,5 @@ Deliberately **NOT** in a work-item: solution, architecture, tech choices, file 
 
 - **Cluster first, then grill** — grilling needs a target; establish tentative groups before deep interviewing.
 - **One question at a time** — with your recommended answer.
-- **Keep the link** — every slice remembers its parent; the map is a graph, not a shredder.
+- **Keep the link** — every slice remembers its parent, and hands off with its register path + ID; the map is a graph, not a shredder.
 - **Stop at the seam** — pre-spec only; hand off for depth.
