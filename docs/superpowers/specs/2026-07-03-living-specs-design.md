@@ -81,7 +81,7 @@ Each hook is one small insertion; exact anchor text lives in the implementation 
 Structural (run from repo root; all must hold after implementation):
 
 - `ls skills/living-specs/` → `SKILL.md  references/`
-- `git diff HEAD -- skills/living-specs/references/PLANS.md` after implementation → empty (vendored file untouched by every later task)
+- `git log --oneline -- skills/living-specs/references/PLANS.md` after implementation → exactly one commit, the spec commit (vendored file never touched again; a plain `git diff HEAD` would pass even if a later task modified and committed it)
 - `grep -l "living-specs" skills/brainstorming/SKILL.md skills/writing-plans/SKILL.md skills/subagent-driven-development/SKILL.md skills/finishing-a-development-branch/SKILL.md` → prints all four paths
 
 Behavioral (observed on the next real feature, this one included):
@@ -153,3 +153,4 @@ Pending — written at finish.
 ## Revision Notes
 
 - 2026-07-03: Initial version — terminal artifact of the brainstorm (conversation: superpowers-vs-ExecPlan comparative analysis → synthesis design). Vendored `skills/living-specs/references/PLANS.md` committed alongside.
+- 2026-07-03: Verification hardened during plan-writing (the first hostile read, as the doctrine predicts): the vendored-file check `git diff HEAD` was ineffective — it passes even after a modifying commit — replaced with a `git log` single-commit check.
