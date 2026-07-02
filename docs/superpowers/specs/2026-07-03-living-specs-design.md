@@ -135,6 +135,10 @@ Behavioral (observed on the next real feature, this one included):
   Rationale: Measured genre variance across all 15 existing specs (no repeated heading structure) is a feature — form fits problem.
   Date: 2026-07-03
 
+- Decision: `living-specs` stays a separate skill rather than folding the doctrine into brainstorming (challenged post-implementation; re-affirmed).
+  Rationale: Folding is mechanically viable — the four hooks are deliberately self-contained one-liners. But brainstorming is only the *producer*; the spec has four consumer moments across different sessions, and three of them (plan-writing, execution bookkeeping, finish) never load brainstorming — pointing them at it would inject its HARD-GATE "do not implement" language into implementation contexts. A separate skill also gives ad-hoc spec revision an auto-trigger, keeps ~90 doctrine lines out of every brainstorm's always-loaded context (a references-file split would recreate the same indirection minus the trigger), and names the reference by what it governs: a document class, not a process. General rule applied: one producer + many cross-session consumers → neutral module (same reason code-reviewer.md lives in requesting-code-review, not copied into SDD).
+  Date/Author: 2026-07-03 (human partner challenged; discussed and re-affirmed)
+
 ## Surprises & Discoveries
 
 - Observation: Upstream already maintains method specs as living documents, with no written norm requiring it.
@@ -159,3 +163,4 @@ Remains: behavioral acceptance on the next real brainstorm (does a fresh session
 - 2026-07-03: Initial version — terminal artifact of the brainstorm (conversation: superpowers-vs-ExecPlan comparative analysis → synthesis design). Vendored `skills/living-specs/references/PLANS.md` committed alongside.
 - 2026-07-03: Verification hardened during plan-writing (the first hostile read, as the doctrine predicts): the vendored-file check `git diff HEAD` was ineffective — it passes even after a modifying commit — replaced with a `git log` single-commit check.
 - 2026-07-03: Outcomes & Retrospective written at finish via the newly installed finishing hook — the feature closing its own loop.
+- 2026-07-03: Decision Log extended — separate-skill-vs-fold-into-brainstorming challenged by the human partner after implementation; rationale for the standing choice was undocumented (exactly the gap this regime exists to close), now recorded.
