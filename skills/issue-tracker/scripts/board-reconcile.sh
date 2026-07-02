@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$MAP" ] || die "no board at $MAP (nothing registered yet)"
 
 T_DHOME="$DAEMON_HOME" _py - <<'PY'
-import glob, json, os, re
+import glob, json, os, re, shlex
 
 env = os.environ
 with open(env["BOARD_MAP"]) as f:
@@ -68,7 +68,10 @@ for t, m in by_id(bound.items()):
         if prop["to"] == "in-review" and ev:
             # in-review is PR-gated: carry the proposal's evidence into the hint
             # as the required --pr value so the apply command runs as-printed.
-            print('          apply: board-transition.sh %s in-review --pr "%s"' % (t, ev))
+            # shlex-quoted — evidence is semi-trusted daemon reply text, and a
+            # `"`/$()/backtick payload must not inject into the printed command.
+            print("          apply: board-transition.sh %s in-review --pr %s"
+                  % (t, shlex.quote(str(ev))))
         else:
             print("          apply: board-transition.sh %s %s" % (t, prop["to"]))
 

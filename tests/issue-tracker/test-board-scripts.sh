@@ -227,6 +227,23 @@ if out="$(run board-reconcile.sh)"; then pass "reconcile survives malformed daem
 assert_contains "$out" "anomaly" "reconcile reports an anomaly for the malformed meta"
 assert_contains "$out" "bogus" "reconcile names the bogus ticket instead of crashing"
 
+# Hostile proposal evidence (daemon reply text is semi-trusted) must come out
+# shell-safe in the printed apply hint — shlex single-quotes it, so `"`, $()
+# and backticks can't inject if the orchestrator runs the hint verbatim.
+cat > "$DAEMON_HOME/dddd4444-0000-0000-0000-000000000004.json" <<'META'
+{"uuid": "dddd4444-0000-0000-0000-000000000004", "short": "dddd4444",
+ "name": "t11-worker", "status": "idle", "cwd": "/tmp/w", "worktree": "w",
+ "ticket": "T11"}
+META
+cat > "$DAEMON_HOME/dddd4444-0000-0000-0000-000000000004.reply.txt" <<'REPLY'
+Opened the PR.
+{"ticket":"T11","from":"in-progress","to":"in-review","reason":"done","evidence":"PR \"x\" $(rm -rf /) `boom`"}
+REPLY
+if out="$(run board-reconcile.sh)"; then pass "reconcile survives hostile evidence (exit 0)"; else
+    fail "reconcile survives hostile evidence (exit 0)"; fi
+assert_contains "$out" "proposal  T11: in-progress → in-review" "hostile-evidence proposal still surfaced"
+assert_contains "$out" "--pr 'PR \"x\" \$(rm -rf /) \`boom\`'" "apply hint single-quotes the evidence (shlex-safe)"
+
 # A missing option operand dies cleanly, naming the option (not a raw set -u
 # unbound-variable error).
 err="$( { run board-transition.sh T11 in-progress --branch; } 2>&1 1>/dev/null || true )"
