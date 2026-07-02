@@ -244,6 +244,27 @@ if out="$(run board-reconcile.sh)"; then pass "reconcile survives hostile eviden
 assert_contains "$out" "proposal  T11: in-progress → in-review" "hostile-evidence proposal still surfaced"
 assert_contains "$out" "--pr 'PR \"x\" \$(rm -rf /) \`boom\`'" "apply hint single-quotes the evidence (shlex-safe)"
 
+# A hostile proposed *state* must never reach the paste-able apply hint.
+# States are a closed set, so an unknown `to` is whitelisted out and reported
+# as an anomaly (safe %r repr) — no proposal line, no hint at all.
+run board-register.sh "Hostile state proposal" bug >/dev/null        # T12
+run board-transition.sh T12 in-progress >/dev/null
+cat > "$DAEMON_HOME/eeee5555-0000-0000-0000-000000000005.json" <<'META'
+{"uuid": "eeee5555-0000-0000-0000-000000000005", "short": "eeee5555",
+ "name": "t12-worker", "status": "idle", "cwd": "/tmp/v", "worktree": "v",
+ "ticket": "T12"}
+META
+cat > "$DAEMON_HOME/eeee5555-0000-0000-0000-000000000005.reply.txt" <<'REPLY'
+Done, promise.
+{"ticket":"T12","from":"in-progress","to":"in-review; rm -rf ~","reason":"pwn","evidence":"x"}
+REPLY
+if out="$(run board-reconcile.sh)"; then pass "reconcile survives hostile proposed state (exit 0)"; else
+    fail "reconcile survives hostile proposed state (exit 0)"; fi
+assert_contains "$out" "anomaly   T12: daemon proposes unknown state 'in-review; rm -rf ~'" \
+    "hostile state reported as anomaly with safe repr"
+printf '%s' "$out" | grep -Fq "apply: board-transition.sh T12" \
+    && fail "no apply hint for hostile-state proposal" || pass "no apply hint for hostile-state proposal"
+
 # A missing option operand dies cleanly, naming the option (not a raw set -u
 # unbound-variable error).
 err="$( { run board-transition.sh T11 in-progress --branch; } 2>&1 1>/dev/null || true )"

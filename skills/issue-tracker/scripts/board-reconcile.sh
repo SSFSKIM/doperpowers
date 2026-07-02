@@ -45,6 +45,8 @@ def by_id(items):
     return sorted(items, key=lambda kv: int(kv[0][1:]))
 
 # 1. Unapplied proposals in daemon replies (last block for the ticket wins).
+STATES = {"ready-for-agent", "in-progress", "blocked", "needs-info",
+          "in-review", "done", "wontfix", "deferred"}
 for t, m in by_id(bound.items()):
     reply = os.path.join(env["T_DHOME"], "%s.reply.txt" % m["_uuid"])
     if not os.path.exists(reply):
@@ -61,7 +63,15 @@ for t, m in by_id(bound.items()):
             prop = cand
             break
     cur = tickets.get(t, {}).get("state")
-    if prop and prop.get("to") and prop["to"] != cur:
+    if not prop or not prop.get("to"):
+        continue
+    # `to` is daemon-controlled text headed for a paste-able command — states
+    # are a closed set, so whitelist instead of quoting: an unknown state is
+    # itself an anomaly (%r keeps the hostile value inert), and no hint prints.
+    if prop["to"] not in STATES:
+        print("anomaly   %s: daemon proposes unknown state %r" % (t, prop["to"]))
+        continue
+    if prop["to"] != cur:
         print("proposal  %s: %s → %s  (reason: %s; evidence: %s)" %
               (t, cur, prop["to"], prop.get("reason", "-"), prop.get("evidence", "-")))
         ev = prop.get("evidence")
