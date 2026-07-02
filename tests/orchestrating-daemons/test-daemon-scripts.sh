@@ -2,12 +2,12 @@
 #
 # Integration tests for the orchestrating-daemons toolkit.
 #
-# The daemon scripts shell out to the real `claude` CLI (claude --bg / agents /
-# -p --resume / stop). To stay hermetic — deterministic, offline, no auth, no
-# real sessions — this test puts a STUB `claude` first on PATH that mimics the
-# CLI's observable behavior (colored bg banner, agents --json, transcript files,
-# -p text output, stop). We then drive the real scripts end-to-end and assert on
-# the registry, replies, and status transitions they produce.
+# The daemon scripts shell out to the real `claude` CLI (claude --bg [--resume] /
+# agents / stop). To stay hermetic — deterministic, offline, no auth, no real
+# sessions — this test puts a STUB `claude` first on PATH that mimics the CLI's
+# observable behavior (colored bg banner, agents --json, transcript files, fork
+# via --bg --resume, stop). We then drive the real scripts end-to-end and assert
+# on the registry, replies, and status transitions they produce.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -75,11 +75,10 @@ esac
 
 args=("$@")
 prompt="${args[$((${#args[@]} - 1))]}"
-has_bg=0; is_p=0; name=""; resume_uuid=""; worktree=""; i=0
+has_bg=0; name=""; resume_uuid=""; worktree=""; i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --bg) has_bg=1 ;;
-    -p|--print) is_p=1 ;;
     -n) i=$((i + 1)); name="${args[$i]}" ;;
     --resume) i=$((i + 1)); resume_uuid="${args[$i]}" ;;
     --worktree) i=$((i + 1)); worktree="${args[$i]}" ;;
@@ -104,14 +103,14 @@ if [ $has_bg -eq 1 ]; then
   # --worktree makes the daemon's real cwd the worktree path (what agents reports).
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
   { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=done"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
-  write_asst "$uuid" "ANSWER:$prompt"
+  # A resume FORKS a new session: the new turn's transcript records which session
+  # it forked from, so the test can prove the registry chains ids across turns.
+  if [ -n "$resume_uuid" ]; then
+    write_asst "$uuid" "FORKED:$resume_uuid:ANSWER:$prompt"
+  else
+    write_asst "$uuid" "ANSWER:$prompt"
+  fi
   printf 'backgrounded · \033[36m%s\033[39m · %s\n' "$short" "$name"
-  exit 0
-fi
-
-if [ $is_p -eq 1 ] && [ -n "$resume_uuid" ]; then
-  write_asst "$resume_uuid" "RESUMED:$prompt"
-  printf 'RESUMED:%s\n' "$prompt"
   exit 0
 fi
 
@@ -158,24 +157,32 @@ assert_contains "$ASKQ_OUT" "Red / Blue" "pending question options rendered"
 assert_contains "$ASKQ_OUT" "Before I pick, one question." "turn text still printed alongside the pending question"
 assert_contains "$ASKQ_OUT" "daemon-resume.sh" "reply points at the answer path"
 
-# DAEMON_TIMEOUT=0 disables the wall-clock backstop: _timeout 0 runs the
-# command bare, and _poll_until_done 0 polls without an iteration cap.
+# DAEMON_TIMEOUT=0 makes the watcher poll without an iteration cap (watch forever).
 { echo "short=eeeeeeee"; echo "uuid=eeeeeeee-0000-4000-8000-000000000000"
   echo "name=z"; echo "state=done"; echo "status="; echo "cwd=/tmp"; } > "$STUB_STATE/agents/eeeeeeee"
 NOCAP_OUT="$(
   source "$SCRIPTS_DIR/_lib.sh"
-  _timeout 0 echo "no-cap passthrough"
   _poll_until_done eeeeeeee 0
 )"
-assert_contains "$NOCAP_OUT" "no-cap passthrough" "_timeout 0 runs the command uncapped"
 assert_contains "$NOCAP_OUT" "eeeeeeee-0000-4000-8000-000000000000 done" "_poll_until_done 0 has no iteration cap"
 rm -f "$STUB_STATE/agents/eeeeeeee"
 
-# daemon-reply falls back to the live transcript when the recorded reply file
-# is missing/empty (spawn watcher gave up before a long first turn finished).
-(source "$SCRIPTS_DIR/_lib.sh"; _meta_set "$ASKQ_UUID" name lagged task probe status idle turns 1)
+# daemon-reply falls back to the live transcript when the recorded reply file is
+# missing/empty (the watcher gave up before a long turn finished). The fallback
+# must read the CURRENT (latest-forked) session, not the daemon key — so point
+# `current` at a distinct session with its own transcript and assert on its text.
+CURSESS="44444444-dddd-4000-8000-000000000000"
+CURSESS_TX="$HOME/.claude/projects/fake-proj2/$CURSESS.jsonl"
+mkdir -p "$(dirname "$CURSESS_TX")"
+python3 - "$CURSESS_TX" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps(
+    {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "reply from the current forked turn"}]}}) + "\n")
+PY
+(source "$SCRIPTS_DIR/_lib.sh"; _meta_set "$ASKQ_UUID" name lagged task probe status idle turns 2 current "$CURSESS")
 LAG_OUT="$("$SCRIPTS_DIR/daemon-reply.sh" 33333333)"
-assert_contains "$LAG_OUT" "Before I pick, one question." "daemon-reply falls back to the transcript when the reply file is absent"
+assert_contains "$LAG_OUT" "reply from the current forked turn" "daemon-reply falls back to the CURRENT session's transcript"
 rm -rf "${DAEMON_HOME:?}"/*
 
 # ---- 2) spawn (claude --bg) --------------------------------------------------
@@ -188,7 +195,8 @@ META="$(cat "$DAEMON_HOME/$UUID.json")"
 assert_contains "$META" '"name": "researcher"' "spawn registers the name"
 assert_contains "$META" '"status": "idle"' "spawn marks status idle after a done first turn"
 assert_contains "$META" '"turns": "1"' "spawn records turn 1"
-assert_contains "$META" '"short":' "spawn records the short id (needed for the stop-lock bridge)"
+assert_contains "$META" '"short":' "spawn records the short id (needed for the fork's claude stop)"
+assert_contains "$META" "\"current\": \"$UUID\"" "spawn seeds current = the first-turn uuid"
 SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$UUID.json")"
 
 # ---- 3) list / reply / mark --------------------------------------------------
@@ -199,18 +207,44 @@ assert_contains "$("$SCRIPTS_DIR/daemon-reply.sh" "$SHORT")" "ANSWER:PING-scope-
 assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"status": "awaiting-human"' "mark sets the judgment status"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh" awaiting-human)" "researcher" "list filters by status"
 
-# ---- 4) resume (stop-lock + -p --resume in place) ----------------------------
+# ---- 4) resume (fork a new native --bg turn) ---------------------------------
 echo "resume:"
+meta_field() { sed -n "s/.*\"$1\": \"\([^\"]*\)\".*/\1/p" "$DAEMON_HOME/$UUID.json"; }
+
 RESUME_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$SHORT" "stay in scope please")"
-assert_contains "$RESUME_OUT" "RESUMED:stay in scope please" "resume returns the follow-up reply"
-assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"turns": "2"' "resume advances the turn count in place"
-assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT" "resume releases the bg lock via claude stop"
-assert_equals "$(ls "$HOME/.claude/projects/"*"/$UUID.jsonl" | wc -l | tr -d ' ')" "1" "resume continues in place — no forked transcript"
+# The forked turn's reply proves it carried the ORIGINAL session forward.
+assert_contains "$RESUME_OUT" "FORKED:$UUID:ANSWER:stay in scope please" "resume returns the forked follow-up reply"
+CUR1="$(meta_field current)"
+[ -n "$CUR1" ] && [ "$CUR1" != "$UUID" ] && pass "resume advances current to a NEW forked uuid" \
+    || fail "resume advances current to a NEW forked uuid"
+SHORT1="$(meta_field short)"
+[ -n "$SHORT1" ] && [ "$SHORT1" != "$SHORT" ] && pass "resume updates short to the new turn's short" \
+    || fail "resume updates short to the new turn's short"
+assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"turns": "2"' "resume increments the turn count"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT" "resume stops the old bg turn before forking"
+# The reply file stays keyed by the ORIGINAL uuid.
+assert_file_exists "$DAEMON_HOME/$UUID.reply.txt" "reply file keyed by the original uuid"
+assert_contains "$(cat "$DAEMON_HOME/$UUID.reply.txt")" "FORKED:$UUID:ANSWER:stay in scope please" "reply file holds the fork reply"
+# Two sessions forked → the original transcript AND the new one both exist.
+assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$UUID.jsonl" 2>/dev/null | head -1)" "original session transcript still exists"
+assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$CUR1.jsonl" 2>/dev/null | head -1)" "forked session has its own transcript"
+# _resolve_uuid maps the CURRENT short id back to the daemon's stable key.
+assert_equals "$(source "$SCRIPTS_DIR/_lib.sh"; _resolve_uuid "$SHORT1")" "$UUID" "_resolve_uuid resolves a daemon by its current short id"
+
+# A SECOND resume must fork from the PREVIOUS current (chain), driven by the
+# current short — proving the id chain, not the original, is what advances.
+RESUME2_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$SHORT1" "one more thing")"
+assert_contains "$RESUME2_OUT" "FORKED:$CUR1:ANSWER:one more thing" "second resume forks from the previous current (chain)"
+assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"turns": "3"' "second resume increments turns again"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT1" "second resume stops the previous turn's short"
+SHORT2="$(meta_field short)"
+assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "$SHORT2" "list SHORT column shows the current turn's short"
 
 # ---- 5) retire ---------------------------------------------------------------
 echo "retire:"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" >/dev/null
 assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"status": "retired"' "retire marks the daemon retired"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT2" "retire stops the CURRENT turn's short"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" purge >/dev/null
 assert_file_absent "$DAEMON_HOME/$UUID.json" "retire purge removes the registry record"
 
