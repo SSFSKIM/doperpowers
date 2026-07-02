@@ -88,7 +88,7 @@ _reply_text() {
 # have to read each meta to find it. Prints the daemon uuid, or errors if zero /
 # multiple daemons match.
 _resolve_uuid() {
-  local q="$1" match
+  local q="$1" match rc
   match="$(DAEMON_HOME="$DAEMON_HOME" python3 - "$q" <<'PY'
 import glob, json, os, sys
 home = os.environ["DAEMON_HOME"]; q = sys.argv[1]
@@ -117,7 +117,14 @@ else:
     sys.stderr.write("ambiguous id '%s' matches: %s\n" % (q, ", ".join(hits)))
     sys.exit(4)
 PY
-)" || { echo "no daemon matching '$q'" >&2; return 1; }
+)" || {
+    rc=$?
+    # Distinguish python's exit codes: 3 = no match (explain here); 4 = ambiguous
+    # (python already wrote the specific "ambiguous id ..." line to stderr, so
+    # also printing "no daemon matching" would double up the error).
+    [ "$rc" -eq 3 ] && echo "no daemon matching '$q'" >&2
+    return 1
+  }
   printf '%s' "$match"
 }
 
