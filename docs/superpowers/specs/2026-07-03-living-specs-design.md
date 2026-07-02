@@ -148,9 +148,14 @@ Behavioral (observed on the next real feature, this one included):
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-07-03, at finish.** Everything in the design shipped, same-day: the vendored `references/PLANS.md` (char-for-char; its git history shows exactly one commit), the `living-specs` adapter skill with the disposition map, and all four hooks (`brainstorming`, `writing-plans`, `subagent-driven-development`, `finishing-a-development-branch`) — every structural verification check passed on the first sweep.
+
+The doctrine proved itself before its own implementation finished: plan-writing's "first hostile read" caught an ineffective verification check in this very spec (`git diff HEAD` passes even after a modifying commit — see Revision Notes), which is precisely the same-day-drift failure class (the issue-tracker `<md>` case) that motivated the feature. This retrospective entry, replacing the "Pending" line via the new finishing hook, is the first acceptance instance the Verification section called for.
+
+Remains: behavioral acceptance on the next real brainstorm (does a fresh session produce a spec in living shape unprompted?); the 15 existing specs stay un-retrofitted by design. Lesson: a plan whose tasks are pure transcription made inline execution the right call — the SDD machinery would have been overhead, exactly as the model-selection doctrine predicts.
 
 ## Revision Notes
 
 - 2026-07-03: Initial version — terminal artifact of the brainstorm (conversation: superpowers-vs-ExecPlan comparative analysis → synthesis design). Vendored `skills/living-specs/references/PLANS.md` committed alongside.
 - 2026-07-03: Verification hardened during plan-writing (the first hostile read, as the doctrine predicts): the vendored-file check `git diff HEAD` was ineffective — it passes even after a modifying commit — replaced with a `git log` single-commit check.
+- 2026-07-03: Outcomes & Retrospective written at finish via the newly installed finishing hook — the feature closing its own loop.
