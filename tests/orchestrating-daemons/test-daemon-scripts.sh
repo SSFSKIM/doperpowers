@@ -97,12 +97,20 @@ PY
 }
 
 if [ $has_bg -eq 1 ]; then
+  # Failure-mode switch: make the --bg launch itself fail (e.g. session not
+  # resumable). Exercises daemon-resume's fork-launch-failure path.
+  if [ "${STUB_FAIL_BG:-0}" = "1" ]; then
+    echo "stub: simulated --bg launch failure" >&2
+    exit 1
+  fi
   n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
   # --worktree makes the daemon's real cwd the worktree path (what agents reports).
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
-  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=done"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
+  # STUB_BG_STATE pins the created agent's reported state (default done). Setting
+  # it to `running` keeps the turn non-terminal so the resume watcher times out.
+  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
   # A resume FORKS a new session: the new turn's transcript records which session
   # it forked from, so the test can prove the registry chains ids across turns.
   if [ -n "$resume_uuid" ]; then
@@ -259,6 +267,78 @@ WT_META="$(cat "$DAEMON_HOME/$WT_UUID.json")"
 assert_contains "$WT_META" '"worktree": "featdaemon"' "spawn records the worktree name"
 assert_contains "$WT_META" '.claude/worktrees/featdaemon' "spawn records the worktree cwd reported by claude agents"
 assert_contains "$("$SCRIPTS_DIR/daemon-retire.sh" "$WT_SHORT")" "branch worktree-featdaemon" "retire surfaces the isolated branch to merge"
+
+# ---- 7) failure windows (fork launch failure, watcher timeout, ordering) -----
+echo "failure windows:"
+spawn_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ .*/\1/p' | head -1; }
+spawn_uuid()  { printf '%s' "$1" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1; }
+
+# (a) The fork command itself fails (session not resumable). Resume must exit
+# nonzero, flip status=error, and leave `current`/turns untouched — the daemon
+# must not be silently advanced past a launch that never happened.
+A_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "failfork" "seed-a" "$WORK")"
+A_SHORT="$(spawn_short "$A_OUT")"; A_UUID="$(spawn_uuid "$A_OUT")"
+A_RC=0
+STUB_FAIL_BG=1 "$SCRIPTS_DIR/daemon-resume.sh" "$A_SHORT" "go" >/dev/null 2>&1 || A_RC=$?
+[ "$A_RC" -ne 0 ] && pass "fork launch failure makes resume exit nonzero" \
+    || fail "fork launch failure makes resume exit nonzero"
+A_META="$(cat "$DAEMON_HOME/$A_UUID.json")"
+assert_contains "$A_META" '"status": "error"' "fork launch failure sets status=error"
+assert_contains "$A_META" "\"current\": \"$A_UUID\"" "fork launch failure leaves current unchanged (no phantom advance)"
+assert_contains "$A_META" '"turns": "1"' "fork launch failure does not bump turns"
+
+# (b) The fork launches but the turn is still running when the watcher expires.
+# The chain must advance to the NEW session (current/short) with status=working
+# (the turn IS still running), the reply file must NOT be overwritten, and turns
+# must not increment (no final reply has landed).
+B_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "slowfork" "seed-b" "$WORK")"
+B_SHORT="$(spawn_short "$B_OUT")"; B_UUID="$(spawn_uuid "$B_OUT")"
+printf 'SENTINEL-REPLY-DO-NOT-OVERWRITE' > "$DAEMON_HOME/$B_UUID.reply.txt"
+B_RC=0
+STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-resume.sh" "$B_SHORT" "long task" >/dev/null 2>&1 || B_RC=$?
+[ "$B_RC" -ne 0 ] && pass "watcher timeout makes resume exit nonzero" \
+    || fail "watcher timeout makes resume exit nonzero"
+B_META="$(cat "$DAEMON_HOME/$B_UUID.json")"
+assert_contains "$B_META" '"status": "working"' "watcher timeout records status=working (turn still running)"
+B_CUR="$(sed -n 's/.*"current": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$B_UUID.json")"
+[ -n "$B_CUR" ] && [ "$B_CUR" != "$B_UUID" ] && pass "watcher timeout advances current to the new forked session" \
+    || fail "watcher timeout advances current to the new forked session"
+B_SHORT_NEW="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$B_UUID.json")"
+[ -n "$B_SHORT_NEW" ] && [ "$B_SHORT_NEW" != "$B_SHORT" ] && pass "watcher timeout advances short to the new turn" \
+    || fail "watcher timeout advances short to the new turn"
+assert_contains "$B_META" '"turns": "1"' "watcher timeout does not bump turns"
+assert_equals "$(cat "$DAEMON_HOME/$B_UUID.reply.txt")" "SENTINEL-REPLY-DO-NOT-OVERWRITE" "watcher timeout leaves the reply file untouched"
+
+# (c) The old turn is stopped BEFORE the fork launches (never stop an in-flight
+# turn after forking). Assert the ordering in calls.log for a fresh daemon.
+C_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "ordercheck" "seed-c" "$WORK")"
+C_SHORT="$(spawn_short "$C_OUT")"; C_UUID="$(spawn_uuid "$C_OUT")"
+"$SCRIPTS_DIR/daemon-resume.sh" "$C_SHORT" "next" >/dev/null
+C_STOP_LINE="$(grep -nF "stop $C_SHORT" "$STUB_STATE/log/calls.log" | tail -1 | cut -d: -f1 || true)"
+C_FORK_LINE="$(grep -nF -- "--bg --resume $C_UUID" "$STUB_STATE/log/calls.log" | tail -1 | cut -d: -f1 || true)"
+if [ -n "$C_STOP_LINE" ] && [ -n "$C_FORK_LINE" ] && [ "$C_STOP_LINE" -lt "$C_FORK_LINE" ]; then
+    pass "stop <old-short> precedes the --bg --resume fork in calls.log"
+else
+    fail "stop <old-short> precedes the --bg --resume fork in calls.log"
+    echo "    stop line: ${C_STOP_LINE:-<none>}  fork line: ${C_FORK_LINE:-<none>}"
+fi
+
+# (d) An ambiguous query prints the specific ambiguity message and NOT the
+# generic "no daemon matching" (python exits 4, not 3 — the wrapper must not
+# double up the error).
+AMBIG_ERR="$(
+  source "$SCRIPTS_DIR/_lib.sh"
+  _meta_set aabb0000-0000-4000-8000-000000000000 name amb-one
+  _meta_set aabb1111-1111-4000-8000-000000000000 name amb-two
+  _resolve_uuid aabb 2>&1 1>/dev/null || true
+)"
+assert_contains "$AMBIG_ERR" "ambiguous id 'aabb'" "ambiguous query prints the ambiguity message"
+if printf '%s' "$AMBIG_ERR" | grep -Fq "no daemon matching"; then
+    fail "ambiguous query does NOT also print 'no daemon matching'"
+else
+    pass "ambiguous query does NOT also print 'no daemon matching'"
+fi
+rm -f "$DAEMON_HOME"/aabb*.json
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
