@@ -257,6 +257,12 @@ a ledger file, not only in todos.
 - When a task's review comes back clean, append one line to the ledger in
   the same message as your other bookkeeping:
   `Task N: complete (commits <base7>..<head7>, review clean)`.
+- In that same bookkeeping message, route anything from the task's report
+  that changed design understanding — an assumption that proved false, a
+  constraint discovered, a mid-course design decision — into the spec's
+  `## Surprises & Discoveries` or `## Decision Log`
+  (superpowers:living-specs). Implementation noise stays in commit
+  messages, not the spec.
 - The ledger is your recovery map: the commits it names exist in git even
   when your context no longer remembers creating them. After compaction,
   trust the ledger and `git log` over your own recollection.
