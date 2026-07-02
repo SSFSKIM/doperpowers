@@ -161,6 +161,39 @@ touch "$BOARD/map.json.tmp"
 run board-list.sh >/dev/null && pass "stray map.json.tmp ignored" || fail "stray map.json.tmp ignored"
 rm -f "$BOARD/map.json.tmp"
 
+# ---- Task 4: bind + reconcile --------------------------------------------------
+echo "board-bind / board-reconcile:"
+
+cat > "$DAEMON_HOME/bbbb2222-0000-0000-0000-000000000002.json" <<'META'
+{"uuid": "bbbb2222-0000-0000-0000-000000000002", "short": "bbbb2222",
+ "name": "t9-worker", "status": "idle", "cwd": "/tmp/y", "worktree": "t9"}
+META
+out="$(run board-bind.sh bbbb2222 T9)"
+assert_contains "$out" "bound T9" "bind reports success"
+tk="$(python3 -c "import json;print(json.load(open('$DAEMON_HOME/bbbb2222-0000-0000-0000-000000000002.json'))['ticket'])")"
+assert_equals "$tk" "T9" "bind wrote the ticket key into daemon meta"
+assert_fails run board-bind.sh bbbb2222 T99          # unknown ticket
+assert_fails run board-bind.sh zzzz9999 T9           # no matching daemon
+
+# Reconcile case 1: a proposal in a reply that the board hasn't applied.
+run board-transition.sh T8 in-progress >/dev/null
+cat > "$DAEMON_HOME/aaaa1111-0000-0000-0000-000000000001.reply.txt" <<'REPLY'
+Build finished; PR opened.
+{"ticket":"T8","from":"in-progress","to":"in-review","reason":"build done","evidence":"PR #9"}
+REPLY
+# Reconcile case 2: in-progress with no bound daemon.
+run board-transition.sh T9 in-progress >/dev/null
+rm "$DAEMON_HOME/bbbb2222-0000-0000-0000-000000000002.json"
+
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "proposal  T8: in-progress → in-review" "reconcile surfaces the unapplied proposal"
+assert_contains "$out" "board-transition.sh T8 in-review" "reconcile prints the apply command"
+assert_contains "$out" "orphaned  T9" "reconcile flags in-progress ticket with no daemon"
+
+map_before="$(cat "$BOARD/map.json")"
+run board-reconcile.sh >/dev/null
+assert_equals "$(cat "$BOARD/map.json")" "$map_before" "reconcile never writes the board"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
