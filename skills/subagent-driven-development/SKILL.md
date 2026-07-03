@@ -99,15 +99,21 @@ conflicts that only emerge from implementation.
 ## Model Selection
 
 **Every worker dispatches on the mid-tier model at high reasoning effort** —
-implementers, task reviewers, fix subagents, and the final whole-branch
-reviewer alike. On Claude that means Sonnet with effort high; on other
-harnesses, the equivalent middle-grade model at its highest reasoning
-setting. Do not tier workers by perceived task difficulty in either
-direction: no cheap-tier "transcription" implementers (they take 2-3× the
-turns and cost more overall), and no top-tier upgrades because a task feels
-important — the plan and the task brief are the difficulty absorbers, not
-the model. A well-specified brief makes a mid-tier implementer reliable, and
-a mid-tier reviewer reading a scoped diff is a consistent gate.
+implementers, task reviewers, and fix subagents alike. On Claude that means
+Sonnet with effort high; on other harnesses, the equivalent middle-grade
+model at its highest reasoning setting. Do not tier these workers by
+perceived task difficulty in either direction: no cheap-tier
+"transcription" implementers (they take 2-3× the turns and cost more
+overall), and no top-tier upgrades because a task feels important — the
+plan and the task brief are the difficulty absorbers, not the model. A
+well-specified brief makes a mid-tier implementer reliable, and a mid-tier
+reviewer reading a scoped diff is a consistent gate.
+
+**The one exception is the final whole-branch review: dispatch it on the
+strongest available model at its highest effort** (Claude: Fable or Opus,
+effort xhigh). It is the last gate before merge and the only reviewer that
+reads the entire branch at once — the one place where top-tier depth pays
+for itself.
 
 **Always specify the model explicitly when dispatching a subagent.** An
 omitted model inherits your session's model — often the most capable and
