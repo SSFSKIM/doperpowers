@@ -317,6 +317,11 @@ assert_contains "$out" "class T14 s_blk" "state maps to its color class"
 run board-map.sh --write >/dev/null 2>&1
 assert_file_exists "$BOARD/MAP.md" "--write saves MAP.md in the board dir"
 
+# Every board WRITE auto-refreshes MAP.md — the render cache cannot go stale
+# by discipline alone.
+run board-transition.sh T17 in-progress >/dev/null
+assert_contains "$(cat "$BOARD/MAP.md")" "class T17 s_prog" "a board write auto-refreshes MAP.md"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else

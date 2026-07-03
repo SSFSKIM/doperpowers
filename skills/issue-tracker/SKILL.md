@@ -54,7 +54,7 @@ Paths relative to this skill's `scripts/` directory. Use them — don't hand-edi
 | `board-register.sh <title> <category> [--state S] [--note N] [--parent T] [--blocked-by T,T] [--spawned-by T]` | add a node; prints `<id> <md-relpath>` — then YOU write that markdown (pre-spec) |
 | `board-transition.sh <id> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes; runs the epic/unblock sweeps |
 | `board-list.sh [state]` | board view; `ELIGIBLE` tag = dispatchable |
-| `board-map.sh [--write]` | human telemetry: the board DAG as a Mermaid flowchart (state colors, epic boxes, block/lineage edges); `--write` saves `MAP.md` for the human — refresh it after transitions |
+| `board-map.sh [--write]` | human telemetry: the board DAG as a Mermaid flowchart (state colors, epic boxes, block/lineage edges). `MAP.md` is a pure render cache of `map.json`, auto-refreshed by every register/transition; `--write` re-renders it by hand |
 | `board-show.sh <id>` | node + md path + bound daemon |
 | `board-bind.sh <uuid> <id>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables |
