@@ -300,6 +300,23 @@ assert_contains "$out" "line one line two" "multi-line note flattened, not trunc
 
 assert_fails run board-register.sh "$(printf ' \n\t ')" bug     # whitespace-only title
 
+# ---- board-map (mermaid human telemetry) --------------------------------------
+echo "board-map:"
+
+run board-register.sh "Map edge probe" enhancement --blocked-by T14 >/dev/null      # T15
+run board-register.sh "Map lineage probe" enhancement --spawned-by T15 >/dev/null   # T16
+run board-register.sh "Map epic child probe" enhancement --parent T16 >/dev/null    # T17
+out="$(run board-map.sh)"
+assert_contains "$out" '```mermaid' "map emits a mermaid block"
+assert_contains "$out" "flowchart TD" "map is a flowchart"
+assert_contains "$out" "T14 ==> T15" "active block renders as a thick arrow"
+assert_contains "$out" "waiting: T14" "blocked-on label names the unmet blocker"
+assert_contains "$out" "T15 -. spawned .-> T16" "lineage renders as a labeled dotted arrow"
+assert_contains "$out" 'subgraph T16[' "a parent renders as an epic subgraph"
+assert_contains "$out" "class T14 s_blk" "state maps to its color class"
+run board-map.sh --write >/dev/null 2>&1
+assert_file_exists "$BOARD/MAP.md" "--write saves MAP.md in the board dir"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
