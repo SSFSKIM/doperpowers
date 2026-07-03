@@ -36,7 +36,7 @@ Everything the grill resolves lands in the ExecPlan: term definitions inline whe
 
 ## Step 2 — Author the ExecPlan
 
-Read [../execspec/references/PLANS.md](../execspec/references/PLANS.md) in full and follow it **to the letter** — including the sections the execspec adapter supersedes for the controlled track (Progress with timestamped checkboxes, narrative milestones, Concrete Steps, novice-grade self-containment). That is track separation, not contradiction: over there, machinery replaces those sections; here, the document IS the machinery.
+Read [../execplan/references/PLANS.md](../execplan/references/PLANS.md) in full and follow it **to the letter** — including the sections the execspec adapter supersedes for the controlled track (Progress with timestamped checkboxes, narrative milestones, Concrete Steps, novice-grade self-containment). That is track separation, not contradiction: over there, machinery replaces those sections; here, the document IS the machinery.
 
 Save to `docs/doperpowers/execplans/YYYY-MM-DD-<topic>.md` (omit the triple-backtick envelope per PLANS.md's file rule). The bar: a fresh session with no conversation history — or a daemon spawned with nothing but this file — can implement it end-to-end and see it working.
 
