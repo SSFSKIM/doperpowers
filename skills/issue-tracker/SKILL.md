@@ -98,6 +98,23 @@ time, plus a terminal outcome summary). Frontmatter `id/title/category` only —
 state lives in the map alone. Body: Problem & intent / Constraints / Success
 criteria / Open questions / Decision log.
 
+## Scope-outs become tickets (deferral rule)
+
+Work deliberately deferred out of scope — during a grill, a brainstorm, an
+issue-register session, or a worker's design phase — is registered on the
+board THE MOMENT the deferral is decided, with its lineage as edges:
+
+- `--spawned-by <origin>` — the ticket whose design session produced the cut
+- `--blocked-by <ids>` — what must land first (often the origin ticket itself,
+  and/or the moving interface that forced the deferral)
+- `--parent <epic>` — when the work belongs to an existing epic
+- If the repo tracks work on GitHub, file the GH issue in the same breath and
+  cross-reference it from the ticket md.
+
+Deferral without a ticket is silent scope loss: the decision exists only in
+the design conversation and dies with the session. The ticket md's Decision
+log records *why* it was cut, so nobody re-litigates it later.
+
 ## Edge cases
 
 - `orphaned` in reconcile → the daemon died: respawn, re-bind, resume the ticket.
