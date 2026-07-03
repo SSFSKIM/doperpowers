@@ -63,8 +63,11 @@ The execspec pipeline and its four hooks; the vendored PLANS.md (still one copy,
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-07-03, at finish.** Shipped as designed, same conversation: `skills/execplan/SKILL.md` (grill vendored verbatim with attribution, three domain-modeling moves absorbed, authoring bound to the shared vendored PLANS.md to the letter, worktree execution, single exit gate). All structural verification passed on the first run (`ls`, both greps = 1). Right-sizing held: no plan was written and none was missed — the skill file was a single transcription-grade artifact.
+
+The methodology portfolio is now two-track: controlled (execspec pipeline, gates throughout) and autonomous (this, gate front-loaded into the grill). Remains: the behavioral acceptance — first real use driving a task from grill to reviewed merge without mid-flight prompts; and the noted-but-unmandated daemon integration, to be wired only if real usage asks for it. Lesson: the fastest design sessions are the ones where every rejected alternative gets written down at rejection time — this spec's Decision Log was pure transcription because the conversation had already done the work.
 
 ## Revision Notes
 
 - 2026-07-03: Initial version — terminal artifact of the grill-shaped design conversation (ExecPlan-only resolution, exit-gate default, right-sizing decision).
+- 2026-07-03: Outcomes & Retrospective written at finish; structural verification results recorded.
