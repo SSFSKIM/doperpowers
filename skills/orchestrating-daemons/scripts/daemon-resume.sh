@@ -32,6 +32,9 @@ msg="${2:?missing message}"
 name="$(_meta_get "$uuid" name)"
 cwd="$(_meta_get "$uuid" cwd)"; model="$(_meta_get "$uuid" model)"
 turns="$(_meta_get "$uuid" turns)"; [ -n "$turns" ] || turns=0
+# Worktree'd daemon → purge needs the worktree path to dirty-guard it while
+# `claude rm` runs (rm deletes a CLEAN worktree with the owning turn).
+wtpath=""; [ -n "$(_meta_get "$uuid" worktree)" ] && wtpath="$cwd"
 
 # The turn to fork from is the CURRENT session (backward compat: metas created
 # before the fork rework have no `current`, so fall back to the daemon's uuid).
@@ -92,7 +95,7 @@ if [ "$poll_rc" -ne 0 ] || [ -z "$newuuid" ]; then
     # session's transcript, so it will surface the reply once the turn finishes.
     _meta_set "$uuid" current "$newuuid" short "$newshort" status "working" updated "$(_now)"
     # The fork is confirmed live — the superseded turn's session can go.
-    if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur"; fi
+    if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur" "$wtpath"; fi
     echo "resume: watcher expired after $((DAEMON_TIMEOUT / 2)) polls; forked turn $newshort ($newuuid) is still running (status=working)." >&2
     echo "        run daemon-reply.sh $uuid once it lands to read the reply." >&2
   else
@@ -110,14 +113,15 @@ fi
 status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error" ] && status="error"
 
 # Reply file stays keyed by the ORIGINAL uuid; read the reply from the new turn.
-_transcript_reply "$newuuid" > "$(_reply_path "$uuid")"
+_record_reply "$newuuid" "$uuid" "$state"
 _meta_set "$uuid" current "$newuuid" short "$newshort" \
   status "$status" updated "$(_now)" turns "$((turns + 1))"
 
-# Purge the superseded turn: drop its dashboard (jobs) entry and transcript so
-# `claude agents` shows exactly one session per daemon — the current turn. The
-# fork carried the full conversation forward, so nothing is lost.
-if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur"; fi
+# Purge the superseded turn: deregister it (jobs entry + supervisor record) and
+# drop its transcript so `claude agents` shows exactly one session per daemon —
+# the current turn. The fork carried the full conversation forward, so nothing
+# is lost.
+if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur" "$wtpath"; fi
 
 echo "daemon resumed: $name  [$newshort / $uuid]  status=$(_meta_get "$uuid" status)  turns=$(_meta_get "$uuid" turns)  current=$newuuid"
 echo "--- reply ---"

@@ -65,7 +65,7 @@ esac
 # truth (status=working) — daemon-reply reads the live transcript for it.
 status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error" ] && status="error"
 [ "$poll_rc" -ne 0 ] && status="working"
-_transcript_reply "$uuid" > "$(_reply_path "$uuid")"
+_record_reply "$uuid" "$uuid" "$state"
 _meta_set "$uuid" \
   uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
   worktree "$worktree" model "$model" \

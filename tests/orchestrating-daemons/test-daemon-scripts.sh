@@ -71,6 +71,16 @@ print(json.dumps(out))
 PY
     exit 0 ;;
   stop) echo "stopped ${2:-}"; exit 0 ;;
+  rm)
+    # Real `claude rm` deregisters the session (jobs entry + supervisor record)
+    # and deletes a CLEAN worktree with the owning turn. The purge dirty-guards
+    # the daemon's worktree with a sentinel — log whether it was present at rm
+    # time so the test can prove the guard held DURING the call.
+    g="absent"
+    [ -n "${STUB_GUARD_DIR:-}" ] && [ -f "$STUB_GUARD_DIR/.daemon-turn-live" ] && g="present"
+    echo "rm-guard:$g" >> "$STUB_STATE/log/calls.log"
+    rm -f "$STUB_STATE/agents/${2:-}"
+    echo "removed ${2:-}"; exit 0 ;;
 esac
 
 args=("$@")
@@ -169,6 +179,31 @@ assert_contains "$ASKQ_OUT" "Red / Blue" "pending question options rendered"
 assert_contains "$ASKQ_OUT" "Before I pick, one question." "turn text still printed alongside the pending question"
 assert_contains "$ASKQ_OUT" "daemon-resume.sh" "reply points at the answer path"
 
+# A turn can also be blocked with NO pending AskUserQuestion in the transcript —
+# a harness-level (permission) prompt holds the tool call before it is written
+# (observed live). _record_reply must annotate that shape, and must NOT annotate
+# a blocked turn whose transcript already carries the pending question.
+PERM_UUID="55555555-eeee-4000-8000-000000000000"
+PERM_TX="$HOME/.claude/projects/fake-proj/$PERM_UUID.jsonl"
+python3 - "$PERM_TX" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps(
+    {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "About to ask something."}]}}) + "\n")
+PY
+(source "$SCRIPTS_DIR/_lib.sh"; _record_reply "$PERM_UUID" "$PERM_UUID" blocked)
+assert_contains "$(cat "$DAEMON_HOME/$PERM_UUID.reply.txt")" "blocked on a harness prompt" \
+    "blocked-without-question reply carries the harness-prompt marker"
+MARK2_UUID="66666666-ffff-4000-8000-000000000000"
+(source "$SCRIPTS_DIR/_lib.sh"; _record_reply "$ASKQ_UUID" "$MARK2_UUID" blocked)
+grep -q "blocked on a harness prompt" "$DAEMON_HOME/$MARK2_UUID.reply.txt" \
+    && fail "pending-question reply has no harness-prompt marker" \
+    || pass "pending-question reply has no harness-prompt marker"
+(source "$SCRIPTS_DIR/_lib.sh"; _record_reply "$PERM_UUID" "$MARK2_UUID" "done")
+grep -q "blocked on a harness prompt" "$DAEMON_HOME/$MARK2_UUID.reply.txt" \
+    && fail "non-blocked reply has no harness-prompt marker" \
+    || pass "non-blocked reply has no harness-prompt marker"
+
 # DAEMON_TIMEOUT=0 makes the watcher poll without an iteration cap (watch forever).
 { echo "short=eeeeeeee"; echo "uuid=eeeeeeee-0000-4000-8000-000000000000"
   echo "name=z"; echo "state=done"; echo "status="; echo "cwd=/tmp"; } > "$STUB_STATE/agents/eeeeeeee"
@@ -202,7 +237,11 @@ echo "spawn:"
 SPAWN_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "researcher" "PING-scope-42" "$WORK")"
 assert_contains "$SPAWN_OUT" "PING-scope-42" "spawn reads the first-turn reply from the transcript"
 assert_contains "$SPAWN_OUT" "visible in 'claude agents'" "spawn reports claude agents visibility"
-UUID="$(ls "$DAEMON_HOME"/*.json | grep -v '\.reply\.' | head -1 | xargs basename | sed 's/\.json$//')"
+UUID=""
+for _f in "$DAEMON_HOME"/*.json; do
+  case "$_f" in *.reply.json) continue ;; esac
+  UUID="$(basename "$_f" .json)"; break
+done
 META="$(cat "$DAEMON_HOME/$UUID.json")"
 assert_contains "$META" '"name": "researcher"' "spawn registers the name"
 assert_contains "$META" '"status": "idle"' "spawn marks status idle after a done first turn"
@@ -241,6 +280,7 @@ assert_contains "$(cat "$DAEMON_HOME/$UUID.reply.txt")" "FORKED:$UUID:ANSWER:sta
 # The superseded turn is PURGED once the fork is confirmed: its dashboard
 # (jobs) entry and transcript are gone; the fork carried the content forward.
 assert_file_absent "$HOME/.claude/jobs/$SHORT" "resume purges the old turn's dashboard jobs entry"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "rm $SHORT" "resume deregisters the old turn via claude rm (file deletion alone resurrects on attach)"
 [ -z "$(ls "$HOME/.claude/projects/"*"/$UUID.jsonl" 2>/dev/null)" ] && pass "resume purges the old turn's transcript" \
     || fail "resume purges the old turn's transcript"
 assert_file_exists "$(ls "$HOME/.claude/projects/"*"/$CUR1.jsonl" 2>/dev/null | head -1)" "forked session has its own transcript"
@@ -372,6 +412,27 @@ mkdir -p "$HOME/.claude/jobs/deadbeef"
 (source "$SCRIPTS_DIR/_lib.sh"; _session_purge "deadbeef" "")
 [ ! -d "$HOME/.claude/jobs/deadbeef" ] && pass "_session_purge removes a valid short's jobs entry" \
     || fail "_session_purge removes a valid short's jobs entry"
+
+# (g) A worktree'd daemon's purge dirty-guards the worktree while `claude rm`
+# runs: rm deletes a CLEAN worktree along with its owning turn (verified live),
+# and the daemon's later turns still run inside that worktree. The stub logs
+# whether the sentinel was present at rm time; it must be gone again after.
+G_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "wtguard" "seed-g" "$WT_REPO" "wtguard")"
+G_SHORT="$(spawn_short "$G_OUT")"
+G_WT="$WT_REPO/.claude/worktrees/wtguard"; mkdir -p "$G_WT"
+mkdir -p "$HOME/.claude/jobs/$G_SHORT"
+STUB_GUARD_DIR="$G_WT" "$SCRIPTS_DIR/daemon-resume.sh" "$G_SHORT" "go" >/dev/null
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "rm-guard:present" "worktree purge holds the dirty-guard sentinel during claude rm"
+assert_file_absent "$G_WT/.daemon-turn-live" "dirty-guard sentinel removed after purge"
+
+# Failure paths must never deregister the old turn either — `claude rm` on the
+# only recovery point would be worse than the ghost it prevents.
+grep -Eq "^rm $A_SHORT$" "$STUB_STATE/log/calls.log" \
+    && fail "fork launch failure never claude-rm's the old turn" \
+    || pass "fork launch failure never claude-rm's the old turn"
+grep -Eq "^rm $E_SHORT$" "$STUB_STATE/log/calls.log" \
+    && fail "uuid-less row never claude-rm's the old turn" \
+    || pass "uuid-less row never claude-rm's the old turn"
 
 # (c) The old turn is stopped BEFORE the fork launches (never stop an in-flight
 # turn after forking). Assert the ordering in calls.log for a fresh daemon.

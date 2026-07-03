@@ -172,17 +172,34 @@ if pending:
 PY
 }
 
-# Purge a superseded turn's session once its forked successor is CONFIRMED:
-# remove its ~/.claude/jobs/<short> entry (which backs the `claude agents`
-# dashboard, including the completed list) and its transcript. Safe because a
+# Purge a superseded turn's session once its forked successor is CONFIRMED.
+# `claude rm <short>` is the native deregister — it removes the session from
+# the supervisor's control plane AND the jobs dir. Deleting the files alone is
+# NOT enough: the supervisor re-materializes state.json from its own record on
+# the next `claude attach` (observed live — a purged turn resurrected as a
+# ghost "working" dashboard entry when the human attached to it).
+# `claude rm` also deletes the session's worktree WHEN CLEAN (dirty worktrees
+# are kept) — and the daemon's FIRST turn owns the shared worktree that every
+# later turn still runs in. So when the daemon is worktree'd, callers pass the
+# worktree path and we make it dirty with a sentinel file for the duration of
+# the rm. rm does not remove transcripts; delete explicitly — safe because a
 # fork physically copies the full conversation into the successor's transcript
 # (verified live). Failure paths must NEVER call this — the old session is the
 # only recovery point when a fork goes wrong.
 _session_purge() {
-  local short="$1" uuid="$2" tx
+  local short="$1" uuid="$2" wt="${3:-}" tx guard=""
   case "$short" in
-    "" | *[!0-9a-f]*) : ;;  # jobs dirs are 8-hex shorts; never rm -rf odd input
-    *) [ "${#short}" -eq 8 ] && rm -rf "$HOME/.claude/jobs/$short" ;;
+    "" | *[!0-9a-f]*) : ;;  # jobs dirs are 8-hex shorts; never touch odd input
+    *)
+      if [ "${#short}" -eq 8 ]; then
+        if [ -n "$wt" ] && [ -d "$wt" ]; then
+          guard="$wt/.daemon-turn-live"
+          touch "$guard" 2>/dev/null || guard=""
+        fi
+        claude rm "$short" >/dev/null 2>&1 || true
+        rm -rf "$HOME/.claude/jobs/$short"  # belt-and-suspenders for CLIs without `rm`
+        [ -n "$guard" ] && rm -f "$guard"
+      fi ;;
   esac
   case "$uuid" in
     "" | *[!0-9a-f-]*) : ;;
@@ -191,6 +208,23 @@ _session_purge() {
       [ -n "$tx" ] && rm -f "$tx" ;;
   esac
   return 0
+}
+
+# Write a turn's reply to the daemon's reply file, annotating the one blocked
+# shape _transcript_reply cannot see: state=blocked with NO pending
+# AskUserQuestion in the transcript. That is a harness-level prompt (observed
+# live: a permission prompt holding a tool call that never reached the
+# transcript) — without the marker the reply reads like a finished statement
+# and the orchestrator has nothing to act on.
+# Usage: _record_reply <turn-uuid> <daemon-uuid> <state>
+_record_reply() {
+  local out
+  out="$(_transcript_reply "$1")"
+  if [ "$3" = "blocked" ] && ! printf '%s' "$out" | grep -q '\[pending AskUserQuestion'; then
+    out="$out
+[blocked on a harness prompt — no pending AskUserQuestion in the transcript, most likely a permission prompt holding a tool call. Resume with an answer/instruction (the pending call is interrupted), or 'claude attach' the session to approve it interactively.]"
+  fi
+  printf '%s\n' "$out" > "$(_reply_path "$2")"
 }
 
 # Poll `claude agents` until short id <1> reaches a terminal/actionable state.
