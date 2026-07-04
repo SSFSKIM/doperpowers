@@ -23,20 +23,23 @@ You MUST create a task for each of these items and complete them in order:
 
 1. **Explore project context** — check files, docs, recent commits
 2. **Offer the visual companion just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.
-3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
-4. **Propose 2-3 approaches** — with trade-offs and your recommendation
-5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 4's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-8. **User reviews written spec** — ask user to review the spec file before proceeding
-9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+3. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
+4. **Choose the track with your human partner** — controlled (continue below, the default) or autonomous (hand off to doperpowers:execplan); see Choosing the Track below
+5. **Propose 2-3 approaches** — with trade-offs and your recommendation
+6. **Present design** — in sections scaled to their complexity, get user approval after each section
+7. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 5's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
+8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
+9. **User reviews written spec** — ask user to review the spec file before proceeding
+10. **Transition to implementation** — invoke writing-plans skill to create implementation plan
 
 ## Process Flow
 
 ```dot
 digraph brainstorming {
     "Explore project context" [shape=box];
-    "Ask clarifying questions" [shape=box];
+    "Grill (clarifying questions)" [shape=box];
+    "Human partner chooses autonomous track?" [shape=diamond];
+    "Invoke execplan skill" [shape=doublecircle];
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
@@ -45,8 +48,10 @@ digraph brainstorming {
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
-    "Explore project context" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Explore project context" -> "Grill (clarifying questions)";
+    "Grill (clarifying questions)" -> "Human partner chooses autonomous track?";
+    "Human partner chooses autonomous track?" -> "Invoke execplan skill" [label="yes, explicitly"];
+    "Human partner chooses autonomous track?" -> "Propose 2-3 approaches" [label="no (default)"];
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
@@ -58,7 +63,7 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice).
 
 ## The Process
 
@@ -67,10 +72,33 @@ digraph brainstorming {
 - Check out the current project state first (files, docs, recent commits)
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
 - If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec → plan → implementation cycle.
-- For appropriately-scoped projects, ask questions one at a time to refine the idea
+- For appropriately-scoped projects, run the grill below to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
-- Only one question per message - if a topic needs more exploration, break it into multiple questions
 - Focus on understanding: purpose, constraints, success criteria
+
+**The Grill** — vendored verbatim from Matt Pocock's `grilling` skill; this is the clarification protocol:
+
+> Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+>
+> Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.
+>
+> If a question can be answered by exploring the codebase, explore the codebase instead.
+
+Three moves to use throughout (kept from his `domain-modeling` skill; its artifacts are not used here):
+
+- **Sharpen fuzzy terms** — propose a precise canonical term: "You're saying 'account' — do you mean the Customer or the User? Those are different things."
+- **Stress-test with concrete scenarios** — invent scenarios that probe edge cases and force precision about the boundaries between concepts.
+- **Cross-reference with code** — when your human partner states how something works, check whether the code agrees; surface contradictions.
+
+Triage the grilling: grill what is fuzzy or important; don't grind an already-clear request to death.
+
+**Choosing the Track (after the grill):**
+
+Two tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — is the default. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates.
+
+- Offer the autonomous track only when the work is delegable and the grill has exhausted the ambiguity space. Test during the grill: if taste questions keep hitting "we can't know until we try," stay controlled — feasibility unknowns are fine, they become prototyping milestones in the ExecPlan.
+- Routing is your human partner's explicit choice — never route silently, and never treat "just handle it" as a track choice; name the track and get a yes. Their explicit choice to go autonomous is the approval the HARD-GATE requires; doperpowers:execplan's contract governs from there.
+- No offer made, or no explicit yes → continue this skill (controlled).
 
 **Exploring approaches:**
 
