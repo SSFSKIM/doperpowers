@@ -322,6 +322,91 @@ assert_file_exists "$BOARD/MAP.md" "--write saves MAP.md in the board dir"
 run board-transition.sh T17 in-progress >/dev/null
 assert_contains "$(cat "$BOARD/MAP.md")" "class T17 s_prog" "a board write auto-refreshes MAP.md"
 
+# ---- board-relate (symmetric relates annotation) -------------------------------
+echo "board-relate:"
+
+run board-register.sh "Relate probe A" enhancement >/dev/null   # T18
+run board-register.sh "Relate probe B" enhancement >/dev/null   # T19
+out="$(run board-relate.sh T18 T19)"
+assert_contains "$out" "related: T18 -- T19" "relate reports the new edge"
+got="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
+assert_equals "$got" "['T19'] ['T18']" "relates edge stored on BOTH nodes"
+assert_fails run board-relate.sh T18 T19            # duplicate
+assert_fails run board-relate.sh T19 T18            # duplicate, reversed
+assert_fails run board-relate.sh T18 T18            # self
+assert_fails run board-relate.sh T18 T99            # unknown ref
+cnt="$(run board-map.sh | grep -Fc -- "-. relates .-")"
+assert_equals "$cnt" "1" "symmetric edge renders exactly once in the map"
+assert_contains "$(cat "$BOARD/MAP.md")" "T18 -. relates .- T19" "relate auto-refreshed MAP.md"
+out="$(run board-relate.sh T19 T18 --cut)"          # cut works from either side
+assert_contains "$out" "cut: T19 -- T18" "cut reported"
+got="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
+assert_equals "$got" "[] []" "cut removed both sides"
+assert_fails run board-relate.sh T18 T19 --cut      # nothing left to cut
+
+# ---- board-edge (re-cut blocked_by / parent after birth) ------------------------
+echo "board-edge:"
+
+run board-register.sh "Edge blocker" enhancement >/dev/null        # T20
+run board-register.sh "Edge dependent" enhancement >/dev/null      # T21
+out="$(run board-edge.sh T21 --block T20)"
+assert_contains "$out" "T21: blocked_by += T20" "block adds the edge"
+run board-list.sh | grep "T21" | grep -q "waiting:T20" \
+    && pass "T21 now waiting on T20" || fail "T21 now waiting on T20"
+assert_contains "$(cat "$BOARD/MAP.md")" "T20 ==> T21" "block auto-refreshed MAP.md (active-block arrow)"
+
+assert_fails run board-edge.sh T21 --block T20        # duplicate
+assert_fails run board-edge.sh T21 --block T21        # self
+assert_fails run board-edge.sh T20 --block T21        # direct cycle
+run board-register.sh "Edge transitive" enhancement --blocked-by T21 >/dev/null   # T22
+assert_fails run board-edge.sh T20 --block T22        # transitive cycle T22→T21→T20
+assert_fails run board-edge.sh T21 --block T99        # unknown ref
+assert_fails run board-edge.sh T21 --block T20 --parent T22   # one op per call
+assert_fails run board-edge.sh T21 --unblock T22      # not a blocker
+
+out="$(run board-edge.sh T21 --unblock T20)"
+assert_contains "$out" "T21: blocked_by -= T20" "unblock cuts the edge"
+assert_contains "$out" "now eligible: T21" "unblock reports restored eligibility"
+
+# ancestor-epic deadlock guard: a child may not block on its own epic
+run board-register.sh "Edge epic" enhancement >/dev/null                      # T23
+run board-register.sh "Edge epic child" enhancement --parent T23 >/dev/null   # T24
+assert_fails run board-edge.sh T24 --block T23
+
+# re-parent pulls the new epic chain when the moved child is in-progress
+run board-transition.sh T24 in-progress >/dev/null    # pulls T23 in-progress too
+run board-register.sh "Edge epic 2" enhancement >/dev/null                    # T25
+run board-register.sh "Edge epic 2 child" enhancement --parent T25 >/dev/null # T26
+out="$(run board-edge.sh T24 --parent T25)"
+assert_contains "$out" "T24: parent = T25 (was T23)" "re-parent recorded"
+assert_contains "$out" "T25: ready-for-agent → in-progress" "in-progress child pulls its new epic"
+
+assert_fails run board-edge.sh T25 --parent T24       # cycle: T25 is T24's ancestor
+assert_fails run board-edge.sh T25 --parent T25       # self
+assert_fails run board-edge.sh T24 --parent T25       # already the parent
+
+# leaving an epic can close it: T27 epic, kids T28 (done) + T29 (leaver)
+run board-register.sh "Edge close epic" enhancement >/dev/null                    # T27
+run board-register.sh "Edge close done kid" enhancement --parent T27 >/dev/null   # T28
+run board-register.sh "Edge close leaver" enhancement --parent T27 >/dev/null     # T29
+run board-transition.sh T28 in-progress >/dev/null
+run board-transition.sh T28 "done" >/dev/null         # T27 stays open: T29 not terminal
+st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T27']['state'])")"
+assert_equals "$st" "in-progress" "epic still open while a child remains active"
+out="$(run board-edge.sh T29 --orphan)"
+assert_contains "$out" "T29: parent cleared (was T27)" "orphan recorded"
+assert_contains "$out" "T27: in-progress → done" "last active child leaving closes the epic"
+assert_fails run board-edge.sh T29 --orphan           # no parent to clear
+
+# edge mutations are audited in log.jsonl with an "edge" key
+grep -q '"edge": "blocked_by"' "$BOARD/log.jsonl" && pass "blocked_by mutations logged" || fail "blocked_by mutations logged"
+grep -q '"edge": "parent"' "$BOARD/log.jsonl" && pass "parent mutations logged" || fail "parent mutations logged"
+grep -q '"edge": "relates_to"' "$BOARD/log.jsonl" && pass "relates mutations logged" || fail "relates mutations logged"
+
+# a missing option operand dies cleanly, naming the option
+err="$( { run board-edge.sh T21 --block; } 2>&1 1>/dev/null || true )"
+assert_contains "$err" "--block" "missing operand names the option"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else

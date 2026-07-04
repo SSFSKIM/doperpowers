@@ -41,8 +41,9 @@ only (they refuse worktrees).
 *knowledge/decision* → `needs-info`.
 
 Ticket dependencies are **edges** (`blocked_by`), never states — eligibility is
-computed. Epics (nodes with children) are never dispatched; the sweep moves
-them automatically.
+computed. Edges are born at register time and re-cut later with
+`board-edge.sh` (understanding changes; the graph follows). Epics (nodes with
+children) are never dispatched; the sweep moves them automatically.
 
 ## Toolkit
 
@@ -53,6 +54,8 @@ Paths relative to this skill's `scripts/` directory. Use them — don't hand-edi
 |---|---|
 | `board-register.sh <title> <category> [--state S] [--note N] [--parent T] [--blocked-by T,T] [--spawned-by T]` | add a node; prints `<id> <md-relpath>` — then YOU write that markdown (pre-spec) |
 | `board-transition.sh <id> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes; runs the epic/unblock sweeps |
+| `board-edge.sh <id> --block T \| --unblock T \| --parent T \| --orphan` | re-cut edges after birth (one op per call): add/cut a `blocked_by`, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
+| `board-relate.sh <a> <b> [--cut]` | symmetric `relates_to` annotation — rendered by board-map, no effect on eligibility |
 | `board-list.sh [state]` | board view; `ELIGIBLE` tag = dispatchable |
 | `board-map.sh [--write]` | human telemetry: the board DAG as a Mermaid flowchart (state colors, epic boxes, block/lineage edges). `MAP.md` is a pure render cache of `map.json`, auto-refreshed by every register/transition; `--write` re-renders it by hand |
 | `board-show.sh <id>` | node + md path + bound daemon |
@@ -119,7 +122,8 @@ log records *why* it was cut, so nobody re-litigates it later.
 ## Edge cases
 
 - `orphaned` in reconcile → the daemon died: respawn, re-bind, resume the ticket.
-- A wontfix blocker makes a dependent `STUCK` — re-cut the `blocked_by` edge or
-  wontfix the dependent; that is a human call.
+- A wontfix blocker makes a dependent `STUCK` — re-cut the edge
+  (`board-edge.sh <id> --unblock <blocker>`) or wontfix the dependent; that is
+  a human call.
 - `map.json` corrupted → restore from git history.
 - Never run board scripts from a worktree (they refuse; work from the main checkout).
