@@ -133,6 +133,10 @@ From a throwaway consumer repo with a registered board:
   Rationale: The first implementation ordered a layer's nodes by (epic-root, id) but let clusters share columns. Browser verification (Task 1) showed a non-member ticket landing *inside* an epic's bounding box — the box is the bbox over the epic's members, and an outsider positioned in that rectangle's empty cell is visually enclosed, misstating membership. Per-cluster bands guarantee an epic's bbox spans only its own band, so it can never enclose a foreign node. Costs horizontal compactness (bands don't interleave); correctness of the containment cue wins. Coordinates aren't asserted by tests, so no test churn.
   Date: 2026-07-05 (found in browser verification, during execution)
 
+- Decision: On load (and on window resize, and on "reset view"), the graph is **fit to the viewport, centered, capped at 100% zoom**.
+  Rationale: A wide board otherwise opens with nodes off the right edge, requiring a blind pan to discover them — a poor first impression. Fitting frames the whole graph immediately. The 100% cap keeps a small board readable instead of blowing it up to fill the screen. "reset view" becomes "fit everything" (more useful than returning to a fixed offset). Rejected: **a fixed initial offset** (the shipped-then-replaced behavior) and **always-fit with no zoom cap** (magnifies a 2-node board absurdly).
+  Date: 2026-07-05 (follow-up, human partner requested)
+
 ## Surprises & Discoveries
 
 - Observation: No live board exists in the doperpowers repo itself — `doperpowers/issue-tracker/` is lazily created in the *consumer* repo on first `board-register.sh`.
@@ -148,9 +152,10 @@ From a throwaway consumer repo with a registered board:
 
 **2026-07-05, at finish.** Everything in the design shipped in three commits: `MAP.html` rendered alongside the Mermaid map (additive), then `MAP.md` shrunk to the fallback table with the suite's Mermaid assertions repointed to the `MAP.html` payload, then the SKILL.md toolkit row and this spec's living tail. The full hermetic suite passes (`ALL TESTS PASSED`, including the new `board-map (html)` section), `scripts/lint-shell.sh` is clean on the two touched shell files, and every spec acceptance check verified on a scratch board — including a real browser pass (via `playwright-cli`) confirming pan/zoom, click-to-detail, state filter, and epic collapse/expand with no JS console errors.
 
-The design held: the change stayed contained to `board-map.sh` + the new template; no other board script was touched. The one substantive deviation was the layout algorithm — the swimlane-band redesign forced by browser verification (see Surprises), which the machine tests could not have surfaced. Remains open by design: crossing-minimization (deferred) and an initial fit-to-viewport (nodes past the first screen currently need a pan; noted as a future polish, not a defect).
+The design held: the change stayed contained to `board-map.sh` + the new template; no other board script was touched. The one substantive deviation was the layout algorithm — the swimlane-band redesign forced by browser verification (see Surprises), which the machine tests could not have surfaced. Remains open by design: crossing-minimization (deferred). The initial fit-to-viewport, first noted here as a future polish, was added as a follow-up the same day (see Revision Notes).
 
 ## Revision Notes
 
 - 2026-07-05: Initial version — terminal artifact of the brainstorm (move the board's human view from Mermaid `MAP.md` to an interactive self-contained `MAP.html`, Mermaid kept as a shrunken fallback). Four design forks decided with the human partner: HTML-primary/MD-fallback, interactive, collapsible epics, committed `MAP.html`.
 - 2026-07-05: Decision Log extended with the per-cluster column-band layout (replacing shared-column ordering) after browser verification found an epic box enclosing a non-member; Surprises & Discoveries records that plus three plan-test assertion bugs caught in review. Outcomes & Retrospective written at finish.
+- 2026-07-05: Follow-up (human partner requested) — the deferred initial fit-to-viewport shipped. `MAP.html` now frames the whole graph on load and on window resize, centered, never zooming past 100%; the "reset view" button calls the same fit. Template-only change (no payload/test change; browser-verified all nodes in view on load). See Decision Log.

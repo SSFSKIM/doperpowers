@@ -194,6 +194,26 @@
   function applyTransform() { VP.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + k + ")"); }
   function toggleEpic(id) { if (collapsed[id]) delete collapsed[id]; else collapsed[id] = true; render(); }
 
+  function contentBounds() {
+    var xs = [], ys = [];
+    BOARD.nodes.forEach(function (n) { xs.push(n.x); ys.push(n.y); });
+    if (!xs.length) return { x: 0, y: 0, w: NODE_W, h: NODE_H };
+    var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+    return { x: x0, y: y0, w: Math.max.apply(null, xs) + NODE_W - x0, h: Math.max.apply(null, ys) + NODE_H - y0 };
+  }
+  // Frame the whole graph on load / reset: fit to content, centered, never
+  // zooming past 100% (a tiny board stays readable rather than blown up).
+  function fitView() {
+    var r = SVG.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) { tx = 40; ty = 40; k = 1; applyTransform(); return; }
+    var b = contentBounds(), pad = 48;
+    k = Math.min(1, (r.width - pad * 2) / b.w, (r.height - pad * 2) / b.h);
+    if (!isFinite(k) || k <= 0) k = 1;
+    tx = (r.width - b.w * k) / 2 - b.x * k;
+    ty = (r.height - b.h * k) / 2 - b.y * k;
+    applyTransform();
+  }
+
   function showDetail(n) {
     var d = document.getElementById("detail");
     function row(kk, vv) {
@@ -254,10 +274,11 @@
   SVG.addEventListener("click", function (e) {
     if (!e.target.closest(".node")) document.getElementById("detail").hidden = true;
   });
-  document.getElementById("reset").onclick = function () { tx = 40; ty = 40; k = 1; applyTransform(); };
+  document.getElementById("reset").onclick = fitView;
+  window.addEventListener("resize", fitView);
 
   document.getElementById("meta").textContent = BOARD.meta.count + " tickets · updated " + BOARD.meta.updated;
-  buildChips(); buildLegend(); render();
+  buildChips(); buildLegend(); render(); fitView();
 })();
 </script>
 </body>
