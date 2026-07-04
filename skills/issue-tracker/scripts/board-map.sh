@@ -5,13 +5,13 @@
 #
 #   (default)  print the fallback table (ticket · state · title · PR) to stdout
 #   --write    render two caches of map.json into doperpowers/issue-tracker/:
-#              MAP.html — the primary view: an interactive layered-DAG (pan/zoom,
+#              BOARD.html — the primary view: an interactive layered-DAG (pan/zoom,
 #              click a node for detail, filter by state, collapse epics), opened
-#              in a browser; and MAP.md — a minimal node/state table, the
+#              in a browser; and BOARD.md — a minimal node/state table, the
 #              GitHub-inline fallback. Both are pure render caches, refreshed by
 #              every board write; --write re-renders them by hand.
 #
-# Reading MAP.html: node color = state; ELIGIBLE (ready-for-agent + all blockers
+# Reading BOARD.html: node color = state; ELIGIBLE (ready-for-agent + all blockers
 # done, not an epic) gets a thick green border; a solid arrow is an ACTIVE block,
 # a dotted one a satisfied dependency; labeled dotted lines carry spawned/relates
 # lineage; each epic is a labeled box around its members (click to collapse).
@@ -24,8 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 write=0
 [ "${1:-}" = "--write" ] && write=1
 
-# The stdout / MAP.md view: a graphless node-state table (GitHub renders it
-# inline). The rich DAG lives in MAP.html, rendered below on --write.
+# The stdout / BOARD.md view: a graphless node-state table (GitHub renders it
+# inline). The rich DAG lives in BOARD.html, rendered below on --write.
 out="$(_py - <<'PY'
 import json, os
 
@@ -51,7 +51,7 @@ def state_cell(tid, n):
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
 md = ["# Issue Board", "",
       "_Board updated %s · %d tickets · full interactive graph in "
-      "`MAP.html` (open in a browser)_" % (updated, len(tickets)), "",
+      "`BOARD.html` (open in a browser)_" % (updated, len(tickets)), "",
       "| ticket | state | title | PR |", "|---|---|---|---|"]
 for tid in order:
     n = tickets[tid]
@@ -63,11 +63,11 @@ PY
 
 printf '%s\n' "$out"
 if [ "$write" -eq 1 ]; then
-  printf '%s\n' "$out" > "$BOARD_DIR/MAP.md"
+  printf '%s\n' "$out" > "$BOARD_DIR/BOARD.md"
   # Render the interactive graph. Call python3 directly (not via _py) so the
   # template/html paths are exported to it unambiguously alongside BOARD_MAP.
   BOARD_MAP="$MAP" BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
-  BOARD_HTML="$BOARD_DIR/MAP.html" python3 - <<'PY'
+  BOARD_HTML="$BOARD_DIR/BOARD.html" python3 - <<'PY'
 import json, os
 
 with open(os.environ["BOARD_MAP"]) as f:
@@ -193,5 +193,5 @@ with open(os.environ["BOARD_TEMPLATE"]) as f:
 with open(os.environ["BOARD_HTML"], "w") as f:
     f.write(tpl.replace("__BOARD_PAYLOAD__", data))
 PY
-  echo "wrote $BOARD_DIR/MAP.md and $BOARD_DIR/MAP.html" >&2
+  echo "wrote $BOARD_DIR/BOARD.md and $BOARD_DIR/BOARD.html" >&2
 fi

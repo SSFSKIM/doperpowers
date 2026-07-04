@@ -79,8 +79,8 @@ with open(env["BOARD_LOG"], "a") as f:
 print(msg)
 PY
 
-# MAP.md is a pure render cache of map.json — refresh it on every board write
+# BOARD.md is a pure render cache of map.json — refresh it on every board write
 # so the human view can never go stale by discipline alone. Non-fatal: the
 # board write above already landed.
 "$SCRIPT_DIR/board-map.sh" --write >/dev/null 2>&1 \
-  || echo "warning: MAP.md refresh failed (board-map.sh)" >&2
+  || echo "warning: BOARD.md refresh failed (board-map.sh)" >&2

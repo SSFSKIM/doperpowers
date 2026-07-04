@@ -314,22 +314,22 @@ printf '%s' "$out" | grep -Fq '```mermaid' && fail "no mermaid in the fallback" 
 echo "$out" | grep "T14" | grep -q "blocked" && pass "T14 row shows its state" || fail "T14 row shows its state"
 
 run board-map.sh --write >/dev/null 2>&1
-assert_file_exists "$BOARD/MAP.md" "--write saves MAP.md (fallback table)"
-assert_file_exists "$BOARD/MAP.html" "--write saves MAP.html (graph)"
-assert_contains "$(cat "$BOARD/MAP.md")" "| T15 |" "MAP.md table has a row per ticket"
+assert_file_exists "$BOARD/BOARD.md" "--write saves BOARD.md (fallback table)"
+assert_file_exists "$BOARD/BOARD.html" "--write saves BOARD.html (graph)"
+assert_contains "$(cat "$BOARD/BOARD.md")" "| T15 |" "BOARD.md table has a row per ticket"
 
-# The graph facts that used to be asserted on the mermaid MAP.md now live in MAP.html.
-html="$(tr -d ' \n\t' < "$BOARD/MAP.html")"
-assert_contains "$html" '"from":"T14","to":"T15","kind":"block-active"' "active block edge in MAP.html"
-assert_contains "$html" '"from":"T15","to":"T16","kind":"spawned"' "lineage edge in MAP.html"
-assert_contains "$html" '"id":"T16","descendants":["T17"]' "epic + child in MAP.html"
-assert_contains "$html" '"id":"T14","state":"blocked"' "state travels into MAP.html"
+# The graph facts that used to be asserted on the mermaid BOARD.md now live in BOARD.html.
+html="$(tr -d ' \n\t' < "$BOARD/BOARD.html")"
+assert_contains "$html" '"from":"T14","to":"T15","kind":"block-active"' "active block edge in BOARD.html"
+assert_contains "$html" '"from":"T15","to":"T16","kind":"spawned"' "lineage edge in BOARD.html"
+assert_contains "$html" '"id":"T16","descendants":["T17"]' "epic + child in BOARD.html"
+assert_contains "$html" '"id":"T14","state":"blocked"' "state travels into BOARD.html"
 
 # Every board WRITE auto-refreshes BOTH render caches — they cannot go stale.
 run board-transition.sh T17 in-progress >/dev/null
-assert_contains "$(tr -d ' \n\t' < "$BOARD/MAP.html")" '"id":"T17","state":"in-progress"' \
-    "a board write auto-refreshes MAP.html"
-assert_contains "$(cat "$BOARD/MAP.md")" "in-progress" "a board write auto-refreshes MAP.md"
+assert_contains "$(tr -d ' \n\t' < "$BOARD/BOARD.html")" '"id":"T17","state":"in-progress"' \
+    "a board write auto-refreshes BOARD.html"
+assert_contains "$(cat "$BOARD/BOARD.md")" "in-progress" "a board write auto-refreshes BOARD.md"
 
 # ---- board-relate (symmetric relates annotation) -------------------------------
 echo "board-relate:"
@@ -345,8 +345,8 @@ assert_fails run board-relate.sh T19 T18            # duplicate, reversed
 assert_fails run board-relate.sh T18 T18            # self
 assert_fails run board-relate.sh T18 T99            # unknown ref
 run board-map.sh --write >/dev/null 2>&1
-rel="$(tr -d ' \n\t' < "$BOARD/MAP.html")"
-assert_contains "$rel" '"from":"T18","to":"T19","kind":"relates"' "relate auto-refreshed MAP.html"
+rel="$(tr -d ' \n\t' < "$BOARD/BOARD.html")"
+assert_contains "$rel" '"from":"T18","to":"T19","kind":"relates"' "relate auto-refreshed BOARD.html"
 printf '%s' "$rel" | grep -Fq '"from":"T19","to":"T18","kind":"relates"' \
     && fail "symmetric relate renders exactly once (no reverse dup)" \
     || pass "symmetric relate renders exactly once (no reverse dup)"
@@ -365,8 +365,8 @@ out="$(run board-edge.sh T21 --block T20)"
 assert_contains "$out" "T21: blocked_by += T20" "block adds the edge"
 run board-list.sh | grep "T21" | grep -q "waiting:T20" \
     && pass "T21 now waiting on T20" || fail "T21 now waiting on T20"
-assert_contains "$(tr -d ' \n\t' < "$BOARD/MAP.html")" '"from":"T20","to":"T21","kind":"block-active"' \
-    "block auto-refreshed MAP.html (active-block edge)"
+assert_contains "$(tr -d ' \n\t' < "$BOARD/BOARD.html")" '"from":"T20","to":"T21","kind":"block-active"' \
+    "block auto-refreshed BOARD.html (active-block edge)"
 
 assert_fails run board-edge.sh T21 --block T20        # duplicate
 assert_fails run board-edge.sh T21 --block T21        # self
@@ -433,11 +433,11 @@ run board-register.sh "HTML epic child" enhancement --parent T33 >/dev/null     
 run board-relate.sh T30 T32 >/dev/null
 
 run board-map.sh --write >/dev/null 2>&1
-assert_file_exists "$BOARD/MAP.html" "--write saves MAP.html in the board dir"
+assert_file_exists "$BOARD/BOARD.html" "--write saves BOARD.html in the board dir"
 
 # Whitespace-stripped view lets us grep the injected JSON as compact substrings.
 # (Explicit ' \n\t' — BSD tr does not treat [:space:] as a class.)
-html="$(tr -d ' \n\t' < "$BOARD/MAP.html")"
+html="$(tr -d ' \n\t' < "$BOARD/BOARD.html")"
 assert_contains "$html" '"id":"T31","state":"ready-for-agent"' "node T31 present with its state"
 assert_contains "$html" '"from":"T30","to":"T31","kind":"block-active"' "active block edge in payload"
 assert_contains "$html" '"label":"waiting:T30"' "T31 carries the unmet-blocker label"
@@ -449,14 +449,14 @@ assert_contains "$html" '"id":"T33","descendants":["T34"]' "epic T33 lists its d
 assert_contains "$html" '"id":"T31","state":"ready-for-agent","eligible":false' "blocked dependent is not eligible"
 
 # Self-contained: no external references anywhere in the file.
-ext="$(grep -Eic 'src="https?://|href="https?://[^"]*\.css|cdnjs|unpkg|jsdelivr' "$BOARD/MAP.html" || true)"
-assert_equals "$ext" "0" "MAP.html has no external references (self-contained)"
+ext="$(grep -Eic 'src="https?://|href="https?://[^"]*\.css|cdnjs|unpkg|jsdelivr' "$BOARD/BOARD.html" || true)"
+assert_equals "$ext" "0" "BOARD.html has no external references (self-contained)"
 
 # block-done appears once the blocker lands.
 run board-transition.sh T30 in-progress >/dev/null
 run board-transition.sh T30 "done" >/dev/null
 run board-map.sh --write >/dev/null 2>&1
-html="$(tr -d ' \n\t' < "$BOARD/MAP.html")"
+html="$(tr -d ' \n\t' < "$BOARD/BOARD.html")"
 assert_contains "$html" '"from":"T30","to":"T31","kind":"block-done"' "satisfied block flips to block-done"
 assert_contains "$html" '"id":"T31","state":"ready-for-agent","eligible":true' "dependent becomes eligible once blocker is done"
 
