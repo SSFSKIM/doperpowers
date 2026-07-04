@@ -24,12 +24,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 write=0
 [ "${1:-}" = "--write" ] && write=1
 
-# The stdout / BOARD.md view: a graphless node-state table (GitHub renders it
-# inline). The rich DAG lives in BOARD.html, rendered below on --write.
-out="$(_py - <<'PY'
+# One python pass per call: it always prints the fallback table to stdout, and
+# on --write it also writes BOARD.md and renders BOARD.html — the table and the
+# graph share the single map.json parse (one process, not two).
+BOARD_MAP="$MAP" BOARD_DIR="$BOARD_DIR" \
+BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
+BOARD_WRITE="$write" python3 - <<'PY'
 import json, os
 
-with open(os.environ["BOARD_MAP"]) as f:
+env = os.environ
+with open(env["BOARD_MAP"]) as f:
     board = json.load(f)
 tickets = board["tickets"]
 
@@ -42,13 +46,15 @@ def eligible(tid, n):
         return False
     return all(tickets.get(b, {}).get("state") == "done" for b in n.get("blocked_by", []))
 
-def state_cell(tid, n):
+def state_label(tid, n):
     if n["state"] == "ready-for-agent":
         unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
         return ("waiting: " + ",".join(unmet)) if unmet else "ELIGIBLE"
     return n["state"]
 
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
+
+# The fallback table: stdout always; BOARD.md on --write. GitHub renders it inline.
 md = ["# Issue Board", "",
       "_Board updated %s · %d tickets · full interactive graph in "
       "`BOARD.html` (open in a browser)_" % (updated, len(tickets)), "",
@@ -56,45 +62,23 @@ md = ["# Issue Board", "",
 for tid in order:
     n = tickets[tid]
     title = " ".join(str(n["title"]).split()).replace("|", "\\|")
-    md.append("| %s | %s | %s | %s |" % (tid, state_cell(tid, n), title, n.get("pr") or ""))
-print("\n".join(md))
-PY
-)"
+    md.append("| %s | %s | %s | %s |" % (tid, state_label(tid, n), title, n.get("pr") or ""))
+table = "\n".join(md)
+print(table)
 
-printf '%s\n' "$out"
-if [ "$write" -eq 1 ]; then
-  printf '%s\n' "$out" > "$BOARD_DIR/BOARD.md"
-  # Render the interactive graph. Call python3 directly (not via _py) so the
-  # template/html paths are exported to it unambiguously alongside BOARD_MAP.
-  BOARD_MAP="$MAP" BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
-  BOARD_HTML="$BOARD_DIR/BOARD.html" python3 - <<'PY'
-import json, os
+if env["BOARD_WRITE"] != "1":
+    raise SystemExit(0)
 
-with open(os.environ["BOARD_MAP"]) as f:
-    board = json.load(f)
-tickets = board["tickets"]
+with open(env["BOARD_DIR"] + "/BOARD.md", "w") as f:
+    f.write(table + "\n")
 
-def num(t): return int(t[1:])
-order = sorted(tickets, key=num)
-epics = {n["parent"] for n in tickets.values() if n.get("parent")}
-
-def eligible(tid, n):
-    if tid in epics or n["state"] != "ready-for-agent":
-        return False
-    return all(tickets.get(b, {}).get("state") == "done" for b in n.get("blocked_by", []))
-
+# --- the interactive graph (BOARD.html) ---
 CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev", "blocked": "s_blk",
          "needs-info": "s_info", "deferred": "s_def", "wontfix": "s_wf"}
 def cls(tid, n):
     if n["state"] == "ready-for-agent":
         return "s_elig" if eligible(tid, n) else "s_wait"
     return CLASS.get(n["state"], "s_wait")
-
-def state_label(tid, n):
-    if n["state"] == "ready-for-agent":
-        unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
-        return ("waiting: " + ",".join(unmet)) if unmet else "ELIGIBLE"
-    return n["state"]
 
 # Longest-path layering over blocked_by (blockers above dependents); memoized,
 # and cycle-tolerant for a hand-edited map (a back-edge just resolves to 0).
@@ -182,16 +166,17 @@ for t in order:
             edges.append({"from": t, "to": r, "kind": "relates"})
 
 epx = [{"id": e, "descendants": descendants(e)} for e in sorted(epics, key=num) if e in tickets]
-updated = max((n.get("updated") or "" for n in tickets.values()), default="")
 payload = {"meta": {"updated": updated, "count": len(tickets)},
            "nodes": nodes, "edges": edges, "epics": epx}
 
 # Embed in a <script> block: neutralize <, >, & so a title can't break out.
 data = json.dumps(payload, indent=2).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-with open(os.environ["BOARD_TEMPLATE"]) as f:
+with open(env["BOARD_TEMPLATE"]) as f:
     tpl = f.read()
-with open(os.environ["BOARD_HTML"], "w") as f:
+with open(env["BOARD_DIR"] + "/BOARD.html", "w") as f:
     f.write(tpl.replace("__BOARD_PAYLOAD__", data))
 PY
+
+if [ "$write" -eq 1 ]; then
   echo "wrote $BOARD_DIR/BOARD.md and $BOARD_DIR/BOARD.html" >&2
 fi
