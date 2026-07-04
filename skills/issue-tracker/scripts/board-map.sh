@@ -194,25 +194,115 @@ def order_cluster(members):
 
 # Coordinates: give each top-level cluster (epic tree or lone node) its own
 # disjoint column band, so an epic's bounding box can only ever enclose its own
-# members. Band width is the max nodes-per-layer (order-independent), so the
-# bands are identical to id-order — only the slot a node takes within its band
-# changes. Layer sets the row; crossing-minimized order sets the slot.
+# members. Band width is the max nodes-per-layer (order-independent). Two levers
+# cut crossings without ever breaking that containment: WITHIN a band, the slot a
+# node takes (order_cluster, above); and the left-to-right ORDER of the bands
+# themselves (below), which cuts crossings among the edges that span clusters.
 COL, ROW = 210, 110
 clusters = {}
 for t in order:
     clusters.setdefault(root(t), []).append(t)
-col_start, next_col = {}, 0
-for rt in sorted(clusters, key=num):
-    per_layer = {}
-    for t in clusters[rt]:
-        per_layer.setdefault(LAYER[t], []).append(t)
-    col_start[rt] = next_col
-    next_col += max(len(v) for v in per_layer.values())
-pos = {}
-for rt in sorted(clusters, key=num):
+
+# Within-band slot + band width, computed once per cluster. The within-band
+# barycenter looks only inside its own band (order_cluster's cset filter), so
+# this is independent of where the band eventually sits — the two levers stay
+# orthogonal, and band reordering never disturbs a settled within-band layout.
+local, width = {}, {}
+for rt in clusters:
+    slot, w = {}, 0
     for lv, lst in order_cluster(clusters[rt]).items():
+        w = max(w, len(lst))
         for i, t in enumerate(lst):
-            pos[t] = ((col_start[rt] + i) * COL, lv * ROW)
+            slot[t] = i
+    local[rt], width[rt] = slot, w
+
+# Band order: reorder the swimlanes left-to-right to cut crossings among the
+# edges that span two clusters. Same discipline as the within-band pass — pure,
+# deterministic, never worse than the id-stable baseline (id-order is the first
+# candidate and we only ever keep a strictly-fewer-crossings order). The classic
+# Sugiyama recipe: a barycenter sweep for a good global order, then a transpose
+# pass (adjacent-band swaps) to clear the crossings barycenter's mirror-symmetry
+# leaves behind. Skipped wholesale when no edge spans clusters — then id-order is
+# already optimal and the bands render byte-identical to before.
+roots = sorted(clusters, key=num)
+gce, seen_g = [], set()
+for t in order:
+    n = tickets[t]
+    for b in n.get("blocked_by", []):
+        if b in tickets: gce.append((b, t))
+    sb = n.get("spawned_by")
+    if sb in tickets: gce.append((sb, t))
+    for r in n.get("relates_to", []) or []:
+        if r in tickets and (r, t) not in seen_g:
+            seen_g.add((t, r)); gce.append((t, r))
+rootof = {t: root(t) for t in order}
+cl_nbr = {rt: set() for rt in roots}
+gspan = [rootof[u] != rootof[v] for (u, v) in gce]  # does this edge span two bands?
+for (u, v), sp in zip(gce, gspan):
+    if sp:
+        cl_nbr[rootof[u]].add(rootof[v]); cl_nbr[rootof[v]].add(rootof[u])
+
+def _starts(seq):
+    cs, acc = {}, 0
+    for rt in seq:
+        cs[rt] = acc; acc += width[rt]
+    return cs
+# Only crossings that involve a cluster-SPANNING edge can change with band order:
+# permuting bands slides whole clusters (frozen internal shape) across disjoint
+# column ranges, so intra-cluster pairs are invariant. Counting just the pairs
+# that touch a spanning edge drops the same constant from every candidate — the
+# argmin (and the never-worse-than-baseline guarantee) is preserved while the
+# cost falls from O(E^2) to O(S*E), which matters on a large board with few
+# cross-epic edges (this runs on every board write).
+def board_crossings(seq):
+    cs = _starts(seq)
+    xy = {t: (cs[rt] + local[rt][t], LAYER[t]) for rt in seq for t in clusters[rt]}
+    c = 0
+    for i in range(len(gce)):
+        a, b = gce[i]
+        si = gspan[i]
+        for j in range(i + 1, len(gce)):
+            if not (si or gspan[j]):
+                continue
+            d, e = gce[j]
+            if len({a, b, d, e}) == 4 and _seg_cross(xy[a], xy[b], xy[d], xy[e]):
+                c += 1
+    return c
+
+best_seq = list(roots)
+if any(cl_nbr.values()):
+    best_x = board_crossings(best_seq)
+    cur = list(roots)
+    for it in range(6):  # barycenter sweep, keeping the fewest-crossings order
+        idx = {rt: i for i, rt in enumerate(cur)}
+        bary = {}
+        for rt in cur:
+            ns = [idx[o] for o in cl_nbr[rt]]
+            bary[rt] = sum(ns) / len(ns) if ns else idx[rt]
+        cur = sorted(cur, key=lambda rt: (bary[rt], num(rt)))
+        x = board_crossings(cur)
+        if x < best_x:
+            best_x, best_seq = x, list(cur)
+        if best_x == 0:
+            break
+    passes = 0                       # transpose refinement on the true count
+    while best_x and passes < len(best_seq):
+        passes += 1
+        moved = False
+        for i in range(len(best_seq) - 1):
+            cand = list(best_seq)
+            cand[i], cand[i + 1] = cand[i + 1], cand[i]
+            x = board_crossings(cand)
+            if x < best_x:
+                best_x, best_seq, moved = x, cand, True
+        if not moved:
+            break
+
+col_start = _starts(best_seq)
+pos = {}
+for rt in best_seq:
+    for t in clusters[rt]:
+        pos[t] = ((col_start[rt] + local[rt][t]) * COL, LAYER[t] * ROW)
 
 nodes = []
 for t in order:

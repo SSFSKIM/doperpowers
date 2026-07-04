@@ -507,6 +507,49 @@ PY
 )"
 assert_equals "$xr" "crossings=0" "crossing-minimization lays the crossed block edges out with zero crossings"
 
+# ---- board-map (band-order crossing minimization) ----------------------------
+# Two block edges that span FOUR separate single-node clusters, wired to cross in
+# numeric-id order: T42←T41 and T43←T40 (sources T40,T41 on the top row; their
+# dependents T42,T43 on the row below). The crossing is BETWEEN clusters, so no
+# within-band move can fix it — only the band-ORDER lever can. Reordering the
+# swimlanes left-to-right must lay the two spanning edges out with zero
+# crossings. Highest ticket so far is T39 → T40 next.
+echo "board-map (band-order crossing minimization):"
+
+run board-register.sh "Band source A" enhancement >/dev/null                         # T40
+run board-register.sh "Band source B" enhancement >/dev/null                         # T41
+run board-register.sh "Band dependent of B" enhancement --blocked-by T41 >/dev/null  # T42←T41
+run board-register.sh "Band dependent of A" enhancement --blocked-by T40 >/dev/null  # T43←T40
+run board-map.sh --write >/dev/null 2>&1
+
+# Count crossings among these four clusters' spanning edges from the emitted
+# coords. id-order crosses the two block edges once; a passing layout reorders
+# the bands to reach zero. (Same proper-segment metric the layout optimizes.)
+xr="$(python3 - "$BOARD/BOARD.html" <<'PY'
+import sys, json, re
+html = open(sys.argv[1]).read()
+m = re.search(r'id="board-data"[^>]*>(.*?)</script>', html, re.S)
+raw = m.group(1).replace('\\u003c', '<').replace('\\u003e', '>').replace('\\u0026', '&')
+p = json.loads(raw)
+xy = {n['id']: (n['x'], n['y']) for n in p['nodes']}
+C = {'T40', 'T41', 'T42', 'T43'}
+segs = [(e['from'], e['to']) for e in p['edges'] if e['from'] in C and e['to'] in C]
+def ccw(a, b, c): return (c[1] - a[1]) * (b[0] - a[0]) - (b[1] - a[1]) * (c[0] - a[0])
+def cross(p1, p2, p3, p4):
+    return ((ccw(p3, p4, p1) > 0) != (ccw(p3, p4, p2) > 0)) and \
+           ((ccw(p1, p2, p3) > 0) != (ccw(p1, p2, p4) > 0))
+n = 0
+for i in range(len(segs)):
+    a, b = segs[i]
+    for j in range(i + 1, len(segs)):
+        d, e = segs[j]
+        if len({a, b, d, e}) == 4 and cross(xy[a], xy[b], xy[d], xy[e]):
+            n += 1
+print("crossings=%d" % n)
+PY
+)"
+assert_equals "$xr" "crossings=0" "band-order reordering lays the cross-cluster block edges out with zero crossings"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
