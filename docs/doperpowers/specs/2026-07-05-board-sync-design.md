@@ -26,7 +26,7 @@ Three approaches were weighed:
 
 ## 1. Schema & data-model changes (issue-tracker core)
 
-Two optional, backward-compatible node fields (a missing field = "unset", so old boards load unchanged), bumping `map.json` `version` 1 → 2:
+Two optional, backward-compatible node fields (a missing field = "unset", so old boards load unchanged); `map.json` `version` stays `1` — the fields are additive and readers use `.get(...)`, so there is no migration:
 
 - **`gh`** (int | null) — the linked GitHub issue number. Sits beside the existing external refs `branch`/`pr`. This is the machine linkage; title text is never parsed again after backfill.
 - **`labels`** (string[]) — the last-reconciled set of *free* GitHub labels for this ticket (see §4). Managed/derived labels (`epic`, `state:*`) are **not** stored here.
@@ -81,11 +81,11 @@ The chosen scope is **state + labels + edges**. Because labels and edges each ex
 
 | board state | GitHub | direction notes |
 |---|---|---|
-| `done` | `closed` / `stateReason=completed` | board→GH: close as completed. GH→board: only-GH close/completed → `done`. |
+| `done` | `closed` / `stateReason=completed` | board→GH: close as completed. GH→board: only-GH close/completed → `done` **when the board ticket is done-reachable (`in-progress`/`in-review`)**; otherwise reported — the board never started it, which is itself a surprise for the human. |
 | `wontfix` | `closed` / `stateReason=not_planned` | board→GH: close as not_planned. GH→board: only-GH close/not_planned → `wontfix` (with a script-required note). |
 | `ready-for-agent`, `in-progress`, `blocked`, `needs-info`, `in-review`, `deferred` | `open` | GH `open` ↔ **any** board "open" state. The fine state is board-only and is **never inferred** from GitHub. board→GH: ensure the issue is open. |
 
-`board→GH` is fully deterministic. `GH→board` is deterministic for `close→{done|wontfix}` (via `stateReason`). A **GitHub reopen** of an issue whose board state is `done`/`wontfix` is genuinely ambiguous (to *which* open state?) → **report, agent/human decides** — it is never auto-applied.
+`board→GH` is fully deterministic. `GH→board` is deterministic for `close→wontfix` (via `stateReason=not_planned`, legal from any non-terminal state) and for `close→done` **only when the board ticket is `in-progress`/`in-review`** (the board state machine forbids `done` from other states — a GitHub-completed issue whose board ticket never started is reported, not forced). A **GitHub reopen** of an issue whose board state is `done`/`wontfix` is genuinely ambiguous (to *which* open state?) → **report, agent/human decides** — it is never auto-applied.
 
 ### Layer 2 — labels
 
@@ -162,3 +162,4 @@ Pending — written at finish.
 ## Revision Notes
 
 - 2026-07-05: Initial design from a brainstorming session. Six clarifying questions locked the architecture (mechanics, sync direction, conflict policy, linkage, unattended aggressiveness, scope) — all captured in the Decision Log with their rejected alternatives. Open sub-choices resolved by the author within the approved design: `state:*` label projection included opt-in (board→GH one-way); report sink is `SYNC-REPORT.md` surfaced by `board-reconcile.sh`.
+- 2026-07-05: Two refinements surfaced while writing the implementation plan (`docs/doperpowers/plans/2026-07-05-board-sync.md`). (1) Dropped the `version` 1→2 bump — the new `gh`/`labels` fields are additive and optional, so readers using `.get()` need no migration and old boards load unchanged; version stays `1`. (2) `GH→board` `done` is auto-applied only when the board ticket is done-reachable (`in-progress`/`in-review`); the board state machine forbids `done` from other states, so a GitHub-completed issue whose ticket never started is reported rather than force-transitioned. `§1 Schema` and `§4 Layer 1` updated accordingly.
