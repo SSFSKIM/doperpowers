@@ -129,15 +129,28 @@ From a throwaway consumer repo with a registered board:
   Rationale: A committed, per-write-regenerated file must diff cleanly, and tests must be able to assert output; both require determinism. Barycenter crossing-reduction is an aesthetic improvement that would introduce ordering instability — deferred to a later revision if board sizes make crossings a real problem.
   Date: 2026-07-05
 
+- Decision: Each top-level cluster (an epic's whole subtree, or a lone node) gets its own **disjoint column band**; nodes are placed within their cluster's band per layer.
+  Rationale: The first implementation ordered a layer's nodes by (epic-root, id) but let clusters share columns. Browser verification (Task 1) showed a non-member ticket landing *inside* an epic's bounding box — the box is the bbox over the epic's members, and an outsider positioned in that rectangle's empty cell is visually enclosed, misstating membership. Per-cluster bands guarantee an epic's bbox spans only its own band, so it can never enclose a foreign node. Costs horizontal compactness (bands don't interleave); correctness of the containment cue wins. Coordinates aren't asserted by tests, so no test churn.
+  Date: 2026-07-05 (found in browser verification, during execution)
+
 ## Surprises & Discoveries
 
 - Observation: No live board exists in the doperpowers repo itself — `doperpowers/issue-tracker/` is lazily created in the *consumer* repo on first `board-register.sh`.
   Evidence: `ls doperpowers/issue-tracker/` returns nothing in this repo; `_board_init` (`_lib.sh`) creates the dir/map on first register. Implication: the work is pure toolkit change, validated through the hermetic test harness, not against a real board.
 
+- Observation: A bounding-box epic drawn over scattered members can enclose a non-member — the machine tests (structure-only) never catch it; only opening the page does.
+  Evidence: with the first layout, the scratch board rendered T6 (blocked_by T5, no parent) geometrically inside the T1 epic box, because T6's grid cell fell within the box's x/y span. Fixed by per-cluster column bands (see Decision Log). Lesson: for a visual deliverable, browser verification is not optional polish — it caught a correctness bug the payload-grep tests were structurally blind to.
+
+- Observation: Three assertion bugs in the plan's test code were caught in the pre-execution review, not at runtime.
+  Evidence: (1) payload key order is `id, state, eligible, …`, so a whitespace-stripped grep for `"id":"T31","eligible":false` never matches — the assertion must include the intervening `"state":"…"`. (2) `tr -d '[:space:]'` deletes the literal characters `[:space]` on BSD/macOS `tr`, not whitespace — the portable form here is `tr -d ' \n\t'`. (3) A `VAR=x _py …` prefix's export-through-a-shell-function is shell-dependent; the HTML render calls `python3` directly with an explicit env prefix (guaranteed exported to an external command) instead. All three were corrected before the first test run.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-07-05, at finish.** Everything in the design shipped in three commits: `MAP.html` rendered alongside the Mermaid map (additive), then `MAP.md` shrunk to the fallback table with the suite's Mermaid assertions repointed to the `MAP.html` payload, then the SKILL.md toolkit row and this spec's living tail. The full hermetic suite passes (`ALL TESTS PASSED`, including the new `board-map (html)` section), `scripts/lint-shell.sh` is clean on the two touched shell files, and every spec acceptance check verified on a scratch board — including a real browser pass (via `playwright-cli`) confirming pan/zoom, click-to-detail, state filter, and epic collapse/expand with no JS console errors.
+
+The design held: the change stayed contained to `board-map.sh` + the new template; no other board script was touched. The one substantive deviation was the layout algorithm — the swimlane-band redesign forced by browser verification (see Surprises), which the machine tests could not have surfaced. Remains open by design: crossing-minimization (deferred) and an initial fit-to-viewport (nodes past the first screen currently need a pan; noted as a future polish, not a defect).
 
 ## Revision Notes
 
 - 2026-07-05: Initial version — terminal artifact of the brainstorm (move the board's human view from Mermaid `MAP.md` to an interactive self-contained `MAP.html`, Mermaid kept as a shrunken fallback). Four design forks decided with the human partner: HTML-primary/MD-fallback, interactive, collapsible epics, committed `MAP.html`.
+- 2026-07-05: Decision Log extended with the per-cluster column-band layout (replacing shared-column ordering) after browser verification found an epic box enclosing a non-member; Surprises & Discoveries records that plus three plan-test assertion bugs caught in review. Outcomes & Retrospective written at finish.

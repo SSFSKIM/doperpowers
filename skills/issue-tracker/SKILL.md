@@ -57,7 +57,7 @@ Paths relative to this skill's `scripts/` directory. Use them — don't hand-edi
 | `board-edge.sh <id> --block T \| --unblock T \| --parent T \| --orphan` | re-cut edges after birth (one op per call): add/cut a `blocked_by`, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric `relates_to` annotation — rendered by board-map, no effect on eligibility |
 | `board-list.sh [state]` | board view; `ELIGIBLE` tag = dispatchable |
-| `board-map.sh [--write]` | human telemetry: the board DAG as a Mermaid flowchart (state colors, epic boxes, block/lineage edges). `MAP.md` is a pure render cache of `map.json`, auto-refreshed by every register/transition; `--write` re-renders it by hand |
+| `board-map.sh [--write]` | human telemetry. `--write` renders two caches of `map.json`: **`MAP.html`** — an interactive layered-DAG (pan/zoom, click a node for its detail, filter by state, collapse epics), the primary view, opened in a browser; and **`MAP.md`** — a minimal node/state table, the GitHub-inline fallback. No argument prints the table to stdout. Both auto-refresh on every register/transition |
 | `board-show.sh <id>` | node + md path + bound daemon |
 | `board-bind.sh <uuid> <id>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables |
