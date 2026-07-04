@@ -11,32 +11,20 @@ This repo has two development tracks. The controlled pipeline (doperpowers:brain
 
 ## Which track?
 
-- **This track**: the work is delegable and a grill can resolve every open question up front. Fits long-running work and durable background daemons.
-- **Controlled track**: taste-heavy, novel, or high-stakes work where design judgment keeps arising mid-flight → doperpowers:brainstorming.
+Routing lives in doperpowers:brainstorming's track choice (its grill is this track's Step 1) — you normally arrive here with the grill done and your human partner having explicitly chosen this track.
 
-Test during the grill: if you keep hitting "we can't know until we try" on *taste* questions, stop and route to the controlled track. (Feasibility unknowns are fine here — they become prototyping milestones in the ExecPlan.)
+- **This track**: the work is delegable and the grill can resolve every open question up front. Fits long-running work and durable background daemons.
+- **Controlled track**: taste-heavy, novel, or high-stakes work where design judgment keeps arising mid-flight → doperpowers:brainstorming.
 
 ## Step 1 — Grill
 
-Vendored verbatim from Matt Pocock's `grilling` skill:
-
-> Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
->
-> Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.
->
-> If a question can be answered by exploring the codebase, explore the codebase instead.
-
-Three moves to use throughout (kept from his `domain-modeling` skill; its artifacts are not used here):
-
-- **Sharpen fuzzy terms** — propose a precise canonical term: "You're saying 'account' — do you mean the Customer or the User? Those are different things."
-- **Stress-test with concrete scenarios** — invent scenarios that probe edge cases and force precision about the boundaries between concepts.
-- **Cross-reference with code** — when your human partner states how something works, check whether the code agrees; surface contradictions.
+The grill and its three interview moves (sharpen fuzzy terms, stress-test with concrete scenarios, cross-reference with code) are vendored verbatim in doperpowers:brainstorming's clarification step — one vendor point, shared by both tracks. You normally arrive here with the grill already done. Entering this track directly? Run doperpowers:brainstorming's grill first — never author an ExecPlan from an un-grilled conversation.
 
 Everything the grill resolves lands in the ExecPlan: term definitions inline where used, decisions (with the rejected alternatives and why) in its Decision Log. No CONTEXT.md, no ADRs — the ExecPlan is this track's only artifact.
 
 ## Step 2 — Author the ExecPlan
 
-Read [../execplan/references/PLANS.md](../execplan/references/PLANS.md) in full and follow it **to the letter** — including the sections the execspec adapter supersedes for the controlled track (Progress with timestamped checkboxes, narrative milestones, Concrete Steps, novice-grade self-containment). That is track separation, not contradiction: over there, machinery replaces those sections; here, the document IS the machinery.
+Read [../execspec/references/PLANS.md](../execspec/references/PLANS.md) in full and follow it **to the letter** — including the sections the execspec adapter supersedes for the controlled track (Progress with timestamped checkboxes, narrative milestones, Concrete Steps, novice-grade self-containment). That is track separation, not contradiction: over there, machinery replaces those sections; here, the document IS the machinery.
 
 Save to `docs/doperpowers/execplans/YYYY-MM-DD-<topic>.md` (omit the triple-backtick envelope per PLANS.md's file rule). The bar: a fresh session with no conversation history — or a daemon spawned with nothing but this file — can implement it end-to-end and see it working.
 
