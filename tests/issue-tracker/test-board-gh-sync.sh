@@ -60,6 +60,27 @@ assert_equals "$gh" "None" "new ticket has gh field defaulting to null"
 labels="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid'].get('labels','MISSING'))")"
 assert_equals "$labels" "[]" "new ticket has labels field defaulting to []"
 
+# ---- Task 2: board-meta.sh writes gh link + free labels ---------------------
+echo "board-meta:"
+run board-register.sh "Meta target" enhancement >/dev/null           # next Tn
+tid="$(run board-list.sh | grep 'Meta target' | awk '{print $1}')"
+out="$(run board-meta.sh "$tid" --gh 42)"
+assert_contains "$out" "$tid: gh = 42" "meta sets gh"
+gh="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid']['gh'])")"
+assert_equals "$gh" "42" "gh written as integer"
+run board-meta.sh "$tid" --add-label P0 --add-label size:M >/dev/null
+run board-meta.sh "$tid" --add-label P0 >/dev/null                    # idempotent
+labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/map.json'))['tickets']['$tid']['labels']))")"
+assert_equals "$labels" "P0,size:M" "labels added once, order preserved"
+run board-meta.sh "$tid" --rm-label P0 >/dev/null
+labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/map.json'))['tickets']['$tid']['labels']))")"
+assert_equals "$labels" "size:M" "label removed"
+run board-meta.sh "$tid" --gh 0 >/dev/null
+gh="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid']['gh'])")"
+assert_equals "$gh" "None" "gh 0 clears the link"
+assert_fails run board-meta.sh T999 --gh 1                            # unknown ticket
+assert_fails run board-meta.sh "$tid" --gh notanumber                # non-integer
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
