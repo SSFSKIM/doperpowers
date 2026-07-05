@@ -2,31 +2,31 @@
 # board-gh-apply.sh — apply a board-gh-plan, then refresh the sync watermark.
 #
 # Usage:
-#   board-gh-apply.sh --plan FILE --gh-json FILE [--dry-run] [--no-github]
-#   ... | board-gh-apply.sh --gh-json FILE [--dry-run]        (plan on stdin)
+#   board-gh-apply.sh --plan FILE [--dry-run] [--no-github]
+#   ... | board-gh-apply.sh [--dry-run]        (plan on stdin)
 #
 # Executes only auto:true, non-conflict actions: board side via board-transition.sh,
 # GitHub side via gh. --dry-run prints the commands and writes nothing. --no-github
 # applies board-side actions but skips gh calls (test/board-only seam). On a real
-# run, .sync-state.json is rewritten for every linked, non-conflict ticket.
+# run, .sync-state.json is refreshed only for the tickets the PLAN represents
+# (its auto/non-conflict actions plus its "agree" set) — never a blind re-walk of
+# map.json, so a ticket held back from a filtered plan is never falsely marked synced.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 [ -f "$MAP" ] || die "no board at $MAP"
 
-planfile="" ghjson="" dry="" nogh=""
+planfile="" dry="" nogh=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --plan) _need_arg "$1" "${2:-}"; planfile="$2"; shift 2 ;;
-    --gh-json) _need_arg "$1" "${2:-}"; ghjson="$2"; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --no-github) nogh=1; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
 [ -n "$planfile" ] && PLAN="$(cat "$planfile")" || PLAN="$(cat)"
-[ -n "$ghjson" ] && GH_SRC="$(cat "$ghjson")" || GH_SRC="[]"
 
 # 1) board-side transitions the plan asks for (unless dry-run) — via the real script.
 printf '%s' "$PLAN" | PLAN_JSON="$PLAN" python3 -c '
@@ -73,35 +73,37 @@ done
 
 [ -n "$dry" ] && { echo "(dry-run: watermark unchanged)"; exit 0; }
 
-# 3) Refresh the watermark for every linked, non-conflict ticket.
-BOARD_GH="$GH_SRC" BOARD_SYNC="$BOARD_DIR/.sync-state.json" PLAN_JSON="$PLAN" \
+# 3) Refresh the watermark only for the tickets the PLAN represents: its
+#    auto/non-conflict actions (now-reconciled) plus its already-agreeing set.
+#    A ticket held back from a filtered plan is simply absent from `refresh`,
+#    so its prior watermark entry (or lack of one) is left untouched — it is
+#    never mistaken for an agreement just because it's missing from the plan.
+BOARD_SYNC="$BOARD_DIR/.sync-state.json" PLAN_JSON="$PLAN" \
 T_TODAY="$(_today)" _py - <<'PY'
 import json, os
 env = os.environ
 with open(env["BOARD_MAP"]) as f:
     board = json.load(f)
 tickets = board["tickets"]
-gh = {i["number"]: i for i in json.loads(env["BOARD_GH"] or "[]")}
 plan = json.loads(env["PLAN_JSON"])
-conflicted = {a["ticket"] for a in plan["actions"] if a.get("conflict")}
 try:
     with open(env["BOARD_SYNC"]) as f:
         state = json.load(f)
 except FileNotFoundError:
     state = {"version": 1, "tickets": {}}
 wm = state.setdefault("tickets", {})
-for tid, n in tickets.items():
-    num = n.get("gh")
-    if not num or num not in gh or tid in conflicted:
-        continue  # unlinked, missing issue, or contested → leave watermark as-is
-    wm[tid] = {"gh": num, "state": n["state"],
-               "labels": list(n.get("labels") or [])}
+refresh = {a["ticket"] for a in plan["actions"] if a.get("auto") and not a.get("conflict")}
+refresh |= set(plan.get("agree", []))
+for tid in refresh:
+    n = tickets.get(tid)
+    if not n or not n.get("gh"):
+        continue
+    wm[tid] = {"gh": n["gh"], "state": n["state"], "labels": list(n.get("labels") or [])}
 state["version"] = 1
 state["synced_at"] = env["T_TODAY"]
 tmp = env["BOARD_SYNC"] + ".tmp"
 with open(tmp, "w") as f:
     json.dump(state, f, indent=2); f.write("\n")
 os.replace(tmp, env["BOARD_SYNC"])
-print("watermark: refreshed %d linked ticket(s)" % sum(
-    1 for t, n in tickets.items() if n.get("gh") and n["gh"] in gh and t not in conflicted))
+print("watermark: refreshed %d ticket(s)" % len(refresh))
 PY

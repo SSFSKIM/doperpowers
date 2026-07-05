@@ -155,7 +155,7 @@ print('plan-assertions-ok')" && pass "plan diff correct each direction" || fail 
 echo "board-gh-apply (dry-run):"
 run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"
 map_before="$(cat "$BOARD/map.json")"
-out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --gh-json "$TEST_ROOT/gh.json" --dry-run)"
+out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --dry-run)"
 assert_contains "$out" "gh: issue close 101 --reason completed" "dry-run plans the board->gh close"
 assert_contains "$out" "board-transition.sh $B wontfix" "dry-run plans the gh->board wontfix"
 assert_equals "$(cat "$BOARD/map.json")" "$map_before" "dry-run writes nothing to the board"
@@ -170,11 +170,92 @@ p=json.load(open(src))
 p["actions"]=[a for a in p["actions"] if a["ticket"]==B]
 json.dump(p,open(dst,"w"))
 PY
-run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --gh-json "$TEST_ROOT/gh.json" --no-github
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --no-github
 st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$B']['state'])")"
 assert_equals "$st" "wontfix" "gh->board wontfix applied to the board via board-transition"
 wm="$(python3 -c "import json;print(json.load(open('$BOARD/.sync-state.json'))['tickets']['$B']['state'])")"
 assert_equals "$wm" "wontfix" "watermark refreshed to the reconciled board state"
+
+# ---- Task 5 regression: filtered-plan safety ---------------------------------
+# The bug this guards: apply's watermark refresh used to re-walk ALL of map.json
+# and stamp every linked, non-conflict ticket — so a ticket whose action was held
+# back (filtered OUT of the plan handed to apply) still got its watermark set to
+# its *current* board state, falsely recording a sync that never happened. The
+# fix makes the refresh set plan-driven: only tickets with an auto/non-conflict
+# action in the plan, plus the plan's "agree" set, get touched.
+echo "board-gh-apply (filtered-plan safety):"
+run board-register.sh "Filter safety A" enhancement >/dev/null
+FA="$(run board-list.sh | grep 'Filter safety A' | awk '{print $1}')"
+run board-transition.sh "$FA" in-progress >/dev/null
+run board-transition.sh "$FA" done >/dev/null                        # board done, gh still open
+run board-meta.sh "$FA" --gh 201 >/dev/null
+run board-register.sh "Filter safety B" enhancement >/dev/null
+FB="$(run board-list.sh | grep 'Filter safety B' | awk '{print $1}')"
+run board-transition.sh "$FB" in-progress >/dev/null                  # done-reachable
+run board-meta.sh "$FB" --gh 202 >/dev/null
+
+cat > "$TEST_ROOT/gh2.json" <<JSON
+[ {"number":201,"state":"OPEN","stateReason":null,"labels":[],"body":"","title":"fa"},
+  {"number":202,"state":"CLOSED","stateReason":"not_planned","labels":[],"body":"","title":"fb"} ]
+JSON
+# FB gets a watermark baseline so its diff is a clean auto gh->board action. FA
+# is deliberately left with NO prior watermark entry at all — it never has been
+# synced, and it is about to be held back by the filter below, so it must come
+# out of this apply exactly as it went in: absent from .sync-state.json.
+python3 - "$BOARD/.sync-state.json" "$FB" <<'PY'
+import json,sys
+p,FB=sys.argv[1:3]
+d=json.load(open(p))
+d["tickets"][FB]={"gh":202,"state":"in-progress"}
+json.dump(d,open(p,"w"))
+PY
+run board-gh-plan.sh --gh-json "$TEST_ROOT/gh2.json" > "$TEST_ROOT/plan2.json"
+python3 -c "
+import json
+p = json.load(open('$TEST_ROOT/plan2.json'))
+a = {x['ticket']: x for x in p['actions']}
+assert a['$FB']['direction'] == 'gh->board' and a['$FB']['auto'], 'expected FB auto gh->board action'
+assert '$FA' not in p.get('agree', []), 'FA must not silently agree in this fixture'
+print('fixture-ok')
+"
+# Filter the plan down to ONLY FB's action (FA's action/absence is held back —
+# this is the exact "confirmed subset" scenario the spec allows), and drop FA
+# from "agree" too (defensively) so only FB survives anywhere in the plan.
+python3 - "$TEST_ROOT/plan2.json" "$TEST_ROOT/plan2-fb.json" "$FA" "$FB" <<'PY'
+import json,sys
+src,dst,FA,FB=sys.argv[1:5]
+p=json.load(open(src))
+p["actions"]=[a for a in p["actions"] if a["ticket"]==FB]
+p["agree"]=[t for t in p.get("agree",[]) if t != FA]
+json.dump(p,open(dst,"w"))
+PY
+run board-gh-apply.sh --plan "$TEST_ROOT/plan2-fb.json" --no-github >/dev/null
+has_fa="$(python3 -c "import json;print('$FA' in json.load(open('$BOARD/.sync-state.json'))['tickets'])")"
+assert_equals "$has_fa" "False" "ticket held back from a filtered plan gets NO watermark entry (regression guard)"
+
+# ---- Task 5 regression: conflicted tickets keep their prior watermark --------
+echo "board-gh-apply (conflict keeps watermark):"
+run board-register.sh "Conflict ticket" enhancement >/dev/null
+FC="$(run board-list.sh | grep 'Conflict ticket' | awk '{print $1}')"
+run board-meta.sh "$FC" --gh 999 >/dev/null
+python3 - "$BOARD/.sync-state.json" "$FC" <<'PY'
+import json,sys
+p,FC=sys.argv[1:3]
+d=json.load(open(p))
+d["tickets"][FC]={"gh":999,"state":"seeded-state","labels":["keep-me"]}
+json.dump(d,open(p,"w"))
+PY
+seeded_before="$(python3 -c "import json;print(json.dumps(json.load(open('$BOARD/.sync-state.json'))['tickets']['$FC'], sort_keys=True))")"
+cat > "$TEST_ROOT/plan-conflict.json" <<JSON
+{"generated_by": "test", "actions": [
+  {"ticket": "$FC", "gh": 999, "facet": "state", "conflict": true, "auto": false,
+   "board": "ready-for-agent", "gh_state": null, "watermark": "seeded-state",
+   "reason": "test conflict"}
+], "agree": [], "unlinked_board": [], "unlinked_gh": []}
+JSON
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-conflict.json" --no-github >/dev/null
+seeded_after="$(python3 -c "import json;print(json.dumps(json.load(open('$BOARD/.sync-state.json'))['tickets']['$FC'], sort_keys=True))")"
+assert_equals "$seeded_after" "$seeded_before" "conflicted ticket's watermark entry is left unchanged"
 
 # ---- summary -----------------------------------------------------------------
 echo

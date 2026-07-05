@@ -55,7 +55,7 @@ def gh_coarse(issue):
     return ["open", None]
 
 DONE_REACHABLE = {"in-progress", "in-review"}
-actions, unlinked_board, unlinked_gh = [], [], []
+actions, agree, unlinked_board, unlinked_gh = [], [], [], []
 linked = set()
 
 for tid in sorted(tickets, key=lambda k: int(k[1:])):
@@ -74,6 +74,7 @@ for tid in sorted(tickets, key=lambda k: int(k[1:])):
     w = wm.get(tid)
     w_c = coarse(w["state"]) if w and "state" in w else None
     if b_c == g_c:
+        agree.append(tid)
         continue  # agree → no action (apply refreshes the watermark)
     b_moved = (w_c is None) or (b_c != w_c)
     g_moved = (w_c is None) or (g_c != w_c)
@@ -113,7 +114,7 @@ for num in sorted(gh):
     if num not in linked and str(gh[num]["state"]).lower() == "open":
         unlinked_gh.append(num)
 
-print(json.dumps({"generated_by": "board-gh-plan", "actions": actions,
+print(json.dumps({"generated_by": "board-gh-plan", "actions": actions, "agree": agree,
                   "unlinked_board": unlinked_board, "unlinked_gh": unlinked_gh},
                  indent=2))
 PY
