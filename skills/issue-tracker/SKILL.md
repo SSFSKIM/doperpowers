@@ -61,6 +61,21 @@ Paths relative to this skill's `scripts/` directory. Use them — don't hand-edi
 | `board-show.sh <id>` | node + md path + bound daemon |
 | `board-bind.sh <uuid> <id>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables |
+| `board-link.sh <id> --gh N` \| `--backfill` | link a ticket to its GitHub issue; `--backfill` populates `gh` from the `(GH#NN)` marker in every title, once |
+| `board-meta.sh <id> [--gh N] [--add-label L] [--rm-label L]` | writer for the `gh` link and free `labels[]` (atomic, re-renders) |
+| `board-gh-plan.sh [--gh-json FILE]` | **read-only**: emit the board↔GitHub reconcile plan (state facet) as JSON |
+| `board-gh-apply.sh [--plan FILE] [--dry-run] [--no-github]` | apply a plan's (stdin or `--plan`) `auto` non-conflict actions (board via scripts, GitHub via `gh`) and refresh `.sync-state.json` from the plan |
+
+## GitHub sync (board-sync)
+
+`board-sync` (a subagent; `/board-sync`) keeps the board and GitHub issues in
+step. It links tickets to issues (`gh` node field; `board-link.sh --backfill`
+migrates existing boards from the `(GH#NN)` title marker), then reconciles state
+both ways against a `.sync-state.json` watermark: board `done`↔closed/completed,
+`wontfix`↔closed/not_planned, everything else↔open. Unambiguous changes apply
+automatically; **true conflicts (both sides moved) are written to
+`SYNC-REPORT.md`, never auto-resolved**. Cron runs are conservative — state only,
+no counterpart creation. Run from the main checkout with `gh` authenticated.
 
 ## The dispatch loop
 
