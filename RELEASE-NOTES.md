@@ -1,5 +1,35 @@
 # Doperpowers Release Notes
 
+## v6.2.0 (2026-07-05)
+
+### Issue Tracker — GitHub Sync (board-sync)
+
+The local issue board (`doperpowers/issue-tracker/`) and a repo's GitHub issues used to drift apart silently — nothing detected or repaired the divergence, and the only ticket↔issue link was a `(GH#NN)` string parsed from the title. **board-sync** closes that gap with a deterministic toolkit plus a thin-judgment subagent that reconciles board state with GitHub in both directions.
+
+- **Deterministic sync toolkit.** `board-meta.sh` writes the structured `gh` link and free-form `labels`; `board-link.sh` adds a `--gh N` shortcut plus a one-time `(GH#NN)` title backfill; `board-gh-plan.sh` produces a read-only state-reconcile diff against a `.sync-state.json` watermark; `board-gh-apply.sh` applies the unambiguous, non-conflicting state changes both ways with a plan-driven watermark refresh. Two additive, backward-compatible node fields (`gh`, `labels`) carry the link, and every write still goes through the invariant-enforcing scripts.
+- **`board-sync` subagent + `/board-sync` command.** The subagent fetches GitHub issues, runs the plan, applies the safe changes, and writes everything it cannot safely auto-apply — conflicts, unlinked tickets — to `SYNC-REPORT.md` instead of guessing. `board-reconcile.sh` now surfaces pending board-sync conflicts on wake.
+- **Coarse close-reason mapping.** `done ↔ closed/completed`, `wontfix ↔ closed/not_planned`, everything else `↔ open`. Terminal-state transitions are gated: a `done` ticket meeting a `not_planned` issue is reported as a conflict, never forced into an illegal `done → wontfix`.
+
+### Issue Tracker — Board Edges & Interactive Map
+
+- **Re-cuttable edges.** `board-edge.sh` and `board-relate.sh` make `blocked_by` and lineage edges first-class and re-cuttable after a ticket is registered.
+- **Interactive HTML board.** The board renders to `BOARD.html` — the primary view, fit-to-viewport with pan/zoom — alongside the Mermaid `BOARD.md` fallback, using a crossing-minimized band layout so the DAG stays readable.
+
+### Methodology
+
+- **ExecPlan track and vendored grill.** The `execplan` skill now vendors `PLANS.md`, and `brainstorming` vendors the grill step and routes work between the controlled (brainstorm → spec → plan) and autonomous (ExecPlan) tracks.
+- Removed an unused skill.
+
+## v6.1.1 (2026-07-03)
+
+### Issue Tracker
+
+- **Local, repo-portable issue board.** A new board under `doperpowers/issue-tracker/` — `board-register` / `board-transition` / `board-list` / `board-map` scripts, with `MAP.md` auto-refreshed on every write. Tickets are purpose-units tracked as nodes in `map.json` and driven end-to-end by background daemons; the orchestrator is the board's sole writer and the scripts refuse to run from a worktree.
+
+### Daemons & SDD
+
+- **Fork-continue daemons** and an explicit **subagent-driven-development model policy** (mid-tier workers at high effort; the final whole-branch review on the strongest model).
+
 ## v6.1.0 (2026-06-30)
 
 ### Lower Per-Session Token Cost
