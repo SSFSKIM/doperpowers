@@ -22,6 +22,7 @@ env = os.environ
 with open(env["BOARD_MAP"]) as f:
     board = json.load(f)
 filled = 0
+log = []
 for tid in sorted(board["tickets"], key=lambda k: int(k[1:])):
     t = board["tickets"][tid]
     if t.get("gh"):
@@ -29,11 +30,15 @@ for tid in sorted(board["tickets"], key=lambda k: int(k[1:])):
     m = re.search(r"GH#(\d+)", t.get("title", ""))
     if m:
         t["gh"] = int(m.group(1)); t["updated"] = env["T_TODAY"]; filled += 1
+        log.append({"ts": env["T_NOW"], "ticket": tid, "meta": "gh", "op": "set", "value": t["gh"]})
         print("%s: gh = %d (from title)" % (tid, t["gh"]))
 tmp = env["BOARD_MAP"] + ".tmp"
 with open(tmp, "w") as f:
     json.dump(board, f, indent=2); f.write("\n")
 os.replace(tmp, env["BOARD_MAP"])
+with open(env["BOARD_LOG"], "a") as f:
+    for e in log:
+        f.write(json.dumps(e) + "\n")
 print("backfilled %d ticket(s)" % filled)
 PY
   "$SCRIPT_DIR/board-map.sh" --write >/dev/null 2>&1 \

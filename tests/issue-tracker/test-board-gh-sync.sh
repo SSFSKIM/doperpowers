@@ -84,6 +84,7 @@ assert_fails run board-meta.sh "$tid" --gh notanumber                # non-integ
 # ---- Task 3: board-link.sh — gh sugar + one-time title backfill -------------
 echo "board-link (backfill):"
 run board-register.sh "Legacy epic (GH#35)" enhancement >/dev/null
+tid_backfilled="$(run board-list.sh | grep 'Legacy epic' | awk '{print $1}')"
 run board-register.sh "No marker here" bug >/dev/null
 out="$(run board-link.sh --backfill)"
 assert_contains "$out" "gh = 35 (from title)" "backfill parses GH#NN from title"
@@ -92,8 +93,19 @@ assert_equals "$n" "1" "exactly one ticket linked to #35"
 # a ticket without a marker stays unlinked
 un="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print([x['gh'] for x in t.values() if x['title']=='No marker here'][0])")"
 assert_equals "$un" "None" "markerless ticket stays unlinked"
+# backfill appends an audit entry to log.jsonl, same shape as board-meta's
+logged="$(grep -F "\"ticket\": \"$tid_backfilled\"" "$BOARD/log.jsonl" | grep -F '"meta": "gh"' | grep -c '"op": "set"' || true)"
+assert_equals "$logged" "1" "backfill appends a gh log entry"
 # re-running backfill does not overwrite an existing link
 run board-link.sh --backfill >/dev/null
+
+# ---- board-link.sh — <id> --gh N sugar delegates to board-meta.sh -----------
+echo "board-link (--gh sugar):"
+run board-register.sh "Sugar target" enhancement >/dev/null
+tid_sugar="$(run board-list.sh | grep 'Sugar target' | awk '{print $1}')"
+run board-link.sh "$tid_sugar" --gh 7 >/dev/null
+gh_sugar="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid_sugar']['gh'])")"
+assert_equals "$gh_sugar" "7" "board-link --gh sugar sets gh via board-meta delegation"
 
 # ---- summary -----------------------------------------------------------------
 echo
