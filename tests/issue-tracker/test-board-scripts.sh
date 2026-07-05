@@ -5,7 +5,7 @@
 # The board scripts touch only the filesystem (a git repo's main checkout, the
 # board data dir, and the daemon registry dir) — no network, no `claude` CLI.
 # We build a throwaway git repo + worktree and a fake daemon registry, drive
-# the real scripts end-to-end, and assert on map.json / log.jsonl / output.
+# the real scripts end-to-end, and assert on board.json / log.jsonl / output.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -56,9 +56,9 @@ echo "board-register:"
 
 out="$(run board-register.sh "Worktree map viewer" enhancement)"
 assert_equals "$out" "T1 tickets/T1-worktree-map-viewer.md" "first register returns T1 + slug md path"
-assert_file_exists "$BOARD/map.json" "lazy init created map.json"
+assert_file_exists "$BOARD/board.json" "lazy init created board.json"
 assert_file_exists "$BOARD/log.jsonl" "birth logged to log.jsonl"
-state="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T1']['state'])")"
+state="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T1']['state'])")"
 assert_equals "$state" "ready-for-agent" "default birth state is ready-for-agent"
 
 out="$(run board-register.sh "Deferred idea" bug --state deferred)"
@@ -66,7 +66,7 @@ assert_contains "$out" "T2" "second register allocates T2"
 
 out="$(run board-register.sh "Child slice" enhancement --parent T1 --blocked-by T2)"
 assert_contains "$out" "T3" "third register allocates T3"
-parent="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['parent'])")"
+parent="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T3']['parent'])")"
 assert_equals "$parent" "T1" "parent edge stored"
 
 loglines="$(wc -l < "$BOARD/log.jsonl" | tr -d ' ')"
@@ -86,7 +86,7 @@ assert_fails run board-register.sh "Bad" bug --state in-progress      # not a bi
 (cd "$TEST_ROOT/wt" && "$SCRIPTS_DIR/board-register.sh" "From worktree" bug) \
     >/dev/null 2>&1 && fail "worktree guard" || pass "refused to run from a worktree"
 
-[ -f "$BOARD/map.json.tmp" ] && fail "no tmp litter" || pass "no tmp litter after writes"
+[ -f "$BOARD/board.json.tmp" ] && fail "no tmp litter" || pass "no tmp litter after writes"
 
 # ---- Task 2: transition legality, notes, sweeps, log --------------------------
 echo "board-transition:"
@@ -103,9 +103,9 @@ assert_contains "$out" "T3: ready-for-agent → in-progress" "transition applied
 assert_contains "$out" "T1: ready-for-agent → in-progress" "epic parent pulled to in-progress"
 
 out="$(run board-transition.sh T3 in-review "" --branch worktree-t3 --pr "PR#12")"
-pr="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['pr'])")"
+pr="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T3']['pr'])")"
 assert_equals "$pr" "PR#12" "pr recorded on in-review"
-branch="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T3']['branch'])")"
+branch="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T3']['branch'])")"
 assert_equals "$branch" "worktree-t3" "branch recorded on in-review"
 
 out="$(run board-transition.sh T2 ready-for-agent)"    # revive the deferred blocker
@@ -159,9 +159,9 @@ assert_contains "$out" "aaaa1111" "show finds the bound daemon"
 assert_fails run board-show.sh T99
 
 # A stray tmp from an interrupted write is ignored by readers (atomicity).
-touch "$BOARD/map.json.tmp"
-run board-list.sh >/dev/null && pass "stray map.json.tmp ignored" || fail "stray map.json.tmp ignored"
-rm -f "$BOARD/map.json.tmp"
+touch "$BOARD/board.json.tmp"
+run board-list.sh >/dev/null && pass "stray board.json.tmp ignored" || fail "stray board.json.tmp ignored"
+rm -f "$BOARD/board.json.tmp"
 
 # ---- Task 4: bind + reconcile --------------------------------------------------
 echo "board-bind / board-reconcile:"
@@ -192,9 +192,9 @@ assert_contains "$out" "proposal  T8: in-progress → in-review" "reconcile surf
 assert_contains "$out" "board-transition.sh T8 in-review" "reconcile prints the apply command"
 assert_contains "$out" "orphaned  T9" "reconcile flags in-progress ticket with no daemon"
 
-map_before="$(cat "$BOARD/map.json")"
+map_before="$(cat "$BOARD/board.json")"
 run board-reconcile.sh >/dev/null
-assert_equals "$(cat "$BOARD/map.json")" "$map_before" "reconcile never writes the board"
+assert_equals "$(cat "$BOARD/board.json")" "$map_before" "reconcile never writes the board"
 
 # ---- Task 5: review findings — PR-gated in-review, in-review→deferred, --------
 #              hardened reconcile, option-arity guard.
@@ -278,10 +278,10 @@ echo "board-transition (stale notes):"
 
 # A note travels with the state that required it; the next move clears it.
 run board-register.sh "Stale note ticket" bug --state blocked --note "waiting on API key" >/dev/null  # T13
-note="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T13']['note'])")"
+note="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T13']['note'])")"
 assert_equals "$note" "waiting on API key" "birth note stored"
 run board-transition.sh T13 ready-for-agent >/dev/null
-note="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T13']['note'])")"
+note="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T13']['note'])")"
 assert_equals "$note" "None" "stale note cleared on the next transition"
 
 # ---- Deferred minors: one-line titles, spoof-proof list rows -------------------
@@ -290,7 +290,7 @@ echo "board-register / board-list (one-line display):"
 # A newline smuggled into a title or note must not spoof extra board-list rows.
 out="$(run board-register.sh "$(printf 'Spoof\nT99 done bug FAKE')" enhancement)"   # T14
 assert_contains "$out" "T14" "newline title registers"
-title="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T14']['title'])")"
+title="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T14']['title'])")"
 assert_equals "$title" "Spoof T99 done bug FAKE" "title normalized to one line at registration"
 run board-transition.sh T14 blocked "$(printf 'line one\nline two')" >/dev/null
 rows="$(run board-list.sh | wc -l | tr -d ' ')"
@@ -338,7 +338,7 @@ run board-register.sh "Relate probe A" enhancement >/dev/null   # T18
 run board-register.sh "Relate probe B" enhancement >/dev/null   # T19
 out="$(run board-relate.sh T18 T19)"
 assert_contains "$out" "related: T18 -- T19" "relate reports the new edge"
-got="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
+got="$(python3 -c "import json;t=json.load(open('$BOARD/board.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
 assert_equals "$got" "['T19'] ['T18']" "relates edge stored on BOTH nodes"
 assert_fails run board-relate.sh T18 T19            # duplicate
 assert_fails run board-relate.sh T19 T18            # duplicate, reversed
@@ -352,7 +352,7 @@ printf '%s' "$rel" | grep -Fq '"from":"T19","to":"T18","kind":"relates"' \
     || pass "symmetric relate renders exactly once (no reverse dup)"
 out="$(run board-relate.sh T19 T18 --cut)"          # cut works from either side
 assert_contains "$out" "cut: T19 -- T18" "cut reported"
-got="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
+got="$(python3 -c "import json;t=json.load(open('$BOARD/board.json'))['tickets'];print(t['T18']['relates_to'],t['T19']['relates_to'])")"
 assert_equals "$got" "[] []" "cut removed both sides"
 assert_fails run board-relate.sh T18 T19 --cut      # nothing left to cut
 
@@ -404,7 +404,7 @@ run board-register.sh "Edge close done kid" enhancement --parent T27 >/dev/null 
 run board-register.sh "Edge close leaver" enhancement --parent T27 >/dev/null     # T29
 run board-transition.sh T28 in-progress >/dev/null
 run board-transition.sh T28 "done" >/dev/null         # T27 stays open: T29 not terminal
-st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['T27']['state'])")"
+st="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['T27']['state'])")"
 assert_equals "$st" "in-progress" "epic still open while a child remains active"
 out="$(run board-edge.sh T29 --orphan)"
 assert_contains "$out" "T29: parent cleared (was T27)" "orphan recorded"

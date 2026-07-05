@@ -4,7 +4,7 @@
 # Usage: board-map.sh [--write]
 #
 #   (default)  print the fallback table (ticket · state · title · PR) to stdout
-#   --write    render two caches of map.json into doperpowers/issue-tracker/:
+#   --write    render two caches of board.json into doperpowers/issue-tracker/:
 #              BOARD.html — the primary view: an interactive layered-DAG (pan/zoom,
 #              click a node for detail, filter by state, collapse epics), opened
 #              in a browser; and BOARD.md — a minimal node/state table, the
@@ -26,7 +26,7 @@ write=0
 
 # One python pass per call: it always prints the fallback table to stdout, and
 # on --write it also writes BOARD.md and renders BOARD.html — the table and the
-# graph share the single map.json parse (one process, not two).
+# graph share the single board.json parse (one process, not two).
 BOARD_MAP="$MAP" BOARD_DIR="$BOARD_DIR" \
 BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
 BOARD_WRITE="$write" python3 - <<'PY'

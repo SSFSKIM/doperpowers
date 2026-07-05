@@ -2,7 +2,7 @@
 # _lib.sh — shared helpers for the issue-tracker board toolkit.
 # Sourced by board-*.sh. Not meant to be run directly.
 #
-# The board is one map.json (graph + states) plus per-ticket markdown and an
+# The board is one board.json (graph + states) plus per-ticket markdown and an
 # append-only log.jsonl under doperpowers/issue-tracker/ in the consumer repo.
 # Single-writer rule: only the orchestrator (main session) writes it, and only
 # from the repo's MAIN checkout — sourcing this file enforces the second half
@@ -36,7 +36,7 @@ _board_root() {
 
 BOARD_ROOT="$(_board_root)"
 BOARD_DIR="$BOARD_ROOT/doperpowers/issue-tracker"
-MAP="$BOARD_DIR/map.json"
+MAP="$BOARD_DIR/board.json"
 LOG="$BOARD_DIR/log.jsonl"
 
 # Daemon registry — same default (and same test override) as orchestrating-daemons.
@@ -44,7 +44,7 @@ DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 
 # Lazy bootstrap: first register creates the data dir + an empty map.
 # Atomic like every other map write: tmp then rename — mv within the same
-# directory is rename(2), so a crash can never leave a partial map.json.
+# directory is rename(2), so a crash can never leave a partial board.json.
 _board_init() {
   [ -f "$MAP" ] && return 0
   mkdir -p "$BOARD_DIR/tickets"

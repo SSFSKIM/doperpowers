@@ -11,7 +11,7 @@
 # those skipped board->gh actions were never actually sent to GitHub, they are also
 # excluded from the watermark refresh below. On a real run, .sync-state.json is
 # refreshed only for the tickets the PLAN represents (its auto/non-conflict actions
-# plus its "agree" set) — never a blind re-walk of map.json, so a ticket held back
+# plus its "agree" set) — never a blind re-walk of board.json, so a ticket held back
 # from a filtered plan is never falsely marked synced.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -8,7 +8,7 @@ description: Use when managing the local issue board — registering tickets, di
 A local, repo-portable issue board. Tickets are **purpose-units**: born as
 pre-specs from `issue-register`, driven end-to-end (brainstorm → spec → plan →
 build → PR) by background daemons (`orchestrating-daemons`), tracked as nodes
-in `doperpowers/issue-tracker/map.json`.
+in `doperpowers/issue-tracker/board.json`.
 
 **You (the main session) are the orchestrator — the board's only writer.**
 Daemons never touch the board; they end turns with *proposal blocks* that you
@@ -48,7 +48,7 @@ children) are never dispatched; the sweep moves them automatically.
 ## Toolkit
 
 Paths relative to this skill's `scripts/` directory. Use them — don't hand-edit
-`map.json`.
+`board.json`.
 
 | script | does |
 |---|---|
@@ -57,7 +57,7 @@ Paths relative to this skill's `scripts/` directory. Use them — don't hand-edi
 | `board-edge.sh <id> --block T \| --unblock T \| --parent T \| --orphan` | re-cut edges after birth (one op per call): add/cut a `blocked_by`, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric `relates_to` annotation — rendered by board-map, no effect on eligibility |
 | `board-list.sh [state]` | board view; `ELIGIBLE` tag = dispatchable |
-| `board-map.sh [--write]` | human telemetry. `--write` renders two caches of `map.json`: **`BOARD.html`** — an interactive, crossing-minimized layered-DAG (pan/zoom, click a node for its detail, filter by state, collapse epics), the primary view, opened in a browser; and **`BOARD.md`** — a minimal node/state table, the GitHub-inline fallback. No argument prints the table to stdout. Both auto-refresh on every register/transition |
+| `board-map.sh [--write]` | human telemetry. `--write` renders two caches of `board.json`: **`BOARD.html`** — an interactive, crossing-minimized layered-DAG (pan/zoom, click a node for its detail, filter by state, collapse epics), the primary view, opened in a browser; and **`BOARD.md`** — a minimal node/state table, the GitHub-inline fallback. No argument prints the table to stdout. Both auto-refresh on every register/transition |
 | `board-show.sh <id>` | node + md path + bound daemon |
 | `board-bind.sh <uuid> <id>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables |
@@ -142,5 +142,5 @@ log records *why* it was cut, so nobody re-litigates it later.
 - A wontfix blocker makes a dependent `STUCK` — re-cut the edge
   (`board-edge.sh <id> --unblock <blocker>`) or wontfix the dependent; that is
   a human call.
-- `map.json` corrupted → restore from git history.
+- `board.json` corrupted → restore from git history.
 - Never run board scripts from a worktree (they refuse; work from the main checkout).

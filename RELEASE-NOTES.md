@@ -1,5 +1,19 @@
 # Doperpowers Release Notes
 
+## v6.3.0 (2026-07-06)
+
+### Issue Tracker — Board Data File Renamed `map.json` → `board.json`
+
+The board's data file is renamed from `map.json` to **`board.json`** so the whole board shares one name: `board.json` (the graph + states), `BOARD.md`, and `BOARD.html` all read as one thing. Only the filename changed — the schema, the `log.jsonl` sidecar, and every script's behavior are identical.
+
+- **⚠️ Migration required for existing boards.** This is a deliberate hard rename with no backward-compatibility shim: the scripts now look for `board.json` and will report "no board" against an old `map.json`. To migrate a repo that already has a board, rename the file once:
+
+  ```bash
+  git mv doperpowers/issue-tracker/map.json doperpowers/issue-tracker/board.json
+  ```
+
+  The render caches (`BOARD.md`, `BOARD.html`) refresh on the next board write, or immediately with `board-map.sh --write`. New boards are created as `board.json` automatically.
+
 ## v6.2.0 (2026-07-05)
 
 ### Issue Tracker — GitHub Sync (board-sync)

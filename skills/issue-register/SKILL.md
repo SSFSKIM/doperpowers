@@ -110,7 +110,7 @@ from this file alone. Every decision the grilling produced goes in the Decision
 log — that is what lets the daemon drive brainstorm → PR with minimal
 escalation.
 
-State is NOT in the md — the board (`map.json`) is the single source of truth.
+State is NOT in the md — the board (`board.json`) is the single source of truth.
 Cluster hierarchy → `--parent`; ordering → `--blocked-by`; parked → `--state
 deferred`; open-questions-remain → `--state needs-info`.
 

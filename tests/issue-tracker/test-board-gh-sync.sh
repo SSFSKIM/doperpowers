@@ -5,7 +5,7 @@
 # The board scripts touch only the filesystem (a git repo's main checkout, the
 # board data dir, and the daemon registry dir) — no network, no `claude` CLI.
 # We build a throwaway git repo + worktree and a fake daemon registry, drive
-# the real scripts end-to-end, and assert on map.json / log.jsonl / output.
+# the real scripts end-to-end, and assert on board.json / log.jsonl / output.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -55,9 +55,9 @@ run() { # run a board script from the main checkout
 echo "board-register (sync fields):"
 out="$(run board-register.sh "First ticket" enhancement)"
 tid="$(printf '%s' "$out" | awk '{print $1}')"
-gh="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid'].get('gh','MISSING'))")"
+gh="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$tid'].get('gh','MISSING'))")"
 assert_equals "$gh" "None" "new ticket has gh field defaulting to null"
-labels="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid'].get('labels','MISSING'))")"
+labels="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$tid'].get('labels','MISSING'))")"
 assert_equals "$labels" "[]" "new ticket has labels field defaulting to []"
 
 # ---- Task 2: board-meta.sh writes gh link + free labels ---------------------
@@ -66,17 +66,17 @@ run board-register.sh "Meta target" enhancement >/dev/null           # next Tn
 tid="$(run board-list.sh | grep 'Meta target' | awk '{print $1}')"
 out="$(run board-meta.sh "$tid" --gh 42)"
 assert_contains "$out" "$tid: gh = 42" "meta sets gh"
-gh="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid']['gh'])")"
+gh="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$tid']['gh'])")"
 assert_equals "$gh" "42" "gh written as integer"
 run board-meta.sh "$tid" --add-label P0 --add-label size:M >/dev/null
 run board-meta.sh "$tid" --add-label P0 >/dev/null                    # idempotent
-labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/map.json'))['tickets']['$tid']['labels']))")"
+labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/board.json'))['tickets']['$tid']['labels']))")"
 assert_equals "$labels" "P0,size:M" "labels added once, order preserved"
 run board-meta.sh "$tid" --rm-label P0 >/dev/null
-labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/map.json'))['tickets']['$tid']['labels']))")"
+labels="$(python3 -c "import json;print(','.join(json.load(open('$BOARD/board.json'))['tickets']['$tid']['labels']))")"
 assert_equals "$labels" "size:M" "label removed"
 run board-meta.sh "$tid" --gh 0 >/dev/null
-gh="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid']['gh'])")"
+gh="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$tid']['gh'])")"
 assert_equals "$gh" "None" "gh 0 clears the link"
 assert_fails run board-meta.sh T999 --gh 1                            # unknown ticket
 assert_fails run board-meta.sh "$tid" --gh notanumber                # non-integer
@@ -88,10 +88,10 @@ tid_backfilled="$(run board-list.sh | grep 'Legacy epic' | awk '{print $1}')"
 run board-register.sh "No marker here" bug >/dev/null
 out="$(run board-link.sh --backfill)"
 assert_contains "$out" "gh = 35 (from title)" "backfill parses GH#NN from title"
-n="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print(sum(1 for x in t.values() if x.get('gh')==35))")"
+n="$(python3 -c "import json;t=json.load(open('$BOARD/board.json'))['tickets'];print(sum(1 for x in t.values() if x.get('gh')==35))")"
 assert_equals "$n" "1" "exactly one ticket linked to #35"
 # a ticket without a marker stays unlinked
-un="$(python3 -c "import json;t=json.load(open('$BOARD/map.json'))['tickets'];print([x['gh'] for x in t.values() if x['title']=='No marker here'][0])")"
+un="$(python3 -c "import json;t=json.load(open('$BOARD/board.json'))['tickets'];print([x['gh'] for x in t.values() if x['title']=='No marker here'][0])")"
 assert_equals "$un" "None" "markerless ticket stays unlinked"
 # backfill appends an audit entry to log.jsonl, same shape as board-meta's
 logged="$(grep -F "\"ticket\": \"$tid_backfilled\"" "$BOARD/log.jsonl" | grep -F '"meta": "gh"' | grep -c '"op": "set"' || true)"
@@ -104,7 +104,7 @@ echo "board-link (--gh sugar):"
 run board-register.sh "Sugar target" enhancement >/dev/null
 tid_sugar="$(run board-list.sh | grep 'Sugar target' | awk '{print $1}')"
 run board-link.sh "$tid_sugar" --gh 7 >/dev/null
-gh_sugar="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid_sugar']['gh'])")"
+gh_sugar="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$tid_sugar']['gh'])")"
 assert_equals "$gh_sugar" "7" "board-link --gh sugar sets gh via board-meta delegation"
 
 # ---- Task 4: board-gh-plan.sh — deterministic state reconcile diff ----------
@@ -204,17 +204,17 @@ if run board-gh-apply.sh --plan "$TEST_ROOT/plan-e.json" --no-github >/dev/null;
 else
   fail "apply exits 0 for a plan holding only the conflicted done/not_planned action"
 fi
-st_e="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$E']['state'])")"
+st_e="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$E']['state'])")"
 assert_equals "$st_e" "done" "ticket stays done — illegal transition never attempted"
 
 # ---- Task 5: board-gh-apply.sh — apply the plan + refresh the watermark -----
 echo "board-gh-apply (dry-run):"
 run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"
-map_before="$(cat "$BOARD/map.json")"
+map_before="$(cat "$BOARD/board.json")"
 out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --dry-run)"
 assert_contains "$out" "gh: issue close 101 --reason completed" "dry-run plans the board->gh close"
 assert_contains "$out" "board-transition.sh $B wontfix" "dry-run plans the gh->board wontfix"
-assert_equals "$(cat "$BOARD/map.json")" "$map_before" "dry-run writes nothing to the board"
+assert_equals "$(cat "$BOARD/board.json")" "$map_before" "dry-run writes nothing to the board"
 [ -f "$BOARD/.sync-state.json.tmp" ] && fail "dry-run no watermark tmp" || pass "dry-run leaves no watermark tmp"
 
 echo "board-gh-apply (board side):"
@@ -227,13 +227,13 @@ p["actions"]=[a for a in p["actions"] if a["ticket"]==B]
 json.dump(p,open(dst,"w"))
 PY
 run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --no-github
-st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$B']['state'])")"
+st="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$B']['state'])")"
 assert_equals "$st" "wontfix" "gh->board wontfix applied to the board via board-transition"
 wm="$(python3 -c "import json;print(json.load(open('$BOARD/.sync-state.json'))['tickets']['$B']['state'])")"
 assert_equals "$wm" "wontfix" "watermark refreshed to the reconciled board state"
 
 # ---- Task 5 regression: filtered-plan safety ---------------------------------
-# The bug this guards: apply's watermark refresh used to re-walk ALL of map.json
+# The bug this guards: apply's watermark refresh used to re-walk ALL of board.json
 # and stamp every linked, non-conflict ticket — so a ticket whose action was held
 # back (filtered OUT of the plan handed to apply) still got its watermark set to
 # its *current* board state, falsely recording a sync that never happened. The
