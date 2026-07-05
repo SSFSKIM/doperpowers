@@ -72,7 +72,7 @@ tickets[tid] = {
     "title": title, "md": md, "state": state, "category": category,
     "note": note or None, "parent": parent or None,
     "blocked_by": blocked, "spawned_by": spawned or None, "relates_to": [],
-    "branch": None, "pr": None,
+    "branch": None, "pr": None, "gh": None, "labels": [],
     "created": env["T_TODAY"], "updated": env["T_TODAY"],
 }
 tmp = env["BOARD_MAP"] + ".tmp"
