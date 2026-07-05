@@ -18,26 +18,37 @@ that determines step 4 below.
 
 Procedure:
 
-1. Fetch GitHub once and compute the plan from that fetch:
+1. Allocate a private per-run scratch dir, then fetch GitHub once and compute
+   the plan from that fetch:
    ```
-   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title > /tmp/board-sync-gh.json
-   board-gh-plan.sh --gh-json /tmp/board-sync-gh.json > /tmp/board-sync-plan.json
+   WORK=$(mktemp -d)
+   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title > "$WORK/gh.json"
+   board-gh-plan.sh --gh-json "$WORK/gh.json" > "$WORK/plan.json"
    ```
-   (The fetch must be explicit and passed via `--gh-json`: under an automated,
-   non-TTY Bash call, a bare `board-gh-plan.sh` falls into its stdin branch,
-   reads zero bytes, and silently treats GitHub as having no issues at all —
-   turning every linked ticket into a false "not found on GitHub" conflict.)
-   Read `/tmp/board-sync-plan.json`.
+   (Note `body` is dropped from the fetched fields — the plan never needs it.
+   Use a fresh `mktemp -d` rather than fixed paths like `/tmp/board-sync-gh.json`:
+   a predictable shared path is a clobber/symlink hazard if two runs ever
+   overlap. We also fetch and pass `--gh-json` explicitly, for clarity and to
+   avoid any dependence on the script's default-fetch behavior, rather than
+   invoking `board-gh-plan.sh` bare.)
+   Read `"$WORK/plan.json"`.
 
 2. Apply the safe changes, reusing the same plan file — do NOT recompute it:
-   `board-gh-apply.sh --plan /tmp/board-sync-plan.json`
+   `board-gh-apply.sh --plan "$WORK/plan.json"`
    This applies only `auto:true`, non-conflict actions, and refreshes the
    watermark from the plan itself (`board-gh-apply.sh` takes no `--gh-json`).
    Do NOT pass `--dry-run` unless asked to preview.
 
 3. Report everything you did NOT auto-apply, built from that same
-   `/tmp/board-sync-plan.json` (not a fresh computation). Write
-   `doperpowers/issue-tracker/SYNC-REPORT.md` with three sections:
+   `"$WORK/plan.json"` (not a fresh computation). Write
+   `doperpowers/issue-tracker/SYNC-REPORT.md` starting with a machine-countable
+   header line, exactly:
+   ```
+   board-sync conflicts: N
+   ```
+   where N is the number of `conflict:true` actions in the plan (0 if none) —
+   `board-reconcile.sh` greps this line on wake, so the count must be the
+   first line of the file. Below it, keep the three sections:
    - **Conflicts** — each `conflict:true` action, showing board / gh_state /
      watermark and the reason. These need a human decision.
    - **Unlinked (board)** — tickets with no `gh` link.

@@ -7,10 +7,12 @@
 #
 # Executes only auto:true, non-conflict actions: board side via board-transition.sh,
 # GitHub side via gh. --dry-run prints the commands and writes nothing. --no-github
-# applies board-side actions but skips gh calls (test/board-only seam). On a real
-# run, .sync-state.json is refreshed only for the tickets the PLAN represents
-# (its auto/non-conflict actions plus its "agree" set) — never a blind re-walk of
-# map.json, so a ticket held back from a filtered plan is never falsely marked synced.
+# applies board-side actions but skips gh calls (test/board-only seam) — and, since
+# those skipped board->gh actions were never actually sent to GitHub, they are also
+# excluded from the watermark refresh below. On a real run, .sync-state.json is
+# refreshed only for the tickets the PLAN represents (its auto/non-conflict actions
+# plus its "agree" set) — never a blind re-walk of map.json, so a ticket held back
+# from a filtered plan is never falsely marked synced.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -78,7 +80,11 @@ done
 #    A ticket held back from a filtered plan is simply absent from `refresh`,
 #    so its prior watermark entry (or lack of one) is left untouched — it is
 #    never mistaken for an agreement just because it's missing from the plan.
-BOARD_SYNC="$BOARD_DIR/.sync-state.json" PLAN_JSON="$PLAN" \
+#    Under --no-github, board->gh actions were never actually sent to GitHub
+#    (step 2 above is skipped for them), so they must not be counted as
+#    reconciled either — otherwise a real run later would see the ticket as
+#    already-synced and silently skip the gh call it still owes.
+BOARD_SYNC="$BOARD_DIR/.sync-state.json" PLAN_JSON="$PLAN" T_NOGH="$nogh" \
 T_TODAY="$(_today)" _py - <<'PY'
 import json, os
 env = os.environ
@@ -92,7 +98,10 @@ try:
 except FileNotFoundError:
     state = {"version": 1, "tickets": {}}
 wm = state.setdefault("tickets", {})
-refresh = {a["ticket"] for a in plan["actions"] if a.get("auto") and not a.get("conflict")}
+nogh = bool(env.get("T_NOGH"))
+refresh = {a["ticket"] for a in plan["actions"]
+           if a.get("auto") and not a.get("conflict")
+           and not (nogh and a.get("direction") == "board->gh")}
 refresh |= set(plan.get("agree", []))
 for tid in refresh:
     n = tickets.get(tid)

@@ -313,6 +313,75 @@ run board-gh-apply.sh --plan "$TEST_ROOT/plan-conflict.json" --no-github >/dev/n
 seeded_after="$(python3 -c "import json;print(json.dumps(json.load(open('$BOARD/.sync-state.json'))['tickets']['$FC'], sort_keys=True))")"
 assert_equals "$seeded_after" "$seeded_before" "conflicted ticket's watermark entry is left unchanged"
 
+# ---- Task 5 regression: --no-github must not watermark a skipped board->gh --
+# The bug this guards: under --no-github the gh call is skipped entirely (step
+# 2 is a no-op for board->gh actions), but the watermark refresh used to count
+# ANY auto, non-conflict action — including board->gh ones — as reconciled.
+# That falsely recorded a GitHub push that never happened. The fix excludes
+# board->gh actions from the refresh set specifically when --no-github is set.
+echo "board-gh-apply (--no-github excludes board->gh from the watermark):"
+run board-register.sh "NoGH board->gh guard" enhancement >/dev/null
+G="$(run board-list.sh | grep 'NoGH board->gh guard' | awk '{print $1}')"
+run board-transition.sh "$G" in-progress >/dev/null
+run board-transition.sh "$G" done >/dev/null                          # board done, gh issue still open
+run board-meta.sh "$G" --gh 301 >/dev/null
+# G has no prior watermark entry at all — nothing has ever been reconciled for it.
+cat > "$TEST_ROOT/plan-nogh.json" <<JSON
+{"generated_by": "test", "actions": [
+  {"ticket": "$G", "gh": 301, "facet": "state", "direction": "board->gh", "conflict": false, "auto": true,
+   "board": "done", "gh_state": "OPEN", "target_gh": ["closed", "completed"], "watermark": null,
+   "reason": "test: board->gh under --no-github"}
+], "agree": [], "unlinked_board": [], "unlinked_gh": []}
+JSON
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-nogh.json" --no-github >/dev/null
+has_g="$(python3 -c "import json;print('$G' in json.load(open('$BOARD/.sync-state.json'))['tickets'])")"
+assert_equals "$has_g" "False" "board->gh action skipped by --no-github gets NO watermark entry (regression guard)"
+
+# ---- Task 6: board-reconcile.sh surfaces pending board-sync conflicts -------
+# Spec: board-reconcile.sh reads SYNC-REPORT.md's machine-countable header
+# line ("board-sync conflicts: N") and, read-only, surfaces a summary line
+# when N>0 — additive, so reconcile's other output/tests are unaffected when
+# no report exists.
+echo "board-reconcile (surfaces SYNC-REPORT.md conflicts):"
+cat > "$BOARD/SYNC-REPORT.md" <<'EOF'
+board-sync conflicts: 2
+
+## Conflicts
+- T1: board=done gh_state=OPEN watermark=in-progress (reason: test)
+- T2: board=ready-for-agent gh_state=CLOSED watermark=ready-for-agent (reason: test)
+
+## Unlinked (board)
+(none)
+
+## Unlinked (GitHub)
+(none)
+EOF
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "board-sync: 2 conflict(s) pending (SYNC-REPORT.md)" "reconcile surfaces pending board-sync conflicts"
+
+# a report with zero conflicts stays silent
+cat > "$BOARD/SYNC-REPORT.md" <<'EOF'
+board-sync conflicts: 0
+
+## Conflicts
+(none)
+EOF
+out="$(run board-reconcile.sh)"
+if printf '%s' "$out" | grep -q 'board-sync:.*conflict'; then
+  fail "reconcile stays silent when SYNC-REPORT.md reports zero conflicts"
+else
+  pass "reconcile stays silent when SYNC-REPORT.md reports zero conflicts"
+fi
+
+# no report at all stays silent too
+rm -f "$BOARD/SYNC-REPORT.md"
+out="$(run board-reconcile.sh)"
+if printf '%s' "$out" | grep -q 'board-sync:.*conflict'; then
+  fail "reconcile stays silent when no SYNC-REPORT.md exists"
+else
+  pass "reconcile stays silent when no SYNC-REPORT.md exists"
+fi
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else

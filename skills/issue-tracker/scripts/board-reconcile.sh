@@ -4,16 +4,18 @@
 # Usage: board-reconcile.sh
 #
 # Scans daemon replies for proposal blocks the board hasn't applied, flags
-# in-progress tickets with no live bound daemon, and lists dispatchable
-# tickets. Applying anything is the orchestrator's judge step, via
-# board-transition.sh — this script only reports.
+# in-progress tickets with no live bound daemon, lists dispatchable tickets,
+# and surfaces pending board<->GitHub sync conflicts from SYNC-REPORT.md (if
+# board-sync has written one). Applying anything is the orchestrator's judge
+# step, via board-transition.sh / the board-sync agent — this script only
+# reports.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 [ -f "$MAP" ] || die "no board at $MAP (nothing registered yet)"
 
-T_DHOME="$DAEMON_HOME" _py - <<'PY'
+T_DHOME="$DAEMON_HOME" T_BOARD_DIR="$BOARD_DIR" _py - <<'PY'
 import glob, json, os, re, shlex
 
 env = os.environ
@@ -101,4 +103,14 @@ for t, n in by_id(tickets.items()):
     if n["state"] == "ready-for-agent" and t not in epics \
        and all(tickets.get(b, {}).get("state") == "done" for b in n.get("blocked_by", [])):
         print("dispatch  %s: %s" % (t, " ".join(str(n["title"]).split())))
+
+# 4. Pending board<->GitHub sync conflicts (read-only surface of the board-sync
+# agent's SYNC-REPORT.md, whose first line is always "board-sync conflicts: N").
+report_path = os.path.join(env["T_BOARD_DIR"], "SYNC-REPORT.md")
+if os.path.isfile(report_path):
+    with open(report_path) as f:
+        first_line = f.readline()
+    m = re.match(r"board-sync conflicts:\s*(\d+)", first_line.strip())
+    if m and int(m.group(1)) > 0:
+        print("board-sync: %d conflict(s) pending (SYNC-REPORT.md)" % int(m.group(1)))
 PY
