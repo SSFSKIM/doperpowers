@@ -107,6 +107,50 @@ run board-link.sh "$tid_sugar" --gh 7 >/dev/null
 gh_sugar="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$tid_sugar']['gh'])")"
 assert_equals "$gh_sugar" "7" "board-link --gh sugar sets gh via board-meta delegation"
 
+# ---- Task 4: board-gh-plan.sh — deterministic state reconcile diff ----------
+echo "board-gh-plan:"
+# scratch board: 4 tickets, drive states, link to issues
+run board-register.sh "Completion push" enhancement >/dev/null        # A
+A="$(run board-list.sh | grep 'Completion push' | awk '{print $1}')"
+run board-transition.sh "$A" in-progress >/dev/null
+run board-transition.sh "$A" done >/dev/null                          # board done, issue still open
+run board-meta.sh "$A" --gh 101 >/dev/null
+run board-register.sh "GH closed it" enhancement >/dev/null           # B
+B="$(run board-list.sh | grep 'GH closed it' | awk '{print $1}')"
+run board-transition.sh "$B" in-progress >/dev/null                   # done-reachable
+run board-meta.sh "$B" --gh 102 >/dev/null
+run board-register.sh "Already agree" enhancement >/dev/null          # C  (open ↔ open)
+C="$(run board-list.sh | grep 'Already agree' | awk '{print $1}')"
+run board-meta.sh "$C" --gh 103 >/dev/null
+run board-register.sh "Unlinked local" bug >/dev/null                 # D  (no gh)
+D="$(run board-list.sh | grep 'Unlinked local' | awk '{print $1}')"
+
+cat > "$TEST_ROOT/gh.json" <<JSON
+[ {"number":101,"state":"OPEN","stateReason":null,"labels":[],"body":"","title":"x"},
+  {"number":102,"state":"CLOSED","stateReason":"not_planned","labels":[],"body":"","title":"y"},
+  {"number":103,"state":"OPEN","stateReason":null,"labels":[],"body":"","title":"z"},
+  {"number":900,"state":"OPEN","stateReason":null,"labels":[],"body":"","title":"orphan"} ]
+JSON
+# empty watermark → C already agrees (no action); A/B each moved on one side only
+: > "$BOARD/.sync-state.json"; echo '{"version":1,"tickets":{}}' > "$BOARD/.sync-state.json"
+python3 - "$BOARD/.sync-state.json" "$A" "$B" "$C" <<'PY'
+import json,sys
+p,A,B,C=sys.argv[1:5]
+d=json.load(open(p))
+d["tickets"]={A:{"gh":101,"state":"in-progress"},B:{"gh":102,"state":"in-progress"},C:{"gh":103,"state":"ready-for-agent"}}
+json.dump(d,open(p,"w"))
+PY
+plan="$(run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json")"
+assert_contains "$plan" "\"ticket\": \"$A\"" "plan includes the board-moved ticket"
+printf '%s' "$plan" | python3 -c "import json,sys;p=json.load(sys.stdin);a={x['ticket']:x for x in p['actions']}; import os
+A,B,C,D='$A','$B','$C','$D'
+assert a[A]['direction']=='board->gh' and a[A]['auto'] and a[A]['target_gh'][0]=='closed', 'A board->gh close'
+assert a[B]['direction']=='gh->board' and a[B]['auto'] and a[B]['target_board'][0]=='wontfix', 'B gh->board wontfix'
+assert C not in a, 'C already agrees, no action'
+assert D in p['unlinked_board'], 'D unlinked_board'
+assert 900 in p['unlinked_gh'], 'orphan open issue surfaced'
+print('plan-assertions-ok')" && pass "plan diff correct each direction" || fail "plan diff correct each direction"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
