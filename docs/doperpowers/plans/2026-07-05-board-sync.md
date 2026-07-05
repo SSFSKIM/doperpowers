@@ -328,7 +328,7 @@ The heart of board-sync: a pure function of (`map.json`, GitHub issue JSON, `.sy
 - Test: `tests/issue-tracker/test-board-gh-sync.sh`
 
 **Interfaces:**
-- Consumes: `map.json`; GitHub issues as `[{number,state,stateReason,labels,body,title}]` via `--gh-json FILE` / stdin / `gh issue list`; `.sync-state.json` (`{tickets:{Tn:{gh,state,...}}}`).
+- Consumes: `map.json`; GitHub issues as `[{number,state,stateReason,labels,title}]` via `--gh-json FILE` / stdin / `gh issue list`; `.sync-state.json` (`{tickets:{Tn:{gh,state,...}}}`).
 - Produces: JSON plan on stdout —
   `{"actions":[{ticket,gh,facet:"state",direction?,auto,target_board?|target_gh?,board,gh_state?,watermark?,conflict?,reason}], "unlinked_board":[Tn], "unlinked_gh":[num]}`.
   Action semantics: `auto:true` + no `conflict` ⇒ apply-able; `board->gh` carries `target_gh:[state,reason]`; `gh->board` carries `target_board:[state,note]` (may be `null` when reported).
@@ -395,7 +395,7 @@ Expected: FAIL — `board-gh-plan.sh` does not exist.
 #   board-gh-plan.sh [--gh-json FILE]
 #
 # GitHub issues come from --gh-json FILE, or stdin if piped, else:
-#   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,body,title
+#   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title
 # Reads .sync-state.json (the last-sync watermark). Emits a JSON plan on stdout.
 # Pure: it never writes the board or GitHub.
 set -euo pipefail
@@ -417,7 +417,7 @@ elif [ ! -t 0 ]; then
   GH_SRC="$(cat)"
 else
   GH_SRC="$(gh issue list --state all --limit 1000 \
-            --json number,state,stateReason,labels,body,title)"
+            --json number,state,stateReason,labels,title)"
 fi
 
 BOARD_GH="$GH_SRC" BOARD_SYNC="$BOARD_DIR/.sync-state.json" _py - <<'PY'
@@ -534,7 +534,7 @@ Consumes a plan and executes only `auto:true`, non-conflict actions — board si
 - Test: `tests/issue-tracker/test-board-gh-sync.sh`
 
 **Interfaces:**
-- Consumes: a plan (from `--plan FILE` / stdin) produced by `board-gh-plan.sh`; the same GitHub JSON via `--gh-json FILE` (to recompute the watermark); `board-transition.sh`.
+- Consumes: a plan (from `--plan FILE` / stdin) produced by `board-gh-plan.sh`; `board-transition.sh`.
 - Produces: side effects (board transitions, `gh` calls) and a refreshed `.sync-state.json`; with `--dry-run`, only prints `board: …` / `gh: …` command lines.
 
 - [ ] **Step 1: Write the failing tests** — append. Reuse the board+plan from Task 4; assert `--dry-run` prints the right commands and touches nothing:
@@ -543,7 +543,7 @@ Consumes a plan and executes only `auto:true`, non-conflict actions — board si
 echo "board-gh-apply (dry-run):"
 run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"
 map_before="$(cat "$BOARD/map.json")"
-out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --gh-json "$TEST_ROOT/gh.json" --dry-run)"
+out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --dry-run)"
 assert_contains "$out" "gh: issue close 101 --reason completed" "dry-run plans the board->gh close"
 assert_contains "$out" "board-transition.sh $B wontfix" "dry-run plans the gh->board wontfix"
 assert_equals "$(cat "$BOARD/map.json")" "$map_before" "dry-run writes nothing to the board"
@@ -562,7 +562,7 @@ p=json.load(open(src))
 p["actions"]=[a for a in p["actions"] if a["ticket"]==B]
 json.dump(p,open(dst,"w"))
 PY
-run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --gh-json "$TEST_ROOT/gh.json" --no-github
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --no-github
 st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$B']['state'])")"
 assert_equals "$st" "wontfix" "gh->board wontfix applied to the board via board-transition"
 wm="$(python3 -c "import json;print(json.load(open('$BOARD/.sync-state.json'))['tickets']['$B']['state'])")"
@@ -583,8 +583,8 @@ Expected: FAIL — `board-gh-apply.sh` does not exist.
 # board-gh-apply.sh — apply a board-gh-plan, then refresh the sync watermark.
 #
 # Usage:
-#   board-gh-apply.sh --plan FILE --gh-json FILE [--dry-run] [--no-github]
-#   ... | board-gh-apply.sh --gh-json FILE [--dry-run]        (plan on stdin)
+#   board-gh-apply.sh --plan FILE [--dry-run] [--no-github]
+#   ... | board-gh-apply.sh [--dry-run]        (plan on stdin)
 #
 # Executes only auto:true, non-conflict actions: board side via board-transition.sh,
 # GitHub side via gh. --dry-run prints the commands and writes nothing. --no-github
@@ -742,7 +742,7 @@ Procedure:
 
 1. Fetch GitHub once and compute the plan from that fetch:
    ```
-   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,body,title > /tmp/board-sync-gh.json
+   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title > /tmp/board-sync-gh.json
    board-gh-plan.sh --gh-json /tmp/board-sync-gh.json > /tmp/board-sync-plan.json
    ```
    (The fetch must be explicit and passed via `--gh-json`: under an automated,

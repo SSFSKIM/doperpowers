@@ -151,6 +151,62 @@ assert D in p['unlinked_board'], 'D unlinked_board'
 assert 900 in p['unlinked_gh'], 'orphan open issue surfaced'
 print('plan-assertions-ok')" && pass "plan diff correct each direction" || fail "plan diff correct each direction"
 
+# ---- board-gh-plan.sh — explicit `--gh-json -` reads stdin, same as FILE ----
+# Bare (no --gh-json) used to fall into an implicit "read stdin if non-TTY"
+# branch — under cron/subagent Bash (always non-TTY) a bare call would read
+# zero bytes and silently treat GitHub as empty. The fix requires stdin be
+# opted into explicitly via `--gh-json -`; this proves that seam still works
+# and produces byte-identical output to the file seam for the same data.
+echo "board-gh-plan (--gh-json - stdin seam):"
+plan_stdin="$(cat "$TEST_ROOT/gh.json" | run board-gh-plan.sh --gh-json -)"
+assert_equals "$plan_stdin" "$plan" "--gh-json - (stdin) matches --gh-json FILE for the same input"
+
+# ---- Task 4 regression: done ticket must not become an illegal wontfix -----
+# The bug this guards: when the board is terminal `done` and GitHub closes the
+# linked issue as not_planned, plan used to emit an auto:true gh->board wontfix
+# action — but `done` has no legal transitions (LEGAL["done"] is empty in
+# board-transition.sh), so apply would die mid-loop applying it on a cron run.
+# The fix forces this specific combination to a conflict instead of an auto
+# action, and apply must then leave the ticket untouched.
+echo "board-gh-plan (done + gh not_planned → conflict, not auto wontfix):"
+run board-register.sh "Done vs not_planned" enhancement >/dev/null
+E="$(run board-list.sh | grep 'Done vs not_planned' | awk '{print $1}')"
+run board-transition.sh "$E" in-progress >/dev/null
+run board-transition.sh "$E" done >/dev/null                          # board terminal: done
+run board-meta.sh "$E" --gh 200 >/dev/null
+python3 - "$BOARD/.sync-state.json" "$E" <<'PY'
+import json,sys
+p,E=sys.argv[1:3]
+d=json.load(open(p))
+d["tickets"][E]={"gh":200,"state":"done"}
+json.dump(d,open(p,"w"))
+PY
+cat > "$TEST_ROOT/gh-donewontfix.json" <<JSON
+[ {"number":200,"state":"CLOSED","stateReason":"not_planned","labels":[],"title":"e"} ]
+JSON
+run board-gh-plan.sh --gh-json "$TEST_ROOT/gh-donewontfix.json" > "$TEST_ROOT/plan-e.json"
+python3 -c "
+import json
+p = json.load(open('$TEST_ROOT/plan-e.json'))
+a = {x['ticket']: x for x in p['actions']}
+act = a['$E']
+assert act['auto'] is False, 'expected auto:false, got %r' % act
+assert act.get('conflict') is True, 'expected conflict:true, got %r' % act
+assert act.get('target_board') is None, 'target_board must stay unset (nothing to apply)'
+print('done-wontfix-guard-ok')
+" && pass "done ticket + gh not_planned yields conflict, not auto wontfix" \
+  || fail "done ticket + gh not_planned yields conflict, not auto wontfix"
+
+# Apply must be a no-op for this conflicted ticket: the illegal done→wontfix
+# transition is never attempted, and board-gh-apply.sh must still exit 0.
+if run board-gh-apply.sh --plan "$TEST_ROOT/plan-e.json" --no-github >/dev/null; then
+  pass "apply exits 0 for a plan holding only the conflicted done/not_planned action"
+else
+  fail "apply exits 0 for a plan holding only the conflicted done/not_planned action"
+fi
+st_e="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$E']['state'])")"
+assert_equals "$st_e" "done" "ticket stays done — illegal transition never attempted"
+
 # ---- Task 5: board-gh-apply.sh — apply the plan + refresh the watermark -----
 echo "board-gh-apply (dry-run):"
 run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"

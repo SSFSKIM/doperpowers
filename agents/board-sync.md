@@ -20,7 +20,7 @@ Procedure:
 
 1. Fetch GitHub once and compute the plan from that fetch:
    ```
-   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,body,title > /tmp/board-sync-gh.json
+   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title > /tmp/board-sync-gh.json
    board-gh-plan.sh --gh-json /tmp/board-sync-gh.json > /tmp/board-sync-plan.json
    ```
    (The fetch must be explicit and passed via `--gh-json`: under an automated,

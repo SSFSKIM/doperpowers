@@ -2,10 +2,10 @@
 # board-gh-plan.sh — compute the board↔GitHub reconcile plan (no mutation).
 #
 # Usage:
-#   board-gh-plan.sh [--gh-json FILE]
+#   board-gh-plan.sh [--gh-json FILE | --gh-json -]
 #
-# GitHub issues come from --gh-json FILE, or stdin if piped, else:
-#   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,body,title
+# GitHub issues come from --gh-json FILE, or --gh-json - to read stdin, else:
+#   gh issue list --state all --limit 1000 --json number,state,stateReason,labels,title
 # Reads .sync-state.json (the last-sync watermark). Emits a JSON plan on stdout.
 # Pure: it never writes the board or GitHub.
 set -euo pipefail
@@ -21,13 +21,13 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1" ;;
   esac
 done
-if [ -n "$ghjson" ]; then
-  GH_SRC="$(cat "$ghjson")"
-elif [ ! -t 0 ]; then
+if [ "$ghjson" = "-" ]; then
   GH_SRC="$(cat)"
+elif [ -n "$ghjson" ]; then
+  GH_SRC="$(cat "$ghjson")"
 else
   GH_SRC="$(gh issue list --state all --limit 1000 \
-            --json number,state,stateReason,labels,body,title)"
+            --json number,state,stateReason,labels,title)"
 fi
 
 BOARD_GH="$GH_SRC" BOARD_SYNC="$BOARD_DIR/.sync-state.json" _py - <<'PY'
@@ -92,7 +92,11 @@ for tid in sorted(tickets, key=lambda k: int(k[1:])):
                 auto = False
                 reason = "GitHub closed completed but board is %s (never started)" % n["state"]
         elif g_c == ["closed", "not_planned"]:
-            target = ["wontfix", "sync: GitHub closed as not planned"]
+            if n["state"] == "done":
+                auto = False
+                reason = "GitHub closed not_planned but board is done — done cannot go to wontfix"
+            else:
+                target = ["wontfix", "sync: GitHub closed as not planned"]
         else:  # reopened while board terminal — ambiguous target open state
             auto = False
             reason = "GitHub reopened; board is %s — target open state ambiguous" % n["state"]

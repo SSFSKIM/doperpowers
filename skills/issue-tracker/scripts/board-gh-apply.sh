@@ -29,7 +29,7 @@ done
 [ -n "$planfile" ] && PLAN="$(cat "$planfile")" || PLAN="$(cat)"
 
 # 1) board-side transitions the plan asks for (unless dry-run) — via the real script.
-printf '%s' "$PLAN" | PLAN_JSON="$PLAN" python3 -c '
+PLAN_JSON="$PLAN" python3 -c '
 import json, os, sys
 plan = json.loads(os.environ["PLAN_JSON"])
 for a in plan["actions"]:
@@ -49,7 +49,7 @@ for a in plan["actions"]:
 done
 
 # 2) GitHub-side changes (unless dry-run or --no-github) — via gh.
-printf '%s' "$PLAN" | PLAN_JSON="$PLAN" python3 -c '
+PLAN_JSON="$PLAN" python3 -c '
 import json, os
 plan = json.loads(os.environ["PLAN_JSON"])
 for a in plan["actions"]:
