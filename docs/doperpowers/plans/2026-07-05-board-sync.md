@@ -742,9 +742,10 @@ Procedure:
    (it fetches GitHub issues via `gh` itself). Read the JSON.
 
 2. Apply the safe changes:
-   `board-gh-plan.sh | board-gh-apply.sh --gh-json <(gh issue list --state all --limit 1000 --json number,state,stateReason,labels,body,title)`
-   This applies only `auto:true`, non-conflict actions and refreshes the
-   watermark. Do NOT pass `--dry-run` unless asked to preview.
+   `board-gh-plan.sh | board-gh-apply.sh`
+   `board-gh-apply.sh` reads the plan from stdin, applies only `auto:true`,
+   non-conflict actions, and refreshes the watermark from the plan itself (it
+   does not take `--gh-json`). Do NOT pass `--dry-run` unless asked to preview.
 
 3. Report everything you did NOT auto-apply. Write
    `doperpowers/issue-tracker/SYNC-REPORT.md` with three sections:
@@ -802,7 +803,7 @@ Fold the four new scripts and board-sync into the issue-tracker manual so the or
 | `board-link.sh <id> --gh N` \| `--backfill` | link a ticket to its GitHub issue; `--backfill` populates `gh` from the `(GH#NN)` marker in every title, once |
 | `board-meta.sh <id> [--gh N] [--add-label L] [--rm-label L]` | writer for the `gh` link and free `labels[]` (atomic, re-renders) |
 | `board-gh-plan.sh [--gh-json FILE]` | **read-only**: emit the board↔GitHub reconcile plan (state facet) as JSON |
-| `board-gh-apply.sh --gh-json FILE [--dry-run]` | apply a plan's `auto` non-conflict actions (board via scripts, GitHub via `gh`) and refresh `.sync-state.json` |
+| `board-gh-apply.sh [--plan FILE] [--dry-run] [--no-github]` | apply a plan's (stdin or `--plan`) `auto` non-conflict actions (board via scripts, GitHub via `gh`) and refresh `.sync-state.json` from the plan |
 ```
 
 - [ ] **Step 2: Add a "## GitHub sync" subsection** after the toolkit table:
