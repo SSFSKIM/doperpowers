@@ -151,6 +151,31 @@ assert D in p['unlinked_board'], 'D unlinked_board'
 assert 900 in p['unlinked_gh'], 'orphan open issue surfaced'
 print('plan-assertions-ok')" && pass "plan diff correct each direction" || fail "plan diff correct each direction"
 
+# ---- Task 5: board-gh-apply.sh — apply the plan + refresh the watermark -----
+echo "board-gh-apply (dry-run):"
+run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"
+map_before="$(cat "$BOARD/map.json")"
+out="$(run board-gh-apply.sh --plan "$TEST_ROOT/plan.json" --gh-json "$TEST_ROOT/gh.json" --dry-run)"
+assert_contains "$out" "gh: issue close 101 --reason completed" "dry-run plans the board->gh close"
+assert_contains "$out" "board-transition.sh $B wontfix" "dry-run plans the gh->board wontfix"
+assert_equals "$(cat "$BOARD/map.json")" "$map_before" "dry-run writes nothing to the board"
+[ -f "$BOARD/.sync-state.json.tmp" ] && fail "dry-run no watermark tmp" || pass "dry-run leaves no watermark tmp"
+
+echo "board-gh-apply (board side):"
+# Apply only the gh->board wontfix for B by feeding a filtered plan (board side, no gh calls).
+python3 - "$TEST_ROOT/plan.json" "$TEST_ROOT/plan-b.json" "$B" <<'PY'
+import json,sys
+src,dst,B=sys.argv[1:4]
+p=json.load(open(src))
+p["actions"]=[a for a in p["actions"] if a["ticket"]==B]
+json.dump(p,open(dst,"w"))
+PY
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-b.json" --gh-json "$TEST_ROOT/gh.json" --no-github
+st="$(python3 -c "import json;print(json.load(open('$BOARD/map.json'))['tickets']['$B']['state'])")"
+assert_equals "$st" "wontfix" "gh->board wontfix applied to the board via board-transition"
+wm="$(python3 -c "import json;print(json.load(open('$BOARD/.sync-state.json'))['tickets']['$B']['state'])")"
+assert_equals "$wm" "wontfix" "watermark refreshed to the reconciled board state"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else
