@@ -831,9 +831,11 @@ step. It links tickets to issues (`gh` node field; `board-link.sh --backfill`
 migrates existing boards from the `(GH#NN)` title marker), then reconciles state
 both ways against a `.sync-state.json` watermark: board `done`↔closed/completed,
 `wontfix`↔closed/not_planned, everything else↔open. Unambiguous changes apply
-automatically; **true conflicts (both sides moved) are written to
-`SYNC-REPORT.md`, never auto-resolved**. Cron runs are conservative — state only,
-no counterpart creation. Run from the main checkout with `gh` authenticated.
+automatically; **anything it can't safely auto-apply — divergent state (both
+sides moved), a missing linked issue, or an ambiguous single-side mapping (e.g. a
+reopened issue, or a GitHub-completed ticket the board never started) — is written
+to `SYNC-REPORT.md`, never auto-resolved**. Cron runs are conservative — state
+only, no counterpart creation. Run from the main checkout with `gh` authenticated.
 ```
 
 - [ ] **Step 3: Commit**
