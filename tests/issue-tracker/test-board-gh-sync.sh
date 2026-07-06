@@ -207,6 +207,43 @@ fi
 st_e="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$E']['state'])")"
 assert_equals "$st_e" "done" "ticket stays done — illegal transition never attempted"
 
+# ---- Task 4b: GitHub 'completed' close is authoritative → board catches up -----
+# A linked issue closed as `completed` reconciles the board to `done` even when the
+# ticket never reached in-progress (born ready-for-agent). LEGAL forbids the direct
+# ready-for-agent→done jump, so plan emits an auto gh->board done and apply must
+# route it through in-progress. This is the "PR merged on an integration branch →
+# issue closed → board done" tail that used to stall as a conflict.
+echo "board-gh-plan/apply (gh completed → board done from ready-for-agent):"
+run board-register.sh "Completed from backlog" enhancement >/dev/null   # birth: ready-for-agent
+F="$(run board-list.sh | grep 'Completed from backlog' | awk '{print $1}')"
+run board-meta.sh "$F" --gh 300 >/dev/null
+# watermark: previous sync saw both sides open (board ready-for-agent, gh open)
+python3 - "$BOARD/.sync-state.json" "$F" <<'PY'
+import json,sys
+p,F=sys.argv[1:3]
+d=json.load(open(p))
+d["tickets"][F]={"gh":300,"state":"ready-for-agent"}
+json.dump(d,open(p,"w"))
+PY
+cat > "$TEST_ROOT/gh-completed.json" <<JSON
+[ {"number":300,"state":"CLOSED","stateReason":"completed","labels":[],"title":"f"} ]
+JSON
+run board-gh-plan.sh --gh-json "$TEST_ROOT/gh-completed.json" > "$TEST_ROOT/plan-f.json"
+python3 -c "
+import json
+p = json.load(open('$TEST_ROOT/plan-f.json'))
+act = {x['ticket']: x for x in p['actions']}['$F']
+assert act['auto'] is True, 'expected auto:true, got %r' % act
+assert not act.get('conflict'), 'must not be a conflict, got %r' % act
+assert act['direction']=='gh->board' and act['target_board'][0]=='done', 'expected gh->board done, got %r' % act
+print('completed-authoritative-plan-ok')
+" && pass "gh completed + ready-for-agent → auto gh->board done (not conflict)" \
+  || fail "gh completed + ready-for-agent → auto gh->board done (not conflict)"
+# apply must route ready-for-agent → in-progress → done without the illegal jump
+run board-gh-apply.sh --plan "$TEST_ROOT/plan-f.json" --no-github >/dev/null
+st_f="$(python3 -c "import json;print(json.load(open('$BOARD/board.json'))['tickets']['$F']['state'])")"
+assert_equals "$st_f" "done" "ready-for-agent ticket routed to done via in-progress"
+
 # ---- Task 5: board-gh-apply.sh — apply the plan + refresh the watermark -----
 echo "board-gh-apply (dry-run):"
 run board-gh-plan.sh --gh-json "$TEST_ROOT/gh.json" > "$TEST_ROOT/plan.json"

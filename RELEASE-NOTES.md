@@ -1,5 +1,17 @@
 # Doperpowers Release Notes
 
+## v6.3.3 (2026-07-06)
+
+### Issue Tracker — a GitHub `completed` close reconciles the board to `done`
+
+`board-gh-sync` (the `board-gh-plan` → `board-gh-apply` engine) used to auto-flip a ticket to `done` **only** when it was already `in-progress` or `in-review`. A ticket still in `ready-for-agent` (or `blocked` / `needs-info` / `deferred`) whose linked issue GitHub closed as **completed** was left as a *conflict* for a human — on the theory that a ticket that "never started" can't be done.
+
+In practice that theory is wrong for the common flow where work jumps straight from the backlog to a merged PR without the board ever being nudged to `in-progress`. A GitHub `completed` close is **authoritative reconciliation**, not a human skipping work-tracking, so the board should just catch up.
+
+- **`board-gh-plan.sh`**: a `completed` GitHub close now emits an auto `gh->board done` for **any non-terminal** board state; only `wontfix` (a deliberate "not planned") stays a conflict, since `completed` vs `not_planned` is a genuine clash. The old `DONE_REACHABLE` gate is gone.
+- **`board-gh-apply.sh`**: because the `LEGAL` state machine still forbids jumping straight from `ready-for-agent` to `done`, apply now **routes the sync-driven `done` through `in-progress`** (and `deferred` through `ready-for-agent → in-progress`). The `board-transition.sh` primitive stays strict — only the reconciliation path is allowed this bypass.
+- The strict-primitive guarantees are unchanged: `done` + GitHub `not_planned` is still a conflict (a `done` ticket never silently becomes `wontfix`). New regression test in `tests/issue-tracker/test-board-gh-sync.sh`.
+
 ## v6.3.2 (2026-07-06)
 
 ### Issue Tracker — `BOARD.html` fills the frame (grid layout)

@@ -54,7 +54,6 @@ def gh_coarse(issue):
         return ["closed", "not_planned" if r == "not_planned" else "completed"]
     return ["open", None]
 
-DONE_REACHABLE = {"in-progress", "in-review"}
 actions, agree, unlinked_board, unlinked_gh = [], [], [], []
 linked = set()
 
@@ -86,11 +85,17 @@ for tid in sorted(tickets, key=lambda k: int(k[1:])):
     elif w_c is not None and g_moved and not b_moved:
         target, auto, reason = None, True, "github changed"
         if g_c == ["closed", "completed"]:
-            if n["state"] in DONE_REACHABLE:
-                target = ["done", None]
-            else:
+            if n["state"] == "wontfix":
+                # board deliberately shelved this (not-planned) but GitHub says it
+                # was completed — a genuine semantic clash; leave it for a human.
                 auto = False
-                reason = "GitHub closed completed but board is %s (never started)" % n["state"]
+                reason = "GitHub closed completed but board is wontfix — completion vs not-planned clash"
+            else:
+                # A GitHub 'completed' close is authoritative reconciliation, not a
+                # human declaring done: the board catches up even from a not-yet-started
+                # state (ready-for-agent, blocked, needs-info, deferred). board-gh-apply
+                # routes the transition through in-progress so the LEGAL machine holds.
+                target = ["done", None]
         elif g_c == ["closed", "not_planned"]:
             if n["state"] == "done":
                 auto = False

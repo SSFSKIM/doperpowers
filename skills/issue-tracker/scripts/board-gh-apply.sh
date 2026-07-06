@@ -44,6 +44,20 @@ for a in plan["actions"]:
   if [ -n "$dry" ]; then
     echo "board: board-transition.sh $tid $st ${note:+\"$note\"}"
   else
+    # A sync-driven 'done' may target a ticket that never reached in-progress on the
+    # board (ready-for-agent, blocked, needs-info, deferred). The LEGAL state machine
+    # forbids jumping straight to done — but a GitHub 'completed' close is authoritative
+    # reconciliation, not a human skipping work-tracking. Route through the legal
+    # intermediate states so the transition stays valid.
+    if [ "$st" = "done" ]; then
+      cur="$(BT_TID="$tid" _py -c 'import json,os;print(json.load(open(os.environ["BOARD_MAP"]))["tickets"].get(os.environ["BT_TID"],{}).get("state",""))')"
+      case "$cur" in
+        done|in-progress|in-review) : ;;
+        deferred) "$SCRIPT_DIR/board-transition.sh" "$tid" ready-for-agent "sync: GitHub completed — 경유" >/dev/null
+                  "$SCRIPT_DIR/board-transition.sh" "$tid" in-progress     "sync: GitHub completed — 경유" >/dev/null ;;
+        *)        "$SCRIPT_DIR/board-transition.sh" "$tid" in-progress     "sync: GitHub completed — 경유" >/dev/null ;;
+      esac
+    fi
     if [ -n "$note" ]; then "$SCRIPT_DIR/board-transition.sh" "$tid" "$st" "$note" >/dev/null
     else "$SCRIPT_DIR/board-transition.sh" "$tid" "$st" >/dev/null; fi
     echo "board: $tid -> $st"
