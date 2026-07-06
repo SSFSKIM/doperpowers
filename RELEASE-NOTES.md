@@ -1,5 +1,22 @@
 # Doperpowers Release Notes
 
+## v7.0.0 (2026-07-06)
+
+### Issue Tracker — GitHub Issues becomes the single source of truth (breaking)
+
+The board no longer lives in `doperpowers/issue-tracker/board.json` — **it IS the repo's GitHub issues**. v6's three copies of board state (local-branch `board.json`, origin `board.json`, GitHub issues) made every branch an automatic board fork and demanded ever-growing sync machinery (board-sync, `.sync-state.json` watermarks, conflict reports). v7 deletes the problem instead of solving it: one store, everything else a view.
+
+- **Typed graph, natively.** `parent` → GitHub **sub-issues**, `blocked_by` → GitHub **issue dependencies** (`addSubIssue`/`addBlockedBy` GraphQL, verified live), state → open + exactly one `status:*` label, terminal states → close reason (`completed`/`not planned`). `spawned-by`/`relates-to`/`branch`/`pr`/`note` ride a script-owned `board:meta` body block. Ticket ids are issue numbers — the `gh` link field, and the two-way-fork bug class, vanish.
+- **Same toolkit, new backend.** Every `board-*.sh` keeps its CLI contract; the state machine, mandatory notes, PR gate, cycle/deadlock checks, and epic sweeps are unchanged, now in a shared `_board.py` module. The worktree guard is gone — no git file is written, so any checkout may run any script.
+- **Deleted:** `board-link.sh`, `board-meta.sh`, `board-gh-plan.sh`, `board-gh-apply.sh`, the `board-sync` agent + `/board-sync` command, `.sync-state.json`, `log.jsonl` (the issue timeline is the log), ticket md files (the issue body is the pre-spec).
+- **New:** `board-lint.sh` — single-store schema validation (one status label per open issue, none on closed, notes where required, no dependency cycles) with `FAIL … FIX:` lines; `board-migrate-gh.sh` — one-shot v6→v7 backfill of a legacy `board.json` into GitHub (dry-run by default). `board-reconcile.sh` ends with a lint pass.
+- **Renders never commit.** `BOARD.html`/`BOARD.md` write into a gitignored render dir — a committed render is how v6's board forked across branches.
+- **Enforcement is three layers:** the scripts as the only write path (the schema lives in the write path, exactly as it did for `board.json`), `board-lint.sh` on wake/cron, and a consumer-CLAUDE.md **Board Write Hard Gate** (shipped in SKILL.md).
+- Tests: the suite now drives the real scripts against a PATH-shimmed mock `gh` (stateful, records every invocation) — hermetic end-to-end, no network.
+
+Design: `docs/doperpowers/specs/2026-07-06-issue-tracker-v7-gh-ssot-design.md`.
+
+
 ## v6.3.4 (2026-07-06)
 
 ### Issue Tracker — a ticket's owner may move its own ticket from a worktree
