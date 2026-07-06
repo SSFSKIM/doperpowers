@@ -185,6 +185,24 @@ set -e
 assert_equals "$rc" "1" "lint exits 1 on FAILs"
 assert_contains "$out" "FAIL #9: open with no status:* label" "untracked named"
 assert_contains "$out" "FAIL #7: open with 2 status:* labels" "conflict named"
+
+# an OPEN issue with a lone terminal label (legacy merge automation) = conflict
+python3 - <<'FIX2'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["9"]["labels"] = ["status:done"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+FIX2
+set +e
+out2="$(run board-lint.sh 2>&1)"
+set -e
+assert_contains "$out2" "FAIL #9" "open issue with lone status:done is not a state"
+python3 - <<'FIX2'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["9"]["labels"] = []
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+FIX2
 assert_contains "$out" "FAIL #3: closed but still labeled" "closed-labeled named"
 assert_contains "$out" "FIX:" "FIX lines present"
 

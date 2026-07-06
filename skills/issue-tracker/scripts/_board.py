@@ -154,9 +154,12 @@ _snapshot_cache = None
 def derive_state(gh_state, state_reason, status_labels):
     if gh_state == "CLOSED":
         return "wontfix" if state_reason in ("NOT_PLANNED", "DUPLICATE") else "done"
-    if len(status_labels) == 1 and status_labels[0] in STATES:
+    # An OPEN issue must carry exactly one *open*-state label — a lone
+    # status:done/status:wontfix on an open issue (e.g. legacy merge automation
+    # that labels instead of closing) is a conflict, not a state.
+    if len(status_labels) == 1 and status_labels[0] in OPEN_STATES:
         return status_labels[0]
-    return CONFLICT if len(status_labels) > 1 else UNTRACKED
+    return CONFLICT if status_labels else UNTRACKED
 
 
 def snapshot(refresh=False):
