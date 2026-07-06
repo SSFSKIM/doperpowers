@@ -11,10 +11,12 @@
 #              collapse epics), opened in a browser; and BOARD.md — a minimal
 #              node/state table.
 #
-# Reading BOARD.html: node color = state; ELIGIBLE (ready-for-agent + all blockers
-# done, not an epic) gets a thick green border; a solid arrow is an ACTIVE block,
-# a dotted one a satisfied dependency; labeled dotted lines carry spawned/relates
-# lineage; each epic is a labeled box around its members (click to collapse).
+# Reading BOARD.html: dependencies flow left→right (a blocker sits left of its
+# dependents). Card color = state; ELIGIBLE (ready-for-agent + all blockers done,
+# not an epic) glows blue; in-progress pulses green. An amber arrow is an ACTIVE
+# block (green while its blocker is itself being worked), a dim dashed one a
+# satisfied dependency; labeled dashed lines carry spawned/relates lineage; each
+# epic is a labeled box around its members (click the epic's card to collapse).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -191,13 +193,18 @@ def order_cluster(members):
             break
     return best
 
-# Coordinates: give each top-level cluster (epic tree or lone node) its own
-# disjoint column band, so an epic's bounding box can only ever enclose its own
-# members. Band width is the max nodes-per-layer (order-independent). Two levers
-# cut crossings without ever breaking that containment: WITHIN a band, the slot a
-# node takes (order_cluster, above); and the left-to-right ORDER of the bands
-# themselves (below), which cuts crossings among the edges that span clusters.
-COL, ROW = 210, 110
+# Coordinates: the board renders as a left→right layered DAG (the agent-harness
+# orientation: layer = x, so a blocker sits LEFT of its dependents). Each
+# top-level cluster (epic tree or lone node) gets its own disjoint band on the
+# slot axis, so an epic's bounding box can only ever enclose its own members.
+# Band width is the max nodes-per-layer (order-independent). Two levers cut
+# crossings without ever breaking that containment: WITHIN a band, the slot a
+# node takes (order_cluster, above); and the ORDER of the bands themselves
+# (below), which cuts crossings among the edges that span clusters. All of the
+# ordering math runs in abstract (slot, layer) units — the transpose to screen
+# px happens only at the final pos emit (segment crossings are invariant under
+# swapping axes, so the minimization is orientation-blind).
+XCOL, YROW = 240, 100   # px per layer step (card 168 + edge gap) / per slot step (card 74 + gap)
 clusters = {}
 for t in order:
     clusters.setdefault(root(t), []).append(t)
@@ -215,8 +222,8 @@ for rt in clusters:
             slot[t] = i
     local[rt], width[rt] = slot, w
 
-# Band order: reorder the swimlanes left-to-right to cut crossings among the
-# edges that span two clusters. Same discipline as the within-band pass — pure,
+# Band order: reorder the swimlanes along the slot axis to cut crossings among
+# the edges that span two clusters. Same discipline as the within-band pass — pure,
 # deterministic, never worse than the id-stable baseline (id-order is the first
 # candidate and we only ever keep a strictly-fewer-crossings order). The classic
 # Sugiyama recipe: a barycenter sweep for a good global order, then a transpose
@@ -297,17 +304,18 @@ if any(cl_nbr.values()):
         if not moved:
             break
 
-# Shelf-pack the top-level bands into rows instead of one long ribbon, so the
-# board fills vertical space. Laid out in a single row, a board of N mostly
-# independent tickets is an N-wide, ~1-tall strip that auto-fits to a thin
-# sliver (huge empty margins above and below); wrapping it into an ~M-wide grid
-# fills the frame and multiplies the readable zoom. Each cluster stays a
-# contiguous block placed at one shelf origin, so the disjoint-column guarantee
-# now also holds across rows (different shelves occupy different row bands) —
-# an epic's bounding box still encloses only its own members. best_seq's
-# crossing-minimized order is preserved; we only wrap it. Shelf width = the one
-# whose packed bounding box best matches a landscape aspect (fitView in the
-# template does the final viewport scaling).
+# Shelf-pack the top-level bands into a grid instead of one long strip, so the
+# board fills the frame. In the transposed (left→right) orientation a band is a
+# ROW of the screen: N mostly independent tickets laid in a single column of
+# bands is an N-tall, ~1-wide sliver that auto-fits tiny; wrapping the bands
+# into shelves (stacked vertically, shelves side by side) fills the frame and
+# multiplies the readable zoom. Each cluster stays a contiguous block placed at
+# one shelf origin, so the disjoint-band guarantee still holds — an epic's
+# bounding box encloses only its own members. best_seq's crossing-minimized
+# order is preserved; we only wrap it. Shelf capacity = the one whose packed
+# bounding box best matches a landscape aspect (fitView in the template does
+# the final viewport scaling). The packer itself works in abstract
+# (slot, layer) units; only the score and the pos emit apply the transpose.
 cheight = {rt: 1 + max(LAYER[t] for t in clusters[rt]) for rt in clusters}
 TARGET_ASPECT = 2.4      # packed width:height — landscape, near a typical viewport
 
@@ -321,20 +329,23 @@ def _pack(shelf_cols):
         maxx = max(maxx, cx + w); cx += w; sh = max(sh, cheight[rt])
     return place, maxx, top + sh
 
-_widest, _total = max(width.values()), sum(width.values())
-_best = None
-for _sc in range(_widest, _total + 1):           # widest single cluster … full single row
-    _place, _cols, _rows = _pack(_sc)
-    _score = abs((_cols * COL) / (_rows * ROW) - TARGET_ASPECT)
-    if _best is None or _score < _best[0]:
-        _best = (_score, _place)
-shelf = _best[1]
+shelf = {}
+if clusters:   # an empty board still renders (the Pages workflow runs pre-first-ticket)
+    _widest, _total = max(width.values()), sum(width.values())
+    _best = None
+    for _sc in range(_widest, _total + 1):       # widest single cluster … one full shelf
+        _place, _slots, _layers = _pack(_sc)
+        # transposed screen extents: layers run along x, slots along y
+        _score = abs((_layers * XCOL) / (_slots * YROW) - TARGET_ASPECT)
+        if _best is None or _score < _best[0]:
+            _best = (_score, _place)
+    shelf = _best[1]
 
-pos = {}
+pos = {}   # the one transpose point: x ← layer axis, y ← slot axis
 for rt in best_seq:
-    bx, by = shelf[rt]
+    b_slot, b_layer = shelf[rt]
     for t in clusters[rt]:
-        pos[t] = ((bx + local[rt][t]) * COL, (by + LAYER[t]) * ROW)
+        pos[t] = ((b_layer + LAYER[t]) * XCOL, (b_slot + local[rt][t]) * YROW)
 
 # Payload ids are display ids ("#42") — nodes, edges, and epics use them
 # consistently, so the template needs no notion of the raw number.

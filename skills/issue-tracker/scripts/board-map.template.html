@@ -3,122 +3,175 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Issue Board Map</title>
+<title>Issue Board</title>
 <style>
-  :root { font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
-  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; color: #212529; }
-  #controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-              padding: 8px 12px; border-bottom: 1px solid #dee2e6; background: #f8f9fa; font-size: 13px; }
-  #meta { color: #495057; }
-  #chips { display: flex; gap: 6px; flex-wrap: wrap; }
-  .chip { border: 1px solid #ced4da; background: #fff; border-radius: 12px;
-          padding: 2px 10px; font-size: 12px; cursor: pointer; color: #495057; }
-  .chip.off { opacity: .4; text-decoration: line-through; }
-  .chip.on  { background: #2b8a3e; color: #fff; border-color: #2b8a3e; }
-  #reset { margin-left: auto; border: 1px solid #ced4da; background: #fff;
-           border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+         background: #070711; color: #d6dde6;
+         font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .muted { color: #7d8896; }
+  /* ---- header chrome: brand · progress · counts · state chips · controls ---- */
+  #bar { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; min-height: 44px;
+         padding: .3rem .85rem; border-bottom: 1px solid #18202c; background: #0a0a14;
+         font-size: 12px; }
+  .brand { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; color: #e6edf3; }
+  .brand svg { color: #00d68f; }
+  .prog { width: 9rem; height: 7px; background: #161c26; border-radius: 4px; overflow: hidden; }
+  .progfill { height: 100%; width: 0; background: linear-gradient(90deg, #16a34a, #00d68f); transition: width .4s ease; }
+  /* chips double as the state legend: each carries its state's palette; off = filtered out */
+  #chips { display: inline-flex; gap: .3rem; flex-wrap: wrap; }
+  .chip { background: #11161f; border: 1px solid var(--bd, #232c3a); border-radius: .6rem;
+          color: var(--tx, #9aa6b2); padding: .1rem .55rem; font: inherit; font-size: 11px; cursor: pointer; }
+  .chip:hover { filter: brightness(1.25); }
+  .chip.off { opacity: .32; text-decoration: line-through; }
+  .chip.on { background: rgba(59,130,246,.16); }
+  .ctls { display: inline-flex; gap: .3rem; margin-left: auto; }
+  button.act { background: #1b2230; color: #d6dde6; border: 1px solid #2a3343; border-radius: .3rem;
+               padding: .12rem .55rem; cursor: pointer; font: inherit; font-size: 12px; }
+  button.act:hover { background: #263041; }
+  /* ---- stage: a transformed inner canvas holds epic boxes + SVG edges + card divs ---- */
   #stage { position: relative; flex: 1; min-height: 0; }
-  #board { width: 100%; height: 100%; background: #fff; cursor: grab; }
-  #board:active { cursor: grabbing; }
-  .edge { fill: none; stroke: #868e96; stroke-width: 2; }
-  .edge.block-active { stroke: #495057; stroke-width: 2.5; }
-  .edge.block-done   { stroke: #adb5bd; stroke-dasharray: 4 4; }
-  .edge.spawned      { stroke: #adb5bd; stroke-dasharray: 2 4; }
-  .edge.relates      { stroke: #adb5bd; stroke-dasharray: 1 5; }
-  .elabel { fill: #868e96; font-size: 10px; }
-  .node { cursor: pointer; }
-  .node .card { stroke-width: 1.5; }
-  .node .nid { font-weight: 700; font-size: 12px; }
-  .node .ntitle { font-size: 11px; }
-  .node .nstate { font-size: 10px; font-style: italic; }
-  .epicbox { fill: rgba(73,80,87,.05); stroke: #adb5bd; stroke-dasharray: 3 4; }
-  .epiclabel { fill: #868e96; font-size: 11px; font-weight: 600; }
-  /* state palette — identical to the Mermaid classDef fills/strokes/text */
-  .node.s_done .card { fill: #d3f9d8; stroke: #2b8a3e; } .node.s_done text { fill: #1b4332; }
-  .node.s_prog .card { fill: #d0ebff; stroke: #1971c2; } .node.s_prog text { fill: #1c3f5e; }
-  .node.s_rev  .card { fill: #e5dbff; stroke: #6741d9; } .node.s_rev  text { fill: #3b2b73; }
-  .node.s_elig .card { fill: #ffffff; stroke: #2b8a3e; stroke-width: 3; } .node.s_elig text { fill: #1b4332; }
-  .node.s_wait .card { fill: #f1f3f5; stroke: #adb5bd; } .node.s_wait text { fill: #495057; }
-  .node.s_blk  .card { fill: #ffe3e3; stroke: #c92a2a; } .node.s_blk  text { fill: #5f1414; }
-  .node.s_info .card { fill: #fff3bf; stroke: #e67700; } .node.s_info text { fill: #5c3c00; }
-  .node.s_def  .card { fill: #f1f3f5; stroke: #adb5bd; stroke-dasharray: 5 5; } .node.s_def text { fill: #868e96; }
-  .node.s_wf   .card { fill: #dee2e6; stroke: #495057; stroke-dasharray: 3 3; } .node.s_wf text { fill: #495057; }
-  #detail { position: absolute; top: 0; right: 0; width: 320px; max-width: 90%; height: 100%;
-            overflow: auto; background: #fff; border-left: 1px solid #dee2e6;
-            padding: 16px; font-size: 13px; box-shadow: -4px 0 12px rgba(0,0,0,.06); }
+  #cy { position: absolute; inset: 0; overflow: hidden; cursor: grab;
+        background: radial-gradient(circle at 30% 20%, #0c0c1a 0%, #070711 60%); }
+  #cy.grabbing { cursor: grabbing; }
+  .gcanvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  .gedges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  .gedge { stroke: #39414f; stroke-width: 1.5; fill: none; }
+  .gedge.block-wait { stroke: #d97706; stroke-width: 1.8; }   /* unmet dependency, blocker idle */
+  .gedge.block-live { stroke: #00d68f; stroke-width: 1.8; }   /* unmet, but the blocker is being worked */
+  .gedge.block-done { stroke: #16a34a; opacity: .4; stroke-dasharray: 5 4; }  /* satisfied */
+  .gedge.spawned    { stroke: #4a5568; stroke-dasharray: 2 5; }
+  .gedge.relates    { stroke: #4a5568; stroke-dasharray: 1 6; opacity: .8; }
+  .elabel { fill: #3d4757; font-size: 10px; letter-spacing: .08em; }
+  /* ---- node cards: doperpowers' 9-state vocabulary on the card-token palette ---- */
+  .node { position: absolute; width: 168px; min-height: 74px; padding: .32rem .45rem .42rem;
+          border: 1px solid var(--bd); border-radius: .55rem; background: var(--bgc);
+          box-shadow: 0 0 10px var(--glow); cursor: pointer; overflow: hidden;
+          --bd: #39414f; --bgc: #11161f; --tx: #cbd5e1; --glow: transparent; }
+  .node:hover { filter: brightness(1.18); }
+  .node-head { display: flex; align-items: baseline; justify-content: space-between; gap: .3rem; }
+  .node-id { font-weight: 700; font-size: .8rem; color: var(--tx); white-space: nowrap; }
+  .node-badge { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--tx);
+                opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node-title { color: #8b97a6; font-size: .72rem; line-height: 1.25; margin-top: .12rem;
+                display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .node-meta { color: var(--tx); font-size: .68rem; margin-top: .18rem; opacity: .92;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node-meta:empty { display: none; }
+  .node-tokenbar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: transparent; }
+  .s_done { --bd: #16a34a; --bgc: rgba(22,163,74,.07);  --tx: #86efac; --glow: rgba(22,163,74,.18); }
+  .s_prog { --bd: #00d68f; --bgc: rgba(0,214,143,.08);  --tx: #6ee7b7; --glow: rgba(0,214,143,.30); }
+  .s_rev  { --bd: #a855f7; --bgc: rgba(168,85,247,.09); --tx: #d8b4fe; --glow: rgba(168,85,247,.22); }
+  .s_elig { --bd: #3b82f6; --bgc: rgba(59,130,246,.09); --tx: #93c5fd; --glow: rgba(59,130,246,.32); }
+  .s_wait { --bd: #2d3748; --bgc: rgba(45,55,72,.25);   --tx: #64748b; --glow: transparent; }
+  .s_blk  { --bd: #ef4444; --bgc: rgba(239,68,68,.09);  --tx: #fca5a5; --glow: rgba(239,68,68,.22); }
+  .s_info { --bd: #d97706; --bgc: rgba(217,119,6,.09);  --tx: #fcd34d; --glow: rgba(217,119,6,.22); }
+  .s_def  { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent; border-style: dashed; }
+  .s_wf   { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent;
+            border-style: dashed; opacity: .72; }
+  .node.s_prog { animation: nodepulse 1.9s ease-in-out infinite; }
+  @keyframes nodepulse { 0%,100% { box-shadow: 0 0 8px var(--glow); } 50% { box-shadow: 0 0 20px var(--glow); } }
+  .node.s_prog .node-tokenbar { background: linear-gradient(90deg, transparent, #00d68f, transparent);
+                                background-size: 200% 100%; animation: tokenflow 1.4s linear infinite; }
+  @keyframes tokenflow { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .node.epic-collapsed { border-style: dashed; }
+  /* ---- epic bounding boxes (behind the cards) ---- */
+  .epicbox { position: absolute; border: 1px dashed #2a3343; border-radius: .8rem;
+             background: rgba(42,51,67,.10); }
+  .epiclabel { position: absolute; color: #556170; font-size: 10px; font-weight: 600;
+               letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+  /* ---- detail panel (drill re-skin) ---- */
+  #detail { position: absolute; top: .75rem; right: .75rem; width: 22rem; max-width: 92%;
+            max-height: calc(100% - 1.5rem); overflow: auto; z-index: 5;
+            border: 1px solid #232c3a; border-radius: .55rem; background: #0b0f17;
+            box-shadow: 0 8px 30px #00000066; }
   #detail[hidden] { display: none; }
-  #detail h2 { font-size: 15px; margin: 0 30px 12px 0; word-break: break-word; }
-  #dclose { position: absolute; top: 8px; right: 10px; border: 0; background: none;
-            font-size: 22px; line-height: 1; cursor: pointer; color: #868e96; }
-  .drow { display: grid; grid-template-columns: 84px 1fr; gap: 8px; padding: 4px 0; border-top: 1px solid #f1f3f5; }
-  .drow span { color: #868e96; } .drow b { font-weight: 500; word-break: break-word; }
-  #legend { padding: 6px 12px; border-top: 1px solid #dee2e6; background: #f8f9fa;
-            font-size: 11px; color: #495057; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .lg { border-radius: 4px; padding: 1px 7px; border: 1px solid; }
-  .lg.s_done{background:#d3f9d8;border-color:#2b8a3e;color:#1b4332}
-  .lg.s_prog{background:#d0ebff;border-color:#1971c2;color:#1c3f5e}
-  .lg.s_rev{background:#e5dbff;border-color:#6741d9;color:#3b2b73}
-  .lg.s_elig{background:#fff;border-color:#2b8a3e;color:#1b4332}
-  .lg.s_wait{background:#f1f3f5;border-color:#adb5bd;color:#495057}
-  .lg.s_blk{background:#ffe3e3;border-color:#c92a2a;color:#5f1414}
-  .lg.s_info{background:#fff3bf;border-color:#e67700;color:#5c3c00}
-  .lg.s_def{background:#f1f3f5;border-color:#adb5bd;color:#868e96}
-  .lg.s_wf{background:#dee2e6;border-color:#495057;color:#495057}
-  .le { color: #868e96; } .le::before { content: "— "; }
+  .dhead { display: flex; gap: .45rem; align-items: center; padding: .45rem .6rem;
+           border-bottom: 1px solid #18202c; background: #0d1320; position: sticky; top: 0; }
+  .did { font-weight: 700; color: #e6edf3; }
+  .dbadge { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--tx, #7d8896); }
+  .dspacer { flex: 1; }
+  .dtitle { padding: .45rem .6rem .1rem; color: #c4cdd8; font-size: .82rem; line-height: 1.35; }
+  .drows { padding: .3rem .6rem .6rem; }
+  .drow { display: grid; grid-template-columns: 82px 1fr; gap: 8px; padding: 4px 0;
+          border-top: 1px solid #141a24; font-size: 12px; }
+  .drow span { color: #556170; } .drow b { font-weight: 500; word-break: break-word; color: #aeb9c6; }
+  .drow a { color: #93c5fd; text-decoration: none; } .drow a:hover { text-decoration: underline; }
+  /* ---- footer: edge legend + meta ---- */
+  #foot { display: flex; gap: .9rem; align-items: center; flex-wrap: wrap; padding: .25rem .85rem;
+          border-top: 1px solid #18202c; background: #0a0a14; font-size: 11px; color: #556170; }
+  .lg { display: inline-flex; align-items: center; gap: .3rem; }
+  .lg i { width: 16px; border-top: 2px solid; display: inline-block; }
+  .lg .dash { border-top-style: dashed; }
 </style>
 </head>
 <body>
-<header id="controls">
-  <span id="meta"></span>
+<div id="bar">
+  <span class="brand"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>issue-board</span>
+  <div class="prog"><div id="progfill" class="progfill"></div></div>
+  <span id="progtxt" class="muted">—</span>
+  <span id="hcounts" class="muted"></span>
   <span id="chips"></span>
-  <button id="reset">reset view</button>
-</header>
+  <span class="ctls">
+    <button class="act" id="zin" title="zoom in">+</button>
+    <button class="act" id="zout" title="zoom out">−</button>
+    <button class="act" id="fit">fit</button>
+  </span>
+</div>
 <div id="stage">
-  <svg id="board" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
-              orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#868e96"/></marker>
-    </defs>
-    <g id="viewport"></g>
-  </svg>
+  <div id="cy"></div>
   <aside id="detail" hidden></aside>
 </div>
-<div id="legend"></div>
+<div id="foot">
+  <span><b>edges</b></span>
+  <span class="lg"><i style="border-color:#d97706"></i>active block</span>
+  <span class="lg"><i style="border-color:#00d68f"></i>blocker in flight</span>
+  <span class="lg"><i class="dash" style="border-color:#16a34a"></i>satisfied</span>
+  <span class="lg"><i class="dash" style="border-color:#4a5568"></i>spawned / relates</span>
+  <span class="lg">dashed box = epic (click its card to collapse)</span>
+  <span id="meta" style="margin-left:auto"></span>
+</div>
 <script id="board-data" type="application/json">__BOARD_PAYLOAD__</script>
 <script>
 (function () {
   "use strict";
-  var NS = "http://www.w3.org/2000/svg";
-  var NODE_W = 180, NODE_H = 54;
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var NODE_W = 168, NODE_H = 74, PAD = 60;
   var BOARD = JSON.parse(document.getElementById("board-data").textContent);
-  var SVG = document.getElementById("board");
-  var VP = document.getElementById("viewport");
+  var host = document.getElementById("cy");
   var nodeById = {}, epicById = {};
   BOARD.nodes.forEach(function (n) { nodeById[n.id] = n; });
   BOARD.epics.forEach(function (e) { epicById[e.id] = e; });
 
-  // `done` tickets are hidden by default (finished work is clutter); click the
-  // struck-through "done" chip to reveal them. Any state chip toggles the same way.
+  // `done` tickets are hidden by default (finished work is clutter); the
+  // struck-through "done" chip reveals them. Any state chip toggles the same way.
   var collapsed = {}, hiddenStates = { done: true }, eligibleOnly = false;
-  var tx = 40, ty = 40, k = 1;
+  var tx = PAD, ty = PAD, k = 1, canvas = null;
 
-  function el(tag, attrs, cls) {
-    var e = document.createElementNS(NS, tag), key;
+  // state class -> the short badge shown on the card (the full label goes to detail).
+  var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_elig: "ELIGIBLE",
+                s_wait: "waiting", s_blk: "blocked", s_info: "needs-info",
+                s_def: "deferred", s_wf: "wontfix" };
+  // state name (chip vocabulary) -> palette class, for coloring the filter chips.
+  var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
+                    "ready-for-agent": "s_elig", "blocked": "s_blk", "needs-info": "s_info",
+                    "deferred": "s_def", "wontfix": "s_wf" };
+
+  function el(tag, text, cls) {
+    var n = document.createElement(tag);
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    if (cls) n.className = cls;
+    return n;
+  }
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(SVGNS, tag), key;
     for (key in attrs) if (attrs.hasOwnProperty(key)) e.setAttribute(key, attrs[key]);
-    if (cls) e.setAttribute("class", cls);
     return e;
   }
-  function txt(x, y, s, cls) { var t = el("text", { x: x, y: y }, cls); t.textContent = s; return t; }
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
-    });
-  }
-  function clip(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-  // Resolve an id to the outermost COLLAPSED epic that hides it (or itself).
+  // Resolve an id to the outermost COLLAPSED epic that hides it (or itself) —
+  // edges from hidden members re-route to the collapsed epic's card.
   function resolve(id) {
     var hit = BOARD.epics.filter(function (e) {
       return collapsed[e.id] && (e.id === id || e.descendants.indexOf(id) >= 0);
@@ -137,108 +190,206 @@
     return { x: x, y: y, w: Math.max.apply(null, xs) + NODE_W - x, h: Math.max.apply(null, ys) + NODE_H - y };
   }
 
-  function edgePath(s, t, kind) {
-    var x1 = s.x + NODE_W / 2, y1 = s.y + NODE_H, x2 = t.x + NODE_W / 2, y2 = t.y;
-    var dy = (y2 - y1) / 2;
-    var d = "M" + x1 + "," + y1 + " C" + x1 + "," + (y1 + dy) + " " + x2 + "," + (y2 - dy) + " " + x2 + "," + y2;
-    var attrs = { d: d };
-    if (kind === "block-active" || kind === "block-done" || kind === "spawned") attrs["marker-end"] = "url(#arrow)";
-    return el("path", attrs, "edge " + kind);
+  // Left-to-right cubic bezier, card edge to card edge (blockers sit left of
+  // dependents; spawned/relates may run any direction — |dx| keeps those sane).
+  function edgePath(a, b) {
+    var x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+    if (x2 < x1) { x1 = a.x; x2 = b.x + NODE_W; }          // right-to-left edge: flip anchors
+    var dx = Math.max(40, Math.abs(x2 - x1) * 0.5) * (x2 >= x1 ? 1 : -1);
+    return "M" + x1 + "," + y1 + " C" + (x1 + dx) + "," + y1 + " " + (x2 - dx) + "," + y2 + " " + x2 + "," + y2;
+  }
+  // An unmet dependency edge is amber (a stalled path) — unless its blocker is
+  // actively being worked (in-progress / in-review), then it reads green so the
+  // eye can trace the moving critical path (the agent-harness edge idiom).
+  function edgeClass(e) {
+    if (e.kind === "block-active") {
+      var s = nodeById[resolve(e.from)];
+      return (s && (s.cls === "s_prog" || s.cls === "s_rev")) ? "block-live" : "block-wait";
+    }
+    return e.kind;   // block-done / spawned / relates map straight to CSS
+  }
+
+  function metaText(n) {
+    if (epicById[n.id] && collapsed[n.id])
+      return "▸ " + epicById[n.id].descendants.length + " hidden";
+    if (n.cls === "s_wait") return n.label;                       // "waiting: #6, #7"
+    var bits = [];
+    if (n.category) bits.push(n.category);
+    if (n.pr) bits.push("PR");
+    return bits.join(" · ");
   }
   function nodeCard(n) {
     var isEpic = !!epicById[n.id];
-    var g = el("g", { transform: "translate(" + n.x + "," + n.y + ")", "data-id": n.id },
-      "node " + n.cls);
-    g.appendChild(el("rect", { x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 8 }, "card"));
-    g.appendChild(txt(10, 20, n.id + (isEpic ? (collapsed[n.id] ? "  ▸" : "  ▾") : ""), "nid"));
-    g.appendChild(txt(10, 37, clip(n.title, 26), "ntitle"));
-    g.appendChild(txt(10, 50, clip(n.label, 30), "nstate"));
-    g.addEventListener("click", function (ev) {
+    var card = el("div", null, "node " + n.cls + (collapsed[n.id] ? " epic-collapsed" : ""));
+    card.style.left = n.x + "px"; card.style.top = n.y + "px";
+    var head = el("div", null, "node-head");
+    head.appendChild(el("div", n.id + (isEpic ? (collapsed[n.id] ? " ▸" : " ▾") : ""), "node-id"));
+    head.appendChild(el("span", BADGE[n.cls] || n.state, "node-badge"));
+    card.appendChild(head);
+    card.appendChild(el("div", n.title, "node-title"));
+    card.appendChild(el("div", metaText(n), "node-meta"));
+    card.appendChild(el("div", null, "node-tokenbar"));
+    card.title = n.id + " · " + n.label;
+    card.addEventListener("click", function (ev) {
       ev.stopPropagation();
       if (isEpic) toggleEpic(n.id);
       showDetail(n);
     });
-    return g;
+    return card;
   }
 
   function render() {
-    while (VP.firstChild) VP.removeChild(VP.firstChild);
+    host.textContent = "";
+    canvas = el("div", null, "gcanvas");
     var vis = {};
     BOARD.nodes.forEach(function (n) { if (resolve(n.id) === n.id && !hiddenBy(n)) vis[n.id] = true; });
 
-    BOARD.epics.forEach(function (e) {
+    BOARD.epics.forEach(function (e) {                      // boxes first (behind everything)
       if (collapsed[e.id] || resolve(e.id) !== e.id) return;
       var members = [e.id].concat(e.descendants).filter(function (id) { return vis[id]; });
       if (members.length < 2) return;
       var b = bbox(members);
-      VP.appendChild(el("rect", { x: b.x - 14, y: b.y - 26, width: b.w + 28, height: b.h + 40, rx: 10 }, "epicbox"));
-      VP.appendChild(txt(b.x - 8, b.y - 12, e.id + " · epic", "epiclabel"));
+      var box = el("div", null, "epicbox");
+      box.style.left = (b.x - 16) + "px"; box.style.top = (b.y - 30) + "px";
+      box.style.width = (b.w + 32) + "px"; box.style.height = (b.h + 44) + "px";
+      canvas.appendChild(box);
+      var lab = el("div", e.id + " · epic", "epiclabel");
+      lab.style.left = (b.x - 6) + "px"; lab.style.top = (b.y - 26) + "px";
+      canvas.appendChild(lab);
     });
 
-    var seen = {};
+    var svg = svgEl("svg", { "class": "gedges" });          // edges behind the cards
+    var defs = svgEl("defs", {});
+    var m = svgEl("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
+                              markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse" });
+    m.appendChild(svgEl("path", { d: "M0,0 L10,5 L0,10 z", fill: "context-stroke" }));
+    defs.appendChild(m); svg.appendChild(defs);
+    var seen = {}, maxx = 0, maxy = 0;
+    BOARD.nodes.forEach(function (n) {
+      maxx = Math.max(maxx, n.x + NODE_W); maxy = Math.max(maxy, n.y + NODE_H);
+    });
+    svg.setAttribute("width", maxx + PAD); svg.setAttribute("height", maxy + PAD);
+    svg.style.width = (maxx + PAD) + "px"; svg.style.height = (maxy + PAD) + "px";
     BOARD.edges.forEach(function (e) {
       var a = resolve(e.from), b = resolve(e.to);
       if (a === b || !vis[a] || !vis[b]) return;
       var key = a + ">" + b + ":" + e.kind;
       if (seen[key]) return; seen[key] = true;
-      VP.appendChild(edgePath(nodeById[a], nodeById[b], e.kind));
+      var attrs = { d: edgePath(nodeById[a], nodeById[b]), "class": "gedge " + edgeClass(e) };
+      if (e.kind !== "relates") attrs["marker-end"] = "url(#arrow)";
+      svg.appendChild(svgEl("path", attrs));
       if (e.kind === "spawned" || e.kind === "relates") {
         var s = nodeById[a], t = nodeById[b];
-        VP.appendChild(txt((s.x + t.x) / 2 + NODE_W / 2, (s.y + t.y) / 2 + NODE_H / 2, e.kind, "elabel"));
+        var lbl = svgEl("text", { x: (s.x + t.x) / 2 + NODE_W / 2, y: (s.y + t.y) / 2 + NODE_H / 2,
+                                  "class": "elabel" });
+        lbl.textContent = e.kind;
+        svg.appendChild(lbl);
       }
     });
+    canvas.appendChild(svg);
 
-    BOARD.nodes.forEach(function (n) { if (vis[n.id]) VP.appendChild(nodeCard(n)); });
+    BOARD.nodes.forEach(function (n) { if (vis[n.id]) canvas.appendChild(nodeCard(n)); });
+    host.appendChild(canvas);
     applyTransform();
   }
 
-  function applyTransform() { VP.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + k + ")"); }
+  function applyTransform() {
+    if (canvas) canvas.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + k + ")";
+  }
   function toggleEpic(id) { if (collapsed[id]) delete collapsed[id]; else collapsed[id] = true; render(); }
 
   function contentBounds() {
     var xs = [], ys = [];
-    BOARD.nodes.forEach(function (n) { if (!hiddenBy(n)) { xs.push(n.x); ys.push(n.y); } });
+    BOARD.nodes.forEach(function (n) {
+      if (resolve(n.id) === n.id && !hiddenBy(n)) { xs.push(n.x); ys.push(n.y); }
+    });
     if (!xs.length) return { x: 0, y: 0, w: NODE_W, h: NODE_H };
     var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
     return { x: x0, y: y0, w: Math.max.apply(null, xs) + NODE_W - x0, h: Math.max.apply(null, ys) + NODE_H - y0 };
   }
-  // Frame the whole graph on load / reset: fit to content, centered, never
-  // zooming past 100% (a tiny board stays readable rather than blown up).
+  // Frame the visible graph: fit to content, centered, never past 100% (a tiny
+  // board stays readable rather than blown up).
   function fitView() {
-    var r = SVG.getBoundingClientRect();
-    if (r.width < 10 || r.height < 10) { tx = 40; ty = 40; k = 1; applyTransform(); return; }
-    var b = contentBounds(), pad = 48;
+    var r = host.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) { tx = PAD; ty = PAD; k = 1; applyTransform(); return; }
+    var b = contentBounds(), pad = 56;
     k = Math.min(1, (r.width - pad * 2) / b.w, (r.height - pad * 2) / b.h);
     if (!isFinite(k) || k <= 0) k = 1;
     tx = (r.width - b.w * k) / 2 - b.x * k;
     ty = (r.height - b.h * k) / 2 - b.y * k;
     applyTransform();
   }
+  function zoomBy(f) {
+    var cx = host.clientWidth / 2, cy2 = host.clientHeight / 2;
+    var nk = Math.max(0.2, Math.min(3, k * f));
+    tx = cx - (cx - tx) * (nk / k); ty = cy2 - (cy2 - ty) * (nk / k); k = nk; applyTransform();
+  }
 
+  function detailRow(label, value) {
+    var r = el("div", null, "drow");
+    r.appendChild(el("span", label));
+    if (value && value.nodeType) { var b = el("b"); b.appendChild(value); r.appendChild(b); }
+    else r.appendChild(el("b", value));
+    return r;
+  }
+  function link(url) {                    // only linkify real http(s) URLs (meta values are free text)
+    if (!/^https?:\/\//.test(String(url))) return null;
+    var a = el("a", url); a.href = url; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  }
   function showDetail(n) {
     var d = document.getElementById("detail");
-    function row(kk, vv) {
-      return vv ? '<div class="drow"><span>' + kk + "</span><b>" + esc(vv) + "</b></div>" : "";
-    }
-    var pr = n.pr ? '<div class="drow"><span>PR</span><b><a href="' + esc(n.pr) +
-      '" target="_blank" rel="noopener">' + esc(n.pr) + "</a></b></div>" : "";
-    d.innerHTML = '<button id="dclose">×</button><h2>' + esc(n.id) + " · " + esc(n.title) + "</h2>" +
-      row("state", n.label) + row("category", n.category) + row("note", n.note) +
-      row("blocked by", (n.blocked_by || []).join(", ")) + row("spawned by", n.spawned_by) +
-      row("relates", (n.relates_to || []).join(", ")) + row("branch", n.branch) + pr +
-      (n.md ? '<div class="drow"><span>issue</span><b><a href="' + esc(n.md) +
-        '" target="_blank" rel="noopener">' + esc(n.md) + "</a></b></div>" : "") +
-      row("created", n.created) + row("updated", n.updated);
+    d.textContent = "";
+    var head = el("div", null, "dhead");
+    head.appendChild(el("span", n.id, "did"));
+    var badge = el("span", BADGE[n.cls] || n.state, "dbadge " + n.cls);
+    head.appendChild(badge);
+    head.appendChild(el("span", null, "dspacer"));
+    var x = el("button", "close", "act");
+    x.onclick = function () { d.hidden = true; };
+    head.appendChild(x);
+    d.appendChild(head);
+    d.appendChild(el("div", n.title, "dtitle"));
+    var rows = el("div", null, "drows");
+    function add(label, v) { if (v) rows.appendChild(detailRow(label, v)); }
+    add("state", n.label);
+    add("category", n.category);
+    add("note", n.note);
+    add("blocked by", (n.blocked_by || []).join(", "));
+    add("spawned by", n.spawned_by);
+    add("relates", (n.relates_to || []).join(", "));
+    add("branch", n.branch);
+    if (n.pr) add("PR", link(n.pr) || n.pr);
+    if (n.md) add("issue", link(n.md) || n.md);
+    add("created", n.created);
+    add("updated", n.updated);
+    d.appendChild(rows);
     d.hidden = false;
-    document.getElementById("dclose").onclick = function () { d.hidden = true; };
+  }
+
+  // Header: done/total progress (counts ALL tickets, filters included) + live counts.
+  function updateHeader() {
+    var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, blk: 0, info: 0 };
+    BOARD.nodes.forEach(function (n) {
+      if (n.state === "done") c.done++;
+      else if (n.state === "in-progress") c.prog++;
+      else if (n.state === "in-review") c.rev++;
+      else if (n.state === "blocked") c.blk++;
+      else if (n.state === "needs-info") c.info++;
+      if (n.eligible) c.elig++;
+    });
+    document.getElementById("progfill").style.width = (total ? Math.round(100 * c.done / total) : 0) + "%";
+    document.getElementById("progtxt").textContent = total ? c.done + "/" + total + " done" : "empty board";
+    document.getElementById("hcounts").textContent =
+      c.prog + " running · " + c.rev + " review · " + c.elig + " eligible · "
+      + c.blk + " blocked · " + c.info + " needs-info";
   }
 
   function buildChips() {
-    var states = [], seen = {}, c = document.getElementById("chips");
-    BOARD.nodes.forEach(function (n) { if (!seen[n.state]) { seen[n.state] = true; states.push(n.state); } });
+    var states = [], seenS = {}, c = document.getElementById("chips");
+    BOARD.nodes.forEach(function (n) { if (!seenS[n.state]) { seenS[n.state] = true; states.push(n.state); } });
     states.forEach(function (s) {
-      var b = document.createElement("button");
-      b.className = "chip" + (hiddenStates[s] ? " off" : ""); b.textContent = s; b.setAttribute("data-state", s);
+      var b = el("button", s, "chip " + (STATE_CLS[s] || "") + (hiddenStates[s] ? " off" : ""));
       b.onclick = function () {
         if (hiddenStates[s]) { delete hiddenStates[s]; b.classList.remove("off"); }
         else { hiddenStates[s] = true; b.classList.add("off"); }
@@ -246,42 +397,39 @@
       };
       c.appendChild(b);
     });
-    var eb = document.createElement("button");
-    eb.className = "chip"; eb.textContent = "ELIGIBLE only";
+    var eb = el("button", "ELIGIBLE only", "chip");
     eb.onclick = function () { eligibleOnly = !eligibleOnly; eb.classList.toggle("on", eligibleOnly); render(); };
     c.appendChild(eb);
   }
-  function buildLegend() {
-    var L = [["done", "s_done"], ["in-progress", "s_prog"], ["in-review", "s_rev"], ["ELIGIBLE", "s_elig"],
-      ["waiting", "s_wait"], ["blocked", "s_blk"], ["needs-info", "s_info"], ["deferred", "s_def"], ["wontfix", "s_wf"]];
-    document.getElementById("legend").innerHTML = "<b>state</b> " +
-      L.map(function (p) { return '<span class="lg ' + p[1] + '">' + p[0] + "</span>"; }).join(" ") +
-      ' &nbsp; <b>edges</b> <span class="le">solid=active block</span> <span class="le">dotted=satisfied/spawned/relates</span>';
-  }
 
-  SVG.addEventListener("wheel", function (e) {
+  // ---- hand-rolled pan (drag) + zoom (wheel toward the cursor) ----
+  host.addEventListener("wheel", function (e) {
     e.preventDefault();
-    var r = SVG.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    var r = host.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
     var nk = Math.min(3, Math.max(0.2, k * Math.exp(-e.deltaY * 0.0015)));
     tx = mx - (mx - tx) * (nk / k); ty = my - (my - ty) * (nk / k); k = nk; applyTransform();
   }, { passive: false });
   var drag = null;
-  SVG.addEventListener("mousedown", function (e) {
+  host.addEventListener("mousedown", function (e) {
     if (e.target.closest(".node")) return;
-    drag = { x: e.clientX, y: e.clientY, tx: tx, ty: ty };
+    drag = { x: e.clientX, y: e.clientY, tx: tx, ty: ty }; host.classList.add("grabbing");
   });
   window.addEventListener("mousemove", function (e) {
-    if (!drag) return; tx = drag.tx + (e.clientX - drag.x); ty = drag.ty + (e.clientY - drag.y); applyTransform();
+    if (!drag) return;
+    tx = drag.tx + (e.clientX - drag.x); ty = drag.ty + (e.clientY - drag.y); applyTransform();
   });
-  window.addEventListener("mouseup", function () { drag = null; });
-  SVG.addEventListener("click", function (e) {
+  window.addEventListener("mouseup", function () { drag = null; host.classList.remove("grabbing"); });
+  host.addEventListener("click", function (e) {
     if (!e.target.closest(".node")) document.getElementById("detail").hidden = true;
   });
-  document.getElementById("reset").onclick = fitView;
+  document.getElementById("zin").onclick = function () { zoomBy(1.2); };
+  document.getElementById("zout").onclick = function () { zoomBy(1 / 1.2); };
+  document.getElementById("fit").onclick = fitView;
   window.addEventListener("resize", fitView);
 
-  document.getElementById("meta").textContent = BOARD.meta.count + " tickets · updated " + BOARD.meta.updated;
-  buildChips(); buildLegend(); render(); fitView();
+  document.getElementById("meta").textContent =
+    BOARD.meta.count + " tickets · updated " + BOARD.meta.updated;
+  buildChips(); updateHeader(); render(); fitView();
 })();
 </script>
 </body>
