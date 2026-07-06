@@ -1,5 +1,19 @@
 # Doperpowers Release Notes
 
+## v6.3.4 (2026-07-06)
+
+### Issue Tracker — a ticket's owner may move its own ticket from a worktree
+
+The board enforced a blanket "never write from a linked worktree" rule: `_lib.sh` refused every board script outside the main checkout, so the *only* way a ticket reached `in-progress`/`in-review` was for the orchestrator to write it from the main checkout. With `orchestrating-daemons`, where one isolated daemon owns one ticket, that routed every state nudge back through the central session — a needless bottleneck.
+
+The rule is now **scoped to bulk writes**, not all writes. A single-ticket state change is worktree-safe: the worker that owns a ticket moves its *own* ticket from inside its isolated worktree, committing `board.json` on its branch. Different tickets are different lines in `board.json`, so merges are usually automatic, and the rendered views plus any residual drift reconcile on merge and via `board-gh-sync`.
+
+- **`_lib.sh`**: the worktree guard now honors an opt-in — a sourcing script that exports `BOARD_WORKTREE_OK=1` may run from a linked worktree. Everything else still refuses outside the main checkout, keeping `board.json` from diverging across trees and avoiding `next_id` collisions.
+- **`board-transition.sh`** (single-ticket state change) and **`board-map.sh`** (pure render cache: `board.json` → `BOARD.html` + `BOARD.md`, no allocation) opt in. A worker's transition now produces a self-consistent commit — updated state *and* refreshed views — with no guard warning.
+- **Still main-only**: `board-register.sh` (allocates + bumps `next_id`), `board-gh-plan`/`board-gh-apply` (whole-board reconcile), and the other bulk scripts. These carry real cross-tree hazards and stay on the canonical copy.
+- **`orchestrating-daemons` SKILL**: documents that a code daemon can move its own board ticket from its worktree (`in-progress` at start, `in-review … --pr <URL>` at PR), and that the spawn prompt should hand the daemon its ticket id.
+- New regression coverage in `tests/issue-tracker/test-board-scripts.sh`: transition succeeds from a worktree (and refreshes the render cache) while `register` still refuses.
+
 ## v6.3.3 (2026-07-06)
 
 ### Issue Tracker — a GitHub `completed` close reconciles the board to `done`

@@ -143,4 +143,4 @@ log records *why* it was cut, so nobody re-litigates it later.
   (`board-edge.sh <id> --unblock <blocker>`) or wontfix the dependent; that is
   a human call.
 - `board.json` corrupted → restore from git history.
-- Never run board scripts from a worktree (they refuse; work from the main checkout).
+- Bulk board scripts (register, board-gh sync, reconcile) refuse to run from a worktree — run those from the main checkout. The single-ticket `board-transition.sh` is the one exception: the worker that owns a ticket may move its OWN ticket (in-progress / in-review) from its isolated worktree, committing `board.json` on its branch. Merges and `board-gh-sync` reconcile the rest.

@@ -11,6 +11,10 @@
 #                   is done; a done ticket prints its newly-eligible dependents
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# A single-ticket state change is worktree-safe: the worker that owns a ticket
+# moves its OWN ticket (in-progress / in-review) from its isolated worktree,
+# committing board.json on its branch. Opt out of _lib.sh's worktree guard.
+BOARD_WORKTREE_OK=1
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 

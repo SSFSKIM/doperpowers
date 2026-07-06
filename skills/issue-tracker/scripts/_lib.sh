@@ -4,9 +4,13 @@
 #
 # The board is one board.json (graph + states) plus per-ticket markdown and an
 # append-only log.jsonl under doperpowers/issue-tracker/ in the consumer repo.
-# Single-writer rule: only the orchestrator (main session) writes it, and only
-# from the repo's MAIN checkout — sourcing this file enforces the second half
-# by refusing to run from a linked worktree.
+# Single-writer rule for BULK ops: allocating/reconciling writes (register a new
+# ticket + bump next_id, board-gh sync, reconcile) run only from the repo's MAIN
+# checkout — sourcing this file refuses a linked worktree to keep board.json from
+# diverging across trees and to avoid next_id collisions.
+# Exception: a single-ticket state change (board-transition.sh) is worktree-safe —
+# the worker that OWNS a ticket may move its own ticket from its isolated worktree.
+# Such scripts export BOARD_WORKTREE_OK=1 before sourcing to opt out of the guard.
 set -euo pipefail
 
 _now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -22,7 +26,8 @@ die() {
 # Call as `_need_arg "$1" "${2:-}"` right before consuming "$2".
 _need_arg() { [ -n "${2:-}" ] || die "option $1 requires a value"; }
 
-# Resolve the repo root; refuse linked worktrees (canonical-copy rule).
+# Resolve the repo root; refuse linked worktrees (canonical-copy rule) unless the
+# sourcing script opted in with BOARD_WORKTREE_OK=1 (single-ticket ops only).
 # In a linked worktree, --git-dir points under <main>/.git/worktrees/<name>
 # while --git-common-dir points at <main>/.git — they differ.
 _board_root() {
@@ -30,7 +35,9 @@ _board_root() {
   local gd cdir
   gd="$(cd "$(git rev-parse --git-dir)" && pwd)"
   cdir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
-  [ "$gd" = "$cdir" ] || die "refusing to touch the board from a worktree — run from the main checkout"
+  if [ "$gd" != "$cdir" ] && [ -z "${BOARD_WORKTREE_OK:-}" ]; then
+    die "refusing to touch the board from a worktree — run bulk ops from the main checkout (single-ticket board-transition.sh is allowed and sets BOARD_WORKTREE_OK=1)"
+  fi
   git rev-parse --show-toplevel
 }
 

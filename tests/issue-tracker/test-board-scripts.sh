@@ -550,6 +550,31 @@ PY
 )"
 assert_equals "$xr" "crossings=0" "band-order reordering lays the cross-cluster block edges out with zero crossings"
 
+# ---- Task: single-ticket transition is worktree-safe (bulk ops still refuse) --
+# A worker that owns a ticket moves its OWN ticket from its isolated worktree;
+# allocating/reconciling writes stay main-only. Register a fresh ticket, commit
+# so a linked worktree checks out a tree that HAS board.json, then drive it.
+echo "worktree write policy:"
+newid="$(run board-register.sh "Worktree-owned ticket" bug | awk '{print $1}')"
+git -C "$WORK" add -A
+git -C "$WORK" -c user.email=t@t -c user.name=t commit -q -m "snapshot board for worktree write test"
+git -C "$WORK" worktree add -q -b t-wt-write "$TEST_ROOT/wt-write" HEAD
+WTBOARD="$TEST_ROOT/wt-write/doperpowers/issue-tracker/board.json"
+
+# board-transition (single-ticket) is ALLOWED from a worktree
+(cd "$TEST_ROOT/wt-write" && "$SCRIPTS_DIR/board-transition.sh" "$newid" in-progress "started") \
+    >/dev/null 2>&1 && pass "board-transition runs from a worktree" \
+                    || fail "board-transition runs from a worktree"
+wtstate="$(python3 -c "import json;print(json.load(open('$WTBOARD'))['tickets']['$newid']['state'])")"
+assert_equals "$wtstate" "in-progress" "worktree transition wrote the worktree's own board.json"
+assert_file_exists "$TEST_ROOT/wt-write/doperpowers/issue-tracker/BOARD.md" \
+    "render cache refreshed inside the worktree (board-map opted in, no guard warning)"
+
+# register (allocates next_id) still REFUSES from a worktree
+(cd "$TEST_ROOT/wt-write" && "$SCRIPTS_DIR/board-register.sh" "Nope" bug) \
+    >/dev/null 2>&1 && fail "register still refuses from a worktree" \
+                    || pass "register still refuses from a worktree"
+
 # ---- summary -----------------------------------------------------------------
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL TESTS PASSED"; else

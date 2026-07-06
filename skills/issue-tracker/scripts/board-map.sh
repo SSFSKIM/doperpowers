@@ -17,6 +17,10 @@
 # lineage; each epic is a labeled box around its members (click to collapse).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Pure render cache (board.json → BOARD.html + BOARD.md), no allocation — safe to
+# regenerate from a worktree so a worker's board-transition produces a
+# self-consistent commit (board.json + refreshed views). Opt out of the guard.
+BOARD_WORKTREE_OK=1
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 [ -f "$MAP" ] || die "no board at $MAP (nothing registered yet)"
