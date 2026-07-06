@@ -6,7 +6,7 @@ description: Use when managing the local issue board — registering tickets, di
 # Issue Tracker
 
 A local, repo-portable issue board. Tickets are **purpose-units**: born as
-pre-specs from `issue-register`, driven end-to-end (brainstorm → spec → plan →
+pre-specs from `issue-register`, driven end-to-end (orient → size → method →
 build → PR) by background daemons (`orchestrating-daemons`), tracked as nodes
 in `doperpowers/issue-tracker/board.json`.
 
@@ -99,8 +99,20 @@ the daemons proposed while you were gone and what needs respawning.
 ## Worker Protocol (embed VERBATIM in every spawn prompt)
 
 ```
-You own ticket <ID> end-to-end: brainstorm → spec → plan → build → PR, in your
-worktree. Your ticket brief is below; treat it as the source of truth.
+You own ticket <ID> end-to-end in your worktree. Your ticket brief is below;
+treat it as the source of truth.
+
+ORIENT BEFORE YOU BUILD — do not open a source file until you have sized the
+work against the brief and picked a method to match. You run UNATTENDED: there
+is no human to answer a live grill or approve a design mid-flight, so route to
+an autonomous method — never interactive brainstorming.
+- Trivial / mechanical (one obvious change, no design fork) → do it inline, then PR.
+- Well-scoped & delegable → doperpowers:execplan (front-load the grill against
+  this brief, author one self-contained ExecPlan, execute it to the letter).
+- Large, multi-part, or needs a living spec → doperpowers:execspec then
+  doperpowers:writing-plans, then execute the plan.
+If the brief leaves a genuine product / taste / design fork you cannot resolve
+from it → propose "needs-info" and END YOUR TURN. Never guess a design decision.
 
 The issue board is READ-ONLY for you. To change your ticket's state, end your
 turn with a single-line JSON proposal block:
