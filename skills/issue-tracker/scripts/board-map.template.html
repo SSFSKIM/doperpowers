@@ -226,7 +226,9 @@
       row("state", n.label) + row("category", n.category) + row("note", n.note) +
       row("blocked by", (n.blocked_by || []).join(", ")) + row("spawned by", n.spawned_by) +
       row("relates", (n.relates_to || []).join(", ")) + row("branch", n.branch) + pr +
-      row("md", n.md) + row("created", n.created) + row("updated", n.updated);
+      (n.md ? '<div class="drow"><span>issue</span><b><a href="' + esc(n.md) +
+        '" target="_blank" rel="noopener">' + esc(n.md) + "</a></b></div>" : "") +
+      row("created", n.created) + row("updated", n.updated);
     d.hidden = false;
     document.getElementById("dclose").onclick = function () { d.hidden = true; };
   }

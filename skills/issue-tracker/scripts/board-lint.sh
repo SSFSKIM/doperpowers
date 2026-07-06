@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# board-lint.sh — single-store invariant validation (replaces reconciliation).
+#
+# Usage: board-lint.sh
+#
+# GitHub is the only board store, so there is nothing to sync — but raw label
+# edits can still break the board schema. This names every violation with a
+# FIX command. Exit 1 when any FAIL is found (WARNs alone exit 0).
+#
+#   FAIL open issue with zero status:* labels (untracked)
+#   FAIL open issue with 2+ status:* labels (conflict)
+#   FAIL closed issue still carrying status:* labels
+#   FAIL blocked/needs-info without a note (board:meta)
+#   FAIL dependency cycle among blocked_by edges
+#   WARN in-progress issue without an assignee
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+. "$SCRIPT_DIR/_lib.sh"
+
+_py - <<'PY'
+import _board as B
+
+tickets = B.snapshot()
+fails = warns = 0
+
+def fail(tid, msg, fix):
+    global fails
+    fails += 1
+    print("FAIL #%s: %s" % (tid, msg))
+    print("     FIX: %s" % fix)
+
+def warn(tid, msg):
+    global warns
+    warns += 1
+    print("WARN #%s: %s" % (tid, msg))
+
+for tid in sorted(tickets, key=int):
+    n = tickets[tid]
+    if n["state"] == B.UNTRACKED:
+        fail(tid, "open with no status:* label (untracked)",
+             "board-transition.sh %s <state> — put it on the board machine" % tid)
+    elif n["state"] == B.CONFLICT:
+        fail(tid, "open with %d status:* labels: %s" %
+             (len(n["status_labels"]), ", ".join(n["status_labels"])),
+             "board-transition.sh %s <state> — the write normalizes the label set" % tid)
+    if n["state"] in B.TERMINAL and n["status_labels"]:
+        fail(tid, "closed but still labeled: %s" % ", ".join(n["status_labels"]),
+             "gh issue edit %s -R %s %s" %
+             (tid, B.repo(),
+              " ".join("--remove-label %s%s" % (B.STATUS_PREFIX, s) for s in n["status_labels"])))
+    if n["state"] in ("blocked", "needs-info") and not n.get("note"):
+        fail(tid, "%s without a note" % n["state"],
+             "board-transition.sh %s %s \"<why>\" — or move it on" % (tid, n["state"]))
+    if n["state"] == "in-progress" and not n["assignees"]:
+        warn(tid, "in-progress with no assignee")
+
+# Dependency cycles (GitHub does not forbid mutual blocking).
+color = {}
+def visit(t, path):
+    color[t] = 1
+    for b in tickets[t]["blocked_by"]:
+        if b not in tickets:
+            continue
+        if color.get(b) == 1:
+            cyc = path[path.index(b):] if b in path else [b, t]
+            fail(t, "dependency cycle: %s" % " → ".join("#%s" % x for x in cyc + [b]),
+                 "board-edge.sh %s --unblock %s (or re-cut elsewhere in the cycle)" % (t, b))
+        elif color.get(b) is None:
+            visit(b, path + [b])
+    color[t] = 2
+
+for t in sorted(tickets, key=int):
+    if color.get(t) is None:
+        visit(t, [t])
+
+print("board-lint: %d issue(s), %d FAIL, %d WARN" % (len(tickets), fails, warns))
+raise SystemExit(1 if fails else 0)
+PY

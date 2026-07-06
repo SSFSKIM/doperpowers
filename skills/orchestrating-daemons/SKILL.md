@@ -61,7 +61,7 @@ This uses `claude`'s native `--worktree` flag (per `using-git-worktrees`: prefer
 
 An isolated daemon's finished work is a *committed branch, not merged*. Integrating it is a separate decision: surface it (queue/escalate per the rubric) and use `finishing-a-development-branch` to merge. `daemon-retire.sh` never deletes a worktree or branch.
 
-If the consumer repo tracks work on an `issue-tracker` board, a code daemon that owns a ticket can move **its own** ticket from inside its worktree — `board-transition.sh <id> in-progress` at start, `board-transition.sh <id> in-review "<note>" --pr <URL>` when it opens the PR (that single-ticket script is worktree-safe; bulk board ops still run from the main checkout). Tell the daemon its ticket id in the spawn prompt so it can, instead of routing every state nudge back through you.
+If the consumer repo tracks work on an `issue-tracker` board (v7: the board IS the repo's GitHub issues), a code daemon that owns a ticket can move **its own** ticket from inside its worktree — `board-transition.sh <n> in-progress` at start, `board-transition.sh <n> in-review "<note>" --pr <URL>` when it opens the PR (every board script is worktree-safe now; the board lives on GitHub, not in a git file). Tell the daemon its issue number in the spawn prompt so it can, instead of routing every state nudge back through you.
 
 ## Spawn-prompt hygiene
 

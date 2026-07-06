@@ -2,11 +2,11 @@
 # board-relate.sh — add or cut a symmetric relates edge between two tickets.
 #
 # Usage:
-#   board-relate.sh <id-a> <id-b> [--cut]
+#   board-relate.sh <number-a> <number-b> [--cut]
 #
-# The edge is annotation only — it never affects eligibility. It is stored on
-# BOTH nodes (relates_to) so either ticket's board-show sees it; board-map
-# dedupes the pair and renders it once as a labeled dotted line.
+# The edge is annotation only — it never affects eligibility. It is stored in
+# BOTH issues' board:meta blocks (relates-to) so either ticket's board-show
+# sees it; board-map dedupes the pair and renders it once as a dotted line.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -22,65 +22,37 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1" ;;
   esac
 done
-[ -f "$MAP" ] || die "no board at $MAP (nothing registered yet)"
 
-T_A="$a" T_B="$b" T_CUT="$cut" T_NOW="$(_now)" T_TODAY="$(_today)" _py - <<'PY'
-import json, os, sys
-
-def die(msg):
-    sys.stderr.write("error: %s\n" % msg)
-    sys.exit(1)
+T_A="$a" T_B="$b" T_CUT="$cut" _py - <<'PY'
+import os
+import _board as B
 
 env = os.environ
-with open(env["BOARD_MAP"]) as f:
-    board = json.load(f)
-tickets = board["tickets"]
-a, b, cut = env["T_A"], env["T_B"], env["T_CUT"] == "1"
-if a not in tickets:
-    die("unknown ticket: %s" % a)
+tickets = B.snapshot()
+a = B.resolve(env["T_A"], tickets)
+b = B.resolve(env["T_B"], tickets)
+cut = env["T_CUT"] == "1"
 if a == b:
-    die("a ticket cannot relate to itself")
+    B.die("a ticket cannot relate to itself")
 
-def rel(t):
-    lst = tickets[t].get("relates_to") or []
-    tickets[t]["relates_to"] = lst
-    return lst
+def write(t, rels):
+    B.update_meta(t, tickets[t],
+                  **{"relates-to": " ".join("#%s" % r for r in rels) or None})
+    tickets[t]["relates_to"] = rels
 
+ra, rb = tickets[a]["relates_to"], tickets[b]["relates_to"]
 if cut:
-    # b may be a dangling ref (hand-edited map): cut whichever halves exist.
-    if b not in rel(a) and not (b in tickets and a in rel(b)):
-        die("no relates edge between %s and %s" % (a, b))
-    if b in rel(a):
-        rel(a).remove(b)
-    if b in tickets and a in rel(b):
-        rel(b).remove(a)
-    msg = "cut: %s -- %s" % (a, b)
+    if b not in ra and a not in rb:
+        B.die("no relates edge between #%s and #%s" % (a, b))
+    if b in ra:
+        write(a, [r for r in ra if r != b])
+    if a in rb:
+        write(b, [r for r in rb if r != a])
+    print("cut: #%s -- #%s" % (a, b))
 else:
-    if b not in tickets:
-        die("unknown ticket: %s" % b)
-    if b in rel(a) or a in rel(b):
-        die("%s and %s are already related" % (a, b))
-    rel(a).append(b)
-    rel(b).append(a)
-    msg = "related: %s -- %s" % (a, b)
-
-tickets[a]["updated"] = env["T_TODAY"]
-if b in tickets:
-    tickets[b]["updated"] = env["T_TODAY"]
-
-tmp = env["BOARD_MAP"] + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(board, f, indent=2)
-    f.write("\n")
-os.replace(tmp, env["BOARD_MAP"])
-with open(env["BOARD_LOG"], "a") as f:
-    f.write(json.dumps({"ts": env["T_NOW"], "ticket": a, "edge": "relates_to",
-                        "op": "cut" if cut else "add", "ref": b}) + "\n")
-print(msg)
+    if b in ra or a in rb:
+        B.die("#%s and #%s are already related" % (a, b))
+    write(a, ra + [b])
+    write(b, rb + [a])
+    print("related: #%s -- #%s" % (a, b))
 PY
-
-# BOARD.md is a pure render cache of board.json — refresh it on every board write
-# so the human view can never go stale by discipline alone. Non-fatal: the
-# board write above already landed.
-"$SCRIPT_DIR/board-map.sh" --write >/dev/null 2>&1 \
-  || echo "warning: BOARD.md refresh failed (board-map.sh)" >&2

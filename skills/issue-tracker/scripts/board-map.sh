@@ -4,12 +4,12 @@
 # Usage: board-map.sh [--write]
 #
 #   (default)  print the fallback table (ticket · state · title · PR) to stdout
-#   --write    render two caches of board.json into doperpowers/issue-tracker/:
-#              BOARD.html — the primary view: an interactive layered-DAG (pan/zoom,
-#              click a node for detail, filter by state, collapse epics), opened
-#              in a browser; and BOARD.md — a minimal node/state table, the
-#              GitHub-inline fallback. Both are pure render caches, refreshed by
-#              every board write; --write re-renders them by hand.
+#   --write    render two caches of the live GitHub board into
+#              doperpowers/issue-tracker/ (gitignored — render caches never
+#              commit): BOARD.html — the primary view: an interactive
+#              layered-DAG (pan/zoom, click a node for detail, filter by state,
+#              collapse epics), opened in a browser; and BOARD.md — a minimal
+#              node/state table.
 #
 # Reading BOARD.html: node color = state; ELIGIBLE (ready-for-agent + all blockers
 # done, not an epic) gets a thick green border; a solid arrow is an ACTIVE block,
@@ -17,31 +17,26 @@
 # lineage; each epic is a labeled box around its members (click to collapse).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Pure render cache (board.json → BOARD.html + BOARD.md), no allocation — safe to
-# regenerate from a worktree so a worker's board-transition produces a
-# self-consistent commit (board.json + refreshed views). Opt out of the guard.
-BOARD_WORKTREE_OK=1
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
-[ -f "$MAP" ] || die "no board at $MAP (nothing registered yet)"
 
 write=0
 [ "${1:-}" = "--write" ] && write=1
+[ "$write" -eq 1 ] && _render_dir
 
 # One python pass per call: it always prints the fallback table to stdout, and
 # on --write it also writes BOARD.md and renders BOARD.html — the table and the
-# graph share the single board.json parse (one process, not two).
-BOARD_MAP="$MAP" BOARD_DIR="$BOARD_DIR" \
-BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
-BOARD_WRITE="$write" python3 - <<'PY'
-import json, os
+# graph share the single board snapshot (one fetch, not two).
+BOARD_DIR="$BOARD_DIR" BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
+BOARD_WRITE="$write" _py - <<'PY'
+import json
+import os
+import _board as B
 
 env = os.environ
-with open(env["BOARD_MAP"]) as f:
-    board = json.load(f)
-tickets = board["tickets"]
+tickets = B.snapshot()
 
-def num(t): return int(t[1:])
+def num(t): return int(t)
 order = sorted(tickets, key=num)
 epics = {n["parent"] for n in tickets.values() if n.get("parent")}
 
@@ -53,12 +48,12 @@ def eligible(tid, n):
 def state_label(tid, n):
     if n["state"] == "ready-for-agent":
         unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
-        return ("waiting: " + ",".join(unmet)) if unmet else "ELIGIBLE"
+        return ("waiting: " + ",".join("#%s" % b for b in unmet)) if unmet else "ELIGIBLE"
     return n["state"]
 
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
 
-# The fallback table: stdout always; BOARD.md on --write. GitHub renders it inline.
+# The fallback table: stdout always; BOARD.md on --write.
 md = ["# Issue Board", "",
       "_Board updated %s · %d tickets · full interactive graph in "
       "`BOARD.html` (open in a browser)_" % (updated, len(tickets)), "",
@@ -66,7 +61,7 @@ md = ["# Issue Board", "",
 for tid in order:
     n = tickets[tid]
     title = " ".join(str(n["title"]).split()).replace("|", "\\|")
-    md.append("| %s | %s | %s | %s |" % (tid, state_label(tid, n), title, n.get("pr") or ""))
+    md.append("| #%s | %s | %s | %s |" % (tid, state_label(tid, n), title, n.get("pr") or ""))
 table = "\n".join(md)
 print(table)
 
@@ -85,7 +80,7 @@ def cls(tid, n):
     return CLASS.get(n["state"], "s_wait")
 
 # Longest-path layering over blocked_by (blockers above dependents); memoized,
-# and cycle-tolerant for a hand-edited map (a back-edge just resolves to 0).
+# and cycle-tolerant (a back-edge just resolves to 0).
 LAYER = {}
 def layer(tid, seen):
     if tid in LAYER:
@@ -341,17 +336,22 @@ for rt in best_seq:
     for t in clusters[rt]:
         pos[t] = ((bx + local[rt][t]) * COL, (by + LAYER[t]) * ROW)
 
+# Payload ids are display ids ("#42") — nodes, edges, and epics use them
+# consistently, so the template needs no notion of the raw number.
+def did(t): return "#" + t
+
 nodes = []
 for t in order:
     n = tickets[t]; x, y = pos[t]
     nodes.append({
-        "id": t, "state": n["state"], "eligible": eligible(t, n),
+        "id": did(t), "state": n["state"], "eligible": eligible(t, n),
         "cls": cls(t, n), "label": state_label(t, n),
         "title": " ".join(str(n["title"]).split()),
         "category": n.get("category"), "note": n.get("note"),
-        "blocked_by": n.get("blocked_by", []), "spawned_by": n.get("spawned_by"),
-        "relates_to": n.get("relates_to", []) or [], "branch": n.get("branch"),
-        "pr": n.get("pr"), "md": n.get("md"),
+        "blocked_by": [did(b) for b in n.get("blocked_by", [])],
+        "spawned_by": did(n["spawned_by"]) if n.get("spawned_by") else None,
+        "relates_to": [did(r) for r in n.get("relates_to", []) or []],
+        "branch": n.get("branch"), "pr": n.get("pr"), "md": n.get("url"),
         "created": n.get("created"), "updated": n.get("updated"),
         "x": x, "y": y,
     })
@@ -362,17 +362,18 @@ for t in order:
     n = tickets[t]
     for b in n.get("blocked_by", []):
         if b in tickets:
-            edges.append({"from": b, "to": t,
+            edges.append({"from": did(b), "to": did(t),
                           "kind": "block-done" if tickets[b]["state"] == "done" else "block-active"})
     sb = n.get("spawned_by")
     if sb in tickets:
-        edges.append({"from": sb, "to": t, "kind": "spawned"})
+        edges.append({"from": did(sb), "to": did(t), "kind": "spawned"})
     for r in n.get("relates_to", []) or []:
         if r in tickets and (r, t) not in seen_rel:
             seen_rel.add((t, r))
-            edges.append({"from": t, "to": r, "kind": "relates"})
+            edges.append({"from": did(t), "to": did(r), "kind": "relates"})
 
-epx = [{"id": e, "descendants": descendants(e)} for e in sorted(epics, key=num) if e in tickets]
+epx = [{"id": did(e), "descendants": [did(d) for d in descendants(e)]}
+       for e in sorted(epics, key=num) if e in tickets]
 payload = {"meta": {"updated": updated, "count": len(tickets)},
            "nodes": nodes, "edges": edges, "epics": epx}
 

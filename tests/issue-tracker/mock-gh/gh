@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+# mock `gh` — hermetic GitHub stand-in for the issue-tracker v7 tests.
+#
+# State lives in $MOCK_GH_STATE (JSON); every invocation is appended to
+# $MOCK_GH_LOG. Implements exactly the surface _board.py uses:
+#   gh label list/create · gh issue create/edit/close/comment
+#   gh api graphql — the snapshot query, the issue-id query, and the
+#   addSubIssue/removeSubIssue/addBlockedBy/removeBlockedBy mutations.
+import json
+import os
+import re
+import sys
+
+STATE = os.environ["MOCK_GH_STATE"]
+LOG = os.environ.get("MOCK_GH_LOG")
+
+def load():
+    if os.path.exists(STATE):
+        with open(STATE) as f:
+            return json.load(f)
+    return {"next": 1, "labels": [], "issues": {}}
+
+def save(s):
+    with open(STATE, "w") as f:
+        json.dump(s, f, indent=1)
+
+def log(argv):
+    if LOG:
+        with open(LOG, "a") as f:
+            f.write(json.dumps(argv) + "\n")
+
+def opt(args, name, multi=False):
+    """Values of --name (list when multi)."""
+    out = []
+    i = 0
+    while i < len(args):
+        if args[i] == name and i + 1 < len(args):
+            out.append(args[i + 1])
+            i += 2
+        else:
+            i += 1
+    return out if multi else (out[0] if out else None)
+
+def die(msg):
+    sys.stderr.write("mock-gh: %s\n" % msg)
+    sys.exit(1)
+
+def issue(s, num):
+    it = s["issues"].get(str(num))
+    if not it:
+        die("no issue #%s" % num)
+    return it
+
+def by_id(s, gid):
+    for it in s["issues"].values():
+        if it["id"] == gid:
+            return it
+    die("no issue id %s" % gid)
+
+def main():
+    argv = sys.argv[1:]
+    log(argv)
+    s = load()
+
+    if argv[:2] == ["label", "list"]:
+        print(json.dumps([{"name": n} for n in s["labels"]]))
+        return
+    if argv[:2] == ["label", "create"]:
+        name = argv[2]
+        if name not in s["labels"]:
+            s["labels"].append(name)
+        save(s)
+        return
+
+    if argv[:2] == ["issue", "create"]:
+        num = str(s["next"]); s["next"] += 1
+        labels = []
+        for l in opt(argv, "--label", multi=True):
+            labels += [x for x in l.split(",") if x]
+        body = sys.stdin.read() if opt(argv, "--body-file") == "-" else (opt(argv, "--body") or "")
+        s["issues"][num] = {
+            "number": int(num), "id": "ID_%s" % num,
+            "title": opt(argv, "--title") or "", "body": body,
+            "state": "OPEN", "stateReason": None, "labels": labels,
+            "assignees": [], "parent": None, "blockedBy": [],
+            "comments": [], "createdAt": "2026-07-06T00:00:00Z",
+            "updatedAt": "2026-07-06T00:00:00Z",
+            "url": "https://github.com/%s/issues/%s" % (os.environ.get("BOARD_REPO", "test/repo"), num),
+        }
+        save(s)
+        print(s["issues"][num]["url"])
+        return
+
+    if argv[:2] == ["issue", "edit"]:
+        it = issue(s, argv[2])
+        for l in opt(argv, "--remove-label", multi=True):
+            if l in it["labels"]:
+                it["labels"].remove(l)
+        for l in opt(argv, "--add-label", multi=True):
+            if l not in it["labels"]:
+                it["labels"].append(l)
+        if opt(argv, "--body-file") == "-":
+            it["body"] = sys.stdin.read()
+        save(s)
+        return
+
+    if argv[:2] == ["issue", "close"]:
+        it = issue(s, argv[2])
+        it["state"] = "CLOSED"
+        it["stateReason"] = "NOT_PLANNED" if opt(argv, "--reason") == "not planned" else "COMPLETED"
+        save(s)
+        return
+
+    if argv[:2] == ["issue", "comment"]:
+        it = issue(s, argv[2])
+        it["comments"].append(sys.stdin.read() if opt(argv, "--body-file") == "-" else (opt(argv, "--body") or ""))
+        save(s)
+        return
+
+    if argv[:2] == ["api", "graphql"]:
+        fields = {}
+        for flag in ("-f", "-F"):
+            for kv in opt(argv, flag, multi=True):
+                k, v = kv.split("=", 1)
+                fields[k] = v
+        q = fields.get("query", "")
+
+        if "addSubIssue" in q:
+            child = by_id(s, fields["c"])
+            parent = by_id(s, fields["p"])
+            if child.get("parent") and fields.get("r") != "true":
+                die("child already has a parent (replaceParent not set)")
+            child["parent"] = parent["number"]
+            save(s)
+            print(json.dumps({"data": {"addSubIssue": {"issue": {"number": child["number"]}}}}))
+            return
+        if "removeSubIssue" in q:
+            child = by_id(s, fields["c"])
+            child["parent"] = None
+            save(s)
+            print(json.dumps({"data": {"removeSubIssue": {"issue": {"number": child["number"]}}}}))
+            return
+        if "addBlockedBy" in q:
+            it = by_id(s, fields["i"])
+            blocker = by_id(s, fields["b"])
+            if blocker["number"] not in it["blockedBy"]:
+                it["blockedBy"].append(blocker["number"])
+            save(s)
+            print(json.dumps({"data": {"addBlockedBy": {"issue": {"number": it["number"]}}}}))
+            return
+        if "removeBlockedBy" in q:
+            it = by_id(s, fields["i"])
+            blocker = by_id(s, fields["b"])
+            if blocker["number"] in it["blockedBy"]:
+                it["blockedBy"].remove(blocker["number"])
+            save(s)
+            print(json.dumps({"data": {"removeBlockedBy": {"issue": {"number": it["number"]}}}}))
+            return
+        if re.search(r"issue\(number:\s*\$n\)\s*{\s*id\s*}", q):
+            it = issue(s, fields["n"])
+            print(json.dumps({"data": {"repository": {"issue": {"id": it["id"]}}}}))
+            return
+        if "issues(first:100" in q:
+            nodes = []
+            for num in sorted(s["issues"], key=int):
+                it = s["issues"][num]
+                nodes.append({
+                    "id": it["id"], "number": it["number"], "title": it["title"],
+                    "body": it["body"], "url": it["url"], "state": it["state"],
+                    "stateReason": it["stateReason"],
+                    "createdAt": it["createdAt"], "updatedAt": it["updatedAt"],
+                    "labels": {"nodes": [{"name": n} for n in it["labels"]]},
+                    "assignees": {"nodes": [{"login": a} for a in it["assignees"]]},
+                    "parent": {"number": it["parent"]} if it.get("parent") else None,
+                    "blockedBy": {"nodes": [{"number": b} for b in it["blockedBy"]]},
+                })
+            print(json.dumps({"data": {"repository": {"issues": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": nodes}}}}))
+            return
+        die("unhandled graphql: %s" % q[:80])
+
+    if argv[:2] == ["repo", "view"]:
+        print(json.dumps({"nameWithOwner": os.environ.get("BOARD_REPO", "test/repo")})
+              if "--jq" not in argv else os.environ.get("BOARD_REPO", "test/repo"))
+        return
+
+    die("unhandled: %s" % " ".join(argv))
+
+main()
