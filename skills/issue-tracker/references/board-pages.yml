@@ -1,0 +1,79 @@
+# board-pages.yml — publish the live issue board (BOARD.html) to GitHub Pages.
+#
+# The v7 board's single source of truth is the repo's GitHub Issues;
+# `board-map.sh --write` renders it locally on demand. This workflow is the
+# hosted-visibility analog (the same shape agent-harness uses for its Linear
+# board: poll the remote tracker → persist a snapshot → serve a read-only
+# view): every issue event re-renders the board on a runner and deploys it to
+# the repo's Pages site, with a cron safety net because sub-issue/dependency
+# edge mutations fire no `issues` webhook.
+#
+# Install (consumer repo):
+#   1. copy this file to .github/workflows/board-pages.yml
+#   2. repo Settings → Pages → Source: "GitHub Actions"
+#   3. pin PLUGIN_REPO/PLUGIN_REF below to the doperpowers checkout you trust
+#      (a private plugin repo needs a token with read access passed to the
+#      second checkout step — the default github.token only reads THIS repo)
+#
+# PRIVACY: on Free/Pro plans a Pages site is PUBLIC even when the repo is
+# private — ticket titles and notes become world-readable at the Pages URL.
+# Only GitHub Enterprise Cloud can restrict Pages visibility. If that is not
+# acceptable, drop the deploy job and download the artifact instead.
+
+name: issue-board-pages
+
+on:
+  issues:
+    types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]
+  schedule:
+    - cron: "23 */6 * * *"   # edge (sub-issue/dependency) changes emit no issues event
+  workflow_dispatch:
+
+concurrency:
+  group: issue-board-pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read
+  pages: write
+  id-token: write
+
+env:
+  PLUGIN_REPO: SSFSKIM/doperpowers
+  PLUGIN_REF: main
+
+jobs:
+  render-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # The board scripts anchor their render cache at a repo root, so check
+      # out the consumer repo even though the board itself lives on GitHub.
+      - uses: actions/checkout@v4
+
+      - name: Check out the issue-tracker toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PLUGIN_REPO }}
+          ref: ${{ env.PLUGIN_REF }}
+          path: .board-plugin
+
+      - name: Render BOARD.html from the live issue board
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOARD_REPO: ${{ github.repository }}
+        run: |
+          .board-plugin/skills/issue-tracker/scripts/board-map.sh --write
+          mkdir -p _site
+          cp doperpowers/issue-tracker/BOARD.html _site/index.html
+          cp doperpowers/issue-tracker/BOARD.md _site/BOARD.md
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
