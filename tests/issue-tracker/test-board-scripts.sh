@@ -283,8 +283,10 @@ python3 -c "import json;p='$MOCK_GH_STATE';s=json.load(open(p));i=s['issues']['9
 out="$(run board-map.sh)"
 assert_contains "$out" "#58 #61" "md table shows native linked PRs (closes + xref)"
 run board-map.sh --write >/dev/null 2>&1
-assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 58' "html payload carries linked PR number"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 58' "html payload carries closing PR number"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "closes"' "closing PR keeps the closes relation"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 61' "html payload carries cross-ref PR number"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "ref"' "cross-ref PR keeps the ref relation"
 
 # ---- worktree friendliness (the v6 guard is gone) --------------------------------
 echo "worktree:"
