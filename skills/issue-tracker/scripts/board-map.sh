@@ -64,7 +64,11 @@ md = ["# Issue Board", "",
 for tid in order:
     n = tickets[tid]
     title = " ".join(str(n["title"]).split()).replace("|", "\\|")
-    md.append("| #%s | %s | %s | %s |" % (tid, state_label(tid, n), title, n.get("pr") or ""))
+    # Prefer the native GitHub-linked PRs (same source the HTML panel uses); fall
+    # back to the manual pr: meta so a hand-entered PR URL still shows.
+    prs = n.get("prs") or []
+    pr_cell = " ".join("#%s" % p["num"] for p in prs) or (n.get("pr") or "")
+    md.append("| #%s | %s | %s | %s |" % (tid, state_label(tid, n), title, pr_cell))
 table = "\n".join(md)
 print(table)
 

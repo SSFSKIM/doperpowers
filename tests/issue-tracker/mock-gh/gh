@@ -83,6 +83,7 @@ def main():
             "title": opt(argv, "--title") or "", "body": body,
             "state": "OPEN", "stateReason": None, "labels": labels,
             "assignees": [], "parent": None, "blockedBy": [],
+            "closesPRs": [], "xrefPRs": [],
             "comments": [], "createdAt": "2026-07-06T00:00:00Z",
             "updatedAt": "2026-07-06T00:00:00Z",
             "url": "https://github.com/%s/issues/%s" % (os.environ.get("BOARD_REPO", "test/repo"), num),
@@ -173,6 +174,15 @@ def main():
                     "assignees": {"nodes": [{"login": a} for a in it["assignees"]]},
                     "parent": {"number": it["parent"]} if it.get("parent") else None,
                     "blockedBy": {"nodes": [{"number": b} for b in it["blockedBy"]]},
+                    "closedByPullRequestsReferences": {"nodes": [
+                        {"number": p["number"], "url": p["url"],
+                         "state": p.get("state", "MERGED"), "isDraft": p.get("isDraft", False)}
+                        for p in it.get("closesPRs", [])]},
+                    "timelineItems": {"nodes": [
+                        {"source": {"__typename": "PullRequest", "number": p["number"],
+                                    "url": p["url"], "state": p.get("state", "OPEN"),
+                                    "isDraft": p.get("isDraft", False)}}
+                        for p in it.get("xrefPRs", [])]},
                 })
             print(json.dumps({"data": {"repository": {"issues": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None},

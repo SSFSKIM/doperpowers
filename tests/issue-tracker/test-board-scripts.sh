@@ -277,6 +277,15 @@ assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.md" "BOARD.md rendered
 assert_equals "$(cat "$WORK/doperpowers/issue-tracker/.gitignore")" "*" "render dir is gitignored"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"id": "#9"' "html payload uses display ids"
 
+# native GitHub-linked PRs (closes + cross-ref) surface without any pr: meta —
+# the merge-autoclose gap the manual meta could not cover.
+python3 -c "import json;p='$MOCK_GH_STATE';s=json.load(open(p));i=s['issues']['9'];i['closesPRs']=[{'number':58,'url':'https://github.com/test/repo/pull/58','state':'MERGED'}];i['xrefPRs']=[{'number':61,'url':'https://github.com/test/repo/pull/61','state':'OPEN'}];json.dump(s,open(p,'w'))"
+out="$(run board-map.sh)"
+assert_contains "$out" "#58 #61" "md table shows native linked PRs (closes + xref)"
+run board-map.sh --write >/dev/null 2>&1
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 58' "html payload carries linked PR number"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "closes"' "closing PR keeps the closes relation"
+
 # ---- worktree friendliness (the v6 guard is gone) --------------------------------
 echo "worktree:"
 out="$(cd "$TEST_ROOT/wt" && "$SCRIPTS_DIR/board-list.sh")"
