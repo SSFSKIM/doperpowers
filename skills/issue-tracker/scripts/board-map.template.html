@@ -246,8 +246,8 @@
   function metaText(n) {
     if (epicById[n.id] && collapsed[n.id])
       return "▸ " + epicById[n.id].descendants.length + " hidden";
-    if (n.cls === "s_wait") return n.label;                       // "waiting: #6, #7"
     var bits = [];
+    if (n.cls === "s_wait") bits.push(n.label);                   // "waiting: #6, #7"
     if (n.priority) bits.push(n.priority);
     if (n.category) bits.push(n.category);
     if (n.pr) bits.push("PR");

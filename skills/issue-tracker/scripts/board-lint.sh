@@ -9,7 +9,7 @@
 #
 #   FAIL open issue with zero status:* labels (untracked)
 #   FAIL open issue with 2+ status:* labels (conflict)
-#   FAIL open issue with 2+ priority:* labels
+#   FAIL open issue with 2+ priority:* labels, or an invalid grade
 #   FAIL closed issue still carrying status:* labels
 #   FAIL blocked/needs-info without a note (board:meta)
 #   FAIL dependency cycle among blocked_by edges
@@ -67,6 +67,10 @@ for tid in sorted(tickets, key=int):
                  (len(n["priority_labels"]), ", ".join(n["priority_labels"])),
                  "board-priority.sh %s %s — the write normalizes the label set"
                  % (tid, pick))
+        elif n["priority_labels"] and n["priority_labels"][0] not in B.PRIORITIES:
+            fail(tid, "invalid priority label: %s%s" %
+                 (B.PRIORITY_PREFIX, n["priority_labels"][0]),
+                 "board-priority.sh %s P2 — the write normalizes the label set" % tid)
         elif not n["priority_labels"]:
             warn(tid, "no priority label (backfill: board-priority.sh %s <P0..P3>)" % tid)
 

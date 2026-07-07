@@ -24,6 +24,8 @@ The issue-tracker board (the `doperpowers:issue-tracker` skill) manages a projec
 
 - Observation: the close path keeps the ticket's priority label by design, and the existing test `status labels stripped on close` asserted label-set equality, so it went red the moment registration started attaching `priority:*` — the one legitimately failing assertion in the whole arity migration. Updated it to expect `['enhancement', 'priority:P1']`, which now *documents* the keep-on-close decision.
   Evidence: suite run after Milestone 6 — single FAIL at `status labels stripped on close`, green after the expectation change.
+- Observation (Codex review, round 1): two real gaps — (a) waiting graph cards (`s_wait`) early-returned their "waiting: #6" label from `metaText` before the priority badge was appended, so a blocked-but-registered P0 showed no grade on the graph; (b) a ticket carrying exactly ONE invalid grade (e.g. `priority:P9`) sorted as unprioritized yet lint stayed silent (only 0 and 2+ were checked). Fixed: s_wait cards now build the same bits row as kanban cards; lint FAILs a lone invalid grade with a normalizing FIX hint. Regression test added for the latter.
+  Evidence: Codex round-1 report (confidence 92/88), both reproduced in code before fixing; suite green after.
 - Observation: the two anticipated risks were real but pre-empted — `board-migrate-gh.sh`'s heredoc call site was caught by the raw-string grep (three call sites total: register, transition, migrate), and the kanban sort was written with an explicit rank function from the start.
   Evidence: `grep -rn 'ensure_status_labels'` listed board-migrate-gh.sh:61 alongside the two obvious callers.
 

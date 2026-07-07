@@ -228,6 +228,20 @@ outp2="$(run board-lint.sh 2>&1)"
 set -e
 assert_not_contains "$outp2" "FAIL #7: 2 priority:* labels" "repair clears the FAIL"
 
+# a lone INVALID grade must FAIL too (a P9 would otherwise sort as unprioritized)
+python3 - <<'BAD'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = [l for l in s["issues"]["8"]["labels"]
+                              if not l.startswith("priority:")] + ["priority:P9"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+BAD
+set +e
+outb="$(run board-lint.sh 2>&1)"
+set -e
+assert_contains "$outb" "FAIL #8: invalid priority label: priority:P9" "invalid grade FAILs"
+run board-priority.sh 8 P3 >/dev/null                                  # restore
+
 # an OPEN issue with a lone terminal label (legacy merge automation) = conflict
 python3 - <<'FIX2'
 import json, os
