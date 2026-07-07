@@ -1,5 +1,35 @@
 # Doperpowers Release Notes
 
+## v7.5.0 (2026-07-07)
+
+### Issue Tracker — PR-landing residue becomes tickets (FOLLOW-UPS slot)
+
+The board policy covered design-time scope-outs (the deferral rule) and
+merge-driven closing (`Closes #N`), but said nothing about the moment work
+most often leaks: a PR that addresses its ticket while leaving non-blocking
+cleanups, discovered larger work, or partially-met success criteria behind.
+Baseline testing showed workers *do* surface these — but with no defined
+vehicle, three out of three invented mutually incompatible ad-hoc JSON,
+abusing the state-change proposal schema.
+
+- **Worker Protocol**: the turn-end message that opens a PR MUST carry a
+  `FOLLOW-UPS` section — one line per residual item with why it was cut, or
+  the literal `FOLLOW-UPS: none`. A follow-up not on the list does not
+  exist; the JSON proposal block is for state changes only.
+- **Deferral rule**: PR landing is now an explicit deferral point. A
+  partially-complete PR still closes its ticket (done means the PR landed);
+  the residue becomes new tickets with `--spawned-by <n>`, and the outcome
+  comment names them so the closed ticket points at where its remainder went.
+- **Dispatch loop finalize**: register each FOLLOW-UPS item before writing
+  the outcome comment; judging an item down is fine, but the judgment is
+  recorded, never silently dropped.
+
+Verified RED→GREEN per `writing-skills`: with the new wording, 3/3 simulated
+workers converged on the same FOLLOW-UPS format and 2/2 orchestrators ran
+finalize → register(`--spawned-by`) → outcome comment in order. Docs-only
+change to `skills/issue-tracker/SKILL.md`; scripts untouched, script tests
+pass.
+
 ## v7.4.0 (2026-07-07)
 
 ### Issue Tracker — the board's node detail now shows GitHub-linked PRs
