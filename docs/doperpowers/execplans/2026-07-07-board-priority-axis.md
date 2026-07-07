@@ -17,8 +17,8 @@ The issue-tracker board (the `doperpowers:issue-tracker` skill) manages a projec
 - [x] (2026-07-07 21:00Z) Milestone 5: SKILL.md contract updates (register signature, board-priority in toolkit table, dispatch-order guidance, lint rules list).
 - [x] (2026-07-07 21:10Z) Milestone 6: tests — update existing register fixtures, add priority assertions, full suite green.
 - [x] (2026-07-07 21:12Z) Version bump to 7.6.0, RELEASE-NOTES entry.
-- [ ] Exit gate: Codex whole-branch review; fix confirmed findings; re-run suite; one re-review.
-- [ ] Merge to origin/main, tag v7.6.0, retrospective written.
+- [x] (2026-07-07 21:40Z) Exit gate: Codex round 1 → 2 real findings (waiting-card badge, invalid-grade lint gap) fixed + regression-tested; round 2 verdict CLEAN.
+- [x] (2026-07-07 21:45Z) Merge to origin/main, tag v7.6.0, retrospective written.
 
 ## Surprises & Discoveries
 
@@ -58,7 +58,9 @@ The issue-tracker board (the `doperpowers:issue-tracker` skill) manages a projec
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Delivered against purpose in full. Registration structurally refuses unprioritized tickets (`board-register.sh "X" bug` dies naming `P0|P1|P2|P3`); a ticket is born with its `priority:*` label; `board-priority.sh` re-prioritizes with a `#N: P2 → P0` report (`none` when unset, no-op re-runs still report); `board-list.sh` prints dispatch order with a priority column; BOARD.md gained the column and BOARD.html shows the grade on graph cards (including waiting cards), kanban cards, the detail panel, and sorts kanban columns by explicit rank. Lint enforces the WARN/FAIL policy plus an invalid-grade FAIL that round 1 of review exposed. The full mock-backed suite passes (`all tests passed`, exit 0) including the new priority assertions; shellcheck baseline clean; released as v7.6.0.
+
+The review gate earned its place: both round-1 findings were real user-facing defects (a blocked P0 ticket would have hidden its grade exactly where a dispatcher looks; a typo'd grade would have silently sorted as unprioritized forever). Lessons: (1) early-return branches in render helpers are where "add X to every card" changes silently skip a card class — sweep every `return` in the helper, not just the main path; (2) validation gaps live between the cases you enumerate (0 and 2+ were checked; exactly-1-invalid was the hole); (3) asserting label-set equality in tests made the keep-priority-on-close decision *visible* as a red test rather than an accident — strict fixtures convert design decisions into documentation. Remaining, deliberately out of scope: backfilling ida-solution's unprioritized tickets (the WARN list plus `board-priority.sh` per ticket is the intended path) and bumping consumer workflow pins to v7.6.0.
 
 ## Context and Orientation
 
@@ -176,3 +178,4 @@ In `skills/issue-tracker/scripts/`:
 ## Revision Notes
 
 - 2026-07-07: Initial authoring after the grill; Decision Log seeded with the five human-approved decisions plus three implementer decisions (list sort order, ensure_labels rename, closed-ticket priority retention). Execution has not started; Progress beyond plan-authoring is unchecked.
+- 2026-07-07 (finish): Progress completed through merge; Surprises records the close-assertion flip and both Codex round-1 findings with their fixes; retrospective written. Board-lint's rule list in this plan's Plan of Work reads as originally designed — the shipped code additionally FAILs a lone invalid grade (see Surprises), which a future reader should treat as part of the design.
