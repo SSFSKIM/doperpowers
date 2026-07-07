@@ -1,7 +1,7 @@
 {
   "name": "doperpowers",
   "description": "Fork of Superpowers (obra/superpowers): a full software-development methodology for coding agents — brainstorm, plan, subagent-driven TDD, review — plus fork-specific skills like orchestrating-daemons. Derived from Jesse Vincent's MIT-licensed Superpowers.",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"

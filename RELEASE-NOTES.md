@@ -1,5 +1,51 @@
 # Doperpowers Release Notes
 
+## v7.1.0 (2026-07-07)
+
+### Issue Tracker — the board gets a real UI, a kanban view, and hosted visibility
+
+v7.0.0 moved the board's source of truth to GitHub Issues but still rendered it
+through the old light-SVG map. v7.1.0 rebuilds the rendered board around the
+agent-harness director dashboard's visual language and makes the GitHub-derived
+error states first-class citizens.
+
+- **`BOARD.html` redesign.** The interactive graph is now a dark, left→right
+  layered DAG (a blocker sits *left* of its dependents) built from `div` cards +
+  SVG bézier edges. Each state carries its own palette (border/background/glow);
+  in-progress cards pulse with a token bar, `ELIGIBLE` (dispatchable) cards glow
+  blue, and an active block edge reads green while its blocker is itself being
+  worked (the moving critical path) and amber otherwise. A header bar shows
+  `done/total` progress plus live counts, the state chips double as a filter and
+  legend, and a drill-style detail panel opens on any card. Epics render as
+  labeled bounding boxes that collapse into their card. Empty boards (the Pages
+  workflow can run before the first ticket exists) render cleanly instead of
+  crashing.
+- **Kanban view toggle.** The same tickets and filters pivot into state columns
+  from a `graph ↔ kanban` header toggle — no separate render file. The
+  `ready-for-agent` column floats `ELIGIBLE` cards to the top and counts them;
+  empty non-core columns drop out; `done` is hidden by default in both views.
+- **Hosted board on GitHub Pages.** A copy-in `references/board-pages.yml`
+  workflow re-renders `BOARD.html` on every issue event (with a cron safety net
+  for sub-issue/dependency edits, which fire no `issues` webhook) and deploys it
+  to the repo's Pages site. The template header spells out the Free/Pro
+  public-Pages privacy caveat and pins the plugin checkout.
+- **`conflict` / `untracked` are now visible, not silent.** Because the board is
+  GitHub-derived, a snapshot can carry states outside the state machine — an open
+  issue with two `status:*` labels (`conflict`) or none (`untracked`). These now
+  get a distinct treatment in both views (conflict = pink alarm, untracked =
+  yellow dashed) instead of masquerading as a gray "waiting" card, and the kanban
+  gives every present state its own column rather than dropping the tickets an
+  operator most needs to see.
+- **Board-review fixes.** Collapsing an epic no longer resurrects a
+  filtered-out child's dependency edge onto the epic card, and a collapsed
+  in-progress epic no longer bleeds its "blocker-in-flight" green onto an idle
+  child's edge — edge visibility and color are read from the real endpoint, not
+  the epic it collapses into.
+- **Migration/state correctness.** A GitHub `completed` close now reconciles the
+  board to `done` GitHub-first without demoting happy-path progress, and a lone
+  `status:done`/`status:wontfix` label on an *open* issue is treated as a
+  `conflict` (a labeling accident) rather than a state.
+
 ## v7.0.0 (2026-07-06)
 
 ### Issue Tracker — GitHub Issues becomes the single source of truth (breaking)
