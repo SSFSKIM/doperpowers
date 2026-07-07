@@ -14,7 +14,12 @@ SCRIPTS_DIR="$REPO_ROOT/skills/issue-tracker/scripts"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
-cleanup() { rm -rf "$TEST_ROOT"; }
+cleanup() {
+    # a mid-test failure must not leak the --serve http.server
+    local pidfile="$TEST_ROOT/work/doperpowers/issue-tracker/.server.pid"
+    [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -rf "$TEST_ROOT"
+}
 trap cleanup EXIT
 
 pass() { echo "  [PASS] $1"; }
@@ -345,6 +350,37 @@ assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 58
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "closes"' "closing PR keeps the closes relation"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"num": 61' "html payload carries cross-ref PR number"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "ref"' "cross-ref PR keeps the ref relation"
+
+# ---- map --serve: live server + hot-reload plumbing -------------------------------
+echo "board-map --serve:"
+export BOARD_NO_OPEN=1
+export BOARD_PORT=$((18000 + RANDOM % 2000))
+out="$(run board-map.sh --serve 2>&1)"
+assert_contains "$out" "http://127.0.0.1:$BOARD_PORT/BOARD.html" "serve prints the board url"
+assert_file_exists "$WORK/doperpowers/issue-tracker/.server.pid" "server pid recorded"
+body="$(curl -s "http://127.0.0.1:$BOARD_PORT/BOARD.html")"
+assert_contains "$body" '"id": "#9"' "served page carries the payload"
+assert_contains "$body" "hot reload" "served page carries the hot-reload poller"
+out="$(run board-map.sh --serve 2>&1)"
+assert_contains "$out" "already up" "second --serve reuses the running server"
+# a mutation while the server is up re-renders the cache in the background
+# (no relates edge exists on the board here — the earlier 7--8 was cut)
+run board-relate.sh 8 9 >/dev/null 2>&1
+for _ in $(seq 1 20); do   # background render: give it a beat
+  grep -Fq '"kind": "relates"' "$WORK/doperpowers/issue-tracker/BOARD.html" 2>/dev/null && break
+  sleep 0.25
+done
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"kind": "relates"' "mutation auto-refreshed the served render"
+run board-relate.sh 8 9 --cut >/dev/null 2>&1   # restore board state for later asserts
+out="$(run board-map.sh --stop 2>&1)"
+assert_contains "$out" "stopped" "--stop kills the server"
+sleep 0.5
+if curl -s --max-time 2 "http://127.0.0.1:$BOARD_PORT/BOARD.html" >/dev/null 2>&1; then
+  fail "server gone after --stop"
+else
+  pass "server gone after --stop"
+fi
+unset BOARD_PORT BOARD_NO_OPEN
 
 # ---- worktree friendliness (the v6 guard is gone) --------------------------------
 echo "worktree:"

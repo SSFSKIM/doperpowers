@@ -104,3 +104,5 @@ for ln in eligible_lines + lines:
     print(ln)
 PY
 
+
+_rerender_if_serving

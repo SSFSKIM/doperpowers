@@ -55,6 +55,16 @@ _render_dir() {
   [ -f "$BOARD_DIR/.gitignore" ] || printf '*\n' > "$BOARD_DIR/.gitignore"
 }
 
+# Live tab refresh: when `board-map.sh --serve` left a server up, a successful
+# mutation re-renders the cache in the background — every open BOARD.html tab
+# hot-reloads on its next poll. No server → free no-op, so mutating scripts
+# call this unconditionally as their last step.
+_rerender_if_serving() {
+  [ -f "$BOARD_DIR/.server.pid" ] \
+    && kill -0 "$(cat "$BOARD_DIR/.server.pid")" 2>/dev/null || return 0
+  ("$BOARD_SCRIPTS/board-map.sh" --write >/dev/null 2>&1 &)
+}
+
 # Run an inline python3 board operation with _board.py importable.
 export BOARD_SCRIPTS
 _py() { PYTHONPATH="$BOARD_SCRIPTS${PYTHONPATH:+:$PYTHONPATH}" python3 "$@"; }

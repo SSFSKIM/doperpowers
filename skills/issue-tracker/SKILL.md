@@ -86,7 +86,7 @@ checkout's repo.
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
 | `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable |
-| `board-map.sh [--write]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. No argument prints the table |
+| `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
 | `board-show.sh <n>` | node + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables, then a lint pass |
@@ -95,9 +95,11 @@ checkout's repo.
 
 ## Remote board (hosted)
 
-`board-map.sh --write` renders locally on demand. For an always-current hosted
+`board-map.sh --serve` renders locally on demand. For an always-current hosted
 view, a workflow re-renders BOARD.html on every issue event (plus a cron safety
-net — sub-issue/dependency edits fire no webhook) and deploys it. Two templates,
+net — sub-issue/dependency edits fire no webhook) and deploys it. Hosted pages
+hot-reload the same way served local tabs do (the page polls its own caching
+headers), so a browser left open tracks each redeploy. Two templates,
 pick by repo visibility:
 
 - **Public repo → GitHub Pages.** Copy `references/board-pages.yml` into

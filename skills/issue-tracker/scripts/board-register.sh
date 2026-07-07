@@ -118,3 +118,5 @@ if note:
 
 print("%s %s" % (num, url))
 PY
+
+_rerender_if_serving

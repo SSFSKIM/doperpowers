@@ -32,3 +32,5 @@ B.ensure_labels()
 B.set_priority_label(tid, n, to)
 print("#%s: %s → %s" % (tid, old, to))
 PY
+
+_rerender_if_serving

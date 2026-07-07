@@ -112,3 +112,5 @@ elif op == "orphan":
 for ln in lines:
     print(ln)
 PY
+
+_rerender_if_serving

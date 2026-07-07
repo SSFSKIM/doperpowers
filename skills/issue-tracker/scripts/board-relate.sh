@@ -56,3 +56,5 @@ else:
     write(b, rb + [a])
     print("related: #%s -- #%s" % (a, b))
 PY
+
+_rerender_if_serving

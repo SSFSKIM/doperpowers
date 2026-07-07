@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # board-map.sh — human telemetry for the board.
 #
-# Usage: board-map.sh [--write]
+# Usage: board-map.sh [--write | --serve | --stop]
 #
 #   (default)  print the fallback table (ticket · state · title · PR) to stdout
 #   --write    render two caches of the live GitHub board into
@@ -11,6 +11,15 @@
 #              collapse epics) with a kanban toggle (the same tickets pivoted
 #              into state columns), opened in a browser; and BOARD.md — a
 #              minimal node/state table.
+#   --serve    --write, plus serve the render dir over http on 127.0.0.1 (a
+#              deterministic per-repo port; override with $BOARD_PORT) and open
+#              the board in a browser ($BOARD_NO_OPEN=1 suppresses). Served
+#              tabs HOT-RELOAD: the page polls for changes and re-renders in
+#              place, so any later render — an explicit --write, or the
+#              automatic one every mutating board script fires while the
+#              server is up — appears without a manual refresh. file:// opens
+#              of BOARD.html stay static (a file page cannot fetch anything).
+#   --stop     stop the --serve server.
 #
 # Reading BOARD.html: dependencies flow left→right (a blocker sits left of its
 # dependents). Card color = state; ELIGIBLE (ready-for-agent + all blockers done,
@@ -23,8 +32,24 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
-write=0
-[ "${1:-}" = "--write" ] && write=1
+write=0 serve=0
+case "${1:-}" in
+  "") ;;
+  --write) write=1 ;;
+  --serve) write=1; serve=1 ;;
+  --stop)
+    pidfile="$BOARD_DIR/.server.pid"
+    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      kill "$(cat "$pidfile")"
+      echo "board server stopped" >&2
+    else
+      echo "no board server running" >&2
+    fi
+    rm -f "$pidfile"
+    exit 0
+    ;;
+  *) die "unknown option: $1 (usage: board-map.sh [--write | --serve | --stop])" ;;
+esac
 [ "$write" -eq 1 ] && _render_dir
 
 # One python pass per call: it always prints the fallback table to stdout, and
@@ -401,10 +426,55 @@ payload = {"meta": {"updated": updated, "count": len(tickets)},
 data = json.dumps(payload, indent=2).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 with open(env["BOARD_TEMPLATE"]) as f:
     tpl = f.read()
-with open(env["BOARD_DIR"] + "/BOARD.html", "w") as f:
+# Atomic swap: a --serve http.server (and its hot-reloading tabs) must never
+# see a half-written page; unique tmp names keep concurrent renders (the
+# background ones mutating scripts fire) from clobbering each other's tmp.
+import tempfile
+fd, tmp = tempfile.mkstemp(dir=env["BOARD_DIR"], prefix=".BOARD.html.")
+with os.fdopen(fd, "w") as f:
     f.write(tpl.replace("__BOARD_PAYLOAD__", data))
+os.replace(tmp, env["BOARD_DIR"] + "/BOARD.html")
 PY
 
 if [ "$write" -eq 1 ]; then
   echo "wrote $BOARD_DIR/BOARD.md and $BOARD_DIR/BOARD.html" >&2
+fi
+
+if [ "$serve" -eq 1 ]; then
+  # Deterministic per-repo port (boards in different checkouts don't collide);
+  # cksum is POSIX and stable across runs, unlike python's randomized hash().
+  port="${BOARD_PORT:-$(printf %s "$BOARD_DIR" | cksum | awk '{ print 8420 + ($1 % 500) }')}"
+  url="http://127.0.0.1:$port/BOARD.html"
+  pidfile="$BOARD_DIR/.server.pid"
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "board server already up — open tabs hot-reload on every render: $url" >&2
+  else
+    # A dumb static server is all hot reload needs: the page polls its own
+    # caching headers and re-fetches itself when a render changes the file.
+    # exec makes the backgrounded subshell BECOME python, so $! is the real
+    # server pid (killable by --stop) and no wrapper shell lingers holding
+    # this script's stdout pipe open.
+    (cd "$BOARD_DIR" && exec nohup python3 -m http.server "$port" --bind 127.0.0.1 \
+       >/dev/null 2>&1) &
+    srv_pid=$!
+    echo "$srv_pid" > "$pidfile"
+    # Return only once the server actually answers (a bind failure exits python
+    # immediately, so alive + answering ⇒ it is OUR server on the port).
+    ready=0
+    for _ in $(seq 1 12); do
+      kill -0 "$srv_pid" 2>/dev/null || break
+      if curl -fsS -o /dev/null --max-time 1 "$url" 2>/dev/null; then ready=1; break; fi
+      sleep 0.25
+    done
+    [ "$ready" -eq 1 ] \
+      || { rm -f "$pidfile"; die "server failed to start — port $port in use? (set BOARD_PORT)"; }
+    echo "board server started: $url" >&2
+    if [ -z "${BOARD_NO_OPEN:-}" ]; then
+      case "$(uname)" in
+        Darwin) open "$url" ;;
+        *) xdg-open "$url" >/dev/null 2>&1 || true ;;
+      esac
+    fi
+  fi
+  echo "$url"
 fi
