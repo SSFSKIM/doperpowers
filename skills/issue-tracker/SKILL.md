@@ -125,11 +125,15 @@ pick by repo visibility:
    (blocked/needs-info notes), wontfix suggestions, and cross-ticket
    proposals; apply or refuse those with `board-transition.sh`.
 6. `done` arrives by landing, not by claim: the worker's PR body says
-   `Closes #<n>`, so the merge itself auto-closes the ticket. Then finalize —
-   `board-transition.sh <n> done` strips the stale in-review label and runs
-   the epic/unblock sweeps (lint's FIX line says the same) — and append an
-   outcome comment. A manual `done` flip remains for non-PR work; verify it
-   landed first.
+   `Closes #<n>`, so the merge itself auto-closes the ticket — even a PR
+   that leaves residual work behind closes it (the residue gets new tickets,
+   not a reopened old one). Then finalize: `board-transition.sh <n> done`
+   strips the stale in-review label and runs the epic/unblock sweeps (lint's
+   FIX line says the same); register each item of the worker's FOLLOW-UPS
+   list (`board-register.sh … --spawned-by <n>` — judging one down is fine,
+   but the judgment is recorded, never the item silently dropped); append an
+   outcome comment naming what landed and the follow-up tickets it spawned.
+   A manual `done` flip remains for non-PR work; verify it landed first.
 
 **Reconcile-on-wake:** been away? `board-reconcile.sh` first. It lists what
 the daemons proposed while you were gone, what needs respawning, and any
@@ -164,6 +168,14 @@ in-progress when you start; in-review with --pr when your PR opens;
 blocked / needs-info (note required) the moment you hit an escalation — set
 the state yourself, then END YOUR TURN with the question stated crisply.
 
+Opening your PR closes out your scope: that turn-end message MUST carry a
+FOLLOW-UPS section — every piece of residual work the PR leaves behind
+(non-blocking cleanups, larger work you discovered, success criteria the PR
+only partially meets), one line each with why it was cut — or the literal
+line "FOLLOW-UPS: none". The orchestrator registers these as new tickets at
+finalize; a follow-up not on this list does not exist. The JSON proposal
+block below is for state changes, not follow-ups.
+
 You NEVER write a terminal state. done is not claimed, it is landed: your PR
 body MUST say "Closes #<N>" so the merge itself closes the ticket. wontfix is
 the orchestrator's call. To suggest either — or any change to ANOTHER
@@ -187,8 +199,9 @@ around it, never inside it.
 ## Scope-outs become tickets (deferral rule)
 
 Work deliberately deferred out of scope — during a grill, a brainstorm, an
-issue-register session, or a worker's design phase — is registered on the
-board THE MOMENT the deferral is decided, with its lineage as edges:
+issue-register session, a worker's design phase, or a worker's FOLLOW-UPS
+list at PR time — is registered on the board THE MOMENT the deferral is
+decided, with its lineage as edges:
 
 - `--spawned-by <origin>` — the ticket whose design session produced the cut
 - `--blocked-by <numbers>` — what must land first (often the origin ticket
@@ -198,6 +211,15 @@ board THE MOMENT the deferral is decided, with its lineage as edges:
 Deferral without a ticket is silent scope loss: the decision exists only in
 the design conversation and dies with the session. The ticket's Decision log
 records *why* it was cut, so nobody re-litigates it later.
+
+PR landing is a deferral point like any other. A PR that addresses its
+ticket but leaves work behind — non-blocking follow-ups, discovered larger
+work, success criteria only partially met — still closes the ticket
+(`Closes #N` stays in the body: done means the PR landed, not that every
+idea it surfaced died). The residue rides the worker's FOLLOW-UPS list into
+new tickets, `--spawned-by <n>`, registered at finalize before the outcome
+comment — and the outcome comment names them, so the closed ticket points
+at where its remainder went.
 
 ## Edge cases
 
