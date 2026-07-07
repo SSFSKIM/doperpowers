@@ -1,5 +1,21 @@
 # Doperpowers Release Notes
 
+## v7.5.1 (2026-07-07)
+
+### Issue Tracker — board workflow templates now grant `pull-requests: read`
+
+v7.4.0 taught the board snapshot to read issue-linked PRs
+(`closedByPullRequestsReferences` + cross-references), but both remote-board
+workflow templates still granted the runner token only `contents: read` and
+`issues: read`. On a real consumer (private repo, Cloudflare template) the
+render step died with GitHub's `Resource not accessible by integration` —
+the default `GITHUB_TOKEN` cannot read pull requests without the extra scope.
+
+Both `references/board-pages.yml` and `references/board-cloudflare-pages.yml`
+now include `pull-requests: read`. Existing consumers who copied an older
+template must add the same line to their workflow's `permissions:` block when
+they bump their plugin pin to v7.4.0 or later.
+
 ## v7.5.0 (2026-07-07)
 
 ### Issue Tracker — PR-landing residue becomes tickets (FOLLOW-UPS slot)

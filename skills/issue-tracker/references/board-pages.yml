@@ -36,6 +36,7 @@ concurrency:
 permissions:
   contents: read
   issues: read
+  pull-requests: read   # snapshot reads issue-linked PRs (closedByPullRequestsReferences)
   pages: write
   id-token: write
 
