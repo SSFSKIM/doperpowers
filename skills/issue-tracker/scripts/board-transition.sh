@@ -81,7 +81,7 @@ if to in B.NOTE_REQUIRED and not note:
 if to == "in-review" and not env["T_PR"]:
     B.die("a PR link is required when moving to in-review (--pr URL)")
 
-B.ensure_status_labels()
+B.ensure_labels()
 extra = {}
 if env["T_BRANCH"]:
     extra["branch"] = env["T_BRANCH"]

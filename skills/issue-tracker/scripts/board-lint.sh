@@ -9,10 +9,13 @@
 #
 #   FAIL open issue with zero status:* labels (untracked)
 #   FAIL open issue with 2+ status:* labels (conflict)
+#   FAIL open issue with 2+ priority:* labels
 #   FAIL closed issue still carrying status:* labels
 #   FAIL blocked/needs-info without a note (board:meta)
 #   FAIL dependency cycle among blocked_by edges
 #   WARN in-progress issue without an assignee
+#   WARN open issue with no priority:* label (legacy — backfill gradually;
+#        registration forces one on every new ticket)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -53,6 +56,19 @@ for tid in sorted(tickets, key=int):
              "board-transition.sh %s %s \"<why>\" — or move it on" % (tid, n["state"]))
     if n["state"] == "in-progress" and not n["assignees"]:
         warn(tid, "in-progress with no assignee")
+    # Priority: exactly one priority:* on every open ticket. Missing is WARN
+    # only — legacy boards predate the axis and backfill gradually; a double
+    # label is an invariant violation regardless of history.
+    if n["state"] not in B.TERMINAL:
+        if len(n["priority_labels"]) >= 2:
+            valid = sorted(p for p in n["priority_labels"] if p in B.PRIORITIES)
+            pick = valid[0] if valid else "P2"
+            fail(tid, "%d priority:* labels: %s" %
+                 (len(n["priority_labels"]), ", ".join(n["priority_labels"])),
+                 "board-priority.sh %s %s — the write normalizes the label set"
+                 % (tid, pick))
+        elif not n["priority_labels"]:
+            warn(tid, "no priority label (backfill: board-priority.sh %s <P0..P3>)" % tid)
 
 # Dependency cycles (GitHub does not forbid mutual blocking).
 color = {}

@@ -2,10 +2,13 @@
 # board-register.sh — open a board ticket (a GitHub issue) with its edges typed.
 #
 # Usage:
-#   board-register.sh <title> <category> [--state S] [--note TEXT] [--parent N]
-#                     [--blocked-by N[,N...]] [--spawned-by N] [--body-file F]
+#   board-register.sh <title> <category> <priority> [--state S] [--note TEXT]
+#                     [--parent N] [--blocked-by N[,N...]] [--spawned-by N]
+#                     [--body-file F]
 #
 #   category  bug | enhancement
+#   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
+#             the managed priority:* label (change later: board-priority.sh)
 #   --state   birth state: ready-for-agent (default) | needs-info | blocked | deferred
 #             (needs-info / blocked require --note)
 #   --parent / --blocked-by take issue numbers; edges are created as native
@@ -19,9 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
-[ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
-title="$1" category="$2"
-shift 2
+[ $# -ge 3 ] || { usage_from_header "$0" >&2; exit 2; }
+title="$1" category="$2" priority="$3"
+shift 3
 state="ready-for-agent" note="" parent="" blocked_by="" spawned_by="" body_file=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,8 +39,8 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$body_file" ] || [ -f "$body_file" ] || die "no such file: $body_file"
 
-T_TITLE="$title" T_CATEGORY="$category" T_STATE="$state" T_NOTE="$note" \
-T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \
+T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
+T_NOTE="$note" T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \
 T_BODY_FILE="$body_file" _py - <<'PY'
 import os
 import re
@@ -48,10 +51,13 @@ env = os.environ
 # spoof extra rows in line-oriented views (board-list).
 title = " ".join(env["T_TITLE"].split())
 category, state, note = env["T_CATEGORY"], env["T_STATE"], env["T_NOTE"]
+priority = env["T_PRIORITY"]
 if not title:
     B.die("title must be non-empty")
 if category not in ("bug", "enhancement"):
     B.die("category must be bug|enhancement")
+if priority not in B.PRIORITIES:
+    B.die("priority must be one of %s" % "|".join(B.PRIORITIES))
 if state not in B.BIRTH:
     B.die("birth state must be one of: %s" % ", ".join(B.BIRTH))
 if state in ("needs-info", "blocked") and not note:
@@ -86,9 +92,10 @@ if note:
     meta["note"] = note
 body = B.render_body(body, meta)
 
-B.ensure_status_labels()
+B.ensure_labels()
 out = B.gh(["issue", "create", "-R", B.repo(), "--title", title,
-            "--label", "%s,%s%s" % (category, B.STATUS_PREFIX, state),
+            "--label", "%s,%s%s,%s%s" % (category, B.STATUS_PREFIX, state,
+                                         B.PRIORITY_PREFIX, priority),
             "--body-file", "-"], input_text=body)
 m = re.search(r"/issues/(\d+)\s*$", out.strip())
 if not m:

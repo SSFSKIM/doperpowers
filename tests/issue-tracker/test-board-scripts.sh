@@ -60,27 +60,49 @@ state() { python3 -c "import json,sys;print(eval(sys.argv[1], {'s': json.load(op
 
 # ---- register ----------------------------------------------------------------
 echo "board-register:"
-out="$(run board-register.sh "Epic: alpha" enhancement)"
+out="$(run board-register.sh "Epic: alpha" enhancement P2)"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
-assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent']" "category + birth status label"
+assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
 
-out="$(run board-register.sh $'Multi\nline title' bug --state blocked --note "waiting on A")"
+out="$(run board-register.sh $'Multi\nline title' bug P1 --state blocked --note "waiting on A")"
 assert_equals "$(state "s['issues']['2']['title']")" "Multi line title" "title newlines collapsed"
 assert_contains "$(state "s['issues']['2']['labels']")" "status:blocked" "birth state honored"
 assert_contains "$(state "s['issues']['2']['comments'][0]")" "[board] blocked: waiting on A" "birth note posted as [board] comment"
 assert_contains "$(state "s['issues']['2']['body']")" "note: waiting on A" "birth note in board:meta"
 
-out="$(run board-register.sh "Child A" enhancement --parent 1 --spawned-by 2)"
+out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2)"
 assert_equals "$(state "s['issues']['3']['parent']")" "1" "parent sub-issue edge created"
 assert_contains "$(state "s['issues']['3']['body']")" "spawned-by: #2" "spawned-by in board:meta"
 
-out="$(run board-register.sh "Child B" enhancement --parent 1 --blocked-by 3)"
+out="$(run board-register.sh "Child B" enhancement P2 --parent 1 --blocked-by 3)"
 assert_equals "$(state "s['issues']['4']['blockedBy']")" "[3]" "blocked_by dependency edge created"
 
-assert_fails run board-register.sh "X" gadget
-assert_fails run board-register.sh "X" bug --state needs-info          # note required
-assert_fails run board-register.sh "X" bug --state "done"                # not a birth state
-assert_fails run board-register.sh "X" bug --parent 999                # unknown ref
+assert_fails run board-register.sh "X" gadget P2
+assert_fails run board-register.sh "X" bug                             # priority required
+assert_fails run board-register.sh "X" bug P9                          # bad grade
+assert_fails run board-register.sh "X" bug P2 --state needs-info       # note required
+assert_fails run board-register.sh "X" bug P2 --state "done"             # not a birth state
+assert_fails run board-register.sh "X" bug P2 --parent 999             # unknown ref
+
+# ---- priority (managed label swap) --------------------------------------------
+echo "board-priority:"
+out="$(run board-priority.sh 2 P0)"
+assert_contains "$out" "#2: P1 → P0" "swap reported"
+assert_contains "$(state "s['issues']['2']['labels']")" "priority:P0" "new label present"
+assert_not_contains "$(state "s['issues']['2']['labels']")" "priority:P1" "old label removed"
+out="$(run board-priority.sh 2 P0)"
+assert_contains "$out" "#2: P0 → P0" "same-grade re-run reports a no-op"
+assert_fails run board-priority.sh 2 P9                                # bad grade
+assert_fails run board-priority.sh 999 P1                              # unknown issue
+python3 - <<'STRIP'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["4"]["labels"] = [l for l in s["issues"]["4"]["labels"]
+                              if not l.startswith("priority:")]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+STRIP
+out="$(run board-priority.sh 4 P2)"
+assert_contains "$out" "#4: none → P2" "unset reported as none"
 
 # ---- transition: legality + note/PR gates ------------------------------------
 echo "board-transition:"
@@ -103,7 +125,7 @@ assert_contains "$(state "s['issues']['3']['comments'][-1]")" "[board] in-review
 out="$(run board-transition.sh 3 "done")"
 assert_equals "$(state "s['issues']['3']['state']")" "CLOSED" "done closes the issue"
 assert_equals "$(state "s['issues']['3']['stateReason']")" "COMPLETED" "close reason completed"
-assert_equals "$(state "s['issues']['3']['labels']")" "['enhancement']" "status labels stripped on close"
+assert_equals "$(state "s['issues']['3']['labels']")" "['enhancement', 'priority:P1']" "status labels stripped on close (priority kept — inert history)"
 assert_contains "$out" "now eligible" "dependent unblocked report"
 assert_contains "$out" "#4" "names the newly-eligible dependent"
 assert_not_contains "$out" "#1: in-progress" "epic stays open (child 4 not terminal)"
@@ -117,10 +139,10 @@ assert_fails run board-transition.sh 3 in-progress                     # termina
 
 # ---- edge: cycles, deadlocks, sweeps ------------------------------------------
 echo "board-edge:"
-run board-register.sh "Epic: beta" enhancement >/dev/null                            # 5
-run board-register.sh "B1" enhancement --parent 5 >/dev/null                         # 6
-run board-register.sh "B2" enhancement --parent 5 --blocked-by 6 >/dev/null          # 7
-run board-register.sh "Loose" enhancement >/dev/null                                 # 8
+run board-register.sh "Epic: beta" enhancement P2 >/dev/null                            # 5
+run board-register.sh "B1" enhancement P2 --parent 5 >/dev/null                         # 6
+run board-register.sh "B2" enhancement P2 --parent 5 --blocked-by 6 >/dev/null          # 7
+run board-register.sh "Loose" enhancement P3 >/dev/null                                 # 8
 
 assert_fails run board-edge.sh 6 --block 6                              # self
 assert_fails run board-edge.sh 6 --block 7                              # cycle (7 waits on 6)
@@ -185,6 +207,26 @@ set -e
 assert_equals "$rc" "1" "lint exits 1 on FAILs"
 assert_contains "$out" "FAIL #9: open with no status:* label" "untracked named"
 assert_contains "$out" "FAIL #7: open with 2 status:* labels" "conflict named"
+assert_contains "$out" "WARN #9: no priority label" "missing priority WARNed"
+
+# duplicate priority labels FAIL, with a copy-paste-runnable FIX hint (bare grade),
+# then repaired immediately so the later clean-board lint stays green.
+python3 - <<'DUP'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["7"]["labels"].append("priority:P0")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+DUP
+set +e
+outp="$(run board-lint.sh 2>&1)"
+set -e
+assert_contains "$outp" "FAIL #7: 2 priority:* labels" "duplicate priority FAILs"
+assert_contains "$outp" "board-priority.sh 7 P0" "FIX hint uses a bare grade"
+run board-priority.sh 7 P2 >/dev/null
+set +e
+outp2="$(run board-lint.sh 2>&1)"
+set -e
+assert_not_contains "$outp2" "FAIL #7: 2 priority:* labels" "repair clears the FAIL"
 
 # an OPEN issue with a lone terminal label (legacy merge automation) = conflict
 python3 - <<'FIX2'
@@ -271,11 +313,13 @@ assert_contains "$out" "board-lint" "reconcile ends with a lint pass"
 echo "board-map:"
 out="$(run board-map.sh)"
 assert_contains "$out" "| #9 |" "table row per ticket"
+assert_contains "$out" "| #8 | P3 |" "table shows the priority column"
 run board-map.sh --write >/dev/null 2>&1
 assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.html" "BOARD.html rendered"
 assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.md" "BOARD.md rendered"
 assert_equals "$(cat "$WORK/doperpowers/issue-tracker/.gitignore")" "*" "render dir is gitignored"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"id": "#9"' "html payload uses display ids"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"priority": "P3"' "html payload carries priority"
 
 # native GitHub-linked PRs (closes + cross-ref) surface without any pr: meta —
 # the merge-autoclose gap the manual meta could not cover.
@@ -330,9 +374,11 @@ assert_contains "$(state "s['issues']['10']['body']")" "spawned-by: #8" "created
 
 # ---- finalize: PR-merge auto-close ("Closes #N") -----------------------------
 echo "finalize (merge auto-close):"
-run board-register.sh "Epic: delta" enhancement >/dev/null                    # 11
-run board-register.sh "D1" enhancement --parent 11 >/dev/null                 # 12
-run board-register.sh "D2" enhancement --blocked-by 12 >/dev/null             # 13
+run board-register.sh "Epic: delta" enhancement P2 >/dev/null                    # 11
+run board-register.sh "D1" enhancement P0 --parent 11 >/dev/null                 # 12
+run board-register.sh "D2" enhancement P2 --blocked-by 12 >/dev/null             # 13
+top="$(run board-list.sh | head -1)"
+assert_contains "$top" "P0" "P0 row floats to the top of the list"
 run board-transition.sh 12 in-progress >/dev/null
 run board-transition.sh 12 in-review "pr open" --pr https://github.com/test/repo/pull/33 >/dev/null
 # GitHub merges the PR: "Closes #12" auto-closes the issue — labels stay put,

@@ -58,7 +58,7 @@ def act(line, fn=None):
         fn()
 
 if apply:
-    B.ensure_status_labels()
+    B.ensure_labels()
 
 # Pass 1 — create issues for unlinked tickets, so every T-ID resolves.
 gh_of = {}   # T-ID -> issue number (str)

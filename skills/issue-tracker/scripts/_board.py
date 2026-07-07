@@ -49,6 +49,20 @@ STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
     "deferred":        "c5def5",
 }
 
+# Priority is the board's second managed label family: exactly one
+# priority:P0..P3 per ticket (P0 = drop everything, P3 = someday). String
+# order IS priority order, so plain sorts stay correct in shell/python/JS.
+# Registration forces a grade; board-priority.sh swaps it; lint WARNs a
+# missing grade (legacy tickets backfill gradually) and FAILs a double one.
+PRIORITY_PREFIX = "priority:"
+PRIORITIES = ("P0", "P1", "P2", "P3")
+PRIORITY_COLORS = {  # ensure_labels palette (hex, no '#')
+    "P0": "b60205",
+    "P1": "d93f0b",
+    "P2": "fbca04",
+    "P3": "c2e0c6",
+}
+
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "note")
 
@@ -189,6 +203,7 @@ def snapshot(refresh=False):
         for it in page["nodes"]:
             labels = [l["name"] for l in it["labels"]["nodes"]]
             status = [l[len(STATUS_PREFIX):] for l in labels if l.startswith(STATUS_PREFIX)]
+            prios = [l[len(PRIORITY_PREFIX):] for l in labels if l.startswith(PRIORITY_PREFIX)]
             meta = parse_meta(it["body"])
             spawned = _nums(meta.get("spawned-by"))
             # Native GitHub PR linkage — closesByPR fills the merge-autoclose gap
@@ -213,6 +228,10 @@ def snapshot(refresh=False):
                 "title": it["title"],
                 "state": derive_state(it["state"], it.get("stateReason"), status),
                 "status_labels": status,
+                # priority: the single valid grade, else None; priority_labels
+                # keeps the raw list so lint can tell missing from conflicted.
+                "priority": prios[0] if len(prios) == 1 and prios[0] in PRIORITIES else None,
+                "priority_labels": prios,
                 "category": "bug" if "bug" in labels else "enhancement",
                 "note": meta.get("note"),
                 "parent": str(it["parent"]["number"]) if it.get("parent") else None,
@@ -223,7 +242,9 @@ def snapshot(refresh=False):
                 "pr": meta.get("pr"),
                 "prs": pr_list,
                 "labels": [l for l in labels
-                           if not l.startswith(STATUS_PREFIX) and l not in ("bug", "enhancement")],
+                           if not l.startswith(STATUS_PREFIX)
+                           and not l.startswith(PRIORITY_PREFIX)
+                           and l not in ("bug", "enhancement")],
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
                 "created": it["createdAt"][:10],
                 "updated": it["updatedAt"][:10],
@@ -248,15 +269,19 @@ def resolve(ref, tickets=None):
 
 
 # ── label management ─────────────────────────────────────────────────────
-def ensure_status_labels():
-    """Create any missing status:* labels (idempotent; one list call)."""
+def ensure_labels():
+    """Create any missing managed labels — status:* AND priority:* — in one
+    idempotent pass (a single `gh label list` call)."""
     have = {l["name"] for l in json.loads(
         gh(["label", "list", "-R", repo(), "--json", "name", "--limit", "200"]))}
-    for state, color in STATUS_COLORS.items():
-        name = STATUS_PREFIX + state
+    want = [(STATUS_PREFIX + s, c, "issue-tracker board state")
+            for s, c in STATUS_COLORS.items()]
+    want += [(PRIORITY_PREFIX + p, c, "issue-tracker board priority")
+             for p, c in PRIORITY_COLORS.items()]
+    for name, color, desc in want:
         if name not in have:
             gh(["label", "create", name, "-R", repo(), "--color", color,
-                "--description", "issue-tracker board state", "--force"])
+                "--description", desc, "--force"])
 
 
 # ── mutations (the only write path — see the Hard Gate in SKILL.md) ──────
@@ -274,6 +299,13 @@ def set_state_label(num, node, to):
     """Swap the status:* label set to exactly `to` (repairs conflict/untracked)."""
     stale = [STATUS_PREFIX + s for s in node["status_labels"] if s != to]
     add = [] if to in node["status_labels"] else [STATUS_PREFIX + to]
+    edit_labels(num, remove=stale, add=add)
+
+
+def set_priority_label(num, node, to):
+    """Swap the priority:* label set to exactly `to` (repairs a double label)."""
+    stale = [PRIORITY_PREFIX + p for p in node["priority_labels"] if p != to]
+    add = [] if to in node["priority_labels"] else [PRIORITY_PREFIX + to]
     edit_labels(num, remove=stale, add=add)
 
 

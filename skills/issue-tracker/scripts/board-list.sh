@@ -5,6 +5,8 @@
 #
 # Eligible = ready-for-agent + every blocked_by ticket done + not an epic.
 # Tags: epic | ELIGIBLE | waiting:<numbers> | STUCK(wontfix blocker)
+# Rows print in dispatch order: priority first (P0 on top, unprioritized
+# last), issue number as tiebreaker — the top ELIGIBLE row is the next pick.
 # Off-machine label states surface as untracked / conflict (fix via
 # board-transition.sh; board-lint.sh names them all).
 set -euo pipefail
@@ -20,7 +22,13 @@ tickets = B.snapshot()
 flt = os.environ["T_FILTER"]
 epics = B.epics(tickets)
 
-for tid in sorted(tickets, key=int):
+# Dispatch order: priority rank (P0 first, unprioritized after P3), then number.
+def rank(tid):
+    p = tickets[tid]["priority"]
+    return (B.PRIORITIES.index(p) if p in B.PRIORITIES else len(B.PRIORITIES),
+            int(tid))
+
+for tid in sorted(tickets, key=rank):
     n = tickets[tid]
     if flt and n["state"] != flt:
         continue
@@ -40,5 +48,7 @@ for tid in sorted(tickets, key=int):
     # One row per ticket: flatten embedded newlines so no field can spoof rows.
     title = " ".join(n["title"].split())
     note = ("  — %s" % " ".join(n["note"].split())) if n.get("note") else ""
-    print("#%-5s %-15s %-11s %s%s%s" % (tid, n["state"], n["category"], title, extra, note))
+    prio = n["priority"] or "-"
+    print("#%-5s %-3s %-15s %-11s %s%s%s"
+          % (tid, prio, n["state"], n["category"], title, extra, note))
 PY

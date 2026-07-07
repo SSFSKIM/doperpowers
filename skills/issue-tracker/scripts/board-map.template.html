@@ -248,6 +248,7 @@
       return "▸ " + epicById[n.id].descendants.length + " hidden";
     if (n.cls === "s_wait") return n.label;                       // "waiting: #6, #7"
     var bits = [];
+    if (n.priority) bits.push(n.priority);
     if (n.category) bits.push(n.category);
     if (n.pr) bits.push("PR");
     return bits.join(" · ");
@@ -350,6 +351,7 @@
     var bits = [];
     if (epicById[n.id]) bits.push("epic · " + epicById[n.id].descendants.length);
     if (n.cls === "s_wait") bits.push(n.label);
+    if (n.priority) bits.push(n.priority);
     if (n.category) bits.push(n.category);
     if (n.pr) bits.push("PR");
     card.appendChild(el("div", bits.join(" · "), "node-meta"));
@@ -367,8 +369,15 @@
         return n.state === s && !(eligibleOnly && !n.eligible);
       });
       if (!items.length && !KB_CORE[s]) return;     // paused/terminal columns only when populated
-      if (s === "ready-for-agent")                  // dispatchables float to the top
-        items = items.slice().sort(function (a, b) { return (b.eligible ? 1 : 0) - (a.eligible ? 1 : 0); });
+      // Column order = dispatch order: priority rank (P0 first, unprioritized
+      // last — explicit rank, null vs string comparison coerces), id tiebreak;
+      // in ready-for-agent, dispatchables still float above the rest.
+      function prioRank(n) { var i = ["P0", "P1", "P2", "P3"].indexOf(n.priority); return i < 0 ? 4 : i; }
+      items = items.slice().sort(function (a, b) {
+        if (s === "ready-for-agent" && a.eligible !== b.eligible) return b.eligible ? 1 : -1;
+        if (prioRank(a) !== prioRank(b)) return prioRank(a) - prioRank(b);
+        return parseInt(a.id.slice(1), 10) - parseInt(b.id.slice(1), 10);
+      });
       var col = el("div", null, "kbcol " + (STATE_CLS[s] || ""));
       var head = el("div", null, "kbhead");
       head.appendChild(el("span", s));
@@ -471,6 +480,7 @@
     var rows = el("div", null, "drows");
     function add(label, v) { if (v) rows.appendChild(detailRow(label, v)); }
     add("state", n.label);
+    add("priority", n.priority);
     add("category", n.category);
     add("note", n.note);
     add("blocked by", (n.blocked_by || []).join(", "));

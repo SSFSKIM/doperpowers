@@ -10,19 +10,22 @@ The issue-tracker board (the `doperpowers:issue-tracker` skill) manages a projec
 
 - [x] (2026-07-07 19:55Z) Grill completed with the human partner; five decisions recorded in the Decision Log below.
 - [x] (2026-07-07 20:05Z) Worktree `worktree-board-priority-axis` created from `origin/main` (commit 96dc645, v7.5.1); this plan written and committed.
-- [ ] Milestone 1: data layer — `_board.py` constants, snapshot `priority` field, label filter, `ensure_labels` rename, `set_priority_label` mutation.
-- [ ] Milestone 2: registration forces priority (third positional arg) and creates the label at birth.
-- [ ] Milestone 3: new `board-priority.sh` re-prioritization command.
-- [ ] Milestone 4: surfacing — `board-list.sh` sort+column, lint WARN/FAIL rules, BOARD.md column, BOARD.html badge/detail/kanban-sort.
-- [ ] Milestone 5: SKILL.md contract updates (register signature, board-priority in toolkit table, dispatch-order guidance, lint rules list).
-- [ ] Milestone 6: tests — update existing register fixtures, add priority assertions, full suite green.
-- [ ] Version bump to 7.6.0, RELEASE-NOTES entry.
+- [x] (2026-07-07 20:35Z) Milestone 1: data layer — `_board.py` constants, snapshot `priority` field, label filter, `ensure_labels` rename, `set_priority_label` mutation.
+- [x] (2026-07-07 20:40Z) Milestone 2: registration forces priority (third positional arg) and creates the label at birth.
+- [x] (2026-07-07 20:45Z) Milestone 3: new `board-priority.sh` re-prioritization command.
+- [x] (2026-07-07 20:55Z) Milestone 4: surfacing — `board-list.sh` sort+column, lint WARN/FAIL rules, BOARD.md column, BOARD.html badge/detail/kanban-sort.
+- [x] (2026-07-07 21:00Z) Milestone 5: SKILL.md contract updates (register signature, board-priority in toolkit table, dispatch-order guidance, lint rules list).
+- [x] (2026-07-07 21:10Z) Milestone 6: tests — update existing register fixtures, add priority assertions, full suite green.
+- [x] (2026-07-07 21:12Z) Version bump to 7.6.0, RELEASE-NOTES entry.
 - [ ] Exit gate: Codex whole-branch review; fix confirmed findings; re-run suite; one re-review.
 - [ ] Merge to origin/main, tag v7.6.0, retrospective written.
 
 ## Surprises & Discoveries
 
-None yet — populated during execution. Two anticipated risks, recorded so the implementer watches for them: (1) `board-migrate-gh.sh` calls `ensure_status_labels` inside a python heredoc, which a rename sweep can miss — grep the raw string across the whole repo, not just `.py` files; (2) in the template's kanban sort, do not compare `n.priority` strings directly (`null` versus string comparison coerces in JS) — use an explicit rank function.
+- Observation: the close path keeps the ticket's priority label by design, and the existing test `status labels stripped on close` asserted label-set equality, so it went red the moment registration started attaching `priority:*` — the one legitimately failing assertion in the whole arity migration. Updated it to expect `['enhancement', 'priority:P1']`, which now *documents* the keep-on-close decision.
+  Evidence: suite run after Milestone 6 — single FAIL at `status labels stripped on close`, green after the expectation change.
+- Observation: the two anticipated risks were real but pre-empted — `board-migrate-gh.sh`'s heredoc call site was caught by the raw-string grep (three call sites total: register, transition, migrate), and the kanban sort was written with an explicit rank function from the start.
+  Evidence: `grep -rn 'ensure_status_labels'` listed board-migrate-gh.sh:61 alongside the two obvious callers.
 
 ## Decision Log
 

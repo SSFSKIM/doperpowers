@@ -1,5 +1,32 @@
 # Doperpowers Release Notes
 
+## v7.6.0 (2026-07-07)
+
+### Issue Tracker — a managed priority axis (`priority:P0`…`P3`)
+
+The board could say which tickets are *startable* (ELIGIBLE) but not which
+startable ticket matters most. This release adds the board's second managed
+label family: every ticket carries exactly one `priority:P0` (drop everything)
+… `priority:P3` (someday) label, and every surface orders or shows it.
+
+- **`board-register.sh <title> <category> <priority>` — BREAKING.** Priority is
+  a required third positional argument (`P0|P1|P2|P3`); registration without it
+  fails, and the ticket is born with the label. Update any automation that
+  calls board-register.
+- **New `board-priority.sh <n> <P0..P3>`.** Managed label swap (also repairs a
+  double label); prints the move — `#12: P2 → P0`, `none` when unset.
+- **`board-list.sh` prints in dispatch order** — priority rank first (P0 on
+  top, unprioritized last), issue number as tiebreaker — with a priority
+  column. The dispatch loop's rule is now "take the top ELIGIBLE row".
+- **Renders surface the grade.** BOARD.md gains a priority column; BOARD.html
+  shows it on cards, in the detail panel, and sorts kanban columns by it.
+- **Lint policy.** Missing priority on an open ticket = WARN (legacy boards
+  backfill gradually — registration forces the label on all new tickets);
+  2+ priority labels = FAIL with a runnable FIX hint. Closed tickets keep
+  their priority label as inert history.
+- Internal: `ensure_status_labels()` → `ensure_labels()` (creates both managed
+  families in one pass).
+
 ## v7.5.1 (2026-07-07)
 
 ### Issue Tracker — board workflow templates now grant `pull-requests: read`
