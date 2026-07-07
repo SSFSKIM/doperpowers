@@ -1,5 +1,32 @@
 # Doperpowers Release Notes
 
+## v7.4.0 (2026-07-07)
+
+### Issue Tracker — the board's node detail now shows GitHub-linked PRs
+
+Clicking a ticket on the hosted board showed its issue number, created, and
+updated dates, but never the pull requests linked to it. The renderer *could*
+show a PR — but only from a `pr:` line manually written into the issue body when
+a ticket was moved to `in-review`. Tickets that reached **done** the normal way,
+via a merged `Closes #N` pull request, never got that line written, so their PR
+was invisible. And a single `pr:` value could never represent more than one PR.
+
+This release reads PR links straight from GitHub, where they already exist:
+
+- **`_board.py` snapshot** now fetches `closedByPullRequestsReferences` (the PRs
+  that close the issue — this is what fills the merge-autoclose gap) and
+  `CROSS_REFERENCED_EVENT` timeline items (PRs that merely mention the issue).
+  They are deduped by number into a new per-ticket `prs` list; a PR that both
+  closes and references keeps the stronger "closes" relation.
+- **`board-map.template.html` detail panel** renders that list as a **PRs**
+  section — one line per PR, linkified, with a state chip (merged / open /
+  closed / draft) coloured to GitHub's own palette and a "· closes" marker on
+  closing PRs. Multiple linked PRs are handled natively. The old single `pr:`
+  meta stays as a fallback when GitHub reports no linkage.
+
+No new dependencies and no change to how the board is rendered or deployed — the
+same `board-map.sh --write` on both the GitHub Pages and Cloudflare templates.
+
 ## v7.3.0 (2026-07-07)
 
 ### Issue Tracker — a private hosted board via Cloudflare Pages + Access

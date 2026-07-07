@@ -102,6 +102,12 @@
           border-top: 1px solid #141a24; font-size: 12px; }
   .drow span { color: #556170; } .drow b { font-weight: 500; word-break: break-word; color: #aeb9c6; }
   .drow a { color: #93c5fd; text-decoration: none; } .drow a:hover { text-decoration: underline; }
+  .prlist { display: flex; flex-direction: column; gap: 3px; }
+  .prline { display: flex; align-items: center; gap: .4rem; }
+  .prchip { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+            padding: .02rem .3rem; border-radius: .25rem; border: 1px solid currentColor; opacity: .9; }
+  .prchip.merged { color: #a371f7; } .prchip.open { color: #3fb950; }
+  .prchip.closed { color: #f85149; } .prchip.draft  { color: #7d8896; }
   /* ---- kanban view: state columns sharing the card palette ---- */
   #kb { position: absolute; inset: 0; overflow: auto; padding: .8rem;
         display: flex; gap: .7rem; align-items: flex-start; }
@@ -432,6 +438,23 @@
     var a = el("a", url); a.href = url; a.target = "_blank"; a.rel = "noopener";
     return a;
   }
+  // Native GitHub-linked PRs (closes + cross-ref), one line each with a state chip.
+  function prList(prs) {
+    var wrap = el("div", null, "prlist");
+    prs.forEach(function (p) {
+      var line = el("div", null, "prline");
+      var a = link(p.url);
+      if (a) { a.textContent = "#" + p.num; line.appendChild(a); }
+      else line.appendChild(el("span", "#" + p.num));
+      var st = p.state === "MERGED" ? "merged"
+             : p.state === "CLOSED" ? "closed"
+             : p.draft ? "draft" : "open";
+      var chip = el("span", st + (p.rel === "closes" ? " · closes" : ""), "prchip " + st);
+      line.appendChild(chip);
+      wrap.appendChild(line);
+    });
+    return wrap;
+  }
   function showDetail(n) {
     var d = document.getElementById("detail");
     d.textContent = "";
@@ -454,7 +477,8 @@
     add("spawned by", n.spawned_by);
     add("relates", (n.relates_to || []).join(", "));
     add("branch", n.branch);
-    if (n.pr) add("PR", link(n.pr) || n.pr);
+    if (n.prs && n.prs.length) rows.appendChild(detailRow("PRs", prList(n.prs)));
+    else if (n.pr) add("PR", link(n.pr) || n.pr);
     if (n.md) add("issue", link(n.md) || n.md);
     add("created", n.created);
     add("updated", n.updated);

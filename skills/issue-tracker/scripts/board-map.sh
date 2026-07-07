@@ -364,7 +364,8 @@ for t in order:
         "blocked_by": [did(b) for b in n.get("blocked_by", [])],
         "spawned_by": did(n["spawned_by"]) if n.get("spawned_by") else None,
         "relates_to": [did(r) for r in n.get("relates_to", []) or []],
-        "branch": n.get("branch"), "pr": n.get("pr"), "md": n.get("url"),
+        "branch": n.get("branch"), "pr": n.get("pr"), "prs": n.get("prs") or [],
+        "md": n.get("url"),
         "created": n.get("created"), "updated": n.get("updated"),
         "x": x, "y": y,
     })

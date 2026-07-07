@@ -142,6 +142,16 @@ query($owner:String!, $name:String!, $cursor:String) {
         assignees(first:10) { nodes { login } }
         parent { number }
         blockedBy(first:50) { nodes { number } }
+        closedByPullRequestsReferences(first:20, includeClosedPrs:true) {
+          nodes { number url state isDraft }
+        }
+        timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], first:40) {
+          nodes {
+            ... on CrossReferencedEvent {
+              source { __typename ... on PullRequest { number url state isDraft } }
+            }
+          }
+        }
       }
     }
   }
@@ -181,6 +191,23 @@ def snapshot(refresh=False):
             status = [l[len(STATUS_PREFIX):] for l in labels if l.startswith(STATUS_PREFIX)]
             meta = parse_meta(it["body"])
             spawned = _nums(meta.get("spawned-by"))
+            # Native GitHub PR linkage — closesByPR fills the merge-autoclose gap
+            # (a "Closes #N" merge never writes a pr: meta), cross-refs catch PRs
+            # that merely mention the issue. Keyed by number → deduped; a PR that
+            # both closes and cross-refs keeps the stronger "closes" relation.
+            prs = {}
+            for pr in it["closedByPullRequestsReferences"]["nodes"]:
+                if pr:
+                    prs[pr["number"]] = {"num": pr["number"], "url": pr["url"],
+                                         "state": pr["state"],
+                                         "draft": pr.get("isDraft", False), "rel": "closes"}
+            for tl in it["timelineItems"]["nodes"]:
+                src = (tl or {}).get("source") or {}
+                if src.get("__typename") == "PullRequest":
+                    prs.setdefault(src["number"], {"num": src["number"], "url": src["url"],
+                                                   "state": src["state"],
+                                                   "draft": src.get("isDraft", False), "rel": "ref"})
+            pr_list = sorted(prs.values(), key=lambda p: p["num"])
             tickets[str(it["number"])] = {
                 "id": it["id"],
                 "title": it["title"],
@@ -194,6 +221,7 @@ def snapshot(refresh=False):
                 "relates_to": _nums(meta.get("relates-to")),
                 "branch": meta.get("branch"),
                 "pr": meta.get("pr"),
+                "prs": pr_list,
                 "labels": [l for l in labels
                            if not l.startswith(STATUS_PREFIX) and l not in ("bug", "enhancement")],
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
