@@ -336,6 +336,7 @@ assert_contains "$out" "| #8 | P3 |" "table shows the priority column"
 run board-map.sh --write >/dev/null 2>&1
 assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.html" "BOARD.html rendered"
 assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.md" "BOARD.md rendered"
+assert_file_exists "$WORK/doperpowers/issue-tracker/BOARD.rev" "BOARD.rev change token rendered"
 assert_equals "$(cat "$WORK/doperpowers/issue-tracker/.gitignore")" "*" "render dir is gitignored"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"id": "#9"' "html payload uses display ids"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"priority": "P3"' "html payload carries priority"
@@ -354,7 +355,9 @@ assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"rel": "r
 # ---- map --serve: live server + hot-reload plumbing -------------------------------
 echo "board-map --serve:"
 export BOARD_NO_OPEN=1
-export BOARD_PORT=$((18000 + RANDOM % 2000))
+# an actually-free port (bind :0), not a random guess that can collide
+BOARD_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export BOARD_PORT
 out="$(run board-map.sh --serve 2>&1)"
 assert_contains "$out" "http://127.0.0.1:$BOARD_PORT/BOARD.html" "serve prints the board url"
 assert_file_exists "$WORK/doperpowers/issue-tracker/.server.pid" "server pid recorded"
@@ -374,12 +377,20 @@ assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"kind": "
 run board-relate.sh 8 9 --cut >/dev/null 2>&1   # restore board state for later asserts
 out="$(run board-map.sh --stop 2>&1)"
 assert_contains "$out" "stopped" "--stop kills the server"
-sleep 0.5
-if curl -s --max-time 2 "http://127.0.0.1:$BOARD_PORT/BOARD.html" >/dev/null 2>&1; then
-  fail "server gone after --stop"
-else
-  pass "server gone after --stop"
-fi
+gone=0
+for _ in $(seq 1 20); do   # SIGTERM latency: wait for the port to close
+  if ! curl -s --max-time 2 "http://127.0.0.1:$BOARD_PORT/BOARD.html" >/dev/null 2>&1; then gone=1; break; fi
+  sleep 0.25
+done
+if [ "$gone" -eq 1 ]; then pass "server gone after --stop"; else fail "server gone after --stop"; fi
+# a stale pidfile whose pid was recycled onto an unrelated process must be
+# left alone: --stop refuses to kill anything that isn't a http.server
+sleep 60 & bystander=$!
+echo "$bystander" > "$WORK/doperpowers/issue-tracker/.server.pid"
+out="$(run board-map.sh --stop 2>&1)"
+assert_contains "$out" "no board server running" "recycled-pid pidfile treated as no server"
+if kill -0 "$bystander" 2>/dev/null; then pass "--stop spared the unrelated process"; else fail "--stop spared the unrelated process"; fi
+kill "$bystander" 2>/dev/null || true
 unset BOARD_PORT BOARD_NO_OPEN
 
 # ---- worktree friendliness (the v6 guard is gone) --------------------------------

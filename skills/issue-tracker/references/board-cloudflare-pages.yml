@@ -90,6 +90,8 @@ jobs:
           mkdir -p _site
           cp doperpowers/issue-tracker/BOARD.html _site/index.html
           cp doperpowers/issue-tracker/BOARD.md _site/BOARD.md
+          # exact change token: lets an open board tab hot-reload on redeploy
+          cp doperpowers/issue-tracker/BOARD.rev _site/BOARD.rev
 
       # wrangler creates the Pages project on first run (idempotent afterwards),
       # then deploys the static board as the production deployment. Pinned to an

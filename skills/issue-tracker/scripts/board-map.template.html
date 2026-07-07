@@ -602,15 +602,22 @@
         if (nodeById[detailId]) showDetail(nodeById[detailId]); else d.hidden = true;
       }
     }
+    function check(f) {
+      if (fp === null) { fp = f; return; }     // arm on the first probe
+      if (f === fp) return;
+      return fetch(location.href, { cache: "no-store" })
+        .then(function (r2) { return r2.text(); })
+        .then(function (txt) { rebindFrom(txt); fp = f; });
+    }
     function tick() {
-      fetch(location.href, { method: "HEAD", cache: "no-store" }).then(function (r) {
-        if (!r.ok) return;
-        var f = fpOf(r);
-        if (fp === null) { fp = f; return; }   // arm on the first probe
-        if (f === fp) return;
-        return fetch(location.href, { cache: "no-store" })
-          .then(function (r2) { return r2.text(); })
-          .then(function (txt) { rebindFrom(txt); fp = f; });
+      // Prefer the exact change token every render writes next to the page
+      // (BOARD.rev); fall back to header fingerprinting when it isn't there
+      // (a hosted deploy that only ships the html) — headers alone can miss
+      // a same-second, same-length rewrite.
+      fetch("BOARD.rev", { cache: "no-store" }).then(function (r) {
+        if (r.ok) return r.text().then(function (t) { return check("rev:" + t); });
+        return fetch(location.href, { method: "HEAD", cache: "no-store" })
+          .then(function (r2) { if (r2.ok) return check("hdr:" + fpOf(r2)); });
       }).catch(function () {});                // offline blip: keep the last good render
     }
     tick(); setInterval(tick, 2000);

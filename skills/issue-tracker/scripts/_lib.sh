@@ -55,13 +55,26 @@ _render_dir() {
   [ -f "$BOARD_DIR/.gitignore" ] || printf '*\n' > "$BOARD_DIR/.gitignore"
 }
 
+# The recorded --serve pid, but only when it still looks like OUR python
+# http.server (prints it and returns 0). A reboot can recycle a stale
+# pidfile's pid onto an unrelated process — which --stop must not kill and
+# --serve must not mistake for a running board server.
+_board_server_pid() {
+  local pid
+  pid="$(cat "$BOARD_DIR/.server.pid" 2>/dev/null)" || return 1
+  [ -n "$pid" ] || return 1
+  case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+    *http.server*) printf '%s\n' "$pid" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Live tab refresh: when `board-map.sh --serve` left a server up, a successful
 # mutation re-renders the cache in the background — every open BOARD.html tab
 # hot-reloads on its next poll. No server → free no-op, so mutating scripts
 # call this unconditionally as their last step.
 _rerender_if_serving() {
-  [ -f "$BOARD_DIR/.server.pid" ] \
-    && kill -0 "$(cat "$BOARD_DIR/.server.pid")" 2>/dev/null || return 0
+  _board_server_pid >/dev/null 2>&1 || return 0
   ("$BOARD_SCRIPTS/board-map.sh" --write >/dev/null 2>&1 &)
 }
 

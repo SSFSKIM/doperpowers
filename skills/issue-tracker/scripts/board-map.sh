@@ -38,19 +38,38 @@ case "${1:-}" in
   --write) write=1 ;;
   --serve) write=1; serve=1 ;;
   --stop)
-    pidfile="$BOARD_DIR/.server.pid"
-    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-      kill "$(cat "$pidfile")"
+    if srv_pid="$(_board_server_pid)"; then
+      kill "$srv_pid"
       echo "board server stopped" >&2
     else
       echo "no board server running" >&2
     fi
-    rm -f "$pidfile"
+    rm -f "$BOARD_DIR/.server.pid"
     exit 0
     ;;
   *) die "unknown option: $1 (usage: board-map.sh [--write | --serve | --stop])" ;;
 esac
 [ "$write" -eq 1 ] && _render_dir
+
+# Serialize renders: concurrent --write runs (the background ones mutating
+# scripts fire) fetch independently, so an older, slower render could otherwise
+# os.replace AFTER a newer one and revert the page to a stale snapshot. Holding
+# the lock across fetch+render makes replace order = fetch order. mkdir is the
+# portable atomic lock; a crashed holder's stale lock is broken after ~20s
+# (far beyond any real render) rather than blocking forever.
+if [ "$write" -eq 1 ]; then
+  _render_lock="$BOARD_DIR/.render.lock"
+  _lock_ok=0
+  for _ in $(seq 1 40); do
+    if mkdir "$_render_lock" 2>/dev/null; then _lock_ok=1; break; fi
+    sleep 0.5
+  done
+  if [ "$_lock_ok" -eq 0 ]; then   # stale lock: break it and take over
+    rmdir "$_render_lock" 2>/dev/null || true
+    mkdir "$_render_lock" 2>/dev/null || true
+  fi
+  trap 'rmdir "$_render_lock" 2>/dev/null' EXIT
+fi
 
 # One python pass per call: it always prints the fallback table to stdout, and
 # on --write it also writes BOARD.md and renders BOARD.html — the table and the
@@ -430,10 +449,18 @@ with open(env["BOARD_TEMPLATE"]) as f:
 # see a half-written page; unique tmp names keep concurrent renders (the
 # background ones mutating scripts fire) from clobbering each other's tmp.
 import tempfile
+import time
 fd, tmp = tempfile.mkstemp(dir=env["BOARD_DIR"], prefix=".BOARD.html.")
 with os.fdopen(fd, "w") as f:
     f.write(tpl.replace("__BOARD_PAYLOAD__", data))
 os.replace(tmp, env["BOARD_DIR"] + "/BOARD.html")
+# Exact change token for the hot-reload poller: header fingerprinting alone
+# (second-resolution Last-Modified + Content-Length) can miss a same-second,
+# same-length rewrite — the rev file cannot.
+fd, tmp = tempfile.mkstemp(dir=env["BOARD_DIR"], prefix=".BOARD.rev.")
+with os.fdopen(fd, "w") as f:
+    f.write(str(time.time_ns()))
+os.replace(tmp, env["BOARD_DIR"] + "/BOARD.rev")
 PY
 
 if [ "$write" -eq 1 ]; then
@@ -446,7 +473,7 @@ if [ "$serve" -eq 1 ]; then
   port="${BOARD_PORT:-$(printf %s "$BOARD_DIR" | cksum | awk '{ print 8420 + ($1 % 500) }')}"
   url="http://127.0.0.1:$port/BOARD.html"
   pidfile="$BOARD_DIR/.server.pid"
-  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+  if _board_server_pid >/dev/null 2>&1; then
     echo "board server already up — open tabs hot-reload on every render: $url" >&2
   else
     # A dumb static server is all hot reload needs: the page polls its own
@@ -467,7 +494,8 @@ if [ "$serve" -eq 1 ]; then
       sleep 0.25
     done
     [ "$ready" -eq 1 ] \
-      || { rm -f "$pidfile"; die "server failed to start — port $port in use? (set BOARD_PORT)"; }
+      || { kill "$srv_pid" 2>/dev/null || true; rm -f "$pidfile"
+           die "server failed to start — port $port in use? (set BOARD_PORT)"; }
     echo "board server started: $url" >&2
     if [ -z "${BOARD_NO_OPEN:-}" ]; then
       case "$(uname)" in
