@@ -76,7 +76,8 @@ with open(env["BOARD_DIR"] + "/BOARD.md", "w") as f:
 
 # --- the interactive graph (BOARD.html) ---
 CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev", "blocked": "s_blk",
-         "needs-info": "s_info", "deferred": "s_def", "wontfix": "s_wf"}
+         "needs-info": "s_info", "deferred": "s_def", "wontfix": "s_wf",
+         "conflict": "s_conflict", "untracked": "s_untracked"}
 def cls(tid, n):
     if n["state"] == "ready-for-agent":
         return "s_elig" if eligible(tid, n) else "s_wait"
