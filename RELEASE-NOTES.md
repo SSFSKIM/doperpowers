@@ -1,5 +1,54 @@
 # Doperpowers Release Notes
 
+## v7.3.0 (2026-07-07)
+
+### Issue Tracker — a private hosted board via Cloudflare Pages + Access
+
+v7.1.0 added a hosted board through GitHub Pages, but GitHub Pages is a dead end
+for **private** repositories: it is unavailable on Free and most org plans, and
+cannot be access-restricted below GitHub Enterprise. Our own private consumer hit
+exactly this wall. This release generalizes the fix into a second, opt-in
+workflow template so any private repo can host its board privately.
+
+- **New `references/board-cloudflare-pages.yml`.** Same render step as the GitHub
+  Pages template (`board-map.sh --write` against the live issues on a runner),
+  but it deploys to Cloudflare Pages via `wrangler` and sits behind Cloudflare
+  Access — a **private, team-authenticated URL**, the only way to host a private
+  board short of GitHub Enterprise. Hardening is baked in from real-world use:
+  the setup order puts Access *before* the first deploy (a `*.pages.dev` URL is
+  public the instant a deployment exists, so deploy-first leaks issue titles for
+  a window); the token-bearing deploy step pins `wrangler` to an exact version
+  rather than pulling an arbitrary latest at runtime; and the header recommends
+  pinning the plugin checkout to a release tag's commit SHA.
+- **`board-pages.yml` (GitHub Pages) stays** for public repos, where it needs no
+  external account. The SKILL.md "Remote board" section now routes by repo
+  visibility: public → GitHub Pages, private → Cloudflare Pages + Access.
+
+## v7.2.0 (2026-07-07)
+
+### Issue Tracker — Symphony-style worker board writes
+
+A worker now writes **all** of its own ticket's *open* states directly —
+`in-progress`/`in-review` plus `blocked`/`needs-info` (an escalation is a worker
+self-describing, not a verdict, so it isn't gated behind a proposal). Terminal
+states remain out of the worker's hands: `done` is a landing, not a claim — a
+PR body's `Closes #N` auto-closes the issue on merge and `derive_state` reads it
+as done (Symphony's "done exists only after merge" semantics). Only `wontfix`
+and cross-ticket edges still route through proposals.
+
+Two mechanical gaps closed:
+
+- **`board-transition.sh` finalize path.** Re-invoking `<n> done` on an
+  already-terminal issue no longer dies — it strips residual `status:*` labels
+  and runs the epic/unblock sweeps idempotently. This is where an *auto-closed*
+  issue (which never went through the script) gets its sweeps run.
+- **`board-lint.sh`** now proposes the finalize command for a closed-but-labeled
+  issue instead of a raw `gh issue edit`, keeping the Board Write Hard Gate
+  consistent.
+- Tests: +10 assertions for the auto-close scenario end-to-end (residual-label
+  lint → finalize → epic close + eligible report → idempotent re-run); 100 PASS,
+  shell lint clean.
+
 ## v7.1.0 (2026-07-07)
 
 ### Issue Tracker — the board gets a real UI, a kanban view, and hosted visibility
