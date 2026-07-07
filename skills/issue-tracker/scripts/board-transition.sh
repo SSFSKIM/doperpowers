@@ -13,6 +13,11 @@
 # Repair path: an issue whose labels are off-machine (zero or 2+ status:*
 # labels — lint calls these untracked/conflict) may transition to any OPEN
 # state; the write normalizes the label set.
+#
+# Finalize path: re-running `<n> done` (or wontfix) on an ALREADY-terminal
+# issue is not an error — it finalizes a ticket that closed outside the
+# machine (a PR's "Closes #N" auto-close): strips residual status labels and
+# runs the terminal sweeps. Idempotent.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -45,7 +50,25 @@ cur = n["state"]
 if to not in B.STATES:
     B.die("unknown state: %s" % to)
 if to == cur:
-    B.die("#%s is already %s" % (tid, cur))
+    if cur not in B.TERMINAL:
+        B.die("#%s is already %s" % (tid, cur))
+    # Finalize: the issue reached this terminal state outside the machine
+    # (e.g. a merged PR's "Closes #N" auto-close), so the label strip and the
+    # terminal sweeps never ran. Run them now; safe to re-run.
+    lines = []
+    if n["status_labels"]:
+        B.edit_labels(tid, remove=[B.STATUS_PREFIX + s for s in n["status_labels"]])
+        n["status_labels"] = []
+        lines.append("#%s: %s — stripped residual status labels" % (tid, cur))
+    if note:
+        B.comment(tid, "[board] %s: %s" % (to, note))
+    B.close_epics(tickets, n.get("parent"), lines)
+    out = (B.newly_eligible(tickets, tid) if to == "done" else []) + lines
+    for ln in out:
+        print(ln)
+    if not out:
+        print("#%s: already %s — nothing to finalize" % (tid, cur))
+    raise SystemExit(0)
 if cur in (B.UNTRACKED, B.CONFLICT):
     # repair: any open state is reachable; terminal still goes through the machine
     if to in B.TERMINAL:

@@ -317,6 +317,40 @@ assert_equals "$(state "s['issues']['10']['title']")" "Unlinked new" "unlinked t
 assert_equals "$(state "s['issues']['10']['blockedBy']")" "[8]" "created ticket got its edges"
 assert_contains "$(state "s['issues']['10']['body']")" "spawned-by: #8" "created ticket got provenance"
 
+# ---- finalize: PR-merge auto-close ("Closes #N") -----------------------------
+echo "finalize (merge auto-close):"
+run board-register.sh "Epic: delta" enhancement >/dev/null                    # 11
+run board-register.sh "D1" enhancement --parent 11 >/dev/null                 # 12
+run board-register.sh "D2" enhancement --blocked-by 12 >/dev/null             # 13
+run board-transition.sh 12 in-progress >/dev/null
+run board-transition.sh 12 in-review "pr open" --pr https://github.com/test/repo/pull/33 >/dev/null
+# GitHub merges the PR: "Closes #12" auto-closes the issue — labels stay put,
+# no script ran, so the sweeps never fired.
+python3 - <<'FIX'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["12"]["state"] = "CLOSED"
+s["issues"]["12"]["stateReason"] = "COMPLETED"
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+FIX
+set +e
+lint_out="$(run board-lint.sh 2>&1)"
+set -e
+assert_contains "$lint_out" "FAIL #12: closed but still labeled" "auto-closed leftover label named"
+assert_contains "$lint_out" "board-transition.sh 12 done" "lint FIX points at finalize"
+
+out="$(run board-transition.sh 12 "done")"
+assert_contains "$out" "#12: done — stripped residual status labels" "finalize strips labels"
+assert_not_contains "$(state "s['issues']['12']['labels']")" "status:in-review" "stale in-review label gone"
+assert_contains "$out" "#11: in-progress → done" "finalize closes the epic"
+assert_equals "$(state "s['issues']['11']['stateReason']")" "COMPLETED" "epic closed as completed"
+assert_contains "$out" "now eligible: #13" "finalize reports unblocked dependent"
+
+out="$(run board-transition.sh 12 "done")"                          # idempotent re-run
+assert_contains "$out" "now eligible: #13" "finalize re-run is safe"
+assert_fails run board-transition.sh 12 wontfix "flip"            # done → wontfix still illegal
+assert_fails run board-transition.sh 13 ready-for-agent           # already ready (open states still die)
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

@@ -46,9 +46,8 @@ for tid in sorted(tickets, key=int):
              "board-transition.sh %s <state> — the write normalizes the label set" % tid)
     if n["state"] in B.TERMINAL and n["status_labels"]:
         fail(tid, "closed but still labeled: %s" % ", ".join(n["status_labels"]),
-             "gh issue edit %s -R %s %s" %
-             (tid, B.repo(),
-              " ".join("--remove-label %s%s" % (B.STATUS_PREFIX, s) for s in n["status_labels"])))
+             "board-transition.sh %s %s — finalize: strips labels + runs the terminal sweeps"
+             % (tid, n["state"]))
     if n["state"] in ("blocked", "needs-info") and not n.get("note"):
         fail(tid, "%s without a note" % n["state"],
              "board-transition.sh %s %s \"<why>\" — or move it on" % (tid, n["state"]))

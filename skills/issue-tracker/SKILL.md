@@ -17,9 +17,10 @@ from any checkout. `doperpowers/issue-tracker/` in the consumer repo survives
 only as a gitignored render cache for `board-map.sh`.
 
 **You (the main session) are the orchestrator — the board's judge.** Daemons
-never write the board beyond their own ticket's state; they end turns with
-*proposal blocks* that you judge and apply. All writes go through the scripts
-(the Hard Gate below).
+write only their OWN ticket's open states (self-descriptions and
+escalations); terminal states are never theirs — `done` arrives via the PR
+merge itself, `wontfix` and cross-ticket changes reach you as *proposal
+blocks* you judge. All writes go through the scripts (the Hard Gate below).
 
 ## The Board Write Hard Gate (put this in the consumer CLAUDE.md)
 
@@ -39,7 +40,7 @@ unattended repos).
 | | writes the board? | how it talks |
 |---|---|---|
 | **Orchestrator** (main session — you) | yes, via scripts | runs the toolkit; judges proposals |
-| **Worker** (daemon, one ticket each) | only its OWN ticket's state, via `board-transition.sh` | reads its issue; ends turns with a proposal block |
+| **Worker** (daemon, one ticket each) | only its OWN ticket's OPEN states, via `board-transition.sh` | reads its issue; escalates via its ticket's state + turn-end message; proposes anything else |
 
 ## State vocabulary
 
@@ -52,7 +53,7 @@ unattended repos).
 | `blocked` | open + `status:blocked` | non-ticket blockage: credentials / auth / human hand | **required** |
 | `needs-info` | open + `status:needs-info` | waiting on knowledge: research or a human taste/product decision | **required** |
 | `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it) | PR link |
-| `done` | **closed — completed** | landed — verify the merge before flipping | optional |
+| `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |
 
@@ -80,7 +81,7 @@ checkout's repo.
 | script | does |
 |---|---|
 | `board-register.sh <title> <category> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; prints `<number> <url>` — then YOU flesh out the pre-spec body (`gh issue edit <n> --body-file …`) |
-| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues |
+| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-list.sh [state]` | board view; `ELIGIBLE` tag = dispatchable |
@@ -108,11 +109,17 @@ first — on non-Enterprise plans a Pages site is public even for a private repo
 3. `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>` (from
    `orchestrating-daemons` — always a worktree; workers write code).
 4. `board-bind.sh <uuid> <n>` then `board-transition.sh <n> in-progress`.
-5. When a daemon's turn ends, judge its proposal block (per
-   `orchestrating-daemons`: answer / queue for the human / wake the human),
-   then apply or refuse with `board-transition.sh`.
-6. On `done`: verify the PR actually landed first — `done` means *landed*,
-   not "worker says finished". Append an outcome comment to the issue.
+5. When a daemon's turn ends, judge it (per `orchestrating-daemons`: answer /
+   queue for the human / wake the human). Workers move their OWN ticket's
+   open states themselves — what lands on you is their *questions*
+   (blocked/needs-info notes), wontfix suggestions, and cross-ticket
+   proposals; apply or refuse those with `board-transition.sh`.
+6. `done` arrives by landing, not by claim: the worker's PR body says
+   `Closes #<n>`, so the merge itself auto-closes the ticket. Then finalize —
+   `board-transition.sh <n> done` strips the stale in-review label and runs
+   the epic/unblock sweeps (lint's FIX line says the same) — and append an
+   outcome comment. A manual `done` flip remains for non-PR work; verify it
+   landed first.
 
 **Reconcile-on-wake:** been away? `board-reconcile.sh` first. It lists what
 the daemons proposed while you were gone, what needs respawning, and any
@@ -136,21 +143,27 @@ Reliability and human-intent alignment come before speed, and you are NOT
 unattended: every turn you end is read by an orchestrator who answers you or
 elevates the question to a human. So the moment ANY part of the task is
 ambiguous — intent, scope, a design/taste fork, an acceptance detail — do NOT
-guess and do NOT proceed. BRAINSTORM IT: run doperpowers:brainstorming and
-surface each open question by ending your turn with a "needs-info" proposal
-stating the question crisply; resume once you have the decision. Autonomy is
-earned only where the brief is genuinely unambiguous — everywhere else, ask.
+guess and do NOT proceed. BRAINSTORM IT: run doperpowers:brainstorming, move
+your ticket to needs-info with the question as the note, and END YOUR TURN
+stating it crisply; resume once you have the decision. Autonomy is earned
+only where the brief is genuinely unambiguous — everywhere else, ask.
 
-You may move your OWN ticket only, via the issue-tracker scripts:
-board-transition.sh <N> in-progress when you start; in-review with --pr when
-your PR opens. Every other board change is a proposal — end your turn with a
-single-line JSON proposal block:
+Your ticket's OPEN states are yours to write — your OWN ticket only, always
+via the issue-tracker scripts (never raw gh): board-transition.sh <N>
+in-progress when you start; in-review with --pr when your PR opens;
+blocked / needs-info (note required) the moment you hit an escalation — set
+the state yourself, then END YOUR TURN with the question stated crisply.
+
+You NEVER write a terminal state. done is not claimed, it is landed: your PR
+body MUST say "Closes #<N>" so the merge itself closes the ticket. wontfix is
+the orchestrator's call. To suggest either — or any change to ANOTHER
+ticket — end your turn with a single-line JSON proposal block:
 {"ticket":"<N>","from":"<current>","to":"<proposed>","reason":"…","evidence":"…"}
 
-Escalation: waiting on an action/precondition (credentials, access, another
-ticket's work) → propose "blocked". Waiting on knowledge or a human
-taste/product decision → propose "needs-info". State the question crisply and
-END YOUR TURN — never guess above your scope, never expand it.
+Escalation discriminant: waiting on an action/precondition (credentials,
+access, another ticket's work) → blocked. Waiting on knowledge or a human
+taste/product decision → needs-info. Never guess above your scope, never
+expand it.
 ```
 
 ## The ticket body (pre-spec)
@@ -178,6 +191,10 @@ records *why* it was cut, so nobody re-litigates it later.
 
 ## Edge cases
 
+- A merged PR auto-closed its ticket (`Closes #N`) → the board already reads
+  it `done`; the stale status label and unswept epics are what's left. Run
+  `board-transition.sh <n> done` to finalize — reconcile's lint pass names
+  these tickets.
 - `orphaned` in reconcile → the daemon died: respawn, re-bind, resume the ticket.
 - A wontfix blocker makes a dependent `STUCK` — re-cut the edge
   (`board-edge.sh <n> --unblock <blocker>`) or wontfix the dependent; that is
