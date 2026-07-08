@@ -70,6 +70,9 @@
   .s_def  { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent; border-style: dashed; }
   .s_wf   { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent;
             border-style: dashed; opacity: .72; }
+  /* close-candidate kanban column (derived: linked PRs all merged/closed, ≥1
+     merged, issue still open) — cards inside keep their own state palette */
+  .s_cand { --bd: #06b6d4; --bgc: rgba(6,182,212,.08); --tx: #67e8f9; --glow: rgba(6,182,212,.20); }
   /* GitHub-derived error states — not part of the machine, so they scream: a
      conflict (2+ status labels) is an alarm, an untracked (no status) needs triage */
   .s_conflict { --bd: #ec4899; --bgc: rgba(236,72,153,.12); --tx: #f9a8d4; --glow: rgba(236,72,153,.30); border-width: 2px; }
@@ -192,8 +195,9 @@
     // states beyond the machine's own (conflict/untracked, or anything a
     // future label adds). Give every state present a column rather than
     // silently dropping its tickets.
-    KB_STATES = ["ready-for-agent", "in-progress", "in-review", "blocked",
-                 "needs-info", "deferred", "conflict", "untracked", "done", "wontfix"];
+    KB_STATES = ["ready-for-agent", "in-progress", "in-review", "close-candidate",
+                 "blocked", "needs-info", "deferred", "conflict", "untracked",
+                 "done", "wontfix"];
     BOARD.nodes.forEach(function (n) { if (KB_STATES.indexOf(n.state) < 0) KB_STATES.push(n.state); });
     document.getElementById("meta").textContent =
       BOARD.meta.count + " tickets · updated " + BOARD.meta.updated + (LIVE ? " · live" : "");
@@ -209,7 +213,8 @@
   var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
                     "ready-for-agent": "s_elig", "blocked": "s_blk", "needs-info": "s_info",
                     "deferred": "s_def", "wontfix": "s_wf",
-                    "conflict": "s_conflict", "untracked": "s_untracked" };
+                    "conflict": "s_conflict", "untracked": "s_untracked",
+                    "close-candidate": "s_cand" };
 
   function el(tag, text, cls) {
     var n = document.createElement(tag);
@@ -267,6 +272,7 @@
       return "▸ " + epicById[n.id].descendants.length + " hidden";
     var bits = [];
     if (n.cls === "s_wait") bits.push(n.label);                   // "waiting: #6, #7"
+    if (n.close_candidate) bits.push("CLOSE?");
     if (n.priority) bits.push(n.priority);
     if (n.category) bits.push(n.category);
     if (n.pr) bits.push("PR");
@@ -354,6 +360,14 @@
   // Chips keep working (a hidden state's column drops out — done is hidden by
   // default here too); epic collapse is a graph concept and is ignored.
   // KB_STATES itself is payload-derived and lives in bindData.
+  // A close candidate leaves its state column so "truly to-do" and "ready to
+  // close" read apart — except actively-worked states (in-progress/in-review),
+  // where a merged part-1 PR is normal mid-flight shape: those stay put and
+  // only carry the CLOSE? mark on the card.
+  function colOf(n) {
+    return n.close_candidate && n.state !== "in-progress" && n.state !== "in-review"
+      ? "close-candidate" : n.state;
+  }
   var KB_CORE = { "ready-for-agent": 1, "in-progress": 1, "in-review": 1, "done": 1 };
   function kbCard(n) {
     var card = el("div", null, "node " + n.cls);
@@ -365,6 +379,7 @@
     var bits = [];
     if (epicById[n.id]) bits.push("epic · " + epicById[n.id].descendants.length);
     if (n.cls === "s_wait") bits.push(n.label);
+    if (n.close_candidate) bits.push("CLOSE?");
     if (n.priority) bits.push(n.priority);
     if (n.category) bits.push(n.category);
     if (n.pr) bits.push("PR");
@@ -380,7 +395,7 @@
     KB_STATES.forEach(function (s) {
       if (hiddenStates[s]) return;
       var items = BOARD.nodes.filter(function (n) {
-        return n.state === s && !(eligibleOnly && !n.eligible);
+        return colOf(n) === s && !(eligibleOnly && !n.eligible);
       });
       if (!items.length && !KB_CORE[s]) return;     // paused/terminal columns only when populated
       // Column order = dispatch order: priority rank (P0 first, unprioritized
@@ -495,6 +510,7 @@
     var rows = el("div", null, "drows");
     function add(label, v) { if (v) rows.appendChild(detailRow(label, v)); }
     add("state", n.label);
+    if (n.close_candidate) add("close?", "all linked PRs merged/closed — verify & close");
     add("priority", n.priority);
     add("category", n.category);
     add("note", n.note);
@@ -513,7 +529,7 @@
 
   // Header: done/total progress (counts ALL tickets, filters included) + live counts.
   function updateHeader() {
-    var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, blk: 0, info: 0 };
+    var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, blk: 0, info: 0, cand: 0 };
     BOARD.nodes.forEach(function (n) {
       if (n.state === "done") c.done++;
       else if (n.state === "in-progress") c.prog++;
@@ -521,12 +537,14 @@
       else if (n.state === "blocked") c.blk++;
       else if (n.state === "needs-info") c.info++;
       if (n.eligible) c.elig++;
+      if (colOf(n) === "close-candidate") c.cand++;
     });
     document.getElementById("progfill").style.width = (total ? Math.round(100 * c.done / total) : 0) + "%";
     document.getElementById("progtxt").textContent = total ? c.done + "/" + total + " done" : "empty board";
     document.getElementById("hcounts").textContent =
       c.prog + " running · " + c.rev + " review · " + c.elig + " eligible · "
-      + c.blk + " blocked · " + c.info + " needs-info";
+      + c.blk + " blocked · " + c.info + " needs-info"
+      + (c.cand ? " · " + c.cand + " close?" : "");
   }
 
   function buildChips() {

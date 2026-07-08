@@ -85,12 +85,12 @@ checkout's repo.
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
-| `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable |
+| `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see The dispatch loop) |
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
 | `board-show.sh <n>` | node + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables, then a lint pass |
-| `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required, no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`). `FAIL … FIX: …` lines, exit 1 |
+| `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required, no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`). Also WARNs close candidates (below). `FAIL … FIX: …` lines, exit 1 |
 | `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration: push a legacy `board.json` into GitHub (dry-run by default) |
 
 ## Remote board (hosted)
@@ -117,7 +117,13 @@ pick by repo visibility:
 ## The dispatch loop
 
 1. `board-list.sh` → pick the TOP `ELIGIBLE` ticket — rows already print in
-   dispatch order (P0 before P1 before …; unprioritized last).
+   dispatch order (P0 before P1 before …; unprioritized last). A row tagged
+   `CLOSE?` is a **close candidate**: every linked PR merged/closed (≥1
+   merged) yet the issue is open — usually a PR that skipped `Closes #N`.
+   Triage it before spawning anything: if the work landed, walk it to `done`
+   (or `wontfix "superseded by PR"`); if work genuinely remains, dispatch as
+   normal. Derived from GitHub PR state on every snapshot — never a label,
+   never auto-closed.
 2. Build a **self-contained spawn prompt**: the full issue body (`gh issue
    view <n>`) + the Worker Protocol block below.
 3. `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>` (from
@@ -231,6 +237,12 @@ at where its remainder went.
   it `done`; the stale status label and unswept epics are what's left. Run
   `board-transition.sh <n> done` to finalize — reconcile's lint pass names
   these tickets.
+- A merged PR did NOT close its ticket (no `Closes #N`) → the ticket becomes
+  a **close candidate**: lint WARNs it, `board-list.sh` tags it `CLOSE?`, and
+  the kanban view pulls it into a close-candidate column (in-progress /
+  in-review tickets stay put — a merged part-1 PR mid-flight is normal, they
+  only carry the mark). Human/orchestrator verifies and closes; never
+  auto-closed.
 - `orphaned` in reconcile → the daemon died: respawn, re-bind, resume the ticket.
 - A wontfix blocker makes a dependent `STUCK` — re-cut the edge
   (`board-edge.sh <n> --unblock <blocker>`) or wontfix the dependent; that is

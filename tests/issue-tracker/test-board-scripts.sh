@@ -469,6 +469,65 @@ assert_contains "$out" "now eligible: #13" "finalize re-run is safe"
 assert_fails run board-transition.sh 12 wontfix "flip"            # done → wontfix still illegal
 assert_fails run board-transition.sh 13 ready-for-agent           # already ready (open states still die)
 
+# ---- close candidate (derived signal, never a label) --------------------------
+# Open ticket + every linked PR merged/closed + ≥1 merged → CLOSE? in list,
+# WARN in lint (unless actively worked), marked in BOARD.md, flagged in the
+# html payload. All-CLOSED-unmerged (abandoned attempt) and any OPEN linked PR
+# are NOT candidates.
+echo "close-candidate:"
+run board-register.sh "Cand ready" enhancement P2 >/dev/null            # 14: closes MERGED + xref CLOSED
+run board-register.sh "Abandoned only" enhancement P2 >/dev/null        # 15: closes CLOSED (no merge)
+run board-register.sh "Still open PR" enhancement P2 >/dev/null         # 16: MERGED + xref OPEN
+python3 - <<'PRS'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["14"]["closesPRs"] = [{"number": 70, "url": "https://github.com/test/repo/pull/70", "state": "MERGED"}]
+s["issues"]["14"]["xrefPRs"]   = [{"number": 71, "url": "https://github.com/test/repo/pull/71", "state": "CLOSED"}]
+s["issues"]["15"]["closesPRs"] = [{"number": 72, "url": "https://github.com/test/repo/pull/72", "state": "CLOSED"}]
+s["issues"]["16"]["closesPRs"] = [{"number": 73, "url": "https://github.com/test/repo/pull/73", "state": "MERGED"}]
+s["issues"]["16"]["xrefPRs"]   = [{"number": 74, "url": "https://github.com/test/repo/pull/74", "state": "OPEN"}]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PRS
+out="$(run board-list.sh)"
+line14="$(printf '%s\n' "$out" | grep '^#14 ')"
+assert_contains "$line14" "CLOSE?" "all-landed ticket tagged CLOSE?"
+assert_contains "$line14" "ELIGIBLE" "CLOSE? does not eat eligibility"
+assert_not_contains "$(printf '%s\n' "$out" | grep '^#15 ')" "CLOSE?" "all-closed-unmerged is NOT a candidate"
+assert_not_contains "$(printf '%s\n' "$out" | grep '^#16 ')" "CLOSE?" "an open linked PR is NOT a candidate"
+
+set +e
+lint_out="$(run board-lint.sh 2>&1)"
+set -e
+assert_contains "$lint_out" "WARN #14: all 2 linked PR(s) merged/closed" "candidate WARNed"
+assert_not_contains "$lint_out" "WARN #15: all" "abandoned-only not WARNed"
+assert_not_contains "$lint_out" "WARN #16: all" "open-PR not WARNed"
+
+out="$(run board-map.sh)"
+assert_contains "$out" "| #14 | P2 | ELIGIBLE · CLOSE? |" "md table marks the candidate"
+run board-map.sh --write >/dev/null 2>&1
+# pull the per-node flag out of the embedded payload (grep can't scope to a node)
+ccflag() { python3 - "$WORK/doperpowers/issue-tracker/BOARD.html" "$1" <<'PY'
+import json, re, sys
+h = open(sys.argv[1]).read()
+m = re.search(r'<script id="board-data" type="application/json">(.*?)</script>', h, re.S)
+d = json.loads(m.group(1).replace('\\u003c', '<').replace('\\u003e', '>').replace('\\u0026', '&'))
+print([x for x in d["nodes"] if x["id"] == sys.argv[2]][0]["close_candidate"])
+PY
+}
+assert_equals "$(ccflag '#14')" "True" "html payload flags the candidate"
+assert_equals "$(ccflag '#15')" "False" "html payload keeps non-candidates false"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"close-candidate"' "kanban column vocabulary present"
+
+# actively-worked candidate: lint goes quiet (mid-flight merged PR is normal),
+# the list still states the fact.
+run board-transition.sh 14 in-progress >/dev/null
+set +e
+lint_out2="$(run board-lint.sh 2>&1)"
+set -e
+assert_not_contains "$lint_out2" "WARN #14: all" "active (in-progress) candidate not WARNed"
+out="$(run board-list.sh)"
+assert_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "active candidate still tagged in list"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

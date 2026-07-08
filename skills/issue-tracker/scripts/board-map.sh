@@ -112,8 +112,11 @@ for tid in order:
     # back to the manual pr: meta so a hand-entered PR URL still shows.
     prs = n.get("prs") or []
     pr_cell = " ".join("#%s" % p["num"] for p in prs) or (n.get("pr") or "")
+    state_cell = state_label(tid, n)
+    if n.get("close_candidate"):
+        state_cell += " · CLOSE?"
     md.append("| #%s | %s | %s | %s | %s |"
-              % (tid, n.get("priority") or "", state_label(tid, n), title, pr_cell))
+              % (tid, n.get("priority") or "", state_cell, title, pr_cell))
 table = "\n".join(md)
 print(table)
 
@@ -414,6 +417,7 @@ for t in order:
         "spawned_by": did(n["spawned_by"]) if n.get("spawned_by") else None,
         "relates_to": [did(r) for r in n.get("relates_to", []) or []],
         "priority": n.get("priority"),
+        "close_candidate": bool(n.get("close_candidate")),
         "branch": n.get("branch"), "pr": n.get("pr"), "prs": n.get("prs") or [],
         "md": n.get("url"),
         "created": n.get("created"), "updated": n.get("updated"),

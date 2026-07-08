@@ -16,6 +16,9 @@
 #   WARN in-progress issue without an assignee
 #   WARN open issue with no priority:* label (legacy — backfill gradually;
 #        registration forces one on every new ticket)
+#   WARN close candidate: open issue whose linked PRs all merged/closed with
+#        at least one merged (skips in-progress/in-review — mid-flight tickets
+#        legitimately have a part-1 PR merged). Verify & close, or re-scope.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -73,6 +76,16 @@ for tid in sorted(tickets, key=int):
                  "board-priority.sh %s P2 — the write normalizes the label set" % tid)
         elif not n["priority_labels"]:
             warn(tid, "no priority label (backfill: board-priority.sh %s <P0..P3>)" % tid)
+    # Close candidate (derived, never a label): every linked PR landed or died,
+    # at least one merged, yet the issue is open — usually a PR that skipped
+    # "Closes #N". A triage cue, not a violation: no one-line FIX exists
+    # (ready-for-agent → done is deliberately not a legal transition), so the
+    # judgment paths are named instead. ACTIVE states are normal mid-flight
+    # shape and skipped (D4 in the ExecPlan).
+    if n.get("close_candidate") and n["state"] not in B.ACTIVE:
+        warn(tid, "all %d linked PR(s) merged/closed — verify & close "
+             "(done if landed / wontfix if superseded), or re-scope"
+             % len(n["prs"]))
 
 # Dependency cycles (GitHub does not forbid mutual blocking).
 color = {}

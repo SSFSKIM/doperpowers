@@ -21,6 +21,10 @@ OPEN_STATES = ("ready-for-agent", "in-progress", "blocked", "needs-info",
                "in-review", "deferred")
 TERMINAL = ("done", "wontfix")
 STATES = OPEN_STATES + TERMINAL
+# Actively-worked states: a close_candidate in one of these is normal
+# mid-flight shape (part-1 PR merged, part 2 coming) — surfaces that nag or
+# relocate (lint WARN, kanban column) skip them; passive displays still mark.
+ACTIVE = ("in-progress", "in-review")
 BIRTH = ("ready-for-agent", "needs-info", "blocked", "deferred")
 NOTE_REQUIRED = ("blocked", "needs-info", "wontfix")
 PULLABLE = ("ready-for-agent", "needs-info", "blocked", "deferred")
@@ -223,10 +227,11 @@ def snapshot(refresh=False):
                                                    "state": src["state"],
                                                    "draft": src.get("isDraft", False), "rel": "ref"})
             pr_list = sorted(prs.values(), key=lambda p: p["num"])
+            state = derive_state(it["state"], it.get("stateReason"), status)
             tickets[str(it["number"])] = {
                 "id": it["id"],
                 "title": it["title"],
-                "state": derive_state(it["state"], it.get("stateReason"), status),
+                "state": state,
                 "status_labels": status,
                 # priority: the single valid grade, else None; priority_labels
                 # keeps the raw list so lint can tell missing from conflicted.
@@ -241,6 +246,13 @@ def snapshot(refresh=False):
                 "branch": meta.get("branch"),
                 "pr": meta.get("pr"),
                 "prs": pr_list,
+                # Derived, never a label: open ticket whose linked PRs all
+                # landed or died, with at least one actually MERGED (all-CLOSED
+                # = abandoned attempts, not delivered work). A triage cue —
+                # closing stays a human/orchestrator call.
+                "close_candidate": state not in TERMINAL and bool(pr_list)
+                    and all(p["state"] in ("MERGED", "CLOSED") for p in pr_list)
+                    and any(p["state"] == "MERGED" for p in pr_list),
                 "labels": [l for l in labels
                            if not l.startswith(STATUS_PREFIX)
                            and not l.startswith(PRIORITY_PREFIX)

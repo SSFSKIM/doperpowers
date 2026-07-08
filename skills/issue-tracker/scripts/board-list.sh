@@ -44,6 +44,10 @@ for tid in sorted(tickets, key=rank):
             tags.append("waiting:" + ",".join("#%s" % b for b in blockers))
             if any(tickets.get(b, {}).get("state") == "wontfix" for b in blockers):
                 tags.append("STUCK(wontfix blocker)")
+    # Derived close-candidate cue (all linked PRs merged/closed, ≥1 merged):
+    # verify & close before dispatching — the ticket may already be done.
+    if n.get("close_candidate"):
+        tags.append("CLOSE?")
     extra = ("  [%s]" % " ".join(tags)) if tags else ""
     # One row per ticket: flatten embedded newlines so no field can spoof rows.
     title = " ".join(n["title"].split())
