@@ -1,3 +1,17 @@
+This repository ("doperpowers") is a fork of https://github.com/obra/superpowers
+and contains code under two different licenses. See NOTICE for the full
+breakdown of which files are which.
+
+1. Code inherited from upstream (obra/superpowers), including the inherited
+   portions of files this fork has modified, remains under the MIT License
+   below, Copyright (c) 2025 Jesse Vincent. This notice is preserved in full
+   and unmodified, as required by its own terms.
+2. Files created new by this fork (listed in NOTICE) are original work by
+   Minhyeok Kim and are NOT covered by the MIT License below. They are
+   licensed separately under LICENSE-FORK (All Rights Reserved).
+
+------------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2025 Jesse Vincent
