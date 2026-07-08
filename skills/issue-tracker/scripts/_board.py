@@ -161,9 +161,11 @@ query($owner:String!, $name:String!, $cursor:String) {
         parent { number }
         blockedBy(first:50) { nodes { number } }
         closedByPullRequestsReferences(first:20, includeClosedPrs:true) {
+          totalCount
           nodes { number url state isDraft }
         }
         timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], first:40) {
+          totalCount
           nodes {
             ... on CrossReferencedEvent {
               source { __typename ... on PullRequest { number url state isDraft } }
@@ -214,18 +216,26 @@ def snapshot(refresh=False):
             # (a "Closes #N" merge never writes a pr: meta), cross-refs catch PRs
             # that merely mention the issue. Keyed by number → deduped; a PR that
             # both closes and cross-refs keeps the stronger "closes" relation.
+            closes, timeline = it["closedByPullRequestsReferences"], it["timelineItems"]
             prs = {}
-            for pr in it["closedByPullRequestsReferences"]["nodes"]:
+            for pr in closes["nodes"]:
                 if pr:
                     prs[pr["number"]] = {"num": pr["number"], "url": pr["url"],
                                          "state": pr["state"],
                                          "draft": pr.get("isDraft", False), "rel": "closes"}
-            for tl in it["timelineItems"]["nodes"]:
+            for tl in timeline["nodes"]:
                 src = (tl or {}).get("source") or {}
                 if src.get("__typename") == "PullRequest":
                     prs.setdefault(src["number"], {"num": src["number"], "url": src["url"],
                                                    "state": src["state"],
                                                    "draft": src.get("isDraft", False), "rel": "ref"})
+            # Both PR connections are fetched capped (first:20/40, unpaginated).
+            # Truncation is harmless for DISPLAY, but the close-candidate
+            # predicate asserts "ALL linked PRs landed" — over a truncated list
+            # that claim is unfounded (an uncounted PR may be open), so the
+            # predicate requires the fetch to be provably complete.
+            prs_complete = (closes["totalCount"] <= len(closes["nodes"])
+                            and timeline["totalCount"] <= len(timeline["nodes"]))
             pr_list = sorted(prs.values(), key=lambda p: p["num"])
             state = derive_state(it["state"], it.get("stateReason"), status)
             tickets[str(it["number"])] = {
@@ -249,8 +259,11 @@ def snapshot(refresh=False):
                 # Derived, never a label: open ticket whose linked PRs all
                 # landed or died, with at least one actually MERGED (all-CLOSED
                 # = abandoned attempts, not delivered work). A triage cue —
-                # closing stays a human/orchestrator call.
+                # closing stays a human/orchestrator call. prs_complete guards
+                # the "all" against a capped fetch (see above): when truncated,
+                # fail conservative — no candidate rather than a false one.
                 "close_candidate": state not in TERMINAL and bool(pr_list)
+                    and prs_complete
                     and all(p["state"] in ("MERGED", "CLOSED") for p in pr_list)
                     and any(p["state"] == "MERGED" for p in pr_list),
                 "labels": [l for l in labels

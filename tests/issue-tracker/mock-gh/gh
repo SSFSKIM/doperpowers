@@ -174,15 +174,22 @@ def main():
                     "assignees": {"nodes": [{"login": a} for a in it["assignees"]]},
                     "parent": {"number": it["parent"]} if it.get("parent") else None,
                     "blockedBy": {"nodes": [{"number": b} for b in it["blockedBy"]]},
-                    "closedByPullRequestsReferences": {"nodes": [
-                        {"number": p["number"], "url": p["url"],
-                         "state": p.get("state", "MERGED"), "isDraft": p.get("isDraft", False)}
-                        for p in it.get("closesPRs", [])]},
-                    "timelineItems": {"nodes": [
-                        {"source": {"__typename": "PullRequest", "number": p["number"],
-                                    "url": p["url"], "state": p.get("state", "OPEN"),
-                                    "isDraft": p.get("isDraft", False)}}
-                        for p in it.get("xrefPRs", [])]},
+                    # totalCount mirrors the real API: the connection's full
+                    # size, which can exceed the returned nodes (capped fetch).
+                    # Seed keys closesTotal/xrefTotal simulate that truncation.
+                    "closedByPullRequestsReferences": {
+                        "totalCount": it.get("closesTotal", len(it.get("closesPRs", []))),
+                        "nodes": [
+                            {"number": p["number"], "url": p["url"],
+                             "state": p.get("state", "MERGED"), "isDraft": p.get("isDraft", False)}
+                            for p in it.get("closesPRs", [])]},
+                    "timelineItems": {
+                        "totalCount": it.get("xrefTotal", len(it.get("xrefPRs", []))),
+                        "nodes": [
+                            {"source": {"__typename": "PullRequest", "number": p["number"],
+                                        "url": p["url"], "state": p.get("state", "OPEN"),
+                                        "isDraft": p.get("isDraft", False)}}
+                            for p in it.get("xrefPRs", [])]},
                 })
             print(json.dumps({"data": {"repository": {"issues": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None},

@@ -528,6 +528,18 @@ assert_not_contains "$lint_out2" "WARN #14: all" "active (in-progress) candidate
 out="$(run board-list.sh)"
 assert_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "active candidate still tagged in list"
 
+# a truncated PR fetch (connection totalCount exceeds the capped nodes the
+# query returns) must not claim "all PRs landed" — an uncounted PR may be
+# open, so the candidate is conservatively disqualified.
+python3 - <<'TRUNC'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["14"]["closesTotal"] = 25            # 25 linked PRs, only 1 fetched
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+TRUNC
+out="$(run board-list.sh)"
+assert_not_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "truncated PR fetch disqualifies the candidate"
+
 # template view logic (kanban relocation + chip filtering) runs under node —
 # the only surface a shell test can't execute. Skipped, not failed, where node
 # is absent (the toolkit itself never needs node; this guards the template).
