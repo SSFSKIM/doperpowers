@@ -154,7 +154,11 @@ ORIENT before anything else: the PR diff against its base
 (git diff origin/<base>...HEAD), the PR body, and ticket #<N>'s brief.
 
 REVIEW ENGINE: run the codex reviewer from the worktree root:
-  node <codex-companion-path> review --wait --base origin/<base>
+  node <codex-companion-path> adversarial-review --wait --base origin/<base> \
+    "Review PR #<PR>: <title>"
+(adversarial-review, not review: only that subcommand returns the structured
+verdict/severity output the rubrics key on — stdout carries a "Verdict:
+approve|needs-attention" line and "- [severity] title (file:lines)" findings.)
 If it refuses because a review is already in progress, retry with backoff up
 to 30 minutes, then fall back to a fresh Claude reviewer subagent at high
 effort over the same diff. Record in the review-trail comment which engine
@@ -263,10 +267,10 @@ protocol text — and are expected to be tuned from shakedown evidence.
 
 ## Assumptions to verify at plan time
 
-- `codex-companion.mjs review` emits the structured JSON of
-  `schemas/review-output.schema.json` (verdict / findings with severity +
-  confidence) on stdout. If it is prose-only, the worker extracts
-  verdict/severity from the text — same rubrics, fuzzier extraction.
+- ~~`codex-companion.mjs review` emits the structured JSON of
+  `schemas/review-output.schema.json`~~ — RESOLVED at plan time: it does not;
+  `adversarial-review` does (see Surprises & Discoveries). The protocol uses
+  `adversarial-review`.
 - The openai-codex plugin's companion script path is resolvable from a daemon
   session (newest version under
   `~/.claude/plugins/cache/openai-codex/codex/*/scripts/`).
@@ -387,6 +391,16 @@ protocol text — and are expected to be tuned from shakedown evidence.
   Evidence: `skills/orchestrating-daemons/scripts/daemon-spawn.sh:37-40`;
   git's one-branch-one-worktree rule.
 
+- Observation: the codex companion's plain `review` subcommand (what
+  `/codex:review` runs) returns free text only; the structured
+  verdict/severity JSON of `schemas/review-output.schema.json` is produced
+  solely by `adversarial-review`, whose rendered stdout carries a parseable
+  `Verdict: approve|needs-attention` line and `- [severity] title
+  (file:lines)` finding lines.
+  Evidence: `codex-companion.mjs:415` passes `outputSchema` only on the
+  adversarial path; `lib/render.mjs` `renderReviewResult` prints the
+  `Verdict:` / `[severity]` lines (openai-codex plugin 1.0.5).
+
 - Observation: ida-solution stacks PRs onto integration branches
   (`feat/mN-*`), so GitHub's `closingIssuesReferences` is empty for them and
   native auto-close never fires; PR base refs vary per PR.
@@ -402,3 +416,7 @@ Pending — written at finish.
 - 2026-07-08: Initial spec from brainstorm (controlled track). Decision Log
   seeded with the approach fork, trigger fork, merge-authority design,
   deploy scope, and the receiving-code-review amendment.
+- 2026-07-08 (plan-writing): review engine corrected `review` →
+  `adversarial-review` — plan-time code inspection showed only the
+  adversarial path returns the structured verdict/severity the rubrics need.
+  Assumption resolved, protocol draft updated, discovery recorded.
