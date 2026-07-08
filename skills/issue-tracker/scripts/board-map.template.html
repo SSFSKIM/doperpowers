@@ -394,8 +394,11 @@
     kb.textContent = "";
     KB_STATES.forEach(function (s) {
       if (hiddenStates[s]) return;
+      // hiddenBy() (real state + ELIGIBLE-only), not just the column skip:
+      // a relocated close candidate sits in the synthetic column, so hiding
+      // its REAL state's chip must still hide the card (graph view parity).
       var items = BOARD.nodes.filter(function (n) {
-        return colOf(n) === s && !(eligibleOnly && !n.eligible);
+        return colOf(n) === s && !hiddenBy(n);
       });
       if (!items.length && !KB_CORE[s]) return;     // paused/terminal columns only when populated
       // Column order = dispatch order: priority rank (P0 first, unprioritized

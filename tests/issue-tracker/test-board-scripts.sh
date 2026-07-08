@@ -528,6 +528,18 @@ assert_not_contains "$lint_out2" "WARN #14: all" "active (in-progress) candidate
 out="$(run board-list.sh)"
 assert_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "active candidate still tagged in list"
 
+# template view logic (kanban relocation + chip filtering) runs under node —
+# the only surface a shell test can't execute. Skipped, not failed, where node
+# is absent (the toolkit itself never needs node; this guards the template).
+echo "board template (kanban view logic):"
+if command -v node >/dev/null 2>&1; then
+    if node "$SCRIPT_DIR/test-board-template.cjs"; then :; else
+        fail "template kanban tests (see output above)"
+    fi
+else
+    echo "  [SKIP] node not installed — template JS tests not run"
+fi
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"
