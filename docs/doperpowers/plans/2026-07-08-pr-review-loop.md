@@ -1209,10 +1209,17 @@ gh api repos/<OWNER>/<REPO>/actions/runners \
 ## 6. Sweep cron (self-heal)
 
 ```bash
+# Find where the required CLIs live first:
+command -v gh git python3 claude
 crontab -e
-# every 30 min: dispatch any unbound open PR, respawn dead reviewers
-*/30 * * * * LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> $HOME/.claude/plugins/marketplaces/doperpowers/skills/reviewing-prs/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
+# cron does NOT inherit your shell PATH (same reason step 3 wrote .path for
+# the runner) — set it inline on the command, adjusted to the dirs found above:
+*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> $HOME/.claude/plugins/marketplaces/doperpowers/skills/reviewing-prs/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
 ```
+
+<!-- corrected during execution (task-6 review): cron's minimal PATH lacks
+gh/claude — inline PATH= on the command line, where sh expands it -->
+
 ````
 
 - [ ] **Step 3: Commit**
