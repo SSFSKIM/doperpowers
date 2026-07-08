@@ -1,5 +1,39 @@
 # Doperpowers Release Notes
 
+## v7.7.0 (2026-07-08)
+
+### Issue Tracker — the board hot-reloads
+
+`BOARD.html` was a static `file://` render: a moved ticket only showed after a
+manual refresh, and a refresh threw away whatever you were looking at. This
+release lets the board update itself in place — the view, filters, pan/zoom,
+collapsed epics, and open detail panel all survive.
+
+- **New `board-map.sh --serve` / `--stop`.** `--serve` renders, then serves the
+  cache over `http://127.0.0.1` (a deterministic per-repo port; `$BOARD_PORT`
+  overrides, `$BOARD_NO_OPEN=1` suppresses the browser open) and opens the
+  board. Tabs opened this way hot-reload; `--stop` ends the server. A plain
+  `file://` open of `BOARD.html` stays static (a file page cannot fetch, so the
+  poller is inert by design).
+- **Every mutating script re-renders while a server is up.** `board-register`,
+  `board-transition`, `board-priority`, `board-relate`, and `board-edge` fire a
+  background re-render on success, so moving a ticket refreshes open tabs on
+  their next poll — no server, no cost.
+- **Change detection.** The page polls a per-render change token
+  (`BOARD.rev`, written atomically next to the page) and falls back to HTTP
+  header fingerprinting (ETag / Last-Modified / Content-Length) when the token
+  is absent — so hosted boards that ship only the HTML still hot-reload, just
+  without the same-second/same-length safety the token adds.
+- **Hosted boards too.** Both remote-board workflow templates
+  (`board-pages.yml`, `board-cloudflare-pages.yml`) now deploy `BOARD.rev`
+  alongside the page, so a browser left open on the hosted board tracks each
+  redeploy.
+- Internal: renders now write via `mkstemp` + `os.replace` (atomic swap, no
+  half-written page) under an `mkdir` render lock (concurrent background
+  renders replace in fetch order, never reverting to a stale snapshot); the
+  `--serve` pidfile is identity-checked (command is `http.server`) so a
+  recycled PID can't be mistaken for — or killed as — the board server.
+
 ## v7.6.0 (2026-07-07)
 
 ### Issue Tracker — a managed priority axis (`priority:P0`…`P3`)
