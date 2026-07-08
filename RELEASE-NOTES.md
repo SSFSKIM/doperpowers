@@ -1,5 +1,23 @@
 # Doperpowers Release Notes
 
+## v7.8.2 (2026-07-08)
+
+### Issue Tracker — merges always re-render the hosted board
+
+Field-tested v7.8.1 on the reference consumer and hit a GitHub Actions trap:
+an open PR's workflow set is cached until its head is pushed again, so PRs
+opened BEFORE the v7.8.1 `pull_request` trigger existed fire no pull_request
+events at all — including their eventual **merge**, the one event the board
+most needs. (Verified live: a fresh PR fired the trigger on open and close; a
+pre-existing PR's draft toggle fired nothing, twice.)
+
+- Both workflow templates add `push: branches: [main]` — a merge is also a
+  push to the base branch, and push events read the workflow from the pushed
+  commit, so they fire regardless of the PR-event cache. Template comment
+  says to add long-lived integration branches (release trains) to the list.
+- No plugin-script changes; consumers re-copy the template or add the same
+  `push:` block.
+
 ## v7.8.1 (2026-07-08)
 
 ### Issue Tracker — hosted boards re-render on PR events

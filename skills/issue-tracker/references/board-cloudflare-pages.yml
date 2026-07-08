@@ -53,6 +53,14 @@ on:
   # chips go stale until the next cron tick.
   pull_request:
     types: [opened, closed, reopened, ready_for_review, converted_to_draft]
+  # Belt-and-braces for merges: GitHub caches an open PR's workflow set until
+  # its head is pushed again, so a PR opened BEFORE this trigger existed fires
+  # no pull_request events — not even its merge. A merge is also a push to the
+  # base branch, and push events read the workflow from the pushed commit, so
+  # this always fires. Add long-lived integration branches here if your PRs
+  # merge into one (e.g. a release train) rather than the default branch.
+  push:
+    branches: [main]
   schedule:
     - cron: "23 */6 * * *"   # edge (sub-issue/dependency) changes emit no issues event
   workflow_dispatch:
