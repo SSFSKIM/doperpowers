@@ -4,9 +4,9 @@ NOTICE — Licensing provenance for doperpowers
 doperpowers is a fork of obra/superpowers (https://github.com/obra/superpowers),
 maintained by Minhyeok Kim (SSFSKIM). This file explains which parts of the
 repository are covered by which license. It supplements, and does not
-replace, LICENSE and LICENSE-FORK.
+replace, LICENSE, LICENSE-FORK, and THIRD-PARTY-LICENSES.
 
-Three categories of content exist in this repository:
+Four categories of content exist in this repository:
 
 1. Unmodified upstream files
 -----------------------------
@@ -26,15 +26,33 @@ substantially the original work. The fork-specific edits within these
 files are additionally authored by Minhyeok Kim, who is credited as a
 contributor but does not claim exclusive ownership of these files.
 
-3. Files created new by this fork
+3. Content adapted from other third-party MIT projects
+----------------------------------------------------------
+Some skills were not written for either obra/superpowers or this fork —
+they were adapted from other MIT-licensed projects and carry their own
+attribution line in the file itself (e.g. "_Adapted from
+[mattpocock/skills](https://github.com/mattpocock/skills) (MIT)._"). These
+remain governed by that project's own MIT License, reproduced in
+THIRD-PARTY-LICENSES, and are NOT covered by LICENSE-FORK. Currently:
+
+    skills/codebase-design/DEEPENING.md          -- mattpocock/skills (MIT)
+    skills/codebase-design/DESIGN-IT-TWICE.md     -- mattpocock/skills (MIT)
+    skills/codebase-design/SKILL.md               -- mattpocock/skills (MIT)
+    skills/domain-modeling/ADR-FORMAT.md          -- mattpocock/skills (MIT)
+    skills/domain-modeling/CONTEXT-FORMAT.md      -- mattpocock/skills (MIT)
+    skills/domain-modeling/SKILL.md               -- mattpocock/skills (MIT)
+
+4. Files created new by this fork
 ------------------------------------
-The files listed below did not exist in obra/superpowers and were written
-from scratch for doperpowers. They are original work, Copyright (c) 2026
-Minhyeok Kim <kimmi@l1ngual.com>, All Rights Reserved, licensed under
-LICENSE-FORK — not under the MIT License in LICENSE. This list is accurate
-as of the commit that introduced this NOTICE file; run
+The files listed below did not exist in obra/superpowers, are not adapted
+from any other third-party project, and were written from scratch for
+doperpowers. They are original work, Copyright (c) 2026 Minhyeok Kim
+<kimmi@l1ngual.com>, All Rights Reserved, licensed under LICENSE-FORK —
+not under the MIT License in LICENSE. This list is accurate as of the
+commit that introduced this NOTICE file; run
 `git diff --diff-filter=A --name-only upstream/main HEAD` against this
-fork's history to regenerate it as the fork evolves.
+fork's history to regenerate it as the fork evolves (then subtract the
+third-party-adapted files listed in section 3 above).
 
     AGENTS.local.md
     CLAUDE.local.md
@@ -54,12 +72,6 @@ fork's history to regenerate it as the fork evolves.
     docs/doperpowers/specs/2026-07-06-issue-tracker-v7-gh-ssot-design.md
     docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md
     hooks/session-start-codex
-    skills/codebase-design/DEEPENING.md
-    skills/codebase-design/DESIGN-IT-TWICE.md
-    skills/codebase-design/SKILL.md
-    skills/domain-modeling/ADR-FORMAT.md
-    skills/domain-modeling/CONTEXT-FORMAT.md
-    skills/domain-modeling/SKILL.md
     skills/execplan/SKILL.md
     skills/execspec/SKILL.md
     skills/execspec/references/PLANS.md
@@ -97,14 +109,16 @@ fork's history to regenerate it as the fork evolves.
 
 Why the split (and not a single All-Rights-Reserved license)
 --------------------------------------------------------------
-The MIT License on the upstream code requires its copyright and permission
+The MIT License on the upstream code, and on any other third-party MIT
+content adapted into this fork, requires its copyright and permission
 notice to be preserved in all copies or substantial portions of the
-software. Since this repository is still substantially obra/superpowers,
-that notice cannot be removed or overridden wholesale. Only content that
-is genuinely new — with no upstream original to derive from — can be
-placed under different terms. This keeps the fork's use of upstream code
-compliant with MIT while letting the fork owner reserve rights over what
-they actually authored.
+software. Since this repository is still substantially obra/superpowers
+plus other MIT-licensed adaptations, those notices cannot be removed or
+overridden wholesale. Only content that is genuinely new — with no
+upstream or third-party original to derive from — can be placed under
+different terms. This keeps the fork's use of others' code compliant
+with their licenses while letting the fork owner reserve rights over
+what they actually authored themselves.
 
 Contact
 -------

@@ -2,11 +2,13 @@ All Rights Reserved
 
 Copyright (c) 2026 Minhyeok Kim <kimmi@l1ngual.com>
 
-This license applies only to the files listed as "created new by this
-fork" in NOTICE. It does not apply to code inherited from
+This license applies only to the files listed under "Files created new
+by this fork" in NOTICE. It does not apply to code inherited from
 obra/superpowers (https://github.com/obra/superpowers), which remains
 licensed under the MIT License in LICENSE, Copyright (c) 2025 Jesse
-Vincent.
+Vincent, and it does not apply to skills adapted from other third-party
+MIT projects, which remain licensed under their own terms as reproduced
+in THIRD-PARTY-LICENSES.
 
 All rights are reserved by the copyright holder. No permission is
 granted to copy, modify, merge, publish, distribute, sublicense, and/or
