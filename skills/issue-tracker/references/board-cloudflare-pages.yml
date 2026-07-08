@@ -48,6 +48,11 @@ name: issue-board-pages
 on:
   issues:
     types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]
+  # PR state feeds the board too (PR chips, close-candidate) — and a merge to a
+  # non-default branch (stacked PRs) fires NO issues event, so without this the
+  # chips go stale until the next cron tick.
+  pull_request:
+    types: [opened, closed, reopened, ready_for_review, converted_to_draft]
   schedule:
     - cron: "23 */6 * * *"   # edge (sub-issue/dependency) changes emit no issues event
   workflow_dispatch:
@@ -72,7 +77,12 @@ jobs:
     steps:
       # The board scripts anchor their render cache at a repo root, so check
       # out the consumer repo even though the board itself lives on GitHub.
+      # Pin to the default branch: pull_request events would otherwise check
+      # out the PR's transient merge ref (absent on schedule payloads, the
+      # expression falls back to the default checkout, which is already right).
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Check out the issue-tracker toolkit
         uses: actions/checkout@v4

@@ -1,5 +1,28 @@
 # Doperpowers Release Notes
 
+## v7.8.1 (2026-07-08)
+
+### Issue Tracker — hosted boards re-render on PR events
+
+Field bug from the reference consumer: in-review tickets showed already-merged
+PRs as "open" on the hosted board for hours. Root cause: the remote-board
+workflows re-render on `issues` events + a 6h cron only, but since v7.4.0 the
+board reads PR state (chips, and now v7.8.0's close-candidate) — and a PR
+merged to a **non-default branch** (stacked PRs) fires no issues event at all,
+so PR-derived data stayed stale until the next cron tick.
+
+- Both workflow templates (`references/board-pages.yml`,
+  `references/board-cloudflare-pages.yml`) now also trigger on
+  `pull_request: [opened, closed, reopened, ready_for_review,
+  converted_to_draft]` — a merge/open/draft-flip redeploys the board within a
+  minute; concurrency cancel-in-progress absorbs bursts.
+- The consumer-repo checkout is pinned to the default branch: `pull_request`
+  events would otherwise check out the PR's transient merge ref (the render
+  only needs a repo root; on schedule payloads the expression degrades to the
+  default checkout, which is already correct).
+- Existing consumers: re-copy the template, or apply the same two hunks to
+  your workflow — no plugin-script changes in this release.
+
 ## v7.8.0 (2026-07-08)
 
 ### Issue Tracker — close candidates (derived, never a label)
