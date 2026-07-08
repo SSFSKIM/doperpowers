@@ -276,6 +276,65 @@ out="$(FAIL_SPAWN_FOR="review-pr-4" "$DISPATCH" --sweep 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep still dispatches PR 5 after PR 4 (earlier) fails mid-dispatch"
 assert_contains "$out" "#4: dispatch error (continuing sweep)" "sweep surfaces PR 4's dispatch failure instead of swallowing it"
 
+# ---- dispatch_one step guards (nounset loop kill / stale-state contamination) ----
+echo "dispatch guards:"
+# With the sweep's `|| echo` reporter suspending errexit through the whole
+# dispatch_one call, mid-function failures need explicit per-step guards.
+# Two concrete consequences are pinned here (both reproduced pre-fix):
+#  (a) FIRST-PR gh failure: eval of the failed parse left PR_STATE unbound
+#      and `set -u` (NOT suspended by ||) killed the loop subshell —
+#      starvation again, on a narrower trigger.
+#  (b) contamination: a gh failure AFTER a successful iteration left the
+#      previous PR's eval'd vars (HEAD_SHA/HEAD_REF/PR_STATE...) in place —
+#      the bad PR was dispatched anyway, with a worktree at the WRONG PR's
+#      SHA and an EMPTY prompt (the render failed silently).
+# PR 3 has NO canned pr-3.json, so the mock `gh pr view 3` exits nonzero.
+
+# (a) first-PR failure: [bad(3), good(5)] — loop must survive and report
+python3 - <<'PY'
+import json, os
+json.dump([{"number": 3, "isDraft": False, "labels": []},
+           {"number": 5, "isDraft": False, "labels": []}],
+          open(os.path.join(os.environ["MOCK_DIR"], "pr-list.json"), "w"))
+PY
+reset_state
+out="$("$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$out" "#3: gh pr view failed" "first-PR gh failure surfaced as a per-step error"
+assert_contains "$out" "#3: dispatch error (continuing sweep)" "first-PR gh failure reaches the sweep reporter"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "loop survives a first-PR gh failure (no nounset kill)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-3" "failing first PR is not spawned"
+
+# (b) contamination: [good-A(5), bad(3), good-B(4)] — good-B on its OWN
+# branch feat/y with a distinct SHA, so a stale-state dispatch is detectable
+git -C "$CLONE" checkout -q -b feat/y main
+echo yo > "$CLONE/g.txt"
+git -C "$CLONE" add g.txt
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -m feat2 -q
+git -C "$CLONE" push -q -u origin feat/y
+HEAD_SHA2="$(git -C "$CLONE" rev-parse HEAD)"
+git -C "$CLONE" checkout -q main
+SHA2="$HEAD_SHA2" python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]; sha2 = os.environ["SHA2"]
+json.dump({"number": 4, "title": "feat: add g", "body": "No ticket for this one.",
+           "baseRefName": "main", "headRefName": "feat/y", "headRefOid": sha2,
+           "url": "https://github.com/test/repo/pull/4", "isDraft": False,
+           "state": "OPEN", "labels": [], "closingIssuesReferences": []},
+          open(os.path.join(d, "pr-4.json"), "w"))
+json.dump([{"number": 5, "isDraft": False, "labels": []},
+           {"number": 3, "isDraft": False, "labels": []},
+           {"number": 4, "isDraft": False, "labels": []}],
+          open(os.path.join(d, "pr-list.json"), "w"))
+PY
+reset_state
+rm -f "$PROMPT_DIR/review-pr-3.prompt"
+out="$("$DISPATCH" --sweep 2>&1)" || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-3" "bad PR after a good one is never spawned (no stale-state dispatch)"
+if [ -f "$PROMPT_DIR/review-pr-3.prompt" ]; then
+    fail "no prompt rendered for the bad PR"; else pass "no prompt rendered for the bad PR"; fi
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "good-B after the bad PR still dispatched"
+assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-pr-4" rev-parse HEAD)" "$HEAD_SHA2" "good-B worktree at its OWN head SHA, not the previous PR's"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"; exit 1

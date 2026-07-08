@@ -79,12 +79,18 @@ sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 
 # ---- per-PR dispatch (dedupe already decided by the caller) --------------------
+# Every step is explicitly guarded: in sweep mode this function runs behind
+# `||` (which suspends errexit through the WHOLE call subtree), so an
+# unguarded mid-function failure would be silently absorbed — dispatching
+# with stale vars from the previous iteration or an empty prompt. Guards
+# return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json issue issue_url td companion wt prompt
+  local pr="$1" tmp pr_json exports issue issue_url td companion wt prompt
   tmp="$(mktemp -d)"
-  pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)"
+  pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
+    || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
   printf '%s' "$pr_json" > "$tmp/pr.json"
-  eval "$(TMP="$tmp" python3 - <<'PY'
+  exports="$(TMP="$tmp" python3 - <<'PY'
 import json, os, re, shlex
 d = json.load(open(os.path.join(os.environ["TMP"], "pr.json")))
 open(os.path.join(os.environ["TMP"], "pr-body.md"), "w").write(d.get("body") or "")
@@ -101,7 +107,8 @@ for m in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d
         linked.append(m.group(1))
 q("LINKED_ISSUES", " ".join(linked))
 PY
-)"
+)" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
+  eval "$exports"
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
@@ -110,8 +117,10 @@ PY
   issue_url="none"
   : > "$tmp/issue-body.md"
   if [ -n "$issue" ]; then
-    issue_url="$(gh issue view "$issue" -R "$BOARD_REPO" --json url -q .url)"
-    gh issue view "$issue" -R "$BOARD_REPO" --json body -q .body > "$tmp/issue-body.md"
+    # degrade gracefully — a deleted linked issue must not block the review
+    issue_url="$(gh issue view "$issue" -R "$BOARD_REPO" --json url -q .url 2>/dev/null || echo none)"
+    gh issue view "$issue" -R "$BOARD_REPO" --json body -q .body > "$tmp/issue-body.md" 2>/dev/null \
+      || : > "$tmp/issue-body.md"
   fi
 
   # standing tech-debt sink (optional) + newest installed codex companion
@@ -122,12 +131,14 @@ PY
   # out in the implementer's worktree, and git forbids a second checkout;
   # detached HEAD sidesteps it (spec Decision Log). Fixes push HEAD:<branch>.
   wt="$LOCAL_REPO/.claude/worktrees/review-pr-$pr"
-  git -C "$LOCAL_REPO" fetch -q origin "$HEAD_REF" "$BASE_REF"
+  git -C "$LOCAL_REPO" fetch -q origin "$HEAD_REF" "$BASE_REF" \
+    || { echo "#$pr: git fetch failed ($HEAD_REF/$BASE_REF)" >&2; rm -rf "$tmp"; return 1; }
   if [ -e "$wt" ]; then
     git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
   fi
   git -C "$LOCAL_REPO" worktree prune
-  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA"
+  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
+    || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
 
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
@@ -150,8 +161,9 @@ subs["PR_BODY"] = readcap(os.environ["PR_BODY_FILE"]) or "(empty PR body)"
 subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(no linked issue)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
-)"
+)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
+  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
 
   "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
 }
