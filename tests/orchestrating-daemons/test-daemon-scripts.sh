@@ -250,6 +250,32 @@ assert_contains "$META" '"short":' "spawn records the short id (needed for the f
 assert_contains "$META" "\"current\": \"$UUID\"" "spawn seeds current = the first-turn uuid"
 SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$UUID.json")"
 
+# ---- 2b) spawn --no-wait (fire-and-forget registration) -----------------------
+# For runner/cron dispatch: register the daemon and return immediately; the
+# first turn keeps running. Contract: status=working + no reply file while the
+# turn runs (daemon-reply reads the live transcript, same as a watcher
+# timeout); when the turn ALREADY ended at poll time, record the truth instead.
+echo "spawn --no-wait:"
+NW_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "nowaiter" "LONG-TASK-7" "$WORK")"
+assert_contains "$NW_OUT" "daemon spawned (no-wait): nowaiter" "no-wait reports the spawn"
+NW_UUID="$(printf '%s' "$NW_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+NW_META="$(cat "$DAEMON_HOME/$NW_UUID.json")"
+assert_contains "$NW_META" '"status": "working"' "no-wait records status=working while the turn runs"
+assert_contains "$NW_META" '"turns": "1"' "no-wait records turn 1"
+assert_contains "$NW_META" "\"current\": \"$NW_UUID\"" "no-wait seeds current = the first-turn uuid"
+assert_file_absent "$DAEMON_HOME/$NW_UUID.reply.txt" "no-wait writes no reply file for a running turn"
+assert_contains "$("$SCRIPTS_DIR/daemon-reply.sh" "$NW_UUID")" "ANSWER:LONG-TASK-7" "daemon-reply reads the running no-wait turn's transcript"
+
+NW2_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "nowaiter2" "QUICK-TASK-8" "$WORK")"
+NW2_UUID="$(printf '%s' "$NW2_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+assert_contains "$(cat "$DAEMON_HOME/$NW2_UUID.json")" '"status": "idle"' "no-wait records idle when the first turn already finished"
+assert_file_exists "$DAEMON_HOME/$NW2_UUID.reply.txt" "no-wait records the reply of an already-finished turn"
+
+NWX_RC=0
+STUB_NO_UUID=1 DAEMON_UUID_POLL=2 "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "nouuid-nw" "seed-nw" "$WORK" >/dev/null 2>&1 || NWX_RC=$?
+[ "$NWX_RC" -ne 0 ] && pass "no-wait with a uuid-less agents row exits nonzero" \
+    || fail "no-wait with a uuid-less agents row exits nonzero"
+
 # ---- 3) list / reply / mark --------------------------------------------------
 echo "list / reply / mark:"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "researcher" "list shows the daemon"

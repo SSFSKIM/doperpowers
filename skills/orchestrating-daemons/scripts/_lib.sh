@@ -256,3 +256,31 @@ for a in d:
   done
   printf '%s %s %s' "${uuid:-}" "${state:-timeout}" "${cwd:-}"; return 1
 }
+
+# Poll `claude agents` until short id <1> has a non-empty sessionId — the row
+# can lag the --bg banner by a beat (same hole the no-uuid hardening in
+# spawn/resume guards). Echoes "<uuid> <state> <cwd>" as soon as the uuid
+# materializes; rc 1 if it never does within <2> iterations (default 30,
+# 2s apart; env override DAEMON_UUID_POLL). Used by daemon-spawn --no-wait,
+# which registers the daemon without waiting for the turn to finish.
+_poll_uuid() {
+  local short="$1" max="${2:-${DAEMON_UUID_POLL:-30}}" i=0 uuid state cwd
+  while :; do
+    read -r uuid state cwd < <(claude agents --json --all 2>/dev/null | DAEMON_SHORT="$short" python3 -c '
+import json, os, sys
+s = os.environ["DAEMON_SHORT"]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = []
+for a in d:
+    if a.get("id") == s and a.get("sessionId"):
+        print(a.get("sessionId"), a.get("state", ""), a.get("cwd", "")); break
+') || true
+    if [ -n "${uuid:-}" ]; then printf '%s %s %s' "$uuid" "$state" "$cwd"; return 0; fi
+    i=$((i + 1))
+    [ "$i" -ge "$max" ] && break
+    sleep 2
+  done
+  return 1
+}
