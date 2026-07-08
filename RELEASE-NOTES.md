@@ -1,5 +1,41 @@
 # Doperpowers Release Notes
 
+## v7.8.0 (2026-07-08)
+
+### Issue Tracker — close candidates (derived, never a label)
+
+On a real consumer board, over half the open tickets had every linked PR
+already merged or closed — a PR that skips `Closes #N` never auto-closes its
+issue, so effectively-done tickets pile up among the genuinely to-do ones and
+pollute the dispatch queue. This release makes that state visible everywhere,
+without adding a label and without ever auto-closing anything.
+
+- **The signal.** An open (non-terminal) ticket is a **close candidate** when
+  it has ≥1 linked PR, ALL linked PRs are MERGED/CLOSED, and at least one is
+  MERGED (all-CLOSED-unmerged = abandoned attempts, not delivered work — not a
+  candidate). Derived from the snapshot's native PR linkage on every read;
+  recomputes for free, can never go stale like a label would.
+- **Surfaces.** `board-list.sh` tags candidate rows `CLOSE?` (eligibility
+  unchanged — the dispatch loop now says: triage a `CLOSE?` top pick before
+  spawning). `board-lint.sh` WARNs candidates with judgment paths (done if
+  landed / wontfix if superseded). `BOARD.md` marks the state cell. The kanban
+  view pulls candidates into a dedicated **close-candidate column**; the graph
+  card, detail panel, and header counts carry the mark.
+- **Actively-worked tickets stay quiet.** `in-progress`/`in-review` tickets
+  routinely have a part-1 PR merged mid-flight — they keep the `CLOSE?` mark
+  but are excluded from the lint WARN and the kanban relocation (new
+  `ACTIVE` constant in `_board.py`).
+- **Truncation-safe.** The PR connections are fetched capped (`first:20/40`);
+  the predicate now reads each connection's `totalCount` and refuses to claim
+  "all PRs landed" over a truncated fetch — fail-conservative (no candidate)
+  rather than a false positive.
+- Review: Codex round 1 caught the kanban relocation ignoring real-state chip
+  hiding (fixed — filter now shares the graph view's `hiddenBy`); round 2
+  caught the truncation false-positive (fixed as above); final verification
+  pass clean. New `tests/issue-tracker/test-board-template.cjs` executes the
+  template's actual view JS under a DOM shim (skipped where node is absent) —
+  the first test coverage for kanban routing/filter behavior.
+
 ## v7.7.0 (2026-07-08)
 
 ### Issue Tracker — the board hot-reloads
