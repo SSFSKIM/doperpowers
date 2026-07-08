@@ -567,6 +567,14 @@ out="$(run board-transition.sh 17 "done")"
 assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "confident-ready → done closes the issue"
 assert_equals "$(state "s['issues']['17']['stateReason']")" "COMPLETED" "closes as completed"
 
+run board-register.sh "CR map probe" enhancement P2 >/dev/null                    # 18
+run board-transition.sh 18 in-progress >/dev/null
+run board-transition.sh 18 in-review "pr" --pr https://github.com/test/repo/pull/81 >/dev/null
+run board-transition.sh 18 confident-ready >/dev/null
+run board-map.sh --write >/dev/null 2>&1
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"cls": "s_cready"' "html payload carries the confident-ready class"
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"confident-ready"' "kanban vocabulary carries the confident-ready column"
+
 # template view logic (kanban relocation + chip filtering) runs under node —
 # the only surface a shell test can't execute. Skipped, not failed, where node
 # is absent (the toolkit itself never needs node; this guards the template).

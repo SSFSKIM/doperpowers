@@ -127,7 +127,8 @@ with open(env["BOARD_DIR"] + "/BOARD.md", "w") as f:
     f.write(table + "\n")
 
 # --- the interactive graph (BOARD.html) ---
-CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev", "blocked": "s_blk",
+CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
+         "confident-ready": "s_cready", "blocked": "s_blk",
          "needs-info": "s_info", "deferred": "s_def", "wontfix": "s_wf",
          "conflict": "s_conflict", "untracked": "s_untracked"}
 def cls(tid, n):

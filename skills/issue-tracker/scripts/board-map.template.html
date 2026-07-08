@@ -63,6 +63,7 @@
   .s_done { --bd: #16a34a; --bgc: rgba(22,163,74,.07);  --tx: #86efac; --glow: rgba(22,163,74,.18); }
   .s_prog { --bd: #00d68f; --bgc: rgba(0,214,143,.08);  --tx: #6ee7b7; --glow: rgba(0,214,143,.30); }
   .s_rev  { --bd: #a855f7; --bgc: rgba(168,85,247,.09); --tx: #d8b4fe; --glow: rgba(168,85,247,.22); }
+  .s_cready { --bd: #14b8a6; --bgc: rgba(20,184,166,.09); --tx: #5eead4; --glow: rgba(20,184,166,.22); }
   .s_elig { --bd: #3b82f6; --bgc: rgba(59,130,246,.09); --tx: #93c5fd; --glow: rgba(59,130,246,.32); }
   .s_wait { --bd: #2d3748; --bgc: rgba(45,55,72,.25);   --tx: #64748b; --glow: transparent; }
   .s_blk  { --bd: #ef4444; --bgc: rgba(239,68,68,.09);  --tx: #fca5a5; --glow: rgba(239,68,68,.22); }
@@ -195,9 +196,9 @@
     // states beyond the machine's own (conflict/untracked, or anything a
     // future label adds). Give every state present a column rather than
     // silently dropping its tickets.
-    KB_STATES = ["ready-for-agent", "in-progress", "in-review", "close-candidate",
-                 "blocked", "needs-info", "deferred", "conflict", "untracked",
-                 "done", "wontfix"];
+    KB_STATES = ["ready-for-agent", "in-progress", "in-review", "confident-ready",
+                 "close-candidate", "blocked", "needs-info", "deferred",
+                 "conflict", "untracked", "done", "wontfix"];
     BOARD.nodes.forEach(function (n) { if (KB_STATES.indexOf(n.state) < 0) KB_STATES.push(n.state); });
     document.getElementById("meta").textContent =
       BOARD.meta.count + " tickets · updated " + BOARD.meta.updated + (LIVE ? " · live" : "");
@@ -205,12 +206,14 @@
   bindData(JSON.parse(document.getElementById("board-data").textContent));
 
   // state class -> the short badge shown on the card (the full label goes to detail).
-  var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_elig: "ELIGIBLE",
+  var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_cready: "confident",
+                s_elig: "ELIGIBLE",
                 s_wait: "waiting", s_blk: "blocked", s_info: "needs-info",
                 s_def: "deferred", s_wf: "wontfix",
                 s_conflict: "CONFLICT", s_untracked: "untracked" };
   // state name (chip vocabulary) -> palette class, for coloring the filter chips.
   var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
+                    "confident-ready": "s_cready",
                     "ready-for-agent": "s_elig", "blocked": "s_blk", "needs-info": "s_info",
                     "deferred": "s_def", "wontfix": "s_wf",
                     "conflict": "s_conflict", "untracked": "s_untracked",
