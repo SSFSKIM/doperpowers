@@ -87,6 +87,11 @@ Sits between `in-review` and `done` in the state table. Changes:
 `board-transition.sh` legality (`in-review → confident-ready` and repair
 reachability like every open state), `board-lint.sh` known-label set,
 `board-list.sh` / `board-map.sh` rendering (table, DAG, kanban column).
+Additionally, `in-review` gains `needs-info` and `blocked` as legal targets —
+the reviewer protocol's safety valves (impasse at the round cap, push
+conflicts, precondition blocks) fire while the ticket is at `in-review`, and
+the pre-existing table rejected those transitions (found at the final
+whole-branch review; the escalation would have died at the board write).
 
 ### 3. New skill `skills/reviewing-prs/` — the product
 
@@ -414,6 +419,28 @@ protocol text — and are expected to be tuned from shakedown evidence.
   script each round; regression sections "sweep failure isolation" and
   "dispatch guards" in tests/reviewing-prs/test-review-dispatch.sh.
 
+- Observation: a hermetic test suite that `export`s an env var its script
+  merely assigns can mask a production-only failure class. `review-dispatch.sh`
+  assigned (never exported) `DAEMON_HOME`; its registry-scan python read
+  `os.environ["DAEMON_HOME"]`; the test suite exported the var, so 37 asserts
+  ran green while both production invocation paths (launchd runner, cron
+  sweep) would KeyError — silently degrading dedupe to always-dispatch
+  (duplicate reviewers every sweep). Regression test now runs the dispatcher
+  under `env -u DAEMON_HOME`.
+  Evidence: final whole-branch review (Opus fallback) finding #1, reproduced
+  on the runner host; fix commit 4aa7623.
+
+- Observation: the codex-companion dead-holder failure mode is real and was
+  observed during this very build — the final whole-branch review job's
+  process died ~40 min in while companion status reported "running" for 4.5+
+  hours, wedging the machine-wide lock until a human cancelled. This
+  validates the protocol's rule that workers NEVER run /codex:cancel and
+  must backoff-then-fallback to a Claude reviewer: the wedge is
+  indistinguishable from a long-running live review from the inside.
+  Evidence: job task-mrc3w7vc-0nhtj6 (log mtime 22:24 vs 02:44 status check,
+  no live process); partial findings salvaged and confirmed/extended by the
+  fallback reviewer.
+
 - Observation: ida-solution stacks PRs onto integration branches
   (`feat/mN-*`), so GitHub's `closingIssuesReferences` is empty for them and
   native auto-close never fires; PR base refs vary per PR.
@@ -433,3 +460,8 @@ Pending — written at finish.
   `adversarial-review` — plan-time code inspection showed only the
   adversarial path returns the structured verdict/severity the rubrics need.
   Assumption resolved, protocol draft updated, discovery recorded.
+- 2026-07-09 (final review): `in-review` gains `needs-info`/`blocked` legal
+  edges (component 2 amended) — the protocol's escalations were illegal
+  against the pre-existing table. Two Surprises added: the unexported
+  DAEMON_HOME production gap, and the codex dead-holder wedge observed live
+  during this build's own final review.

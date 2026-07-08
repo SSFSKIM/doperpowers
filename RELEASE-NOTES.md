@@ -1,5 +1,34 @@
 # Doperpowers Release Notes
 
+## v7.9.0 (2026-07-09)
+
+### reviewing-prs — autonomous PR review loop (new skill)
+
+The inverse of the issue-tracker dispatch loop: opened PRs get fresh-context
+review daemons that run codex adversarial-review against the PR base, verify
+and route findings (fix / spawned ticket / tech-debt sink / rebuttal),
+re-review per rubric, then self-merge small low-risk PRs (CI green) or
+escalate PR + ticket to the new `confident-ready` state for the human. No
+orchestrator in the loop. Ships review-dispatch.sh (dedupe/sweep policy,
+detached worktree at the PR head SHA, per-step failure guards, live-worktree
+occupancy guard), the Review Worker Protocol template, a self-hosted-runner
+GH workflow template (no-checkout, zero token permissions), and a runner
+setup guide. Spec: docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md.
+
+- issue-tracker: new `confident-ready` state (open + status:confident-ready)
+  between in-review and done — reachable only from in-review, demotable back
+  on new pushes; board map/kanban render it (s_cready). `in-review` also
+  gains needs-info/blocked legal edges — the reviewer protocol's safety
+  valves (impasse, push conflicts, precondition blocks).
+- orchestrating-daemons: `daemon-spawn.sh --no-wait` — fire-and-forget spawn
+  for runner/cron dispatch; registers the daemon and returns while the first
+  turn keeps running (`_poll_uuid` helper).
+- Hardening from the review gauntlet (2 task-review fix rounds + final
+  whole-branch review): sweep failure isolation with per-step dispatch
+  guards (one PR's failure can neither starve the pass nor contaminate the
+  next dispatch), DAEMON_HOME propagation into the registry scan (dedupe
+  was silently inert under launchd/cron), cron-PATH fix in the runner guide.
+
 ## v7.8.2 (2026-07-08)
 
 ### Issue Tracker — merges always re-render the hosted board
