@@ -44,7 +44,9 @@ unattended repos).
 
 ## State vocabulary
 
-`ready-for-agent → in-progress → in-review → done` is the happy path.
+`ready-for-agent → in-progress → in-review → done` is the happy path; under
+the review loop (doperpowers:reviewing-prs) a PR passes through
+`confident-ready` between `in-review` and `done`.
 
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
@@ -53,6 +55,7 @@ unattended repos).
 | `blocked` | open + `status:blocked` | non-ticket blockage: credentials / auth / human hand | **required** |
 | `needs-info` | open + `status:needs-info` | waiting on knowledge: research or a human taste/product decision | **required** |
 | `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it) | PR link |
+| `confident-ready` | open + `status:confident-ready` | PR rigorously reviewed (reviewing-prs loop); merge/close with confidence | optional |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |

@@ -18,7 +18,7 @@ from typing import NoReturn
 
 # ── state vocabulary (v6-identical machine) ──────────────────────────────
 OPEN_STATES = ("ready-for-agent", "in-progress", "blocked", "needs-info",
-               "in-review", "deferred")
+               "in-review", "confident-ready", "deferred")
 TERMINAL = ("done", "wontfix")
 STATES = OPEN_STATES + TERMINAL
 # Actively-worked states: a close_candidate in one of these is normal
@@ -33,7 +33,12 @@ LEGAL = {
     "in-progress":     {"needs-info", "blocked", "in-review", "done", "wontfix", "deferred"},
     "needs-info":      {"ready-for-agent", "in-progress", "wontfix", "deferred"},
     "blocked":         {"ready-for-agent", "in-progress", "wontfix", "deferred"},
-    "in-review":       {"in-progress", "done", "wontfix", "deferred"},
+    "in-review":       {"in-progress", "confident-ready", "done", "wontfix", "deferred"},
+    # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
+    # Reachable ONLY from in-review (a review verdict presupposes an open PR);
+    # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
+    # merged SHOULD surface as a close candidate (the finalize cue).
+    "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
     "deferred":        {"ready-for-agent", "needs-info", "blocked", "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
@@ -48,6 +53,7 @@ STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
     "ready-for-agent": "0e8a16",
     "in-progress":     "1d76db",
     "in-review":       "5319e7",
+    "confident-ready": "008672",
     "blocked":         "d93f0b",
     "needs-info":      "fbca04",
     "deferred":        "c5def5",

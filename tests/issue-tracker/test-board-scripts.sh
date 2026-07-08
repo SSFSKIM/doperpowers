@@ -540,6 +540,33 @@ TRUNC
 out="$(run board-list.sh)"
 assert_not_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "truncated PR fetch disqualifies the candidate"
 
+# ---- confident-ready (review-loop escalation state) ---------------------------
+# Reachable only from in-review (a review verdict presupposes a PR); demotes
+# back to in-review on a new push; closes normally. Note optional.
+echo "confident-ready:"
+run board-register.sh "Review target" enhancement P2 >/dev/null                  # 17
+assert_fails run board-transition.sh 17 confident-ready                          # ready → confident-ready illegal
+run board-transition.sh 17 in-progress >/dev/null
+assert_fails run board-transition.sh 17 confident-ready                          # in-progress → illegal (must pass through in-review)
+run board-transition.sh 17 in-review "pr open" --pr https://github.com/test/repo/pull/80 >/dev/null
+out="$(run board-transition.sh 17 confident-ready "codex approve, 2 rounds")"
+assert_contains "$out" "#17: in-review → confident-ready" "in-review → confident-ready applied"
+assert_contains "$(state "s['issues']['17']['labels']")" "status:confident-ready" "label swapped in"
+assert_not_contains "$(state "s['issues']['17']['labels']")" "status:in-review" "old label removed"
+assert_contains "$(state "s['issues']['17']['comments'][-1]")" "[board] confident-ready: codex approve" "note comment posted"
+out="$(run board-list.sh confident-ready)"
+assert_contains "$out" "#17" "board-list filters confident-ready"
+set +e
+lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
+set -e
+assert_equals "$lint_rc" "0" "board with a confident-ready ticket lints green"
+out="$(run board-transition.sh 17 in-review "new push demoted" --pr https://github.com/test/repo/pull/80)"
+assert_contains "$out" "#17: confident-ready → in-review" "confident-ready demotes to in-review"
+run board-transition.sh 17 confident-ready >/dev/null                            # note optional
+out="$(run board-transition.sh 17 "done")"
+assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "confident-ready → done closes the issue"
+assert_equals "$(state "s['issues']['17']['stateReason']")" "COMPLETED" "closes as completed"
+
 # template view logic (kanban relocation + chip filtering) runs under node —
 # the only surface a shell test can't execute. Skipped, not failed, where node
 # is absent (the toolkit itself never needs node; this guards the template).
