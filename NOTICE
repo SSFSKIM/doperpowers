@@ -1,0 +1,125 @@
+NOTICE — Licensing provenance for doperpowers
+==============================================
+
+doperpowers is a fork of obra/superpowers (https://github.com/obra/superpowers),
+maintained by Minhyeok Kim (SSFSKIM). This file explains which parts of the
+repository are covered by which license. It supplements, and does not
+replace, LICENSE, LICENSE-FORK, and THIRD-PARTY-LICENSES.
+
+Four categories of content exist in this repository:
+
+1. Unmodified upstream files
+-----------------------------
+The majority of this repository is unmodified code from obra/superpowers.
+It remains licensed under the MIT License in LICENSE, Copyright (c) 2025
+Jesse Vincent. Nothing about that license or copyright changes in this fork.
+
+2. Upstream files modified by this fork
+-----------------------------------------
+Some upstream files have been edited as part of maintaining this fork (see
+`git log upstream/main..HEAD` for the exact commit history against
+https://github.com/obra/superpowers). These files remain governed by the
+MIT License in LICENSE in their entirety — MIT requires the original
+copyright and permission notice to be preserved in all copies or
+substantial portions of the software, and a modified file is still
+substantially the original work. The fork-specific edits within these
+files are additionally authored by Minhyeok Kim, who is credited as a
+contributor but does not claim exclusive ownership of these files.
+
+3. Content adapted from other third-party MIT projects
+----------------------------------------------------------
+Some skills were not written for either obra/superpowers or this fork —
+they were adapted from other MIT-licensed projects and carry their own
+attribution line in the file itself (e.g. "_Adapted from
+[mattpocock/skills](https://github.com/mattpocock/skills) (MIT)._"). These
+remain governed by that project's own MIT License, reproduced in
+THIRD-PARTY-LICENSES, and are NOT covered by LICENSE-FORK. Currently:
+
+    skills/codebase-design/DEEPENING.md          -- mattpocock/skills (MIT)
+    skills/codebase-design/DESIGN-IT-TWICE.md     -- mattpocock/skills (MIT)
+    skills/codebase-design/SKILL.md               -- mattpocock/skills (MIT)
+    skills/domain-modeling/ADR-FORMAT.md          -- mattpocock/skills (MIT)
+    skills/domain-modeling/CONTEXT-FORMAT.md      -- mattpocock/skills (MIT)
+    skills/domain-modeling/SKILL.md               -- mattpocock/skills (MIT)
+
+4. Files created new by this fork
+------------------------------------
+The files listed below did not exist in obra/superpowers, are not adapted
+from any other third-party project, and were written from scratch for
+doperpowers. They are original work, Copyright (c) 2026 Minhyeok Kim
+<kimmi@l1ngual.com>, All Rights Reserved, licensed under LICENSE-FORK —
+not under the MIT License in LICENSE. This list is accurate as of the
+commit that introduced this NOTICE file; run
+`git diff --diff-filter=A --name-only upstream/main HEAD` against this
+fork's history to regenerate it as the fork evolves (then subtract the
+third-party-adapted files listed in section 3 above).
+
+    AGENTS.local.md
+    CLAUDE.local.md
+    docs/INSTALL-doperpowers.md
+    docs/doperpowers/execplans/2026-07-07-board-close-candidate.md
+    docs/doperpowers/execplans/2026-07-07-board-priority-axis.md
+    docs/doperpowers/plans/2026-07-03-issue-tracker-substrate.md
+    docs/doperpowers/plans/2026-07-03-living-specs.md
+    docs/doperpowers/plans/2026-07-05-board-sync.md
+    docs/doperpowers/plans/2026-07-05-issue-board-html-map.md
+    docs/doperpowers/plans/2026-07-08-pr-review-loop.md
+    docs/doperpowers/specs/2026-07-03-execplan-track-design.md
+    docs/doperpowers/specs/2026-07-03-issue-tracker-substrate-design.md
+    docs/doperpowers/specs/2026-07-03-living-specs-design.md
+    docs/doperpowers/specs/2026-07-05-board-sync-design.md
+    docs/doperpowers/specs/2026-07-05-issue-board-html-map-design.md
+    docs/doperpowers/specs/2026-07-06-issue-tracker-v7-gh-ssot-design.md
+    docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md
+    hooks/session-start-codex
+    skills/execplan/SKILL.md
+    skills/execspec/SKILL.md
+    skills/execspec/references/PLANS.md
+    skills/issue-register/SKILL.md
+    skills/issue-tracker/SKILL.md
+    skills/issue-tracker/references/board-cloudflare-pages.yml
+    skills/issue-tracker/references/board-pages.yml
+    skills/issue-tracker/scripts/_board.py
+    skills/issue-tracker/scripts/_lib.sh
+    skills/issue-tracker/scripts/board-bind.sh
+    skills/issue-tracker/scripts/board-edge.sh
+    skills/issue-tracker/scripts/board-lint.sh
+    skills/issue-tracker/scripts/board-list.sh
+    skills/issue-tracker/scripts/board-map.sh
+    skills/issue-tracker/scripts/board-map.template.html
+    skills/issue-tracker/scripts/board-migrate-gh.sh
+    skills/issue-tracker/scripts/board-priority.sh
+    skills/issue-tracker/scripts/board-reconcile.sh
+    skills/issue-tracker/scripts/board-register.sh
+    skills/issue-tracker/scripts/board-relate.sh
+    skills/issue-tracker/scripts/board-show.sh
+    skills/issue-tracker/scripts/board-transition.sh
+    skills/orchestrating-daemons/SKILL.md
+    skills/orchestrating-daemons/scripts/_lib.sh
+    skills/orchestrating-daemons/scripts/daemon-list.sh
+    skills/orchestrating-daemons/scripts/daemon-mark.sh
+    skills/orchestrating-daemons/scripts/daemon-reply.sh
+    skills/orchestrating-daemons/scripts/daemon-resume.sh
+    skills/orchestrating-daemons/scripts/daemon-retire.sh
+    skills/orchestrating-daemons/scripts/daemon-spawn.sh
+    tests/issue-tracker/mock-gh/gh
+    tests/issue-tracker/test-board-scripts.sh
+    tests/issue-tracker/test-board-template.cjs
+    tests/orchestrating-daemons/test-daemon-scripts.sh
+
+Why the split (and not a single All-Rights-Reserved license)
+--------------------------------------------------------------
+The MIT License on the upstream code, and on any other third-party MIT
+content adapted into this fork, requires its copyright and permission
+notice to be preserved in all copies or substantial portions of the
+software. Since this repository is still substantially obra/superpowers
+plus other MIT-licensed adaptations, those notices cannot be removed or
+overridden wholesale. Only content that is genuinely new — with no
+upstream or third-party original to derive from — can be placed under
+different terms. This keeps the fork's use of others' code compliant
+with their licenses while letting the fork owner reserve rights over
+what they actually authored themselves.
+
+Contact
+-------
+Minhyeok Kim <kimmi@l1ngual.com>
