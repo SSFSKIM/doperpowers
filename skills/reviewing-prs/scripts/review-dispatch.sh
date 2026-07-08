@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
 PROTOCOL_TEMPLATE="$SKILL_DIR/references/review-worker-protocol.md"
@@ -44,7 +45,7 @@ fi
 
 # Newest review-pr-<n> registry entry → "uuid|status|current" (empty if none).
 _reviewer_meta() {
-  PRN="$1" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
 import glob, json, os
 home = os.environ["DAEMON_HOME"]; name = "review-pr-" + os.environ["PRN"]
 best = None
@@ -77,6 +78,21 @@ sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 }
 
 _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
+
+# rc 0 when some `claude agents` row's cwd equals worktree path <1> — a live
+# daemon (of ANY kind, not just a review worker) is sitting in it. This is
+# defense-in-depth ON TOP OF the registry dedupe check above, not a
+# replacement for it: fail-open on an `agents` flake (empty/unreadable list →
+# not occupied → removal proceeds) is correct here, do not invert it.
+_wt_occupied() {
+  claude agents --json --all 2>/dev/null | WT="$1" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = []
+sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)'
+}
 
 # ---- per-PR dispatch (dedupe already decided by the caller) --------------------
 # Every step is explicitly guarded: in sweep mode this function runs behind
@@ -134,6 +150,10 @@ PY
   git -C "$LOCAL_REPO" fetch -q origin "$HEAD_REF" "$BASE_REF" \
     || { echo "#$pr: git fetch failed ($HEAD_REF/$BASE_REF)" >&2; rm -rf "$tmp"; return 1; }
   if [ -e "$wt" ]; then
+    if _wt_occupied "$wt"; then
+      echo "#$pr: live daemon occupies $wt — not removing (retire it first)" >&2
+      rm -rf "$tmp"; return 1
+    fi
     git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
   fi
   git -C "$LOCAL_REPO" worktree prune

@@ -33,7 +33,10 @@ LEGAL = {
     "in-progress":     {"needs-info", "blocked", "in-review", "done", "wontfix", "deferred"},
     "needs-info":      {"ready-for-agent", "in-progress", "wontfix", "deferred"},
     "blocked":         {"ready-for-agent", "in-progress", "wontfix", "deferred"},
-    "in-review":       {"in-progress", "confident-ready", "done", "wontfix", "deferred"},
+    # needs-info/blocked reachable from in-review: the reviewing-prs worker's
+    # impasse/precondition escalations (protocol safety valves)
+    "in-review":       {"in-progress", "confident-ready", "done", "wontfix", "deferred",
+                         "needs-info", "blocked"},
     # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
     # Reachable ONLY from in-review (a review verdict presupposes an open PR);
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all

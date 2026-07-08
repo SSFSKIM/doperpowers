@@ -206,6 +206,33 @@ out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "triggered mode retires a finished reviewer"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered mode re-dispatches after an explicit event"
 
+# ---- dedupe without exported DAEMON_HOME (production repro) -------------------
+# In launchd/cron the parent process never exports DAEMON_HOME — the script's
+# own `DAEMON_HOME="${DAEMON_HOME:-...}"` default assignment computes it fine
+# either way, but _reviewer_meta's python subprocess only sees it if the
+# shell var was exported (or passed inline). Seed the registry at the
+# DEFAULT location ($HOME/.claude/orchestrating-daemons, not the test's
+# $DAEMON_HOME override) and invoke the dispatcher with DAEMON_HOME entirely
+# absent from the child environment.
+echo "dedupe without exported DAEMON_HOME:"
+reset_state
+DEFAULT_DAEMON_HOME="$HOME/.claude/orchestrating-daemons"; mkdir -p "$DEFAULT_DAEMON_HOME"
+NOEXPORT_UUID="cafe1234-0000-4000-8000-000000000000"
+D="$DEFAULT_DAEMON_HOME" U="$NOEXPORT_UUID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": os.environ["U"], "current": os.environ["U"],
+           "name": "review-pr-5", "status": "working",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["D"], os.environ["U"] + ".json"), "w"))
+PY
+echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\"}]" > "$MOCK_DIR/agents.json"
+out="$(env -u DAEMON_HOME HOME="$HOME" PATH="$PATH" LOCAL_REPO="$LOCAL_REPO" BOARD_REPO="$BOARD_REPO" \
+    DAEMON_SCRIPTS="$DAEMON_SCRIPTS" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
+    PROMPT_DIR="$PROMPT_DIR" STUB_COUNT="$STUB_COUNT" "$DISPATCH" 5)"
+assert_contains "$out" "active reviewer" "ACTIVE+live reviewer skipped even with DAEMON_HOME absent from the child env"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn logged — DAEMON_HOME reached _reviewer_meta via explicit passthrough, not inheritance"
+rm -rf "$DEFAULT_DAEMON_HOME"
+
 # ---- sweep ---------------------------------------------------------------------
 echo "sweep:"
 reset_state; seed_reviewer idle
@@ -232,6 +259,26 @@ mkdir -p "$WT"; echo junk > "$WT/junk.txt"
 out="$("$DISPATCH" 5)"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "stale worktree dir replaced with a fresh checkout"
 
+# ---- live worktree guard (defense-in-depth on top of dedupe) ------------------
+# A live daemon can occupy $WT even when the DAEMON_HOME registry has no
+# record of it (e.g. a non-review daemon, or a registry that was cleared).
+# The registry-only dedupe check would say "dispatch"; the cwd-based guard
+# must refuse anyway rather than force-removing a worktree a live process is
+# sitting in.
+echo "live worktree guard:"
+reset_state
+out="$("$DISPATCH" 5)"                                     # real dispatch: (re)creates $WT
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "setup: worktree created via a real dispatch"
+reset_state                                                  # clears registry → dedupe alone would say "dispatch"
+echo "[{\"id\": \"live0001\", \"sessionId\": \"live0001-0000-4000-8000-000000000000\", \"cwd\": \"$WT\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "live daemon occupies" "occupied worktree refuses removal"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn when the worktree is occupied by a live daemon"
+if [ -d "$WT" ]; then pass "worktree still exists after the refused dispatch"; else
+    fail "worktree still exists after the refused dispatch"; fi
+reset_state
+
 # ---- sweep failure isolation ----------------------------------------------------
 echo "sweep failure isolation:"
 # PR 4 (earlier in the sweep order) fails mid-dispatch; PR 5 must still be
@@ -240,18 +287,19 @@ echo "sweep failure isolation:"
 #
 # NOTE on how the failure is injected: dispatch_one runs inside
 # `run_for ... || echo ...`, and bash suspends `errexit` for the *entire*
-# call subtree of a command guarded by `||` (verified directly: a failing
-# command substitution — e.g. `gh issue view` on a deleted linked issue, or
-# a failing `git fetch` — deep inside a `||`-guarded function does NOT abort
-# that function; execution just continues with the failed step's output
-# treated as empty/absent, and the PR still gets dispatched with degraded
-# data). Only a failure in dispatch_one's actual *last* command — the
-# `daemon-spawn.sh` call — propagates as dispatch_one's own nonzero return,
-# which is what `|| echo "dispatch error"` can observe. So this test
-# simulates a realistic spawn-time failure (e.g. a daemon registry write
-# conflict) for review-pr-4 specifically, via the stub's FAIL_SPAWN_FOR hook,
-# rather than a gh/git failure that (correctly, per the fix) never aborts
-# the sweep but also never becomes an *observable* per-PR "dispatch error".
+# call subtree of a command guarded by `||`. That USED to mean a gh/git
+# failure deep inside dispatch_one could go unreported — it no longer does:
+# every gh/git step that can fail (git fetch, gh pr view, worktree add, ...)
+# is now explicitly guarded inline (`... || { echo "#$pr: <step> failed" >&2;
+# return 1; }`), so those failures surface as their own observable per-PR
+# error today — see the "dispatch guards" section below, which pins exactly
+# that (`#3: gh pr view failed`, reaching the sweep's reporter). This section
+# instead simulates a SPAWN-time failure (e.g. a daemon registry write
+# conflict) for review-pr-4 specifically, via the stub's FAIL_SPAWN_FOR hook:
+# `daemon-spawn.sh` is dispatch_one's actual *last* command, so its failure
+# is the one that exercises the sweep's own `|| echo "dispatch error"`
+# loop-isolation reporter directly, distinct from the per-step gh/git guards
+# already covered elsewhere in this file.
 #
 # pr-list.json is overwritten so PR 4 sorts BEFORE PR 5 (which must still be
 # dispatched). Safe to mutate here: no later test in this file depends on
