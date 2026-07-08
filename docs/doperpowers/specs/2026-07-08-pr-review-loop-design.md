@@ -401,6 +401,19 @@ protocol text — and are expected to be tuned from shakedown evidence.
   adversarial path; `lib/render.mjs` `renderReviewResult` prints the
   `Verdict:` / `[severity]` lines (openai-codex plugin 1.0.5).
 
+- Observation: ambient `set -euo pipefail` is not an error-handling strategy
+  for a per-item loop body. The plan's original sweep loop let one PR's
+  failure abort the whole pass; the first fix (`run_for … || report`)
+  suspended errexit through the entire call tree — so a mid-dispatch
+  `gh pr view` failure then dispatched a daemon with the PREVIOUS PR's head
+  SHA and an empty prompt (cross-PR contamination), while `set -u` (not
+  suspended by `||`) still killed the pass when the FIRST PR failed. The
+  shipped design guards every critical step in `dispatch_one` explicitly
+  (capture-before-eval, per-step `|| return 1`, empty-prompt refusal).
+  Evidence: task-5 review rounds 1–3, reproduced live against the committed
+  script each round; regression sections "sweep failure isolation" and
+  "dispatch guards" in tests/reviewing-prs/test-review-dispatch.sh.
+
 - Observation: ida-solution stacks PRs onto integration branches
   (`feat/mN-*`), so GitHub's `closingIssuesReferences` is empty for them and
   native auto-close never fires; PR base refs vary per PR.
