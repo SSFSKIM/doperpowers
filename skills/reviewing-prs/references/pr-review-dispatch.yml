@@ -1,0 +1,39 @@
+# pr-review-dispatch.yml — dispatch a local review-worker daemon on PR events.
+# Template from doperpowers:reviewing-prs — copy into .github/workflows/.
+#
+# SETUP (per adopting repo — see runner-setup.md in the reviewing-prs skill):
+#   1. PRIVATE REPOS ONLY. A self-hosted runner on a public repo lets a
+#      stranger's fork PR reach the machine.
+#   2. Register a self-hosted runner labeled `claude-review` on the machine
+#      running the daemon fleet, and set LOCAL_REPO below to that machine's
+#      canonical clone path.
+#   3. Security properties this template maintains — keep them:
+#      - NO actions/checkout: the job never executes PR code (the PR runs
+#        only inside the daemon's worktree behind --permission-mode auto).
+#      - permissions: {} — the job needs no GitHub token; the dispatch
+#        script uses the runner machine's own `gh` auth.
+#      - Only ${{ github.event.pull_request.number }} (numeric) is
+#        interpolated. NEVER interpolate PR title/body here (injection).
+#      - The actor gate keeps other accounts' PRs off the runner.
+#   4. `synchronize` is deliberately NOT a trigger: fix pushes by the review
+#      worker itself must not re-dispatch. The sweep cron is the catch-up.
+name: PR review dispatch
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+permissions: {}
+concurrency:
+  group: review-dispatch-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    if: github.event.pull_request.draft == false && github.actor == github.repository_owner
+    runs-on: [self-hosted, claude-review]
+    timeout-minutes: 10
+    env:
+      LOCAL_REPO: /CHANGE/ME/absolute/path/to/local/clone
+      BOARD_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch review daemon
+        run: |
+          "${DOPERPOWERS_HOME:-$HOME/.claude/plugins/marketplaces/doperpowers}/skills/reviewing-prs/scripts/review-dispatch.sh" "${{ github.event.pull_request.number }}"
