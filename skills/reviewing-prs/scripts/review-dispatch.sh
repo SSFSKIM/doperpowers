@@ -194,7 +194,7 @@ for p in json.load(sys.stdin):
     cr = 1 if any(l.get("name") == "confident-ready" for l in p.get("labels") or []) else 0
     print("%s %s" % (p["number"], cr))' \
     | while read -r prn cr; do
-        run_for "$prn" sweep "$cr"
+        run_for "$prn" sweep "$cr" || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"

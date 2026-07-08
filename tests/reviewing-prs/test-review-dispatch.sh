@@ -66,6 +66,10 @@ set -euo pipefail
 echo "spawn:$*" >> "$SPAWN_LOG"
 [ "${1:-}" = "--no-wait" ] && shift
 name="$1"; task="$2"; cwd="${3:-}"
+if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
+  echo "stub daemon-spawn: simulated failure for $name" >&2
+  exit 1
+fi
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
 n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
 uuid="$(printf 'aaaa%04d' "$n")-0000-4000-8000-000000000000"
@@ -227,6 +231,50 @@ reset_state
 mkdir -p "$WT"; echo junk > "$WT/junk.txt"
 out="$("$DISPATCH" 5)"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "stale worktree dir replaced with a fresh checkout"
+
+# ---- sweep failure isolation ----------------------------------------------------
+echo "sweep failure isolation:"
+# PR 4 (earlier in the sweep order) fails mid-dispatch; PR 5 must still be
+# dispatched afterward, and the failure must be surfaced rather than
+# silently swallowed or left to abort the rest of the pass.
+#
+# NOTE on how the failure is injected: dispatch_one runs inside
+# `run_for ... || echo ...`, and bash suspends `errexit` for the *entire*
+# call subtree of a command guarded by `||` (verified directly: a failing
+# command substitution — e.g. `gh issue view` on a deleted linked issue, or
+# a failing `git fetch` — deep inside a `||`-guarded function does NOT abort
+# that function; execution just continues with the failed step's output
+# treated as empty/absent, and the PR still gets dispatched with degraded
+# data). Only a failure in dispatch_one's actual *last* command — the
+# `daemon-spawn.sh` call — propagates as dispatch_one's own nonzero return,
+# which is what `|| echo "dispatch error"` can observe. So this test
+# simulates a realistic spawn-time failure (e.g. a daemon registry write
+# conflict) for review-pr-4 specifically, via the stub's FAIL_SPAWN_FOR hook,
+# rather than a gh/git failure that (correctly, per the fix) never aborts
+# the sweep but also never becomes an *observable* per-PR "dispatch error".
+#
+# pr-list.json is overwritten so PR 4 sorts BEFORE PR 5 (which must still be
+# dispatched). Safe to mutate here: no later test in this file depends on
+# the original pr-list.json contents.
+SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]; sha = os.environ["SHA"]
+def pr(n, **kw):
+    base = {"number": n, "title": "fix: something", "body": "No ticket for this one.",
+            "baseRefName": "main", "headRefName": "feat/x", "headRefOid": sha,
+            "url": "https://github.com/test/repo/pull/%d" % n, "isDraft": False,
+            "state": "OPEN", "labels": [], "closingIssuesReferences": []}
+    base.update(kw)
+    json.dump(base, open(os.path.join(d, "pr-%d.json" % n), "w"))
+pr(4)
+json.dump([{"number": 4, "isDraft": False, "labels": []},
+           {"number": 5, "isDraft": False, "labels": []}],
+          open(os.path.join(d, "pr-list.json"), "w"))
+PY
+reset_state
+out="$(FAIL_SPAWN_FOR="review-pr-4" "$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep still dispatches PR 5 after PR 4 (earlier) fails mid-dispatch"
+assert_contains "$out" "#4: dispatch error (continuing sweep)" "sweep surfaces PR 4's dispatch failure instead of swallowing it"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
