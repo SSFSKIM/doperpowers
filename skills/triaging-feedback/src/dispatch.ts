@@ -12,7 +12,7 @@ export interface Deps {
     diffStat(wt: string): Promise<{ files: string[]; lines: number }>;
     buildAndTest(wt: string): Promise<boolean>;
   };
-  runTurn(o: { worktree: string; prompt: string; sandbox: 'read_only' | 'workspace_write'; thread?: unknown }): Promise<{ text: string; thread: unknown }>;
+  runTurn(o: { worktree: string; prompt: string; sandbox: 'read_only' | 'workspace_write' }): Promise<{ text: string }>;
   se: {
     findExisting(id: string): Promise<{ pr?: string; issue?: string }>;
     openFixPr(a: { feedbackId: string; worktree: string; branch: string; title: string; body: string }): Promise<string>;
@@ -30,9 +30,11 @@ export async function dispatchRow(row: FeedbackRow, d: Deps): Promise<TriageStat
   const wt = await d.git.addWorktree(row.id);
   try {
     // turn 1: read_only 진단 (body = untrusted data)
-    const { text, thread } = await d.runTurn({ worktree: wt, prompt: renderTriagePrompt(row), sandbox: 'read_only' });
+    const { text } = await d.runTurn({ worktree: wt, prompt: renderTriagePrompt(row), sandbox: 'read_only' });
     const verdict = parseVerdict(text);
     if (!verdict) { await d.db.writeback(row.id, { triage_state: 'failed' }); return 'failed'; }
+    // 모델이 다른 행의 id를 참칭하면(혼동 또는 프롬프트 인젝션) 신뢰하지 않고 실패 처리한다.
+    if (verdict.feedback_id !== row.id) { await d.db.writeback(row.id, { triage_state: 'failed' }); return 'failed'; }
 
     const wantsFix = d.cfg.fixEnabled && preRoute(row.category) === 'diagnose' && verdict.route === 'fix';
     if (!wantsFix) {
@@ -41,8 +43,9 @@ export async function dispatchRow(row: FeedbackRow, d: Deps): Promise<TriageStat
       return 'ticketed';
     }
 
-    // turn 2: workspace_write 수정
-    await d.runTurn({ worktree: wt, prompt: renderFixPrompt(row, verdict), sandbox: 'workspace_write', thread });
+    // turn 2: workspace_write 수정 — fresh thread(F2). turn 1의 신뢰불가 row.body를 이어받지 않도록
+    // renderFixPrompt는 검증된 verdict 필드만 담는다.
+    await d.runTurn({ worktree: wt, prompt: renderFixPrompt(verdict), sandbox: 'workspace_write' });
     const stat = await d.git.diffStat(wt);
     const testsPassed = await d.git.buildAndTest(wt);
     const gate = enforceGate({ resolvedCategory: verdict.resolved_category, changedFiles: stat.files, diffLines: stat.lines, testsPassed, rootCauseCited: /\S+:\d+/.test(verdict.root_cause) });

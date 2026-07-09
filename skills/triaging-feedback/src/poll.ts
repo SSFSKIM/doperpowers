@@ -4,7 +4,7 @@ import { loadConfig } from './config';
 import { makeDb } from './db';
 import { makeGit } from './git';
 import { makeSideEffects, type Sh } from './sideEffects';
-import { runTurn } from './codexAdapter';
+import { makeCodexRunner } from './codexAdapter';
 import { dispatchRow } from './dispatch';
 
 const execFileP = promisify(execFile);
@@ -19,6 +19,7 @@ if (!cfg.enabled) {
 const db = makeDb(cfg);
 const git = makeGit(cfg.repoPath, cfg.baseBranch);
 const se = makeSideEffects(cfg, sh);
+const runTurn = makeCodexRunner(cfg.openaiApiKey, cfg.timeoutMs);
 
 const rows = await db.findActionable(cfg.k, cfg.reclaimMs);
 for (const row of rows) {

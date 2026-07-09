@@ -34,10 +34,12 @@ export function makeGit(repoPath: string, baseBranch: string) {
 
     /** 워크트리 내 변경분 통계. gate.ts의 G3(diff 규모)·G4(리스크 표면 파일 목록) 판단 입력.
      * 커밋될 형태 그대로 측정: 먼저 스테이징(git add -A)한 뒤 staged diff를 본다 — 그래야
-     * Codex가 새로 추가한(untracked) 파일도 게이트에 보인다(`git diff --numstat`은 tracked 파일만 잡는다). */
+     * Codex가 새로 추가한(untracked) 파일도 게이트에 보인다(`git diff --numstat`은 tracked 파일만 잡는다).
+     * --no-renames: rename 감지가 기본 켜져 있으면 `lib/{foo.ts => auth.ts}` 꼴 결합 경로가 나와
+     * gate.ts의 앵커드 정규식이 매치를 못 한다(F6) — add+delete로 풀어 실제 최종 경로를 보게 한다. */
     async diffStat(wt: string): Promise<{ files: string[]; lines: number }> {
       await run('git', ['-C', wt, 'add', '-A']); // 새 파일(untracked)도 게이트에 보이게 스테이징
-      const { stdout } = await run('git', ['-C', wt, 'diff', '--cached', '--numstat'], { maxBuffer: 64 * 1024 * 1024 });
+      const { stdout } = await run('git', ['-C', wt, 'diff', '--cached', '--no-renames', '--numstat'], { maxBuffer: 64 * 1024 * 1024 });
       const rows = stdout.trim().split('\n').filter(Boolean);
       const files = rows.map((r) => r.split('\t')[2]);
       const lines = rows.reduce((n, r) => {
