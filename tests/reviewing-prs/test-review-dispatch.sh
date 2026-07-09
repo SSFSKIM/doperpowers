@@ -171,6 +171,9 @@ assert_contains "$PROMPT" "only when auto-merge is on" "AUTHORITY recap gates me
 assert_contains "$PROMPT" "base-is-default: yes" "prompt marks base==default (PR 5 targets main, the default) → always human tier"
 assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted placeholder survives"
+assert_contains "$PROMPT" "needs-human" "protocol parks route to needs-human (v8)"
+assert_not_contains "$PROMPT" "needs-info" "review-loop parks are all human-unparked (v8)"
+assert_not_contains "$PROMPT" "→ blocked" "retired blocked vocabulary gone from the protocol"
 
 # ---- skips --------------------------------------------------------------------
 echo "skips:"

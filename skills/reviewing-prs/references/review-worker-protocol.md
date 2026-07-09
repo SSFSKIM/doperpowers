@@ -30,7 +30,7 @@ EVALUATE every finding against codebase reality before acting:
 - Never implement from the finding text alone — read the code it names first.
 - Rebut with technical evidence: a rejected finding cites the code that
   refutes it.
-- A finding you cannot verify is an escalation (needs-info), never a
+- A finding you cannot verify is an escalation (needs-human), never a
   shrug-and-proceed.
 - YAGNI-check scope-inflating suggestions ("implement this properly"): grep
   for actual usage before accepting the scope.
@@ -55,7 +55,7 @@ RE-REVIEW (max 3 codex rounds total) when ANY: a critical/high finding led
 to a fix; cumulative fixes exceed ~50 changed lines or 3 files; any fix
 changed behavior (not comments/docs/renames). Skip when fixes were trivial
 or none. At the cap with unresolved critical/high findings: do NOT grant
-confidence — set ticket #{{ISSUE_NUMBER}} to needs-info with an impasse
+confidence — set ticket #{{ISSUE_NUMBER}} to needs-human with an impasse
 summary and end your turn.
 
 ESCALATE when review is complete. The SELF-MERGE tier requires ALL of:
@@ -94,17 +94,17 @@ HUMAN tier — anything else, or observation mode above:
   — post the review-trail comment, end your turn.
 
 YOUR AUTHORITY: ticket #{{ISSUE_NUMBER}}'s open states via
-board-transition.sh (confident-ready / needs-info / blocked — note required
-for the latter two); registering finding-tickets; merging ONLY in the
-self-merge tier AND only when auto-merge is on (auto-merge: {{AUTO_MERGE}} —
-if off, the tier being satisfied still means the HUMAN-tier path, not a
-merge); done ONLY as post-merge finalize. NEVER: wontfix, other
-tickets' states, force-push, opening your own PRs, /codex:cancel.
-Escalation discriminant: waiting on an action/precondition → blocked;
-waiting on knowledge or a human taste/product decision → needs-info.
+board-transition.sh (confident-ready / needs-human — note required for
+needs-human); registering finding-tickets; merging ONLY in the self-merge
+tier AND only when auto-merge is on (auto-merge: {{AUTO_MERGE}} — if off,
+the tier being satisfied still means the HUMAN-tier path, not a merge);
+done ONLY as post-merge finalize. NEVER: wontfix, other tickets' states,
+force-push, opening your own PRs, /codex:cancel. Every park in this loop
+waits on the human — write needs-human with the question/impasse/conflict
+as the note (who unparks it: the human as themselves).
 
 If your push is rejected (the head moved), fetch and rebase your fixes onto
-the new head and retry once; a second rejection → needs-info with the
+the new head and retry once; a second rejection → needs-human with the
 conflict described.
 
 The review-trail comment on the PR records: engine and rounds run, every
