@@ -367,7 +367,36 @@ tune `K`, gate thresholds, category handling.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Plan B (the `triaging-feedback` skill) is code-complete** (2026-07-10, branch
+`feat/triaging-feedback-skill`, 11 task commits, 46 unit tests green, `tsc`
+clean). Built via subagent-driven-development: a spike + nine TDD/glue tasks,
+each with an independent task review, then a whole-branch review on Opus.
+
+What the process caught that the per-task reviews could not — two integration-seam
+bugs surfaced only by the whole-branch review:
+- **Gate evasion (Critical):** `git diff --numstat` measured only modified
+  *tracked* files, so a fix that *added* a new file (e.g. a `sql/pNN.sql`
+  migration or `app/api/cron/*` — both risk surfaces) reached the gate as an
+  empty diff and would have been committed ungated. Fixed by staging first
+  (`git add -A` → `git diff --cached --numstat`) so the gate sees exactly what
+  the PR will commit.
+- **Dead reclaim (Important):** the atomic `claim` guarded on `pending` only, so
+  the stale-`claimed` rows that `findActionable` surfaces for crash recovery
+  could never be re-claimed — the whole `reclaimMs` window was inert. Fixed by
+  giving `claim` the same `pending OR stale-claimed` predicate as
+  `findActionable`.
+
+Both were the direct consequence of the plan deliberately leaving `git.ts`/`db.ts`
+partially untested (I/O glue) — the missing `findActionable` unit test is exactly
+what hid the reclaim bug; coverage was added with the fix.
+
+**Not yet done:** Task 11 (live shadow run) is a handoff — it needs Plan A's `p86`
+migration live and `OPENAI_API_KEY` + service-role creds on the self-hosted Mac,
+so it validates the three untested seams (`codexAdapter` two-turn flow,
+`git.ts` worktree/build, `poll.ts` end-to-end) against real infrastructure.
+Also deferred to that hardening pass: `findExisting`'s `gh pr list` fails *open*
+(a `gh` error → no PR found → possible duplicate), backstopped for now by the
+body marker and human PR review.
 
 ## Revision Notes
 
