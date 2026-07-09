@@ -98,6 +98,9 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
     num = gh_of[tid]
     gn = node(num)
     want = n["state"]
+    # v8: the legacy v6 vocabulary carried `blocked`; it lands as needs-human.
+    if want == "blocked":
+        want = "needs-human"
     ref = "%s→#%s" % (tid, num)
 
     # state
@@ -120,8 +123,8 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
             # Happy-path progression: GitHub-side automation (assign→in-progress,
             # PR→in-review) is what the legacy board historically lagged behind —
             # never downgrade an issue GitHub says is further along. Paused board
-            # states (deferred/blocked/needs-info) are deliberate decisions and
-            # still win.
+            # states (deferred/needs-human/needs-info) are deliberate decisions
+            # and still win.
             HAPPY = {"ready-for-agent": 0, "in-progress": 1, "in-review": 2}
             if want in HAPPY and have in HAPPY and HAPPY[have] > HAPPY[want]:
                 print("note  %s: GitHub is further along (%s > board %s) — GitHub wins, label kept"

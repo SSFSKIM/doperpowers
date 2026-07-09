@@ -11,7 +11,8 @@
 #   FAIL open issue with 2+ status:* labels (conflict)
 #   FAIL open issue with 2+ priority:* labels, or an invalid grade
 #   FAIL closed issue still carrying status:* labels
-#   FAIL blocked/needs-info without a note (board:meta)
+#   FAIL needs-human/needs-info/interactive-preferred without a note (board:meta)
+#   FAIL open issue carrying the retired status:blocked label (v8 → needs-human)
 #   FAIL dependency cycle among blocked_by edges
 #   WARN in-progress issue without an assignee
 #   WARN open issue with no priority:* label (legacy — backfill gradually;
@@ -41,20 +42,26 @@ def warn(tid, msg):
     warns += 1
     print("WARN #%s: %s" % (tid, msg))
 
+park_needs_note = [s for s in B.NOTE_REQUIRED if s in B.OPEN_STATES]
+
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     if n["state"] == B.UNTRACKED:
         fail(tid, "open with no status:* label (untracked)",
              "board-transition.sh %s <state> — put it on the board machine" % tid)
     elif n["state"] == B.CONFLICT:
-        fail(tid, "open with %d status:* labels: %s" %
-             (len(n["status_labels"]), ", ".join(n["status_labels"])),
-             "board-transition.sh %s <state> — the write normalizes the label set" % tid)
+        if n["status_labels"] == ["blocked"]:
+            fail(tid, "retired state: status:blocked (v8 folded it into needs-human)",
+                 "board-transition.sh %s needs-human \"<carried note>\" — the write swaps the label" % tid)
+        else:
+            fail(tid, "open with %d status:* labels: %s" %
+                 (len(n["status_labels"]), ", ".join(n["status_labels"])),
+                 "board-transition.sh %s <state> — the write normalizes the label set" % tid)
     if n["state"] in B.TERMINAL and n["status_labels"]:
         fail(tid, "closed but still labeled: %s" % ", ".join(n["status_labels"]),
              "board-transition.sh %s %s — finalize: strips labels + runs the terminal sweeps"
              % (tid, n["state"]))
-    if n["state"] in ("blocked", "needs-info") and not n.get("note"):
+    if n["state"] in park_needs_note and not n.get("note"):
         fail(tid, "%s without a note" % n["state"],
              "board-transition.sh %s %s \"<why>\" — or move it on" % (tid, n["state"]))
     if n["state"] == "in-progress" and not n["assignees"]:

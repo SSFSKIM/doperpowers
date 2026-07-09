@@ -9,8 +9,8 @@
 #   category  bug | enhancement
 #   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
 #             the managed priority:* label (change later: board-priority.sh)
-#   --state   birth state: ready-for-agent (default) | needs-info | blocked | deferred
-#             (needs-info / blocked require --note)
+#   --state   birth state: ready-for-agent (default) | needs-human | needs-info
+#             | interactive-preferred | deferred (the three park states require --note)
 #   --parent / --blocked-by take issue numbers; edges are created as native
 #   sub-issue / dependency relations. --spawned-by is provenance (board:meta).
 #   --body-file seeds the issue body (else a pre-spec skeleton is used).
@@ -60,7 +60,7 @@ if priority not in B.PRIORITIES:
     B.die("priority must be one of %s" % "|".join(B.PRIORITIES))
 if state not in B.BIRTH:
     B.die("birth state must be one of: %s" % ", ".join(B.BIRTH))
-if state in ("needs-info", "blocked") and not note:
+if state in B.NOTE_REQUIRED and not note:
     B.die("--note is required for state %s" % state)
 
 tickets = B.snapshot()

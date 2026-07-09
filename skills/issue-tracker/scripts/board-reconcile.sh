@@ -3,11 +3,11 @@
 #
 # Usage: board-reconcile.sh
 #
-# Scans daemon replies for proposal blocks the board hasn't applied, flags
-# in-progress tickets with no live bound daemon, lists dispatchable tickets,
-# and finishes with a board-lint pass (schema invariants over the live GitHub
-# state). Applying anything is the orchestrator's judge step, via
-# board-transition.sh — this script only reports.
+# Lists the human wake queue (parked tickets: needs-human / needs-info /
+# interactive-preferred), flags in-progress tickets with no live bound
+# daemon, lists dispatchable tickets, and finishes with a board-lint pass.
+# There is no proposal scanner: v8 workers write their own ticket states and
+# register child/follow-up tickets directly (doperpowers:implementing-tickets).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -18,7 +18,6 @@ import glob
 import json
 import os
 import re
-import shlex
 import _board as B
 
 env = os.environ
@@ -48,44 +47,14 @@ for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
 def by_id(items):
     return sorted(items, key=lambda kv: int(kv[0]))
 
-# 1. Unapplied proposals in daemon replies (last block for the ticket wins).
-for t, m in by_id(bound.items()):
-    reply = os.path.join(env["T_DHOME"], "%s.reply.txt" % m["_uuid"])
-    if not os.path.exists(reply):
-        continue
-    with open(reply) as f:
-        blocks = re.findall(r'\{[^{}]*"ticket"[^{}]*\}', f.read())
-    prop = None
-    for raw in reversed(blocks):
-        try:
-            cand = json.loads(raw)
-        except ValueError:
-            continue
-        if str(cand.get("ticket", "")).lstrip("#") == t:
-            prop = cand
-            break
-    cur = tickets[t]["state"]
-    if not prop or not prop.get("to"):
-        continue
-    # `to` is daemon-controlled text headed for a paste-able command — states
-    # are a closed set, so whitelist instead of quoting: an unknown state is
-    # itself an anomaly (%r keeps the hostile value inert), and no hint prints.
-    if prop["to"] not in B.STATES:
-        print("anomaly   #%s: daemon proposes unknown state %r" % (t, prop["to"]))
-        continue
-    if prop["to"] != cur:
-        print("proposal  #%s: %s → %s  (reason: %s; evidence: %s)" %
-              (t, cur, prop["to"], prop.get("reason", "-"), prop.get("evidence", "-")))
-        ev = prop.get("evidence")
-        if prop["to"] == "in-review" and ev:
-            # in-review is PR-gated: carry the proposal's evidence into the hint
-            # as the required --pr value so the apply command runs as-printed.
-            # shlex-quoted — evidence is semi-trusted daemon reply text, and a
-            # `"`/$()/backtick payload must not inject into the printed command.
-            print("          apply: board-transition.sh %s in-review --pr %s"
-                  % (t, shlex.quote(str(ev))))
-        else:
-            print("          apply: board-transition.sh %s %s" % (t, prop["to"]))
+# 1. The wake queue: parked tickets — every one waits on the human.
+#    needs-human = a decision/real-world input only they have; needs-info =
+#    research must precede gating; interactive-preferred = take it into a
+#    live doperpowers:brainstorming session.
+for t, n in by_id(tickets.items()):
+    if n["state"] in ("needs-human", "needs-info", "interactive-preferred"):
+        note = " ".join((n.get("note") or "(no note — lint FAILs this)").split())
+        print("parked    #%s: %s — %s" % (t, n["state"], note))
 
 # 2. in-progress tickets with a missing or terminal daemon.
 for t, n in by_id(tickets.items()):

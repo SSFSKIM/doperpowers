@@ -69,10 +69,10 @@ out="$(run board-register.sh "Epic: alpha" enhancement P2)"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
 assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
 
-out="$(run board-register.sh $'Multi\nline title' bug P1 --state blocked --note "waiting on A")"
+out="$(run board-register.sh $'Multi\nline title' bug P1 --state needs-human --note "waiting on A")"
 assert_equals "$(state "s['issues']['2']['title']")" "Multi line title" "title newlines collapsed"
-assert_contains "$(state "s['issues']['2']['labels']")" "status:blocked" "birth state honored"
-assert_contains "$(state "s['issues']['2']['comments'][0]")" "[board] blocked: waiting on A" "birth note posted as [board] comment"
+assert_contains "$(state "s['issues']['2']['labels']")" "status:needs-human" "birth state honored"
+assert_contains "$(state "s['issues']['2']['comments'][0]")" "[board] needs-human: waiting on A" "birth note posted as [board] comment"
 assert_contains "$(state "s['issues']['2']['body']")" "note: waiting on A" "birth note in board:meta"
 
 out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2)"
@@ -86,6 +86,8 @@ assert_fails run board-register.sh "X" gadget P2
 assert_fails run board-register.sh "X" bug                             # priority required
 assert_fails run board-register.sh "X" bug P9                          # bad grade
 assert_fails run board-register.sh "X" bug P2 --state needs-info       # note required
+assert_fails run board-register.sh "X" bug P2 --state interactive-preferred  # note required
+assert_fails run board-register.sh "X" bug P2 --state blocked          # retired state (v8)
 assert_fails run board-register.sh "X" bug P2 --state "done"             # not a birth state
 assert_fails run board-register.sh "X" bug P2 --parent 999             # unknown ref
 
@@ -112,7 +114,7 @@ assert_contains "$out" "#4: none → P2" "unset reported as none"
 # ---- transition: legality + note/PR gates ------------------------------------
 echo "board-transition:"
 assert_fails run board-transition.sh 3 "done"                            # ready → done illegal
-assert_fails run board-transition.sh 3 blocked                         # note required
+assert_fails run board-transition.sh 3 needs-human                     # note required
 assert_fails run board-transition.sh 999 in-progress                   # unknown issue
 
 out="$(run board-transition.sh 3 in-progress)"
@@ -316,13 +318,9 @@ assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
 assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
 
 run board-transition.sh 9 in-progress >/dev/null
-cat > "$DAEMON_HOME/aaaa-bbbb.reply.txt" <<'J'
-work done, proposing:
-{"ticket":"9","from":"in-progress","to":"in-review","reason":"PR open","evidence":"https://github.com/test/repo/pull/12"}
-J
 out="$(run board-reconcile.sh)"
-assert_contains "$out" "proposal  #9: in-progress → in-review" "reconcile surfaces proposal"
-assert_contains "$out" "board-transition.sh 9 in-review --pr https://github.com/test/repo/pull/12" "apply hint carries PR"
+assert_contains "$out" "parked    #2: needs-human — waiting on A" "reconcile lists the wake queue"
+assert_not_contains "$out" "proposal" "the proposal scanner is gone (v8: no orchestrator)"
 run board-transition.sh 7 in-progress >/dev/null 2>&1 || true    # 7 has no daemon
 out="$(run board-reconcile.sh)"
 assert_contains "$out" "orphaned  #7" "orphaned in-progress flagged"
@@ -575,10 +573,10 @@ run board-map.sh --write >/dev/null 2>&1
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"cls": "s_cready"' "html payload carries the confident-ready class"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"confident-ready"' "kanban vocabulary carries the confident-ready column"
 
-# ---- in-review escalations: needs-info/blocked (review-worker protocol safety
-# valves) -------------------------------------------------------------------
+# ---- in-review escalations: needs-info/needs-human (review-worker protocol
+# safety valves) -------------------------------------------------------------
 # The reviewing-prs Review Worker Protocol escalates in-review → needs-info
-# (round cap reached, impasse) and in-review → blocked (push conflict,
+# (round cap reached, impasse) and in-review → needs-human (push conflict,
 # precondition failure) — both were illegal transitions before this fix.
 # Reuses #18 (left at confident-ready above); demote it back to in-review
 # first.
@@ -593,11 +591,68 @@ assert_contains "$(state "s['issues']['18']['labels']")" "status:needs-info" "ne
 
 run board-transition.sh 18 in-progress >/dev/null
 out="$(run board-transition.sh 18 in-review "back for another round" --pr https://github.com/test/repo/pull/81)"
-assert_contains "$out" "#18: in-progress → in-review" "back to in-review ahead of the blocked escalation"
-assert_fails run board-transition.sh 18 blocked                                # note required
-out="$(run board-transition.sh 18 blocked "push conflict — needs a human")"
-assert_contains "$out" "#18: in-review → blocked" "in-review → blocked is now legal (protocol escalation)"
-assert_contains "$(state "s['issues']['18']['labels']")" "status:blocked" "blocked label applied"
+assert_contains "$out" "#18: in-progress → in-review" "back to in-review ahead of the needs-human escalation"
+assert_fails run board-transition.sh 18 needs-human                            # note required
+out="$(run board-transition.sh 18 needs-human "push conflict — needs a human")"
+assert_contains "$out" "#18: in-review → needs-human" "in-review → needs-human is legal (protocol escalation)"
+assert_contains "$(state "s['issues']['18']['labels']")" "status:needs-human" "needs-human label applied"
+
+# ---- interactive-preferred (park: ticket shape wants live human steering) -----
+echo "interactive-preferred:"
+assert_fails run board-register.sh "IP birth" enhancement P2 --state interactive-preferred  # note required
+run board-register.sh "IP birth" enhancement P2 --state interactive-preferred --note "product-core: onboarding voice" >/dev/null   # 19
+assert_contains "$(state "s['issues']['19']['labels']")" "status:interactive-preferred" "birth state honored"
+out="$(run board-list.sh)"
+line19="$(printf '%s\n' "$out" | grep '^#19 ')"
+assert_not_contains "$line19" "ELIGIBLE" "interactive-preferred is never ELIGIBLE"
+out="$(run board-transition.sh 19 in-progress)"
+assert_contains "$out" "#19: interactive-preferred → in-progress" "human takes it up: in-progress legal"
+assert_fails run board-transition.sh 19 interactive-preferred                  # note required
+out="$(run board-transition.sh 19 interactive-preferred "back to parked")"
+assert_contains "$out" "#19: in-progress → interactive-preferred" "in-progress → interactive-preferred legal (gate-fail mid-build)"
+set +e
+lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
+set -e
+assert_equals "$lint_rc" "0" "board with a noted interactive-preferred ticket lints green"
+
+# ---- needs-human (park: the human as themselves unparks) ---------------------
+echo "needs-human:"
+run board-register.sh "NH probe" enhancement P2 >/dev/null                     # 20
+assert_fails run board-transition.sh 20 needs-human                            # note required
+out="$(run board-transition.sh 20 needs-human "pick auth provider: A or B (rec: A)")"
+assert_contains "$out" "#20: ready-for-agent → needs-human" "gate-fail park applied"
+out="$(run board-transition.sh 20 needs-info "research first: provider capability matrix")"
+assert_contains "$out" "#20: needs-human → needs-info" "park-to-park re-triage legal"
+out="$(run board-transition.sh 20 ready-for-agent)"
+assert_contains "$out" "#20: needs-info → ready-for-agent" "answered park returns to ready"
+
+# ---- blocked is retired (v8) --------------------------------------------------
+echo "blocked retired:"
+assert_fails run board-transition.sh 20 blocked "any"                          # unknown state
+python3 - <<'LEGACY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["20"]["labels"] = ["enhancement", "status:blocked", "priority:P2"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+LEGACY
+set +e
+lint_out="$(run board-lint.sh 2>&1)"; rc=$?
+set -e
+assert_equals "$rc" "1" "legacy status:blocked FAILs lint"
+assert_contains "$lint_out" "retired state: status:blocked" "retired label named"
+assert_contains "$lint_out" "board-transition.sh 20 needs-human" "FIX points at the needs-human migration"
+out="$(run board-transition.sh 20 needs-human "migrated: carried note")"
+assert_contains "$(state "s['issues']['20']['labels']")" "status:needs-human" "migration swaps the label"
+assert_not_contains "$(state "s['issues']['20']['labels']")" "status:blocked" "retired label removed"
+
+# ---- map: v8 park classes ------------------------------------------------------
+echo "board-map (v8 park classes):"
+run board-map.sh --write >/dev/null 2>&1
+BOARD_HTML="$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")"
+assert_contains "$BOARD_HTML" '"cls": "s_needh"' "html payload carries the needs-human class"
+assert_contains "$BOARD_HTML" '"cls": "s_ipref"' "html payload carries the interactive-preferred class"
+assert_contains "$BOARD_HTML" '"interactive-preferred"' "kanban vocabulary carries the interactive-preferred column"
+assert_not_contains "$BOARD_HTML" 's_blk' "retired blocked class gone from the render"
 
 # template view logic (kanban relocation + chip filtering) runs under node —
 # the only surface a shell test can't execute. Skipped, not failed, where node

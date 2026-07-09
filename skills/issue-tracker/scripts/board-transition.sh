@@ -4,7 +4,7 @@
 # Usage:
 #   board-transition.sh <number> <to-state> [note] [--branch NAME] [--pr URL]
 #
-# Enforces transition legality and mandatory notes (blocked/needs-info/wontfix),
+# Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
 #   → in-progress : the first active child pulls its parent epic(s) to in-progress
 #   → done/wontfix: an epic closes when every child is terminal and at least one

@@ -16,33 +16,48 @@ import subprocess
 import sys
 from typing import NoReturn
 
-# ── state vocabulary (v6-identical machine) ──────────────────────────────
-OPEN_STATES = ("ready-for-agent", "in-progress", "blocked", "needs-info",
-               "in-review", "confident-ready", "deferred")
+# ── state vocabulary (v8: blocked retired into needs-human; the park trio) ──
+OPEN_STATES = ("ready-for-agent", "in-progress", "needs-human", "needs-info",
+               "interactive-preferred", "in-review", "confident-ready",
+               "deferred")
 TERMINAL = ("done", "wontfix")
 STATES = OPEN_STATES + TERMINAL
 # Actively-worked states: a close_candidate in one of these is normal
 # mid-flight shape (part-1 PR merged, part 2 coming) — surfaces that nag or
 # relocate (lint WARN, kanban column) skip them; passive displays still mark.
 ACTIVE = ("in-progress", "in-review")
-BIRTH = ("ready-for-agent", "needs-info", "blocked", "deferred")
-NOTE_REQUIRED = ("blocked", "needs-info", "wontfix")
-PULLABLE = ("ready-for-agent", "needs-info", "blocked", "deferred")
+BIRTH = ("ready-for-agent", "needs-info", "needs-human",
+         "interactive-preferred", "deferred")
+# Park discriminant — WHO UNPARKS IT: the human as themselves (a decision or
+# a real-world input) → needs-human; knowledge work anyone could do →
+# needs-info; ongoing steering, not one answer → interactive-preferred.
+NOTE_REQUIRED = ("needs-human", "needs-info", "interactive-preferred", "wontfix")
+PULLABLE = ("ready-for-agent", "needs-info", "needs-human",
+            "interactive-preferred", "deferred")
 LEGAL = {
-    "ready-for-agent": {"in-progress", "needs-info", "blocked", "wontfix", "deferred"},
-    "in-progress":     {"needs-info", "blocked", "in-review", "done", "wontfix", "deferred"},
-    "needs-info":      {"ready-for-agent", "in-progress", "wontfix", "deferred"},
-    "blocked":         {"ready-for-agent", "in-progress", "wontfix", "deferred"},
-    # needs-info/blocked reachable from in-review: the reviewing-prs worker's
-    # impasse/precondition escalations (protocol safety valves)
-    "in-review":       {"in-progress", "confident-ready", "done", "wontfix", "deferred",
-                         "needs-info", "blocked"},
+    "ready-for-agent": {"in-progress", "needs-info", "needs-human",
+                        "interactive-preferred", "wontfix", "deferred"},
+    "in-progress":     {"needs-info", "needs-human", "interactive-preferred",
+                        "in-review", "done", "wontfix", "deferred"},
+    "needs-info":      {"ready-for-agent", "in-progress", "needs-human",
+                        "interactive-preferred", "wontfix", "deferred"},
+    "needs-human":     {"ready-for-agent", "in-progress", "needs-info",
+                        "interactive-preferred", "wontfix", "deferred"},
+    "interactive-preferred": {"ready-for-agent", "in-progress", "needs-info",
+                        "needs-human", "wontfix", "deferred"},
+    # needs-human reachable from in-review: the reviewing-prs review loop's
+    # impasse/precondition escalations (protocol safety valve) — all its
+    # parks route to needs-human. needs-info stays reachable here too, as a
+    # human/legacy affordance; the review worker itself no longer writes it.
+    "in-review":       {"in-progress", "confident-ready", "done", "wontfix",
+                        "deferred", "needs-info", "needs-human"},
     # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
     # Reachable ONLY from in-review (a review verdict presupposes an open PR);
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
     # merged SHOULD surface as a close candidate (the finalize cue).
     "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
-    "deferred":        {"ready-for-agent", "needs-info", "blocked", "wontfix"},
+    "deferred":        {"ready-for-agent", "needs-info", "needs-human",
+                        "interactive-preferred", "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
 }
@@ -57,7 +72,8 @@ STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
     "in-progress":     "1d76db",
     "in-review":       "5319e7",
     "confident-ready": "008672",
-    "blocked":         "d93f0b",
+    "needs-human":     "d93f0b",
+    "interactive-preferred": "d4c5f9",
     "needs-info":      "fbca04",
     "deferred":        "c5def5",
 }

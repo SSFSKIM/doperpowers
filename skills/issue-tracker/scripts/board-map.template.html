@@ -66,7 +66,8 @@
   .s_cready { --bd: #14b8a6; --bgc: rgba(20,184,166,.09); --tx: #5eead4; --glow: rgba(20,184,166,.22); }
   .s_elig { --bd: #3b82f6; --bgc: rgba(59,130,246,.09); --tx: #93c5fd; --glow: rgba(59,130,246,.32); }
   .s_wait { --bd: #2d3748; --bgc: rgba(45,55,72,.25);   --tx: #64748b; --glow: transparent; }
-  .s_blk  { --bd: #ef4444; --bgc: rgba(239,68,68,.09);  --tx: #fca5a5; --glow: rgba(239,68,68,.22); }
+  .s_needh { --bd: #ef4444; --bgc: rgba(239,68,68,.09);  --tx: #fca5a5; --glow: rgba(239,68,68,.22); }
+  .s_ipref { --bd: #ec4899; --bgc: rgba(236,72,153,.09); --tx: #f9a8d4; --glow: rgba(236,72,153,.22); }
   .s_info { --bd: #d97706; --bgc: rgba(217,119,6,.09);  --tx: #fcd34d; --glow: rgba(217,119,6,.22); }
   .s_def  { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent; border-style: dashed; }
   .s_wf   { --bd: #2d3748; --bgc: rgba(45,55,72,.18);   --tx: #5a6677; --glow: transparent;
@@ -197,7 +198,8 @@
     // future label adds). Give every state present a column rather than
     // silently dropping its tickets.
     KB_STATES = ["ready-for-agent", "in-progress", "in-review", "confident-ready",
-                 "close-candidate", "blocked", "needs-info", "deferred",
+                 "close-candidate", "needs-human", "needs-info",
+                 "interactive-preferred", "deferred",
                  "conflict", "untracked", "done", "wontfix"];
     BOARD.nodes.forEach(function (n) { if (KB_STATES.indexOf(n.state) < 0) KB_STATES.push(n.state); });
     document.getElementById("meta").textContent =
@@ -208,13 +210,14 @@
   // state class -> the short badge shown on the card (the full label goes to detail).
   var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_cready: "confident",
                 s_elig: "ELIGIBLE",
-                s_wait: "waiting", s_blk: "blocked", s_info: "needs-info",
-                s_def: "deferred", s_wf: "wontfix",
+                s_wait: "waiting", s_needh: "needs-human", s_info: "needs-info",
+                s_ipref: "interactive", s_def: "deferred", s_wf: "wontfix",
                 s_conflict: "CONFLICT", s_untracked: "untracked" };
   // state name (chip vocabulary) -> palette class, for coloring the filter chips.
   var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
                     "confident-ready": "s_cready",
-                    "ready-for-agent": "s_elig", "blocked": "s_blk", "needs-info": "s_info",
+                    "ready-for-agent": "s_elig", "needs-human": "s_needh",
+                    "needs-info": "s_info", "interactive-preferred": "s_ipref",
                     "deferred": "s_def", "wontfix": "s_wf",
                     "conflict": "s_conflict", "untracked": "s_untracked",
                     "close-candidate": "s_cand" };
@@ -535,12 +538,12 @@
 
   // Header: done/total progress (counts ALL tickets, filters included) + live counts.
   function updateHeader() {
-    var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, blk: 0, info: 0, cand: 0 };
+    var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, needh: 0, info: 0, cand: 0 };
     BOARD.nodes.forEach(function (n) {
       if (n.state === "done") c.done++;
       else if (n.state === "in-progress") c.prog++;
       else if (n.state === "in-review") c.rev++;
-      else if (n.state === "blocked") c.blk++;
+      else if (n.state === "needs-human") c.needh++;
       else if (n.state === "needs-info") c.info++;
       if (n.eligible) c.elig++;
       if (colOf(n) === "close-candidate") c.cand++;
@@ -549,7 +552,7 @@
     document.getElementById("progtxt").textContent = total ? c.done + "/" + total + " done" : "empty board";
     document.getElementById("hcounts").textContent =
       c.prog + " running · " + c.rev + " review · " + c.elig + " eligible · "
-      + c.blk + " blocked · " + c.info + " needs-info"
+      + c.needh + " needs-human · " + c.info + " needs-info"
       + (c.cand ? " · " + c.cand + " close?" : "");
   }
 
