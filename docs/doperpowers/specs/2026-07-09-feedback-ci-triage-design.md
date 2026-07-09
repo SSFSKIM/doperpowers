@@ -309,6 +309,22 @@ tune `K`, gate thresholds, category handling.
   diff size and scans changed paths against risk-surface globs itself.
 - **Track = controlled** (approaches → design → spec → writing-plans), chosen for
   a novel, cross-repo, taste-heavy, high-stakes build.
+- **Driver language = TypeScript (not the Python fallback).** The Task 1 spike
+  found the shipped TS `@openai/codex-sdk@0.143.0` has **no per-turn `sandbox`
+  field** on `thread.run()` (only `outputSchema`/`signal`) — sandbox is a
+  thread-level `ThreadOptions.sandboxMode`. The plan's Task 1 pre-wrote a
+  "pivot to the Python SDK" branch for exactly this case. **We did not pivot.**
+  The same spike surfaced that `codex.resumeThread(id, { sandboxMode })` returns a
+  fresh `Thread` bound to the *same conversation id* with a *different* sandbox,
+  and since every `run()` spawns its own `codex exec` child regardless, resuming
+  costs nothing extra. So the read-only-diagnose → workspace-write-fix flow is
+  fully expressible in TS: `startThread({sandboxMode:'read-only'})` then
+  `resumeThread(thread.id, {sandboxMode:'workspace-write'})`. Staying in TS keeps
+  9 of 10 code tasks intact — only Task 6's adapter *internals* absorb the
+  start/resume choice and the value mapping; its `runTurn` seam signature (which
+  every other task depends on) is unchanged. Rejected: *full Python rewrite* —
+  the larger, more surprising deviation, discarding the plan's TS test suites for
+  no capability gain.
 
 ## Surprises & Discoveries
 
@@ -327,6 +343,27 @@ tune `K`, gate thresholds, category handling.
 - **The feedback triage columns already half-existed in spirit** — `status`
   (new/seen/done) + `hq_note` — but they're human-owned, so the bot gets its own
   parallel `triage_state` rather than overloading them.
+- **Codex-SDK (TS) surface, pinned by the Task 1 spike (2026-07-10, static read
+  of `@openai/codex-sdk@0.143.0`'s shipped `.d.ts` + `developers.openai.com/codex/sdk`;
+  no live call — `OPENAI_API_KEY` absent headlessly):**
+  - **Sandbox values are hyphenated** — `"read-only" | "workspace-write" |
+    "danger-full-access"`, on `ThreadOptions.sandboxMode` (maps 1:1 to the CLI
+    `--sandbox` flag). The plan's `read_only`/`workspace_write` (underscores) are
+    **wrong** — the adapter maps the dispatcher's underscore vocabulary to hyphens.
+  - **Working dir** = `ThreadOptions.workingDirectory` (→ `--cd`); a CI checkout
+    also needs **`skipGitRepoCheck: true`** (Codex refuses a non-git cwd otherwise).
+  - **Assistant text** = `(await thread.run(prompt)).finalResponse` (a plain
+    `string`, the last `agent_message` item's `.text`) — regex the fenced ```` ```json ````
+    verdict from it. `TurnOptions.outputSchema` is an available structured-output
+    alternative (deferred).
+  - **Auth** flows through the child's inherited `process.env` (so an exported
+    `OPENAI_API_KEY`/`CODEX_API_KEY` passes through), or `new Codex({ apiKey })`
+    which the SDK wires to **`CODEX_API_KEY`** specifically.
+  - **`thread.id` is `null` until the first `run()` completes** — read it *after*
+    turn 1 to resume for turn 2.
+  - **Errors** are normalized: a `turn.failed` event makes `run()` reject with
+    `Error(message)`; the dispatcher's `try/finally` + `parseVerdict(...)===null`
+    guard already cover both the throw and a malformed-verdict return.
 
 ## Outcomes & Retrospective
 
@@ -348,3 +385,11 @@ Pending — written at finish.
   (3) Ticket priority is `P2`-only in v1; P1 escalation deferred. (4) The Codex-SDK
   TS surface (per-turn sandbox, resume, text recovery) is pinned by a spike task
   before any dependent code — see Plan B Task 1.
+- 2026-07-10 — Plan B Task 1 spike executed. **Language stays TypeScript** (not
+  the Python fallback): the TS SDK lacks a per-turn `run()` sandbox, but
+  `resumeThread(id, {sandboxMode})` gives the same read→write flow at no cost — see
+  the new Decision Log entry and the Surprises bullet pinning the concrete SDK
+  facts (hyphenated sandbox values, `skipGitRepoCheck`, `.finalResponse`,
+  `CODEX_API_KEY`, `thread.id`-after-first-run). Task 6's adapter absorbs it; the
+  `runTurn` seam and Tasks 2–5/7–10 are unchanged. Live write-confirmation deferred
+  to Task 11's shadow run (needs credentials on the Mac).
