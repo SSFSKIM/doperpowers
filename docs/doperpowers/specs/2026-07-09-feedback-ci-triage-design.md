@@ -339,3 +339,12 @@ Pending — written at finish.
 - 2026-07-09 — Plan-time correction (Plan A hostile read): migration number
   `≈p83` → **`p86`** (`p83`/`p85` already claimed on in-flight branches). Updated
   Components, Assumptions, and Surprises accordingly.
+- 2026-07-09 — Plan B refinements: (1) `feedback-poll.sh` is retained as the
+  **launchd wrapper**; the ingress/dispatch logic lives in Node modules under
+  `src/` (`config`/`gate`/`verdict`/`route`/`db`/`sideEffects`/`codexAdapter`/
+  `dispatch`/`git`/`poll`) so the safety-critical logic is unit-testable without
+  the SDK — the spec's single `feedback-dispatch.ts` became this small module set.
+  (2) `triaging-feedback` is the plugin's first Node/TS skill (own `package.json`).
+  (3) Ticket priority is `P2`-only in v1; P1 escalation deferred. (4) The Codex-SDK
+  TS surface (per-turn sandbox, resume, text recovery) is pinned by a spike task
+  before any dependent code — see Plan B Task 1.
