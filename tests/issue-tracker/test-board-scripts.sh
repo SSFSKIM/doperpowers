@@ -573,8 +573,8 @@ run board-map.sh --write >/dev/null 2>&1
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"cls": "s_cready"' "html payload carries the confident-ready class"
 assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"confident-ready"' "kanban vocabulary carries the confident-ready column"
 
-# ---- in-review escalations: needs-info/blocked (review-worker protocol safety
-# valves) -------------------------------------------------------------------
+# ---- in-review escalations: needs-info/needs-human (review-worker protocol
+# safety valves) -------------------------------------------------------------
 # The reviewing-prs Review Worker Protocol escalates in-review → needs-info
 # (round cap reached, impasse) and in-review → needs-human (push conflict,
 # precondition failure) — both were illegal transitions before this fix.
@@ -591,7 +591,7 @@ assert_contains "$(state "s['issues']['18']['labels']")" "status:needs-info" "ne
 
 run board-transition.sh 18 in-progress >/dev/null
 out="$(run board-transition.sh 18 in-review "back for another round" --pr https://github.com/test/repo/pull/81)"
-assert_contains "$out" "#18: in-progress → in-review" "back to in-review ahead of the blocked escalation"
+assert_contains "$out" "#18: in-progress → in-review" "back to in-review ahead of the needs-human escalation"
 assert_fails run board-transition.sh 18 needs-human                            # note required
 out="$(run board-transition.sh 18 needs-human "push conflict — needs a human")"
 assert_contains "$out" "#18: in-review → needs-human" "in-review → needs-human is legal (protocol escalation)"

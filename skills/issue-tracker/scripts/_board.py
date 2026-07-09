@@ -45,8 +45,10 @@ LEGAL = {
                         "interactive-preferred", "wontfix", "deferred"},
     "interactive-preferred": {"ready-for-agent", "in-progress", "needs-info",
                         "needs-human", "wontfix", "deferred"},
-    # needs-info/needs-human reachable from in-review: the reviewing-prs
-    # worker's impasse/precondition escalations (protocol safety valves)
+    # needs-human reachable from in-review: the reviewing-prs review loop's
+    # impasse/precondition escalations (protocol safety valve) — all its
+    # parks route to needs-human. needs-info stays reachable here too, as a
+    # human/legacy affordance; the review worker itself no longer writes it.
     "in-review":       {"in-progress", "confident-ready", "done", "wontfix",
                         "deferred", "needs-info", "needs-human"},
     # confident-ready: PR rigorously reviewed by the reviewing-prs loop.

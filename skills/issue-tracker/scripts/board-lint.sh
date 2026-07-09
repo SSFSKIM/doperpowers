@@ -42,6 +42,8 @@ def warn(tid, msg):
     warns += 1
     print("WARN #%s: %s" % (tid, msg))
 
+park_needs_note = [s for s in B.NOTE_REQUIRED if s in B.OPEN_STATES]
+
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     if n["state"] == B.UNTRACKED:
@@ -59,8 +61,7 @@ for tid in sorted(tickets, key=int):
         fail(tid, "closed but still labeled: %s" % ", ".join(n["status_labels"]),
              "board-transition.sh %s %s — finalize: strips labels + runs the terminal sweeps"
              % (tid, n["state"]))
-    if n["state"] in ("needs-human", "needs-info", "interactive-preferred") \
-       and not n.get("note"):
+    if n["state"] in park_needs_note and not n.get("note"):
         fail(tid, "%s without a note" % n["state"],
              "board-transition.sh %s %s \"<why>\" — or move it on" % (tid, n["state"]))
     if n["state"] == "in-progress" and not n["assignees"]:
