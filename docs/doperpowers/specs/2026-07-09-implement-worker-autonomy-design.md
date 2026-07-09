@@ -496,7 +496,56 @@ End-to-end: a gate-passed ticket flows ticket → PR → review worker → merge
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Landed 2026-07-09 on branch `brainstorming-track-choice` via
+doperpowers:subagent-driven-development (fresh implementer + task review per
+task; final whole-branch review on the strongest model). Commits
+`0e69b8c..6eed63c` (9 feature commits from merge-base `3f16330`, plus one
+Minor-cleanup commit).
+
+**What shipped.** Board schema v8 in `_board.py` (blocked retired into
+needs-human; the park trio; new LEGAL matrix with `in-review → needs-human`);
+board views (`s_needh`/`s_ipref`, kanban columns, header counts); reconcile's
+proposal scanner replaced by the parked-ticket wake queue; reviewing-prs
+protocol parks all routed to needs-human; the new `implementing-tickets`
+skill (SKILL.md + `references/implement-worker-protocol.md` + content test);
+the issue-tracker SKILL.md rewritten as the no-orchestrator board manual;
+issue-register rippled; version bumped to 7.10.0.
+
+**Verification (hermetic).** All three suites green
+(`tests/issue-tracker/test-board-scripts.sh`,
+`tests/reviewing-prs/test-review-dispatch.sh`,
+`tests/implementing-tickets/test-protocol-content.sh`); shellcheck clean on
+every branch-changed script. All five schema/script acceptance items
+below are named-and-passing in the live suite output. The whole-branch review
+returned **Ready to merge — Yes** with zero Critical/Important findings; its
+four Minor findings (stale `blocked` comments/labels in otherwise-migrated
+files + a lint DRY refactor to derive from `NOTE_REQUIRED`) were all fixed in
+`6eed63c`.
+
+**Deferred to post-merge (not part of the branch's hermetic deliverable).**
+1. **Downstream codex-plugin distribution.** `scripts/sync-to-codex-plugin.sh`
+   is a distribution tool — it clones the external
+   `prime-radiant-inc/openai-codex-plugins` repo and opens a sync PR there;
+   it warns when run off `main`. It is NOT a local-tree updater, and this repo
+   has no vendored `.codex-plugin/skills/` mirror (only `.codex-plugin/plugin.json`,
+   correctly bumped). Run it after this branch merges to `main`.
+2. **Live consumer migration (ida-solution).** Pre-create the `status:needs-human`
+   / `status:interactive-preferred` labels, lint-sweep any legacy
+   `status:blocked` tickets to needs-human, delete the retired label, and edit
+   the consumer's `issue-status-labels.yml` MANAGED set. Outward-facing writes
+   to a live private board — do after merge and the consumer's plugin update.
+3. **The five live protocol shakedown scenarios** (clean ticket → direct build;
+   buried minor-taste fork → needs-human; oversized-sliceable → decompose;
+   product-core → interactive-preferred; considerable → execplan). They need
+   real daemon spawns on scratch tickets. Record their outcomes here when run.
+
+**Retrospective.** Two content-heavy tasks (the new skill; the issue-tracker
+rewrite) each hit a transcription artifact where the plan's fenced content
+soft-wrapped a phrase across a newline that a line-oriented `grep -F` gate
+could not match; both were resolved by placing the phrase on one line
+(inert in rendered markdown, verified by whitespace-normalized word-diff
+against the plan). No behavior changed. Everything else executed to the letter
+of the plan.
 
 ## Revision Notes
 
@@ -512,3 +561,13 @@ Pending — written at finish.
   `needs-human`; `needs-info` leaves the review protocol. Two assumptions
   resolved: the legality table lives wholly in `_board.py`, and the implement
   protocol drops the tech-debt placeholder.
+- 2026-07-09 (implementation landed): 8-task plan executed subagent-driven;
+  all six substantive tasks passed task-scoped review, the whole-branch review
+  returned Ready-to-merge with only four Minor cleanup findings (applied in
+  `6eed63c`), and all three test suites are green. Corrected a
+  plan/`CLAUDE.local.md` assumption discovered at execution: `sync-to-codex-plugin.sh`
+  is a downstream distribution tool (opens a PR into
+  `prime-radiant-inc/openai-codex-plugins`), NOT a local `.codex-plugin/skills`
+  updater — no such vendored mirror exists, so nothing local is half-synced;
+  only `.codex-plugin/plugin.json` is bumped. Consumer migration and the five
+  live shakedown scenarios are deferred to post-merge (see Outcomes).
