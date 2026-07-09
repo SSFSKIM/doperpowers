@@ -35,7 +35,7 @@ You MUST create a task for each item and complete them in order:
 3. **Tentative clustering** — group the atomic ideas into candidate clusters, each an *independently-shippable* concern. Separate "these are independent groups" from "these are one group." Present the tentative map and get a reaction BEFORE deep grilling.
 4. **Clarify & grill each cluster to pre-spec** — relentlessly, one question at a time (see below). Sharpen fuzzy terms. Re-cluster as understanding sharpens.
 5. **Nested slicing (only if a cluster is truly big/complex)** — split into child work-items, each still pre-spec. PRESERVE THE LINK: stable IDs + explicit parent refs.
-6. **Register onto the board** — for each work-item, run the `issue-tracker` skill's `board-register.sh` (title, `bug`/`enhancement`, `--parent`/`--blocked-by` edges; state `ready-for-agent` when complete & unblocked, `--state needs-info` when open questions remain, `--state deferred` when parked, `--state blocked` for non-ticket blockage — `needs-info` and `blocked` need `--note`). Then flesh out the issue body (`gh issue edit <n> --body-file …`, or `--body-file` at register time): a **self-contained pre-spec** carrying every decision from the grilling (template below).
+6. **Register onto the board** — for each work-item, run the `issue-tracker` skill's `board-register.sh` (title, `bug`/`enhancement`, `--parent`/`--blocked-by` edges; state `ready-for-agent` when complete & unblocked, `--state needs-human` when a human decision or real-world input is the blocker, `--state needs-info` when substantial research must precede core decisions, `--state interactive-preferred` when the grill already shows the work is product-core and should be driven live with a human, `--state deferred` when parked — the three park states need `--note`). Then flesh out the issue body (`gh issue edit <n> --body-file …`, or `--body-file` at register time): a **self-contained pre-spec** carrying every decision from the grilling (template below).
 7. **Stop & hand off** — present the board (`board-list.sh`). Each ticket is now a self-contained purpose-unit: the orchestrator dispatches daemons to `ELIGIBLE` tickets per the `issue-tracker` skill, or takes one into `brainstorming` in-session. Do NOT cross the seam here.
 
 ## Process Flow
@@ -108,7 +108,9 @@ escalation.
 
 State is NOT body text — it is the issue's `status:*` label / close reason.
 Cluster hierarchy → `--parent`; ordering → `--blocked-by`; parked → `--state
-deferred`; open-questions-remain → `--state needs-info`.
+deferred`; open human decisions → `--state needs-human`; research-first →
+`--state needs-info`; product-core, wants live steering → `--state
+interactive-preferred`.
 
 Deliberately NOT in a ticket: solution, architecture, tech choices, file paths,
 acceptance-criteria-as-tasks. Those belong downstream.

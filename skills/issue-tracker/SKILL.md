@@ -1,26 +1,29 @@
 ---
 name: issue-tracker
-description: Use when managing the issue board — registering tickets, dispatching background daemons to tickets, judging daemon state proposals, reconciling the board after time away, or asking what is in progress / blocked / dispatchable. The board IS the repo's GitHub issues; the toolkit lives in this skill's scripts/.
+description: Use when managing the issue board — registering tickets, running the mechanical dispatch ritual, working the wake queue (needs-human / needs-info / interactive-preferred), reconciling the board after time away, or asking what is in progress / parked / dispatchable. The board IS the repo's GitHub issues; the toolkit lives in this skill's scripts/.
 ---
 
 # Issue Tracker
 
 A repo's issue board, stored where it cannot fork: **GitHub Issues is the
 single source of truth.** Tickets are **purpose-units**: born as pre-specs
-from `issue-register`, driven end-to-end (orient → size → method → build → PR)
-by background daemons (`orchestrating-daemons`), tracked as GitHub issues with
-typed edges (sub-issue = parent, dependency = blocked-by).
+from `issue-register`, gated and driven to a PR by autonomous implement
+workers (doperpowers:implementing-tickets), reviewed to a confident merge by
+review workers (doperpowers:reviewing-prs), tracked as GitHub issues with
+typed edges (sub-issue = parent, dependency = blocked-by, provenance =
+spawned-by).
 
 There is no local board file, nothing to sync, and no worktree restriction —
 every script talks to GitHub directly (`gh` required, fail-loud) and may run
 from any checkout. `doperpowers/issue-tracker/` in the consumer repo survives
 only as a gitignored render cache for `board-map.sh`.
 
-**You (the main session) are the orchestrator — the board's judge.** Daemons
-write only their OWN ticket's open states (self-descriptions and
-escalations); terminal states are never theirs — `done` arrives via the PR
-merge itself, `wontfix` and cross-ticket changes reach you as *proposal
-blocks* you judge. All writes go through the scripts (the Hard Gate below).
+**There is no orchestrator-judge.** Dispatch is mechanical (the ritual
+below): it renders a protocol, spawns a worker, and writes nothing. Workers
+write their own ticket's open states and register child/follow-up tickets
+directly, under their protocol's authority rules. Everything that needs a
+human lands on the board as a parked state and waits for the wake ritual.
+All writes go through the scripts (the Hard Gate below).
 
 ## The Board Write Hard Gate (put this in the consumer CLAUDE.md)
 
@@ -35,12 +38,14 @@ PR gates, and cycle/deadlock checks that GitHub's API will not.
 `board-lint.sh` catches what slips past (run it on wake; wire it to cron for
 unattended repos).
 
-## The two roles
+## Who writes the board
 
-| | writes the board? | how it talks |
+| writer | writes | doctrine |
 |---|---|---|
-| **Orchestrator** (main session — you) | yes, via scripts | runs the toolkit; judges proposals |
-| **Worker** (daemon, one ticket each) | only its OWN ticket's OPEN states, via `board-transition.sh` | reads its issue; escalates via its ticket's state + turn-end message; proposes anything else |
+| **Implement worker** (daemon, one ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing-tickets |
+| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
+| **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
+| **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
 
 ## State vocabulary
 
@@ -51,22 +56,27 @@ the review loop (doperpowers:reviewing-prs) a PR passes through
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
 | `ready-for-agent` | open + `status:ready-for-agent` | pre-spec complete; dispatchable once blockers are done | — |
-| `in-progress` | open + `status:in-progress` | a daemon is driving it (an epic stays here while children run) | optional |
-| `blocked` | open + `status:blocked` | non-ticket blockage: credentials / auth / human hand | **required** |
-| `needs-info` | open + `status:needs-info` | waiting on knowledge: research or a human taste/product decision | **required** |
+| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
+| `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
+| `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
+| `interactive-preferred` | open + `status:interactive-preferred` | the ticket's shape wants continuous human steering — never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
 | `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it) | PR link |
 | `confident-ready` | open + `status:confident-ready` | PR rigorously reviewed (reviewing-prs loop); merge/close with confidence | optional |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |
 
+**Park discriminant — who unparks it?** The human acting as themselves (a
+decision, or a real-world input) → `needs-human`. Knowledge work that anyone
+could in principle do (substantial research, spec-deepening) → `needs-info`.
+Not one answer but ongoing steering → `interactive-preferred`. (`blocked`
+was retired in v8: its meaning was absorbed by `needs-human`; lint names any
+legacy label with the migration FIX.)
+
 Exactly one `status:*` label on every open issue; terminal states are the
 close reason (no label). An issue outside this scheme is `untracked` (no
 label) or `conflict` (2+ labels) — lint FAILs it; `board-transition.sh`
 repairs it (any open state is reachable from either).
-
-**Discriminant:** waiting on an *action/precondition* → `blocked`; waiting on
-*knowledge/decision* → `needs-info`.
 
 Ticket dependencies are **edges** (native GitHub dependencies), never states —
 eligibility is computed. Edges are born at register time and re-cut later with
@@ -83,18 +93,18 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; prints `<number> <url>` — then YOU flesh out the pre-spec body (`gh issue edit <n> --body-file …`) |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; prints `<number> <url>` — then the registrar fleshes out the pre-spec body (`gh issue edit <n> --body-file …`) |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
-| `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see The dispatch loop) |
+| `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see the ritual) |
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
 | `board-show.sh <n>` | node + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
-| `board-reconcile.sh` | read-only catch-up: unapplied proposals, orphaned tickets, dispatchables, then a lint pass |
-| `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required, no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`). Also WARNs close candidates (below). `FAIL … FIX: …` lines, exit 1 |
-| `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration: push a legacy `board.json` into GitHub (dry-run by default) |
+| `board-reconcile.sh` | read-only catch-up: the wake queue (parked tickets), orphaned tickets, dispatchables, then a lint pass |
+| `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required (the park trio + wontfix), no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`), the retired `status:blocked` label named with its migration FIX. Also WARNs close candidates. `FAIL … FIX: …` lines, exit 1 |
+| `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration: push a legacy `board.json` into GitHub (dry-run by default; legacy `blocked` lands as `needs-human`) |
 
 ## Remote board (hosted)
 
@@ -117,7 +127,7 @@ pick by repo visibility:
   set up Access *before* the first deploy, or there is a window where issue
   titles are public.
 
-## The dispatch loop
+## The dispatch ritual (mechanical — no judgment)
 
 1. `board-list.sh` → pick the TOP `ELIGIBLE` ticket — rows already print in
    dispatch order (P0 before P1 before …; unprioritized last). A row tagged
@@ -127,112 +137,94 @@ pick by repo visibility:
    (or `wontfix "superseded by PR"`); if work genuinely remains, dispatch as
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
-2. Build a **self-contained spawn prompt**: the full issue body (`gh issue
-   view <n>`) + the Worker Protocol block below.
+2. Render the Implement Worker Protocol
+   (`doperpowers:implementing-tickets` →
+   `references/implement-worker-protocol.md`): substitute every
+   `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
+   `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
+   issue body from `gh issue view <n> --json body`).
 3. `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>` (from
    `orchestrating-daemons` — always a worktree; workers write code).
-4. `board-bind.sh <uuid> <n>` then `board-transition.sh <n> in-progress`.
-5. When a daemon's turn ends, judge it (per `orchestrating-daemons`: answer /
-   queue for the human / wake the human). Workers move their OWN ticket's
-   open states themselves — what lands on you is their *questions*
-   (blocked/needs-info notes), wontfix suggestions, and cross-ticket
-   proposals; apply or refuse those with `board-transition.sh`.
-6. `done` arrives by landing, not by claim: the worker's PR body says
-   `Closes #<n>`, so the merge itself auto-closes the ticket — even a PR
-   that leaves residual work behind closes it (the residue gets new tickets,
-   not a reopened old one). Then finalize: `board-transition.sh <n> done`
-   strips the stale in-review label and runs the epic/unblock sweeps (lint's
-   FIX line says the same); register each item of the worker's FOLLOW-UPS
-   list (`board-register.sh … --spawned-by <n>` — judging one down is fine,
-   but the judgment is recorded, never the item silently dropped); append an
-   outcome comment naming what landed and the follow-up tickets it spawned.
-   A manual `done` flip remains for non-PR work; verify it landed first.
+4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
+   write is its gate verdict — `in-progress` (+ a `[gate]` comment) means
+   the gate passed; a park state means it failed.
 
-**Reconcile-on-wake:** been away? `board-reconcile.sh` first. It lists what
-the daemons proposed while you were gone, what needs respawning, and any
-schema drift (lint).
+Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
+are picked up by the review loop (doperpowers:reviewing-prs). The next phase
+replaces step 3's invoker with an issue-event trigger
+(doperpowers:implementing-tickets `scripts/`, when it lands) — the ritual
+itself does not change.
 
-## Worker Protocol (embed VERBATIM in every spawn prompt)
+**Ad-hoc daemons are a different animal:** fleets you spawn conversationally
+for your own work follow doperpowers:orchestrating-daemons and its judge
+rubric. Board pipeline workers do not — their doctrine is
+implementing-tickets / reviewing-prs, and nobody sits between them and the
+board.
 
-```
-You own ticket #<N> end-to-end in your worktree. Your ticket brief is below;
-treat it as the source of truth.
+## The wake ritual (the human's catch-up)
 
-ORIENT BEFORE YOU BUILD — do not open a source file until you have sized the
-work against the brief and picked a method to match:
-- Trivial / mechanical (one obvious change, no design fork) → do it inline, then PR.
-- Well-scoped & delegable → doperpowers:execplan (front-load the grill against
-  this brief, author one self-contained ExecPlan, execute it to the letter).
-- Large, multi-part, or needs a living spec → doperpowers:execspec then
-  doperpowers:writing-plans, then execute the plan.
+1. `board-reconcile.sh` — the wake queue (parked tickets with notes),
+   orphaned in-progress tickets, dispatchables, then a lint pass.
+2. Answer the parks, on the ticket (answers belong in the body/comments —
+   the next worker reads the ticket, not your chat):
+   - `needs-human` → answer the note's questions in a comment (or edit the
+     body), then `board-transition.sh <n> ready-for-agent` — the next
+     dispatch re-runs the gate against the enriched ticket.
+   - `needs-info` → do (or delegate) the research; fold the findings into
+     the body; back to `ready-for-agent`.
+   - `interactive-preferred` → take it into a live doperpowers:brainstorming
+     session (the note says which decision areas need steering); the session
+     ends in a controlled-track build, a decomposition into gate-passing
+     children, or a re-spec back to `ready-for-agent`.
+3. Finalize merges: `board-transition.sh <n> done` on merge-auto-closed
+   tickets (lint's FIX line says the same). Workers registered their own
+   follow-ups at PR time — verify against the PR's FOLLOW-UPS section; a
+   follow-up not registered does not exist.
+4. Triage `CLOSE?` rows: verify & close (`done` / `wontfix`), or re-scope.
+5. `wontfix` recommendations arrive as `needs-human` parks with the
+   recommendation in the note — the close is yours, never a worker's.
 
-Reliability and human-intent alignment come before speed, and you are NOT
-unattended: every turn you end is read by an orchestrator who answers you or
-elevates the question to a human. So the moment ANY part of the task is
-ambiguous — intent, scope, a design/taste fork, an acceptance detail — do NOT
-guess and do NOT proceed. BRAINSTORM IT: run doperpowers:brainstorming, move
-your ticket to needs-info with the question as the note, and END YOUR TURN
-stating it crisply; resume once you have the decision. Autonomy is earned
-only where the brief is genuinely unambiguous — everywhere else, ask.
+## Worker protocols
 
-Your ticket's OPEN states are yours to write — your OWN ticket only, always
-via the issue-tracker scripts (never raw gh): board-transition.sh <N>
-in-progress when you start; in-review with --pr when your PR opens;
-blocked / needs-info (note required) the moment you hit an escalation — set
-the state yourself, then END YOUR TURN with the question stated crisply.
-
-Opening your PR closes out your scope: that turn-end message MUST carry a
-FOLLOW-UPS section — every piece of residual work the PR leaves behind
-(non-blocking cleanups, larger work you discovered, success criteria the PR
-only partially meets), one line each with why it was cut — or the literal
-line "FOLLOW-UPS: none". The orchestrator registers these as new tickets at
-finalize; a follow-up not on this list does not exist. The JSON proposal
-block below is for state changes, not follow-ups.
-
-You NEVER write a terminal state. done is not claimed, it is landed: your PR
-body MUST say "Closes #<N>" so the merge itself closes the ticket. wontfix is
-the orchestrator's call. To suggest either — or any change to ANOTHER
-ticket — end your turn with a single-line JSON proposal block:
-{"ticket":"<N>","from":"<current>","to":"<proposed>","reason":"…","evidence":"…"}
-
-Escalation discriminant: waiting on an action/precondition (credentials,
-access, another ticket's work) → blocked. Waiting on knowledge or a human
-taste/product decision → needs-info. Never guess above your scope, never
-expand it.
-```
+The implement-side protocol lives in doperpowers:implementing-tickets
+(`references/implement-worker-protocol.md`); the review-side protocol in
+doperpowers:reviewing-prs (`references/review-worker-protocol.md`). Both are
+embedded VERBATIM in spawn prompts. This file owns only the schema they
+write against.
 
 ## The ticket body (pre-spec)
 
-The issue body — seeded by register, fleshed out by YOU (register time, plus a
-terminal outcome comment). Sections: Problem & intent / Constraints / Success
-criteria / Open questions / Decision log. The trailing `<!-- board:meta … -->`
-block is script-owned (spawned-by / relates-to / branch / pr / note) — edit
-around it, never inside it.
+The issue body — seeded by register, fleshed out by the registrar (register
+time, plus a terminal outcome comment). Sections: Problem & intent /
+Constraints / Success criteria / Open questions / Decision log — plus, on a
+decomposed parent, Roadmap (the one sanctioned form of "ticket that doesn't
+exist yet"). The trailing `<!-- board:meta … -->` block is script-owned
+(spawned-by / relates-to / branch / pr / note) — edit around it, never
+inside it.
 
 ## Scope-outs become tickets (deferral rule)
 
 Work deliberately deferred out of scope — during a grill, a brainstorm, an
-issue-register session, a worker's design phase, or a worker's FOLLOW-UPS
-list at PR time — is registered on the board THE MOMENT the deferral is
-decided, with its lineage as edges:
+issue-register session, a worker's gate/decomposition, or a worker's PR-time
+follow-ups — is registered on the board THE MOMENT the deferral is decided,
+by whoever decided it (v8: workers register directly; there is no proposal
+queue), with its lineage as edges:
 
-- `--spawned-by <origin>` — the ticket whose design session produced the cut
-- `--blocked-by <numbers>` — what must land first (often the origin ticket
-  itself, and/or the moving interface that forced the deferral)
-- `--parent <epic>` — when the work belongs to an existing epic
+- `--parent <epic>` — decomposition children (they ARE the parent's content,
+  sliced) and work that belongs to an existing epic
+- `--spawned-by <origin>` — scope-outs and follow-ups discovered during work
+- `--blocked-by <numbers>` — what must land first
 
 Deferral without a ticket is silent scope loss: the decision exists only in
 the design conversation and dies with the session. The ticket's Decision log
 records *why* it was cut, so nobody re-litigates it later.
 
 PR landing is a deferral point like any other. A PR that addresses its
-ticket but leaves work behind — non-blocking follow-ups, discovered larger
-work, success criteria only partially met — still closes the ticket
-(`Closes #N` stays in the body: done means the PR landed, not that every
-idea it surfaced died). The residue rides the worker's FOLLOW-UPS list into
-new tickets, `--spawned-by <n>`, registered at finalize before the outcome
-comment — and the outcome comment names them, so the closed ticket points
-at where its remainder went.
+ticket but leaves work behind still closes the ticket (`Closes #N` stays in
+the body: done means the PR landed, not that every idea it surfaced died).
+The worker registers the residue as tickets (`--spawned-by <n>`) BEFORE its
+turn-end message and lists the numbers in its FOLLOW-UPS section — a
+follow-up not registered does not exist.
 
 ## Edge cases
 
@@ -244,14 +236,19 @@ at where its remainder went.
   a **close candidate**: lint WARNs it, `board-list.sh` tags it `CLOSE?`, and
   the kanban view pulls it into a close-candidate column (in-progress /
   in-review tickets stay put — a merged part-1 PR mid-flight is normal, they
-  only carry the mark). Human/orchestrator verifies and closes; never
-  auto-closed.
-- `orphaned` in reconcile → the daemon died: respawn, re-bind, resume the ticket.
+  only carry the mark). Human verifies and closes; never auto-closed.
+- `orphaned` in reconcile → the worker died: respawn (the fresh worker
+  re-runs the gate from scratch — prior `[gate]` comments are context, not
+  inherited trust), re-bind, resume the ticket.
 - A wontfix blocker makes a dependent `STUCK` — re-cut the edge
   (`board-edge.sh <n> --unblock <blocker>`) or wontfix the dependent; that is
   a human call.
 - An issue labeled by hand (or by external automation) lands `untracked` /
-  `conflict` → lint names it; `board-transition.sh` repairs it.
+  `conflict` → lint names it; `board-transition.sh` repairs it. A legacy `status:blocked`
+  label is a special case of conflict — lint's FIX line carries the
+  `needs-human` migration.
 - Consumer label automation that already speaks `status:*` (e.g. assign →
   `status:in-progress`) is a legitimate board writer — same store, same
-  vocabulary, no sync.
+  vocabulary, no sync. Its managed-label set must track the v8 vocabulary
+  (add `status:needs-human` / `status:interactive-preferred`, drop the
+  retired `status:blocked`).
