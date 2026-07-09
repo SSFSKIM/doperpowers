@@ -649,6 +649,15 @@ out="$(run board-transition.sh 20 needs-human "migrated: carried note")"
 assert_contains "$(state "s['issues']['20']['labels']")" "status:needs-human" "migration swaps the label"
 assert_not_contains "$(state "s['issues']['20']['labels']")" "status:blocked" "retired label removed"
 
+# ---- map: v8 park classes ------------------------------------------------------
+echo "board-map (v8 park classes):"
+run board-map.sh --write >/dev/null 2>&1
+BOARD_HTML="$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")"
+assert_contains "$BOARD_HTML" '"cls": "s_needh"' "html payload carries the needs-human class"
+assert_contains "$BOARD_HTML" '"cls": "s_ipref"' "html payload carries the interactive-preferred class"
+assert_contains "$BOARD_HTML" '"interactive-preferred"' "kanban vocabulary carries the interactive-preferred column"
+assert_not_contains "$BOARD_HTML" 's_blk' "retired blocked class gone from the render"
+
 # template view logic (kanban relocation + chip filtering) runs under node —
 # the only surface a shell test can't execute. Skipped, not failed, where node
 # is absent (the toolkit itself never needs node; this guards the template).
