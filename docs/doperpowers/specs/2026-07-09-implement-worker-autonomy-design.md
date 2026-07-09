@@ -522,22 +522,30 @@ four Minor findings (stale `blocked` comments/labels in otherwise-migrated
 files + a lint DRY refactor to derive from `NOTE_REQUIRED`) were all fixed in
 `6eed63c`.
 
-**Deferred to post-merge (not part of the branch's hermetic deliverable).**
-1. **Downstream codex-plugin distribution.** `scripts/sync-to-codex-plugin.sh`
-   is a distribution tool — it clones the external
-   `prime-radiant-inc/openai-codex-plugins` repo and opens a sync PR there;
-   it warns when run off `main`. It is NOT a local-tree updater, and this repo
-   has no vendored `.codex-plugin/skills/` mirror (only `.codex-plugin/plugin.json`,
-   correctly bumped). Run it after this branch merges to `main`.
-2. **Live consumer migration (ida-solution).** Pre-create the `status:needs-human`
-   / `status:interactive-preferred` labels, lint-sweep any legacy
-   `status:blocked` tickets to needs-human, delete the retired label, and edit
-   the consumer's `issue-status-labels.yml` MANAGED set. Outward-facing writes
-   to a live private board — do after merge and the consumer's plugin update.
+**Post-merge status.** Merged to `main` and released as **v7.10.0** (merge
+commit `073ed17`, tag `v7.10.0`) on 2026-07-09.
+
+1. **Downstream codex-plugin distribution — NOT run (open decision).**
+   `scripts/sync-to-codex-plugin.sh` is a distribution tool: it clones the
+   external `prime-radiant-inc/openai-codex-plugins` marketplace fork and opens
+   a PR there. That fork carries the *upstream* project's listing as
+   `plugins/superpowers/` and has no `plugins/doperpowers/`, so running it would
+   `--bootstrap` a rebranded personal-fork plugin into a third party's
+   marketplace. Held pending an explicit product/naming decision; not a routine
+   per-release sync for a personal fork.
+2. **Live consumer migration (ida-solution) — DONE 2026-07-09.** Created
+   `status:needs-human` (d93f0b) + `status:interactive-preferred` (d4c5f9);
+   swept the two legacy `status:blocked` tickets to `needs-human` with notes
+   carried (#302 runner-registration/org-admin, #116 waiting-on-export); deleted
+   the retired `status:blocked` label (zero holders); updated the consumer's
+   `issue-status-labels.yml` MANAGED set (drop `blocked`, add the two park
+   states; `confident-ready` + synchronize-demotion already present) via merged
+   PR IDA-solution/ida-solution#401. `board-lint`: 0 FAIL.
 3. **The five live protocol shakedown scenarios** (clean ticket → direct build;
    buried minor-taste fork → needs-human; oversized-sliceable → decompose;
-   product-core → interactive-preferred; considerable → execplan). They need
-   real daemon spawns on scratch tickets. Record their outcomes here when run.
+   product-core → interactive-preferred; considerable → execplan) — STILL
+   PENDING. They need real daemon spawns on scratch tickets. Record their
+   outcomes here when run.
 
 **Retrospective.** Two content-heavy tasks (the new skill; the issue-tracker
 rewrite) each hit a transcription artifact where the plan's fenced content
