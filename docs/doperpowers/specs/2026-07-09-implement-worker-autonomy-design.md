@@ -541,6 +541,13 @@ commit `073ed17`, tag `v7.10.0`) on 2026-07-09.
    `issue-status-labels.yml` MANAGED set (drop `blocked`, add the two park
    states; `confident-ready` + synchronize-demotion already present) via merged
    PR IDA-solution/ida-solution#401. `board-lint`: 0 FAIL.
+   **Addendum 2026-07-10 (final review):** the hosted-board render workflow
+   (`board-pages.yml`) was still pinning the plugin at v7.8.1 (`31808fe`) —
+   a renderer that predates v8 *and* v7.9's `confident-ready`, so the swept
+   `needs-human` tickets rendered as CONFLICT on the Cloudflare board. Pin
+   bumped to the v7.10.0 release commit (`073ed17`) via merged PR
+   IDA-solution/ida-solution#402 + immediate re-render dispatched. This was
+   the missing piece of "hosted board re-renders pick up new columns."
 3. **The five live protocol shakedown scenarios** (clean ticket → direct build;
    buried minor-taste fork → needs-human; oversized-sliceable → decompose;
    product-core → interactive-preferred; considerable → execplan) — STILL
