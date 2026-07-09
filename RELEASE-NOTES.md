@@ -1,5 +1,58 @@
 # Doperpowers Release Notes
 
+## v7.10.0 (2026-07-09)
+
+### implementing-tickets — autonomous implement loop with a pre-code Ticket Gate (new skill)
+
+The implement-side mirror of `reviewing-prs`. Where the review loop puts its
+rigor gate at the END of the pipeline (`confident-ready` before merge), this
+loop puts it at the START: **a worker may not write code until the ticket
+passes the Ticket Gate.** There is no orchestrator — workers write their own
+ticket's board states and register child/follow-up tickets directly; anything
+that needs a human parks on the board and waits for the wake ritual.
+
+- **The Ticket Gate.** Before any source file opens, the worker interrogates
+  the ticket the way a brainstorming grill interrogates a human, but every
+  answer must come from the ticket body, the codebase, or repo docs. Two
+  checks: *well-defined* (mechanical forks are the worker's call; non-trivial
+  architecture and product/taste forks — major **or** minor — must be answered
+  by the ticket, else gate-fail) and *well-scoped* (fits ~1–2 ExecPlans, else
+  decompose or park). The verdict is the worker's first board write.
+- **Decompose is the one scoping behavior.** Oversized-but-sliceable tickets
+  become child tickets (`--parent`) with dependency edges (`--blocked-by`, a
+  chain IS serialization); contingent later phases live as a `## Roadmap` in
+  the parent. Recursion is emergent — every child re-runs the same gate.
+- **Two execution modes on gate pass:** direct (the pre-spec is the plan) or
+  `doperpowers:execplan` for multi-milestone work.
+
+### Board schema v8 — `blocked` retired; the park trio
+
+- **`blocked` is retired**, its meaning absorbed into `needs-human`. Legacy
+  `status:blocked` labels are named by lint with a one-command migration FIX
+  and remapped by `board-migrate-gh.sh`.
+- **Three park states, one discriminant — who unparks it?** `needs-human`
+  (the human as themselves: a decision only they can make, or a real-world
+  input only they possess), `needs-info` (knowledge work anyone could do —
+  rare by design), `interactive-preferred` (ongoing steering, taken into a
+  live brainstorming session). All three require a note.
+- The board render gains `needs-human` / `interactive-preferred` classes and
+  kanban columns; reconcile's old proposal scanner is replaced by a human
+  **wake queue** of parked tickets.
+
+### reviewing-prs — every park routes to `needs-human`
+
+Under the who-unparks-it discriminant, every park in the review loop (impasse
+at the round cap, an unverifiable finding, a push conflict) waits on the
+human, so they all become `needs-human`; `needs-info` and the retired
+`blocked` leave the review protocol entirely.
+
+### issue-tracker — rewritten as the no-orchestrator board manual
+
+The orchestrator-judge is gone. Dispatch is a mechanical ritual (render the
+protocol, spawn a worker, write nothing); the human works a wake ritual over
+the parked-ticket queue. The skill now owns only the board schema that both
+worker protocols write against.
+
 ## v7.9.1 (2026-07-09)
 
 ### reviewing-prs — two safety defaults for the self-merge tier
