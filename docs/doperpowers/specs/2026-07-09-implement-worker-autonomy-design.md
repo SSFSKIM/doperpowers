@@ -181,7 +181,7 @@ Thresholds are tunable starting values living in one place: the protocol text.
 |---|---|---|---|
 | `needs-human` | open + `status:needs-human` | parked for the human as themselves: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: spec unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
-| `interactive-preferred` | open + `status:interactive-preferred` | ticket shape wants continuous human steering; never auto-dispatched; summons the human into /brainstorming | **required** |
+| `interactive-preferred` | open + `status:interactive-preferred` | ticket shape wants continuous human steering; never auto-dispatched; summons the human into /brainstorming. Both exits are legal: the live session drives it to PR in-session (`→ in-progress → in-review`), or settles the decisions / re-scopes and returns it to the pool (`→ ready-for-agent`) | **required** |
 
 `blocked` is REMOVED from the schema. All other states unchanged
 (`ready-for-agent`, `in-progress`, `in-review`, `confident-ready`, `done`,
@@ -318,6 +318,10 @@ EXECUTION (gate passed) — choose in the [gate] comment:
   session would need the document to survive context death →
   doperpowers:execplan (the gate already served as its grill; author the
   ExecPlan from ticket + gate findings, execute to the letter).
+The gate lowers the odds of a park; it does not abolish parks.
+A fork discovered mid-build is classified by the same rules: worker-grade →
+your call, keep building; human-grade → commit WIP to your branch, then
+park with the same discriminant (required note) and end your turn.
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh (never
 raw gh); registering decomposition children (--parent) and follow-up tickets
@@ -586,3 +590,13 @@ of the plan.
   updater — no such vendored mirror exists, so nothing local is half-synced;
   only `.codex-plugin/plugin.json` is bumped. Consumer migration and the five
   live shakedown scenarios are deferred to post-merge (see Outcomes).
+- 2026-07-10: Reconciled the two surviving observations from the discarded
+  parallel spec (`c0aa167`, worker-dispatch-gate). (a) `interactive-preferred`
+  exit doctrine made explicit in the state table — both exits were already
+  legal in the shipped `LEGAL` matrix and present in the wake ritual, but the
+  spec defined the queue without its exit; the test suite gains an explicit
+  `interactive-preferred → ready-for-agent` assert. (b) Post-gate park clause
+  added to Protocol v2 — the mid-build gate-fail edge case existed in
+  SKILL.md doctrine but was missing from the rendered protocol, the only text
+  a worker sees; the old protocol's "the moment ANY part is ambiguous" safety
+  valve is thereby restored in discriminant form, pinned by the content test.

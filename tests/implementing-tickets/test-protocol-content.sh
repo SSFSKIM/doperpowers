@@ -39,6 +39,7 @@ assert_contains "$proto" "A follow-up not registered does not exist" "direct reg
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
 assert_contains "$proto" "doperpowers:execplan" "execplan mode wired"
+assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
 assert_contains "$proto" "doperpowers:reviewing-prs" "handoff to the review loop named"
 assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"

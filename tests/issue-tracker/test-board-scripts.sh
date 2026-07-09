@@ -610,6 +610,9 @@ assert_contains "$out" "#19: interactive-preferred → in-progress" "human takes
 assert_fails run board-transition.sh 19 interactive-preferred                  # note required
 out="$(run board-transition.sh 19 interactive-preferred "back to parked")"
 assert_contains "$out" "#19: in-progress → interactive-preferred" "in-progress → interactive-preferred legal (gate-fail mid-build)"
+out="$(run board-transition.sh 19 ready-for-agent)"
+assert_contains "$out" "#19: interactive-preferred → ready-for-agent" "re-spec exit: settled decisions return it to the pool"
+run board-transition.sh 19 interactive-preferred "back to parked" >/dev/null   # restore the park for the kanban asserts
 set +e
 lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
 set -e

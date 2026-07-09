@@ -69,6 +69,10 @@ EXECUTION (gate passed) — name the mode in the gate comment:
   session would need the document to survive context death →
   doperpowers:execplan (the gate already served as its grill; author the
   ExecPlan from ticket + gate findings, execute to the letter).
+The gate lowers the odds of a park; it does not abolish parks.
+A fork discovered mid-build is classified by the same rules: worker-grade →
+your call, keep building; human-grade → commit WIP to your branch, then
+park with the same discriminant (required note) and end your turn.
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh
 (never raw gh for status labels); registering decomposition children
