@@ -22,4 +22,7 @@ describe('parseVerdict', () => {
   it('returns null on an out-of-enum route', () => {
     expect(parseVerdict('```json\n{"feedback_id":"f","resolved_category":"bug","route":"merge","root_cause":"x","confidence":"high"}\n```')).toBeNull();
   });
+  it('returns null when the fenced json is an array, not an object', () => {
+    expect(parseVerdict('```json\n["bug","fix"]\n```')).toBeNull();
+  });
 });

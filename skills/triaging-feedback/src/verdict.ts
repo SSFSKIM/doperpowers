@@ -9,7 +9,7 @@ export interface Verdict {
   confidence: 'high' | 'medium' | 'low';
 }
 
-const CATS = ['bug', 'idea', 'question', 'other'];
+const CATS = ['bug', 'idea', 'question', 'other'] satisfies ResolvedCategory[];
 
 export function parseVerdict(text: string): Verdict | null {
   const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
@@ -17,10 +17,11 @@ export function parseVerdict(text: string): Verdict | null {
   let raw: unknown;
   try { raw = JSON.parse(blocks[blocks.length - 1][1].trim()); } catch { return null; }
   if (typeof raw !== 'object' || raw === null) return null;
+  if (Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
   if (typeof o.feedback_id !== 'string') return null;
   if (typeof o.root_cause !== 'string') return null;
-  if (typeof o.resolved_category !== 'string' || !CATS.includes(o.resolved_category)) return null;
+  if (typeof o.resolved_category !== 'string' || !(CATS as readonly string[]).includes(o.resolved_category)) return null;
   if (o.route !== 'fix' && o.route !== 'ticket') return null;
   if (o.confidence !== 'high' && o.confidence !== 'medium' && o.confidence !== 'low') return null;
   return {
