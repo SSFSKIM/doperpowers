@@ -23,6 +23,12 @@ gitignore돼 있어 비어 있음). 따라서:
   `npm install`을 한 번 실행해 `node_modules`가 존재해야 합니다.
 - 이후 그 디렉터리에서 `npm install`을 다시 돌릴 때마다(의존성 변경 시)
   워크트리들이 최신 상태로 링크를 따라가므로 별도 동기화는 필요 없습니다.
+- `git.ts`의 `addWorktree`는 워크트리를 `TRIAGE_REPO_PATH` 안쪽
+  `.triage-worktrees/<id>`에 만듭니다. 그 결과 피드백 처리 중에는 베이스
+  체크아웃(ida-solution)의 `git status`에 untracked 디렉터리로 잡혀
+  사람/에이전트가 같은 체크아웃에서 작업할 때 잡음이 됩니다 — 미리
+  `TRIAGE_REPO_PATH` 체크아웃의 `.gitignore`에 `.triage-worktrees/`를
+  추가하십시오(예: 그 체크아웃에서 `echo '.triage-worktrees/' >> .gitignore`).
 
 ## 2. `.env` 파일 (커밋 금지)
 

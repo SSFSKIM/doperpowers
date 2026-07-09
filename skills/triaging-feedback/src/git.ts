@@ -37,10 +37,12 @@ export function makeGit(repoPath: string, baseBranch: string) {
       return { files, lines };
     },
 
-    /** 워크트리에서 프로덕션 빌드 실행(G5). 15분 타임아웃 — Next.js 풀빌드를 고려한 여유치. */
+    /** 워크트리에서 프로덕션 빌드 실행(G5). 15분 타임아웃 — Next.js 풀빌드를 고려한 여유치.
+     * maxBuffer 64MiB — execFile 기본값(1MiB)로는 실 Next.js 빌드의 combined stdout/stderr가
+     * 넘쳐 성공한 빌드도 buffer overflow로 오탐(false) 처리된다. */
     async buildAndTest(wt: string): Promise<boolean> {
       try {
-        await run('npm', ['run', 'build'], { cwd: wt, timeout: 15 * 60_000 });
+        await run('npm', ['run', 'build'], { cwd: wt, timeout: 15 * 60_000, maxBuffer: 64 * 1024 * 1024 });
         return true;
       } catch {
         return false;
