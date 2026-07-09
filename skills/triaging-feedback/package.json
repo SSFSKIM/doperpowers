@@ -1,0 +1,8 @@
+{
+  "name": "triaging-feedback",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run", "poll": "tsx src/poll.ts" },
+  "dependencies": { "@openai/codex-sdk": "^0.143.0", "@supabase/supabase-js": "^2" },
+  "devDependencies": { "typescript": "^5", "tsx": "^4", "vitest": "^2" }
+}
