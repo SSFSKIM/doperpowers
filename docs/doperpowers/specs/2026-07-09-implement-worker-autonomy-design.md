@@ -234,11 +234,14 @@ the review worker in its self-merge tier) runs the finalize transition.
 ad-hoc conversational fleets. The judge dies in the ticket pipeline, not
 everywhere; one paragraph in issue-tracker notes the boundary.
 
-### 4. `skills/reviewing-prs` — rename-level ripples
+### 4. `skills/reviewing-prs` — park-vocabulary ripples
 
-Protocol escalation discriminant and error-table rows swap `blocked` →
-`needs-human` (permission-gated ops, push conflicts at retry cap). No
-behavior change.
+Under the who-unparks discriminant, every park the review worker takes is
+human-unparked — permission-gated ops and push conflicts at the retry cap
+(old `blocked`), and the round-cap impasse and unverifiable-finding
+escalations (old `needs-info`) — so the protocol's park writes all become
+`needs-human`, and `needs-info` leaves the review protocol entirely. Same
+escalation moments, same notes; only the state written changes.
 
 ### 5. Consumer migration (ida-solution, one-time)
 
@@ -364,13 +367,18 @@ End-to-end: a gate-passed ticket flows ticket → PR → review worker → merge
 
 ## Assumptions to verify at plan time
 
-- The exact current legality table in `board-transition.sh` (this spec names
-  only the deltas; the full matrix is read at plan time).
+- ~~The exact current legality table in `board-transition.sh`~~ — RESOLVED at
+  plan time: the whole state machine lives in `_board.py` (`LEGAL`, plus
+  `OPEN_STATES`/`BIRTH`/`NOTE_REQUIRED`/`PULLABLE`/`STATUS_COLORS`), one home
+  for the machine; the plan carries the full v8 matrix.
 - ida-solution's `issue-status-labels.yml` MANAGED-set mechanics and the
   count of open `status:blocked` tickets at migration time.
-- The placeholder set Protocol v2 actually needs for interim hand-rendering
-  (tech-debt issue number is referenced by reviewing-prs; confirm whether the
-  implement protocol needs it too or drops it).
+- ~~The placeholder set Protocol v2 actually needs for interim
+  hand-rendering~~ — RESOLVED at plan time: the implement protocol drops the
+  tech-debt placeholder (the tech-debt sink is review-loop doctrine;
+  implement-side residue routes to follow-up tickets via `--spawned-by`).
+  Placeholders: `ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `ISSUE_BODY`,
+  `REPO`, `BOARD_SCRIPTS`.
 
 ## Decision Log
 
@@ -498,3 +506,9 @@ Pending — written at finish.
   fractal, 2-way execution, the minor-taste rule, JIT registration, the death
   of the proposal block, and the scope-outs (trigger mechanism, Slack
   connector).
+- 2026-07-09 (plan-writing): component 4 amended — the review protocol's old
+  `needs-info` parks (round-cap impasse, unverifiable finding) are
+  human-unparked under the new discriminant, so ALL review-loop parks become
+  `needs-human`; `needs-info` leaves the review protocol. Two assumptions
+  resolved: the legality table lives wholly in `_board.py`, and the implement
+  protocol drops the tech-debt placeholder.
