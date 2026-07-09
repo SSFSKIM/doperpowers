@@ -129,7 +129,8 @@ break).
 
 - **`sql/pNN_feedback_triage.sql`** (claim the next free `pN` verified across
   **all** branches at authoring time — `p76` on the integration branch but
-  `p81`/`p82` exist in in-flight PRs, so ≈`p83`):
+  `p81`/`p82`/`p83`/`p85` exist in in-flight PRs, so **`p86`**; re-verify at
+  execution):
   - `triage_state TEXT NOT NULL DEFAULT 'pending' CHECK (IN
     'pending','claimed','fixed','ticketed','skipped','failed')`
   - `triage_pr_url TEXT`, `triage_issue_url TEXT`, `triaged_at TIMESTAMPTZ`,
@@ -258,7 +259,8 @@ tune `K`, gate thresholds, category handling.
   and its result surface lets the dispatcher recover the model's final text to
   extract the fenced-JSON verdict (if the SDK offers a structured-output mode,
   prefer it over fenced-JSON parsing).
-- The next free `pN` migration number across all branches (≈`p83`).
+- The next free `pN` migration number across all branches (`p86` at plan time —
+  `p83`/`p85` already taken; re-verify before applying).
 - `app/api/feedback/route.ts` insert can carry `host` without tripping the
   demo-account mutation guard (it already whitelists `/api/feedback`).
 - Codex CLI/auth is provisioned headless on the Mac (`OPENAI_API_KEY`).
@@ -318,9 +320,10 @@ tune `K`, gate thresholds, category handling.
 - **`brandForHost(_host)` ignores its argument; `BRANDS` = `{ ida }` only.** The
   documented host→brand resolution isn't live in the resolver today, which flipped
   the capture from "resolved brand" to "raw host."
-- **Migration numbering is a cross-worktree hazard.** `p81`/`p82` exist in
-  in-flight PRs though the integration branch shows `p76`; hand-numbered
-  migrations across parallel worktrees collide silently.
+- **Migration numbering is a cross-worktree hazard.** `p81`/`p82`/`p83`/`p85`
+  exist in in-flight PRs though the integration branch shows `p76`; hand-numbered
+  migrations across parallel worktrees collide silently. Plan-time re-check moved
+  the target from the spec's first guess (`p83`) to `p86`.
 - **The feedback triage columns already half-existed in spirit** — `status`
   (new/seen/done) + `hq_note` — but they're human-owned, so the bot gets its own
   parallel `triage_state` rather than overloading them.
@@ -333,3 +336,6 @@ Pending — written at finish.
 
 - 2026-07-09 — Initial design. Authored via the brainstorming → grill →
   controlled-track flow; seven grill decisions captured in the Decision Log.
+- 2026-07-09 — Plan-time correction (Plan A hostile read): migration number
+  `≈p83` → **`p86`** (`p83`/`p85` already claimed on in-flight branches). Updated
+  Components, Assumptions, and Surprises accordingly.
