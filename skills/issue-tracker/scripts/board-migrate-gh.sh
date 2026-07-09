@@ -98,6 +98,9 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
     num = gh_of[tid]
     gn = node(num)
     want = n["state"]
+    # v8: the legacy v6 vocabulary carried `blocked`; it lands as needs-human.
+    if want == "blocked":
+        want = "needs-human"
     ref = "%s→#%s" % (tid, num)
 
     # state
