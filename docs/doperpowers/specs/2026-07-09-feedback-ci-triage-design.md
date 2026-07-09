@@ -325,6 +325,18 @@ tune `K`, gate thresholds, category handling.
   every other task depends on) is unchanged. Rejected: *full Python rewrite* —
   the larger, more surprising deviation, discarding the plan's TS test suites for
   no capability gain.
+- **Write 턴 = fresh thread(외부 리뷰 F2), resumeThread 설계는 폐기.** 프리머지
+  리뷰(gpt-5.5)가 지적: turn 1(read-only 진단)에 들어간 신뢰불가 피드백 본문이
+  `resumeThread`로 이어진 turn 2(workspace-write)의 대화 컨텍스트에 그대로
+  남아, 본문에 심긴 지시가 write-capable 턴에 영향을 줄 수 있었다. 수정:
+  `codexAdapter.ts`의 `thread`/`resumeThread`/`CodexThread` export를 제거하고
+  매 턴을 독립된 fresh thread로 시작; `dispatch.ts`가 turn 2 프롬프트에
+  verdict의 검증된 필드(`resolved_category`/`root_cause`)만 넘기고
+  `row.body`는 배제; `parseVerdict` 직후 `verdict.feedback_id !== row.id`면
+  실패 처리해 모델의 행 id 참칭/혼동도 방어한다. **"변경파일 ⊆ 인용파일"
+  검증(수정이 실제로 root_cause가 인용한 파일에만 닿는지)은 v1에서는 보류** —
+  G1–G6 게이트 + 사람의 PR 리뷰가 백스톱 역할을 하므로 당장 필수는 아니라고
+  판단; Task 11(하드닝) 후보로 남긴다.
 
 ## Surprises & Discoveries
 

@@ -49,11 +49,25 @@ TRIAGE_BOARD_SCRIPTS_DIR=/absolute/path/to/doperpowers/skills/issue-tracker/scri
 
 ```
 TRIAGE_K=3               # tick당 처리할 최대 행 수
-TRIAGE_TIMEOUT_MS=1200000        # 20분 — 워커 턴 타임아웃
-TRIAGE_RECLAIM_MS=1800000        # 30분 — claimed인데 멈춘 행을 회수하는 기준
+TRIAGE_TIMEOUT_MS=1200000        # 20분 — 워커 턴(turn) 타임아웃(AbortController로 배선됨)
+TRIAGE_RECLAIM_MS=5400000        # 90분 — claimed인데 멈춘 행을 회수하는 기준
 TRIAGE_ENABLED=true      # false면 poll.ts가 즉시 exit 0 (킬 스위치)
-TRIAGE_FIX_ENABLED=false # 아래 5번 — 섀도 모드 시작 값
+TRIAGE_FIX_ENABLED=false # 기본값=shadow(티켓만). true를 리터럴로 명시했을 때만 fix PR 경로가 켜짐 — 아래 5번
 ```
+
+**`TRIAGE_RECLAIM_MS`는 반드시 최악 디스패치 시간보다 커야 합니다.** 한 행의
+최악 실행 시간은 turn 2회(`TRIAGE_TIMEOUT_MS` 각각) + 빌드/테스트(최대 15분,
+`git.ts`의 `buildAndTest`)입니다. 기본값 90분은 기본 `TRIAGE_TIMEOUT_MS`(20분)
+기준 이 여유를 담아 계산한 값입니다 — `TRIAGE_TIMEOUT_MS`를 늘리면
+`TRIAGE_RECLAIM_MS`도 함께 늘리십시오. 리클레임 창이 실행 시간보다 짧으면
+아직 살아있는 잡을 다른 폴러 인스턴스가 리클레임해 같은 피드백을 이중
+처리할 수 있습니다.
+
+**전제: 폴러는 머신당 launchd 단일 label 1개만 등록합니다.** 이 문서의
+리클레임 설계(atomic claim + 위 창 확대)는 동시성 안전을 launchd의 "같은
+label은 동시 실행하지 않는다" 직렬화에 의존합니다. 같은 머신에 같은 잡을
+여러 label로 중복 등록하거나 수동으로 병행 실행하지 마십시오(lease/heartbeat
+같은 별도 조율 장치는 v1에서 의도적으로 두지 않았습니다 — 과설계로 판단).
 
 ## 3. `BOARD_REPO`는 반드시 ida-solution을 가리켜야 함
 
@@ -135,3 +149,12 @@ tail -f /tmp/feedback-poll.out.log /tmp/feedback-poll.err.log
 `TRIAGE_ENABLED=false — skip`만 계속 찍히면 `.env`의 `TRIAGE_ENABLED`를
 확인하십시오. `feedback <id> → ticketed` / `→ fixed` 같은 줄이 보이면
 정상 동작 중입니다.
+
+## 8. `failed`는 터미널 상태 — 자동 재시도 없음
+
+`db.ts`의 `findActionable`/`claim`은 `pending`이거나 리클레임 창을 넘긴
+`claimed` 행만 고릅니다. `failed`로 쓰인 행은 이 predicate에 절대 걸리지
+않으므로 다음 tick에도, 그다음 tick에도 재시도되지 않습니다(재시도 카운터
+같은 별도 장치는 두지 않았습니다). 원인(로그 확인)을 고치고 다시 돌리려면
+운영자가 Supabase에서 해당 행의 `triage_state`를 `pending`으로 직접
+리셋해야 합니다.

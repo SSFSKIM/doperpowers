@@ -19,8 +19,10 @@ lets the dispatcher act on the worker's verdict.
 **There is no orchestrator beyond the poller itself.** Each row is
 independent, claimed atomically (so two poller instances can run
 concurrently without double-processing), and dispatched sequentially within
-one tick. A row that errors is written back `failed` and retried on a later
-tick (up to the reclaim window) — nothing is silently dropped.
+one tick. `failed` is a **terminal** state — `findActionable`/`claim` only
+ever pick up `pending` or stale-`claimed` rows, never `failed`, so a failed
+row is not silently retried. To retry, an operator resets that row's
+`triage_state` back to `pending`.
 
 Full design + rationale:
 `docs/doperpowers/specs/2026-07-09-feedback-ci-triage-design.md`.
@@ -35,7 +37,7 @@ Full design + rationale:
 | `src/gate.ts` | `enforceGate(...)` — re-checks G1–G6 against the **real diff** (the worker's self-report in the verdict is advisory only) |
 | `src/db.ts` | `makeDb(cfg)` — Supabase adapter: `findActionable` (pending + stale-claimed rows), `claim` (atomic `pending→claimed` update, returns false if lost the race), `writeback` (final `triage_state` + PR/issue URL) |
 | `src/sideEffects.ts` | `makeSideEffects(cfg, sh)` — the only place that touches the outside world: `findExisting` (idempotency guard via a `feedback:<id>` marker in PR/issue bodies), `openFixPr`, `registerTicket` (needs-human, via the board scripts) |
-| `src/codexAdapter.ts` | `runTurn(...)` — the Codex SDK seam: starts/resumes a thread at a given sandbox (`read_only` diagnose turn, `workspace_write` fix turn) |
+| `src/codexAdapter.ts` | `makeCodexRunner(openaiApiKey, timeoutMs)` — the Codex SDK seam: builds a runner that starts a **fresh** thread per turn at a given sandbox (`read_only` diagnose turn, `workspace_write` fix turn, never resumed — see F2 in the spec's Decision Log), with a locked-down child-process env (`buildCodexOptions`: PATH/HOME only, no inherited secrets) and a per-turn abort timeout |
 | `src/git.ts` | `makeGit(repoPath, baseBranch)` — per-feedback disposable worktree (`addWorktree`/`removeWorktree`), `diffStat` (feeds G3/G4), `buildAndTest` (feeds G5, `npm run build`, 15-min timeout). Symlinks the base checkout's `node_modules` into every new worktree — see `references/setup.md` §1 |
 | `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → diagnose turn → pre-route/verdict-route decision → (if fixing) fix turn → gate → PR-or-ticket → writeback. This is where the phases in the protocol actually get enforced in code |
 | `src/poll.ts` | the entry: `loadConfig` → exit early if `TRIAGE_ENABLED=false` → `findActionable` → per-row `claim` + `dispatchRow`, sequential, catch → writeback `failed` |
@@ -64,12 +66,13 @@ diff is small/safe/tested is not trusted; `git.ts`'s `diffStat` and
 
 - **`TRIAGE_ENABLED=false`** — the top-level stop. `poll.ts` exits 0 before
   touching the DB or spawning any worker. Use this to pause the whole loop.
-- **`TRIAGE_FIX_ENABLED=false`** — shadow mode. `dispatch.ts`'s `wantsFix`
+- **`TRIAGE_FIX_ENABLED`** — shadow mode is the default: `loadConfig` only
+  turns fix mode on when the env var is the literal string `'true'` (unset,
+  empty, or any typo defaults to off). While off, `dispatch.ts`'s `wantsFix`
   is forced false, so every row that would have become a fix PR becomes a
   needs-human ticket carrying the diagnosis instead — no `workspace_write`
-  turn ever runs, no code is ever written. This is the recommended starting
-  state for a newly adopted repo (`references/setup.md` §5); flip it on
-  only after watching ticket quality for a while.
+  turn ever runs, no code is ever written. Flip it on (`TRIAGE_FIX_ENABLED=true`)
+  only after watching ticket quality for a while (`references/setup.md` §5).
 
 ## Relationship to `reviewing-prs`
 
