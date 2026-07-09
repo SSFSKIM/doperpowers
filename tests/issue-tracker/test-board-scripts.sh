@@ -318,13 +318,9 @@ assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
 assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
 
 run board-transition.sh 9 in-progress >/dev/null
-cat > "$DAEMON_HOME/aaaa-bbbb.reply.txt" <<'J'
-work done, proposing:
-{"ticket":"9","from":"in-progress","to":"in-review","reason":"PR open","evidence":"https://github.com/test/repo/pull/12"}
-J
 out="$(run board-reconcile.sh)"
-assert_contains "$out" "proposal  #9: in-progress → in-review" "reconcile surfaces proposal"
-assert_contains "$out" "board-transition.sh 9 in-review --pr https://github.com/test/repo/pull/12" "apply hint carries PR"
+assert_contains "$out" "parked    #2: needs-human — waiting on A" "reconcile lists the wake queue"
+assert_not_contains "$out" "proposal" "the proposal scanner is gone (v8: no orchestrator)"
 run board-transition.sh 7 in-progress >/dev/null 2>&1 || true    # 7 has no daemon
 out="$(run board-reconcile.sh)"
 assert_contains "$out" "orphaned  #7" "orphaned in-progress flagged"
