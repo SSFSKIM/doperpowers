@@ -15,7 +15,7 @@ that diagnoses the item against the actual codebase/DB and routes it: a clearly
 diagnosable, well-scoped **bug** becomes a real fix **PR** (which then rides the
 existing `reviewing-prs` `--sweep` loop to a human merge); anything ambiguous, or
 any **아이디어/질문** or product/scope request, becomes a human-flagged
-`needs-info` board ticket carrying the worker's diagnosis. The outcome is written
+`needs-human` board ticket carrying the worker's diagnosis. The outcome is written
 back to the feedback row and surfaced in the HQ console as a badge
 (`🤖 수정 → PR #123` / `🤖 티켓 → #45`).
 
@@ -25,7 +25,7 @@ review daemons). Where an implementing worker turns a ticket into a PR and a
 review worker turns a PR into a confident merge, a **triage worker turns a raw
 user report into either a fix PR or a scoped human ticket**. Unlike the
 implement-dispatch loop it has no orchestrator: its outputs are GitHub objects
-(PRs, `needs-info` issues) and DB writeback, and the fix PRs it opens are
+(PRs, `needs-human` issues) and DB writeback, and the fix PRs it opens are
 reviewed by the *already-running* PR-review loop — so this loop deliberately
 does **no** review of its own.
 
@@ -64,7 +64,7 @@ user submits 피드백 ─▶ POST /api/feedback ─▶ feedback row
           writeback triage_state='fixed', triage_pr_url
              └─▶ reviewing-prs --sweep cron reviews the PR ─▶ human merges
        else (idea/question/기타, not diagnosable, oversized, risk-surface, or build fail):
-          dispatcher: board-register.sh … --state needs-info --note "<왜 사람이 필요한지>"
+          dispatcher: board-register.sh … --state needs-human --note "<왜 사람이 필요한지>"
           writeback triage_state='ticketed', triage_issue_url
      finally: git worktree remove
                          ▼
@@ -119,7 +119,7 @@ already-paid-for pass.
 
 ### 3. `skills/issue-tracker` — reused unchanged
 
-Human-flagged tickets are created with `board-register.sh … --state needs-info`
+Human-flagged tickets are created with `board-register.sh … --state needs-human`
 (the board state meaning "waiting on a human's knowledge/taste/product
 decision"), labeled `source:user-feedback` (+ `type:question` for 질문), default
 priority **P2** (P1 only when the feedback describes data loss / a blocking
@@ -225,7 +225,7 @@ Every failure still produces a useful, non-silent outcome:
   body cites the feedback id + diagnosis. The PR opens **no** review of its own;
   the `--sweep` loop reviews it.
 - An 아이디어 or 질문, or a bug that fails any gate condition, results in a
-  `needs-info` board ticket labeled `source:user-feedback`,
+  `needs-human` board ticket labeled `source:user-feedback`,
   `triage_state='ticketed'`, `triage_issue_url` set, and the ticket body carries
   the diagnosis (bugs) or the human-framed request (ideas/questions).
 - A fix whose diff touches a risk-surface path becomes a ticket, never a PR —
@@ -309,6 +309,34 @@ tune `K`, gate thresholds, category handling.
   diff size and scans changed paths against risk-surface globs itself.
 - **Track = controlled** (approaches → design → spec → writing-plans), chosen for
   a novel, cross-repo, taste-heavy, high-stakes build.
+- **Driver language = TypeScript (not the Python fallback).** The Task 1 spike
+  found the shipped TS `@openai/codex-sdk@0.143.0` has **no per-turn `sandbox`
+  field** on `thread.run()` (only `outputSchema`/`signal`) — sandbox is a
+  thread-level `ThreadOptions.sandboxMode`. The plan's Task 1 pre-wrote a
+  "pivot to the Python SDK" branch for exactly this case. **We did not pivot.**
+  The same spike surfaced that `codex.resumeThread(id, { sandboxMode })` returns a
+  fresh `Thread` bound to the *same conversation id* with a *different* sandbox,
+  and since every `run()` spawns its own `codex exec` child regardless, resuming
+  costs nothing extra. So the read-only-diagnose → workspace-write-fix flow is
+  fully expressible in TS: `startThread({sandboxMode:'read-only'})` then
+  `resumeThread(thread.id, {sandboxMode:'workspace-write'})`. Staying in TS keeps
+  9 of 10 code tasks intact — only Task 6's adapter *internals* absorb the
+  start/resume choice and the value mapping; its `runTurn` seam signature (which
+  every other task depends on) is unchanged. Rejected: *full Python rewrite* —
+  the larger, more surprising deviation, discarding the plan's TS test suites for
+  no capability gain.
+- **Write 턴 = fresh thread(외부 리뷰 F2), resumeThread 설계는 폐기.** 프리머지
+  리뷰(gpt-5.5)가 지적: turn 1(read-only 진단)에 들어간 신뢰불가 피드백 본문이
+  `resumeThread`로 이어진 turn 2(workspace-write)의 대화 컨텍스트에 그대로
+  남아, 본문에 심긴 지시가 write-capable 턴에 영향을 줄 수 있었다. 수정:
+  `codexAdapter.ts`의 `thread`/`resumeThread`/`CodexThread` export를 제거하고
+  매 턴을 독립된 fresh thread로 시작; `dispatch.ts`가 turn 2 프롬프트에
+  verdict의 검증된 필드(`resolved_category`/`root_cause`)만 넘기고
+  `row.body`는 배제; `parseVerdict` 직후 `verdict.feedback_id !== row.id`면
+  실패 처리해 모델의 행 id 참칭/혼동도 방어한다. **"변경파일 ⊆ 인용파일"
+  검증(수정이 실제로 root_cause가 인용한 파일에만 닿는지)은 v1에서는 보류** —
+  G1–G6 게이트 + 사람의 PR 리뷰가 백스톱 역할을 하므로 당장 필수는 아니라고
+  판단; Task 11(하드닝) 후보로 남긴다.
 
 ## Surprises & Discoveries
 
@@ -327,10 +355,60 @@ tune `K`, gate thresholds, category handling.
 - **The feedback triage columns already half-existed in spirit** — `status`
   (new/seen/done) + `hq_note` — but they're human-owned, so the bot gets its own
   parallel `triage_state` rather than overloading them.
+- **Codex-SDK (TS) surface, pinned by the Task 1 spike (2026-07-10, static read
+  of `@openai/codex-sdk@0.143.0`'s shipped `.d.ts` + `developers.openai.com/codex/sdk`;
+  no live call — `OPENAI_API_KEY` absent headlessly):**
+  - **Sandbox values are hyphenated** — `"read-only" | "workspace-write" |
+    "danger-full-access"`, on `ThreadOptions.sandboxMode` (maps 1:1 to the CLI
+    `--sandbox` flag). The plan's `read_only`/`workspace_write` (underscores) are
+    **wrong** — the adapter maps the dispatcher's underscore vocabulary to hyphens.
+  - **Working dir** = `ThreadOptions.workingDirectory` (→ `--cd`); a CI checkout
+    also needs **`skipGitRepoCheck: true`** (Codex refuses a non-git cwd otherwise).
+  - **Assistant text** = `(await thread.run(prompt)).finalResponse` (a plain
+    `string`, the last `agent_message` item's `.text`) — regex the fenced ```` ```json ````
+    verdict from it. `TurnOptions.outputSchema` is an available structured-output
+    alternative (deferred).
+  - **Auth** flows through the child's inherited `process.env` (so an exported
+    `OPENAI_API_KEY`/`CODEX_API_KEY` passes through), or `new Codex({ apiKey })`
+    which the SDK wires to **`CODEX_API_KEY`** specifically.
+  - **`thread.id` is `null` until the first `run()` completes** — read it *after*
+    turn 1 to resume for turn 2.
+  - **Errors** are normalized: a `turn.failed` event makes `run()` reject with
+    `Error(message)`; the dispatcher's `try/finally` + `parseVerdict(...)===null`
+    guard already cover both the throw and a malformed-verdict return.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Plan B (the `triaging-feedback` skill) is code-complete** (2026-07-10, branch
+`feat/triaging-feedback-skill`, 11 task commits, 46 unit tests green, `tsc`
+clean). Built via subagent-driven-development: a spike + nine TDD/glue tasks,
+each with an independent task review, then a whole-branch review on Opus.
+
+What the process caught that the per-task reviews could not — two integration-seam
+bugs surfaced only by the whole-branch review:
+- **Gate evasion (Critical):** `git diff --numstat` measured only modified
+  *tracked* files, so a fix that *added* a new file (e.g. a `sql/pNN.sql`
+  migration or `app/api/cron/*` — both risk surfaces) reached the gate as an
+  empty diff and would have been committed ungated. Fixed by staging first
+  (`git add -A` → `git diff --cached --numstat`) so the gate sees exactly what
+  the PR will commit.
+- **Dead reclaim (Important):** the atomic `claim` guarded on `pending` only, so
+  the stale-`claimed` rows that `findActionable` surfaces for crash recovery
+  could never be re-claimed — the whole `reclaimMs` window was inert. Fixed by
+  giving `claim` the same `pending OR stale-claimed` predicate as
+  `findActionable`.
+
+Both were the direct consequence of the plan deliberately leaving `git.ts`/`db.ts`
+partially untested (I/O glue) — the missing `findActionable` unit test is exactly
+what hid the reclaim bug; coverage was added with the fix.
+
+**Not yet done:** Task 11 (live shadow run) is a handoff — it needs Plan A's `p86`
+migration live and `OPENAI_API_KEY` + service-role creds on the self-hosted Mac,
+so it validates the three untested seams (`codexAdapter` two-turn flow,
+`git.ts` worktree/build, `poll.ts` end-to-end) against real infrastructure.
+Also deferred to that hardening pass: `findExisting`'s `gh pr list` fails *open*
+(a `gh` error → no PR found → possible duplicate), backstopped for now by the
+body marker and human PR review.
 
 ## Revision Notes
 
@@ -348,3 +426,20 @@ Pending — written at finish.
   (3) Ticket priority is `P2`-only in v1; P1 escalation deferred. (4) The Codex-SDK
   TS surface (per-turn sandbox, resume, text recovery) is pinned by a spike task
   before any dependent code — see Plan B Task 1.
+- 2026-07-10 — Plan B Task 1 spike executed. **Language stays TypeScript** (not
+  the Python fallback): the TS SDK lacks a per-turn `run()` sandbox, but
+  `resumeThread(id, {sandboxMode})` gives the same read→write flow at no cost — see
+  the new Decision Log entry and the Surprises bullet pinning the concrete SDK
+  facts (hyphenated sandbox values, `skipGitRepoCheck`, `.finalResponse`,
+  `CODEX_API_KEY`, `thread.id`-after-first-run). Task 6's adapter absorbs it; the
+  `runTurn` seam and Tasks 2–5/7–10 are unchanged. Live write-confirmation deferred
+  to Task 11's shadow run (needs credentials on the Mac).
+- 2026-07-10 — Vocabulary correction recorded at reland review (PR #8): the
+  spec's five `needs-info` mentions become **`needs-human`**, matching what
+  the implementation and SKILL.md already write (`board-register.sh --state
+  needs-human`). The rename happened during implementation but was never
+  recorded here. Under board schema v8's who-unparks discriminant this is a
+  correction, not a change: a triage ticket waits on the human's own
+  product/priority decision — the spec's own parenthetical ("waiting on a
+  human's knowledge/taste/product decision") was already needs-human's v8
+  definition; `needs-info` is reserved for delegable knowledge work.
