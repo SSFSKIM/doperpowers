@@ -64,6 +64,18 @@ gh api repos/<OWNER>/<REPO>/actions/runners \
 command -v gh git python3 claude
 crontab -e
 # cron does NOT inherit your shell PATH (same reason step 3 wrote .path for
-# the runner) — set it inline on the command, adjusted to the dirs found above:
-*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> $HOME/.claude/plugins/marketplaces/doperpowers/skills/reviewing-prs/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
+# the runner) — set it inline on the command, adjusted to the dirs found above.
+# Keep AUTO_MERGE_ENABLED in lock-step with the workflow's env (default off =
+# observation mode; sweep-dispatched reviewers honor the same rollout gate):
+*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> AUTO_MERGE_ENABLED=false $HOME/.claude/plugins/marketplaces/doperpowers/skills/reviewing-prs/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
 ```
+
+## 7. (Optional) Per-repo risk-surface manifest
+
+Declare the repo's concrete self-merge-disqualifying paths in
+`.doperpowers/risk-surfaces.md` on the integration branch(es) reviewers
+target. It's a plain list of globs and prose path/content rules the review
+worker reads against the diff — auth files, migration dirs, privileged
+routes, security-sensitive SQL. It is read from the PR's **base ref** (never
+HEAD) and only ADDS to the always-on risk categories; it can never loosen the
+gate. Absent file → the always-on categories still apply.

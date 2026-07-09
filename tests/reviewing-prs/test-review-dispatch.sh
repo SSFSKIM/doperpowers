@@ -96,6 +96,7 @@ cat > "$STUB_BIN/gh" <<'STUB'
 set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
 case "${1:-} ${2:-}" in
+  "repo view") echo "${MOCK_DEFAULT_BRANCH:-main}" ;;   # -q .defaultBranchRef.name
   "pr view")   cat "$MOCK_DIR/pr-$3.json" ;;
   "pr list")   cat "$MOCK_DIR/pr-list.json" ;;
   "issue view")
@@ -165,6 +166,10 @@ assert_contains "$PROMPT" "Ticket seven brief body" "prompt carries the linked i
 assert_contains "$PROMPT" "origin/main" "prompt carries the base ref"
 assert_contains "$PROMPT" "codex/1.0.9/scripts/codex-companion.mjs" "prompt resolves the NEWEST codex companion"
 assert_contains "$PROMPT" "tech-debt issue: #99" "prompt carries the standing tech-debt issue"
+assert_contains "$PROMPT" "auto-merge: off" "prompt renders auto-merge off by default (observation mode)"
+assert_contains "$PROMPT" "only when auto-merge is on" "AUTHORITY recap gates merge on auto-merge (no observation-mode merge)"
+assert_contains "$PROMPT" "base-is-default: yes" "prompt marks base==default (PR 5 targets main, the default) → always human tier"
+assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted placeholder survives"
 
 # ---- skips --------------------------------------------------------------------
@@ -382,6 +387,41 @@ if [ -f "$PROMPT_DIR/review-pr-3.prompt" ]; then
     fail "no prompt rendered for the bad PR"; else pass "no prompt rendered for the bad PR"; fi
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "good-B after the bad PR still dispatched"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-pr-4" rev-parse HEAD)" "$HEAD_SHA2" "good-B worktree at its OWN head SHA, not the previous PR's"
+
+# ---- risk-surface manifest (read from BASE, not HEAD) + rollout flags ----------
+echo "risk manifest + rollout flags:"
+# Commit a manifest to main (the base) with a distinctive marker, then a
+# DIFFERENT version on the PR head branch. The prompt must carry the BASE
+# version and never the HEAD version — a PR cannot weaken its own gate.
+git -C "$CLONE" checkout -q main
+mkdir -p "$CLONE/.doperpowers"
+printf 'RISK-FROM-BASE\nlib/auth.ts\n' > "$CLONE/.doperpowers/risk-surfaces.md"
+git -C "$CLONE" add .doperpowers/risk-surfaces.md
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "add risk manifest"
+git -C "$CLONE" push -q origin main
+git -C "$CLONE" checkout -q -b feat/z main
+printf 'RISK-FROM-HEAD-SHOULD-NOT-APPEAR\n' > "$CLONE/.doperpowers/risk-surfaces.md"
+git -C "$CLONE" add .doperpowers/risk-surfaces.md
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "sneak manifest edit"
+git -C "$CLONE" push -q origin feat/z
+HEAD_SHA_Z="$(git -C "$CLONE" rev-parse HEAD)"
+git -C "$CLONE" checkout -q main
+SHAZ="$HEAD_SHA_Z" python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]; sha = os.environ["SHAZ"]
+json.dump({"number": 10, "title": "feat: z", "body": "No ticket for this one.",
+           "baseRefName": "main", "headRefName": "feat/z", "headRefOid": sha,
+           "url": "https://github.com/test/repo/pull/10", "isDraft": False,
+           "state": "OPEN", "labels": [], "closingIssuesReferences": []},
+          open(os.path.join(d, "pr-10.json"), "w"))
+PY
+reset_state
+out="$(AUTO_MERGE_ENABLED=true DEFAULT_BRANCH=develop "$DISPATCH" 10)"
+P10="$(cat "$PROMPT_DIR/review-pr-10.prompt")"
+assert_contains "$P10" "RISK-FROM-BASE" "manifest content injected from the BASE ref"
+assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifest edit does not leak (read from base, not head)"
+assert_contains "$P10" "auto-merge: on" "AUTO_MERGE_ENABLED=true renders auto-merge on"
+assert_contains "$P10" "base-is-default: no" "base (main) != default branch (develop) → not main-excluded"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

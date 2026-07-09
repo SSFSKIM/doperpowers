@@ -11,11 +11,28 @@
 #   review-dispatch.sh --sweep        catch-up: every unbound open PR
 #
 # Env:
-#   LOCAL_REPO      canonical local clone of the target repo (default: $PWD)
-#   BOARD_REPO      owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL    optional model override for the review daemon
-#   DAEMON_SCRIPTS  orchestrating-daemons scripts dir override (tests)
-#   DAEMON_HOME     daemon registry dir (default ~/.claude/orchestrating-daemons)
+#   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
+#   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
+#   REVIEW_MODEL        optional model override for the review daemon
+#   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
+#                       (default false = observation mode: the worker reviews
+#                       and judges the tier but routes self-merge-eligible PRs
+#                       to confident-ready instead of merging). Injected into
+#                       the protocol; the dispatch layer never merges.
+#   DEFAULT_BRANCH      repo default branch (default: resolved via gh); the
+#                       worker never self-merges a PR whose base is this branch
+#   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
+#   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
+#
+# Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
+# in the target repo declares concrete self-merge-disqualifying paths/patterns.
+# It is read from the PR's BASE ref (never HEAD) so a PR cannot weaken its own
+# gate in the same commit, and it only ADDS to the always-on risk categories.
+# LOCAL_REPO must be a FULL clone (not --single-branch): the base read resolves
+# origin/<base>, refreshed by the per-dispatch fetch; a narrowed clone can
+# leave that tracking ref stale and the manifest would silently fall back to
+# the always-on categories only (fail-safe — self-merge still never lands on
+# the default branch, but a repo-declared surface would go unenforced).
 #
 # Dedupe policy (SKILL.md table): confident-ready-labeled PRs are never
 # dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
@@ -42,6 +59,16 @@ if [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
 fi
 [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
+
+# Repo-wide config injected into every worker prompt (constant across PRs):
+#   DEFAULT_BRANCH — self-merge is forbidden onto it (main-exclusion).
+#   AUTO_MERGE_DISPLAY — the staged-rollout gate as the worker sees it.
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
+[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
+case "${AUTO_MERGE_ENABLED:-false}" in
+  true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
+  *) AUTO_MERGE_DISPLAY="off" ;;
+esac
 
 # Newest review-pr-<n> registry entry → "uuid|status|current" (empty if none).
 _reviewer_meta() {
@@ -149,6 +176,15 @@ PY
   wt="$LOCAL_REPO/.claude/worktrees/review-pr-$pr"
   git -C "$LOCAL_REPO" fetch -q origin "$HEAD_REF" "$BASE_REF" \
     || { echo "#$pr: git fetch failed ($HEAD_REF/$BASE_REF)" >&2; rm -rf "$tmp"; return 1; }
+
+  # Per-repo risk-surface manifest, read from the BASE ref (not HEAD) so a PR
+  # cannot weaken its own gate in the same commit. Absent file → empty, and
+  # the worker falls back to the always-on categories. Never fails dispatch.
+  git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
+    || : > "$tmp/risk.md"
+  # base-is-default drives the worker's main-exclusion clause.
+  local base_is_default="no"
+  [ "$BASE_REF" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
   if [ -e "$wt" ]; then
     if _wt_occupied "$wt"; then
       echo "#$pr: live daemon occupies $wt — not removing (retire it first)" >&2
@@ -165,8 +201,10 @@ PY
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_URL="$issue_url" P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
     P_TECH_DEBT_ISSUE="${td:-none}" P_CODEX_COMPANION="${companion:-none}" \
-    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
+    RISK_FILE="$tmp/risk.md" \
     python3 - "$PROTOCOL_TEMPLATE" <<'PY'
 import os, re, sys
 CAP = 20000  # keep the spawn arg well under the OS arg-size limit
@@ -179,6 +217,8 @@ t = open(sys.argv[1]).read()
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
 subs["PR_BODY"] = readcap(os.environ["PR_BODY_FILE"]) or "(empty PR body)"
 subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(no linked issue)"
+subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
+    "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
 )" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp"; return 1; }

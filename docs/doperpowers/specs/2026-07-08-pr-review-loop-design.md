@@ -375,6 +375,30 @@ protocol text — and are expected to be tuned from shakedown evidence.
   PR labels into board queries.
   Date/Author: 2026-07-08 / Claude
 
+- Decision: Self-merge risk surfaces are additive — always-on categories
+  (CI/workflows, auth, migrations, release, and the manifest file itself)
+  PLUS an optional per-repo `.doperpowers/risk-surfaces.md` of concrete
+  path/content rules, read from the PR's BASE ref (never HEAD). Self-merge is
+  also forbidden onto the repo default branch, and gated behind
+  `AUTO_MERGE_ENABLED` (default off = observation mode). Rejected: hardcoding
+  concrete paths into the protocol (domain-specific, violates core's
+  general-purpose rule); reading the manifest from HEAD (a PR could delist a
+  surface it touches in the same commit); auto-merge on by default (no
+  observation period before trusting the tier).
+  Rationale: borrowed from ida-solution PR #282's PR-review-automation design
+  after a head-to-head comparison — its concrete path-based Gate-A
+  classification, explicit main-exclusion, and staged rollout flag were
+  strictly better safety defaults than the original generic risk-surface
+  list. Adapted to this loop's architecture: doperpowers core ships the
+  MECHANISM (manifest read + injection, base-not-HEAD, additive-only, the
+  two gates); the consumer repo ships the concrete surfaces. The
+  base-not-HEAD read and "manifest file itself is always a risk surface"
+  together close the self-delisting attack. #282's own contributions this
+  loop deliberately did NOT adopt: hosted-Routine review (no verify-then-rebut
+  discipline, no board integration), and deterministic-classifier-as-reviewer
+  (this loop's reviewer is a fresh-context judgment agent, not a regex gate).
+  Date/Author: 2026-07-09 / human (directive) + Claude (design)
+
 ## Surprises & Discoveries
 
 - Observation: `/codex:review` cannot be invoked by the daemon as a slash
@@ -465,3 +489,16 @@ Pending — written at finish.
   against the pre-existing table. Two Surprises added: the unexported
   DAEMON_HOME production gap, and the codex dead-holder wedge observed live
   during this build's own final review.
+- 2026-07-09 (post-ship, v7.9.1): adopted two safety defaults from
+  ida-solution PR #282's competing design — a per-repo additive
+  risk-surface manifest (base-not-HEAD read) and staged-rollout self-merge
+  (main-exclusion + `AUTO_MERGE_ENABLED`, default off). Protocol ESCALATE
+  block, `review-dispatch.sh` (4 new injected placeholders), SKILL.md merge
+  authority + adopting checklist, workflow/runner templates, and the dispatch
+  test suite (+5 asserts incl. the base-not-HEAD self-delisting repro) all
+  updated. See the new Decision Log entry dated 2026-07-09. Opus review pass:
+  READY — verified the base-not-HEAD security core, errexit/nounset safety,
+  and placeholder integrity all hold; fixed its one MEDIUM (the AUTHORITY
+  recap could be read as licensing a merge in observation mode → now gated on
+  "auto-merge is on", pinned by a regression assert) and two LOW (off-state
+  prose wording; full-clone requirement for the base read, now documented).

@@ -49,13 +49,30 @@ net: PRs opened while the machine slept (GitHub queues self-hosted jobs only
 
 ## Merge authority (two tiers)
 
-Encoded as Rubric 3 in the protocol — ALL clauses must hold for self-merge:
-final verdict approve (or only low findings, each explicitly routed);
-post-fix diff ≤ ~150 changed lines AND ≤ 5 files; zero touches on risk
-surfaces (CI/workflows, auth/security, migrations/schema,
-release/versioning); every CI check green — a repo with no checks
-disqualifies self-merge, no exceptions. Anything else → `confident-ready`
-label on the PR + `status:confident-ready` on the ticket; the human merges.
+Encoded in the protocol's ESCALATE block — ALL clauses must hold for
+self-merge: final verdict approve (or only low findings, each explicitly
+routed); post-fix diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
+**not** the repo default branch (self-merge lands only on integration
+branches); zero touches on a **risk surface**; every CI check green — a repo
+with no checks disqualifies self-merge, no exceptions. Anything else →
+`confident-ready` label on the PR + `status:confident-ready` on the ticket;
+the human merges.
+
+**Risk surfaces are additive.** Always-on, manifest or not: CI/workflows,
+auth/security, migrations/schema, release/versioning, and the manifest file
+itself. A repo may ALSO declare concrete surfaces in an optional
+`.doperpowers/risk-surfaces.md` — a plain list of globs and prose
+path/content rules the worker reads against the diff. The dispatch layer
+injects it from the PR's **base ref, never HEAD**, so a PR cannot delist a
+surface it touches in the same commit; the manifest can only tighten the
+gate, never loosen an always-on category.
+
+**Staged rollout (`AUTO_MERGE_ENABLED`, default off).** Off is *observation
+mode*: the worker runs the full loop and judges the tier, but a
+self-merge-eligible PR is routed to `confident-ready` instead of merged, with
+the trail comment naming what it *would* have merged. Watch a few of those,
+then set `AUTO_MERGE_ENABLED=true` (workflow / runner env) to let the worker
+actually merge the self-merge tier.
 
 ## Tech-debt sink
 
@@ -100,4 +117,11 @@ the human cancels).
    `status:confident-ready` is auto-created by the board scripts.
 6. Register the standing tech-debt issue (`--state deferred`, P3, plus the
    `tech-debt` label).
-7. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
+7. (Optional but recommended) Add `.doperpowers/risk-surfaces.md` listing the
+   repo's concrete self-merge-disqualifying paths/patterns — auth files,
+   migration dirs, privileged routes, security-sensitive SQL. Commit it on
+   the integration branch(es) reviewers target (it is read from the base).
+8. Start in observation mode: leave `AUTO_MERGE_ENABLED` unset/false in the
+   workflow env. Flip it to `true` only after the trail comments show the
+   self-merge tier judging as you'd want.
+9. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.

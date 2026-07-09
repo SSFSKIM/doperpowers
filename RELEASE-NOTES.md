@@ -1,5 +1,33 @@
 # Doperpowers Release Notes
 
+## v7.9.1 (2026-07-09)
+
+### reviewing-prs — two safety defaults for the self-merge tier
+
+Borrowed from a head-to-head comparison with a competing PR-review-automation
+design: the self-merge tier gains a per-repo risk-surface manifest and a
+staged rollout gate. Both are enforced by the review worker reading the
+protocol; the dispatch layer only injects the facts and never merges.
+
+- **Per-repo risk-surface manifest.** An optional `.doperpowers/risk-surfaces.md`
+  in the target repo declares concrete self-merge-disqualifying paths/patterns
+  (auth files, migration dirs, privileged routes, sensitive SQL). The
+  dispatcher reads it from the PR's **base ref, never HEAD**, so a PR cannot
+  delist a surface it touches in the same commit; it is **additive-only** —
+  it can add surfaces but never remove the always-on categories
+  (CI/workflows, auth, migrations, release, and the manifest file itself).
+- **Staged rollout + main-exclusion.** `AUTO_MERGE_ENABLED` (default false) is
+  observation mode: the worker runs the full loop and judges the self-merge
+  tier, but routes eligible PRs to `confident-ready` instead of merging,
+  noting in the trail what it would have merged. Self-merge is also forbidden
+  onto the repo default branch. Flip the flag to `true` after the trails read
+  right.
+
+review-dispatch.sh injects four new protocol facts (risk manifest,
+auto-merge state, default branch, base-is-default); the dispatch test suite
+gains a base-not-HEAD self-delisting regression. Templates (workflow env,
+runner cron, adopting checklist) updated.
+
 ## v7.9.0 (2026-07-09)
 
 ### reviewing-prs — autonomous PR review loop (new skill)

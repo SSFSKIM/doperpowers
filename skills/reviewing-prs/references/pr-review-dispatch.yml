@@ -35,6 +35,10 @@ jobs:
     env:
       LOCAL_REPO: /CHANGE/ME/absolute/path/to/local/clone
       BOARD_REPO: ${{ github.repository }}
+      # Staged rollout: start unset (observation mode — the worker reviews and
+      # routes self-merge-eligible PRs to confident-ready without merging).
+      # Set to "true" only after the trail comments show the tier judging well.
+      AUTO_MERGE_ENABLED: "false"
     steps:
       - name: Dispatch review daemon
         run: |

@@ -58,16 +58,37 @@ or none. At the cap with unresolved critical/high findings: do NOT grant
 confidence — set ticket #{{ISSUE_NUMBER}} to needs-info with an impasse
 summary and end your turn.
 
-ESCALATE when review is complete:
-- SELF-MERGE tier — ALL must hold: final verdict approve (or only low
-  findings, each explicitly routed); post-fix diff ≤ ~150 changed lines AND
-  ≤ 5 files; zero touches on risk surfaces (CI/workflows, auth/security,
-  migrations/schema, release/versioning); every CI check green
-  (gh pr checks {{PR_NUMBER}}) — a repo with NO checks disqualifies
-  self-merge, no exceptions. Then: merge with the repo's default method
-  (gh pr merge {{PR_NUMBER}}), post the review-trail comment, and finalize:
+ESCALATE when review is complete. The SELF-MERGE tier requires ALL of:
+- final verdict approve (or only low findings, each explicitly routed);
+- post-fix diff ≤ ~150 changed lines AND ≤ 5 files;
+- the PR base ({{BASE_REF}}) is NOT the repo default branch
+  ({{DEFAULT_BRANCH}}); base-is-default: {{BASE_IS_DEFAULT}}. Self-merge lands
+  only on integration branches — a PR targeting the default branch is ALWAYS
+  human tier;
+- zero touches on any RISK SURFACE. A risk surface is any of:
+    · a path/pattern in this repo's risk-surface manifest (rendered at the
+      very bottom of this prompt), if the repo declares one — every entry is
+      a self-merge disqualifier;
+    · and ALWAYS, manifest or not: CI/workflows, auth/security,
+      migrations/schema, release/versioning, and the manifest file itself
+      (.doperpowers/risk-surfaces.md). The manifest only ADDS surfaces — it
+      can never remove one of these always-on categories;
+- every CI check green (gh pr checks {{PR_NUMBER}}) — a repo with NO checks
+  disqualifies self-merge, no exceptions.
+
+If ALL hold AND auto-merge is on (auto-merge: {{AUTO_MERGE}}): merge with the
+repo's default method (gh pr merge {{PR_NUMBER}}), post the review-trail
+comment, and finalize:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done
-- HUMAN tier — anything else:
+
+If ALL hold BUT auto-merge is off (auto-merge: {{AUTO_MERGE}}): OBSERVATION MODE — do NOT
+merge. Take the HUMAN-tier actions below instead, and in the review-trail
+comment state explicitly that the self-merge tier WAS satisfied and name the
+clauses it met ("auto-merge disabled — this is what I would have merged").
+This is the staged-rollout observation period; the human reads the trail to
+build trust before enabling auto-merge.
+
+HUMAN tier — anything else, or observation mode above:
   gh pr edit {{PR_NUMBER}} --add-label confident-ready
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} confident-ready "<one-line review summary>"
   — post the review-trail comment, end your turn.
@@ -75,7 +96,9 @@ ESCALATE when review is complete:
 YOUR AUTHORITY: ticket #{{ISSUE_NUMBER}}'s open states via
 board-transition.sh (confident-ready / needs-info / blocked — note required
 for the latter two); registering finding-tickets; merging ONLY in the
-self-merge tier; done ONLY as post-merge finalize. NEVER: wontfix, other
+self-merge tier AND only when auto-merge is on (auto-merge: {{AUTO_MERGE}} —
+if off, the tier being satisfied still means the HUMAN-tier path, not a
+merge); done ONLY as post-merge finalize. NEVER: wontfix, other
 tickets' states, force-push, opening your own PRs, /codex:cancel.
 Escalation discriminant: waiting on an action/precondition → blocked;
 waiting on knowledge or a human taste/product decision → needs-info.
@@ -96,3 +119,6 @@ Linked issues: {{ISSUE_LIST}} (primary: #{{ISSUE_NUMBER}} {{ISSUE_URL}})
 
 ---- Ticket #{{ISSUE_NUMBER}} brief ----
 {{ISSUE_BODY}}
+
+---- Risk-surface manifest ({{REPO}} @ base {{BASE_REF}}) ----
+{{RISK_MANIFEST}}
