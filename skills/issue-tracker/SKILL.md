@@ -155,11 +155,12 @@ replaces step 3's invoker with an issue-event trigger
 (doperpowers:implementing-tickets `scripts/`, when it lands) — the ritual
 itself does not change.
 
-**Ad-hoc daemons are a different animal:** fleets you spawn conversationally
-for your own work follow doperpowers:orchestrating-daemons and its judge
-rubric. Board pipeline workers do not — their doctrine is
-implementing-tickets / reviewing-prs, and nobody sits between them and the
-board.
+**doperpowers:orchestrating-daemons is the spawn substrate this ritual
+calls, not a parallel doctrine.** For your own work: in-session fan-out is
+native subagents (doperpowers:dispatching-parallel-agents); a raw ad-hoc
+daemon is reserved for work that must survive your session with no board to
+hold it. Board pipeline workers' doctrine is implementing-tickets /
+reviewing-prs, and nobody sits between them and the board.
 
 ## The wake ritual (the human's catch-up)
 

@@ -475,6 +475,8 @@ End-to-end: a gate-passed ticket flows ticket → PR → review worker → merge
 - Decision: `orchestrating-daemons` keeps its judge doctrine — the judge dies
   in the ticket pipeline only, not for ad-hoc conversational fleets.
   Date/Author: 2026-07-09 / approved in section review.
+  **Superseded 2026-07-10** — the judge doctrine was demoted everywhere; the
+  skill is now the daemon process substrate. See Revision Notes.
 
 - Decision: Scoped OUT of this phase: the auto-attach trigger mechanism
   (issue-event workflow/runner/sweep — implementing-tickets/scripts/ is its
@@ -600,3 +602,22 @@ of the plan.
   SKILL.md doctrine but was missing from the rendered protocol, the only text
   a worker sees; the old protocol's "the moment ANY part is ambiguous" safety
   valve is thereby restored in discriminant form, pinned by the content test.
+- 2026-07-10: Superseded the "orchestrating-daemons keeps its judge doctrine"
+  decision — the skill is demoted to what it had de facto become: the daemon
+  process substrate (scripts + registry + spawn/fork-purge/worktree/permission
+  mechanics) that the pipeline dispatchers call, plus a narrow escape hatch
+  for work that must survive the session with no board to hold it. The judge
+  rubric (answer-yourself / queue / wake) is cut to a pointer: its content was
+  absorbed by the board, not bypassed — "answer it yourself" became the gate's
+  worker-grade fork class, "queue it" became `needs-human` with a
+  recommended-answer note, "wake now" is the future connector on the wake
+  queue. What changed since 2026-07-09: native background subagents
+  (continuation, worktree isolation) now cover in-session fan-out;
+  human-attachability was never the human's real interface (the session agent
+  mediates); work needing live human steering is `interactive-preferred`; and
+  the pipeline itself uses spawn-only — respawn-over-resume replaced
+  multi-turn steering, leaving the resume/judge half of the toolkit without a
+  pipeline consumer. Scripts, paths, and registry location are untouched
+  (dispatchers hard-code them; the daemon script suite pins them).
+  `issue-tracker`'s boundary paragraph updated to match. Frontmatter narrowed
+  so "fan out work" phrasing routes to the board / native subagents, not here.
