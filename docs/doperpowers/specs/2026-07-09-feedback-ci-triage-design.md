@@ -15,7 +15,7 @@ that diagnoses the item against the actual codebase/DB and routes it: a clearly
 diagnosable, well-scoped **bug** becomes a real fix **PR** (which then rides the
 existing `reviewing-prs` `--sweep` loop to a human merge); anything ambiguous, or
 any **아이디어/질문** or product/scope request, becomes a human-flagged
-`needs-info` board ticket carrying the worker's diagnosis. The outcome is written
+`needs-human` board ticket carrying the worker's diagnosis. The outcome is written
 back to the feedback row and surfaced in the HQ console as a badge
 (`🤖 수정 → PR #123` / `🤖 티켓 → #45`).
 
@@ -25,7 +25,7 @@ review daemons). Where an implementing worker turns a ticket into a PR and a
 review worker turns a PR into a confident merge, a **triage worker turns a raw
 user report into either a fix PR or a scoped human ticket**. Unlike the
 implement-dispatch loop it has no orchestrator: its outputs are GitHub objects
-(PRs, `needs-info` issues) and DB writeback, and the fix PRs it opens are
+(PRs, `needs-human` issues) and DB writeback, and the fix PRs it opens are
 reviewed by the *already-running* PR-review loop — so this loop deliberately
 does **no** review of its own.
 
@@ -64,7 +64,7 @@ user submits 피드백 ─▶ POST /api/feedback ─▶ feedback row
           writeback triage_state='fixed', triage_pr_url
              └─▶ reviewing-prs --sweep cron reviews the PR ─▶ human merges
        else (idea/question/기타, not diagnosable, oversized, risk-surface, or build fail):
-          dispatcher: board-register.sh … --state needs-info --note "<왜 사람이 필요한지>"
+          dispatcher: board-register.sh … --state needs-human --note "<왜 사람이 필요한지>"
           writeback triage_state='ticketed', triage_issue_url
      finally: git worktree remove
                          ▼
@@ -119,7 +119,7 @@ already-paid-for pass.
 
 ### 3. `skills/issue-tracker` — reused unchanged
 
-Human-flagged tickets are created with `board-register.sh … --state needs-info`
+Human-flagged tickets are created with `board-register.sh … --state needs-human`
 (the board state meaning "waiting on a human's knowledge/taste/product
 decision"), labeled `source:user-feedback` (+ `type:question` for 질문), default
 priority **P2** (P1 only when the feedback describes data loss / a blocking
@@ -225,7 +225,7 @@ Every failure still produces a useful, non-silent outcome:
   body cites the feedback id + diagnosis. The PR opens **no** review of its own;
   the `--sweep` loop reviews it.
 - An 아이디어 or 질문, or a bug that fails any gate condition, results in a
-  `needs-info` board ticket labeled `source:user-feedback`,
+  `needs-human` board ticket labeled `source:user-feedback`,
   `triage_state='ticketed'`, `triage_issue_url` set, and the ticket body carries
   the diagnosis (bugs) or the human-framed request (ideas/questions).
 - A fix whose diff touches a risk-surface path becomes a ticket, never a PR —
@@ -434,3 +434,12 @@ body marker and human PR review.
   `CODEX_API_KEY`, `thread.id`-after-first-run). Task 6's adapter absorbs it; the
   `runTurn` seam and Tasks 2–5/7–10 are unchanged. Live write-confirmation deferred
   to Task 11's shadow run (needs credentials on the Mac).
+- 2026-07-10 — Vocabulary correction recorded at reland review (PR #8): the
+  spec's five `needs-info` mentions become **`needs-human`**, matching what
+  the implementation and SKILL.md already write (`board-register.sh --state
+  needs-human`). The rename happened during implementation but was never
+  recorded here. Under board schema v8's who-unparks discriminant this is a
+  correction, not a change: a triage ticket waits on the human's own
+  product/priority decision — the spec's own parenthetical ("waiting on a
+  human's knowledge/taste/product decision") was already needs-human's v8
+  definition; `needs-info` is reserved for delegable knowledge work.
