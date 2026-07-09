@@ -16,8 +16,10 @@
 `doperpowers` is a **personal fork of `obra/superpowers`** — a multi-harness
 plugin (mostly *skills*) that gives coding agents a full software-development
 methodology (brainstorm → worktree → plan → subagent-driven TDD → review →
-finish). The skills auto-trigger via a session-start bootstrap; you rarely
-invoke them by hand.
+finish). Skills load from `skills/` and are invoked via the `Skill` tool.
+(Upstream shipped a `SessionStart` bootstrap that injected a `using-doperpowers`
+index to shape auto-triggering; this fork removed that mechanism — see the
+`hooks/` row below.)
 
 Two goals for this fork:
 1. **Customize** the plugin to how I actually work.
@@ -65,10 +67,10 @@ to see divergence at a glance (`0  0` = perfectly in sync, as it is now).
 | Path | What it is |
 |------|-----------|
 | `skills/` | The core product — one dir per skill, each with `SKILL.md` (frontmatter `name` + `description` that drives auto-trigger). 14 skills; `using-doperpowers` is the bootstrap entrypoint. |
-| `hooks/` | `hooks.json` wires a `SessionStart` (startup/clear/compact) hook → `run-hook.cmd session-start`, which injects the `using-doperpowers` bootstrap. `session-start-codex` is the Codex variant. |
+| ~~`hooks/`~~ | **Removed.** The `SessionStart` bootstrap (which injected the `using-doperpowers` skill index to shape auto-triggering) was torn out across all harnesses; the `using-doperpowers` skill itself was already deleted upstream-side in this fork, leaving the hook injecting an error. Skills still load from `skills/`; they just no longer get the bootstrap's trigger guidance. |
 | `.claude-plugin/` | Claude Code manifest (`plugin.json`) + dev `marketplace.json`. |
 | `.codex-plugin/`, `.cursor-plugin/`, `.kimi-plugin/`, `.opencode/`, `.pi/`, `.agents/`, `gemini-extension.json` | Per-harness plugin manifests/adapters. `.codex-plugin` is synced out via `scripts/sync-to-codex-plugin.sh`. |
-| `tests/` | Shell + harness integration tests, one subdir per harness (`claude-code/`, `codex/`, `kimi/`, `opencode/`, `pi/`, `hooks/`, `shell-lint/`, …). Run via each dir's `run-*.sh`. |
+| `tests/` | Shell + harness integration tests, one subdir per harness (`claude-code/`, `codex/`, `shell-lint/`, …). Run via each dir's `run-*.sh`. (Note: `opencode/`, `kimi/`, `pi/`, `antigravity/` test harnesses whose plugin dirs were already pruned — orphaned, not wired to any runner.) |
 | `scripts/` | `bump-version.sh` (version across all manifests per `.version-bump.json`), `lint-shell.sh`, `sync-to-codex-plugin.sh`. |
 | `docs/` | Harness porting/install docs + `docs/doperpowers/{plans,specs}` design history. |
 | `evals/` | Skill-behavior eval harness (`superpowers-evals`), **gitignored** — cloned in separately, not part of the plugin. |
@@ -79,7 +81,6 @@ to see divergence at a glance (`0  0` = perfectly in sync, as it is now).
 No `npm test`. Tests are shell scripts, run per-area:
 ```bash
 tests/claude-code/run-skill-tests.sh          # Claude Code skill/integration tests
-tests/hooks/test-session-start.sh             # bootstrap hook
 tests/codex-plugin-sync/test-sync-to-codex-plugin.sh
 scripts/lint-shell.sh                         # shellcheck baseline
 ```

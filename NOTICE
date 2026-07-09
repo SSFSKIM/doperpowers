@@ -71,7 +71,6 @@ third-party-adapted files listed in section 3 above).
     docs/doperpowers/specs/2026-07-05-issue-board-html-map-design.md
     docs/doperpowers/specs/2026-07-06-issue-tracker-v7-gh-ssot-design.md
     docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md
-    hooks/session-start-codex
     skills/execplan/SKILL.md
     skills/execspec/SKILL.md
     skills/execspec/references/PLANS.md

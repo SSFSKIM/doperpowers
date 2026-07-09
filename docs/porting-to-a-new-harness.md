@@ -1,5 +1,16 @@
 # Porting Doperpowers to a New Harness
 
+> **⚠️ Fork note (out of date):** This fork removed the `SessionStart`
+> bootstrap mechanism entirely — the `hooks/` directory (`session-start`,
+> `session-start-codex`, `hooks.json`, `hooks-cursor.json`, `run-hook.cmd`)
+> and the `using-doperpowers` skill it injected no longer exist. Every
+> reference below to `hooks/session-start*`, `run-hook.cmd`, or the
+> "load the bootstrap at session start" model describes the *upstream*
+> design, not this fork's current state. Skills still live in `skills/` and
+> load normally; they simply no longer receive the bootstrap's auto-trigger
+> guidance. Treat the sections below as upstream reference material until the
+> porting model is redesigned.
+
 This guide explains how to add support for a new harness — an IDE, CLI, or
 agent runner that isn't Claude Code — so that Doperpowers skills auto-trigger
 there the same way they do natively.

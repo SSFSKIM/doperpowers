@@ -69,8 +69,8 @@ Install Doperpowers as a plugin from this repository:
 agy plugin install https://github.com/obra/superpowers
 ```
 
-Antigravity runs the plugin's session-start hook, so Doperpowers is active from
-the first message. Reinstall with the same command to update.
+Doperpowers' skills install with the plugin and are available immediately.
+Reinstall with the same command to update.
 
 ### Codex App
 
