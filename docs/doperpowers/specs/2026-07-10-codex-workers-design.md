@@ -55,7 +55,8 @@ propelled.
   -c approvals_reviewer=<auto value>`) — a fail-closed reviewer adjudicates
   escalation requests so safe ops continue and unsafe ones are declined.
   The human's interactive config already runs `guardian_subagent`; Symphony
-  sets `auto_review`. Exact value + headless behavior: smoke test.
+  sets `auto_review`. Both values confirmed headless-safe (Task 1 spike);
+  recommended default `auto_review` — see Surprises & Discoveries.
 - **Models:** `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (workhorse);
   reasoning efforts `minimal|low|medium|high|xhigh`. **Caveat (smoke
   test, codex-cli 0.142.5, ChatGPT-account auth):** neither `gpt-5.6-sol`
@@ -316,7 +317,10 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
   top-level `error` + `turn.failed` pair means the turn actually failed.
 - **Exit codes, confirmed live.** `rc=0` on `turn.completed`; `rc=1` on
   `turn.failed` (tested via an invalid model on both fresh `exec` and
-  `exec resume`). No other rc value was observed.
+  `exec resume`); `rc=2` on CLI-level argument/usage errors (observed live:
+  `--sandbox` passed to `exec resume` → `error: unexpected argument
+  '--sandbox' found`) — in the rc=2 case **no JSON events are emitted at
+  all**, so wrappers must not assume an event log exists on failure.
 - **Model availability blocked the happy path as specified.** The
   brief's `-m gpt-5.6-sol` failed: `"The 'gpt-5.6-sol' model requires a
   newer version of Codex."` Retried with this environment's own
