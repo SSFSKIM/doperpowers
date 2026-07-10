@@ -157,10 +157,14 @@ the claude block references `doperpowers:test-driven-development` /
 `doperpowers:execplan` directly (spec: "not used in v1 … but it's the path if
 Codex workers ever need full skills"). That path is now live:
 
-- **Verified empirically first:** codex-cli 0.144.1 scans
-  `<workspace>/.agents/skills/`, follows a symlink, and surfaces every
-  doperpowers skill properly namespaced (`doperpowers:execplan`, …) — tested
-  with a scratch repo + symlink + one cheap `codex exec` call.
+- **Verified empirically** — with a correction. The first probe (scratch repo
+  + symlink → codex listed `doperpowers:*`) turned out to be **contaminated**:
+  this machine's codex has the released doperpowers **7.10.0 plugin installed**
+  (`~/.codex/plugins/cache/doperpowers-dev/…`), discovered when SD-1's
+  pre-vendoring worker ran skill scripts from that cache. A clean canary test
+  settled it: a fake skill existing ONLY in a scratch `.agents/skills` symlink
+  target was seen by codex (`yes-XYZZY-CANARY`) — so directory scanning is
+  real and plugin-independent on codex-cli 0.144.1.
 - **Mechanism:** `_codex_vendor_skills` (in `_codex_lib.sh`, called by
   `codex-spawn.sh` after worktree resolution) symlinks the doperpowers
   `skills/` root to `<runcwd>/.agents/skills` and adds `.agents/skills` to
@@ -176,6 +180,20 @@ Codex workers ever need full skills"). That path is now live:
   evidence, per the skill-change bar.
 - Six new assertions in `tests/orchestrating-daemons/test-codex-scripts.sh`;
   all orchestrating-daemons + reviewing-prs suites green; shellcheck clean.
+- **Open policy question — one skills source, not two.** On machines with the
+  codex marketplace plugin installed, post-FU-4 workers see BOTH the released
+  plugin skills (7.10.0) and the vendored working tree — version skew plus a
+  known "2% skills context budget" squeeze (descriptions get truncated).
+  Either uninstall the codex doperpowers plugin on worker machines (pin to
+  working tree via vendoring) or skip vendoring when the plugin is present.
+  Human call; not blocking the shakedown.
+- **Live observation (SD-1):** the codex worker discovered the doperpowers
+  skills (via the plugin cache — it predated vendoring) and elected
+  subagent-driven development on its own: per-task codex sub-threads, 47
+  collab waits, `.doperpowers/sdd/task-N-report.md` artifacts. Codex-in-Codex
+  works unprompted; wall-clock cost ~1h for a 3-root-cause ticket. Whether
+  workers should fan out sub-agents (latency/token multiplier) vs execute
+  in-thread is a protocol-tuning question for after the shakedown.
 
 ### Remaining engine asymmetries — audited, deliberate (not gaps)
 
