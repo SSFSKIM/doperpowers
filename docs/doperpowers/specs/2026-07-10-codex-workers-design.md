@@ -64,8 +64,10 @@ propelled.
   today; both 400 with "requires a newer version of Codex" (0.144.1 is
   available per `codex doctor`; 0.142.5 is installed). `gpt-5.5` is the
   newest model confirmed working end-to-end. Design target unchanged
-  (Decision Log #8); the live-shakedown acceptance step needs a Codex CLI
-  upgrade first, or `gpt-5.5` as an interim substitute.
+  (Decision Log #8). **Resolved same day:** codex-cli upgraded to 0.144.1
+  (npm); `gpt-5.6-sol` confirmed working end-to-end (`rc=0`, reply `pong`)
+  with event shapes identical to the Task 1 pinning — the caveat no longer
+  gates the live shakedown.
 
 ## Design
 
@@ -400,3 +402,12 @@ Pending — written at finish.
    shakedown should account for it (upgrade codex-cli first, or treat
    `gpt-5.5` as an interim substitute). Full evidence in Surprises &
    Discoveries above.
+- **2026-07-10 (controller, post-Task 1).** The CLI-version gate is closed:
+  codex-cli upgraded 0.142.5 → 0.144.1 (`npm install -g @openai/codex@latest`),
+  and `gpt-5.6-sol` verified end-to-end on the new CLI (rc=0, `-o` reply
+  `pong`, event stream `thread.started{thread_id}` →
+  `item.completed{item:{type:"agent_message",text}}` →
+  `turn.completed{usage}` — byte-identical shapes to the Task 1 pinning, so
+  the recorded contract carries over unchanged). Remaining spike and
+  shakedown steps run the design's real models; the `gpt-5.5` interim
+  substitute is no longer needed.
