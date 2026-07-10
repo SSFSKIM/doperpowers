@@ -35,13 +35,26 @@ propelled.
   turn — Symphony has an orchestrator; this pipeline deliberately has none.
   It is also marked Experimental. The TS SDK wraps `codex exec` and adds
   nothing reachable from bash.
-- **Native review is headless-capable.** `codex exec review` is the
-  automation variant (`--json`, `-o`, `--output-schema`, `-m`); target via
-  `--base <branch>`; custom instructions via positional PROMPT (`-` =
-  stdin). No `-C` flag — the caller must `cd` into the checkout. Whether
-  PROMPT composes with `--base` or replaces the preset review scope is
-  undocumented (smoke test; fallback: OpenAI's cookbook pattern — plain
-  `codex exec` + review prompt + `--output-schema` findings JSON).
+- **Native review is headless-capable, but PROMPT and a target flag are
+  mutually exclusive.** `codex exec review` is the automation variant
+  (`--json`, `-o`, `--output-schema`, `-m`); target via `--base <branch>`,
+  `--commit <sha>`, or `--uncommitted`. No `-C` flag — the caller must `cd`
+  into the checkout. **Confirmed live (Task 2 spike, codex-cli 0.144.1):**
+  `--base`, `--commit`, and `--uncommitted` each hard-conflict with a
+  custom PROMPT at the clap argument-parser level — `rc=2`, no JSON
+  emitted, `error: the argument '--base <BRANCH>' cannot be used with
+  '[PROMPT]'` (same shape for the other two flags). PROMPT-alone (no
+  target flag) DOES compose with the built-in correctness preset — a
+  custom spec-compliance instruction produced both a correctness finding
+  and the compliance finding in the same call — but its implicit target is
+  only the last commit (`HEAD` vs `HEAD^`) or the working tree if dirty,
+  never a multi-commit range against a base branch. So for a real PR diff
+  against `origin/<base>`, the `review` subcommand cannot carry custom
+  criteria at all; the cookbook pattern (plain `codex exec` with a prompt
+  that self-diffs against the base branch, plus inlined correctness +
+  compliance instructions, optionally `--output-schema`) is not an
+  edge-case fallback — it is the only working path for that case. See
+  Surprises & Discoveries, Task 2 spike.
 - **The review lock is a companion artifact, not a Codex one.** Direct
   `codex exec review` has no machine-wide lock.
 - **Sandbox facts** (partly via Symphony's hardening): `codex exec`
@@ -143,16 +156,25 @@ render:
   (milestones, observable acceptance) committed in the worktree, then
   execute it to the letter.
 - **review protocol `{{ENGINE_BLOCK}}` + `{{FALLBACK_BLOCK}}`** — the
-  engine block is now the SAME for both species: `cd` to the worktree
-  root, `codex exec review --base origin/<base> --ephemeral
-  -m $CODEX_REVIEW_MODEL -c model_reasoning_effort=$CODEX_REVIEW_EFFORT
-  -o <findings>`
-  with custom instructions on stdin: the correctness preset plus **spec
-  compliance** — the linked ticket brief with "are the acceptance criteria
-  fulfilled; is anything out of scope; is anything claimed but missing".
-  Fallback differs by species: the Claude worker falls back to a fresh
-  Claude reviewer subagent (as today); a Codex worker has no second engine
-  — after brief retries it parks `needs-human` with the failure as the
+  `codex exec review --base <branch> ... <stdin PROMPT>` composition
+  originally sketched here is impossible: Task 2's spike confirmed
+  `--base` (and `--commit`, `--uncommitted`) hard-conflict with a custom
+  PROMPT at the CLI level (`rc=2`). The engine block is now the SAME for
+  both species but uses the cookbook pattern instead of the `review`
+  subcommand's target flags: `cd` to the worktree root, plain `codex exec
+  --ephemeral -m $CODEX_REVIEW_MODEL -c
+  model_reasoning_effort=$CODEX_REVIEW_EFFORT -o <findings>` with a stdin
+  prompt that (1) instructs the model to self-diff against
+  `origin/<base>` (`git diff origin/<base>...HEAD`), (2) inlines the same
+  correctness discipline `codex exec review`'s preset applies, and (3)
+  adds **spec compliance** — the linked ticket brief with "are the
+  acceptance criteria fulfilled; is anything out of scope; is anything
+  claimed but missing". (The `review` subcommand's target flags remain
+  usable standalone — e.g. a no-custom-instructions correctness-only pass
+  — just never combined with custom criteria in the same call.) Fallback
+  differs by species: the Claude worker falls back to a fresh Claude
+  reviewer subagent (as today); a Codex worker has no second engine —
+  after brief retries it parks `needs-human` with the failure as the
   note.
 
 The codex-companion path — machine-wide lock, 30-minute backoff,
@@ -183,13 +205,20 @@ multi-tenant deny-by-default env is a deliberate non-goal).
 ### Feasibility smoke tests (front-loaded in the plan)
 
 1. `codex exec` exit codes + `thread.started` id capture from `--json`.
+   **Done (Task 1 spike).**
 2. Commit/push from a linked worktree under `workspace-write` +
-   `--add-dir <main-repo-root>`.
-3. `codex exec review` PROMPT + `--base` composition and output shape
-   (fallback: cookbook pattern with `--output-schema`).
+   `--add-dir <main-repo-root>`. **Done (Task 2 spike): confirmed working
+   end-to-end** — push landed on the bare origin, verified by fetch.
+3. `codex exec review` PROMPT + `--base` composition and output shape.
+   **Done (Task 2 spike): they do NOT compose** — mutually exclusive at
+   the CLI level (`rc=2`). The cookbook pattern (plain `codex exec` +
+   review prompt, optional `--output-schema`) is the confirmed path, not
+   just a fallback.
 4. Codex-in-Codex: inner `codex exec review --ephemeral` under the outer
-   worker's sandbox (fallback: workspace-local `CODEX_HOME` with symlinked
-   `auth.json` — Symphony-proven).
+   worker's sandbox. **Done (Task 2 spike): bare `--ephemeral` fails
+   nested** (`rc=1`, app-server client init blocked by the outer sandbox);
+   **the workspace-local `CODEX_HOME` + symlinked `auth.json` fallback
+   works** (`rc=0`, confirmed Symphony's pattern).
 5. `codex exec resume <id>` from a different cwd.
 6. Approvals auto-reviewer headless: exact config value (`auto_review` vs
    `guardian_subagent`) and that `codex exec` honors it.
@@ -381,6 +410,111 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
   consistent with, and reinforcing, the design's existing
   `-c features.hooks=false` requirement.
 
+### Task 2 spike: sandboxed worktree git, review composition, Codex-in-Codex (2026-07-10, codex-cli 0.144.1, ChatGPT-account auth)
+
+All three flags the brief expects (`--base`, `--ephemeral`, positional
+PROMPT/`-` stdin) exist on `codex exec review` and `codex exec` unchanged
+from the brief's assumptions — no flag-name adaptation was needed before
+running the steps.
+
+- **(a) Sandboxed commit + push from a linked worktree: confirmed
+  working.** From `$S/wt` (a `git worktree add` sibling of `$S/main`,
+  whose bare origin is `$S/origin.git`), `codex exec --sandbox
+  workspace-write -c features.hooks=false --add-dir "$S/main" -m
+  gpt-5.6-sol -c model_reasoning_effort=low` created `hello.txt`,
+  committed it, and ran `git push origin HEAD:feat` — both the commit
+  (`git add && git commit`) and the push were plain `command_execution`
+  items with `exit_code: 0`, and `turn.completed` fired (`rc=0`). Verified
+  independently: `git -C "$S/main" fetch origin feat && git log --oneline
+  FETCH_HEAD` showed the new commit on the bare origin. One transient
+  wrinkle worth recording: the agent's *first* attempt used its internal
+  file-write tool to create `hello.txt`, which it reported as blocked by
+  the sandbox on `index.lock` creation (the worktree's real git metadata
+  lives under `$S/main/.git/worktrees/wt`, outside the workspace root
+  until `--add-dir` exposes it) — but it self-corrected by re-running the
+  file creation and all git operations as plain shell commands
+  (`command_execution`), and every one of those succeeded on its first
+  real try (`exit_code: 0`, no retries needed). Net result: `--add-dir
+  <main-clone-root>` is sufficient for a linked worktree to commit and
+  push; this becomes `_codex_main_root`'s contract in Task 3, and Task 3
+  should keep git operations as explicit shell commands in worker
+  instructions rather than relying on the agent's internal file-edit tool
+  for anything touching `.git`.
+- **(b) `codex exec review --base X` does NOT compose a stdin PROMPT with
+  the built-in correctness review — they are mutually exclusive at the
+  CLI argument-parser level, not merely "one replaces the other."**
+  Running `codex exec review --base master --ephemeral -m gpt-5.6-sol -c
+  model_reasoning_effort=low -o /tmp/spike-review.txt -` (stdin carrying a
+  spec-compliance instruction) failed immediately: `rc=2`, no JSON
+  emitted, stderr `error: the argument '--base <BRANCH>' cannot be used
+  with '[PROMPT]'` — consistent with the Task 1 rc=2 contract ("CLI
+  argument error, no JSON events emitted at all"). The same conflict was
+  confirmed for the other two targeting flags: `--commit <sha>` and
+  `--uncommitted` each independently produced the identical
+  `cannot be used with '[PROMPT]'` rejection when combined with a stdin
+  PROMPT. So this is not `--base`-specific — **no targeting flag can be
+  combined with a custom PROMPT on `codex exec review`, full stop.**
+  Composition *does* happen, but only in the mode the brief didn't test:
+  PROMPT passed **alone**, with no targeting flag at all. Live test: with
+  a dirty/committed repo whose last commit added `bug.py` containing `x =
+  1/0`, running `codex exec review --ephemeral -m gpt-5.6-sol -c
+  model_reasoning_effort=low -o out.txt -` with the same spec-compliance
+  instruction ("the change was supposed to add greeting.py") produced
+  **both** findings in one output: `[P1] Add the required greeting.py
+  file` and `[P1] Avoid unconditional division by zero`. So the preset
+  and the custom instructions genuinely compose — just never in the same
+  invocation as a `--base`/`--commit`/`--uncommitted` target. The catch:
+  PROMPT-alone's implicit target is narrow. Instrumented via its own
+  `git` calls (visible in the human-readable transcript), it ran `git
+  diff HEAD^ HEAD` — i.e. it reviews only the single last commit (or the
+  working tree if dirty), never a multi-commit range against a named base
+  branch. For a real PR — potentially many commits since it branched from
+  `origin/<base>` — this mode cannot be pointed at the actual PR diff.
+  **Verdict: for a real PR review that must carry both the correctness
+  preset and custom spec-compliance criteria, `codex exec review` (the
+  subcommand) has no working invocation at all.** The Ground truth's
+  documented "fallback" — plain `codex exec` with a review prompt that
+  self-diffs against the base branch (`git diff origin/<base>...HEAD`),
+  inlining both correctness discipline and spec-compliance instructions,
+  optionally with `--output-schema` for structured findings — is not an
+  edge-case fallback; it is the only path that reaches the actual
+  requirement. Task 6's engine block must be written around the cookbook
+  pattern, not the `codex exec review --base ... <stdin>` sketch
+  originally in the Design section (now corrected in place).
+- **(c) Codex-in-Codex: bare `--ephemeral` fails nested; workspace-local
+  `CODEX_HOME` with a symlinked `auth.json` fixes it.** Running an inner
+  `codex exec review --commit HEAD --ephemeral -c
+  model_reasoning_effort=low -o /tmp/inner.txt` (no PROMPT, to isolate
+  this question from finding (b)'s CLI-arg conflict — the brief's literal
+  inner command used `--base` + stdin PROMPT together, which finding (b)
+  already shows is `rc=2` regardless of nesting) from inside an outer
+  `codex exec --sandbox workspace-write -c
+  sandbox_workspace_write.network_access=true --add-dir "$S/main" -m
+  gpt-5.6-sol -c model_reasoning_effort=low` session produced `rc=1` on
+  the inner command specifically: `WARNING: proceeding, even though we
+  could not create PATH aliases: Operation not permitted (os error 1)`
+  followed by `Error: failed to initialize in-process app-server client:
+  Operation not permitted (os error 1)` — the outer `workspace-write`
+  sandbox blocks whatever IPC/socket the inner app-server client needs
+  to stand up, even for a read-only review. The outer turn itself still
+  completed (`rc=0`) — only the nested `codex` invocation failed. Retried
+  with the brief's suggested fallback: `mkdir -p .codex-home && ln -sf
+  ~/.codex/auth.json .codex-home/auth.json && CODEX_HOME=$PWD/.codex-home
+  codex exec review --commit HEAD --ephemeral -c
+  model_reasoning_effort=low -o /tmp/inner2.txt` — this completed with
+  `exit_code: 0` for the inner command and the outer turn. Caveat worth
+  carrying into Task 6: because the workspace-local `.codex-home` has no
+  `config.toml`, the inner review ran under stock CLI defaults (banner
+  showed `sandbox: read-only`, `approval: never`) rather than any
+  repo-configured defaults or the outer session's `-c` overrides — fine
+  for a review (read-only is exactly what a reviewer needs), but the
+  inner invocation must have its own `-m`/`-c model_reasoning_effort`
+  passed explicitly; nothing from the outer `-c` flags carries through
+  the `CODEX_HOME` boundary. **The working variant — workspace-local
+  `CODEX_HOME` with a symlinked `auth.json`, no bare `--ephemeral` sharing
+  the outer's real `~/.codex`, and explicit `-m`/`-c` on the inner call —
+  goes verbatim into the Task 6 engine block.**
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
@@ -415,3 +549,21 @@ Pending — written at finish.
   the recorded contract carries over unchanged). Remaining spike and
   shakedown steps run the design's real models; the `gpt-5.5` interim
   substitute is no longer needed.
+2. **2026-07-10 (Task 2 spike).** Corrected two Design-section claims the
+   live `codex exec review` contract contradicted: (a) the Ground truth
+   review bullet's "whether PROMPT composes with `--base` ... is
+   undocumented" is resolved — it does not; `--base`/`--commit`/
+   `--uncommitted` each hard-conflict with a custom PROMPT (`rc=2`, no
+   JSON) — and the "fallback: cookbook pattern" is promoted from
+   contingency to the only confirmed path for a real base-branch-range
+   review with custom criteria; (b) the review protocol's `{{ENGINE_BLOCK}}`
+   sketch (`codex exec review --base origin/<base> ... <stdin PROMPT>`) is
+   corrected to the cookbook pattern (plain `codex exec` with a
+   self-diffing, criteria-inlining prompt), since the sketched invocation
+   is a CLI-level impossibility, not a stylistic preference. Also recorded:
+   commit+push from a linked worktree under `--add-dir <main-clone-root>`
+   is confirmed working (feeds `_codex_main_root` in Task 3), and
+   Codex-in-Codex needs the workspace-local `CODEX_HOME` + symlinked
+   `auth.json` variant — bare nested `--ephemeral` fails closed with an
+   app-server init error under the outer sandbox. Full evidence in
+   Surprises & Discoveries, "Task 2 spike" above.
