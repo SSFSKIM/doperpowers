@@ -195,6 +195,27 @@ Codex workers ever need full skills"). That path is now live:
   workers should fan out sub-agents (latency/token multiplier) vs execute
   in-thread is a protocol-tuning question for after the shakedown.
 
+### FU-5 · `codex exec resume` rejects `--add-dir` — linked-worktree resume was broken
+
+SD-1's worker died mid-turn on an upstream capacity error (`"Selected model
+is at capacity"` — transient, not ours), which made it the first LIVE test of
+`codex-resume.sh` on a linked-worktree daemon. The resume failed to start
+(rc=2): **`codex exec resume` accepts no `--add-dir`**, the same CLI
+asymmetry family as the `--sandbox` quirk Task 1's spike documented — the
+spike caught `--sandbox` but missed `--add-dir` because no worktree resume
+had ever run. The rc=2 guard held (turns not incremented, loud error).
+
+- **Fix:** the config-space equivalent, `-c
+  sandbox_workspace_write.writable_roots=["<main-root>"]` — the same table as
+  the `network_access` override every spawn already passes.
+- **Verified live:** the re-run resume turn started and ran (status
+  `working`, turns=2) where the old flags died at rc=2.
+- Regression test: worktree-daemon resume must carry `writable_roots` and
+  never `--add-dir` (test-codex-scripts.sh).
+- Bonus coverage: this exercised the crash-mid-build → resume path end-to-end
+  on a real ticket (plan + 5 commits survived; fresh turn re-oriented from
+  the plan file), which no SD cell explicitly covered.
+
 ### Remaining engine asymmetries — audited, deliberate (not gaps)
 
 | surface | claude worker | codex worker | verdict |

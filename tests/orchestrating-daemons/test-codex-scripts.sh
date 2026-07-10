@@ -379,5 +379,28 @@ if [ -d "$TEST_ROOT/vendorown/.agents/skills" ] && [ ! -L "$TEST_ROOT/vendorown/
 if [ ! -e "$WORK/.agents" ]; then pass "non-git cwd: vendoring is a no-op"; else
     fail "non-git cwd: vendoring is a no-op"; fi
 
+echo "== codex-resume from a linked worktree: writable_roots, never --add-dir (FU-5) =="
+# The job-vendor daemon above lives in the VWT linked worktree — resume it.
+uuid_v="$(DAEMON_HOME="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("name") == "job-vendor":
+        print(m["uuid"]); break
+PY
+)"
+if [ -n "$uuid_v" ]; then pass "found the worktree daemon's meta"; else fail "found the worktree daemon's meta"; fi
+STUB_SLEEP=0 "$SCRIPTS_DIR/codex-resume.sh" "$uuid_v" "resume in worktree" >/dev/null
+wtresume="$(grep "exec resume $uuid_v" "$STUB_STATE/calls.log" | tail -1)"
+assert_not_contains "$wtresume" "--add-dir" "worktree resume omits --add-dir (real CLI rejects it, rc=2)"
+mainroot="$(cd "$VWORK" && git rev-parse --show-toplevel)"
+assert_contains "$wtresume" "sandbox_workspace_write.writable_roots=[\"$mainroot\"]" \
+    "worktree resume passes -c writable_roots at the main repo root instead"
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "$FAILURES FAILURE(S)"; exit 1; fi

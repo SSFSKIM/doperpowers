@@ -74,8 +74,12 @@ printf '%s' "$msg" > "$taskf"
 # (rc=2, no JSON — see _codex_resume_flags). Everything else (-m, effort,
 # network, hooks, approvals) is unchanged from a fresh spawn.
 _codex_resume_flags "$model" "$effort"
+# ... and no --add-dir either (rc=2 "to pass '--add-dir' as a value, use
+# '--'" — hit live resuming a linked-worktree worker, FU-5). The config-space
+# equivalent is sandbox_workspace_write.writable_roots, same table as the
+# network_access override we already pass.
 addroot="$(_codex_main_root "$cwd")"
-[ -n "$addroot" ] && CODEX_FLAGS=( "${CODEX_FLAGS[@]}" --add-dir "$addroot" )
+[ -n "$addroot" ] && CODEX_FLAGS=( "${CODEX_FLAGS[@]}" -c "sandbox_workspace_write.writable_roots=[\"$addroot\"]" )
 
 _codex_launch "$cwd" "$taskf" "$run" exec resume "$uuid" "${CODEX_FLAGS[@]}"
 
