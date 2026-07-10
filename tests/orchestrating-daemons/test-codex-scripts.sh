@@ -29,6 +29,11 @@ assert_contains() {
 assert_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
 }
+assert_not_contains() {
+    if printf '%s' "$1" | grep -Fq -- "$2"; then
+        fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"
+    else pass "$3"; fi
+}
 
 export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
@@ -51,6 +56,22 @@ echo "$*" >> "$STUB_STATE/calls.log"
 shift
 resume=""
 if [ "${1:-}" = "resume" ]; then resume="$2"; shift 2; fi
+if [ -n "$resume" ]; then
+  # Real `codex exec resume` has no --sandbox flag at all (rc=2, no JSON,
+  # confirmed live — see docs/doperpowers/specs/2026-07-10-codex-workers-design.md).
+  # Validate like the real CLI so a regression that re-adds --sandbox to a
+  # resume call is actually caught here instead of silently "passing."
+  for a in "$@"; do
+    if [ "$a" = "--sandbox" ]; then
+      echo "error: unexpected argument '--sandbox' found" >&2
+      exit 2
+    fi
+  done
+  if [ "${STUB_RESUME_FAIL_EARLY:-0}" = "1" ]; then
+    echo "error: simulated early resume failure" >&2
+    exit 2
+  fi
+fi
 out=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -138,6 +159,45 @@ assert_contains "$out" "stub reply: follow up" "resume prints the new reply"
 assert_equals "$(meta_field "$uuid" turns)" "2" "resume increments turns"
 assert_equals "$(meta_field "$uuid" current)" "$uuid" "resume keeps the session id"
 assert_contains "$(cat "$STUB_STATE/calls.log")" "exec resume $uuid" "stub saw exec resume <uuid>"
+resume_call="$(grep "exec resume $uuid" "$STUB_STATE/calls.log" | tail -1)"
+assert_not_contains "$resume_call" "--sandbox" "resume omits --sandbox (real CLI rejects it, rc=2)"
+assert_contains "$resume_call" "sandbox_mode=workspace-write" "resume passes -c sandbox_mode=workspace-write instead"
+
+echo "== codex-resume: early launch failure does not bump turns, exits nonzero =="
+turns_before="$(meta_field "$uuid" turns)"
+if STUB_RESUME_FAIL_EARLY=1 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "boom" >/dev/null 2>&1; then
+    fail "resume exits nonzero on an early (pre-session) launch failure"
+else
+    pass "resume exits nonzero on an early (pre-session) launch failure"
+fi
+assert_equals "$(meta_field "$uuid" turns)" "$turns_before" "turns not bumped when the turn never started"
+
+echo "== codex-resume: waits on a dying wrapper's rc barrier before proceeding =="
+# Simulate the liveness-guard race: status=working, pid already dead (the
+# codex process exited), but the previous wrapper's rc file (its completion
+# barrier per _codex_launch) hasn't appeared yet. Resume must wait a bounded
+# window for it rather than racing ahead immediately.
+# A fixed, certainly-nonexistent pid (well past any real process id) — the
+# test only needs `kill -0` to fail, and a real spawn-then-kill sequence
+# raced with bash job control under piped output in earlier iterations.
+DEADPID=999999
+prev_log="$TEST_ROOT/dead-wrapper.events.jsonl"; : > "$prev_log"
+python3 - "$DAEMON_HOME/$uuid.json" "$prev_log" "$DEADPID" <<'PY'
+import json, sys
+path, ev, pid = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(path))
+d["status"] = "working"; d["pid"] = pid; d["event_log"] = ev
+json.dump(d, open(path, "w"))
+PY
+start_ts=$(date +%s)
+# Bound picked well above the ~1-2s of incidental sleep the OTHER (pre-existing,
+# unrelated) polling loops in codex-resume.sh can add on their own — only the
+# rc-barrier wait itself should be able to push elapsed past that margin.
+out="$(CODEX_RC_BARRIER_WAIT=6 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "after dead wrapper")"
+elapsed=$(( $(date +%s) - start_ts ))
+assert_contains "$out" "stub reply: after dead wrapper" "resume proceeds once the rc-barrier wait times out"
+if [ "$elapsed" -ge 5 ]; then pass "resume waited the full rc-barrier bound (${elapsed}s)"; else
+    fail "resume waited the full rc-barrier bound (${elapsed}s)"; fi
 
 echo "== engine guards =="
 if "$SCRIPTS_DIR/daemon-resume.sh" "$uuid" "hi" >/dev/null 2>&1; then

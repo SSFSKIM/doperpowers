@@ -14,19 +14,37 @@
 # _resolve_uuid prefix matching work unchanged. Codex sessions keep ONE id
 # across resumes — `current` always equals `uuid`.
 
-# Default flags for every codex worker. NEVER add
-# --dangerously-bypass-approvals-and-sandbox / --yolo here or at call sites —
-# sandbox + approvals reviewer IS the safety contract (mirror of the
-# claude-side --dangerously-skip-permissions ban). Fills global CODEX_FLAGS
-# (bash 3.2: no mapfile).
-_codex_flags() {  # <model> <effort>
-  # shellcheck disable=SC2034  # consumed by callers (codex-spawn.sh) after sourcing
-  CODEX_FLAGS=( --json --sandbox workspace-write
+# Shared tail of every codex invocation: network/hooks/approvals config plus
+# -m/effort. NEVER add --dangerously-bypass-approvals-and-sandbox / --yolo
+# here or at call sites — sandbox + approvals reviewer IS the safety contract
+# (mirror of the claude-side --dangerously-skip-permissions ban). Fills
+# global CODEX_FLAGS (bash 3.2: no mapfile). Args after <model> <effort> are
+# the sandbox-mode flag(s), which differ between a fresh spawn and a resume
+# (see _codex_flags / _codex_resume_flags below).
+_codex_flags_common() {  # <model> <effort> <sandbox-flag-word...>
+  local model="$1" effort="$2"; shift 2
+  # shellcheck disable=SC2034  # consumed by callers (codex-spawn.sh/codex-resume.sh) after sourcing
+  CODEX_FLAGS=( --json "$@"
     -c 'sandbox_workspace_write.network_access=true'
     -c 'features.hooks=false'
     -c 'approval_policy=on-request'
     -c "approvals_reviewer=${CODEX_APPROVALS_REVIEWER:-auto_review}"
-    -m "$1" -c "model_reasoning_effort=$2" )
+    -m "$model" -c "model_reasoning_effort=$effort" )
+}
+
+# Default flags for a FRESH `codex exec` turn (spawn or -o-only follow-up).
+_codex_flags() {  # <model> <effort>
+  _codex_flags_common "$1" "$2" --sandbox workspace-write
+}
+
+# Flags for `codex exec resume` — NOT the same sandbox flag as a fresh spawn:
+# `codex exec resume` has no --sandbox option at all (confirmed live: rc=2,
+# no JSON emitted, "error: unexpected argument '--sandbox' found" — see
+# docs/doperpowers/specs/2026-07-10-codex-workers-design.md, Task 1 spike).
+# Sandbox mode on resume goes through -c sandbox_mode=<mode> instead;
+# everything else (network access, hooks, approvals, -m/effort) is identical.
+_codex_resume_flags() {  # <model> <effort>
+  _codex_flags_common "$1" "$2" -c 'sandbox_mode=workspace-write'
 }
 
 # If <cwd> is a LINKED worktree, echo the main repo root — its real .git lives
