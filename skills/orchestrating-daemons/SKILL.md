@@ -7,7 +7,7 @@ description: Use when spawning, resuming, tracking, or debugging durable backgro
 
 ## Overview
 
-A **daemon** is a durable background `claude` session, spawned with `claude --bg` so it runs as its own process, is visible in `claude agents`, and survives this session ending. This skill is the *substrate*: the scripts that spawn, resume, track, and retire daemons, and the mechanics that make those operations safe. It is not an orchestration doctrine — the fleets that used to be driven from here now live in the board pipeline, where workers escalate via park states and nobody judges their turn-ends.
+A **daemon** is a durable background `claude` session, spawned with `claude --bg` so it runs as its own process, is visible in `claude agents`, and survives this session ending. The substrate drives two engines under one registry: `claude --bg` daemons and detached `codex exec` workers (`engine: codex` in the meta) — the board pipeline picks per dispatch (label → `WORKER_ENGINE` → codex). This skill is the *substrate*: the scripts that spawn, resume, track, and retire daemons, and the mechanics that make those operations safe. It is not an orchestration doctrine — the fleets that used to be driven from here now live in the board pipeline, where workers escalate via park states and nobody judges their turn-ends.
 
 **Where work goes** (decide this before spawning anything):
 
@@ -22,7 +22,7 @@ That last row is rare by design. "Must survive my session" is practically the de
 
 ## Every turn is a native background agent
 
-Resuming a daemon *forks* a new `--bg` agent that carries the full conversation forward — so every turn (the first and each resume) shows up in `claude agents` in real time. The registry chains the session ids under one stable identity (the daemon's original uuid): you always address a daemon by that id or by its name, even though its human-visible short id changes with every turn. Once a fork is confirmed, the superseded turn's session is **purged** via `claude rm` — the native deregister; deleting its files alone is not enough, because the supervisor re-materializes the entry on the next `claude attach` (observed live as a ghost "working" dashboard row). `claude rm` also deletes a CLEAN worktree along with its owning turn, so the purge dirty-guards the daemon's worktree with a sentinel file for the duration; the transcript is removed separately (the fork physically copies the full conversation forward). The agents view thus shows exactly one session per daemon instead of piling up completed turns; failure paths purge nothing, keeping the old session as the recovery point. The scripts hide the churn — don't hand-roll the `--bg --resume` fork yourself.
+Resuming a daemon *forks* a new `--bg` agent that carries the full conversation forward — so every turn (the first and each resume) shows up in `claude agents` in real time. The registry chains the session ids under one stable identity (the daemon's original uuid): you always address a daemon by that id or by its name, even though its human-visible short id changes with every turn. Once a fork is confirmed, the superseded turn's session is **purged** via `claude rm` — the native deregister; deleting its files alone is not enough, because the supervisor re-materializes the entry on the next `claude attach` (observed live as a ghost "working" dashboard row). `claude rm` also deletes a CLEAN worktree along with its owning turn, so the purge dirty-guards the daemon's worktree with a sentinel file for the duration; the transcript is removed separately (the fork physically copies the full conversation forward). The agents view thus shows exactly one session per daemon instead of piling up completed turns; failure paths purge nothing, keeping the old session as the recovery point. The scripts hide the churn — don't hand-roll the `--bg --resume` fork yourself. (Claude engine only: codex sessions keep one id for life; `codex-resume.sh` never forks or purges.)
 
 ## Toolkit
 
@@ -36,6 +36,8 @@ Paths are relative to this skill's directory. The scripts hide every sharp edge 
 | `daemon-list.sh [status]` | Fleet view; optional status filter. |
 | `daemon-mark.sh <id> <status> [note]` | Record a judgment state (`awaiting-human`, `done`) + why. |
 | `daemon-retire.sh <id> [purge]` | Drop from active fleet; transcript stays resumable. |
+| `codex-spawn.sh [--no-wait] <name> <task> [cwd] [worktree] [model] [effort]` | Spawn a detached `codex exec --json` worker into the same registry (`engine: codex`, pid liveness). Defaults gpt-5.6-sol/high. Launch in a bg shell. |
+| `codex-resume.sh <id> <message>` | Continue a codex daemon (`codex exec resume` — same session id, no forking). Launch in a bg shell. |
 
 ## Driving an ad-hoc daemon by hand
 
@@ -84,6 +86,17 @@ The scripts spawn with `--permission-mode auto` — the LLM classifier auto-appr
 A daemon also goes `blocked` when it calls **AskUserQuestion** — headless, nobody can click an option. The recorded reply renders the pending question and its options; answer it as plain text with `daemon-resume.sh <id> "<answer>"` (the pending tool call is interrupted and your text arrives as the next user message — daemons handle this fine).
 
 A daemon can also block on a **harness permission prompt** that holds a tool call before it ever reaches the transcript (observed live: an AskUserQuestion call stuck at the permission layer). The recorded reply then carries a `[blocked on a harness prompt …]` marker instead of a rendered question — the daemon's last text states what it wanted; resume with your answer/instruction (the pending call is interrupted), or `claude attach` the session to approve it interactively.
+
+Codex workers get the same posture, spelled differently: `--sandbox
+workspace-write` plus the approvals auto-reviewer (`-c
+approval_policy=on-request -c approvals_reviewer=…`) — safe ops continue,
+genuinely unsafe escalations are declined in-flight (fail-closed). A codex
+daemon is therefore NEVER `blocked`: a declined escalation is a failed
+command the worker sees and works around, or parks over. **Do not add
+`--yolo` / `--dangerously-bypass-approvals-and-sandbox`** — the exact
+mirror of the `--dangerously-skip-permissions` ban. `-c
+features.hooks=false` is always on: a checked-out PR could ship
+`.codex/hooks.json`, which would otherwise execute at session start.
 
 ## Common mistakes
 

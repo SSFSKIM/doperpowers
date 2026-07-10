@@ -10,8 +10,9 @@ description: Use when operating or setting up the autonomous PR-review loop — 
 The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
-background daemon (`orchestrating-daemons`) that reviews it with codex,
-verifies every finding against the code, applies the valid fixes, re-reviews
+background daemon (`orchestrating-daemons`) that reviews it with a native
+Codex reviewer (`codex exec` self-diffing the PR), verifies every finding
+against the code, applies the valid fixes, re-reviews
 when the fixes warrant it, and then either merges it (small/simple tier, CI
 green) or escalates the PR + its linked ticket to **`confident-ready`** for
 the human.
@@ -28,6 +29,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | `references/review-worker-protocol.md` | the Review Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
+| `references/engine-blocks/` | engine + per-species fallback blocks; `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex) |
 | `confident-ready` state | owned by doperpowers:issue-tracker (state table there); this loop is its only writer |
 
 ## Dedupe & sweep policy
@@ -85,13 +87,18 @@ accumulated comments into real tickets during gardening passes (register
 via doperpowers:issue-tracker; a pile grown sprint-shaped is
 doperpowers:organizing-sprints input).
 
-## Codex-lock handling
+## Review engine
 
-The codex companion serializes ALL jobs behind one machine-wide lock with no
-dead-holder detection. Workers therefore retry with backoff up to ~30 min,
-then fall back to a fresh Claude high-effort reviewer subagent — and NEVER
-run `/codex:cancel` (a busy lock may be another worker's live review; only
-the human cancels).
+Both worker species run the same engine: a native `codex exec` reviewer that
+self-diffs the PR against its base (`git diff origin/<base>...HEAD`), with
+correctness discipline AND spec-compliance criteria (the linked ticket's
+acceptance) inlined in the review prompt — no companion, no machine-wide lock.
+(The `codex exec review` subcommand can't take custom criteria — its target
+flags reject a stdin prompt — so the cookbook plain-`codex exec` form carries
+both.) The Claude species falls back to a fresh Claude high-effort reviewer
+subagent when codex is unavailable; the Codex species has no second engine and
+parks `needs-human` instead. The review-trail comment names the engine that
+reviewed.
 
 ## Edge cases
 
@@ -126,3 +133,6 @@ the human cancels).
    workflow env. Flip it to `true` only after the trail comments show the
    self-merge tier judging as you'd want.
 9. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
+10. Codex workers (the default engine): `codex` CLI installed and authed
+    (`codex login`) on the runner machine; set `WORKER_ENGINE=claude` (env) or
+    label `engine:claude` to opt a repo/PR out.
