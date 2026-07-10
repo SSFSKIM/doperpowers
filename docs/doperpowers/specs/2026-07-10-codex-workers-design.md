@@ -347,6 +347,20 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
   completion barrier before writing status — the same barrier
   `codex-resume.sh`'s dead-pid guard already waits on. `daemon-retire.sh`
   now does; a future non-`daemon-retire` kill path would have to as well.
+- **Latent registration-time lost-update, defended by turn duration** (raised
+  by the final whole-branch review). `_meta_set` is atomic per-write
+  (`os.replace`) but not atomic *across* the detached `_codex_launch` wrapper
+  and the foreground spawn/resume script. In principle, if a turn finished in
+  the millisecond window between the foreground script detecting
+  `thread.started` and writing the full-field meta, the wrapper's finalize —
+  having read the meta while it was still empty — could clobber the
+  `engine`/`pid`/`turns` fields back to just `{status, updated}` (the daemon
+  would then render as `claude` in `daemon-list`). This is **unreachable with
+  real codex turns**: `thread.started` fires at turn *start* and the wrapper
+  finalizes at turn *end*, seconds apart, so the foreground write always lands
+  first (the hermetic fast-turn test confirms the observed interleaving is
+  safe). Recorded as a known property, not a fixed defect — a future
+  hardening could have the wrapper merge rather than overwrite.
 
 ### Task 1 spike: `codex exec --json` contract (2026-07-10, codex-cli 0.142.5, ChatGPT-account auth)
 
@@ -551,14 +565,38 @@ running the steps.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish. **Code/test acceptance is complete** (all ten
-plan tasks landed; the daemon, codex-worker, and review-dispatch suites plus
-the implement-side render smoke are green — see the plan's final verification
-task). The remaining trigger that closes this section is the **live shakedown**:
-a real Codex implement worker driving a real ticket to a PR, and a real Codex
-review worker reviewing a real PR — run on the next real board dispatch, not in
-this plan. The retrospective (what was achieved against Purpose, gaps, lessons)
-is written when that shakedown completes.
+**Code/test milestone: complete and merge-approved** (2026-07-10). All ten
+plan tasks landed via subagent-driven development with a per-task review gate
+and a final whole-branch review on the strongest model (verdict: Ready to
+merge, 0 Critical / 0 Important). The live shakedown remains the trigger for
+the *ultimate* closure (below).
+
+**Achieved against Purpose.** The board pipeline now drives two worker species
+under one registry: the existing Claude daemons and a new detached `codex exec`
+species (`engine: codex` in the meta), selected per dispatch by
+`label → WORKER_ENGINE → codex`. Codex is the default engine, but nothing
+Claude-side was removed — symmetry, not replacement. Both the implement
+pipeline (issue-tracker ritual + per-engine EXECUTION blocks) and the review
+pipeline (`review-dispatch.sh` engine switch + cookbook `codex exec` reviewer
+with spec-compliance criteria) understand both engines. The codex-companion
+lock+backoff apparatus is fully retired.
+
+**Gaps / deferred.** (1) The **live shakedown** — a real Codex implement worker
+driving a real ticket to a PR, and a real Codex review worker reviewing a real
+PR — has not run; it happens on the next real board dispatch and is what closes
+this spec for good. (2) Two non-blocking follow-ups from the final review: the
+latent registration-time lost-update (Surprises, unreachable with real turns)
+and unbounded `$DAEMON_HOME/runs` growth (a GC ticket).
+
+**Lessons.** The two front-loaded spikes paid for themselves repeatedly: Spike
+B's finding that `codex exec review` + a target flag + a custom PROMPT is a
+CLI-level impossibility (rc=2) invalidated the engine-block sketch the plan had
+carried into *three* later tasks (6, 7, 9) — each caught at pre-dispatch and
+corrected in place, before an implementer could faithfully build the broken
+form. Encoding hard-won CLI contract facts (event shapes, exit codes, the
+resume flag differences, the `_codex_launch` kill-race) into the spec's
+Surprises section, not just commit messages, is what made those catches
+mechanical rather than lucky.
 
 ## Revision Notes
 
