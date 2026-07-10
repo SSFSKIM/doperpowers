@@ -551,7 +551,14 @@ running the steps.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Pending — written at finish. **Code/test acceptance is complete** (all ten
+plan tasks landed; the daemon, codex-worker, and review-dispatch suites plus
+the implement-side render smoke are green — see the plan's final verification
+task). The remaining trigger that closes this section is the **live shakedown**:
+a real Codex implement worker driving a real ticket to a PR, and a real Codex
+review worker reviewing a real PR — run on the next real board dispatch, not in
+this plan. The retrospective (what was achieved against Purpose, gaps, lessons)
+is written when that shakedown completes.
 
 ## Revision Notes
 
@@ -611,3 +618,22 @@ Pending — written at finish.
    from both commits plus the injected compliance criterion (`rc=0`).
    Recorded in Surprises (b) and Feasibility item 3. Also softened finding
    (c)'s root-cause gloss to observed-symptom language per the same review.
+4. **2026-07-10 (Tasks 3–10 execution).** Two substantive Design/Surprises
+   shifts surfaced during implementation. (a) **Engine-selection env vars
+   reconciled** (Task 8): the implement worker has no dedicated `*_IMPL_*`
+   model/effort knob — `codex-spawn.sh` reads generic `CODEX_MODEL`/
+   `CODEX_EFFORT`, whose defaults (`gpt-5.6-sol`/`high`) already ARE the
+   implement defaults, so nothing needs overriding to reach them. The review
+   worker keeps its dedicated `CODEX_REVIEW_MODEL`/`CODEX_REVIEW_EFFORT`
+   precisely because it wants `xhigh` (≠ the spawner's `high`), which
+   `review-dispatch.sh` translates into positional args. The Engine-selection
+   section was corrected from the earlier `CODEX_IMPL_*` naming. (b) **The
+   `_codex_launch` external-kill race** (Task 5), added to Surprises:
+   killing a live codex turn wakes the wrapper's own finalization, which then
+   clobbers any status a caller writes — so every path that kills a live codex
+   pid (currently `daemon-retire.sh`, and `codex-resume.sh`'s dead-pid guard)
+   must wait the wrapper's `.rc` completion barrier before writing status.
+   Three plan-side engine-block/test sketches were also corrected in place
+   pre-dispatch (the `codex exec review --base ... <PROMPT>` composition
+   Spike B disproved, in Tasks 6/7/9) — the spec's Design already carried the
+   cookbook correction from Revision Note 2, so only the plan needed aligning.
