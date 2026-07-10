@@ -16,7 +16,7 @@ function req(env: Record<string, string | undefined>, key: string): string {
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
-  const effort = env.TRIAGE_EFFORT ?? 'medium';
+  const effort = env.TRIAGE_EFFORT ?? 'high';
   if (!(EFFORTS as readonly string[]).includes(effort))
     throw new Error(`TRIAGE_EFFORT must be one of: ${EFFORTS.join(', ')}`);
   return {
@@ -28,7 +28,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     boardScriptsDir: req(env, 'TRIAGE_BOARD_SCRIPTS_DIR'),
     // 워커 모델/노력을 명시 고정 — 미지정 시 ~/.codex/config.toml의 대화용 기본값이
     // 무인 루프에 조용히 새어드는 결합을 끊는다(2026-07-11 티켓-온리 재설계).
-    model: env.TRIAGE_MODEL || 'gpt-5.6-sol',
+    // 워크호스 모델 + high effort: 진단·티켓 저작은 플래그십(sol)급 문제가 아니다.
+    model: env.TRIAGE_MODEL || 'gpt-5.6-terra',
     effort: effort as Effort,
     k: env.TRIAGE_K ? Number(env.TRIAGE_K) : 3,
     timeoutMs: env.TRIAGE_TIMEOUT_MS ? Number(env.TRIAGE_TIMEOUT_MS) : 20 * 60_000,

@@ -42,7 +42,7 @@ Full design + rationale:
 
 | piece | what |
 |---|---|
-| `src/config.ts` | `loadConfig(env)` — required `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`OPENAI_API_KEY`/`TRIAGE_REPO_PATH`/`TRIAGE_BASE_BRANCH`/`TRIAGE_BOARD_SCRIPTS_DIR`, plus `TRIAGE_MODEL` (default `gpt-5.6-sol`), `TRIAGE_EFFORT` (default `medium`), `TRIAGE_K`/`TRIAGE_TIMEOUT_MS`/`TRIAGE_RECLAIM_MS`, and the `TRIAGE_ENABLED` kill switch |
+| `src/config.ts` | `loadConfig(env)` — required `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`OPENAI_API_KEY`/`TRIAGE_REPO_PATH`/`TRIAGE_BASE_BRANCH`/`TRIAGE_BOARD_SCRIPTS_DIR`, plus `TRIAGE_MODEL` (default `gpt-5.6-terra` — the workhorse tier is enough for diagnose-and-author), `TRIAGE_EFFORT` (default `high`), `TRIAGE_K`/`TRIAGE_TIMEOUT_MS`/`TRIAGE_RECLAIM_MS`, and the `TRIAGE_ENABLED` kill switch |
 | `src/verdict.ts` | `parseVerdict(text)` — extracts the single fenced ```json block the worker emits, including the worker-authored `ticket` (title/body/state/note); malformed/missing → treated as a failure, not a guess |
 | `src/gate.ts` | `routeTicket(rowCategory, verdict)` — the registration gate (R1–R5): idea/question forced `needs-human`; `ready-for-agent` honored only for a cited, non-risk-surface bug (dispatcher scans paths out of the verdict text itself); park states get a note. Plus `RISK_SURFACES` and `extractCandidatePaths` |
 | `src/db.ts` | `makeDb(cfg)` — Supabase adapter: `findActionable` (pending + stale-claimed rows), `claim` (atomic `pending→claimed` update, returns false if lost the race), `writeback` (final `triage_state` + issue URL) |

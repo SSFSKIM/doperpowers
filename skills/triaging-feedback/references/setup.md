@@ -44,8 +44,9 @@ TRIAGE_BOARD_SCRIPTS_DIR=/absolute/path/to/doperpowers/skills/issue-tracker/scri
 선택(기본값 있음):
 
 ```
-TRIAGE_MODEL=gpt-5.6-sol # 워커 모델 — 명시 고정. ~/.codex/config.toml의 대화용 기본값과 무관
-TRIAGE_EFFORT=medium     # minimal|low|medium|high|xhigh — 진단+티켓 저작에는 medium이 적정
+TRIAGE_MODEL=gpt-5.6-terra # 워커 모델 — 명시 고정. ~/.codex/config.toml의 대화용 기본값과 무관.
+                           # 워크호스 티어로 충분(진단+티켓 저작) — 플래그십(sol)은 과사양
+TRIAGE_EFFORT=high         # minimal|low|medium|high|xhigh — 작은 모델 + 높은 effort 조합
 TRIAGE_K=3               # tick당 처리할 최대 행 수 (처음엔 1로 시작 권장 — 아래 5번)
 TRIAGE_TIMEOUT_MS=1200000        # 20분 — 워커 턴(turn) 타임아웃(AbortController로 배선됨)
 TRIAGE_RECLAIM_MS=5400000        # 90분 — claimed인데 멈춘 행을 회수하는 기준

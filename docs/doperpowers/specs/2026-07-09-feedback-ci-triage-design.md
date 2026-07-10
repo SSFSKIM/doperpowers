@@ -441,13 +441,16 @@ the implement loop is the autonomy, gated there.)
   letting the worker set priority would let an injected feedback body jump
   the implement-dispatch queue. The human re-prioritizes on wake if needed.
 - **Model + reasoning effort pinned via `TRIAGE_MODEL`/`TRIAGE_EFFORT`
-  (defaults `gpt-5.6-sol`/`medium`).** (2026-07-11.) v1 set neither, so the
+  (defaults `gpt-5.6-terra`/`high`).** (2026-07-11.) v1 set neither, so the
   worker silently ran whatever `~/.codex/config.toml` declared as the
   machine's interactive default — changing the daily-driver config would have
   changed the unattended loop. `ThreadOptions.model`/`.modelReasoningEffort`
-  (confirmed in `@openai/codex-sdk@0.144.1` typings) decouple them. `medium`
-  effort: the worker now only diagnoses and writes prose; `high` was sized
-  for producing correct minimal diffs.
+  (confirmed in `@openai/codex-sdk@0.144.1` typings) decouple them.
+  *Amended same day (human call): first draft defaulted to the flagship
+  (`gpt-5.6-sol`/`medium`); switched to the workhorse tier at `high` effort —
+  diagnose-and-author doesn't need a big model, and the deeper reasoning
+  budget compensates where it matters (tracing a symptom to a cited
+  root cause).*
 - **Declined: network access + `approvalPolicy:on-request` +
   `approvals_reviewer=auto_review` for this worker.** (2026-07-11.) Proposed
   to align triage with the codex-workers substrate config; declined because
@@ -601,7 +604,8 @@ since ticket-only is the terminal shape.)*
   implement-side gate definitions, else parked with an explicit note. Fixes
   flow through the normal board pipeline (implementing-tickets →
   reviewing-prs). Model/effort pinned (`TRIAGE_MODEL`/`TRIAGE_EFFORT`,
-  defaults `gpt-5.6-sol`/`medium`); network access and the codex-workers
+  defaults `gpt-5.6-terra`/`high` — workhorse tier, deep effort; amended from
+  the first draft's `sol`/`medium` the same day); network access and the codex-workers
   `auto_review` approvals reviewer considered and declined for this worker's
   trust class. Deleted: turn 2, `renderFixPrompt`, G3–G6 diff gate,
   `diffStat`/`buildAndTest`, `openFixPr`, `TRIAGE_FIX_ENABLED`. Five
