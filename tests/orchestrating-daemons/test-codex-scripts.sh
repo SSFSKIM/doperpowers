@@ -193,11 +193,51 @@ start_ts=$(date +%s)
 # Bound picked well above the ~1-2s of incidental sleep the OTHER (pre-existing,
 # unrelated) polling loops in codex-resume.sh can add on their own — only the
 # rc-barrier wait itself should be able to push elapsed past that margin.
-out="$(CODEX_RC_BARRIER_WAIT=6 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "after dead wrapper")"
+out="$(CODEX_RC_BARRIER_WAIT=6 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "after dead wrapper" 2>&1)"
 elapsed=$(( $(date +%s) - start_ts ))
 assert_contains "$out" "stub reply: after dead wrapper" "resume proceeds once the rc-barrier wait times out"
 if [ "$elapsed" -ge 5 ]; then pass "resume waited the full rc-barrier bound (${elapsed}s)"; else
     fail "resume waited the full rc-barrier bound (${elapsed}s)"; fi
+assert_contains "$out" "completion barrier never appeared" "barrier timeout is surfaced on stderr"
+
+echo "== codex-resume: proceeds early once the prior rc barrier lands =="
+# Same stale-meta shape, but this time the prior wrapper is merely SLOW: its
+# rc file lands 2s in. Resume must stop waiting as soon as it appears (well
+# under the 15s bound) and must NOT emit the barrier-timeout warning.
+prev_log2="$TEST_ROOT/late-wrapper.events.jsonl"; : > "$prev_log2"
+prev_rc2="$TEST_ROOT/late-wrapper.rc"; rm -f "$prev_rc2"
+python3 - "$DAEMON_HOME/$uuid.json" "$prev_log2" "$DEADPID" <<'PY'
+import json, sys
+path, ev, pid = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(path))
+d["status"] = "working"; d["pid"] = pid; d["event_log"] = ev
+json.dump(d, open(path, "w"))
+PY
+( sleep 2; echo 0 > "$prev_rc2" ) &
+start_ts=$(date +%s)
+out="$(CODEX_RC_BARRIER_WAIT=15 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "after late barrier" 2>&1)"
+elapsed=$(( $(date +%s) - start_ts ))
+assert_contains "$out" "stub reply: after late barrier" "resume proceeds after the rc barrier lands"
+assert_not_contains "$out" "completion barrier never appeared" "no timeout warning when the barrier lands in time"
+if [ "$elapsed" -le 8 ]; then pass "resume stopped waiting once the barrier landed (${elapsed}s, bound 15)"; else
+    fail "resume stopped waiting once the barrier landed (${elapsed}s, bound 15)"; fi
+
+echo "== codex-resume: meta without event_log skips the barrier wait =="
+# Metas predating the event_log field (or hand-registered ones) have nothing
+# to derive an rc path from — the guard must proceed immediately, not stall.
+python3 - "$DAEMON_HOME/$uuid.json" "$DEADPID" <<'PY'
+import json, sys
+path, pid = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+d["status"] = "working"; d["pid"] = pid; d.pop("event_log", None)
+json.dump(d, open(path, "w"))
+PY
+start_ts=$(date +%s)
+out="$(CODEX_RC_BARRIER_WAIT=15 "$SCRIPTS_DIR/codex-resume.sh" "$uuid" "no prior log")"
+elapsed=$(( $(date +%s) - start_ts ))
+assert_contains "$out" "stub reply: no prior log" "resume proceeds with no event_log in the meta"
+if [ "$elapsed" -le 5 ]; then pass "no barrier wait without an event_log (${elapsed}s)"; else
+    fail "no barrier wait without an event_log (${elapsed}s)"; fi
 
 echo "== engine guards =="
 if "$SCRIPTS_DIR/daemon-resume.sh" "$uuid" "hi" >/dev/null 2>&1; then
@@ -212,7 +252,10 @@ else
 fi
 
 echo "== codex-resume: refuses a live working turn =="
-STUB_SLEEP=4 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-e "long turn" "$WORK" >/dev/null
+# 6s (not 4) keeps the turn provably live through --no-wait registration
+# (~2s of uuid polling) plus the resume attempt even under load — observed
+# flaking once at 4s when the whole suite ran under heavier I/O.
+STUB_SLEEP=6 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-e "long turn" "$WORK" >/dev/null
 uuid_e="$(basename "$(ls -t "$DAEMON_HOME"/cdec*.json | head -1)" .json)"
 if "$SCRIPTS_DIR/codex-resume.sh" "$uuid_e" "interrupt" >/dev/null 2>&1; then
     fail "resume refuses while a turn is live"

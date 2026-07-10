@@ -34,15 +34,29 @@ if [ "$(_meta_get "$uuid" status)" = "working" ]; then
   # is written LAST, once the registry + reply are already finalized (see
   # _codex_launch) — so derive it from this meta's event_log
   # ("<run>.events.jsonl" -> "<run>.rc") and wait a bounded window for it.
-  # If it appears, finalization is done (re-read status below rather than
-  # trust the value read above); if it never appears, the previous wrapper
-  # died mid-flight and there is nothing left to wait for — proceed.
+  # If it appears, finalization is complete: re-read the finalized status
+  # (the "working" value that got us here is stale) and proceed on it —
+  # terminal idle/error is the expected shape; anything else is surfaced as
+  # a note. If it never appears, the previous wrapper died mid-flight —
+  # warn and proceed. No event_log in the meta -> nothing to wait on.
   prev_log="$(_meta_get "$uuid" event_log)"
   if [ -n "$prev_log" ]; then
     prev_rc="${prev_log%.events.jsonl}.rc"
     bound="${CODEX_RC_BARRIER_WAIT:-10}"
     j=0
     while [ ! -f "$prev_rc" ] && [ "$j" -lt "$bound" ]; do sleep 1; j=$((j + 1)); done
+    if [ -f "$prev_rc" ]; then
+      # Barrier landed — base the guard's decision on the FINALIZED status,
+      # not the stale read above. Terminal (idle/error) means the prior turn
+      # is fully wrapped up and the daemon is safely resumable. A lingering
+      # "working" would take a wrapper that wrote rc without finalizing,
+      # which _codex_launch cannot do — but the pid is dead either way, so
+      # the turn is over regardless; surface the anomaly and continue.
+      [ "$(_meta_get "$uuid" status)" = "working" ] && echo \
+        "codex-resume: prior turn's rc landed but status is still 'working' — proceeding (pid dead, turn over)" >&2
+    else
+      echo "codex-resume: prior turn's completion barrier never appeared after ${bound}s — proceeding (wrapper presumed dead)" >&2
+    fi
   fi
 fi
 
