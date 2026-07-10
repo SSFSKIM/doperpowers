@@ -8,7 +8,6 @@ truth.
 
 Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
-- codex companion: {{CODEX_COMPANION}}
 - standing tech-debt issue: #{{TECH_DEBT_ISSUE}}
 - primary ticket: #{{ISSUE_NUMBER}} — when this is "none", skip EVERY board
   write below; escalation lands on the PR alone (label + comment).
@@ -16,15 +15,9 @@ Toolkit:
 ORIENT before anything else: read the PR diff against its base
 (git diff origin/{{BASE_REF}}...HEAD), the PR body, and the ticket brief.
 
-REVIEW ENGINE — run the codex reviewer from the worktree root:
-  node {{CODEX_COMPANION}} adversarial-review --wait --base origin/{{BASE_REF}} "Review PR #{{PR_NUMBER}}: {{PR_TITLE}}"
-Its stdout carries "Verdict: approve|needs-attention" and findings as
-"- [severity] title (file:lines)". If the companion path is "none", or it
-still refuses after retrying with backoff for up to 30 minutes (another
-review may hold the machine-wide lock), fall back to a fresh Claude reviewer
-subagent at high effort over the same diff. Record in the review-trail
-comment which engine reviewed. NEVER run /codex:cancel — a busy lock may be
-another worker's live review; you cannot distinguish wedged from busy.
+{{ENGINE_BLOCK}}
+
+{{FALLBACK_BLOCK}}
 
 EVALUATE every finding against codebase reality before acting:
 - Never implement from the finding text alone — read the code it names first.
@@ -51,7 +44,7 @@ ROUTE each finding to exactly one bin:
 - INVALID — does not hold against the code: rebuttal comment on the PR
   citing the refuting code.
 
-RE-REVIEW (max 3 codex rounds total) when ANY: a critical/high finding led
+RE-REVIEW (max 3 engine rounds total) when ANY: a critical/high finding led
 to a fix; cumulative fixes exceed ~50 changed lines or 3 files; any fix
 changed behavior (not comments/docs/renames). Skip when fixes were trivial
 or none. At the cap with unresolved critical/high findings: do NOT grant
@@ -99,7 +92,7 @@ needs-human); registering finding-tickets; merging ONLY in the self-merge
 tier AND only when auto-merge is on (auto-merge: {{AUTO_MERGE}} — if off,
 the tier being satisfied still means the HUMAN-tier path, not a merge);
 done ONLY as post-merge finalize. NEVER: wontfix, other tickets' states,
-force-push, opening your own PRs, /codex:cancel. Every park in this loop
+force-push, opening your own PRs. Every park in this loop
 waits on the human — write needs-human with the question/impasse/conflict
 as the note (who unparks it: the human as themselves).
 
