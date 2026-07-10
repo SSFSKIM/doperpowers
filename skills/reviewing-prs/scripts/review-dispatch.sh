@@ -13,7 +13,14 @@
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL        optional model override for the review daemon
+#   REVIEW_MODEL        optional model override for the review daemon (claude model;
+#                       only used when the resolved engine is claude)
+#   WORKER_ENGINE       which engine spawns the review worker: claude|codex
+#                       (default codex). Resolution order per PR: an
+#                       `engine:claude`/`engine:codex` label on the PR wins,
+#                       else this env var, else codex.
+#   CODEX_REVIEW_MODEL  codex model for the review engine (default gpt-5.6-sol)
+#   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
 #   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
 #                       (default false = observation mode: the worker reviews
 #                       and judges the tier but routes self-merge-eligible PRs
@@ -69,8 +76,13 @@ case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;
 esac
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
+CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
+ENGINE_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/engine-codex-review.md"
+FALLBACK_CLAUDE_FILE="$SKILL_DIR/references/engine-blocks/fallback-claude.md"
+FALLBACK_CODEX_FILE="$SKILL_DIR/references/engine-blocks/fallback-codex.md"
 
-# Newest review-pr-<n> registry entry → "uuid|status|current" (empty if none).
+# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid" (empty if none).
 _reviewer_meta() {
   DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
 import glob, json, os
@@ -89,12 +101,18 @@ for p in glob.glob(os.path.join(home, "*.json")):
             best = (key, m)
 if best:
     m = best[1]
-    print("%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", "")))
+    print("%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
+                              m.get("engine") or "claude", m.get("pid", "")))
 PY
 }
 
-# rc 0 when session uuid <1> is visible in `claude agents` (a live turn).
-_is_live() {
+# rc 0 when the reviewer's CURRENT turn is live: claude → session uuid visible
+# in `claude agents`; codex → recorded pid alive.
+_is_live() {  # <current> <engine> <pid>
+  if [ "$2" = "codex" ]; then
+    [ -n "$3" ] && kill -0 "$3" 2>/dev/null
+    return
+  fi
   claude agents --json --all 2>/dev/null | CUR="$1" python3 -c '
 import json, os, sys
 try:
@@ -118,7 +136,34 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     d = []
-sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)'
+sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)' && return 0
+  # codex workers never appear in `claude agents` — scan the registry, but
+  # count ONLY codex metas with a live pid; a stale claude-engine `working`
+  # meta must NOT start blocking removal (the claude path's fail-open
+  # behavior above is unchanged).
+  DAEMON_HOME="$DAEMON_HOME" WT="$1" python3 - <<'PY'
+import glob, json, os, sys
+home = os.environ["DAEMON_HOME"]; wt = os.environ["WT"]
+for p in glob.glob(os.path.join(home, "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("engine") != "codex" or m.get("cwd") != wt:
+        continue
+    if m.get("status") not in ("working", "blocked"):
+        continue
+    pid = str(m.get("pid") or "")
+    if pid.isdigit():
+        try:
+            os.kill(int(pid), 0)
+            sys.exit(0)   # live codex worker sits in this worktree
+        except OSError:
+            pass
+sys.exit(1)
+PY
 }
 
 # ---- per-PR dispatch (dedupe already decided by the caller) --------------------
@@ -128,7 +173,7 @@ sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)'
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td companion wt prompt
+  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine fallback_file
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -141,6 +186,9 @@ def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
 q("PR_TITLE", d["title"]); q("BASE_REF", d["baseRefName"]); q("HEAD_REF", d["headRefName"])
 q("HEAD_SHA", d["headRefOid"]); q("PR_URL", d["url"]); q("PR_STATE", d["state"])
 q("PR_DRAFT", 1 if d["isDraft"] else 0)
+names = [l.get("name", "") for l in (d.get("labels") or [])]
+eng = "claude" if "engine:claude" in names else ("codex" if "engine:codex" in names else "")
+q("ENGINE_LABEL", eng)
 linked = [str(n["number"]) for n in (d.get("closingIssuesReferences") or [])]
 text = (d.get("title") or "") + "\n" + (d.get("body") or "")
 # same close-keyword semantics as the consumer label automation: stacked PRs
@@ -152,6 +200,9 @@ q("LINKED_ISSUES", " ".join(linked))
 PY
 )" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
   eval "$exports"
+  engine="${ENGINE_LABEL:-${WORKER_ENGINE:-codex}}"
+  fallback_file="$FALLBACK_CODEX_FILE"
+  [ "$engine" = "claude" ] && fallback_file="$FALLBACK_CLAUDE_FILE"
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
@@ -166,9 +217,8 @@ PY
       || : > "$tmp/issue-body.md"
   fi
 
-  # standing tech-debt sink (optional) + newest installed codex companion
+  # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
-  companion="$(ls "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1 || true)"
 
   # DETACHED worktree at the PR head SHA — the PR branch is usually checked
   # out in the implementer's worktree, and git forbids a second checkout;
@@ -200,9 +250,12 @@ PY
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_URL="$issue_url" P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
-    P_TECH_DEBT_ISSUE="${td:-none}" P_CODEX_COMPANION="${companion:-none}" \
+    P_TECH_DEBT_ISSUE="${td:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
+    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" \
+    ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$fallback_file" \
     PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
     RISK_FILE="$tmp/risk.md" \
     python3 - "$PROTOCOL_TEMPLATE" <<'PY'
@@ -214,6 +267,8 @@ def readcap(path):
         t = t[:CAP] + "\n[... truncated for dispatch — read the rest on GitHub]"
     return t
 t = open(sys.argv[1]).read()
+t = t.replace("{{ENGINE_BLOCK}}", open(os.environ["ENGINE_BLOCK_FILE"]).read())
+t = t.replace("{{FALLBACK_BLOCK}}", open(os.environ["FALLBACK_FILE"]).read())
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
 subs["PR_BODY"] = readcap(os.environ["PR_BODY_FILE"]) or "(empty PR body)"
 subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(no linked issue)"
@@ -225,20 +280,26 @@ PY
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
 
-  "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
+  if [ "$engine" = "codex" ]; then
+    "$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
+      "$CODEX_REVIEW_MODEL" "$CODEX_REVIEW_EFFORT"
+  else
+    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
+  fi
 }
 
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
 # Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest
+  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
   meta="$(_reviewer_meta "$pr")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
-  uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; current="${rest#*|}"
+  uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
+  current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; pid="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
+      if _is_live "$current" "$engine" "$pid"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
     retired) echo "dispatch" ;;
     *)
       if [ "$mode" = "triggered" ]; then echo "respawn $uuid"

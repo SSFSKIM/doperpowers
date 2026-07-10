@@ -82,12 +82,39 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
 PY
 echo "daemon spawned (no-wait): $name"
 STUB
+cat > "$STUB_DAEMONS/codex-spawn.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "codex-spawn:$*" >> "$SPAWN_LOG"
+[ "${1:-}" = "--no-wait" ] && shift
+name="$1"; task="$2"; cwd="${3:-}"
+if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
+  echo "stub codex-spawn: simulated failure for $name" >&2
+  exit 1
+fi
+printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
+n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
+uuid="$(printf 'cdec%04d' "$n")-0000-4000-8000-000000000000"
+U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
+           "engine": "codex", "pid": "99999",
+           "status": "working", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "daemon spawned (no-wait): $name"
+STUB
 cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "retire:$1" >> "$SPAWN_LOG"
 STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
+chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
+# Every PRE-EXISTING case in this file exercises the claude path unchanged —
+# the label→env→codex resolution only kicks in per-test below via an
+# explicit WORKER_ENGINE=codex prefix.
+export WORKER_ENGINE=claude
 
 # stub gh + claude
 STUB_BIN="$TEST_ROOT/bin"; mkdir -p "$STUB_BIN"
@@ -142,12 +169,6 @@ json.dump({"url": "https://github.com/test/repo/issues/7",
            "body": "Ticket seven brief body"}, open(os.path.join(d, "issue-7.json"), "w"))
 PY
 
-# fake codex companion installs — dispatch must resolve the NEWEST version
-mkdir -p "$HOME/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts" \
-         "$HOME/.claude/plugins/cache/openai-codex/codex/1.0.9/scripts"
-touch "$HOME/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/codex-companion.mjs" \
-      "$HOME/.claude/plugins/cache/openai-codex/codex/1.0.9/scripts/codex-companion.mjs"
-
 reset_state() { rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- triggered dispatch (happy path) ------------------------------------------
@@ -164,7 +185,6 @@ assert_contains "$PROMPT" "Adds f." "prompt carries the PR body"
 assert_contains "$PROMPT" "---- Ticket #7 brief ----" "prompt names the primary ticket (Closes #7 parsed from the body)"
 assert_contains "$PROMPT" "Ticket seven brief body" "prompt carries the linked issue body"
 assert_contains "$PROMPT" "origin/main" "prompt carries the base ref"
-assert_contains "$PROMPT" "codex/1.0.9/scripts/codex-companion.mjs" "prompt resolves the NEWEST codex companion"
 assert_contains "$PROMPT" "tech-debt issue: #99" "prompt carries the standing tech-debt issue"
 assert_contains "$PROMPT" "auto-merge: off" "prompt renders auto-merge off by default (observation mode)"
 assert_contains "$PROMPT" "only when auto-merge is on" "AUTHORITY recap gates merge on auto-merge (no observation-mode merge)"
@@ -425,6 +445,60 @@ assert_contains "$P10" "RISK-FROM-BASE" "manifest content injected from the BASE
 assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifest edit does not leak (read from base, not head)"
 assert_contains "$P10" "auto-merge: on" "AUTO_MERGE_ENABLED=true renders auto-merge on"
 assert_contains "$P10" "base-is-default: no" "base (main) != default branch (develop) → not main-excluded"
+
+# ---- engine switch (label → WORKER_ENGINE → codex) + codex liveness ------------
+# Canned PR on feat/x (labels overridable) + a thin wrapper over $DISPATCH, so
+# an env-var prefix (e.g. `WORKER_ENGINE=codex run_dispatch 41`) reaches the
+# script for exactly one call.
+gh_pr() {  # $1=number $2=state $3=isDraft(0|1) $4=labels (comma-separated, "" for none)
+    N="$1" STATE="$2" DRAFT="$3" LABELS="$4" SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+n = int(os.environ["N"])
+labels = [{"name": l} for l in os.environ["LABELS"].split(",") if l]
+d = {"number": n, "title": "feat: add f", "body": "Adds f.\n\nCloses #7",
+     "baseRefName": "main", "headRefName": "feat/x", "headRefOid": os.environ["SHA"],
+     "url": "https://github.com/test/repo/pull/%d" % n, "isDraft": os.environ["DRAFT"] == "1",
+     "state": os.environ["STATE"], "labels": labels, "closingIssuesReferences": []}
+json.dump(d, open(os.path.join(os.environ["MOCK_DIR"], "pr-%d.json" % n), "w"))
+PY
+}
+run_dispatch() { "$DISPATCH" "$@"; }
+
+echo "engine switch:"
+reset_state
+: > "$SPAWN_LOG"
+gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
+WORKER_ENGINE=codex run_dispatch 41
+assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
+prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
+assert_contains "$prompt" "git diff origin/main...HEAD" "prompt carries the engine block (cookbook self-diff, BASE_REF rendered)"
+assert_contains "$prompt" "SPEC COMPLIANCE" "prompt carries compliance criteria"
+assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
+assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
+
+: > "$SPAWN_LOG"
+gh_pr 42 OPEN 0 "engine:claude"
+WORKER_ENGINE=codex run_dispatch 42
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:" "engine:claude label overrides env"
+prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
+assert_contains "$prompt42" "Claude reviewer subagent" "claude species gets the claude fallback block"
+
+echo "codex reviewer liveness in dedupe:"
+sleep 300 & LIVEPID=$!
+python3 - "$DAEMON_HOME" "$LIVEPID" <<'PY'
+import json, sys
+json.dump({"uuid": "cdec9999-0000-4000-8000-000000000000", "current": "cdec9999-0000-4000-8000-000000000000",
+           "name": "review-pr-43", "engine": "codex", "pid": str(sys.argv[2]),
+           "status": "working", "updated": "2026-07-10T00:00:00Z"},
+          open(sys.argv[1] + "/cdec9999-0000-4000-8000-000000000000.json", "w"))
+PY
+gh_pr 43 OPEN 0 ""
+out="$(WORKER_ENGINE=codex run_dispatch 43)"
+assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
+: > "$SPAWN_LOG"
+out="$(WORKER_ENGINE=codex run_dispatch 43)"
+assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "dead codex pid retires + respawns"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
