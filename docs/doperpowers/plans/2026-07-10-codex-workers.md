@@ -1037,7 +1037,7 @@ gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labe
 WORKER_ENGINE=codex run_dispatch 41
 assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
-assert_contains "$prompt" "codex exec review --base origin/main" "prompt carries the engine block"
+assert_contains "$prompt" "git diff origin/main...HEAD" "prompt carries the engine block (cookbook self-diff, BASE_REF rendered)"
 assert_contains "$prompt" "SPEC COMPLIANCE" "prompt carries compliance criteria"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
@@ -1068,6 +1068,12 @@ assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "dead codex pid retires + r
 ```
 
 (Adapt helper names — `gh_pr`/`run_dispatch` — to the file's actual canned-PR and invocation helpers; add a labels parameter to the PR-JSON helper if it lacks one.)
+
+> Amended during execution (pre-dispatch): the "prompt carries the engine
+> block" assertion originally checked for `codex exec review --base origin/main`
+> — the disproven invocation Task 6 replaced with the cookbook pattern. Changed
+> to `git diff origin/main...HEAD` (the cookbook block's self-diff line, which
+> also proves `{{BASE_REF}}` rendered). Keep in sync with Task 6's engine block.
 
 - [ ] **Step 2: Run to verify failure** — Expected: new cases FAIL (no codex-spawn call, `{{ENGINE_BLOCK}}` unrendered).
 
