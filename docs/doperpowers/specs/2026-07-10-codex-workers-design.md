@@ -23,9 +23,13 @@ propelled.
 ## Ground truth (researched 2026-07-10)
 
 - **Drive mechanism: plain `codex exec`.** `codex exec --json` emits a
-  `thread.started` event carrying the session id; `codex exec resume
-  <session-id> "<msg>"` continues it from any cwd; `-o <file>` captures the
-  final message. This mirrors the `claude --bg` daemon contract almost 1:1.
+  `thread.started` event carrying the session id (field `thread_id`, not
+  `id` — confirmed by smoke test); `codex exec resume <session-id> "<msg>"`
+  continues it from any cwd **that is itself a trusted/git directory, or
+  with `--skip-git-repo-check`** (confirmed: resuming into plain `/tmp`
+  fails closed with "Not inside a trusted directory..." until that flag is
+  added); `-o <file>` captures the final message. This mirrors the
+  `claude --bg` daemon contract almost 1:1.
   The App Server (what OpenAI Symphony's Director drives over JSON-RPC
   stdio) requires a resident driver process holding the pipes for the whole
   turn — Symphony has an orchestrator; this pipeline deliberately has none.
@@ -53,7 +57,15 @@ propelled.
   The human's interactive config already runs `guardian_subagent`; Symphony
   sets `auto_review`. Exact value + headless behavior: smoke test.
 - **Models:** `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (workhorse);
-  reasoning efforts `minimal|low|medium|high|xhigh`.
+  reasoning efforts `minimal|low|medium|high|xhigh`. **Caveat (smoke
+  test, codex-cli 0.142.5, ChatGPT-account auth):** neither `gpt-5.6-sol`
+  nor `gpt-5.6-terra` — the latter is this environment's own
+  `~/.codex/config.toml` default — is actually invocable via `codex exec`
+  today; both 400 with "requires a newer version of Codex" (0.144.1 is
+  available per `codex doctor`; 0.142.5 is installed). `gpt-5.5` is the
+  newest model confirmed working end-to-end. Design target unchanged
+  (Decision Log #8); the live-shakedown acceptance step needs a Codex CLI
+  upgrade first, or `gpt-5.5` as an interim substitute.
 
 ## Design
 
@@ -81,8 +93,16 @@ Session id parsed from the first `thread.started` event in the log; a
 detached watcher polls the PID and flips registry status
 `working → idle|error` on exit, recording the reply from `-o`. `--no-wait`
 = register as soon as the session id materializes (same contract as
-today). `codex-resume.sh <id> "<msg>"` wraps `codex exec resume` with the
-same flags, records the new PID, increments turns.
+today). `codex-resume.sh <id> "<msg>"` wraps `codex exec resume`, records
+the new PID, increments turns — **not** "the same flags" verbatim: `codex
+exec resume` has no `--sandbox` option at all (confirmed via
+`codex exec resume --help`); sandbox mode is set via `-c sandbox_mode=<mode>`
+instead. It also does not inherit the spawning session's model — a
+mismatch fires a non-fatal warning item and the turn falls back to
+`~/.codex/config.toml`'s default model — so `codex-resume.sh` must
+re-pass `-m <model> -c model_reasoning_effort=<effort>` on every resume
+call, the same as the initial spawn. Resuming into a cwd that isn't
+itself trusted/git needs `--skip-git-repo-check` too.
 
 **Status semantics, documented in orchestrating-daemons:** `blocked` never
 occurs for this engine — exec has no interactive approval prompts; the
@@ -275,10 +295,108 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
 - `~/.codex/config.toml` carries a stale pin note ("0.140.0, do not
   upgrade") while 0.142.5 is installed and working.
 
+### Task 1 spike: `codex exec --json` contract (2026-07-10, codex-cli 0.142.5, ChatGPT-account auth)
+
+- **Event shapes, confirmed live.** `thread.started` carries the id as
+  `thread_id` (not `id`): `{"type":"thread.started","thread_id":"019f..."}`.
+  A successful turn's agent reply arrives as
+  `{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"pong"}}`.
+  The terminal event on success is
+  `{"type":"turn.completed","usage":{"input_tokens":N,"cached_input_tokens":N,"output_tokens":N,"reasoning_output_tokens":N}}`.
+  On failure the terminal event is
+  `{"type":"turn.failed","error":{"message":"<JSON-string of the API error object>"}}`,
+  immediately preceded by a top-level `{"type":"error","message":"..."}`
+  event with the same nested message. Non-fatal advisory items (stale
+  model-metadata warnings, the "skill descriptions were shortened"
+  notice, malformed plugin-hooks-config parse errors, resume
+  model-mismatch warnings) also arrive as `item.completed` with
+  `item.type:"error"` but do **not** fail the run — only the
+  top-level `error` + `turn.failed` pair means the turn actually failed.
+- **Exit codes, confirmed live.** `rc=0` on `turn.completed`; `rc=1` on
+  `turn.failed` (tested via an invalid model on both fresh `exec` and
+  `exec resume`). No other rc value was observed.
+- **Model availability blocked the happy path as specified.** The
+  brief's `-m gpt-5.6-sol` failed: `"The 'gpt-5.6-sol' model requires a
+  newer version of Codex."` Retried with this environment's own
+  configured default, `gpt-5.6-terra` — same error. Retried with
+  `gpt-5.3-codex` (named in `config.toml`'s `model_migrations` map) —
+  different error: `"...is not supported when using Codex with a ChatGPT
+  account."` `~/.codex/models_cache.json` (the CLI's own fetched model
+  list) confirms only `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini` carry
+  `supported_in_api: true` for this account/CLI version; no `gpt-5.6-*`
+  slug exists in the cache at all. `codex doctor` reports 0.144.1 is
+  available vs. the installed 0.142.5. Completed the remaining spike
+  steps with `gpt-5.5` (confirmed working) as a substitute — this is an
+  environment/version gate, not a design defect; see the Ground truth
+  models bullet above for the caveat and the Revision Notes entry below.
+- **`codex exec resume` has no `--sandbox` flag.** `codex exec resume
+  --help` lists no `-s/--sandbox` option — passing it errors with
+  `"unexpected argument '--sandbox' found"`. Sandbox mode on resume must
+  go through `-c sandbox_mode=<mode>` instead.
+- **Resuming into an untrusted/non-git cwd fails closed.** `cd /tmp &&
+  codex exec resume <id> ...` (exactly the brief's cross-cwd test)
+  produced `"Not inside a trusted directory and --skip-git-repo-check
+  was not specified."` — `/tmp` itself isn't a git repo or a
+  previously-trusted project directory. Adding `--skip-git-repo-check`
+  fixed it; the resume then re-emitted the identical `thread_id`,
+  confirming cross-cwd resume genuinely works once past the trust gate.
+- **Resume does not inherit the spawning session's model.** Without
+  re-passing `-m`, the resumed turn silently falls back to
+  `~/.codex/config.toml`'s default model (`gpt-5.6-terra` here) and a
+  non-fatal warning item fires: `"This session was recorded with model
+  X but is resuming with Y."` Since the config default is currently one
+  of the unusable 5.6 models, an unqualified resume call fails the
+  turn. `-m`/`-c model_reasoning_effort` must be re-passed on every
+  resume, not assumed to persist.
+- **stdin `-` prompt works on resume** — no fallback to a positional
+  argv prompt is needed; `codex exec resume <id> --json ... - <<<
+  "msg"` behaved identically to fresh `exec`.
+- **Approvals reviewer: both values run headless without error.**
+  `-c approval_policy=on-request -c approvals_reviewer=auto_review` and
+  `...=guardian_subagent` both returned `rc=0` running `git status` end
+  to end, no CLI-level rejection either way. Neither run surfaced any
+  "approval" text in the JSONL stream (`grep -c approval` = 0 for both)
+  — a benign `git status` never escalates past the `workspace-write`
+  sandbox, so this test confirms the config value is *accepted*, not
+  that the auto-reviewer *adjudicates* anything; an actual escalation
+  scenario wasn't exercised. No first-party CLI documentation
+  distinguishing the two values was found (checked `codex exec --help`,
+  `codex exec resume --help`, bundled resources, installed plugin
+  caches — no hits). Recommendation: default `CODEX_APPROVALS_REVIEWER`
+  to `auto_review`, on the existing ground-truth evidence that Symphony
+  — an automated, headless orchestrator — sets `auto_review`, while the
+  human's own interactive session config uses `guardian_subagent`; the
+  interactive/headless split maps to that reviewer/orchestrator
+  distinction.
+- **Hooks parse errors are cosmetic without `-c features.hooks=false`.**
+  Two installed plugins' `hooks.json` files fail to parse (`unknown
+  field "description", expected "hooks"`) and surface as non-fatal
+  `item.completed` errors on every run that doesn't disable hooks —
+  consistent with, and reinforcing, the design's existing
+  `-c features.hooks=false` requirement.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
 
 ## Revision Notes
 
-—
+1. **2026-07-10 (Task 1 spike).** Corrected two Design-section claims
+   that the live `codex exec`/`codex exec resume` contract contradicted:
+   (a) the Ground truth drive-mechanism bullet's "continues it from any
+   cwd" now carries the `--skip-git-repo-check` caveat for cwds that
+   aren't themselves trusted/git directories; (b) the
+   `codex-resume.sh` sketch's "wraps `codex exec resume` with the same
+   flags" is corrected — resume has no `--sandbox` option (use `-c
+   sandbox_mode=<mode>`) and does not inherit the spawning session's
+   model (re-pass `-m`/`-c model_reasoning_effort` every call). The
+   Ground truth models bullet gained a caveat: on this spike's
+   environment (codex-cli 0.142.5, ChatGPT-account auth), neither
+   `gpt-5.6-sol` nor `gpt-5.6-terra` is invocable via `codex exec` today
+   (both 400 with "requires a newer version of Codex"); `gpt-5.5` is the
+   newest confirmed-working model. The model *decision* (Decision Log
+   #8) is unchanged — this is an environment/CLI-version gate, not a
+   reason to retarget — but Task 3's stub-codex tests and any live
+   shakedown should account for it (upgrade codex-cli first, or treat
+   `gpt-5.5` as an interim substitute). Full evidence in Surprises &
+   Discoveries above.
