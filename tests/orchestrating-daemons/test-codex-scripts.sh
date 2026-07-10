@@ -264,5 +264,29 @@ else
 fi
 for _ in $(seq 1 15); do [ "$(meta_field "$uuid_e" status)" != "working" ] && break; sleep 1; done
 
+echo "== read-side engine awareness =="
+# $uuid's most-recently recorded reply by this point in the suite is whatever
+# the last preceding resume left behind ("no prior log", from the event_log-less
+# barrier test) — not "follow up". Resume once more with a known message
+# immediately before asserting, so the assertion stays honest (codex's OWN
+# recorded reply, not a stale fixture) rather than being weakened to match
+# whatever text happened to be left over from an earlier test.
+"$SCRIPTS_DIR/codex-resume.sh" "$uuid" "follow up" >/dev/null
+listing="$("$SCRIPTS_DIR/daemon-list.sh")"
+assert_contains "$listing" "ENG" "daemon-list has an engine column"
+assert_contains "$listing" "codex" "daemon-list shows codex engine"
+reply_out="$("$SCRIPTS_DIR/daemon-reply.sh" "$uuid")"
+assert_contains "$reply_out" "stub reply: follow up" "daemon-reply prints the codex reply"
+
+echo "== daemon-retire kills a live codex turn =="
+STUB_SLEEP=30 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-f "hang" "$WORK" >/dev/null
+uuid_f="$(basename "$(ls -t "$DAEMON_HOME"/cdec*.json | head -1)" .json)"
+pid_f="$(meta_field "$uuid_f" pid)"
+retire_out="$("$SCRIPTS_DIR/daemon-retire.sh" "$uuid_f")"
+assert_contains "$retire_out" "codex resume $uuid_f" "retire prints codex resume hint"
+sleep 1
+if kill -0 "$pid_f" 2>/dev/null; then fail "retire stops the live codex turn"; else pass "retire stops the live codex turn"; fi
+assert_equals "$(meta_field "$uuid_f" status)" "retired" "retire records status"
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "$FAILURES FAILURE(S)"; exit 1; fi

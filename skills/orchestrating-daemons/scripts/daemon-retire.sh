@@ -16,8 +16,33 @@ name="$(_meta_get "$uuid" name)"
 short="$(_meta_get "$uuid" short)"
 worktree="$(_meta_get "$uuid" worktree)"
 
-# Stop the bg process if it is still live (idempotent).
-[ -n "$short" ] && claude stop "$short" >/dev/null 2>&1 || true
+# Stop the live turn if it is still running (idempotent) — engine-specific:
+# a claude daemon is stopped via the supervisor; a codex daemon is a detached
+# process we own directly, so we signal its recorded pid ourselves.
+engine="$(_meta_get "$uuid" engine)"
+if [ "$engine" = "codex" ]; then
+  pid="$(_meta_get "$uuid" pid)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    # Killing the pid makes _codex_launch's own detached wrapper (the one
+    # that finalizes status+reply once `wait` on the codex pid returns) wake
+    # up and write a terminal status (idle/error) of its own — racing our
+    # "retired" write below. Its rc file is the same completion barrier
+    # codex-resume.sh already waits on; wait for it here too so "retired" is
+    # written LAST and isn't immediately clobbered by the wrapper's own
+    # finalization of the turn we just killed.
+    log="$(_meta_get "$uuid" event_log)"
+    if [ -n "$log" ]; then
+      rc_barrier="${log%.events.jsonl}.rc"
+      bound="${CODEX_RC_BARRIER_WAIT:-10}"; j=0
+      while [ ! -f "$rc_barrier" ] && [ "$j" -lt "$bound" ]; do sleep 1; j=$((j + 1)); done
+    fi
+  fi
+  resume_hint="codex resume $uuid"
+else
+  [ -n "$short" ] && claude stop "$short" >/dev/null 2>&1 || true
+  resume_hint="claude --resume $uuid"
+fi
 
 # Never auto-delete a worktree/branch — the daemon may have committed work you
 # still want to review or merge (see finishing-a-development-branch).
@@ -26,8 +51,8 @@ wtnote=""
 
 if [ "${2:-}" = "purge" ]; then
   rm -f "$(_meta_path "$uuid")" "$(_reply_path "$uuid")" "$(_err_path "$uuid")"
-  echo "purged $name [$uuid] from registry (session transcript left intact; resume with: claude --resume $uuid)${wtnote}"
+  echo "purged $name [$uuid] from registry (session transcript left intact; resume with: $resume_hint)${wtnote}"
 else
   _meta_set "$uuid" status "retired" updated "$(_now)"
-  echo "retired $name [$uuid] (still resumable: claude --resume $uuid)${wtnote}"
+  echo "retired $name [$uuid] (still resumable: $resume_hint)${wtnote}"
 fi

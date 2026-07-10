@@ -37,16 +37,16 @@ for p in glob.glob(os.path.join(home, "*.json")):
         except Exception:
             pass
     rows.append((m.get("updated", ""), m.get("name", "?"), short, m.get("status", "?"),
-                 m.get("turns", "0"), reply))
+                 m.get("engine", "claude"), m.get("turns", "0"), reply))
 
 rows.sort(reverse=True)
 if not rows:
     print("(no daemons)"); raise SystemExit
 
-print(f"{'NAME':<18} {'SHORT':<9} {'STATUS':<14} {'T':>2}  LATEST REPLY")
+print(f"{'NAME':<18} {'SHORT':<9} {'STATUS':<14} {'ENG':<6} {'T':>2}  LATEST REPLY")
 print("-" * 96)
-for updated, name, short, status, turns, reply in rows:
-    print(f"{name[:18]:<18} {short[:8]:<9} {status:<14} {str(turns):>2}  {reply[:52]}")
+for updated, name, short, status, engine, turns, reply in rows:
+    print(f"{name[:18]:<18} {short[:8]:<9} {status:<14} {engine[:6]:<6} {str(turns):>2}  {reply[:46]}")
 print()
 print("full uuid + reply:  daemon-reply.sh <short-or-full-uuid>")
 PY
