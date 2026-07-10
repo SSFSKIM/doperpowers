@@ -106,3 +106,48 @@ Both addressed in commit `1ff71ea` (reviewed, all suites green).
   (Known limitation: a daemon resumed once and never spawned/resumed again
   leaves its orphan un-swept until the next spawn — accepted, since growth is
   driven by active resuming, which the sweep bounds.)
+
+## Live run — 2026-07-11 (macbook, mini unavailable)
+
+Shakedown executed on the macbook (the usual mini host was not accessible).
+Prereqs re-verified on this host: `codex-cli 0.144.1`, `claude 2.1.206`, `gh
+2.87.3` authed as `SSFSKIM`, `~/.codex/auth.json` present. Target: the real
+ida-solution board (doperpowers itself has Issues disabled). Only one
+code-shaped gate-ready ticket existed (**#460**, the midnight-wrap camera
+bug), so coverage was: **SD-1** codex-implement on #460, then **SD-3/SD-4**
+codex+claude review of the resulting PR (run sequentially — the review dedupe
+skips a PR with a live reviewer). **SD-2** (claude-implement) had no second
+gate-ready code ticket and was left for a human ticket-promotion decision.
+
+### FU-3 · `gh` unauthenticated inside the codex sandbox — FIXED
+
+The first codex implement worker gated #460 (pass, PLAN mode) but every `gh`
+call — starting with its first board write — returned **HTTP 403
+unauthenticated**; it could not even park, and exited clean with no code (a
+correct disciplined failure, but dead in the water).
+
+- **Root cause.** `gh` here authenticates from the **macOS keychain**. Codex
+  runs workers in a Seatbelt `workspace-write` sandbox that cannot read the
+  login keychain, so `gh` ran signed-out. The claude engine never hit this:
+  claude workers run **un-sandboxed on the host**, where the keychain is
+  reachable. The asymmetry is the sandbox, not the token. The prereq check
+  above missed it because it verified codex's *own* `auth.json`, not that
+  `gh` (a different tool, different credential store) works *inside* the
+  sandbox.
+- **Fix** (`_codex_lib.sh`, `_codex_launch`, shared by spawn **and** resume):
+  capture the token with `gh auth token` in the dispatcher's context (which
+  has keychain access) and export it as `GH_TOKEN`; `gh` prefers the env
+  token over the keychain, and the sandbox reads process env. Auth parity
+  with the claude workers; the standard CI pattern. Guarded on `GH_TOKEN` /
+  `GITHUB_TOKEN` being unset so an explicit token still wins.
+- **Verified live.** Minimal sandbox probe printed `Logged in … (GH_TOKEN)`;
+  re-dispatched worker's process carried `GH_TOKEN` in its env; #460
+  transitioned `ready-for-agent → in-progress` with a `[gate] pass —
+  codex/PLAN` comment — i.e. the first board write now succeeds.
+- **Security note for review.** This places a repo-scoped token in the
+  worker's sandbox env (visible to its own subprocesses). It is parity with
+  what claude workers already wield via the keychain, not new exposure — but
+  flagged here so the human can veto if they read the surface differently.
+
+_(Should also be reflected as a Surprise in
+`specs/2026-07-10-codex-workers-design.md` at retrospective.)_

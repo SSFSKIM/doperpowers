@@ -175,6 +175,17 @@ PY
 # is appended here.
 _codex_launch() {
   local cwd="$1" taskf="$2" run="$3"; shift 3
+  # gh stores its token in the OS keychain, which codex's Seatbelt
+  # workspace-write sandbox cannot read — so a worker's `gh` calls run
+  # unauthenticated (HTTP 403) and the very first board write fails. Capture
+  # the token HERE (the dispatcher's context has keychain access) and export
+  # it as GH_TOKEN, which gh prefers over the keyring and the sandbox reads
+  # from process env. This is auth parity with the un-sandboxed claude workers
+  # (the standard CI pattern), and covers resume too since it shares this path.
+  if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    local _tok; _tok="$(gh auth token 2>/dev/null || true)"
+    [ -n "$_tok" ] && export GH_TOKEN="$_tok"
+  fi
   nohup bash -c '
     set -u
     DIR="$1"; cwd="$2"; taskf="$3"; run="$4"; shift 4
