@@ -500,6 +500,74 @@ kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 out="$(WORKER_ENGINE=codex run_dispatch 43)"
 assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "dead codex pid retires + respawns"
 
+# ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
+# The "live worktree guard" section above pins _wt_occupied's FIRST branch (a
+# `claude agents` cwd hit). Codex workers never appear in `claude agents`, so
+# the function falls through to a registry scan that must count a worktree as
+# occupied ONLY when a meta has ALL of: engine == "codex", cwd == the target
+# worktree, status in (working, blocked), and a live pid. This section
+# targets that scan directly, observed the same way as the claude-path guard:
+# through dispatch_one's "live daemon occupies" refusal and whether a spawn
+# happens — not by calling _wt_occupied as an internal. These dispatches use
+# the suite's default WORKER_ENGINE=claude (unqualified "$DISPATCH" 5) since
+# what's under test is the engine field of the meta SITTING in the worktree,
+# not which engine this dispatch itself would spawn as.
+echo "live worktree guard (codex registry scan):"
+reset_state
+out="$("$DISPATCH" 5)"                                     # setup: (re)creates $WT via a real dispatch
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "setup: worktree created via a real dispatch"
+reset_state                                                  # clears registry + agents.json ([] by reset_state)
+
+# (a) live codex-engine meta, same cwd, status working → OCCUPIED, blocked
+sleep 300 & WTPID=$!
+WT="$WT" PID="$WTPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8001-0000-4000-8000-000000000000",
+           "current": "cdec8001-0000-4000-8000-000000000000",
+           "name": "occupant", "engine": "codex", "cwd": os.environ["WT"],
+           "pid": os.environ["PID"], "status": "working",
+           "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8001-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "live daemon occupies" "live codex-engine meta (same cwd, live pid) blocks worktree removal"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn while a live codex worker occupies the worktree"
+if [ -d "$WT" ]; then pass "worktree still exists after the refused dispatch"; else
+    fail "worktree still exists after the refused dispatch"; fi
+kill "$WTPID" 2>/dev/null; wait "$WTPID" 2>/dev/null || true
+
+# (b) same shape of meta, but the pid is now dead → NOT occupied, dispatch proceeds
+WT="$WT" PID="$WTPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8001-0000-4000-8000-000000000000",
+           "current": "cdec8001-0000-4000-8000-000000000000",
+           "name": "occupant", "engine": "codex", "cwd": os.environ["WT"],
+           "pid": os.environ["PID"], "status": "working",
+           "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8001-0000-4000-8000-000000000000.json"), "w"))
+PY
+: > "$SPAWN_LOG"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "dead codex pid in the registry does not block removal — dispatch proceeds"
+
+# (c) guard: a STALE claude-engine "working" meta in this SAME cwd must NOT
+# block removal either. This pins the fail-open behavior the task required
+# to preserve: the codex-registry scan filters on engine == "codex", so a
+# non-codex (or missing-engine) meta is skipped outright regardless of cwd,
+# status, or pid — it never reaches the pid-liveness check at all.
+reset_state
+WT="$WT" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "aaaa9001-0000-4000-8000-000000000000",
+           "current": "aaaa9001-0000-4000-8000-000000000000",
+           "name": "stale-claude-occupant", "engine": "claude", "cwd": os.environ["WT"],
+           "status": "working", "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "aaaa9001-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "stale claude-engine meta in the same cwd does not block removal (fail-open preserved)"
+reset_state
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"; exit 1
