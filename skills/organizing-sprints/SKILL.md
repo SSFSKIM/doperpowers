@@ -180,9 +180,12 @@ spec is self-contained).
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |
 | Skipping existing-ticket disposition | The board must reflect the sprint, not accumulate parallel truths. |
 
-## Scaling down
+## Scale
 
-A small dump (say, five loose observations) runs the same phases; only the
-document compresses. Never dropped, at any scale: the verification table,
-observable acceptance criteria, the Decision Log with rejected
-alternatives, the tracking map, and the Deferred section.
+The dump sets the scale — a handful of loose observations or a quarter's
+worth of accumulated notes both run the same phases; only the artifacts
+compress or grow. Epic count, ticket count, and document length are
+outputs of the shape rules (purpose-unit epics, gate-passing tickets),
+never targets: no floor, no ceiling. Never dropped, at any scale: the
+verification table, observable acceptance criteria, the Decision Log with
+rejected alternatives, the tracking map, and the Deferred section.

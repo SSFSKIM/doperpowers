@@ -1,10 +1,12 @@
 # Umbrella Sprint Spec — Skeleton
 
-The proven section layout for an organizing-sprints spec (700–1000 lines at
-full sprint scale). Save to `docs/<milestone>-sprint-spec.md` in the
-consumer repo (its own conventions override). Section numbers are a
-convention, not a contract — keep the order; compress or merge for small
-dumps (SKILL.md, Scaling down).
+The proven section layout for an organizing-sprints spec. Save to
+`docs/<milestone>-sprint-spec.md` in the consumer repo (its own conventions
+override). Section numbers are a convention, not a contract — keep the
+order; compress or merge for small dumps (SKILL.md, Scale). Size
+follows the dump: there is no target length, epic count, or ticket count —
+the shape rules (purpose-unit epics, observable acceptance) determine the
+numbers, at any scale.
 
 ## Header block (unnumbered, top of file)
 
