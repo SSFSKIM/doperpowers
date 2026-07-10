@@ -132,5 +132,34 @@ fi
 n_after="$(ls "$DAEMON_HOME"/*.json 2>/dev/null | wc -l | tr -d ' ')"
 assert_equals "$n_after" "$n_before" "early failure registers no meta"
 
+echo "== codex-resume: same session id, turns increment =="
+out="$("$SCRIPTS_DIR/codex-resume.sh" "$uuid" "follow up")"
+assert_contains "$out" "stub reply: follow up" "resume prints the new reply"
+assert_equals "$(meta_field "$uuid" turns)" "2" "resume increments turns"
+assert_equals "$(meta_field "$uuid" current)" "$uuid" "resume keeps the session id"
+assert_contains "$(cat "$STUB_STATE/calls.log")" "exec resume $uuid" "stub saw exec resume <uuid>"
+
+echo "== engine guards =="
+if "$SCRIPTS_DIR/daemon-resume.sh" "$uuid" "hi" >/dev/null 2>&1; then
+    fail "daemon-resume refuses a codex daemon"
+else
+    pass "daemon-resume refuses a codex daemon"
+fi
+if "$SCRIPTS_DIR/codex-resume.sh" "not-a-daemon" "hi" >/dev/null 2>&1; then
+    fail "codex-resume errors on unknown id"
+else
+    pass "codex-resume errors on unknown id"
+fi
+
+echo "== codex-resume: refuses a live working turn =="
+STUB_SLEEP=4 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-e "long turn" "$WORK" >/dev/null
+uuid_e="$(basename "$(ls -t "$DAEMON_HOME"/cdec*.json | head -1)" .json)"
+if "$SCRIPTS_DIR/codex-resume.sh" "$uuid_e" "interrupt" >/dev/null 2>&1; then
+    fail "resume refuses while a turn is live"
+else
+    pass "resume refuses while a turn is live"
+fi
+for _ in $(seq 1 15); do [ "$(meta_field "$uuid_e" status)" != "working" ] && break; sleep 1; done
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "$FAILURES FAILURE(S)"; exit 1; fi

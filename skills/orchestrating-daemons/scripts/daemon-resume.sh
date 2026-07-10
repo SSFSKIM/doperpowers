@@ -29,6 +29,9 @@ source "$DIR/_lib.sh"
 uuid="$(_resolve_uuid "${1:?usage: daemon-resume.sh <uuid> <message>}")"
 msg="${2:?missing message}"
 
+[ "$(_meta_get "$uuid" engine)" = "codex" ] \
+  && { echo "daemon-resume: $uuid is a codex daemon — use codex-resume.sh" >&2; exit 1; }
+
 name="$(_meta_get "$uuid" name)"
 cwd="$(_meta_get "$uuid" cwd)"; model="$(_meta_get "$uuid" model)"
 turns="$(_meta_get "$uuid" turns)"; [ -n "$turns" ] || turns=0
