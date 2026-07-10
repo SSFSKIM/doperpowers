@@ -68,7 +68,8 @@ spec's §4 and add only deltas.
 
 The footgun section; the note is never trusted past this point.
 
-- **§5.1 Confirmed real bugs** — observation → diagnosis → file:line.
+- **§5.1 Confirmed real bugs** — observation → diagnosis → evidence
+  (file:line where the diagnosis is surprising or contested).
 - **§5.2 Misreads corrected** — observation → what the code actually does →
   the real requirement extracted from under the misread.
 - **§5.3 Missing or partial** — the sprint's real work, each row naming the
@@ -131,7 +132,8 @@ The materialization contract and its record:
 - Disposition of every pre-existing open ticket the sprint touches (absorb
   / defer / re-cut / close candidate), each with its reason.
 - After materialization: epic → issue number mapping, milestone, edges cut,
-  lint result.
+  lint result. (Each materialized body cites its epic section back here —
+  spec path + epic id — so ticket and spec point at each other.)
 
 ## §14 Risks
 

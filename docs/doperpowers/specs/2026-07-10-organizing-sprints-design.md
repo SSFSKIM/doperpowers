@@ -124,4 +124,17 @@ Pending — completed after the first live organizing run (expected: the M5
 
 ## Revision Notes
 
-- (none yet)
+- **2026-07-10 (same day, post-release review with the human).** Three
+  adjustments. (1) Evidence granularity softened: the verification table
+  stays a structural requirement (Decision 5's core stands), but the
+  blanket per-row file:line demand is demoted to judgment — a surprising or
+  contested classification cites file:line; an obvious one doesn't. The
+  human's rationale: trust capable models to cite as needed; the observed
+  failure was skipping *classification*, not skipping *citations*.
+  (2) Materialized ticket bodies now cite their spec epic section (path +
+  epic id) so ticket and spec point at each other — self-containment
+  unchanged. (3) Restored three issue-register carryovers the rewrite had
+  dropped: prefer multiple-choice grill questions where options are
+  enumerable; ask when unsure whether two observations are one epic or two
+  (over-merge vs over-split); the tunnel-vision warning against treating
+  the whole dump as one project.

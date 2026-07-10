@@ -39,13 +39,14 @@ Create a task per phase; complete them in order.
    said it, seeing what) rides along — it becomes the epic's context line.
 2. **Ground every observation in code** — fan out parallel explorations by
    area (doperpowers:dispatching-parallel-agents) and classify each
-   observation against code reality with file:line evidence (see The
-   verification table below). A question the codebase can answer is
-   answered by reading, never asked.
+   observation against code reality (see The verification table below). A
+   question the codebase can answer is answered by reading, never asked.
 3. **Tentative decomposition** — cut streams and epics. An epic is an
    independently shippable purpose-unit; two observations share an epic
    only if they share a problem or outcome, not merely a topic or a page.
-   Present the tentative map and get a reaction BEFORE deep grilling.
+   Unsure whether two observations are one epic or two? Ask — over-merging
+   hides independent shippables; over-splitting loses coherence. Present
+   the tentative map and get a reaction BEFORE deep grilling.
 4. **Grill until every question lands** — one question at a time, full
    record into the Decision Log (see The grill below). Milestone boundaries
    are grill questions too: work that outgrows this sprint is landed as a
@@ -100,7 +101,7 @@ builds on. Classify EVERY observation:
 
 | class | meaning | what it demands |
 |---|---|---|
-| `[BUG]` | confirmed real defect | diagnosis with file:line evidence — cause, not just symptom |
+| `[BUG]` | confirmed real defect | a diagnosis — cause, not just symptom — with evidence at the depth the claim needs (a surprising or contested row cites file:line; an obvious one doesn't) |
 | `[MISREAD]` | observation contradicts code reality | correct the record AND extract the real requirement hiding under the misread — a wrong observation usually points at a real want, stated wrongly |
 | `[BUILT]` / `[PARTIAL]` | already exists, fully or partly | no work, or the delta only — name where it lives |
 | `[NOT-BUILT]` | absent | the sprint's real work |
@@ -115,7 +116,8 @@ scope unless someone checks the assumption against the code.
 
 The interview protocol, adapted from doperpowers:brainstorming's grill:
 
-- One question at a time, each with your recommended answer.
+- One question at a time, each with your recommended answer. Prefer
+  multiple choice where the options are enumerable; open-ended is fine too.
 - A question the codebase can answer is answered by reading, never asked.
 - Sharpen fuzzy terms; stress-test with concrete scenarios; cross-reference
   the human's claims about current behavior with the code.
@@ -148,8 +150,9 @@ spec is self-contained).
   notes required).
 - Ticket bodies are fleshed to the pre-spec bar: self-contained, so a
   fresh-context worker can gate from the body alone. Carry the epic's
-  decisions and acceptance criteria INTO the body — a link to the spec is
-  context, not a substitute.
+  decisions and acceptance criteria INTO the body, and cite the spec's epic
+  section (path + epic id) for surrounding context — the citation is
+  context, not a substitute for self-containment.
 - Milestone + epic labels via raw `gh` are legal; states and edges go
   through the scripts only (the Board Write Hard Gate).
 - **Disposition every pre-existing open ticket the sprint touches** —
@@ -169,6 +172,7 @@ spec is self-contained).
 | Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
 | Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
 | Running on a single idea | Wrong skill — doperpowers:brainstorming. |
+| Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
 | Per-epic implementation plans in the umbrella | The umbrella stops at observable acceptance criteria; ExecPlans derive downstream at dispatch time. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
