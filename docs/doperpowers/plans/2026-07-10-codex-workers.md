@@ -1332,7 +1332,7 @@ features.hooks=false` is always on: a checked-out PR could ship
 Both worker species run the same engine: a native `codex exec` reviewer that
 self-diffs the PR against its base (`git diff origin/<base>...HEAD`), with
 correctness discipline AND spec-compliance criteria (the linked ticket's
-acceptance) inlined in the review prompt — no companion, no machine-wide lock.
+acceptance) inlined in the review prompt — no companion, no shared lock.
 (The `codex exec review` subcommand can't take custom criteria — its target
 flags reject a stdin prompt — so the cookbook plain-`codex exec` form carries
 both.) The Claude species falls back to a fresh Claude high-effort reviewer
@@ -1351,10 +1351,19 @@ reviewed.
 
 (d) Adoption checklist: add item "10. Codex workers (the default engine): `codex` CLI installed and authed (`codex login`) on the runner machine; set `WORKER_ENGINE=claude` (env) or label `engine:claude` to opt a repo/PR out."
 
+Also retire the stale edge-case bullet the wholesale-replacement anchor
+misses: `reviewing-prs/SKILL.md`'s `- **Two reviewers, one codex lock** —
+parallel review daemons contend; the backoff serializes them.` describes the
+now-deleted lock+backoff. Replace it with the dedupe-on-dispatch reality (the
+live reviewer is detected — Claude by session, codex by pid — and the second
+dispatch skips; a worktree with a live reviewer is never reused).
+
 - [ ] **Step 3: sanity grep**
 
-Run: `grep -rn "codex-companion\|codex:cancel\|machine-wide lock" skills/reviewing-prs/ skills/orchestrating-daemons/`
-Expected: no matches (the lock is retired everywhere).
+Run: `grep -rn "codex-companion\|codex:cancel\|codex lock\|backoff serializes" skills/reviewing-prs/ skills/orchestrating-daemons/`
+Expected: no matches (the lock apparatus is retired everywhere; the Review
+engine section says "no shared lock", not "machine-wide lock", so the
+retirement grep stays a clean zero).
 
 - [ ] **Step 4: Commit**
 

@@ -92,7 +92,7 @@ doperpowers:organizing-sprints input).
 Both worker species run the same engine: a native `codex exec` reviewer that
 self-diffs the PR against its base (`git diff origin/<base>...HEAD`), with
 correctness discipline AND spec-compliance criteria (the linked ticket's
-acceptance) inlined in the review prompt — no companion, no machine-wide lock.
+acceptance) inlined in the review prompt — no companion, no shared lock.
 (The `codex exec review` subcommand can't take custom criteria — its target
 flags reject a stdin prompt — so the cookbook plain-`codex exec` form carries
 both.) The Claude species falls back to a fresh Claude high-effort reviewer
@@ -108,8 +108,10 @@ reviewed.
   or restore the ticket state.
 - **PR with no linked issue** — reviewed normally; every board write is
   skipped; escalation lands on the PR alone (label + comment).
-- **Two reviewers, one codex lock** — parallel review daemons contend; the
-  backoff serializes them. Expected, not an error.
+- **Two dispatches, one PR** — the second dispatch detects the still-live
+  reviewer (Claude: its session in `claude agents`; codex: its recorded pid)
+  and skips; a worktree with a live reviewer is never reused underneath it.
+  No lock, no backoff — dedupe on dispatch does the serializing.
 
 ## Adopting a repo (checklist)
 
