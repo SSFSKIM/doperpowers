@@ -119,9 +119,8 @@ _codex_launch() {
     cpid=$!
     echo "$cpid" > "$run.pid"
     rc=0; wait "$cpid" || rc=$?
-    echo "$rc" > "$run.rc"
     uuid="$(_codex_thread_id "$run.events.jsonl")"
-    [ -n "$uuid" ] || exit 0   # never produced a session — spawn fails loud instead
+    if [ -z "$uuid" ]; then echo "$rc" > "$run.rc"; exit 0; fi   # never produced a session — spawn fails loud instead
     status="$(_codex_final_status "$rc" "$run.events.jsonl")"
     if [ -s "$run.reply.txt" ]; then
       cp "$run.reply.txt" "$(_reply_path "$uuid")"
@@ -129,5 +128,6 @@ _codex_launch() {
       _codex_last_message "$run.events.jsonl" > "$(_reply_path "$uuid")"
     fi
     _meta_set "$uuid" status "$status" updated "$(_now)"
+    echo "$rc" > "$run.rc"   # completion barrier — written LAST, after all finalization
   ' _ "$CODEX_LIB_DIR" "$cwd" "$taskf" "$run" "$@" >/dev/null 2>&1 &
 }

@@ -106,7 +106,6 @@ while [ ! -f "$run.rc" ]; do
   fi
   sleep 2
 done
-sleep 1  # let the wrapper finish its meta/reply writes
 echo "daemon spawned: $name  [codex $(printf '%.8s' "$uuid") / $uuid]  status=$(_meta_get "$uuid" status)"
 echo "--- reply ---"
 _reply_text "$uuid"
