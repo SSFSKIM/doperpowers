@@ -359,8 +359,13 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
   real codex turns**: `thread.started` fires at turn *start* and the wrapper
   finalizes at turn *end*, seconds apart, so the foreground write always lands
   first (the hermetic fast-turn test confirms the observed interleaving is
-  safe). Recorded as a known property, not a fixed defect — a future
-  hardening could have the wrapper merge rather than overwrite.
+  safe). **Fixed 2026-07-10 (post-review follow-up):** rather than leave it a
+  known property, `_meta_set` now serializes its read-modify-write with an
+  advisory `fcntl.flock` on a shared `$DAEMON_HOME/.metalock`, making each write
+  atomic w.r.t. every other. A concurrency regression test proved the race was
+  in fact worse than "unreachable" — under real parallel writers the unlocked
+  RMW both lost fields AND crashed on the `<path>.tmp` `os.replace`; the lock
+  closes both. See Revision Note 5.
 
 ### Task 1 spike: `codex exec --json` contract (2026-07-10, codex-cli 0.142.5, ChatGPT-account auth)
 
@@ -584,9 +589,9 @@ lock+backoff apparatus is fully retired.
 **Gaps / deferred.** (1) The **live shakedown** — a real Codex implement worker
 driving a real ticket to a PR, and a real Codex review worker reviewing a real
 PR — has not run; it happens on the next real board dispatch and is what closes
-this spec for good. (2) Two non-blocking follow-ups from the final review: the
-latent registration-time lost-update (Surprises, unreachable with real turns)
-and unbounded `$DAEMON_HOME/runs` growth (a GC ticket).
+this spec for good. (2) The two non-blocking follow-ups from the final review
+are now **closed** (Revision Note 5): `_meta_set` serialization (flock) and
+`$DAEMON_HOME/runs` garbage collection both shipped with regression tests.
 
 **Lessons.** The two front-loaded spikes paid for themselves repeatedly: Spike
 B's finding that `codex exec review` + a target flag + a custom PROMPT is a
@@ -675,3 +680,16 @@ mechanical rather than lucky.
    pre-dispatch (the `codex exec review --base ... <PROMPT>` composition
    Spike B disproved, in Tasks 6/7/9) — the spec's Design already carried the
    cookbook correction from Revision Note 2, so only the plan needed aligning.
+5. **2026-07-10 (post-review follow-ups closed).** The two non-blocking items
+   the final whole-branch review flagged were both fixed rather than deferred.
+   (a) **`_meta_set` serialization** — its cross-process read-modify-write is
+   now wrapped in an advisory `fcntl.flock` on `$DAEMON_HOME/.metalock`. A new
+   concurrency test (61 parallel writers on one meta) showed the pre-fix code
+   was worse than the review's "unreachable" framing: it lost fields *and*
+   crashed on the `<path>.tmp` `os.replace` under real contention. The lock is
+   global (all daemons serialize on one file) — coarser than a per-uuid lock
+   but negligible given the tiny critical section, and it benefits claude
+   daemons too. (b) **runs GC** — `_codex_gc_runs` age-gates and sweeps
+   `codex-run.*` sets that no live meta's `event_log` references, called at
+   spawn/resume, plus purge-time removal of a daemon's own run files. Both
+   reviewed and green across the codex, daemon, and review-dispatch suites.

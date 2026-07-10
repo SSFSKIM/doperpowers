@@ -89,17 +89,20 @@ each step. Two chains cover every cell without touching the self-hosted runner.
   The board's cron sweep is deliberately left un-armed until a manual
   shakedown passes.
 
-## Non-blocking follow-ups (from the final whole-branch review)
+## Non-blocking follow-ups (from the final whole-branch review) — DONE
 
-Separate from the shakedowns; captured here so they aren't lost.
+Both addressed in commit `1ff71ea` (reviewed, all suites green).
 
-- [ ] **FU-1 · registration-time lost-update (defensive hardening).**
-  `_codex_launch`'s meta finalize and the foreground spawn/resume meta write
-  are each atomic but not atomic across the two processes. Unreachable with
-  real Codex turn durations (documented in the spec's Surprises), so no fix is
-  required — but a future hardening could have the wrapper *merge* rather than
-  *overwrite* the meta, closing the theoretical window.
-- [ ] **FU-2 · `$DAEMON_HOME/runs` garbage collection.** Each Codex turn
-  leaves `codex-run.*.{task,events.jsonl,reply.txt,err,pid,rc}` behind; the
-  live `event_log` reference forbids blind deletion, so the directory grows
-  unbounded. Add GC for runs whose meta is retired/purged.
+- [x] **FU-1 · registration-time lost-update.** Resolved by serializing
+  `_meta_set`'s cross-process read-modify-write with an advisory `fcntl.flock`
+  on a shared `$DAEMON_HOME/.metalock`. Turned out to be more than theoretical:
+  under real concurrency the unserialized RMW not only lost fields but crashed
+  on the `<path>.tmp` `os.replace`. The lock makes each `_meta_set` atomic
+  w.r.t. every other, for claude and codex daemons alike.
+- [x] **FU-2 · `$DAEMON_HOME/runs` garbage collection.** Added `_codex_gc_runs`
+  — an age-gated sweep of run sets no live meta's `event_log` references —
+  called at spawn/resume, plus removal of a codex daemon's run files on
+  `purge`. The age gate spares a run another spawn is mid-registration on.
+  (Known limitation: a daemon resumed once and never spawned/resumed again
+  leaves its orphan un-swept until the next spawn — accepted, since growth is
+  driven by active resuming, which the sweep bounds.)
