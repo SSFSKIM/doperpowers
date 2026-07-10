@@ -13,7 +13,7 @@ A **daemon** is a durable background `claude` session, spawned with `claude --bg
 
 | the work is… | it goes to… |
 |---|---|
-| ticket-shaped, or must survive your session | the board — register it (doperpowers:issue-register); implement workers (doperpowers:implementing-tickets) and review workers (doperpowers:reviewing-prs) are daemons the *dispatch rituals* spawn through this substrate |
+| ticket-shaped, or must survive your session | the board — register it (doperpowers:issue-tracker); implement workers (doperpowers:implementing-tickets) and review workers (doperpowers:reviewing-prs) are daemons the *dispatch rituals* spawn through this substrate |
 | needing the human's live steering | the board, parked `interactive-preferred` |
 | ephemeral fan-out inside this session | native subagents (doperpowers:dispatching-parallel-agents) — they share your session's lifetime, and that's fine because the work does too |
 | must survive your session AND there is no board to hold it (a repo without issue-tracker, an overnight run in a bare directory) | a raw ad-hoc daemon — the escape hatch this skill's hand-driven loop below exists for |

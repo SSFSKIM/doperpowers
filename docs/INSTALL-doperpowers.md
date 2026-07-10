@@ -2,7 +2,7 @@
 
 `doperpowers` is a personal fork of [Doperpowers](https://github.com/obra/superpowers)
 by Jesse Vincent (MIT-licensed), with fork-specific skills such as
-`orchestrating-daemons`, `issue-register`, `codebase-design`, and `domain-modeling`
+`orchestrating-daemons`, `organizing-sprints`, `codebase-design`, and `domain-modeling`
 on top of the full brainstorm → plan → subagent-driven-TDD → review methodology.
 
 It ships as its own Claude Code plugin from a self-hosted marketplace in this repo,

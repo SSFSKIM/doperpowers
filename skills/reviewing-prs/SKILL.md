@@ -81,8 +81,9 @@ repo (label `tech-debt`) as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
 and the edit would land inside the very PR under review. Register the
 standing issue as a `deferred` P3 ticket so board-lint stays green. Promote
-accumulated comments into real tickets during gardening passes
-(doperpowers:issue-register).
+accumulated comments into real tickets during gardening passes (register
+via doperpowers:issue-tracker; a pile grown sprint-shaped is
+doperpowers:organizing-sprints input).
 
 ## Codex-lock handling
 

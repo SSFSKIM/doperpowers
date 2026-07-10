@@ -7,7 +7,8 @@ description: Use when managing the issue board — registering tickets, running 
 
 A repo's issue board, stored where it cannot fork: **GitHub Issues is the
 single source of truth.** Tickets are **purpose-units**: born as pre-specs
-from `issue-register`, gated and driven to a PR by autonomous implement
+from an `organizing-sprints` materialization (or registered directly here),
+gated and driven to a PR by autonomous implement
 workers (doperpowers:implementing-tickets), reviewed to a confident merge by
 review workers (doperpowers:reviewing-prs), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
@@ -206,7 +207,7 @@ inside it.
 ## Scope-outs become tickets (deferral rule)
 
 Work deliberately deferred out of scope — during a grill, a brainstorm, an
-issue-register session, a worker's gate/decomposition, or a worker's PR-time
+organizing-sprints session, a worker's gate/decomposition, or a worker's PR-time
 follow-ups — is registered on the board THE MOMENT the deferral is decided,
 by whoever decided it (v8: workers register directly; there is no proposal
 queue), with its lineage as edges:
