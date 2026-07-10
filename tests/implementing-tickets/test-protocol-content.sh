@@ -38,7 +38,7 @@ assert_contains "$proto" "FOLLOW-UPS: none" "follow-ups contract present"
 assert_contains "$proto" "A follow-up not registered does not exist" "direct registration doctrine"
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
-assert_contains "$proto" "doperpowers:execplan" "execplan mode wired"
+assert_contains "$proto" "{{EXECUTION_BLOCK}}" "execution block placeholder present"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
 assert_contains "$proto" "doperpowers:reviewing-prs" "handoff to the review loop named"
 assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
@@ -46,10 +46,21 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-want="{{BOARD_SCRIPTS}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO}}"
+want="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "placeholder set is exactly: $want"; else
     fail "placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+
+echo "engine blocks:"
+EXEC_CLAUDE="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md"
+EXEC_CODEX="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-codex.md"
+[ -f "$EXEC_CLAUDE" ] || { echo "missing $EXEC_CLAUDE"; exit 1; }
+[ -f "$EXEC_CODEX" ] || { echo "missing $EXEC_CODEX"; exit 1; }
+exec_claude="$(cat "$EXEC_CLAUDE")"
+exec_codex="$(cat "$EXEC_CODEX")"
+assert_contains "$exec_claude" "doperpowers:execplan" "claude block: execplan mode wired"
+assert_contains "$exec_codex" "PLAN:" "codex block: plan mode wired"
+assert_contains "$exec_codex" ".agents/skills" "codex block: vendored skill doctrine pointer"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
