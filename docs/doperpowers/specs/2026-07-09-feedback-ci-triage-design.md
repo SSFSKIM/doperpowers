@@ -11,30 +11,41 @@ sit unseen; good ideas evaporate; the loop from "user noticed something" to
 
 After this change, every **new** feedback row is picked up within minutes by a
 background **triage worker** — a Codex-SDK thread running on a self-hosted Mac —
-that diagnoses the item against the actual codebase/DB and routes it: a clearly
-diagnosable, well-scoped **bug** becomes a real fix **PR** (which then rides the
-existing `reviewing-prs` `--sweep` loop to a human merge); anything ambiguous, or
-any **아이디어/질문** or product/scope request, becomes a human-flagged
-`needs-human` board ticket carrying the worker's diagnosis. The outcome is written
+that diagnoses the item against the actual codebase/DB and **authors a board
+ticket**: a clearly diagnosable, well-defined and well-scoped **bug** becomes a
+`ready-for-agent` ticket (which the existing `implementing-tickets` loop then
+dispatches into a fix PR, and `reviewing-prs` reviews — the normal tri-CI
+pipeline); anything ambiguous, any **아이디어/질문**, or anything touching a
+risk surface becomes a `needs-human` (or `needs-info`) ticket that says
+explicitly what is unclear or why a human must decide. The outcome is written
 back to the feedback row and surfaced in the HQ console as a badge
-(`🤖 수정 → PR #123` / `🤖 티켓 → #45`).
+(`🤖 티켓 → #45`).
+
+> **Revision 2026-07-11 (ticket-only redesign):** v1 of this spec had the
+> triage worker also *fixing* gate-passing bugs directly (a second
+> `workspace-write` turn → fix PR). That fix path was deleted before ever
+> going live — see the Decision Log entries dated 2026-07-11. The triage
+> worker is now a **translator, not a fixer**: raw user language in,
+> board-native language out. Fixes still happen autonomously, but through the
+> board pipeline, which already owns the code-writing gate and the review leg.
+> Historical sections of this document that describe the fix path are marked
+> `[superseded]` rather than rewritten where they carry design history.
 
 It is the third member of the doperpowers dispatch family, alongside
 `issue-tracker` (tickets → implementing daemons) and `reviewing-prs` (PRs →
 review daemons). Where an implementing worker turns a ticket into a PR and a
 review worker turns a PR into a confident merge, a **triage worker turns a raw
-user report into either a fix PR or a scoped human ticket**. Unlike the
-implement-dispatch loop it has no orchestrator: its outputs are GitHub objects
-(PRs, `needs-human` issues) and DB writeback, and the fix PRs it opens are
-reviewed by the *already-running* PR-review loop — so this loop deliberately
-does **no** review of its own.
+user report into a well-authored board ticket** — the board is the shared
+interface of the tri-CI, so a worker that writes excellent tickets upgrades
+both downstream legs. Unlike the implement-dispatch loop it has no
+orchestrator: its outputs are GitHub issues and DB writeback.
 
 How to see it working: submit feedback in ida-solution with 분류 = 버그 제보
 describing a small, real bug; within one cron tick (~10 min) the `/hq/feedback`
-row shows `🤖 처리 중`, then `🤖 수정 → PR #<n>` (or `🤖 티켓 → #<n>` if it
-wasn't safely fixable); the PR appears against the current integration branch,
-its body citing the feedback id and the diagnosis, and the `reviewing-prs`
-`--sweep` cron reviews it like any other PR.
+row shows `🤖 처리 중`, then `🤖 티켓 → #<n>`; the ticket appears on the
+ida-solution board born `ready-for-agent`, its body carrying the diagnosis
+with `file:line` citations plus the quoted original feedback as data, and the
+implement-dispatch loop picks it up like any other ticket.
 
 ## Architecture
 
@@ -50,33 +61,41 @@ user submits 피드백 ─▶ POST /api/feedback ─▶ feedback row
      atomic claim  UPDATE…SET triage_state='claimed' WHERE …='pending' RETURNING   ◀─ dedup
      for each claimed row (≤ K per tick, sequential) → feedback-dispatch
                          ▼
-  feedback-dispatch.ts  (reusable core · Node · @openai/codex-sdk)
-     idempotency guard: existing PR/issue referencing feedback_id? → reconcile, skip
-     git worktree add  (base = configured integration branch)
-     thread = codex.startThread()
-       turn 1  thread.run(<triage prompt>, sandbox=read_only)   ← body = UNTRUSTED data
-       parse fenced-JSON verdict { resolved_category, route, root_cause, gate, … }
-     ── dispatcher enforces the gate on the REAL diff (not the model's self-report) ──
-       route=fix AND gate passes:
-          turn 2  thread.run(<apply fix>, sandbox=workspace_write)
-          dispatcher: npm run build + relevant tests
-          dispatcher: git commit + gh pr create (base = integration branch)
-          writeback triage_state='fixed', triage_pr_url
-             └─▶ reviewing-prs --sweep cron reviews the PR ─▶ human merges
-       else (idea/question/기타, not diagnosable, oversized, risk-surface, or build fail):
-          dispatcher: board-register.sh … --state needs-human --note "<왜 사람이 필요한지>"
-          writeback triage_state='ticketed', triage_issue_url
+  src/dispatch.ts  (reusable core · Node · @openai/codex-sdk)
+     idempotency guard: existing issue referencing feedback_id? → reconcile, skip
+     git worktree add --detach  (clean snapshot of origin/<integration branch>)
+     single turn  thread.run(<triage prompt>, sandbox=read-only)  ← body = UNTRUSTED data
+       the worker diagnoses against the real code AND authors the ticket
+       (title/body per the repo's ticket policy, recommended birth state)
+     parse fenced-JSON verdict { resolved_category, root_cause, ticket:{…}, … }
+     ── dispatcher enforces the REGISTRATION GATE on the verdict ──
+       idea/question → forced needs-human (product/answer = human's, worker
+         recommendation cannot override)
+       ready-for-agent only if: resolved_category=bug AND root_cause carries a
+         file:line citation AND no cited path touches a risk surface
+       risk-surface citation → demoted to needs-human with the reason
+     dispatcher: board-register.sh … --state <state> [--note "<what's unclear>"]
+       (body = worker-authored ticket + dispatcher-appended provenance block:
+        quoted raw feedback marked as data + metadata + feedback:<id> marker)
+     writeback triage_state='ticketed', triage_issue_url
+       └─▶ ready-for-agent tickets ride the NORMAL pipeline:
+           implementing-tickets (re-runs its own Ticket Gate at dispatch)
+           ─▶ fix PR ─▶ reviewing-prs --sweep ─▶ human/self-merge
      finally: git worktree remove
                          ▼
   HQ console /hq/feedback  renders the triage badge per row
 ```
 
-**Principle: the model proposes, the dispatcher disposes.** The Codex thread only
-reads code and edits files in an ephemeral worktree. Every privileged,
-irreversible side effect — Supabase writeback, `board-register.sh`,
-`gh pr create` — is executed by the dispatcher (Node), never by the model. The
-model's verdict is advisory; the dispatcher independently re-checks the gate
-against the real git diff.
+**Principle: the model proposes, the dispatcher disposes — scoped to side-effect
+execution, not authorship.** The Codex thread reads code in an ephemeral
+read-only worktree and authors ticket *content*; every privileged, irreversible
+side effect — Supabase writeback, `board-register.sh` — is executed by the
+dispatcher (Node), never by the model. The worker's recommended birth state is
+advisory; the dispatcher independently enforces the registration gate (category
+prior, citation presence, risk-surface scan) before honoring `ready-for-agent`.
+The backstop is structural: a `ready-for-agent` ticket is re-gated by the
+implement worker's own Ticket Gate at dispatch time, and any resulting PR is
+reviewed by the review leg.
 
 **Two repos, clean split:**
 
@@ -94,12 +113,15 @@ against the real git diff.
   (`triage_state='pending'`, plus `claimed` rows older than a reclaim timeout),
   performs the atomic claim, and invokes `feedback-dispatch.ts` per claimed row,
   sequentially, up to `K` per tick. Kill switch: `TRIAGE_ENABLED`.
-- **`scripts/feedback-dispatch.ts`** — the reusable worker core (Node 18+,
-  `@openai/codex-sdk`). Per row: idempotency guard → worktree → Codex thread
-  (read_only diagnosis, workspace_write fix) → **deterministic gate enforcement
-  on the real diff** → side effects (PR or ticket) → writeback → worktree
-  cleanup. Kill switch: `TRIAGE_FIX_ENABLED` (false ⇒ every bug becomes a
-  ticket). Owns all privileged tokens; the model never sees DB creds.
+- **`src/dispatch.ts`** (+ the `src/` module set) — the reusable worker core
+  (Node 18+, `@openai/codex-sdk`). Per row: idempotency guard → detached
+  read-only worktree → **one** Codex turn (diagnose + author the ticket) →
+  **deterministic registration-gate enforcement on the verdict** → ticket
+  registration → writeback → worktree cleanup. Owns all privileged tokens; the
+  model never sees DB creds. *(2026-07-11: the `workspace_write` fix turn,
+  diff gate, build runner, and `TRIAGE_FIX_ENABLED` kill switch were deleted
+  with the ticket-only redesign; `TRIAGE_ENABLED` remains the stop switch, and
+  `TRIAGE_MODEL`/`TRIAGE_EFFORT` pin the worker's model + reasoning effort.)*
 - **`references/triage-worker-protocol.md`** — the prompt template with
   `{{PLACEHOLDERS}}` (feedback id, resolved category, body, page_path, role,
   host, academy, base branch), establishing the untrusted-input boundary and the
@@ -110,20 +132,27 @@ against the real git diff.
   integration base branch, `K`, timeouts), and the two kill switches.
 - **Unit tests** — the gate truth-table (see Testing under Acceptance).
 
-### 2. `skills/reviewing-prs` — reused unchanged
+### 2. `skills/implementing-tickets` + `skills/reviewing-prs` — reused unchanged
 
-Fix PRs target the integration branch and are reviewed by the Mac's existing
-`review-dispatch.sh --sweep` cron, which scans all open PRs base-agnostically.
-This loop performs **no PR review of its own** — that would duplicate an
-already-paid-for pass.
+The downstream pipeline. A triage ticket born `ready-for-agent` is dispatched
+by the implement loop, whose Ticket Gate (well-defined + well-scoped)
+**re-runs at ORIENT from fresh context** — the triage worker's gate-triage at
+registration is a recommendation, never inherited trust (this mirrors how
+decomposition children are gate-triaged honestly at registration and re-gated
+at dispatch). The resulting fix PR is reviewed by the Mac's existing
+`review-dispatch.sh --sweep` cron. This loop performs **no code write and no
+review of its own** — both are already-paid-for passes downstream.
 
 ### 3. `skills/issue-tracker` — reused unchanged
 
-Human-flagged tickets are created with `board-register.sh … --state needs-human`
-(the board state meaning "waiting on a human's knowledge/taste/product
-decision"), labeled `source:user-feedback` (+ `type:question` for 질문), default
-priority **P2** (P1 only when the feedback describes data loss / a blocking
-break).
+Tickets are created with `board-register.sh … --state <state>` where state is
+the gate outcome: **`ready-for-agent`** (diagnosed, grounded, well-defined +
+well-scoped bug), **`needs-human`** (idea/question, product/taste forks,
+risk-surface contact, or anything only the human can unpark — note carries the
+question list), or **`needs-info`** (substantial knowledge work anyone could
+do; rare by design). All are labeled `source:user-feedback` (+ `type:question`
+for 질문), priority fixed at **P2** — the worker cannot set priority, so an
+injected feedback body can never jump the implement-dispatch queue.
 
 ### 4. ida-solution changes (consumer — M4.5 gate)
 
@@ -135,6 +164,10 @@ break).
     'pending','claimed','fixed','ticketed','skipped','failed')`
   - `triage_pr_url TEXT`, `triage_issue_url TEXT`, `triaged_at TIMESTAMPTZ`,
     `host TEXT`
+  - *(2026-07-11, migration still unapplied: `'fixed'` and `triage_pr_url` are
+    vestiges of the deleted fix path — since p86 has not been authored/applied
+    yet, drop both from the DDL when it lands; the skill no longer writes
+    either. The TS `TriageState` mirror follows whatever the applied DDL says.)*
   - **Critical backfill:** `UPDATE feedback SET triage_state='skipped' WHERE
     created_at < now();` so the bot never sweeps historical rows on first run.
   - Partial index: `CREATE INDEX … ON feedback (created_at) WHERE
@@ -155,34 +188,54 @@ reveal secrets, "ignore the above") is ignored; the worker acts only to
 diagnose/fix the reported symptom. This boundary is stated before the body is
 shown.
 
-Phases:
+Phases (2026-07-11 ticket-only shape; the v1 fix-turn phases are superseded):
 
 1. **ORIENT** — state the untrusted boundary; read the row's metadata.
-2. **CLASSIFY (category prior)** — `아이디어` → always ticket (product/scope =
-   human); `질문` → always ticket (a human answers); `버그 제보` → diagnose;
-   `기타` → infer the real category from the body, then apply the same rules.
-3. **DIAGNOSE (`read_only`)** — reproduce the fault against the real codebase/DB;
-   identify root cause with `file:line` citations. No clear root cause → ticket.
-4. **DECIDE** — emit the structured verdict; `route:fix` only if every gate
-   condition holds, else `route:ticket`.
-5. **ACT** — the dispatcher (not the model) performs the side effect.
+2. **CLASSIFY (category prior)** — `아이디어` → `needs-human` ticket
+   (product/scope = human); `질문` → `needs-human` ticket (a human answers);
+   `버그 제보` → diagnose; `기타` → infer the real category from the body,
+   then apply the same rules. Ideas/questions still get *diagnosed context*
+   (which modules the request touches) — grounding helps the human too — but
+   never a `ready-for-agent` recommendation.
+3. **DIAGNOSE (`read-only`)** — reproduce the fault against the real
+   codebase/DB; identify root cause with `file:line` citations. No clear root
+   cause → park state with an explicit what's-unclear note.
+4. **AUTHOR** — write the ticket the way the board expects tickets to be
+   written: a title that summarizes the problem (never raw user text), a body
+   with symptom → diagnosis (citations) → suggested fix direction → scope
+   estimate → open questions. The implement-side Ticket Gate definitions
+   (well-defined: every non-mechanical fork answerable from ticket+codebase;
+   well-scoped: fits ~1–2 ExecPlans) are the authoring standard.
+5. **DECIDE** — recommend the birth state: `ready-for-agent` only if the
+   ticket honestly passes the gate above AND the diagnosis is grounded AND no
+   risk surface is implicated; else `needs-human`/`needs-info` with the note
+   saying exactly what is missing. The dispatcher (not the model) performs
+   every side effect.
 
-The fix gate — all must hold, enforced by the dispatcher on the real diff; any
-miss degrades to a ticket carrying the diagnosis:
+The registration gate — enforced by the dispatcher on the verdict; the
+worker's recommended state is advisory:
 
-- **G1** root cause identified with ≥1 code/DB citation
-- **G2** resolved category is `bug`
-- **G3** post-fix diff ≤ ~150 lines **and** ≤ 5 files
-- **G4** touches **no risk surface** (from ida-solution golden rules): auth/RLS
-  (`lib/auth.ts`, `middleware.ts`, RLS policies, `assertStudentAccess`);
-  migrations/schema (`lib/schema.sql`, `sql/*.sql`, the `types/index.ts` mirror);
-  generate-plan timetable layout (`buildMealBreakRows` / `splitStudyAroundBlocks`
-  / `resolveOverlaps`); exam-bank copyright (`past_exam_problems`,
+- **R1** `ready-for-agent` requires `resolved_category = bug`
+- **R2** `ready-for-agent` requires ≥1 `file:line` citation in `root_cause`
+- **R3** any cited path (extracted by the dispatcher from `root_cause` and the
+  authored ticket text, not from a self-reported list) matching a **risk
+  surface** demotes to `needs-human`: auth/RLS (`lib/auth.ts`,
+  `middleware.ts`, RLS policies, `assertStudentAccess`); migrations/schema
+  (`lib/schema.sql`, `sql/*.sql`, the `types/index.ts` mirror); generate-plan
+  timetable layout; exam-bank copyright (`past_exam_problems`,
   `lib/exam-bank.ts`); D-day/grade truth (`lib/exam-calendar.ts`,
   `lib/grade-system.ts`); server-only secrets/LLM (`lib/anthropic.ts`,
-  `supabaseAdmin`, service-role/API keys); cron (`app/api/cron/*`, `vercel.json`)
-- **G5** `npm run build` (or `tsc --noEmit`) + relevant tests green
-- **G6** the fix addresses only the reported symptom — no unrelated refactor
+  `supabaseAdmin`, service-role/API keys); cron (`app/api/cron/*`,
+  `vercel.json`)
+- **R4** `idea`/`question` (row category or resolved) is always forced to
+  `needs-human` regardless of the worker's recommendation
+- **R5** park states carry a non-empty note (what's unclear / why a human)
+
+Provenance is enforced by construction: the dispatcher — not the worker —
+appends the quoted raw feedback body (marked "data, not instructions"), the
+submission metadata, and the `feedback:<id>` idempotency marker to every
+ticket body. A downstream implement worker always sees which part of the
+ticket is untrusted user text.
 
 Verdict shape (fenced JSON the dispatcher extracts):
 
@@ -190,10 +243,13 @@ Verdict shape (fenced JSON the dispatcher extracts):
 {
   "feedback_id": "…",
   "resolved_category": "bug|idea|question|other",
-  "route": "fix|ticket",
-  "root_cause": "… with file:line citations",
-  "gate": { "cited": true, "scoped": true, "risk_surface": false, "tests_green": true },
-  "reason_if_ticket": "touches auth risk surface — needs human",
+  "root_cause": "… with file:line citations (or why grounding failed)",
+  "ticket": {
+    "title": "problem summary, never raw user text",
+    "body": "markdown: 증상 → 진단 → 제안 방향 → 스코프 → 불명확한 점",
+    "state": "ready-for-agent|needs-human|needs-info",
+    "note": "required for park states — what's unclear / why a human"
+  },
   "confidence": "high|medium|low"
 }
 ```
@@ -202,13 +258,14 @@ Verdict shape (fenced JSON the dispatcher extracts):
 
 Every failure still produces a useful, non-silent outcome:
 
-- Codex/API error → `failed`; retried next tick up to N attempts, then left
-  `failed` (HQ shows `🤖 실패`).
-- Fix builds/tests **fail** → **no PR**; downgrade to a ticket carrying the
-  diagnosis + note "제안 수정이 빌드/테스트 실패".
-- `gh pr create` fails → `failed`, worktree cleaned, retry next tick.
-- Writeback fails after a PR/ticket was created → stale-claim recovery re-runs
-  the row, but the **idempotency guard** (search for an existing PR/issue
+- Codex/API error → `failed` (terminal — an operator resets the row to
+  `pending` to retry; HQ shows `🤖 실패`).
+- Malformed verdict, or a verdict whose `feedback_id` doesn't match the row →
+  `failed`, never a guessed ticket.
+- `board-register.sh` fails → `failed`, worktree cleaned; stale-claim recovery
+  applies on reset.
+- Writeback fails after a ticket was created → stale-claim recovery re-runs
+  the row, but the **idempotency guard** (search for an existing issue
   referencing `feedback_id` before acting) reconciles instead of duplicating.
 - Worker timeout (default 20 min) → `failed` + worktree cleanup.
 - Worktree removed in a `finally` on every exit path — no orphans.
@@ -220,35 +277,38 @@ Every failure still produces a useful, non-silent outcome:
 - Within one cron tick a pending row moves to `claimed`; two concurrent poll runs
   never both process the same row (atomic claim proven by the `RETURNING`
   contract).
-- A 버그 제보 describing a small, real, non-risk-surface bug results in a PR against
-  the integration branch, `triage_state='fixed'`, `triage_pr_url` set, and the PR
-  body cites the feedback id + diagnosis. The PR opens **no** review of its own;
-  the `--sweep` loop reviews it.
-- An 아이디어 or 질문, or a bug that fails any gate condition, results in a
-  `needs-human` board ticket labeled `source:user-feedback`,
-  `triage_state='ticketed'`, `triage_issue_url` set, and the ticket body carries
-  the diagnosis (bugs) or the human-framed request (ideas/questions).
-- A fix whose diff touches a risk-surface path becomes a ticket, never a PR —
-  even if the model's self-reported verdict said `risk_surface:false` (dispatcher
-  path scan wins).
-- `TRIAGE_FIX_ENABLED=false` routes every bug to a ticket with zero code-write.
+- A 버그 제보 describing a small, real, non-risk-surface bug results in a board
+  ticket born `ready-for-agent`, `triage_state='ticketed'`, `triage_issue_url`
+  set; the ticket title summarizes the problem, the body carries the diagnosis
+  with `file:line` citations plus the dispatcher-appended quoted original
+  (marked as data) and the `feedback:<id>` marker.
+- An 아이디어 or 질문, or a bug the worker cannot ground, results in a
+  `needs-human` (or `needs-info`) ticket whose note states exactly what is
+  unclear or why a human must decide, labeled `source:user-feedback`.
+- A diagnosis citing a risk-surface path becomes `needs-human`, never
+  `ready-for-agent` — even if the worker recommended `ready-for-agent`
+  (dispatcher path scan over the verdict text wins).
+- No code is ever written and no PR is ever opened by this loop; the only
+  write-capable actor downstream is the implement worker, after its own gate.
 - The HQ console shows the correct badge per `triage_state`; the human `status`
   tabs are unchanged.
 
-**Testing** concentrates on the safety-critical dispatcher gate (Node/vitest):
-gate truth-table over synthetic diffs (oversized → ticket; risk-surface path →
-ticket; benign path → allowed); category routing never raises the sandbox for
-idea/question; verdict-JSON parsing (malformed → `failed`); idempotency guard;
-atomic-claim 0-row skip. Plus: migration applies on a scratch DB; `types`
-compile; `host` lands on the inserted row; HQ badge renders; one end-to-end
-rehearsal with a seeded synthetic bug row.
+**Testing** concentrates on the safety-critical dispatcher logic (Node/vitest):
+registration-gate truth-table (idea/question forced needs-human; uncited or
+non-bug ready-for-agent demoted; risk-surface citation demoted; park state
+without note repaired); verdict-JSON parsing (malformed / id-mismatch →
+`failed`); provenance block always appended; idempotency guard; atomic-claim
+0-row skip. Plus: migration applies on a scratch DB; `types` compile; `host`
+lands on the inserted row; HQ badge renders; one end-to-end rehearsal with a
+seeded synthetic bug row.
 
-**Rollout (phased; the kill switch is the observation stage, not a code fork):**
-Phase 0 — land ida-solution changes (inert) via the M4.5 gate + apply the
-migration. Phase 1 — shadow: `TRIAGE_FIX_ENABLED=false`, every item becomes a
-ticket, validate ingress/claim/worktree/Codex/ticket-quality/badges with no
-code-write risk. Phase 2 — enable auto-fix, `K=1`, watch the first PRs. Phase 3 —
-tune `K`, gate thresholds, category handling.
+**Rollout (phased):** Phase 0 — land ida-solution changes (inert) via the M4.5
+gate + apply the migration. Phase 1 — live with `K=1`: watch ticket quality
+(classification accuracy, grounding, state recommendations) on the first rows.
+Phase 2 — tune `K`, cadence, and the protocol's authoring guidance from
+observed tickets. (The old Phase 2 "enable auto-fix" no longer exists —
+ticket-only is the terminal shape, and `ready-for-agent` tickets flowing to
+the implement loop is the autonomy, gated there.)
 
 ## Assumptions to verify at plan time
 
@@ -337,6 +397,79 @@ tune `K`, gate thresholds, category handling.
   검증(수정이 실제로 root_cause가 인용한 파일에만 닿는지)은 v1에서는 보류** —
   G1–G6 게이트 + 사람의 PR 리뷰가 백스톱 역할을 하므로 당장 필수는 아니라고
   판단; Task 11(하드닝) 후보로 남긴다.
+- **Ticket-only: the fix path is deleted; fixes flow through the board
+  pipeline.** (2026-07-11, human decision.) Supersedes "Fix autonomy = fix+PR
+  day one" and narrows "Routing = category-aware full routing" (routing
+  survives, but every route now ends in a ticket). Rationale: the tri-CI
+  already has an implement leg with its own pre-code rigor gate
+  (implementing-tickets' well-defined + well-scoped Ticket Gate) and a review
+  leg; a direct-fix path inside triage was a second, parallel code-writing
+  pipeline that bypassed the implement gate and duplicated its machinery
+  (own diff gate, own 15-min build runner, own PR plumbing). Routing
+  everything through the board yields one pipeline and one gate vocabulary;
+  autonomy is preserved because a solid diagnosis births the ticket
+  `ready-for-agent`, which the implement loop dispatches unattended. Deleted:
+  the `workspace-write` turn, `renderFixPrompt`, the G3–G6 diff gate,
+  `diffStat`/`buildAndTest`, `openFixPr`, `TRIAGE_FIX_ENABLED`. The G4
+  risk-surface list survives with a changed role: from diff gate to routing
+  prior (cited-path scan → forced `needs-human`). Rejected: *keeping the
+  dual-path shadow toggle* — permanent shadow mode with dead fix code is
+  worse than deleting it; git history and this log preserve the design.
+- **The worker authors the ticket; the dispatcher executes it.** (2026-07-11.)
+  "Model proposes, dispatcher disposes" was over-applied in v1 to *content*:
+  `dispatch.ts` composed tickets mechanically (title = first 60 chars of raw
+  user text, fixed template body), which squeezed the diagnosis into one
+  field and produced tickets that could never honestly pass the implement
+  gate. The principle is about side-effect *execution*, not authorship. Now
+  the verdict carries a full worker-authored ticket (title, body per the
+  board's ticket policy, recommended birth state, park note); the dispatcher
+  validates it (registration gate R1–R5), appends the provenance block +
+  idempotency marker itself, and is the only thing that runs `gh`/
+  `board-register.sh`. Chained-injection caveat handled by construction: the
+  raw feedback is always quoted in a dispatcher-appended block explicitly
+  marked as data, so downstream implement workers can see the trust boundary
+  inside the ticket.
+- **Triage tickets can be born `ready-for-agent`; priority stays fixed P2.**
+  (2026-07-11.) v1 filed every ticket `needs-human`, making the human the
+  bottleneck for even perfectly-diagnosed bugs. The board's existing
+  registration ethic (implementing-tickets: children are "gate-triaged
+  honestly at registration", and the implement worker re-runs the gate at
+  dispatch from fresh context, treating prior triage as context, not
+  inherited trust) means a triage worker recommending `ready-for-agent` is
+  structurally safe — it is exactly the same trust shape as a decomposing
+  worker registering children. Priority remains dispatcher-fixed at P2:
+  letting the worker set priority would let an injected feedback body jump
+  the implement-dispatch queue. The human re-prioritizes on wake if needed.
+- **Model + reasoning effort pinned via `TRIAGE_MODEL`/`TRIAGE_EFFORT`
+  (defaults `gpt-5.6-sol`/`medium`).** (2026-07-11.) v1 set neither, so the
+  worker silently ran whatever `~/.codex/config.toml` declared as the
+  machine's interactive default — changing the daily-driver config would have
+  changed the unattended loop. `ThreadOptions.model`/`.modelReasoningEffort`
+  (confirmed in `@openai/codex-sdk@0.144.1` typings) decouple them. `medium`
+  effort: the worker now only diagnoses and writes prose; `high` was sized
+  for producing correct minimal diffs.
+- **Declined: network access + `approvalPolicy:on-request` +
+  `approvals_reviewer=auto_review` for this worker.** (2026-07-11.) Proposed
+  to align triage with the codex-workers substrate config; declined because
+  the trust classes differ. Review/implement workers consume repo-internal
+  input (PRs, tickets authored by our own agents/humans); the triage worker
+  consumes arbitrary end-user text — the least-trusted input in the system.
+  `networkAccessEnabled:true` would assemble untrusted input + private
+  codebase + an exfiltration channel, and an LLM approvals reviewer is
+  itself promptable and only adjudicates command escalations, not network
+  bytes. A read-only diagnose-and-author worker also has nothing to
+  escalate, so `approvalPolicy:'never'` is descriptive, not restrictive. If
+  live tickets show diagnosis starved for lack of reproduction capability,
+  revisit with evidence (narrowest option first: `webSearchMode:'cached'` or
+  dispatcher-fetched context passed as data).
+- **Worktree kept, but detached and bare.** (2026-07-11.) With no fix turn
+  the worktree's write-isolation role is gone, but it still provides a clean
+  snapshot pinned to `origin/<integration branch>` — the base checkout may be
+  dirty, mid-operation, or on another branch, which would corrupt `file:line`
+  citations. Now created with `--detach` (no `fix/feedback-*` branch to clean
+  up) and without the `node_modules` symlink (nothing builds). Rejected:
+  *diagnosing in the base checkout* (citation integrity) and *dropping
+  isolation machinery entirely* (same reason).
 
 ## Surprises & Discoveries
 
@@ -376,6 +509,20 @@ tune `K`, gate thresholds, category handling.
   - **Errors** are normalized: a `turn.failed` event makes `run()` reject with
     `Error(message)`; the dispatcher's `try/finally` + `parseVerdict(...)===null`
     guard already cover both the throw and a malformed-verdict return.
+- **`@openai/codex-sdk@0.144.1` grew the knobs v1 lacked** (2026-07-11, static
+  read of the published tarball's `dist/index.d.ts`): `ThreadOptions` now
+  carries `model`, `modelReasoningEffort` (`"minimal"|"low"|"medium"|"high"|
+  "xhigh"`), `approvalPolicy`, `networkAccessEnabled`, and `webSearchMode` —
+  everything the ticket-only redesign pins is first-class SDK surface, no
+  `CodexOptions.config` escape hatch needed (that hatch also exists now and
+  flattens a JSON object into CLI `--config` overrides, which is how
+  `approvals_reviewer` *would* be set if the declined auto_review decision is
+  ever revisited).
+- **The board state the redesign needed already existed as the default.**
+  `board-register.sh`'s birth states are `ready-for-agent` (default) |
+  `needs-info` | `needs-human` | `interactive-preferred` | `deferred`, with
+  notes required for park states — the triage worker slots into the existing
+  vocabulary with zero board-side changes.
 
 ## Outcomes & Retrospective
 
@@ -409,6 +556,10 @@ so it validates the three untested seams (`codexAdapter` two-turn flow,
 Also deferred to that hardening pass: `findExisting`'s `gh pr list` fails *open*
 (a `gh` error → no PR found → possible duplicate), backstopped for now by the
 body marker and human PR review.
+*(2026-07-11: after the ticket-only redesign the untested seams shrink to
+`codexAdapter` single-turn, `git.ts` detached worktree, and `poll.ts`
+end-to-end; the live run is now the Phase 1 `K=1` run, no longer "shadow"
+since ticket-only is the terminal shape.)*
 
 ## Revision Notes
 
@@ -443,3 +594,17 @@ body marker and human PR review.
   product/priority decision — the spec's own parenthetical ("waiting on a
   human's knowledge/taste/product decision") was already needs-human's v8
   definition; `needs-info` is reserved for delegable knowledge work.
+- 2026-07-11 — **Ticket-only redesign** (human decision, pre-live: the fix
+  path never ran against real feedback). The triage worker no longer writes
+  code or opens PRs; it diagnoses and *authors* a board ticket, born
+  `ready-for-agent` when the diagnosis is grounded and the ticket passes the
+  implement-side gate definitions, else parked with an explicit note. Fixes
+  flow through the normal board pipeline (implementing-tickets →
+  reviewing-prs). Model/effort pinned (`TRIAGE_MODEL`/`TRIAGE_EFFORT`,
+  defaults `gpt-5.6-sol`/`medium`); network access and the codex-workers
+  `auto_review` approvals reviewer considered and declined for this worker's
+  trust class. Deleted: turn 2, `renderFixPrompt`, G3–G6 diff gate,
+  `diffStat`/`buildAndTest`, `openFixPr`, `TRIAGE_FIX_ENABLED`. Five
+  superseding Decision Log entries + two Surprises added; Purpose,
+  Architecture, Components, Protocol, Error handling, Acceptance, and Rollout
+  rewritten to the ticket-only shape.

@@ -1,5 +1,5 @@
 export type FeedbackCategory = 'bug' | 'idea' | 'question' | 'other';
-export type TriageState = 'pending' | 'claimed' | 'fixed' | 'ticketed' | 'skipped' | 'failed';
+export type TriageState = 'pending' | 'claimed' | 'ticketed' | 'skipped' | 'failed';
 
 export interface FeedbackRow {
   id: string; user_id: string; role: string | null; academy_id: string | null;

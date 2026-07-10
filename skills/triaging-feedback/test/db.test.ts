@@ -43,10 +43,10 @@ describe('writebackQuery', () => {
   it('updates the patch fields plus a fresh triaged_at, scoped by id', async () => {
     const chain = { update: vi.fn().mockReturnThis(), eq: vi.fn().mockResolvedValue({ data: null, error: null }) };
     const client = { from: vi.fn().mockReturnValue(chain) } as any;
-    await writebackQuery(client, 'f1', { triage_state: 'fixed', triage_pr_url: 'https://example.com/pr/1' });
+    await writebackQuery(client, 'f1', { triage_state: 'ticketed', triage_issue_url: 'https://example.com/issues/1' });
     expect(chain.update).toHaveBeenCalledWith(expect.objectContaining({
-      triage_state: 'fixed',
-      triage_pr_url: 'https://example.com/pr/1',
+      triage_state: 'ticketed',
+      triage_issue_url: 'https://example.com/issues/1',
       triaged_at: expect.any(String),
     }));
     expect(chain.eq).toHaveBeenCalledWith('id', 'f1');

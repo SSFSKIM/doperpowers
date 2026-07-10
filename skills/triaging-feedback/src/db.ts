@@ -30,7 +30,7 @@ export async function findActionableQuery(client: SupabaseClient, k: number, rec
   return (data ?? []) as FeedbackRow[];
 }
 
-export async function writebackQuery(client: SupabaseClient, id: string, patch: { triage_state: TriageState; triage_pr_url?: string; triage_issue_url?: string }): Promise<void> {
+export async function writebackQuery(client: SupabaseClient, id: string, patch: { triage_state: TriageState; triage_issue_url?: string }): Promise<void> {
   const { error } = await client.from('feedback')
     .update({ ...patch, triaged_at: new Date().toISOString() }).eq('id', id);
   if (error) throw error;
@@ -41,6 +41,6 @@ export function makeDb(cfg: Config) {
   return {
     findActionable: (k: number, reclaimMs: number) => findActionableQuery(client, k, reclaimMs),
     claim: (id: string) => claimQuery(client, id, cfg.reclaimMs),
-    writeback: (id: string, patch: { triage_state: TriageState; triage_pr_url?: string; triage_issue_url?: string }) => writebackQuery(client, id, patch),
+    writeback: (id: string, patch: { triage_state: TriageState; triage_issue_url?: string }) => writebackQuery(client, id, patch),
   };
 }
