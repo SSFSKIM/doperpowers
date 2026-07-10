@@ -332,6 +332,16 @@ installed + authed"), implementing-tickets (pieces table), issue-tracker
   workers must `cd` before invoking the engine.
 - `~/.codex/config.toml` carries a stale pin note ("0.140.0, do not
   upgrade") while 0.142.5 is installed and working.
+- **The `_codex_launch` finalization wrapper turns any external kill of a
+  live codex turn into a status race** (found building Task 5's
+  `daemon-retire.sh`). Killing the codex pid wakes the wrapper's blocked
+  `wait`, which then writes its own terminal status *after* the caller's —
+  clobbering a `retired` (or any other) write back to `error`/`idle` milli-
+  seconds later, deterministically (reproduced 3/3, timestamp-instrumented).
+  Every caller that kills a live codex pid must wait on the wrapper's `.rc`
+  completion barrier before writing status — the same barrier
+  `codex-resume.sh`'s dead-pid guard already waits on. `daemon-retire.sh`
+  now does; a future non-`daemon-retire` kill path would have to as well.
 
 ### Task 1 spike: `codex exec --json` contract (2026-07-10, codex-cli 0.142.5, ChatGPT-account auth)
 

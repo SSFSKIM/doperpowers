@@ -857,7 +857,21 @@ fi
 engine="$(_meta_get "$uuid" engine)"
 if [ "$engine" = "codex" ]; then
   pid="$(_meta_get "$uuid" pid)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    # Killing the pid wakes _codex_launch's detached wrapper (its `wait` on the
+    # codex pid returns), which then writes its OWN terminal status — racing the
+    # "retired" write below and reliably clobbering it back to error/idle. Wait
+    # on the wrapper's rc completion barrier (same one codex-resume.sh waits on)
+    # so "retired" is the last word. Gated behind a live pid, so idle daemons
+    # pay zero added latency.
+    log="$(_meta_get "$uuid" event_log)"
+    if [ -n "$log" ]; then
+      rc_barrier="${log%.events.jsonl}.rc"
+      bound="${CODEX_RC_BARRIER_WAIT:-10}"; j=0
+      while [ ! -f "$rc_barrier" ] && [ "$j" -lt "$bound" ]; do sleep 1; j=$((j + 1)); done
+    fi
+  fi
   resume_hint="codex resume $uuid"
 else
   [ -n "$short" ] && claude stop "$short" >/dev/null 2>&1 || true
@@ -866,6 +880,13 @@ fi
 ```
 
 and in the two echo lines replace `claude --resume $uuid` with `$resume_hint`.
+
+> Amended during execution: the original Step-5 snippet killed the pid then
+> wrote `status=retired` with no wait — a deterministic race (reproduced 3/3,
+> timestamp-instrumented) against `_codex_launch`'s detached finalization
+> wrapper, which the kill itself wakes and which then clobbers "retired" back
+> to a terminal status. Fixed with a bounded rc-barrier wait mirroring
+> `codex-resume.sh`'s dead-pid guard, scoped to the live-pid codex branch only.
 
 - [ ] **Step 6: Run tests** — codex suite ALL PASSED, daemon suite still green, `scripts/lint-shell.sh` clean.
 
