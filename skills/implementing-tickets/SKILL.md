@@ -21,6 +21,7 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `references/implement-worker-protocol.md` | the Implement Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
+| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline inlined) — composed into the protocol at render time |
 | The Ticket Gate | the pre-code pass/park verdict (below) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |

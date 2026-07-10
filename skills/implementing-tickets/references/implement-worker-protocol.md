@@ -49,7 +49,7 @@ be written down as self-contained child pre-specs right now?
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
   then a one-line gate comment:
-  gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — <direct|execplan>: <one line>"
+  gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line>"
 - Fail → the park state itself, with the required note. Park discriminant —
   WHO UNPARKS IT:
   - The human as themselves — a decision only they can make, or a
@@ -62,13 +62,7 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
   - Ongoing steering, not one answer → interactive-preferred.
   End your turn stating the park crisply.
 
-EXECUTION (gate passed) — name the mode in the gate comment:
-- DIRECT: the pre-spec is the plan — TDD
-  (doperpowers:test-driven-development), commit frequently, open the PR.
-- EXECPLAN: 2+ milestones, or enough files/design sequencing that a fresh
-  session would need the document to survive context death →
-  doperpowers:execplan (the gate already served as its grill; author the
-  ExecPlan from ticket + gate findings, execute to the letter).
+{{EXECUTION_BLOCK}}
 The gate lowers the odds of a park; it does not abolish parks.
 A fork discovered mid-build is classified by the same rules: worker-grade →
 your call, keep building; human-grade → commit WIP to your branch, then

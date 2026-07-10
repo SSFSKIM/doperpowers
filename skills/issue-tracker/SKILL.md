@@ -138,14 +138,20 @@ pick by repo visibility:
    (or `wontfix "superseded by PR"`); if work genuinely remains, dispatch as
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
-2. Render the Implement Worker Protocol
+2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
+   `$WORKER_ENGINE` → default `codex`. Render the Implement Worker Protocol
    (`doperpowers:implementing-tickets` →
    `references/implement-worker-protocol.md`): substitute every
    `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
    `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
-   issue body from `gh issue view <n> --json body`).
-3. `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>` (from
-   `orchestrating-daemons` — always a worktree; workers write code).
+   issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
+   engine, `EXECUTION_BLOCK` = the engine's
+   `references/engine-blocks/execution-<engine>.md`).
+3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
+   (model/effort default gpt-5.6-sol/high — override with
+   `$CODEX_MODEL` / `$CODEX_EFFORT` as args 5–6). claude:
+   `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`. Both
+   from `orchestrating-daemons` — always a worktree; workers write code.
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) means
    the gate passed; a park state means it failed.
