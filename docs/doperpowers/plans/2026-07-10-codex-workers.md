@@ -1253,10 +1253,19 @@ EXECUTION (gate passed) — name the mode in the gate comment:
    `references/engine-blocks/execution-<engine>.md`).
 3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    (model/effort default gpt-5.6-sol/high — override with
-   `$CODEX_IMPL_MODEL` / `$CODEX_IMPL_EFFORT` as args 5–6). claude:
+   `$CODEX_MODEL` / `$CODEX_EFFORT`, the vars codex-spawn.sh actually reads,
+   or pass them as args 5–6). claude:
    `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`. Both
    from `orchestrating-daemons` — always a worktree; workers write code.
 ```
+
+> Amended during execution: the brief originally named the implement override
+> vars `$CODEX_IMPL_MODEL`/`$CODEX_IMPL_EFFORT`, which exist nowhere — Task 3's
+> `codex-spawn.sh` reads generic `$CODEX_MODEL`/`$CODEX_EFFORT` (defaults
+> gpt-5.6-sol/high, == the implement defaults). No dedicated `*_IMPL_*` knob is
+> needed: unlike review (which needs `CODEX_REVIEW_*` to reach `xhigh`), the
+> implement defaults already equal the spawner's, so the ritual just uses the
+> generic vars. Spec's Engine-selection section reconciled to match.
 
 - [ ] **Step 5: `skills/implementing-tickets/SKILL.md` pieces table** — add a row after the protocol row:
 

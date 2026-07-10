@@ -134,9 +134,14 @@ Read-side scripts stay single-entry with small engine branches:
 ### Engine selection
 
 Precedence: per-ticket/PR label `engine:claude|engine:codex` → env
-`WORKER_ENGINE` → default `codex`. Model/effort env:
-`CODEX_IMPL_MODEL`/`CODEX_IMPL_EFFORT` (default `gpt-5.6-sol`/`high`),
-`CODEX_REVIEW_MODEL`/`CODEX_REVIEW_EFFORT` (default `gpt-5.6-sol`/`xhigh`).
+`WORKER_ENGINE` → default `codex`. Model/effort env: the implement worker
+uses `codex-spawn.sh`'s own `CODEX_MODEL`/`CODEX_EFFORT` (default
+`gpt-5.6-sol`/`high`) directly — no dedicated `*_IMPL_*` knob, because the
+implement defaults ARE the spawner's defaults, so nothing needs overriding to
+reach them. The review worker needs a dedicated pair — `CODEX_REVIEW_MODEL`/
+`CODEX_REVIEW_EFFORT` (default `gpt-5.6-sol`/`xhigh`), which `review-dispatch.sh`
+translates into `codex-spawn.sh`'s positional model/effort args — precisely
+because review wants `xhigh`, which differs from the spawner's `high` default.
 `REVIEW_MODEL` keeps meaning the Claude review worker's model. The
 issue-tracker ritual step 3 and `review-dispatch.sh`'s spawn become a
 two-way switch: render the engine's protocol, call the engine's spawner.
