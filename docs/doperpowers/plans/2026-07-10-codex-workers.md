@@ -1324,18 +1324,30 @@ features.hooks=false` is always on: a checked-out PR could ship
 `.codex/hooks.json`, which would otherwise execute at session start.
 ```
 
-- [ ] **Step 2: reviewing-prs** — (a) Overview: "reviews it with codex" → "reviews it with the native Codex reviewer (`codex exec review`)". (b) Pieces table: add `references/engine-blocks/` row (engine + per-species fallback blocks) and note `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex). (c) Replace the whole `## Codex-lock handling` section with:
+- [ ] **Step 2: reviewing-prs** — (a) Overview: "reviews it with codex" → "reviews it with a native Codex reviewer (`codex exec` self-diffing the PR)". (b) Pieces table: add `references/engine-blocks/` row (engine + per-species fallback blocks) and note `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex). (c) Replace the whole `## Codex-lock handling` section with:
 
 ```markdown
 ## Review engine
 
-Both worker species run the same engine: native `codex exec review` against
-the PR base, with spec-compliance criteria (the linked ticket's acceptance)
-appended via stdin — no companion, no machine-wide lock. The Claude species
-falls back to a fresh Claude high-effort reviewer subagent when codex is
-unavailable; the Codex species has no second engine and parks `needs-human`
-instead. The review-trail comment names the engine that reviewed.
+Both worker species run the same engine: a native `codex exec` reviewer that
+self-diffs the PR against its base (`git diff origin/<base>...HEAD`), with
+correctness discipline AND spec-compliance criteria (the linked ticket's
+acceptance) inlined in the review prompt — no companion, no machine-wide lock.
+(The `codex exec review` subcommand can't take custom criteria — its target
+flags reject a stdin prompt — so the cookbook plain-`codex exec` form carries
+both.) The Claude species falls back to a fresh Claude high-effort reviewer
+subagent when codex is unavailable; the Codex species has no second engine and
+parks `needs-human` instead. The review-trail comment names the engine that
+reviewed.
 ```
+
+> Amended during execution (pre-dispatch): (a) and (c) originally described the
+> reviewer as `codex exec review` with spec-compliance criteria "appended via
+> stdin" — the exact composition Spike B proved impossible (targeting flags
+> reject a custom PROMPT, rc=2). Rewritten to the cookbook `codex exec` self-diff
+> form the Task 6 engine block actually ships, so the SKILL.md prose matches the
+> implementation rather than the disproven sketch. Same stale-vs-spike class as
+> Tasks 6–7.
 
 (d) Adoption checklist: add item "10. Codex workers (the default engine): `codex` CLI installed and authed (`codex login`) on the runner machine; set `WORKER_ENGINE=claude` (env) or label `engine:claude` to opt a repo/PR out."
 
