@@ -8,3 +8,7 @@ EXECUTION (gate passed) — name the mode in the gate comment:
   milestones with observable acceptance criteria, exact files per
   milestone), commit it, then execute it to the letter milestone by
   milestone — same TDD discipline within each.
+The full doperpowers skill doctrine behind this summary is vendored at
+`.agents/skills/` in your workspace (test-driven-development,
+writing-plans, verification-before-completion, systematic-debugging, …) —
+read the relevant SKILL.md when the summary above is not enough.

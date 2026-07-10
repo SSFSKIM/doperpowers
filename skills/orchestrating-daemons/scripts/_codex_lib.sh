@@ -63,6 +63,32 @@ _codex_main_root() {
   fi
 }
 
+# Vendor doperpowers skills into <cwd> so the codex worker can read the full
+# skill doctrine: codex scans <workspace>/.agents/skills/ and follows symlinks
+# (verified live on codex-cli 0.144.1 — skills surface namespaced as
+# doperpowers:<name>). This is the skills-parity seam the design spec noted
+# ("Symphony vendors doperpowers there per-workspace"): claude workers get the
+# plugin via the claude CLI; codex workers get this symlink. The exclude line
+# goes to the repo's SHARED info/exclude (local, never committed) so the
+# symlink is invisible to git status in every worktree — a worker can't
+# accidentally commit it. Silently a no-op for non-git cwds and for repos
+# that already have .agents/skills (tracked or previously vendored).
+_codex_vendor_skills() {  # <cwd>
+  local cwd="$1" lib skills_root ex
+  git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  if [ -e "$cwd/.agents/skills" ] || [ -L "$cwd/.agents/skills" ]; then return 0; fi
+  lib="${CODEX_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  skills_root="$(cd "$lib/../.." && pwd)"
+  [ -d "$skills_root" ] || return 0
+  mkdir -p "$cwd/.agents" 2>/dev/null || return 0
+  ln -s "$skills_root" "$cwd/.agents/skills" 2>/dev/null || return 0
+  ex="$(git -C "$cwd" rev-parse --git-path info/exclude 2>/dev/null)" || return 0
+  case "$ex" in /*) ;; *) ex="$cwd/$ex" ;; esac
+  mkdir -p "$(dirname "$ex")" 2>/dev/null || return 0
+  grep -qxF '.agents/skills' "$ex" 2>/dev/null \
+    || printf '%s\n' '.agents/skills' >> "$ex" 2>/dev/null || true
+}
+
 # Session/thread id from a --json event log (thread.started). Field names per
 # Spike A; tolerant of drift (thread_id, then id).
 _codex_thread_id() {

@@ -343,5 +343,41 @@ assert_file_exists "$el_gc" "spawn left a run event log"
 if [ ! -f "$el_gc" ]; then pass "purge removes the codex daemon's run files"; else
     fail "purge removes the codex daemon's run files"; fi
 
+echo "== spawn vendors doperpowers skills into the workspace (FU-4) =="
+# Implement path: git repo + worktree arg → vendored into the worktree.
+VWORK="$TEST_ROOT/vendorrepo"; mkdir -p "$VWORK"
+git -C "$VWORK" init -q
+git -C "$VWORK" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-vendor "hello" "$VWORK" vwt >/dev/null
+VWT="$VWORK/.claude/worktrees/vwt"
+if [ -L "$VWT/.agents/skills" ]; then pass "worktree gets an .agents/skills symlink"; else
+    fail "worktree gets an .agents/skills symlink"; fi
+assert_equals "$(readlink "$VWT/.agents/skills")" "$REPO_ROOT/skills" \
+    ".agents/skills points at the doperpowers skills root"
+assert_equals "$(git -C "$VWT" status --porcelain)" "" \
+    "vendored skills are invisible to git status (shared info/exclude)"
+# Review path shape: an existing git dir passed as cwd, no worktree arg.
+VDIRECT="$TEST_ROOT/vendordirect"; mkdir -p "$VDIRECT"
+git -C "$VDIRECT" init -q
+git -C "$VDIRECT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-vendor2 "hello" "$VDIRECT" >/dev/null
+if [ -L "$VDIRECT/.agents/skills" ]; then pass "plain git cwd (review path) gets the symlink"; else
+    fail "plain git cwd (review path) gets the symlink"; fi
+assert_equals "$(git -C "$VDIRECT" status --porcelain)" "" \
+    "review-path vendoring invisible to git status"
+# Idempotent + respects a pre-existing .agents/skills (does not clobber).
+mkdir -p "$TEST_ROOT/vendorown/.agents/skills"
+git -C "$TEST_ROOT/vendorown" init -q 2>/dev/null
+( source "$SCRIPTS_DIR/_lib.sh"; source "$SCRIPTS_DIR/_codex_lib.sh"
+  _codex_vendor_skills "$TEST_ROOT/vendorown" )
+if [ -d "$TEST_ROOT/vendorown/.agents/skills" ] && [ ! -L "$TEST_ROOT/vendorown/.agents/skills" ]; then
+    pass "a repo's own .agents/skills is left untouched"; else
+    fail "a repo's own .agents/skills is left untouched"; fi
+# Non-git cwd → silent no-op (implicitly also covered by every $WORK spawn above).
+( source "$SCRIPTS_DIR/_lib.sh"; source "$SCRIPTS_DIR/_codex_lib.sh"
+  _codex_vendor_skills "$WORK" )
+if [ ! -e "$WORK/.agents" ]; then pass "non-git cwd: vendoring is a no-op"; else
+    fail "non-git cwd: vendoring is a no-op"; fi
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "$FAILURES FAILURE(S)"; exit 1; fi

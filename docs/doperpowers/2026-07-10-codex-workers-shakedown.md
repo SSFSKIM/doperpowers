@@ -149,5 +149,45 @@ correct disciplined failure, but dead in the water).
   what claude workers already wield via the keychain, not new exposure — but
   flagged here so the human can veto if they read the surface differently.
 
-_(Should also be reflected as a Surprise in
+### FU-4 · skills parity — codex workers now get the doperpowers doctrine
+
+The v1 design deliberately inlined the TDD/PLAN discipline into
+`execution-codex.md` because codex workers had no doperpowers skills, while
+the claude block references `doperpowers:test-driven-development` /
+`doperpowers:execplan` directly (spec: "not used in v1 … but it's the path if
+Codex workers ever need full skills"). That path is now live:
+
+- **Verified empirically first:** codex-cli 0.144.1 scans
+  `<workspace>/.agents/skills/`, follows a symlink, and surfaces every
+  doperpowers skill properly namespaced (`doperpowers:execplan`, …) — tested
+  with a scratch repo + symlink + one cheap `codex exec` call.
+- **Mechanism:** `_codex_vendor_skills` (in `_codex_lib.sh`, called by
+  `codex-spawn.sh` after worktree resolution) symlinks the doperpowers
+  `skills/` root to `<runcwd>/.agents/skills` and adds `.agents/skills` to
+  the repo's shared `info/exclude` (local, never committed) so the symlink is
+  invisible to `git status` in every worktree — a worker cannot accidentally
+  commit it. No-op for non-git cwds and for repos that already have
+  `.agents/skills`. Covers both pipelines: implement (worktree arg) and
+  review (`review-dispatch.sh` passes its detached worktree as cwd).
+- **Engine block:** `execution-codex.md` keeps the inlined discipline as the
+  primary instruction (proven in SD-1) and gains a pointer to
+  `.agents/skills/` for the full doctrine. Rewriting the block to reference
+  skills the way the claude block does is a follow-up that wants eval
+  evidence, per the skill-change bar.
+- Six new assertions in `tests/orchestrating-daemons/test-codex-scripts.sh`;
+  all orchestrating-daemons + reviewing-prs suites green; shellcheck clean.
+
+### Remaining engine asymmetries — audited, deliberate (not gaps)
+
+| surface | claude worker | codex worker | verdict |
+|---|---|---|---|
+| repo instructions | `CLAUDE.md` (+`CLAUDE.local.md`) | `AGENTS.md` → chains to `CLAUDE.md` in ida-solution | OK; `CLAUDE.local.md` stays claude-only by design |
+| approvals | `--permission-mode auto`; can surface `blocked` | sandbox + `auto_review` approvals reviewer; **never** `blocked` | deliberate (codex-spawn.sh header) |
+| hooks | normal claude hooks | `features.hooks=false` | deliberate (two installed plugins' hooks.json fail codex's parser — spec Surprises) |
+| worktree | native `--worktree` | manual `git worktree add` + `--add-dir` main root | equivalent outcome, different mechanism |
+| reply/resume | native `claude --resume` | `codex-resume.sh` + reply file / event log | engine-routed in daemon-reply/daemon-list; verified live |
+| review fallback | fresh claude reviewer subagent | no second engine → parks `needs-human` | deliberate (spec) |
+| effort knob | (model arg only) | `CODEX_MODEL` + `CODEX_EFFORT` | minor cosmetic asymmetry; claude CLI has no spawn-time effort flag |
+
+_(FU-3 and FU-4 should also be reflected as Surprises in
 `specs/2026-07-10-codex-workers-design.md` at retrospective.)_

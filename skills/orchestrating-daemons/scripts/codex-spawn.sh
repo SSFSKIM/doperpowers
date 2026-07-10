@@ -52,6 +52,10 @@ if [ -n "$worktree" ]; then
   runcwd="$wtdir"
 fi
 
+# Skills parity with claude workers: expose the doperpowers skill doctrine at
+# <workspace>/.agents/skills — codex scans that path (see _codex_vendor_skills).
+_codex_vendor_skills "$runcwd"
+
 runs="$DAEMON_HOME/runs"; mkdir -p "$runs"
 _codex_gc_runs   # reclaim orphaned scratch from earlier turns before adding ours
 run="$(mktemp "$runs/codex-run.XXXXXX")"; rm -f "$run"
