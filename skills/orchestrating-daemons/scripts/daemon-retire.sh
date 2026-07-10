@@ -50,6 +50,13 @@ wtnote=""
 [ -n "$worktree" ] && wtnote="  NOTE: work is on branch worktree-$(printf '%s' "$worktree" | tr -c 'a-zA-Z0-9._-' '-') — merge or remove its worktree yourself."
 
 if [ "${2:-}" = "purge" ]; then
+  # A codex daemon's turn scratch (codex-run.*) lives under $DAEMON_HOME/runs;
+  # its event_log points into that set. We are about to drop the meta, so the
+  # runs GC would never again see this daemon to reclaim it — remove the set now.
+  if [ "$engine" = "codex" ]; then
+    el="$(_meta_get "$uuid" event_log)"
+    [ -n "$el" ] && rm -f "${el%.events.jsonl}".* 2>/dev/null || true
+  fi
   rm -f "$(_meta_path "$uuid")" "$(_reply_path "$uuid")" "$(_err_path "$uuid")"
   echo "purged $name [$uuid] from registry (session transcript left intact; resume with: $resume_hint)${wtnote}"
 else

@@ -53,6 +53,7 @@ if [ -n "$worktree" ]; then
 fi
 
 runs="$DAEMON_HOME/runs"; mkdir -p "$runs"
+_codex_gc_runs   # reclaim orphaned scratch from earlier turns before adding ours
 run="$(mktemp "$runs/codex-run.XXXXXX")"; rm -f "$run"
 taskf="$run.task.txt"
 printf '%s' "$task" > "$taskf"

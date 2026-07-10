@@ -39,24 +39,39 @@ _strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
 # Merge key=value pairs into a daemon's metadata JSON (creates it if absent).
 # Usage: _meta_set <uuid> field1 value1 [field2 value2 ...]
+#
+# The read-modify-write is serialized across processes with an advisory flock on
+# a shared lock file. Without it, two concurrent _meta_set calls on the same
+# daemon — the detached _codex_launch wrapper finalizing a turn while the
+# foreground spawn/resume writes the registration block — race: the later
+# writer's stale snapshot silently clobbers the other's fields (e.g. `engine`
+# is lost and the daemon renders as claude), and the two `<path>.tmp` writes can
+# collide on os.replace outright. The flock makes each RMW atomic w.r.t. every
+# other _meta_set.
 _meta_set() {
   local uuid="$1"; shift
   local path; path="$(_meta_path "$uuid")"
-  DAEMON_META_PATH="$path" python3 - "$@" <<'PY'
-import json, os, sys
+  DAEMON_META_PATH="$path" DAEMON_META_LOCK="$DAEMON_HOME/.metalock" python3 - "$@" <<'PY'
+import fcntl, json, os, sys
 path = os.environ["DAEMON_META_PATH"]
-try:
-    with open(path) as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
 args = sys.argv[1:]
-for i in range(0, len(args), 2):
-    data[args[i]] = args[i + 1]
-tmp = path + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(data, f, indent=2)
-os.replace(tmp, path)
+lf = open(os.environ["DAEMON_META_LOCK"], "a")
+try:
+    fcntl.flock(lf, fcntl.LOCK_EX)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    for i in range(0, len(args), 2):
+        data[args[i]] = args[i + 1]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lf, fcntl.LOCK_UN)
+    lf.close()
 PY
 }
 

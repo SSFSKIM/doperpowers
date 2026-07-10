@@ -288,5 +288,60 @@ sleep 1
 if kill -0 "$pid_f" 2>/dev/null; then fail "retire stops the live codex turn"; else pass "retire stops the live codex turn"; fi
 assert_equals "$(meta_field "$uuid_f" status)" "retired" "retire records status"
 
+echo "== _meta_set serializes concurrent RMW — no lost fields (FU-1) =="
+# The lost-update race: the detached _codex_launch wrapper and the foreground
+# spawn each read-modify-write the same meta; without serialization the later
+# writer's stale snapshot clobbers the other's fields (e.g. `engine` is lost and
+# the daemon renders as claude). Hammer one meta with many concurrent writers —
+# 60 each adding a distinct key, plus one laying down a registration block — and
+# assert every field survives. Without the flock this loses updates; with it,
+# never.
+mb="metabench-0000-4000-8000-000000000000"
+printf '{}' > "$DAEMON_HOME/$mb.json"
+for k in $(seq 1 60); do
+  ( source "$SCRIPTS_DIR/_lib.sh"; _meta_set "$mb" "k$k" "v$k" ) &
+done
+( source "$SCRIPTS_DIR/_lib.sh"; _meta_set "$mb" engine codex pid 4242 status working ) &
+wait 2>/dev/null || true
+survived="$(DAEMON_HOME="$DAEMON_HOME" MB="$mb" python3 - <<'PY'
+import json, os
+d = json.load(open(os.path.join(os.environ["DAEMON_HOME"], os.environ["MB"] + ".json")))
+lost = [k for k in range(1, 61) if d.get("k%d" % k) != "v%d" % k]
+# whole registration block must survive intact, not just `engine`
+reg = "%s/%s/%s" % (d.get("engine", "MISSING"), d.get("pid", "MISSING"), d.get("status", "MISSING"))
+print("%d %s" % (len(lost), reg))
+PY
+)"
+assert_equals "${survived%% *}" "0" "no field lost across 61 concurrent _meta_set writers"
+assert_equals "${survived##* }" "codex/4242/working" "registration block (engine/pid/status) survives the race"
+
+echo "== _codex_gc_runs sweeps old orphans, keeps referenced + fresh (FU-2) =="
+gcruns="$DAEMON_HOME/runs"; mkdir -p "$gcruns"
+mkset() { for e in task.txt events.jsonl reply.txt err pid rc; do : > "$gcruns/codex-run.$1.$e"; done; }
+mkset REF; mkset OLDORPH; mkset FRESH
+# a live meta references REF's event log → must survive
+printf '{"uuid":"gcref","engine":"codex","status":"working","event_log":"%s/codex-run.REF.events.jsonl"}' "$gcruns" > "$DAEMON_HOME/gcref.json"
+# backdate OLDORPH beyond the GC age; FRESH stays new (in-flight-spawn safety)
+python3 - "$gcruns" <<'PY'
+import glob, os, sys, time
+old = time.time() - 99999
+for f in glob.glob(os.path.join(sys.argv[1], "codex-run.OLDORPH.*")):
+    os.utime(f, (old, old))
+PY
+( source "$SCRIPTS_DIR/_lib.sh"; source "$SCRIPTS_DIR/_codex_lib.sh"; CODEX_RUNS_GC_AGE=600 _codex_gc_runs )
+assert_file_exists "$gcruns/codex-run.REF.events.jsonl" "GC keeps a run referenced by a live meta"
+assert_file_exists "$gcruns/codex-run.FRESH.events.jsonl" "GC keeps a fresh orphan (in-flight spawn safety)"
+if [ ! -f "$gcruns/codex-run.OLDORPH.events.jsonl" ]; then pass "GC sweeps an old orphaned run"; else
+    fail "GC sweeps an old orphaned run"; fi
+
+echo "== daemon-retire purge removes a codex daemon's run files (FU-2) =="
+STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-gc "quick" "$WORK" >/dev/null
+uuid_gc="$(basename "$(ls -t "$DAEMON_HOME"/cdec*.json | head -1)" .json)"
+el_gc="$(meta_field "$uuid_gc" event_log)"
+assert_file_exists "$el_gc" "spawn left a run event log"
+"$SCRIPTS_DIR/daemon-retire.sh" "$uuid_gc" purge >/dev/null
+if [ ! -f "$el_gc" ]; then pass "purge removes the codex daemon's run files"; else
+    fail "purge removes the codex daemon's run files"; fi
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "$FAILURES FAILURE(S)"; exit 1; fi

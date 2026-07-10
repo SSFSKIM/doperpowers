@@ -65,6 +65,7 @@ model="$(_meta_get "$uuid" model)"; [ -n "$model" ] || model="${CODEX_MODEL:-gpt
 effort="$(_meta_get "$uuid" effort)"; [ -n "$effort" ] || effort="${CODEX_EFFORT:-high}"
 
 runs="$DAEMON_HOME/runs"; mkdir -p "$runs"
+_codex_gc_runs   # this resume orphans the prior turn's run — sweep old ones now
 run="$(mktemp "$runs/codex-run.XXXXXX")"; rm -f "$run"
 taskf="$run.task.txt"
 printf '%s' "$msg" > "$taskf"

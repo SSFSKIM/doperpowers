@@ -119,6 +119,54 @@ _codex_final_status() {  # <rc> <event_log>
   printf 'idle'
 }
 
+# Garbage-collect orphaned turn scratch under $DAEMON_HOME/runs. Each turn
+# writes codex-run.XXXXXX.{task.txt,events.jsonl,reply.txt,err,pid,rc}; a resume
+# points the meta's `event_log` at a NEW run, orphaning the previous one — so an
+# actively-resumed daemon would otherwise grow the runs dir without bound. A run
+# set is collectable when NO meta's `event_log` references its events.jsonl AND
+# every file in the set is older than CODEX_RUNS_GC_AGE seconds (the age gate
+# spares a run another spawn is still mid-registration on). Called
+# opportunistically at spawn/resume; a no-op when runs/ is absent, and safe to
+# call anytime.
+_codex_gc_runs() {
+  local runs="$DAEMON_HOME/runs"
+  [ -d "$runs" ] || return 0
+  DAEMON_HOME="$DAEMON_HOME" RUNS="$runs" AGE="${CODEX_RUNS_GC_AGE:-600}" python3 - <<'PY'
+import glob, json, os, time
+home = os.environ["DAEMON_HOME"]; runs = os.environ["RUNS"]
+age = float(os.environ["AGE"]); now = time.time()
+referenced = set()
+for m in glob.glob(os.path.join(home, "*.json")):
+    if m.endswith(".reply.json"):
+        continue
+    try:
+        el = json.load(open(m)).get("event_log")
+    except Exception:
+        continue
+    if el:
+        referenced.add(os.path.realpath(el))
+groups = {}
+for f in glob.glob(os.path.join(runs, "codex-run.*")):
+    parts = os.path.basename(f).split(".")
+    prefix = os.path.join(runs, ".".join(parts[:2]))  # codex-run.XXXXXX
+    groups.setdefault(prefix, []).append(f)
+for prefix, files in groups.items():
+    if os.path.realpath(prefix + ".events.jsonl") in referenced:
+        continue
+    try:
+        newest = max(os.path.getmtime(f) for f in files)
+    except OSError:
+        continue
+    if now - newest < age:
+        continue
+    for f in files:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+PY
+}
+
 # Launch one detached codex turn: backgrounds codex inside a nohup'd wrapper
 # that records the codex pid, waits for it, captures rc, and finalizes the
 # registry (status + reply file) — the wrapper IS the watcher and survives the
