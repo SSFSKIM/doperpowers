@@ -169,9 +169,12 @@ render:
   correctness discipline `codex exec review`'s preset applies, and (3)
   adds **spec compliance** — the linked ticket brief with "are the
   acceptance criteria fulfilled; is anything out of scope; is anything
-  claimed but missing". (The `review` subcommand's target flags remain
-  usable standalone — e.g. a no-custom-instructions correctness-only pass
-  — just never combined with custom criteria in the same call.) Fallback
+  claimed but missing". This full shape — multi-commit self-diff plus
+  combined criteria in one plain `codex exec` call — is live-verified
+  (see Surprises & Discoveries, Task 2 spike (b), follow-up). (The
+  `review` subcommand's target flags remain usable standalone — e.g. a
+  no-custom-instructions correctness-only pass — just never combined
+  with custom criteria in the same call.) Fallback
   differs by species: the Claude worker falls back to a fresh Claude
   reviewer subagent (as today); a Codex worker has no second engine —
   after brief retries it parks `needs-human` with the failure as the
@@ -212,8 +215,11 @@ multi-tenant deny-by-default env is a deliberate non-goal).
 3. `codex exec review` PROMPT + `--base` composition and output shape.
    **Done (Task 2 spike): they do NOT compose** — mutually exclusive at
    the CLI level (`rc=2`). The cookbook pattern (plain `codex exec` +
-   review prompt, optional `--output-schema`) is the confirmed path, not
-   just a fallback.
+   self-diffing review prompt, optional `--output-schema`) is the only
+   path — **and was itself verified live in a post-review follow-up**:
+   a two-commit range reviewed against its base produced correctness
+   findings from both commits plus the injected spec-compliance finding
+   in one call (`rc=0`). See Surprises & Discoveries, Task 2 spike (b).
 4. Codex-in-Codex: inner `codex exec review --ephemeral` under the outer
    worker's sandbox. **Done (Task 2 spike): bare `--ephemeral` fails
    nested** (`rc=1`, app-server client init blocked by the outer sandbox);
@@ -481,6 +487,17 @@ running the steps.
   requirement. Task 6's engine block must be written around the cookbook
   pattern, not the `codex exec review --base ... <stdin>` sketch
   originally in the Design section (now corrected in place).
+  **Cookbook pattern itself verified live (post-review follow-up, same
+  day):** the spike had only proven the negative (targeting flags reject
+  a PROMPT) plus a single-commit composition; the actual Task 6 shape —
+  plain `codex exec --ephemeral` (no `review` subcommand) with a stdin
+  prompt instructing a self-diff against the base branch over a
+  **two-commit** range plus inlined correctness + spec-compliance
+  criteria — was then executed for real: `rc=0`, and the findings list
+  contained defects from BOTH commits (`bug.py` ZeroDivisionError from
+  commit 1, `util.py` NameError from commit 2) AND the compliance finding
+  (required `greeting.py` missing). Multi-commit self-diff review with
+  combined criteria is observed behavior, not inference.
 - **(c) Codex-in-Codex: bare `--ephemeral` fails nested; workspace-local
   `CODEX_HOME` with a symlinked `auth.json` fixes it.** Running an inner
   `codex exec review --commit HEAD --ephemeral -c
@@ -494,9 +511,11 @@ running the steps.
   the inner command specifically: `WARNING: proceeding, even though we
   could not create PATH aliases: Operation not permitted (os error 1)`
   followed by `Error: failed to initialize in-process app-server client:
-  Operation not permitted (os error 1)` — the outer `workspace-write`
-  sandbox blocks whatever IPC/socket the inner app-server client needs
-  to stand up, even for a read-only review. The outer turn itself still
+  Operation not permitted (os error 1)` — root cause not fully
+  diagnosed; the observed symptom (PATH-alias creation then app-server
+  client init both dying on `Operation not permitted`) points at the
+  outer sandbox denying writes/setup the inner CLI needs under the real
+  `~/.codex`, even for a read-only review. The outer turn itself still
   completed (`rc=0`) — only the nested `codex` invocation failed. Retried
   with the brief's suggested fallback: `mkdir -p .codex-home && ln -sf
   ~/.codex/auth.json .codex-home/auth.json && CODEX_HOME=$PWD/.codex-home
@@ -567,3 +586,13 @@ Pending — written at finish.
    `auth.json` variant — bare nested `--ephemeral` fails closed with an
    app-server init error under the outer sandbox. Full evidence in
    Surprises & Discoveries, "Task 2 spike" above.
+3. **2026-07-10 (post-Task 2 review follow-up).** Task 2's reviewer flagged
+   that the cookbook self-diff invocation (Task 6's engine-block shape) was
+   recorded with "confirmed" confidence while only the negative
+   (target-flag/PROMPT conflict) and a single-commit composition had been
+   executed. Resolved by running the missing experiment rather than
+   softening the language: plain `codex exec --ephemeral` with a
+   self-diff-against-base prompt over a two-commit range returned findings
+   from both commits plus the injected compliance criterion (`rc=0`).
+   Recorded in Surprises (b) and Feasibility item 3. Also softened finding
+   (c)'s root-cause gloss to observed-symptom language per the same review.
