@@ -42,17 +42,39 @@ Full design + rationale:
 
 | piece | what |
 |---|---|
-| `src/config.ts` | `loadConfig(env)` — required `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`OPENAI_API_KEY`/`TRIAGE_REPO_PATH`/`TRIAGE_BASE_BRANCH`/`TRIAGE_BOARD_SCRIPTS_DIR`, plus `TRIAGE_MODEL` (default `gpt-5.6-terra` — the workhorse tier is enough for diagnose-and-author), `TRIAGE_EFFORT` (default `high`), `TRIAGE_K`/`TRIAGE_TIMEOUT_MS`/`TRIAGE_RECLAIM_MS`, and the `TRIAGE_ENABLED` kill switch |
+| `src/config.ts` | `loadConfig(env)` — required `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`OPENAI_API_KEY`/`TRIAGE_REPO_PATH`/`TRIAGE_BASE_BRANCH`/`TRIAGE_BOARD_SCRIPTS_DIR`, plus `TRIAGE_MODEL` (default `gpt-5.6-terra` — the workhorse tier is enough for diagnose-and-author), `TRIAGE_EFFORT` (default `high`), `TRIAGE_TRUSTED_ROLES` (default `admin`) / `TRIAGE_DEV_CODE` (trust discriminants), `TRIAGE_K`/`TRIAGE_TIMEOUT_MS`/`TRIAGE_RECLAIM_MS` (the reclaim window is **validated at load**: must exceed timeout + a 10-min registration budget) |
+| `src/trust.ts` | `resolveTrust(row, cfg)` — the two-tier trust discriminant: `developer` when the row's server-resolved `role` is in `TRIAGE_TRUSTED_ROLES`, or when the body starts with the `.env`-secret `#<TRIAGE_DEV_CODE>` prefix (stripped before any downstream use so it never leaks into a public ticket); else `user` |
 | `src/verdict.ts` | `parseVerdict(text)` — extracts the single fenced ```json block the worker emits, including the worker-authored `ticket` (title/body/state/note); malformed/missing → treated as a failure, not a guess |
-| `src/gate.ts` | `routeTicket(rowCategory, verdict)` — the registration gate (R1–R5): idea/question forced `needs-human`; `ready-for-agent` honored only for a cited, non-risk-surface bug (dispatcher scans paths out of the verdict text itself); park states get a note. Plus `RISK_SURFACES` and `extractCandidatePaths` |
-| `src/db.ts` | `makeDb(cfg)` — Supabase adapter: `findActionable` (pending + stale-claimed rows), `claim` (atomic `pending→claimed` update, returns false if lost the race), `writeback` (final `triage_state` + issue URL) |
-| `src/sideEffects.ts` | `makeSideEffects(cfg, sh)` — the only place that touches the outside world: `findExisting` (idempotency guard via a `feedback:<id>` marker in issue bodies), `registerTicket` (any birth state, via the board scripts) |
+| `src/gate.ts` | `routeTicket(trust, rowCategory, verdict)` — the registration gate (R1–R5): user-trust idea/question forced `needs-human` and user-trust `ready-for-agent` is bug-only; both trusts require a **real** `file:line` citation (path-shaped, `unknown:12` doesn't count) and zero risk contact — paths (`RISK_SURFACES`) **and symbols** (`RISK_SYMBOLS`: `assertStudentAccess`, `supabaseAdmin`, `RLS`, …) scanned out of the verdict text itself; park states get a note |
+| `src/db.ts` | `makeDb(cfg)` — Supabase adapter: `findActionable` (pending + stale-claimed rows), `claim` (atomic update that stamps and returns a **lease token**, null if lost the race), `writeback` (conditional on the lease — a reclaimed row's late writeback throws instead of clobbering) |
+| `src/sideEffects.ts` | `makeSideEffects(cfg, sh)` — the only place that touches the outside world: `findExisting` (idempotency guard via a `feedback:<id>` marker in issue bodies; **fails closed** — a `gh` search error aborts the row rather than reading as "no duplicate"), `registerTicket` (any birth state, via the board scripts; body goes through a private `mkdtemp` file, mode 0600, removed in `finally`) |
 | `src/codexAdapter.ts` | `makeCodexRunner(cfg)` — the Codex SDK seam: a fresh **read-only** thread per row, model/effort pinned from config (never inherited from `~/.codex/config.toml`), locked-down child env (`buildCodexOptions`: PATH/HOME only, no inherited secrets), `approvalPolicy:never` + network off, per-turn abort timeout |
 | `src/git.ts` | `makeGit(repoPath, baseBranch)` — per-feedback disposable **detached** worktree (`addWorktree`/`removeWorktree`), pinned to `origin/<baseBranch>` for `file:line` citation integrity (no branch, no build, no `node_modules`) |
-| `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → single diagnose+author turn → registration gate → ticket → writeback. Composes the final ticket body: worker-authored content + dispatcher-appended provenance block (quoted raw feedback marked as data) |
-| `src/poll.ts` | the entry: `loadConfig` → exit early if `TRIAGE_ENABLED=false` → `findActionable` → per-row `claim` + `dispatchRow`, sequential, catch → writeback `failed` |
+| `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → trust resolution → single diagnose+author turn → registration gate → **second idempotency check** (a reclaimer may have registered during the long Codex turn) → ticket → writeback. Composes the final ticket body: worker-authored content + dispatcher-appended provenance block (quoted original, marked as data for user trust) |
+| `src/poll.ts` | the entry: `TRIAGE_ENABLED=false` exits **before** any config parsing (the stop switch works even with missing secrets) → `loadConfig` → `findActionable` → per-row lease-issuing `claim` + `dispatchRow` with lease-bound writeback, sequential, catch → writeback `failed` |
 | `references/triage-worker-protocol.md` | the Triage Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every turn's prompt by `src/prompt.ts` |
 | `scripts/feedback-poll.sh` | launchd entry point: loads the skill dir's `.env`, runs `npx tsx src/poll.ts` |
+
+## Two-tier trust: developer feedback is instruction, user feedback is data
+
+Every row is classified before the worker runs (`src/trust.ts`):
+
+- **`developer`** — the row's `role` (a server-resolved snapshot from
+  `POST /api/feedback`, not forgeable from the widget) is in
+  `TRIAGE_TRUSTED_ROLES` (default `admin`), **or** the body starts with
+  `#<TRIAGE_DEV_CODE>` (a `.env` secret, stripped before the body reaches
+  the prompt or the ticket — if the code ever leaks, rotate it). The worker
+  reads the body as team instruction; dev ideas/enhancements can be born
+  `ready-for-agent`; the ticket is labeled `source:dev-feedback`.
+- **`user`** (default) — the body is data, never instruction; idea/question
+  force `needs-human`; `ready-for-agent` is bug-only.
+
+Both trust levels keep the trust-independent rules: real `file:line`
+citation, risk-surface paths **and symbols** demote to `needs-human`,
+priority fixed at P2, provenance block, and the verdict id-echo check.
+Residual risk on the user tier (gate-passing tickets still carry
+model-authored prose influenced by untrusted text) is an explicitly accepted
+call — the implement-side Ticket Gate re-run and PR review are the backstops.
 
 ## Model proposes, dispatcher disposes — scoped to execution, not authorship
 
@@ -88,9 +110,10 @@ option first).
 ## Kill switch
 
 **`TRIAGE_ENABLED=false`** — the top-level stop. `poll.ts` exits 0 before
-touching the DB or spawning any worker. *(The v1 `TRIAGE_FIX_ENABLED` shadow
-toggle is gone — ticket-only is the terminal shape, so there is no
-riskier mode to graduate into.)*
+parsing any other config, so the switch works even when secrets are missing
+or mid-rotation. *(The v1 `TRIAGE_FIX_ENABLED` shadow toggle is gone —
+ticket-only is the terminal shape, so there is no riskier mode to graduate
+into.)*
 
 ## Relationship to the board loops
 
@@ -118,7 +141,8 @@ Full step-by-step in `references/setup.md`. Summary:
 3. Confirm `TRIAGE_BOARD_SCRIPTS_DIR` + a `TRIAGE_REPO_PATH` that resolves
    `BOARD_REPO` to the **target repo**, not this skill's repo — tickets must
    file into the target's own board.
-4. One-time: `gh label create source:user-feedback` and
+4. One-time: `gh label create source:user-feedback`,
+   `gh label create source:dev-feedback`, and
    `gh label create type:question` on the target repo.
 5. Register the launchd agent for `scripts/feedback-poll.sh` on a
    ~10-minute `StartInterval`, starting with `TRIAGE_K=1` and watching

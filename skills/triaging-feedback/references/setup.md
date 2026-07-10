@@ -8,13 +8,15 @@
 
 ## 0. 전제조건 — 피드백 트리아지 마이그레이션(p86)이 먼저 적용돼 있어야 함
 
-이 폴러는 `feedback.triage_state`/`feedback.host` 컬럼이 있다고 가정합니다
-(claim·writeback이 이 컬럼에 쓴다). ida-solution 쪽에서 `sql/p86_*.sql`
-(feedback triage 컬럼 + `triage_state` CHECK + 과거 행 `skipped` 백필 +
-partial index)이 Supabase에 적용되지 않은 상태로 폴러를 돌리면 매 tick마다
-DB 에러로 실패합니다. 먼저 그 마이그레이션이 라이브인지 확인하십시오.
-(티켓-온리 재설계 이후 `'fixed'` 상태값과 `triage_pr_url` 컬럼은 불필요 —
-아직 미적용이므로 DDL에서 빼고 작성하면 됩니다.)
+이 폴러는 `feedback.triage_state`/`feedback.host`/`feedback.triage_lease`
+컬럼이 있다고 가정합니다(claim·writeback이 이 컬럼에 쓴다). ida-solution
+쪽에서 `sql/p86_*.sql`(feedback triage 컬럼 + `triage_state` CHECK + 과거 행
+`skipped` 백필 + partial index)이 Supabase에 적용되지 않은 상태로 폴러를
+돌리면 매 tick마다 DB 에러로 실패합니다. 먼저 그 마이그레이션이 라이브인지
+확인하십시오. (티켓-온리 재설계 이후 `'fixed'` 상태값과 `triage_pr_url`
+컬럼은 불필요 — 아직 미적용이므로 DDL에서 빼고, 대신 `triage_lease UUID`를
+넣어 작성하십시오: claim이 lease를 새기고 writeback이 그 lease를 조건으로
+걸어 리클레임 이중 기록을 막습니다.)
 
 ## 1. 워크트리 잡음 방지 (`.gitignore`)
 
@@ -47,18 +49,24 @@ TRIAGE_BOARD_SCRIPTS_DIR=/absolute/path/to/doperpowers/skills/issue-tracker/scri
 TRIAGE_MODEL=gpt-5.6-terra # 워커 모델 — 명시 고정. ~/.codex/config.toml의 대화용 기본값과 무관.
                            # 워크호스 티어로 충분(진단+티켓 저작) — 플래그십(sol)은 과사양
 TRIAGE_EFFORT=high         # minimal|low|medium|high|xhigh — 작은 모델 + 높은 effort 조합
+TRIAGE_TRUSTED_ROLES=admin # 이 role(서버가 조회한 스냅샷 — 위조 불가)의 피드백은 developer 신뢰:
+                           # 본문을 지시로 읽고, 아이디어/개선도 ready-for-agent 가능. 콤마 구분.
+TRIAGE_DEV_CODE=           # (선택) 시크릿 코드 — 본문이 `#<code>`로 시작하면 developer 신뢰.
+                           # 코드는 처리 전에 본문에서 제거되어 티켓/프롬프트에 노출되지 않음.
+                           # 누출이 의심되면 즉시 로테이트.
 TRIAGE_K=3               # tick당 처리할 최대 행 수 (처음엔 1로 시작 권장 — 아래 5번)
 TRIAGE_TIMEOUT_MS=1200000        # 20분 — 워커 턴(turn) 타임아웃(AbortController로 배선됨)
 TRIAGE_RECLAIM_MS=5400000        # 90분 — claimed인데 멈춘 행을 회수하는 기준
 TRIAGE_ENABLED=true      # false면 poll.ts가 즉시 exit 0 (킬 스위치)
 ```
 
-**`TRIAGE_RECLAIM_MS`는 반드시 최악 디스패치 시간보다 커야 합니다.** 한 행의
-최악 실행 시간은 진단 턴 1회(`TRIAGE_TIMEOUT_MS`) + 티켓 등록/DB 기록
-지연입니다. 기본값 90분은 기본 `TRIAGE_TIMEOUT_MS`(20분) 기준 넉넉한
-여유치입니다 — `TRIAGE_TIMEOUT_MS`를 늘리면 `TRIAGE_RECLAIM_MS`도 함께
-늘리십시오. 리클레임 창이 실행 시간보다 짧으면 아직 살아있는 잡을 다른
-폴러 인스턴스가 리클레임해 같은 피드백을 이중 처리할 수 있습니다.
+**`TRIAGE_RECLAIM_MS`는 반드시 최악 디스패치 시간보다 커야 하며, 이제
+`loadConfig`가 강제합니다**(`TRIAGE_TIMEOUT_MS` + 등록 예산 10분보다 작으면
+로드 시점에 throw). `TRIAGE_TIMEOUT_MS`를 늘리면 `TRIAGE_RECLAIM_MS`도 함께
+늘리십시오. 추가 방어선: claim이 행에 lease 토큰을 새기고 writeback이 그
+lease를 조건으로 걸므로, 설령 리클레임이 일어나도 구 워커의 늦은 기록이 신
+워커의 결과를 덮어쓰지 못하며, 등록 직전의 2차 멱등 확인이 중복 티켓 창을
+좁힙니다.
 
 **전제: 폴러는 머신당 launchd 단일 label 1개만 등록합니다.** 이 문서의
 리클레임 설계(atomic claim + 위 창 확대)는 동시성 안전을 launchd의 "같은
@@ -86,6 +94,7 @@ doperpowers가 아니라 **ida-solution 체크아웃**을 가리키기만 하면
 
 ```bash
 gh label create "source:user-feedback" --color BFD4F2 --description "in-app 피드백에서 자동 파일링됨"
+gh label create "source:dev-feedback" --color 0E8A16 --description "developer 신뢰 피드백에서 자동 파일링됨"
 gh label create "type:question" --color D4C5F9 --description "사용자 질문 — 사람 답변 필요"
 ```
 

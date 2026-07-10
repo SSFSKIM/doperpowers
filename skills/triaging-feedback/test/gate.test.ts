@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { touchesRiskSurface, extractCandidatePaths, routeTicket } from '../src/gate';
+import { touchesRiskSurface, touchesRiskSymbol, extractCandidatePaths, extractFileCitations, routeTicket } from '../src/gate';
 import type { Verdict } from '../src/verdict';
 
 type Over = Omit<Partial<Verdict>, 'ticket'> & { ticket?: Partial<Verdict['ticket']> };
@@ -32,6 +32,16 @@ describe('touchesRiskSurface', () => {
   });
 });
 
+describe('touchesRiskSymbol', () => {
+  it.each(['assertStudentAccess', 'supabaseAdmin', 'RLS', 'buildMealBreakRows', 'splitStudyAroundBlocks', 'resolveOverlaps', 'past_exam_problems', 'SUPABASE_SERVICE_ROLE_KEY'])(
+    'flags a %s mention in prose', (sym: string) => {
+      expect(touchesRiskSymbol(`수정하려면 ${sym} 동작을 바꿔야 함`)).toBe(sym);
+    });
+  it('ignores benign prose', () => {
+    expect(touchesRiskSymbol('버튼 핸들러가 빠졌다')).toBeNull();
+  });
+});
+
 describe('extractCandidatePaths', () => {
   it('extracts file:line citations with the line tail stripped', () => {
     expect(extractCandidatePaths('원인은 lib/auth.ts:12 그리고 components/x.tsx:3-9')).toEqual(
@@ -48,54 +58,93 @@ describe('extractCandidatePaths', () => {
   });
 });
 
+describe('extractFileCitations', () => {
+  it('accepts real path:line citations', () => {
+    expect(extractFileCitations('components/x.tsx:12 그리고 lib/foo.ts:3-9')).toEqual(['components/x.tsx', 'lib/foo.ts']);
+  });
+  it('rejects token:number that is not a file path (unknown:12)', () => {
+    expect(extractFileCitations('원인 unknown:12 로 추정')).toEqual([]);
+  });
+  it('rejects bare paths without a :line', () => {
+    expect(extractFileCitations('components/x.tsx 어딘가')).toEqual([]);
+  });
+});
+
 describe('routeTicket', () => {
-  it('honors ready-for-agent for a cited, benign bug', () => {
-    expect(routeTicket('bug', verdict())).toEqual({ state: 'ready-for-agent', note: undefined });
+  it('honors ready-for-agent for a cited, benign bug (user trust)', () => {
+    expect(routeTicket('user', 'bug', verdict())).toEqual({ state: 'ready-for-agent', note: undefined });
   });
 
-  it('row category idea → forced needs-human even if the worker recommends ready-for-agent', () => {
-    const r = routeTicket('idea', verdict());
-    expect(r.state).toBe('needs-human');
+  it('user: row category idea → forced needs-human even if the worker recommends ready-for-agent', () => {
+    expect(routeTicket('user', 'idea', verdict()).state).toBe('needs-human');
   });
 
-  it('resolved category question → forced needs-human (row category was other)', () => {
-    const r = routeTicket('other', verdict({ resolved_category: 'question' }));
+  it('user: resolved category question → forced needs-human (row category was other)', () => {
+    const r = routeTicket('user', 'other', verdict({ resolved_category: 'question' }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toBeTruthy();
   });
 
+  it('developer: idea can be born ready-for-agent (no category forcing, no bug-only rule)', () => {
+    expect(routeTicket('developer', 'idea', verdict({ resolved_category: 'idea' }))).toEqual({ state: 'ready-for-agent', note: undefined });
+  });
+
+  it('developer: still demoted on risk-surface citation — risk rules are trust-independent', () => {
+    const r = routeTicket('developer', 'bug', verdict({ root_cause: 'lib/auth.ts:7 세션 체크 누락' }));
+    expect(r.state).toBe('needs-human');
+    expect(r.note).toContain('lib/auth.ts');
+  });
+
+  it('developer: still requires a real file:line citation', () => {
+    const r = routeTicket('developer', 'idea', verdict({ root_cause: '설명만 있음' }));
+    expect(r.state).toBe('needs-human');
+    expect(r.note).toContain('인용');
+  });
+
   it('worker-recommended park state is honored with its note', () => {
-    const r = routeTicket('bug', verdict({ ticket: { state: 'needs-info', note: '레거시 API 응답 스키마 조사 필요' } }));
+    const r = routeTicket('user', 'bug', verdict({ ticket: { state: 'needs-info', note: '레거시 API 응답 스키마 조사 필요' } }));
     expect(r).toEqual({ state: 'needs-info', note: '레거시 API 응답 스키마 조사 필요' });
   });
 
   it('park state without a note gets a fallback note (board requires one)', () => {
-    const r = routeTicket('bug', verdict({ ticket: { state: 'needs-human', note: undefined } }));
+    const r = routeTicket('user', 'bug', verdict({ ticket: { state: 'needs-human', note: undefined } }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toBeTruthy();
   });
 
-  it('demotes ready-for-agent when resolved category is not bug', () => {
-    const r = routeTicket('other', verdict({ resolved_category: 'other' }));
+  it('user: demotes ready-for-agent when resolved category is not bug', () => {
+    const r = routeTicket('user', 'other', verdict({ resolved_category: 'other' }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('bug');
   });
 
-  it('demotes ready-for-agent when root_cause has no file:line citation', () => {
-    const r = routeTicket('bug', verdict({ root_cause: '어딘가 잘못됨' }));
+  it('demotes ready-for-agent when root_cause has no citation at all', () => {
+    const r = routeTicket('user', 'bug', verdict({ root_cause: '어딘가 잘못됨' }));
+    expect(r.state).toBe('needs-human');
+    expect(r.note).toContain('인용');
+  });
+
+  it('demotes ready-for-agent when the only citation is a non-file token (unknown:12) — R2 hardening', () => {
+    const r = routeTicket('user', 'bug', verdict({ root_cause: 'unknown:12 근처로 추정' }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('인용');
   });
 
   it('demotes ready-for-agent when a cited path touches a risk surface (root_cause)', () => {
-    const r = routeTicket('bug', verdict({ root_cause: 'lib/auth.ts:7 세션 체크 누락' }));
+    const r = routeTicket('user', 'bug', verdict({ root_cause: 'lib/auth.ts:7 세션 체크 누락' }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('lib/auth.ts');
   });
 
-  it('demotes ready-for-agent when the authored ticket body mentions a risk surface', () => {
-    const r = routeTicket('bug', verdict({ ticket: { body: '## 제안 수정 방향\nsql/p90_fix.sql 마이그레이션 추가' } }));
+  it('demotes ready-for-agent when the authored ticket body mentions a risk surface path', () => {
+    const r = routeTicket('user', 'bug', verdict({ ticket: { body: '## 제안 수정 방향\nsql/p90_fix.sql 마이그레이션 추가' } }));
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('sql/p90_fix.sql');
+  });
+
+  it('demotes ready-for-agent when the fix description mentions a risk SYMBOL without any risk path — R3 hardening', () => {
+    const r = routeTicket('user', 'bug', verdict({ ticket: { body: '## 제안 수정 방향\ncomponents/wrapper.tsx에서 assertStudentAccess 호출을 우회' } }));
+    expect(r.state).toBe('needs-human');
+    expect(r.note).toContain('assertStudentAccess');
   });
 });

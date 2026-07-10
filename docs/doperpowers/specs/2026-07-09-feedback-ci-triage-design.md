@@ -68,12 +68,16 @@ user submits 피드백 ─▶ POST /api/feedback ─▶ feedback row
        the worker diagnoses against the real code AND authors the ticket
        (title/body per the repo's ticket policy, recommended birth state)
      parse fenced-JSON verdict { resolved_category, root_cause, ticket:{…}, … }
+     ── dispatcher resolves TRUST (2026-07-11): developer (server-resolved role
+        in TRIAGE_TRUSTED_ROLES, or .env-secret #code prefix — stripped before
+        any downstream use) vs user (default) ──
      ── dispatcher enforces the REGISTRATION GATE on the verdict ──
-       idea/question → forced needs-human (product/answer = human's, worker
-         recommendation cannot override)
-       ready-for-agent only if: resolved_category=bug AND root_cause carries a
-         file:line citation AND no cited path touches a risk surface
-       risk-surface citation → demoted to needs-human with the reason
+       user trust: idea/question → forced needs-human; ready-for-agent
+         requires resolved_category=bug
+       both trusts: ready-for-agent requires a REAL file:line citation
+         (path-shaped, not token:number) AND no risk-surface path OR SYMBOL
+         (assertStudentAccess, supabaseAdmin, RLS, …) anywhere in the verdict
+       risk contact → demoted to needs-human with the reason
      dispatcher: board-register.sh … --state <state> [--note "<what's unclear>"]
        (body = worker-authored ticket + dispatcher-appended provenance block:
         quoted raw feedback marked as data + metadata + feedback:<id> marker)
@@ -101,18 +105,20 @@ reviewed by the review leg.
 
 | Repo | Contents |
 |---|---|
-| **doperpowers** `skills/triaging-feedback/` | `SKILL.md`; `scripts/feedback-poll.sh` (ida ingress adapter); `scripts/feedback-dispatch.ts` (reusable Codex-SDK worker + gate); `references/triage-worker-protocol.md`; `references/setup.md` (launchd + secrets); unit tests for the gate |
+| **doperpowers** `skills/triaging-feedback/` | `SKILL.md`; `scripts/feedback-poll.sh` (launchd wrapper); the `src/` module set (`poll`/`dispatch`/`config`/`gate`/`trust`/`verdict`/`db`/`sideEffects`/`codexAdapter`/`git`/`prompt` — the spec's original single `feedback-dispatch.ts` became these unit-testable modules); `references/triage-worker-protocol.md`; `references/setup.md` (launchd + secrets); unit tests |
 | **ida-solution** (M4.5 worktree+PR gate) | `sql/pNN_feedback_triage.sql`; `types/index.ts` mirror; `app/api/feedback/route.ts` (`host` capture); `app/hq/feedback/*` (triage badge) |
 
 ## Components
 
 ### 1. New skill `skills/triaging-feedback/` (doperpowers — the product)
 
-- **`scripts/feedback-poll.sh`** — the cron entrypoint and the *only* ida-specific
-  file. Reads Supabase config from env, `SELECT`s actionable rows
-  (`triage_state='pending'`, plus `claimed` rows older than a reclaim timeout),
-  performs the atomic claim, and invokes `feedback-dispatch.ts` per claimed row,
-  sequentially, up to `K` per tick. Kill switch: `TRIAGE_ENABLED`.
+- **`scripts/feedback-poll.sh`** — the launchd wrapper: loads the skill dir's
+  `.env` and runs `src/poll.ts`, which checks the `TRIAGE_ENABLED` kill switch
+  **before** parsing any other config (so the stop switch works even with
+  missing/rotating secrets), `SELECT`s actionable rows (`triage_state='pending'`,
+  plus `claimed` rows older than a reclaim timeout), performs the atomic
+  lease-issuing claim, and runs `dispatchRow` per claimed row, sequentially,
+  up to `K` per tick.
 - **`src/dispatch.ts`** (+ the `src/` module set) — the reusable worker core
   (Node 18+, `@openai/codex-sdk`). Per row: idempotency guard → detached
   read-only worktree → **one** Codex turn (diagnose + author the ticket) →
@@ -123,13 +129,15 @@ reviewed by the review leg.
   with the ticket-only redesign; `TRIAGE_ENABLED` remains the stop switch, and
   `TRIAGE_MODEL`/`TRIAGE_EFFORT` pin the worker's model + reasoning effort.)*
 - **`references/triage-worker-protocol.md`** — the prompt template with
-  `{{PLACEHOLDERS}}` (feedback id, resolved category, body, page_path, role,
-  host, academy, base branch), establishing the untrusted-input boundary and the
-  ORIENT → CLASSIFY → DIAGNOSE → DECIDE → ACT phases, and specifying the
-  fenced-JSON verdict the dispatcher parses.
+  `{{PLACEHOLDERS}}` (feedback id, category, trust level + per-trust notice,
+  body, page_path, role, host), establishing the trust boundary and the
+  ORIENT → CLASSIFY → DIAGNOSE → AUTHOR → DECIDE phases, and specifying the
+  fenced-JSON verdict (including the worker-authored ticket) the dispatcher
+  parses.
 - **`references/setup.md`** — one-time Mac setup: launchd LaunchAgent cadence,
   the env file (`OPENAI_API_KEY`, Supabase service-role, `gh` auth, repo path,
-  integration base branch, `K`, timeouts), and the two kill switches.
+  integration base branch, model/effort, trust config, `K`, timeouts), and the
+  `TRIAGE_ENABLED` kill switch.
 - **Unit tests** — the gate truth-table (see Testing under Acceptance).
 
 ### 2. `skills/implementing-tickets` + `skills/reviewing-prs` — reused unchanged
@@ -167,7 +175,11 @@ injected feedback body can never jump the implement-dispatch queue.
   - *(2026-07-11, migration still unapplied: `'fixed'` and `triage_pr_url` are
     vestiges of the deleted fix path — since p86 has not been authored/applied
     yet, drop both from the DDL when it lands; the skill no longer writes
-    either. The TS `TriageState` mirror follows whatever the applied DDL says.)*
+    either. Add `triage_lease UUID` instead: `claim` stamps a fresh lease and
+    `writeback` is conditional on it, so a reclaimed row's late writeback from
+    the old worker fails (0 rows) instead of clobbering the reclaimer's
+    outcome — external review #4. The TS `TriageState` mirror follows whatever
+    the applied DDL says.)*
   - **Critical backfill:** `UPDATE feedback SET triage_state='skipped' WHERE
     created_at < now();` so the bot never sweeps historical rows on first run.
   - Partial index: `CREATE INDEX … ON feedback (created_at) WHERE
@@ -213,22 +225,28 @@ Phases (2026-07-11 ticket-only shape; the v1 fix-turn phases are superseded):
    every side effect.
 
 The registration gate — enforced by the dispatcher on the verdict; the
-worker's recommended state is advisory:
+worker's recommended state is advisory. R1/R4 apply to **user** trust only;
+R2/R3/R5 apply to both trust levels (risk rules are trust-independent — the
+danger of an agent touching auth/RLS unattended is the same whoever asked):
 
-- **R1** `ready-for-agent` requires `resolved_category = bug`
-- **R2** `ready-for-agent` requires ≥1 `file:line` citation in `root_cause`
-- **R3** any cited path (extracted by the dispatcher from `root_cause` and the
-  authored ticket text, not from a self-reported list) matching a **risk
-  surface** demotes to `needs-human`: auth/RLS (`lib/auth.ts`,
-  `middleware.ts`, RLS policies, `assertStudentAccess`); migrations/schema
-  (`lib/schema.sql`, `sql/*.sql`, the `types/index.ts` mirror); generate-plan
-  timetable layout; exam-bank copyright (`past_exam_problems`,
-  `lib/exam-bank.ts`); D-day/grade truth (`lib/exam-calendar.ts`,
-  `lib/grade-system.ts`); server-only secrets/LLM (`lib/anthropic.ts`,
-  `supabaseAdmin`, service-role/API keys); cron (`app/api/cron/*`,
-  `vercel.json`)
-- **R4** `idea`/`question` (row category or resolved) is always forced to
-  `needs-human` regardless of the worker's recommendation
+- **R1** *(user)* `ready-for-agent` requires `resolved_category = bug`
+- **R2** `ready-for-agent` requires ≥1 **real file** citation in `root_cause` —
+  the `:line`-stripped token must be path-shaped (slash or extension), so
+  `unknown:12` doesn't count (2026-07-11 hardening, external review #2)
+- **R3** any cited path **or risk symbol** (both extracted by the dispatcher
+  from `root_cause` + the authored ticket text, not from a self-reported
+  list) matching a **risk surface** demotes to `needs-human`. Paths: auth/RLS
+  (`lib/auth.ts`, `middleware.ts`); migrations/schema (`lib/schema.sql`,
+  `sql/*.sql`, the `types/index.ts` mirror); `app/api/ai/generate-plan/route.ts`;
+  exam-bank (`lib/exam-bank.ts`); D-day/grade truth (`lib/exam-calendar.ts`,
+  `lib/grade-system.ts`); server-only LLM (`lib/anthropic.ts`); cron
+  (`app/api/cron/*`, `vercel.json`). Symbols (2026-07-11 hardening, external
+  review #3): `assertStudentAccess`, `supabaseAdmin`, `RLS`,
+  `buildMealBreakRows`, `splitStudyAroundBlocks`, `resolveOverlaps`,
+  `past_exam_problems`, `SUPABASE_SERVICE_ROLE_KEY`
+- **R4** *(user)* `idea`/`question` (row category or resolved) is always
+  forced to `needs-human` regardless of the worker's recommendation;
+  developer-trust ideas/enhancements may be born `ready-for-agent`
 - **R5** park states carry a non-empty note (what's unclear / why a human)
 
 Provenance is enforced by construction: the dispatcher — not the worker —
@@ -473,6 +491,50 @@ the implement loop is the autonomy, gated there.)
   up) and without the `node_modules` symlink (nothing builds). Rejected:
   *diagnosing in the base checkout* (citation integrity) and *dropping
   isolation machinery entirely* (same reason).
+- **Two-tier trust: developer feedback is instruction, user feedback is
+  data.** (2026-07-11, human decision after external review finding #1 —
+  worker-authored ticket text flows into the implement worker as trusted
+  input.) The human's call: full downstream distrust is over-strict for this
+  product; instead, split the input by submitter. **Primary discriminant =
+  the `role` snapshot** (`TRIAGE_TRUSTED_ROLES`, default `admin`) — it is
+  server-resolved by `POST /api/feedback` from the requester's identity, so
+  it cannot be forged from the widget. **Convenience discriminant =
+  `TRIAGE_DEV_CODE`**, a `.env` secret: a body starting with `#<code>` gets
+  developer trust and the code is stripped before the body reaches the
+  prompt or the ticket (otherwise the quoted provenance would publish the
+  code on a public issue, and anyone who read it could forge developer
+  trust; leak = rotate). Developer trust changes: the prompt presents the
+  body as team instruction, R1/R4 are waived (dev ideas/enhancements can be
+  born `ready-for-agent`), label `source:dev-feedback`. Unchanged for both:
+  R2 citation, R3 risk surfaces, P2 priority, provenance block, id-echo
+  check. **Accepted residual risk (recorded as the human's explicit call —
+  "we don't have to be very strict"):** user-trust tickets that pass the
+  gate still carry model-authored prose influenced by untrusted text into
+  the implement worker; the backstops are the implement-side Ticket Gate
+  re-run and PR review. Rejected: *human approval before every
+  ready-for-agent* (recreates the human bottleneck ticket-only was meant to
+  remove) and *body-code as the sole discriminant without stripping* (leaks
+  and is forgeable).
+- **Idempotency and lease hardening.** (2026-07-11, external review findings
+  #4/#5.) Three changes: (1) `claim` now issues a per-claim **lease token**
+  stamped on the row (`triage_lease`), and `writeback` is conditional on it —
+  a reclaimed row's late writeback throws instead of clobbering; (2) the
+  reclaim window is **validated at config load** (`TRIAGE_RECLAIM_MS >
+  TRIAGE_TIMEOUT_MS + 10min registration budget`), promoting a comment-level
+  invariant to an enforced one; (3) `findExisting` now **fails closed** (a
+  `gh` search error aborts the row to `failed` rather than reading as "no
+  duplicate"), and dispatch re-checks idempotency a second time immediately
+  before registering — closing the window where a reclaimer registered a
+  ticket while the original worker's Codex turn was still running.
+- **Registration-gate hardening: real file citations + risk symbols.**
+  (2026-07-11, external review findings #2/#3.) R2 now requires the citation
+  to be path-shaped after stripping `:line` (`unknown:12` no longer counts);
+  R3 now scans the verdict text for risk **symbols** (`assertStudentAccess`,
+  `supabaseAdmin`, `RLS`, the generate-plan layout functions,
+  `past_exam_problems`, `SUPABASE_SERVICE_ROLE_KEY`) in addition to paths,
+  so a verdict citing only a benign wrapper file while describing an
+  auth-bypass fix is still demoted. Prose false-positives demote to
+  `needs-human`, the safe direction.
 
 ## Surprises & Discoveries
 
@@ -612,3 +674,18 @@ since ticket-only is the terminal shape.)*
   superseding Decision Log entries + two Surprises added; Purpose,
   Architecture, Components, Protocol, Error handling, Acceptance, and Rollout
   rewritten to the ticket-only shape.
+- 2026-07-11 — **External review (Codex gpt-5.5, high effort) + two-tier
+  trust.** The full-workflow review returned 8 findings; all addressed. #1
+  (worker-authored ticket text flows to the implement worker as trusted
+  input) resolved by the human's two-tier trust design: developer feedback
+  (server-resolved `role` in `TRIAGE_TRUSTED_ROLES`, or a stripped `.env`
+  `#code` prefix) is read as instruction with R1/R4 waived; user feedback
+  keeps the conservative gate, residual risk explicitly accepted. #2 real
+  file-citation check; #3 risk-symbol scan; #4 lease-conditional writeback +
+  load-time reclaim-window validation + a second pre-registration
+  idempotency check; #5 `findExisting` fails closed; #6 ticket temp files in
+  a `mkdtemp` dir, mode 0600, removed in `finally`; #7 `TRIAGE_ENABLED`
+  checked before config parsing; #8 spec drift fixed (`feedback-dispatch.ts`
+  references, "two kill switches"). p86 DDL gains `triage_lease UUID`. New
+  module `src/trust.ts`; new env `TRIAGE_TRUSTED_ROLES`/`TRIAGE_DEV_CODE`;
+  new label `source:dev-feedback`. 91 tests green.
