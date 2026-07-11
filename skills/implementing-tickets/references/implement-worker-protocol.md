@@ -32,7 +32,9 @@ Decompose only work whose children could land on main independently).
 Too big? One question decides: can the remainder
 be written down as self-contained child pre-specs right now?
 - Yes → DECOMPOSE. Register children:
-  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --parent {{ISSUE_NUMBER}}
+  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement|spike> <P0..P3> --parent {{ISSUE_NUMBER}}
+  (spike = a child whose deliverable is findings the other children need —
+  usually their --blocked-by)
   (+ --blocked-by between siblings where order matters; a chain IS
   serialization; + --state S --note "<why>" for a child born parked). Then
   flesh out each child body (gh issue edit <n> --body-file -) to the

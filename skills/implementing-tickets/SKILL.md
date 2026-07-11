@@ -1,6 +1,6 @@
 ---
 name: implementing-tickets
-description: Use when dispatching implementation workers onto board tickets, gating a ticket before building (well-defined + well-scoped), parking tickets (needs-human / needs-info / interactive-preferred), decomposing an oversized ticket into child tickets, or choosing direct-vs-execplan execution — the implement-side autonomous loop; the inverse of doperpowers:reviewing-prs.
+description: Use when dispatching implementation workers onto board tickets, gating a ticket before building (well-defined + well-scoped), parking tickets (needs-human / needs-info / interactive-preferred), decomposing an oversized ticket into child tickets, choosing direct-vs-execplan execution, or running the spike lane (category `spike` — exploration tickets whose deliverable is findings, never a merge) — the implement-side autonomous loop; the inverse of doperpowers:reviewing-prs.
 ---
 
 # Implementing Tickets — the autonomous implement loop
@@ -21,7 +21,8 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `references/implement-worker-protocol.md` | the Implement Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
-| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline via the vendored `.agents/skills` doctrine) — both mandate in-thread solo execution; composed into the protocol at render time |
+| `references/spike-worker-protocol.md` | the Spike Worker Protocol — rendered instead when the ticket's category is `spike` (the exploration lane below) |
+| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline via the vendored `.agents/skills` doctrine) — both mandate in-thread solo execution; composed into the protocol at render time (implement protocol only — spikes are exploration, not TDD) |
 | The Ticket Gate | the pre-code pass/park verdict (below) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
@@ -101,6 +102,41 @@ the PR body is the closing artifact (`Closes #N`, `## Validation Evidence`
 FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
 orientation summary. Mid-flight visibility is the board's state label —
 watching a worker work is supervision, which this pipeline removed.
+
+## The spike lane (category `spike`)
+
+The board's second lane, for exploration: the gate's value scales with the
+cost of a wrong PR, a spike's value scales with the cost of NOT trying
+ideas — they coexist on one board but never in one lane. A spike ticket's
+deliverable is **information** (a structured `[findings]` comment), never a
+merge; failures discard at the cost of reading a comment. Dispatch renders
+`references/spike-worker-protocol.md` instead of the implement protocol —
+same ritual, same binding, no EXECUTION_BLOCK.
+
+What changes and what doesn't:
+
+- **Gate variant** — Check 1 asks the question be CRISP (what do we want
+  to learn / how would we recognize an answer / where to start), not that
+  every fork be answered. Taste forks met during exploration are findings
+  content ("this fork exists; A and B look like this"), never parks. Check
+  2 survives: too-big questions decompose into narrower child spikes.
+- **Merge bar is free** — the optional evidence PR is a DRAFT (never
+  `Closes #N`, never marked ready): review dispatch skips drafts and land
+  dispatch refuses them, so spike code cannot enter the merge lane by
+  construction.
+- **End state reuses the board** — a finished spike parks
+  `needs-human "findings ready: <one-line answer>"`: no new state, no
+  worker terminal-state authority, and the findings land exactly where the
+  human already looks (the wake queue). The human closes (`done` — the
+  manual flip for non-PR work), relays a follow-up question
+  (`board-answer.sh` resumes the bound session, which explores and
+  re-parks), or graduates.
+- **Graduation** — production work the findings clearly justify is
+  registered `--spawned-by <spike>` with honest gate-triage against the
+  IMPLEMENT gate; murkier outcomes stay a Recommendation line for the
+  human.
+- Research-heavy spikes often want `engine:claude` (web reach); the label
+  mechanism is unchanged.
 
 ## Worker authority
 

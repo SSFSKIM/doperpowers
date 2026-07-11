@@ -92,6 +92,12 @@ PRIORITY_COLORS = {  # ensure_labels palette (hex, no '#')
     "P3": "c2e0c6",
 }
 
+# Categories: bug/enhancement are GitHub defaults; spike (the exploration
+# lane — deliverable is findings, never a merge) is board-managed, so
+# ensure_labels creates it.
+CATEGORIES = ("bug", "enhancement", "spike")
+SPIKE_COLOR = "f9d0c4"
+
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "note")
 
@@ -272,7 +278,8 @@ def snapshot(refresh=False):
                 # keeps the raw list so lint can tell missing from conflicted.
                 "priority": prios[0] if len(prios) == 1 and prios[0] in PRIORITIES else None,
                 "priority_labels": prios,
-                "category": "bug" if "bug" in labels else "enhancement",
+                "category": next((c for c in CATEGORIES if c in labels),
+                                 "enhancement"),
                 "note": meta.get("note"),
                 "parent": str(it["parent"]["number"]) if it.get("parent") else None,
                 "blocked_by": [str(b["number"]) for b in it["blockedBy"]["nodes"]],
@@ -294,7 +301,7 @@ def snapshot(refresh=False):
                 "labels": [l for l in labels
                            if not l.startswith(STATUS_PREFIX)
                            and not l.startswith(PRIORITY_PREFIX)
-                           and l not in ("bug", "enhancement")],
+                           and l not in CATEGORIES],
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
                 "created": it["createdAt"][:10],
                 "updated": it["updatedAt"][:10],
@@ -328,6 +335,9 @@ def ensure_labels():
             for s, c in STATUS_COLORS.items()]
     want += [(PRIORITY_PREFIX + p, c, "issue-tracker board priority")
              for p, c in PRIORITY_COLORS.items()]
+    want += [("spike", SPIKE_COLOR,
+              "issue-tracker board category: exploration spike — "
+              "deliverable is findings, never a merge")]
     for name, color, desc in want:
         if name not in have:
             gh(["label", "create", name, "-R", repo(), "--color", color,

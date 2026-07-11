@@ -731,6 +731,16 @@ WORKING
 assert_fails run board-answer.sh "$ans_t" "late answer"
 unset DAEMON_SCRIPTS STUB_STATE
 
+# ---- spike lane (category spike) ---------------------------------------------
+echo "spike category:"
+spike_t="$(run board-register.sh "Spike: is X feasible" spike P2 | awk '{print $1}')"
+assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-agent', 'priority:P2']" "spike category + status + priority labels"
+assert_contains "$(state "s['labels']")" "spike" "spike label auto-created by ensure_labels"
+assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike category"
+run board-transition.sh "$spike_t" in-progress >/dev/null
+out="$(run board-transition.sh "$spike_t" needs-human "findings ready: X is feasible via Y")"
+assert_contains "$(state "s['issues']['$spike_t']['comments'][-1]")" "findings ready" "spike handoff park lands with its note"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

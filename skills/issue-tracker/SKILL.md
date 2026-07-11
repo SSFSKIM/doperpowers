@@ -43,7 +43,7 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Implement worker** (daemon, one ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing-tickets |
+| **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing-tickets |
 | **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
@@ -94,7 +94,7 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; prints `<number> <url>` — then the registrar fleshes out the pre-spec body (`gh issue edit <n> --body-file …`) |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing-tickets); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; prints `<number> <url>` — then the registrar fleshes out the pre-spec body (`gh issue edit <n> --body-file …`) |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
@@ -140,13 +140,14 @@ pick by repo visibility:
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
 2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
-   `$WORKER_ENGINE` → default `codex`. Render the Implement Worker Protocol
-   (`doperpowers:implementing-tickets` →
-   `references/implement-worker-protocol.md`): substitute every
+   `$WORKER_ENGINE` → default `codex`. Render the worker protocol
+   (`doperpowers:implementing-tickets`): category `spike` →
+   `references/spike-worker-protocol.md`, else
+   `references/implement-worker-protocol.md`. Substitute every
    `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
    `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
    issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
-   engine, `EXECUTION_BLOCK` = the engine's
+   engine, and — implement protocol only — `EXECUTION_BLOCK` = the engine's
    `references/engine-blocks/execution-<engine>.md`).
 3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    (model/effort default gpt-5.6-sol/high — override with
@@ -186,6 +187,12 @@ reviewing-prs, and nobody sits between them and the board.
      the body), then `board-transition.sh <n> ready-for-agent` — the next
      dispatch re-runs the gate against the enriched ticket from fresh
      context.
+   - a spike's `needs-human "findings ready: …"` is a handoff, not a
+     blockage: read the `[findings]` comment, then close (`done` — the
+     manual flip for non-PR work), relay a follow-up question
+     (`board-answer.sh`, the bound session explores and re-parks), or
+     graduate (the worker already registered clear-cut graduation tickets
+     `--spawned-by`; register the rest yourself).
    - `needs-info` → do (or delegate) the research; fold the findings into
      the body; back to `ready-for-agent`.
    - `interactive-preferred` → take it into a live doperpowers:brainstorming

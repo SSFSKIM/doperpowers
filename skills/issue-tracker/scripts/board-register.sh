@@ -6,7 +6,8 @@
 #                     [--parent N] [--blocked-by N[,N...]] [--spawned-by N]
 #                     [--body-file F]
 #
-#   category  bug | enhancement
+#   category  bug | enhancement | spike (exploration lane: deliverable is a
+#             findings comment, never a merge — see doperpowers:implementing-tickets)
 #   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
 #             the managed priority:* label (change later: board-priority.sh)
 #   --state   birth state: ready-for-agent (default) | needs-human | needs-info
@@ -54,8 +55,8 @@ category, state, note = env["T_CATEGORY"], env["T_STATE"], env["T_NOTE"]
 priority = env["T_PRIORITY"]
 if not title:
     B.die("title must be non-empty")
-if category not in ("bug", "enhancement"):
-    B.die("category must be bug|enhancement")
+if category not in B.CATEGORIES:
+    B.die("category must be %s" % "|".join(B.CATEGORIES))
 if priority not in B.PRIORITIES:
     B.die("priority must be one of %s" % "|".join(B.PRIORITIES))
 if state not in B.BIRTH:

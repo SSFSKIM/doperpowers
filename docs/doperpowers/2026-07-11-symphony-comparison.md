@@ -659,6 +659,35 @@ is a findings comment + optional draft PR, and which is hard-barred from
 merge? Or is "run it as an ad-hoc research daemon / interactive session" the
 honest answer and the board should stay production-only?
 
+**RESOLVED (2026-07-12, human decisions).** Spike lane on the board
+(category `spike`); a finished spike parks `needs-human "findings ready"`.
+The sharpening finding that settled it: the board structurally could NOT
+host information-deliverable work — `done` arrives only via a PR's
+`Closes #N` merge and workers never touch terminal states, so a
+research-shaped ticket had no legal path to closure. FD-5 was a schema
+question, not a taste question. The tipping economics: the merge bar was
+already free (review dispatch skips draft PRs, land dispatch refuses
+them), and the end state reuses the wake queue — no new board state, no
+new terminal authority, and `board-answer.sh` gives follow-up questions
+to the SAME bound session for free. The ad-hoc-daemon alternative lost on
+four counts: no phone-readable findings surface, no relay, no
+`--spawned-by` graduation lineage, invisible to the wake ritual — and
+orchestrating-daemons doctrine already pushed ticket-shaped daemon work
+onto the board in one direction; this closes the loop in the other.
+
+**IMPLEMENTED (2026-07-12):** category `spike` (validated in
+`board-register.sh`, derived in `_board.py` snapshots, label auto-created
+by `ensure_labels` — spike is not a GitHub default label) +
+`skills/implementing-tickets/references/spike-worker-protocol.md` (gate
+variant: question-crisp instead of every-fork-answered; taste forks are
+findings content, never parks; optional evidence PR is DRAFT-only with no
+`Closes #N`; structured `[findings]` closing comment; graduation tickets
+`--spawned-by` gate-triaged against the IMPLEMENT gate; end =
+`needs-human "findings ready: <answer>"`) + a spike-lane section in the
+implementing-tickets SKILL, dispatch-ritual + wake-ritual updates in the
+issue-tracker SKILL, and spike asserts in
+`tests/issue-tracker/test-board-scripts.sh`.
+
 ### FD-6 · Credential topology: broker-held auth vs worker-env tokens
 
 **Symphony:** the orchestrator holds tracker auth and exposes a narrow
