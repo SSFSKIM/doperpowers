@@ -29,6 +29,13 @@
 >   `specs/2026-07-10-codex-workers-design.md`.
 > - Live evidence: `docs/doperpowers/2026-07-10-codex-workers-shakedown.md`
 >   (SD-1/SD-3 passed, FU-3…FU-7), `docs/doperpowers/TECH-DEBT.md` (T1…T3).
+>
+> **Provenance note.** This document reconciles TWO independent same-day
+> analyses of the same sources (two parallel sessions; git: `7caf3fe` and
+> `63c25f0`). Their verdicts agreed on every settled axis — and disagreed on
+> exactly two import decisions, preserved as marked disagreements inside
+> FD-1 (rework full-reset) and FD-7 (workpad). Two independent readings
+> splitting on the same two points is itself evidence those forks are real.
 
 ---
 
@@ -89,6 +96,15 @@ Symphony's endpoint (goals + tools, agent writes the tracker) is our starting
 axiom; we add hard gates only where human values are at stake (taste forks,
 terminal states, merge tiers). Their lesson trajectory validates the doctrine.
 
+The cleanest one-line statement of the real disagreement: **where does
+scarce human attention go?** Symphony spends it *reviewing output*
+(overproduce, filter; failure is cheap). We spend it *answering questions*
+(parks with recommended answers, one-glance `confident-ready` merges;
+failure is not cheap because the human reviews what survives). Which is
+rational depends on the ratio of agent cost to review cost — theirs fits
+free-ish tokens + harness-engineered repos + PMs filing tickets; ours fits a
+solo operator whose review bandwidth IS the bottleneck.
+
 ---
 
 ## 2. Component-by-component
@@ -127,7 +143,24 @@ phase without changing.
 is importable as a watchdog (bounded auto-resume + sweep + caps: exactly
 T1's planned answer) without accepting the costs: a per-team service to build
 and babysit, volatile scheduler state, and a resident process standing where
-our doctrine says nobody stands. What we genuinely lack today and they have:
+our doctrine says nobody stands. Two counterpoints keep their win on this
+layer from being a rout:
+
+1. **Their liveness costs an always-on, single-instance, stateful service.**
+   Claims are in-memory (§7.1) — two orchestrators would double-dispatch;
+   restart loses the retry queue (§14.3). Our review loop already proved the
+   same liveness guarantee as *event trigger + idempotent sweep + registry
+   dedupe* — no resident process, restart-safe because the "orchestrator
+   state" lives in GitHub and the registry.
+2. **Their transient-death recovery loses the thread.** A worker that dies
+   mid-run is re-dispatched fresh — attempt N carries only the workspace and
+   the workpad comment. Our `codex exec resume` rehydrates the actual
+   session from disk — proven three times in the live shakedown — which is
+   strictly better for the dominant observed failure class
+   (model-at-capacity, stream disconnects). Import their retry *taxonomy*,
+   keep our *resume* as the recovery verb.
+
+What we genuinely lack today and they have:
 **(a)** automatic transient recovery (T1-1), **(b)** stall detection,
 **(c)** board-driven cancellation of a running worker (→ FD-8),
 **(d)** concurrency caps (`max_concurrent_agents`, per-state caps — SPEC
@@ -308,10 +341,15 @@ App-server is objectively the richer runtime interface, **and its value is
 conditional on a resident consumer**: streamed events need a listener, stall
 detection needs a watchdog process, turn loops need a driver, injected tools
 need a broker holding auth. We removed that process deliberately, so exec/bg
-is not the inferior option — it is the right-sized one, and it buys something
-app-server structurally cannot: **engine plurality**. The app-server protocol
-locks Symphony to codex; our substrate runs two engines under one registry
-and proved two species × two engines live (shakedown SD-1/SD-3). The two
+is not the inferior option — it is the right-sized one, and it buys two
+things app-server structurally cannot. **Engine plurality**: the app-server
+protocol locks Symphony to codex; our substrate runs two engines under one
+registry and proved two species × two engines live (shakedown SD-1/SD-3).
+**Durability**: an app-server thread lives in the subprocess — when worker
+or orchestrator dies, Symphony recovers by re-dispatching fresh with only
+workspace + workpad as carried context; our resume rehydrates the actual
+session from codex's on-disk state, context intact (observed 3× live). For
+the transient-failure class, CLI-resume is *stronger* than app-server. The two
 capabilities whose absence we actually felt — transient-death auto-recovery,
 stall detection — are watchdog features, not runner features; importing them
 via the trigger-phase watchdog (T1) gets ~80% of app-server's operational
@@ -376,24 +414,39 @@ the watchdog import.
    AC / validation evidence / **Confusions**) written by the implement worker.
    Where: implement-worker-protocol.md clause + a `[workpad]` comment
    convention. Cheap; consolidates our scattered trail; Confusions feeds
-   harness improvement. (WF step 1, workpad template.)
+   harness improvement (our shakedown FU-list *was* a confusions ledger,
+   hand-kept). (WF step 1, workpad template.) **Contested — see FD-7.**
 2. **Reproduction-first rung** — for bug-category tickets, capture the
    failure signal before changing code; record it in the workpad. Extends the
    evidence ladder from *done* to *understood*. (WF step 1.8.)
-3. **Rework clause** — when a human review rejects the approach: close the
+3. **Ticket-authored `Validation`/`Test Plan` sections as mandatory
+   acceptance checkboxes** — the gate reads success criteria, but the
+   protocol does not yet make ticket-supplied test plans
+   mandatory-verbatim. (WF Default posture.) Cheap prompt addition.
+4. **Rework clause** — when a human review rejects the approach: close the
    old PR, fresh branch from origin/main, prior branch non-reusable, full
    reset. Where: implement protocol edge case + issue-tracker wake ritual.
-   (WF step 4.)
-4. **Watchdog details for T1** — backoff formula, transient-vs-real
-   distinction, stall timeout, `max_concurrent_agents` (+ per-state caps).
-   (SPEC §8.4, §8.5, §5.3.5.) Also FD-8's cancellation sweep if adopted.
-5. **Per-repo bootstrap hook** — a narrow `.doperpowers/workspace-hooks`
-   (after-create/before-run analog) so consumer-repo setup (npm ci lesson)
-   is declarative, not tribal. (SPEC §9.4.) Scope carefully — FD-3.
-6. **UI media evidence** (pilot) — app-touching tickets attach a runtime
+   (WF step 4.) **Contested — see FD-1.**
+5. **Watchdog details for T1** — backoff formula, transient-vs-real
+   distinction (auto-**resume**, not re-dispatch — §2.1), stall detection
+   from the `--json` event timestamps we already record,
+   `max_concurrent_agents` (+ per-state caps), a continuation recheck after
+   clean exits (turn ended but ticket still `in-progress` → resume with
+   continuation guidance, turn-capped), and a terminal-workspace sweep at
+   trigger startup (closes the FU-2 residue). (SPEC §8.4, §8.5, §5.3.5,
+   §8.6.) Also FD-8's cancellation pass if adopted.
+6. **Strict render check** — after placeholder substitution, abort dispatch
+   if any `{{[A-Z_]+}}` survives in the spawn prompt. One grep in the
+   ritual/dispatch scripts; kills the FU-4 bug class permanently. (SPEC §5.4
+   strict-rendering analog.) Do at next touch.
+7. **Per-repo bootstrap hook** — a narrow `.doperpowers/workspace-hooks`
+   (after-create/before-run analog) so consumer-repo setup (the ida-solution
+   arm64 `npm ci` lesson) is declarative, not tribal. (SPEC §9.4.) Scope
+   carefully — FD-3.
+8. **UI media evidence** (pilot) — app-touching tickets attach a runtime
    capture to the PR. (WF step 2.5.) Raises human-review confidence for the
    exact tier that stays human (FD-7).
-7. **Token accounting** (later) — usage fields from `codex exec --json` into
+9. **Token accounting** (later) — usage fields from `codex exec --json` into
    the registry; surface in daemon-list. (SPEC §13.5.)
 
 ## 5. Deliberate non-imports
@@ -406,10 +459,12 @@ the watchdog import.
   narrow manifests (risk-surfaces, maybe workspace-hooks).
 - **Polling** — the event trigger + sweep cron covers it with less machinery;
   GitHub events beat 30s polls for our scale.
-- **Liquid strict templating wholesale** — but add a cheap render-time check:
-  fail dispatch if any `{{...}}` survives substitution (the FU-4 class).
+- **Liquid strict templating wholesale** — the render-time survivor check
+  (§4.6) captures the value without the engine.
 - **`Human Review` overloading** — their single park state is the flaw our
   discriminant fixes; nothing to take.
+- **Linear** — the board being GitHub Issues (same store as the PRs, zero
+  extra SaaS) is a feature, not a gap.
 
 ---
 
@@ -439,6 +494,18 @@ session resumed) instead of re-dispatch — e.g. a `needs-human` answered
 within minutes, where the parked worker's context is fresher than any
 re-orientation could be? (`codex exec resume` makes this mechanically free
 for the codex species.)
+
+**Intra-fork disagreement (rework sub-question).** The two independent
+analyses split on importing WF step 4's full-reset rework clause: one
+imports it (a human-rejected *approach* deserves a fresh start, and today no
+clause tells the next worker the old PR is non-reusable); the other rejects
+it (our review loop's fix-in-place already covers the common case — rework
+severe enough for a reset is rare, and the human can simply order one in the
+unpark comment). Resolution options: (a) import as a default clause, (b)
+import as an *opt-in verb* the human writes when re-opening
+(`ready-for-agent` note says "rework: fresh approach"), (c) skip. (b) looks
+like the synthesis — the discriminant says approach-reset is a human-grade
+decision anyway.
 
 ### FD-2 · State machine ownership: prompt+config (soft) vs scripts/schema (hard)
 
@@ -533,10 +600,23 @@ the human at `confident-ready` gets a trail comment, a PR diff, and CI. **Skew:*
 we made the human the merge authority for everything non-trivial (FD-4), yet
 our evidence investment flows to the machine tier; Symphony's flows to the
 human tier they also gate on. If the human stays our expensive tier, their
-allocation is arguably more rational than ours. **Open:** how much of §4.1/.2/.6
+allocation is arguably more rational than ours. **Open:** how much of §4
 (workpad, reproduction-first, UI media) to mandate vs leave repo-optional
 (ties into FD-3's boundary) — and does the review worker *consume* the workpad
 (cross-checking claimed validation against the diff) or only the human?
+
+**Intra-fork disagreement (workpad sub-question).** The two analyses split
+here too: one imports the workpad as priority-1 (our trail is scattered
+across `[gate]` comments, `[board]` notes, and PR bodies; no single artifact
+a human reads top-to-bottom); the other calls it optional (our progress
+artifacts deliberately live in the *repo* — ExecPlan doc, branch, PR body —
+better for engineering review, and a tracker-comment mirror risks drifting
+from the repo truth). The real question underneath: is the issue thread a
+*progress surface* (then workpad wins — it's where the human already looks
+on the phone/board) or purely a *routing surface* (then repo artifacts
+suffice and the workpad is duplication)? A middle exists: no live-updated
+workpad, but a mandatory structured **closing comment** (validation
+evidence + confusions) at PR-open/park time — one write, no drift window.
 
 ### FD-8 · Board-driven cancellation: reconciliation kills vs kill-by-hand
 
