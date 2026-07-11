@@ -15,8 +15,16 @@ fails to start ("Operation not permitted"):
   mkdir -p .codex-home && ln -sf ~/.codex/auth.json .codex-home/auth.json
   export CODEX_HOME="$PWD/.codex-home"
 
+And give the inner call file-based TLS roots — under the sandbox a nested
+codex cannot reach the OS keychain/trustd for platform trust, so every
+connection dies with `invalid peer certificate: UnknownIssuer` (surfacing
+as "stream disconnected" retry loops). If not already in your env:
+
+  export SSL_CERT_FILE=/etc/ssl/cert.pem   # macOS; on Linux point at the distro CA bundle
+
 (The nested review then runs under stock read-only defaults — exactly what a
-reviewer needs.) A Claude worker skips this — its `codex exec` is not nested.
+reviewer needs.) A Claude worker skips both steps — its `codex exec` is not
+nested.
 
 Then compose the review call — paste the ticket brief's requirements /
 acceptance criteria into the COMPLIANCE section (when the ticket is "none",

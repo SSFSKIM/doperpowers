@@ -52,6 +52,7 @@ cat > "$STUB_BIN/codex" <<'STUB'
 set -euo pipefail
 mkdir -p "$STUB_STATE"
 echo "$*" >> "$STUB_STATE/calls.log"
+{ echo "SSL_CERT_FILE=${SSL_CERT_FILE:-}"; echo "GH_TOKEN_SET=${GH_TOKEN:+yes}"; } > "$STUB_STATE/env.log"
 [ "${1:-}" = "exec" ] || { echo "stub codex: only exec supported" >&2; exit 2; }
 shift
 resume=""
@@ -378,6 +379,17 @@ if [ -d "$TEST_ROOT/vendorown/.agents/skills" ] && [ ! -L "$TEST_ROOT/vendorown/
   _codex_vendor_skills "$WORK" )
 if [ ! -e "$WORK/.agents" ]; then pass "non-git cwd: vendoring is a no-op"; else
     fail "non-git cwd: vendoring is a no-op"; fi
+
+echo "== spawn env: file-based TLS roots + loud gh-token warning (FU-6) =="
+warn_out="$(STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-warn "quick" "$WORK" 2>&1)"
+# Hermetic HOME has no gh auth → the capture must fail LOUDLY, not silently.
+assert_contains "$warn_out" "no GitHub token captured" "spawn warns when gh token capture fails"
+if [ -f /etc/ssl/cert.pem ]; then
+    assert_contains "$(cat "$STUB_STATE/env.log")" "SSL_CERT_FILE=/etc/ssl/cert.pem" \
+        "worker env carries file-based TLS roots (nested codex trust anchors)"
+else
+    pass "worker env carries file-based TLS roots (skipped: host has no /etc/ssl/cert.pem)"
+fi
 
 echo "== codex-resume from a linked worktree: writable_roots, never --add-dir (FU-5) =="
 # The job-vendor daemon above lives in the VWT linked worktree — resume it.

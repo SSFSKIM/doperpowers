@@ -224,6 +224,37 @@ had ever run. The rc=2 guard held (turns not incremented, loud error).
   on a real ticket (plan + 5 commits survived; fresh turn re-oriented from
   the plan file), which no SD cell explicitly covered.
 
+### FU-6 · nested codex has no TLS trust anchors in the sandbox — review engine was structurally broken
+
+Both SD-3 review rounds (sol, then terra) failed identically: the reviewer's
+inner cookbook call (`codex exec --ephemeral`, codex-in-codex) died on every
+attempt with `stream disconnected` retry loops — underneath, `invalid peer
+certificate: UnknownIssuer` on `wss://chatgpt.com/...`. Not upstream
+weather and not a MITM (the chain is genuine Google Trust Services): under
+Seatbelt the NESTED codex cannot reach the OS keychain/trustd, so its rustls
+platform verifier has zero trust anchors — FU-3's failure class, third
+appearance (keychain gh token, system trust store, and counting). The outer
+codex is unaffected (the sandbox constrains its *children*, not itself);
+`curl` inside the sandbox works because it reads the file bundle.
+
+- **Fix (substrate):** `_codex_launch` exports
+  `SSL_CERT_FILE=/etc/ssl/cert.pem` (sandbox-readable file bundle) into every
+  worker's env when unset — nested codex then verifies normally. Verified
+  live: identical nested call fails without it, completes with it.
+- **Fix (doc):** the review engine block now pairs the writable-`CODEX_HOME`
+  workaround with the `SSL_CERT_FILE` export.
+- **Also (FU-6b):** round 2's worker additionally had NO gh auth — the
+  spawn-time `gh auth token` capture returned empty once (cause not pinned:
+  round 1 five minutes earlier captured fine; suspected transient keyring
+  denial) and the guard swallowed it silently, so the worker only discovered
+  it an hour later at its first write. `_codex_launch` now warns LOUDLY at
+  dispatch time when no token is captured (not fatal — hermetic tests and
+  gh-less repos must still spawn).
+- Both reviewer failures were protocol-clean: honest trails, no fabricated
+  verdicts, correct parks. The review pipeline's *behavior* passed twice
+  while its *engine transport* failed — exactly the seam a shakedown exists
+  to expose.
+
 ### Remaining engine asymmetries — audited, deliberate (not gaps)
 
 | surface | claude worker | codex worker | verdict |

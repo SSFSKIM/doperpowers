@@ -210,7 +210,24 @@ _codex_launch() {
   # (the standard CI pattern), and covers resume too since it shares this path.
   if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
     local _tok; _tok="$(gh auth token 2>/dev/null || true)"
-    [ -n "$_tok" ] && export GH_TOKEN="$_tok"
+    if [ -n "$_tok" ]; then
+      export GH_TOKEN="$_tok"
+    else
+      # Loud, not fatal: a worker without gh auth is doomed at its first
+      # board write (or review-trail post), and that failure surfaces an
+      # hour later. Warn the dispatcher now so it can abort/retry. Not an
+      # abort: hermetic tests (fake HOME) and gh-less repos must still spawn.
+      echo "codex-launch WARNING: no GitHub token captured (gh auth token empty) — the worker's gh calls will be unauthenticated" >&2
+    fi
+  fi
+  # File-based TLS roots for the worker's children: a NESTED codex (e.g. the
+  # review engine call) cannot reach the OS keychain/trustd under the
+  # sandbox, so its rustls has no trust anchors and every connection dies
+  # with `invalid peer certificate: UnknownIssuer`. /etc/ssl/cert.pem is the
+  # sandbox-readable file bundle (verified live: nested exec fails without,
+  # completes with). The outer codex itself is unsandboxed and unaffected.
+  if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
+    export SSL_CERT_FILE=/etc/ssl/cert.pem
   fi
   nohup bash -c '
     set -u
