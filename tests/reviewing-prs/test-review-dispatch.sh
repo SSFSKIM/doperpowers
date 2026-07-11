@@ -196,6 +196,14 @@ assert_contains "$PROMPT" "not verifiable is itself a finding" "unverifiable cla
 assert_contains "$PROMPT" "needs-human" "protocol parks route to needs-human (v8)"
 assert_not_contains "$PROMPT" "needs-info" "review-loop parks are all human-unparked (v8)"
 assert_not_contains "$PROMPT" "→ blocked" "retired blocked vocabulary gone from the protocol"
+assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt injects the engine script path"
+assert_contains "$PROMPT" "--base origin/main" "engine call carries the base ref"
+assert_contains "$PROMPT" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
+assert_contains "$PROMPT" "stays in-review" "engine-down never parks needs-human"
+assert_not_contains "$PROMPT" "IN-THREAD" "in-thread review is gone"
+assert_not_contains "$PROMPT" "cookbook" "cookbook engine form is gone"
+assert_not_contains "$PROMPT" "Claude reviewer subagent" "claude fallback engine is gone"
+assert_not_contains "$PROMPT" "git diff origin/main...HEAD)" "ORIENT no longer instructs a full-diff read"
 
 # ---- skips --------------------------------------------------------------------
 echo "skips:"
@@ -473,7 +481,7 @@ gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labe
 WORKER_ENGINE=codex run_dispatch 41
 assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
-assert_contains "$prompt" "git diff origin/main...HEAD" "prompt carries the engine block (cookbook self-diff, BASE_REF rendered)"
+assert_contains "$prompt" "review-engine.sh --base origin/main" "prompt carries the engine block (script path + BASE_REF rendered)"
 assert_contains "$prompt" "SPEC COMPLIANCE" "prompt carries compliance criteria"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
@@ -483,7 +491,7 @@ gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:" "engine:claude label overrides env"
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "Claude reviewer subagent" "claude species gets the claude fallback block"
+assert_contains "$prompt42" "ENGINE-UNAVAILABLE" "claude species gets the same single merged fallback"
 
 echo "codex reviewer liveness in dedupe:"
 sleep 300 & LIVEPID=$!
