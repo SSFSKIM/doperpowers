@@ -354,7 +354,9 @@ capabilities whose absence we actually felt — transient-death auto-recovery,
 stall detection — are watchdog features, not runner features; importing them
 via the trigger-phase watchdog (T1) gets ~80% of app-server's operational
 value at ~5% of its machinery, with zero standing judgment. Revisit only if
-we ever adopt a resident supervisor — which the doctrine rejects.
+we ever adopt a resident supervisor — which the doctrine rejects — or if
+FD-9 lands on a custom (non-terminal) steering surface for parked sessions,
+the one scenario where the protocol client earns its keep.
 
 ### 2.6 Safety (SPEC §15) — ours is concrete, theirs is documented-away
 
@@ -634,6 +636,59 @@ cron gain a cancellation pass (ticket left open-active states → retire the
 bound daemon, comment the termination)? What are the semantics for the
 in-flight worktree (keep as WIP branch, per "committed branch not merged")?
 
+### FD-9 · Steering surface for parked work: attach-and-steer vs answers-on-ticket
+
+**Symphony:** has no park to steer — blockage routes to `Human Review` and
+the fix is a tracker edit. But its runner choice keeps a door open ours
+closes: an app-server client surface can interject mid-run by design (turn
+cancellation, `turn_input_required` routing, streamed events) — the
+*machinery* for live steering exists even though their workflow never uses
+it. **Ours:** doctrine says answers belong on the ticket (*"the next worker
+reads the ticket, not your chat"* — wake ritual): `needs-human` answers are
+comments + fresh re-dispatch + re-gate; `interactive-preferred` summons a
+**new** brainstorming session. In both cases the parked worker's warm
+orientation is discarded — the park note is the only carried artifact.
+
+**The contesting scenario** (raised in discussion, 2026-07-12): the human
+resumes the parked worker *itself* and steers it live until the ticket is
+`ready-for-agent` — zero re-orientation, the worker that found the forks
+answers them dialogically, and nuance that doesn't compress into comments
+survives. A sharp corollary: this applies *more* strongly to
+`interactive-preferred`, whose current doctrine (fresh brainstorming
+session) throws away the freshest orientation precisely when live steering
+was the point of the park.
+
+**Mechanics (important):** none of this requires app-server. `claude attach`
+gives full interactive attachment; `codex resume <session-id>` opens the
+parked codex session in the TUI. App-server (or claude's Agent-SDK
+equivalent) re-enters ONLY for a *custom* steering surface — steering from
+the board UI / issue thread / phone, streaming the worker's activity live,
+mid-turn interruption, approval routing. So §2.5's verdict stands for
+runner-as-worker; runner-as-steering-substrate is open exactly here.
+
+**Skew:** warm context vs board-as-record. Steering the worker leaves
+decisions in a session transcript unless it writes them back; it re-anchors
+on a possibly mis-oriented worker; and the worker's protocol shapes it for
+autonomy (work alone, end turns crisply) — a steered daemon fights its own
+prompt. Conversely, "answers on the ticket" is lossy exactly when the
+questions were entangled — the discriminant's own criterion.
+
+**Open:** three candidate regimes:
+- **(a) Keep the doctrine** — answers on ticket, fresh re-dispatch; make
+  parks cheaper with a richer park-time orientation dump (ties to FD-7's
+  closing-comment synthesis).
+- **(b) Sanctioned steering** — the human MAY attach/steer a parked session,
+  but the session must end by writing its decisions back to the ticket (a
+  steered session is an interactive session; normal rules apply). The board
+  stays the record; the transcript is scratch.
+- **(c) Full continuation** — the steered worker continues into the build.
+  This collapses into `interactive-preferred`'s controlled track and blurs
+  the needs-human/interactive-preferred boundary: if answering *enumerable*
+  questions dialogically with the parked worker is cheaper than writing
+  comments, the discriminant's states blur at the margin — which is either
+  an argument for (b) as the synthesis, or a sign the discriminant needs a
+  "cheap dialogue" clause.
+
 ---
 
 ## 7. Convergences worth noting (independent evolution, same answer)
@@ -647,4 +702,4 @@ posture ≈ our `--spawned-by` deferral rule); the tracker is the control
 plane; state machines for agents should carry goals, not micro-transitions
 (their blog lesson ≈ our no-judge doctrine). Convergence under independent
 evolution is evidence the problem shape, not fashion, dictates these — and
-it localizes the genuine disagreements to §6's eight forks.
+it localizes the genuine disagreements to §6's nine forks.
