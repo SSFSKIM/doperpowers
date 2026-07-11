@@ -26,7 +26,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`) |
-| `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + criteria via developer_instructions); both species call it |
+| `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + fixed policy in developer instructions + untrusted criteria file); both species call it |
 | `references/review-worker-protocol.md` | the Review Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
@@ -102,9 +102,9 @@ verifies the claims were real.
 
 ONE engine for both worker species: the native `codex exec review --base
 origin/<base>` run by `scripts/review-engine.sh`, with correctness
-discipline + the ticket's acceptance criteria riding
-`-c developer_instructions=` (a config value — the CLI forbids combining
-`--base` with a positional prompt). The engine returns a compact
+discipline riding `-c developer_instructions=` and PR/ticket criteria kept
+in an explicitly untrusted data file (the CLI forbids combining `--base`
+with a positional prompt). The engine returns a compact
 structured verdict file; the PR diff never enters the worker's own
 context. Species differ only in nesting: a Codex worker's call runs
 inside its own sandbox (the script detects this and skips the inner
