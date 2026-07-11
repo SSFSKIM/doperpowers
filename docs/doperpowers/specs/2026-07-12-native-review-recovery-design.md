@@ -28,7 +28,7 @@ gpt-5.6-sol):
   workspace-write profile still confines every child), and
   `CODEX_CODE_MODE_HOST_PATH=$HOME/.local/bin/codex-code-mode-host` (nested
   codex misresolves the code-mode host to `/usr/local/bin/`). Plus the
-  already-known workspace-local `CODEX_HOME` + symlinked `auth.json`.
+  already-known isolated writable `CODEX_HOME` + symlinked `auth.json`.
   Verified end-to-end: nested reviewer under an outer seatbelted
   `codex exec` returned rc=0 with zero `sandbox_apply` / host-spawn errors
   and produced both the correctness and the compliance finding.
@@ -85,8 +85,9 @@ review-engine.sh --base <ref> --criteria <file> --out <file>
   `CODEX_REVIEW_EFFORT` (default `xhigh`) — same knobs and defaults as
   `review-dispatch.sh`.
 - Owns the environment recipe, each part applied only when needed:
-  workspace-local `CODEX_HOME` with symlinked `~/.codex/auth.json`
-  (created for the run, removed after); `SSL_CERT_FILE=/etc/ssl/cert.pem`
+  temporary `CODEX_HOME` outside the reviewed tree with symlinked
+  `~/.codex/auth.json` (created for the run, removed after);
+  `SSL_CERT_FILE=/etc/ssl/cert.pem`
   and `CODEX_CODE_MODE_HOST_PATH=$HOME/.local/bin/codex-code-mode-host`
   each exported only if unset (and, for the host path, only if the binary
   exists).

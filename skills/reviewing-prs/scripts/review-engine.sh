@@ -46,10 +46,11 @@ fi
 if [ -z "${CODEX_CODE_MODE_HOST_PATH:-}" ] && [ -x "$HOME/.local/bin/codex-code-mode-host" ]; then
   export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"
 fi
-# Workspace-local CODEX_HOME: the engine must WRITE session state, and the
-# default ~/.codex is read-only under the outer seatbelt. auth.json is
+# Temporary CODEX_HOME: the engine must WRITE session state, and the default
+# ~/.codex is read-only under the outer seatbelt. Keep that state outside the
+# reviewed tree so untracked snapshots cannot affect the review. auth.json is
 # symlinked so login state carries over. Removed on every exit path.
-eng_home="$(mktemp -d "$PWD/.review-engine-home.XXXXXX")"
+eng_home="$(mktemp -d "${TMPDIR:-/tmp}/review-engine-home.XXXXXX")"
 trap 'rm -rf "$eng_home"' EXIT
 if [ -f "$HOME/.codex/auth.json" ]; then
   ln -s "$HOME/.codex/auth.json" "$eng_home/auth.json"
