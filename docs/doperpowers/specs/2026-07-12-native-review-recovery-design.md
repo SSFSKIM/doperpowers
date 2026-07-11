@@ -16,11 +16,12 @@ Claude worker calls the cookbook plain-`codex exec` form. Both walls are
 now overturned by live spikes (2026-07-12, codex-cli 0.144.1,
 gpt-5.6-sol):
 
-- **Custom criteria ride as config, not PROMPT.** `-c
-  developer_instructions="…"` carries correctness discipline + ticket
-  spec-compliance past the clap conflict — `codex exec review --base` with
-  custom criteria works in ONE call (rc=0, both planted findings, ~1KB
-  structured `-o` output).
+- **Fixed review policy rides as config, not PROMPT.** `-c
+  developer_instructions="…"` carries correctness and compliance discipline
+  past the clap conflict. PR and ticket text stay in an external file that
+  the policy explicitly labels untrusted data — `codex exec review --base`
+  still works in ONE call (rc=0, both planted findings, ~1KB structured
+  `-o` output).
 - **Codex-in-codex review works** with three environment fixes:
   `SSL_CERT_FILE=/etc/ssl/cert.pem` (FU-6, already shipped), inner
   `-c sandbox_mode="danger-full-access"` (macOS forbids applying a second
@@ -48,13 +49,14 @@ required", never "infrastructure failed".
   codex exec review --base origin/<base> \
     -m $CODEX_REVIEW_MODEL -c model_reasoning_effort=$CODEX_REVIEW_EFFORT \
     -c features.hooks=false \
-    -c developer_instructions="$(cat <criteria-file>)" \
+    -c developer_instructions="<fixed policy referencing criteria-file>" \
     --json -o <findings-file>
   ```
 
-  Reviews the full multi-commit range `origin/<base>...HEAD`; criteria =
-  correctness discipline + the ticket's acceptance criteria; output is the
-  compact structured verdict in the `-o` file. `codex exec review` (not
+  Reviews the full multi-commit range `origin/<base>...HEAD`; the fixed
+  developer policy supplies review discipline and reads ticket/PR criteria
+  from an explicitly untrusted data file. Output is the compact structured
+  verdict in the `-o` file. `codex exec review` (not
   top-level `codex review`) is the right form — it has
   `-o`/`--json`/`-m`; top-level `codex review` has none of those.
 - The engine runs `git diff` **via shell** (`/bin/zsh -lc`), not
@@ -100,9 +102,9 @@ review-engine.sh --base <ref> --criteria <file> --out <file>
   confines the child; non-nested (Claude-species worker on the host) the
   flag would be a real, unjustified widening, so the engine runs under
   codex's default sandbox.
-- Multi-line criteria pass through `"$(cat <file>)"` into the
-  `developer_instructions` config value (multi-line handling is a
-  front-loaded verification task in the plan).
+- Fixed developer instructions reference the criteria file as untrusted
+  review context. PR-controlled titles, bodies, and ticket text never enter
+  the developer-level config value.
 - Exits with codex's rc; the findings file is the engine's output.
 
 Both species call the same file: the codex worker nested, the
@@ -113,9 +115,9 @@ literally one script.
 
 - `references/engine-blocks/engine-codex-review.md`: drop the in-thread
   instruction, the cookbook form, and the "codex-in-codex is structurally
-  broken" prose. New shape: write the criteria file (correctness
-  discipline + ticket acceptance pasted from the brief; ticket "none" →
-  correctness only), run `{{REVIEW_ENGINE}}`, read the findings file. The
+  broken" prose. New shape: write the untrusted context file (PR claims +
+  ticket acceptance pasted from the brief; ticket "none" → correctness
+  only), run `{{REVIEW_ENGINE}}`, read the findings file. The
   work-alone rule gets a one-line carve-out: the engine call is a tool
   invocation, not a nested agent (the same status the cookbook form had).
 - The protocol's ORIENT step drops its full-diff read (`git diff
@@ -267,6 +269,12 @@ same only-if-unset pattern. Worker-shell flags unchanged.
   not a carrier failure — immaterial to the quoting question this spike
   closes.)
 
+- **Security hardening — criteria are not developer instructions.** The
+  spike proved the carrier worked but also proved it would elevate PR- and
+  ticket-controlled text. The final engine therefore passes only fixed
+  review policy at developer privilege and points that policy to an external
+  criteria file explicitly classified as untrusted data.
+
 - **Finding recall is severity-of-signal-dependent, not effort-dependent.**
   Acceptance runs (gpt-5.6-sol, efforts low→high) always caught the planted
   compliance gap, but consistently declined to flag `mean([])`'s
@@ -293,3 +301,7 @@ Pending — written at finish.
    acceptance clause "no full-diff dump into the worker's main context".
    Design §2 now includes the ORIENT rewrite (shape-only `--stat` read;
    the worker reads only the code each finding names).
+2. **2026-07-12 (PR review).** Adversarial review caught that the original
+   carrier elevated PR-controlled title and ticket text into developer
+   instructions. The engine now keeps a fixed developer policy and reads
+   all PR/ticket criteria from an explicitly untrusted data file.
