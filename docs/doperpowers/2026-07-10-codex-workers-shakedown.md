@@ -285,6 +285,16 @@ command-running work (pure-inference nested calls do work — FU-6's probe).
 - All three SD-3 rounds were protocol-clean failures (honest trails,
   correct parks, no fabricated verdicts). Round 4 runs the in-thread
   design.
+- **Correction (2026-07-12):** "structurally dead" is overturned — the
+  `sandbox_apply` wall is skipped by running the INNER codex with
+  `-c sandbox_mode="danger-full-access"` (it only skips self-profiling;
+  the outer profile still confines every child), plus
+  `CODEX_CODE_MODE_HOST_PATH=$HOME/.local/bin/codex-code-mode-host` for a
+  third, newly-found wall (nested codex misresolves the code-mode host to
+  `/usr/local/bin/`). Nested `codex exec review --base` verified
+  end-to-end (rc=0, both planted findings). The in-thread design this FU
+  produced is superseded by
+  `specs/2026-07-12-native-review-recovery-design.md`.
 
 ### Remaining engine asymmetries — audited, deliberate (not gaps)
 

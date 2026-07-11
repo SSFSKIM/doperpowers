@@ -709,3 +709,25 @@ mechanical rather than lucky.
    `codex-run.*` sets that no live meta's `event_log` references, called at
    spawn/resume, plus purge-time removal of a daemon's own run files. Both
    reviewed and green across the codex, daemon, and review-dispatch suites.
+6. **2026-07-12 (native-review recovery — two conclusions overturned).**
+   Live spikes (codex-cli 0.144.1, gpt-5.6-sol) overturned two of this
+   spec's load-bearing conclusions. (a) Task 2's "no working invocation at
+   all" for `codex exec review --base` + custom criteria (Revision Note 2's
+   promotion of the cookbook form to "the only confirmed path") holds only
+   for criteria as the positional `[PROMPT]` — criteria as a **config
+   value** (`-c developer_instructions="…"`) pass the clap parser and
+   compose correctness + spec-compliance in one native call (rc=0, full
+   multi-commit range, compact `-o` verdict). (b) FU-7's "codex-in-codex is
+   structurally dead on macOS for command-running work" (recorded in the
+   shakedown doc, reflected in the in-thread engine-block design) is
+   overturned by an environment recipe: `SSL_CERT_FILE` (FU-6), inner
+   `-c sandbox_mode="danger-full-access"` (skips the impossible second
+   Seatbelt profile; the outer profile still confines all children), and
+   `CODEX_CODE_MODE_HOST_PATH=$HOME/.local/bin/codex-code-mode-host`
+   (nested codex misresolves the code-mode host) — verified end-to-end:
+   a nested `codex exec review --base` under a seatbelted outer codex
+   returned rc=0 with both planted findings. The species-split engine
+   design (Codex reviews in-thread / Claude calls the cookbook form) is
+   **superseded** by `specs/2026-07-12-native-review-recovery-design.md`:
+   one native `codex exec review` engine for both species, owned by a
+   substrate script.
