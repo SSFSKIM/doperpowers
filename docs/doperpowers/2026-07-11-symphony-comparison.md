@@ -689,6 +689,41 @@ questions were entangled — the discriminant's own criterion.
   an argument for (b) as the synthesis, or a sign the discriminant needs a
   "cheap dialogue" clause.
 
+**Resolution direction (discussion, 2026-07-12) — "park = pause, not
+death."** The dominant real case is neither entangled steering nor pure
+blockage: a mid-to-large ticket where the worker needs a FEW enumerable
+decisions and can then proceed — the ideal worker policy asks early rather
+than building on assumptions, but today asking is expensive (park = worker
+death = full re-orientation after the answer), which economically pressures
+workers toward assuming. The synthesis keeps the *comment channel* (Q&A
+lives on the ticket — audit trail, decision log, and next-worker context
+for free; answerable from phone/mail/hosted board) and adds the *session
+continuity*: when the human answers a `needs-human` comment, the wake
+ritual (later: an issue-comment trigger) **resumes the bound session** with
+the answer relayed verbatim, instead of flipping to `ready-for-agent` for a
+fresh dispatch. Mechanics are already built: one-id-for-life codex sessions
+(`codex-resume.sh`, FU-5-verified), `daemon-resume.sh` for claude,
+`board-bind.sh` ticket↔daemon binding. Guards: (1) the resumed worker
+restates its gate verdict against the answers in one paragraph — re-gate
+kept conceptually, cheap in-session; (2) freshness rule — dead session,
+scope-reshaping answers, or a long gap → fresh dispatch as today (resume is
+an optimization, not a semantics change); (3) one doctrine edit required:
+orchestrating-daemons' "don't hand-drive a pipeline worker" ban must be
+narrowed to permit *mechanical answer-relay resume* (the human remains the
+author, the ticket remains the record; the judge is NOT reintroduced) while
+still banning chat-answers that bypass the ticket. Layering: **L1** (now)
+protocol clause "ask early, cheaply" + resume-preferring wake ritual;
+**L2** (unattended phase) comment-event → answer-relay automation;
+**L3** (later) BOARD.html per-ticket session affordances — first as
+copy-paste `claude attach` / `codex resume` commands rendered from the
+registry binding (nearly free), and only as an embedded chat surface if
+ever justified — the sole branch where app-server earns its keep. Side
+effect: the discriminant sharpens — enumerable decisions → `needs-human`
+(now cheap), entangled steering → `interactive-preferred`. Symphony
+contrast: their `turn_input_required` is a hard failure in the high-trust
+reference (§10.5); this makes input-required a first-class cheap pause —
+the opposite bet, fitting the opposite attention economics (§1).
+
 ---
 
 ## 7. Convergences worth noting (independent evolution, same answer)
