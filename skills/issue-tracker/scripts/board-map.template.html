@@ -144,8 +144,8 @@
   <span id="hcounts" class="muted"></span>
   <span id="chips"></span>
   <span class="ctls">
-    <button class="act on" id="vgraph">graph</button>
-    <button class="act" id="vkanban">kanban</button>
+    <button class="act" id="vgraph">graph</button>
+    <button class="act on" id="vkanban">kanban</button>
     <span id="gctls">
       <button class="act" id="zin" title="zoom in">+</button>
       <button class="act" id="zout" title="zoom out">−</button>
@@ -604,7 +604,9 @@
   document.getElementById("vkanban").onclick = function () { setView("kanban"); };
   window.addEventListener("resize", fitView);
 
-  buildChips(); updateHeader(); render(); fitView();
+  // Lay out and fit the graph once (view is still "graph" so fitView runs),
+  // then default the visible view to kanban.
+  buildChips(); updateHeader(); render(); fitView(); setView("kanban");
 
   // ---- hot reload (served pages only — board-map.sh --serve, or the hosted
   // deploys, which redeploy this same file on every issue event) ----
