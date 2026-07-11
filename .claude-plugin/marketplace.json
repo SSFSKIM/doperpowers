@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Fork of Superpowers (obra/superpowers): a full software-development methodology for coding agents — brainstorm, plan, subagent-driven TDD, review — plus fork-specific skills like orchestrating-daemons.",
-      "version": "7.13.0",
+      "version": "7.13.1",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
