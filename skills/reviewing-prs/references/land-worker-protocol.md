@@ -36,8 +36,10 @@ NATIVE FIRST — when GitHub reports the PR mergeable (no conflicts):
   poll `gh pr view {{PR_NUMBER}} --json state,mergedAt` every ~60s for at
   most 30 minutes. Merged inside the window → FINALIZE below. Still pending
   at the bound → leave auto-merge armed, post the trail comment naming the
-  handoff (GitHub lands it on green; ticket finalize falls to the Closes-#N
-  automation or the next wake), end your turn.
+  handoff (GitHub lands it on green; Closes-#N then closes the ticket, and
+  the residual status label is a board-lint FAIL — "closed but still
+  labeled" — that the next wake's reconcile surfaces for finalize), end
+  your turn.
 - A red check → rerun the failed run at most TWICE (gh run rerun <id>
   --failed), and only when the failure reads flaky/infra (timeout,
   cancelled, runner lost). A red that reproduces after two reruns, or that
@@ -69,7 +71,10 @@ CONFLICTS — when GitHub reports the PR unmergeable:
    and watch bounded). The trail comment MUST name the delta: each
    conflicted file and what you chose. The push may demote confident-ready
    (synchronize automation) — correct and irrelevant to you: your
-   authority is the human's approval, not the label.
+   authority is the human's approval, not the label. One edge: if the
+   repo's only landing method is rebase-merge, your resolution merge
+   commit may make that merge impossible — a refused merge after your
+   push is a PARK, never an improvisation.
 5. Out of bounds, or a conflict you cannot resolve mechanically → PARK
    with the resolution kept as a LOCAL commit in the worktree (never push
    an out-of-bounds resolution — it is unreviewed code).
@@ -98,9 +103,12 @@ YOUR AUTHORITY: merging PR #{{PR_NUMBER}} and nothing else — the human's
 approval ({{APPROVAL_SIGNAL}}) is the grant; pushing ONLY in-bounds
 merge-of-base commits to HEAD:{{HEAD_REF}}; ticket #{{ISSUE_NUMBER}} via
 board-transition.sh: done (post-merge finalize) and needs-human (park).
-NEVER: rebase or force-push; code edits beyond conflict hunks; merging any
-other PR; wontfix or other tickets' states; adding or removing
-confident-ready or any label; closing PRs; deleting branches.
+NEVER: rewriting the PR branch — no rebase of the branch, no force-push
+(the repo-configured rebase-MERGE landing method is GitHub-side onto the
+base and rewrites nothing on the branch, so it is not this); code edits
+beyond conflict hunks; merging any other PR; wontfix or other tickets'
+states; adding or removing confident-ready or any label; closing PRs;
+deleting branches.
 
 ---- PR #{{PR_NUMBER}} ----
 Title: {{PR_TITLE}}

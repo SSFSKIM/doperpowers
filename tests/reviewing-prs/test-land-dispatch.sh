@@ -38,6 +38,7 @@ export DAEMON_HOME="$TEST_ROOT/registry"; mkdir -p "$DAEMON_HOME"
 export MOCK_DIR="$TEST_ROOT/mock"; mkdir -p "$MOCK_DIR"
 export SPAWN_LOG="$TEST_ROOT/spawn.log"; : > "$SPAWN_LOG"
 export BIND_LOG="$TEST_ROOT/bind.log"; : > "$BIND_LOG"
+export EDIT_LOG="$TEST_ROOT/edit.log"; : > "$EDIT_LOG"
 export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
 
@@ -121,8 +122,10 @@ cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-} ${2:-}" in
-  "repo view") cat "$MOCK_DIR/repo-merge.json" ;;
-  "pr view")   cat "$MOCK_DIR/pr-$3.json" ;;
+  "repo view")   cat "$MOCK_DIR/repo-merge.json" ;;
+  "pr view")     cat "$MOCK_DIR/pr-$3.json" ;;
+  "pr edit")     echo "edit:$*" >> "$EDIT_LOG" ;;
+  "api graphql") cat "$MOCK_DIR/approved-oids.txt" ;;   # stands in for the -q jq extraction
   *) echo "mock gh: unhandled: $*" >&2; exit 1 ;;
 esac
 STUB
@@ -137,6 +140,8 @@ export PATH="$STUB_BIN:$PATH"
 echo "[]" > "$MOCK_DIR/agents.json"
 echo '{"squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false}' \
   > "$MOCK_DIR/repo-merge.json"
+# approving reviews target the current head by default (stale guard passes)
+echo "$HEAD_SHA" > "$MOCK_DIR/approved-oids.txt"
 
 # canned PRs: label sets + review decisions per case
 SHA="$HEAD_SHA" python3 - <<'PY'
@@ -161,7 +166,7 @@ pr(11, labels=["confident-ready"], title="chore: tidy",
 pr(12, labels=["confident-ready", "engine:codex"])                 # engine label
 PY
 
-reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; : > "$BIND_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
+reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; : > "$BIND_LOG"; : > "$EDIT_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- happy path (approved + confident-ready, default dry-run) -------------------
 echo "happy path:"
@@ -252,13 +257,55 @@ reset_state
 assert_contains "$(cat "$PROMPT_DIR/land-pr-11.prompt")" "primary ticket: #none" "ticketless PR renders ticket=none"
 assert_equals "$(cat "$BIND_LOG")" "" "ticketless PR binds nothing"
 
-# ---- bind failure degrades, never blocks -----------------------------------------------
+# ---- bind is mandatory for a ticketed PR: retry, then retire + fail -------------------
 echo "bind failure:"
 reset_state
-out="$(FAIL_BIND=1 "$DISPATCH" 5 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "spawn happened despite the bind failure"
-assert_contains "$out" "bind to ticket #7 failed" "bind failure surfaced as a warning"
-assert_contains "$out" "land worker dispatched" "dispatch still reports success"
+rc=0; out="$(FAIL_BIND=1 "$DISPATCH" 5 2>&1)" || rc=$?
+assert_equals "$rc" "1" "persistent bind failure fails the dispatch"
+assert_equals "$(grep -c "^bind:" "$BIND_LOG")" "3" "bind retried three times before giving up"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:aaaa" "the spawned worker is retired on bind failure (not left running unbound)"
+assert_contains "$out" "bind to ticket #7 failed" "failure names the ticket"
+assert_not_contains "$out" "land worker dispatched" "no success report on a failed bind"
+
+# ---- exclusive ticket ownership (board-answer must resume THE LAND WORKER) -------------
+echo "exclusive binding:"
+reset_state
+# a finished implement worker still bound to ticket 7 sits in the registry
+python3 - <<'PY'
+import json, os
+json.dump({"uuid": "0000impl-0000-4000-8000-000000000000",
+           "current": "0000impl-0000-4000-8000-000000000000",
+           "name": "impl-7", "status": "idle", "ticket": "7",
+           "updated": "2026-07-11T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "0000impl-0000-4000-8000-000000000000.json"), "w"))
+PY
+"$DISPATCH" 5 > /dev/null
+old_ticket="$(python3 -c '
+import json, os
+m = json.load(open(os.path.join(os.environ["DAEMON_HOME"], "0000impl-0000-4000-8000-000000000000.json")))
+print(m.get("ticket", "STRIPPED"))')"
+assert_equals "$old_ticket" "STRIPPED" "the implement worker's stale binding is stripped (ownership transferred)"
+assert_contains "$(cat "$BIND_LOG")" ":7" "the land worker holds the binding"
+
+# ---- stale approval refused --------------------------------------------------------------
+echo "stale approval:"
+reset_state
+echo "0123456789abcdef0123456789abcdef01234567" > "$MOCK_DIR/approved-oids.txt"
+rc=0; out="$("$DISPATCH" 5 2>&1)" || rc=$?
+assert_equals "$rc" "1" "approval targeting an old head refused"
+assert_contains "$out" "approval is stale" "refusal names the staleness"
+assert_equals "$(cat "$SPAWN_LOG")" "" "stale approval spawns nothing"
+echo "$HEAD_SHA" > "$MOCK_DIR/approved-oids.txt"
+
+# ---- land label is single-use in live mode -------------------------------------------------
+echo "land label consumption:"
+reset_state
+LAND_ENABLED=true "$DISPATCH" 9 > /dev/null
+assert_contains "$(cat "$EDIT_LOG")" "--remove-label land" "live dispatch consumes the land label"
+reset_state
+"$DISPATCH" 9 > /dev/null
+assert_equals "$(cat "$EDIT_LOG")" "" "dry-run leaves the land label in place"
 
 # ---- engine resolution -------------------------------------------------------------------
 echo "engine resolution:"
@@ -305,6 +352,7 @@ json.dump({"number": 13, "title": "feat: z", "body": "No ticket for this one.",
           open(os.path.join(d, "pr-13.json"), "w"))
 PY
 reset_state
+printf '%s\n%s\n' "$HEAD_SHA" "$HEAD_SHA_Z" > "$MOCK_DIR/approved-oids.txt"
 "$DISPATCH" 13 > /dev/null
 P13="$(cat "$PROMPT_DIR/land-pr-13.prompt")"
 assert_contains "$P13" "RISK-FROM-BASE" "manifest content injected from the BASE ref"

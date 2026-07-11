@@ -138,7 +138,19 @@ engine="${ENGINE_LABEL:-${WORKER_ENGINE:-codex}}"
 if [ "$HAS_LAND_LABEL" = "1" ]; then
   APPROVAL_SIGNAL="manual 'land' label (explicit human override)"
 elif [ "$REVIEW_DECISION" = "APPROVED" ]; then
-  APPROVAL_SIGNAL="GitHub review decision APPROVED"
+  # Stale-approval guard: a repo that does not dismiss stale reviews keeps
+  # reviewDecision=APPROVED across later pushes. Require an approving review
+  # that targets the CURRENT head; fail closed when the check itself fails.
+  owner="${BOARD_REPO%%/*}"; repo_name="${BOARD_REPO#*/}"
+  # shellcheck disable=SC2016  # GraphQL $vars are bound via -f/-F, not the shell
+  approved_oids="$(gh api graphql \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(states:APPROVED,last:100){nodes{commit{oid}}}}}}' \
+    -f owner="$owner" -f name="$repo_name" -F number="$pr" \
+    -q '.data.repository.pullRequest.reviews.nodes[].commit.oid')" \
+    || die "#$pr: could not verify which commit the approval targets — refusing on stale-authority risk"
+  printf '%s\n' "$approved_oids" | grep -qx "$HEAD_SHA" \
+    || die "#$pr: approval is stale — no approving review targets the current head ($HEAD_SHA); re-approve the PR, or add the 'land' label to override"
+  APPROVAL_SIGNAL="GitHub review decision APPROVED (approval targets the current head)"
 else
   die "#$pr: no landing authority — review decision is '${REVIEW_DECISION:-none}'; approve the PR or add the 'land' label"
 fi
@@ -159,6 +171,10 @@ if [ -n "$meta" ]; then
 fi
 
 # ---- repo merge method (native preference: squash > merge > rebase) ------------
+# --rebase here is GitHub's rebase-MERGE landing method — it replays commits
+# onto the BASE branch server-side and never rewrites or force-pushes the PR
+# branch, so it does not violate the never-rebase-the-branch rule. It is the
+# last resort only for repos that allow nothing else.
 MERGE_METHOD="$(gh repo view "$BOARD_REPO" --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed 2>/dev/null \
   | python3 -c '
 import json, sys
@@ -212,13 +228,50 @@ else
 fi
 
 # Bind the daemon to the ticket so a needs-human park is resumable via
-# board-answer.sh (park = pause, not death). Ticketless PRs stay unbound;
-# a linked issue that is not a board ticket degrades to a warning.
+# board-answer.sh (park = pause, not death). The binding is MANDATORY for a
+# ticketed PR: an unbound land worker would park into a state the answer
+# relay cannot reach, so a failed bind is a failed dispatch — the worker is
+# retired (daemon-retire.sh stops a live codex pid too), not left running.
 if [ -n "$issue" ]; then
   meta="$(_land_meta "$pr")"; uuid="${meta%%|*}"
+  bound=""
   if [ -n "$uuid" ]; then
-    "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue" \
-      || echo "#$pr: bind to ticket #$issue failed — a parked land worker will need a fresh dispatch instead of the answer relay" >&2
+    for _try in 1 2 3; do
+      if "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue"; then bound=1; break; fi
+      sleep 2
+    done
   fi
+  if [ -z "$bound" ]; then
+    [ -n "$uuid" ] && _retire "$uuid"
+    die "#$pr: bind to ticket #$issue failed after 3 attempts — land worker retired (a parked land worker must be resumable via board-answer; if #$issue is not a board ticket, drop the Closes link or merge by hand)"
+  fi
+  # Ticket ownership is EXCLUSIVE: strip the binding from every other meta
+  # (typically the finished implement worker's) — board-answer.sh resumes
+  # the first bound match it finds, and it must be THIS land worker.
+  DAEMON_HOME="$DAEMON_HOME" TICKET="$issue" KEEP="$uuid" python3 - <<'PY'
+import glob, json, os
+home = os.environ["DAEMON_HOME"]; tk = os.environ["TICKET"].lstrip("#")
+keep = os.environ["KEEP"]
+for p in glob.glob(os.path.join(home, "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if str(m.get("ticket", "")).lstrip("#") != tk or m.get("uuid") == keep:
+        continue
+    del m["ticket"]
+    tmp = p + ".tmp"
+    json.dump(m, open(tmp, "w"), indent=2)
+    os.replace(tmp, p)
+PY
+fi
+# The land label is SINGLE-USE authority: a live dispatch consumes it so a
+# lingering label can never authorize commits the human has not seen. A
+# dry-run leaves it in place for the eventual live run.
+if [ "$HAS_LAND_LABEL" = "1" ] && [ "$LAND_MODE" = "live" ]; then
+  gh pr edit "$pr" -R "$BOARD_REPO" --remove-label land \
+    || echo "#$pr: could not consume the land label — remove it by hand" >&2
 fi
 echo "#$pr: land worker dispatched ($engine, $LAND_MODE, $APPROVAL_SIGNAL)"
