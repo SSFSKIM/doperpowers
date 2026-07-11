@@ -101,10 +101,17 @@ verifies the claims were real.
 ## Review engine
 
 ONE engine for both worker species: the native `codex exec review --base
-origin/<base>` run by `scripts/review-engine.sh`, with correctness
-discipline riding `-c developer_instructions=` and PR/ticket criteria kept
-in an explicitly untrusted data file (the CLI forbids combining `--base`
-with a positional prompt). The engine returns a compact
+origin/<base>` run by `scripts/review-engine.sh`. The native review owns
+code quality on its own; the script's FIXED `-c developer_instructions=`
+policy (a config value — the CLI forbids combining `--base` with a
+positional prompt) adds ONLY the ticket's spec-compliance review — above
+all decision discipline: did the implementer surface every
+scope/product-taste fork that needed a human call, and where it assumed,
+was the assumption valid to make unasked. The ticket text itself rides an
+explicitly UNTRUSTED data file the policy references: PR/ticket-controlled
+text never enters developer instructions and cannot override policy or
+suppress findings. A ticketless PR adds no instructions at all. The
+engine returns a compact
 structured verdict file; the PR diff never enters the worker's own
 context. Species differ only in nesting: a Codex worker's call runs
 inside its own sandbox (the script detects this and skips the inner

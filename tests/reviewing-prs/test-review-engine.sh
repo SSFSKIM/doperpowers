@@ -82,6 +82,18 @@ assert_contains "$LOG" "AUTH_LINK=yes" "auth.json symlinked into the engine home
 assert_equals "$(find "$TMPDIR" -maxdepth 1 -name 'review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed after the run"
 assert_equals "$(cat "$TEST_ROOT/out.txt")" "- [P2] stub finding (ratio.py:2)" "findings land in --out"
 
+echo "ticketless (empty criteria):"
+reset
+EMPTY_CRIT="$TEST_ROOT/crit-empty.md"
+: > "$EMPTY_CRIT"
+env -u CODEX_HOME -u CODEX_SANDBOX -u CODEX_REVIEW_MODEL -u CODEX_REVIEW_EFFORT \
+  -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+  "$ENGINE" --base origin/main --criteria "$EMPTY_CRIT" --out "$TEST_ROOT/out.txt"
+LOG="$(cat "$ENGINE_LOG")"
+assert_contains "$LOG" "developer_instructions=" "empty criteria still passes the (empty) config value"
+assert_not_contains "$LOG" "SPEC COMPLIANCE" "ticketless run adds no policy text at all"
+assert_not_contains "$LOG" "untrusted review context" "ticketless run sends no instructions"
+
 echo "custom CODEX_HOME auth:"
 reset
 CUSTOM_CODEX_HOME="$TEST_ROOT/custom-codex"
