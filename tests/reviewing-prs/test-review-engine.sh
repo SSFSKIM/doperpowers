@@ -31,8 +31,9 @@ assert_not_contains() {
 }
 
 export HOME="$TEST_ROOT/home"
+export TMPDIR="$TEST_ROOT/tmp"
 export ENGINE_LOG="$TEST_ROOT/engine.log"
-mkdir -p "$HOME/.codex" "$HOME/.local/bin"
+mkdir -p "$HOME/.codex" "$HOME/.local/bin" "$TMPDIR"
 echo '{"token":"fake"}' > "$HOME/.codex/auth.json"
 : > "$HOME/.local/bin/codex-code-mode-host"; chmod +x "$HOME/.local/bin/codex-code-mode-host"
 
@@ -72,9 +73,9 @@ assert_contains "$LOG" "xhigh" "default effort applied"
 assert_contains "$LOG" 'line one with a "quote"' "multi-line criteria (with a quote) ride developer_instructions"
 assert_contains "$LOG" "line two" "second criteria line survives"
 assert_not_contains "$LOG" "danger-full-access" "non-nested run never widens the sandbox"
-assert_contains "$LOG" "ENV_CODEX_HOME=$WT/.review-engine-home." "workspace-local CODEX_HOME"
+assert_contains "$LOG" "ENV_CODEX_HOME=$TMPDIR/review-engine-home." "temporary CODEX_HOME stays outside the reviewed tree"
 assert_contains "$LOG" "AUTH_LINK=yes" "auth.json symlinked into the engine home"
-assert_equals "$(find "$WT" -maxdepth 1 -name '.review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed after the run"
+assert_equals "$(find "$TMPDIR" -maxdepth 1 -name 'review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed after the run"
 assert_equals "$(cat "$TEST_ROOT/out.txt")" "- [P2] stub finding (ratio.py:2)" "findings land in --out"
 
 echo "nested:"
@@ -99,7 +100,7 @@ echo "rc passthrough:"
 reset
 rc=0; STUB_CODEX_RC=3 "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt" || rc=$?
 assert_equals "$rc" "3" "codex rc passes through"
-assert_equals "$(find "$WT" -maxdepth 1 -name '.review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed even on failure"
+assert_equals "$(find "$TMPDIR" -maxdepth 1 -name 'review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed even on failure"
 
 echo "usage errors:"
 rc=0; "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>/dev/null || rc=$?
