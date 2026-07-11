@@ -116,6 +116,11 @@ literally one script.
   correctness only), run `{{REVIEW_ENGINE}}`, read the findings file. The
   work-alone rule gets a one-line carve-out: the engine call is a tool
   invocation, not a nested agent (the same status the cookbook form had).
+- The protocol's ORIENT step drops its full-diff read (`git diff
+  origin/<base>...HEAD`) for a shape-only read (`git diff --stat`): the
+  engine reviews the range, and a worker that pre-reads the whole diff
+  re-creates exactly the context dump this spec removes. The worker reads
+  only the code each finding names.
 - The two fallback blocks merge into ONE (`fallback-engine.md`): the
   Claude-reviewer-subagent fallback is deleted; both species behave
   identically on engine failure (see §3). `review-dispatch.sh` loses the
@@ -243,4 +248,11 @@ Pending — written at finish.
 
 ## Revision Notes
 
-(none yet)
+1. **2026-07-12 (planning).** Planning's hostile read caught a
+   contradiction the design sections had missed: the review-worker
+   protocol's ORIENT step instructs a FULL diff read
+   (`git diff origin/<base>...HEAD`) before the engine ever runs — which
+   would put the whole PR diff back into the worker's context and void the
+   acceptance clause "no full-diff dump into the worker's main context".
+   Design §2 now includes the ORIENT rewrite (shape-only `--stat` read;
+   the worker reads only the code each finding names).
