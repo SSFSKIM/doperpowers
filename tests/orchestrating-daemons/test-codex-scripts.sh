@@ -308,6 +308,38 @@ kill "$stale_pid" 2>/dev/null || true
 wait "$stale_pid" 2>/dev/null || true
 assert_equals "$(meta_field "$uuid_stale" status)" "retired" "terminal codex record is still retired"
 
+echo "== host-aware liveness: a foreign-host pid is dead by definition =="
+# A registry that migrated on a state volume carries pids recorded on the old
+# machine. A reused (live-HERE) pid number must not read as a live worker:
+# resume proceeds (resuming here IS the recovery act) and retire never signals
+# an unrelated local process.
+assert_equals "$(meta_field "$uuid_e" host)" "$(hostname)" "codex-spawn stamps host"
+sleep 30 & foreign_pid=$!
+uuid_mig="hostmig1-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","name":"migrated","short":"hostmig1","engine":"codex","pid":"%s","host":"old-host","status":"working","cwd":"%s"}' \
+  "$uuid_mig" "$uuid_mig" "$foreign_pid" "$WORK" > "$DAEMON_HOME/$uuid_mig.json"
+out="$("$SCRIPTS_DIR/codex-resume.sh" "$uuid_mig" "resume after migration" 2>&1)"
+assert_not_contains "$out" "a turn is still running" "resume does not mistake a foreign-host pid for a live turn"
+assert_contains "$out" "stub reply: resume after migration" "resume proceeds on the new host"
+assert_equals "$(meta_field "$uuid_mig" host)" "$(hostname)" "resume re-stamps host to this machine"
+if kill -0 "$foreign_pid" 2>/dev/null; then
+    pass "resume never signals the unrelated local process behind the foreign pid"
+else
+    fail "resume never signals the unrelated local process behind the foreign pid"
+fi
+uuid_mig2="hostmig2-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","name":"migrated2","short":"hostmig2","engine":"codex","pid":"%s","host":"old-host","status":"working"}' \
+  "$uuid_mig2" "$foreign_pid" > "$DAEMON_HOME/$uuid_mig2.json"
+"$SCRIPTS_DIR/daemon-retire.sh" "$uuid_mig2" >/dev/null
+if kill -0 "$foreign_pid" 2>/dev/null; then
+    pass "retire leaves a foreign-host working pid alone"
+else
+    fail "retire leaves a foreign-host working pid alone"
+fi
+assert_equals "$(meta_field "$uuid_mig2" status)" "retired" "foreign-host record is still retired"
+kill "$foreign_pid" 2>/dev/null || true
+wait "$foreign_pid" 2>/dev/null || true
+
 echo "== _meta_set serializes concurrent RMW — no lost fields (FU-1) =="
 # The lost-update race: the detached _codex_launch wrapper and the foreground
 # spawn each read-modify-write the same meta; without serialization the later

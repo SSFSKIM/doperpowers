@@ -7,7 +7,9 @@
 # shell around the process finalizes the registry when the turn ends. The meta
 # is the same JSON contract as claude daemons plus:
 #   engine     "codex"
-#   pid        codex process pid of the CURRENT turn (liveness: kill -0)
+#   pid        codex process pid of the CURRENT turn (liveness: _pid_alive —
+#              kill -0 gated on `host` matching this machine; a registry that
+#              migrated on a state volume carries pids that are dead here)
 #   effort     model_reasoning_effort
 #   event_log  JSONL event stream of the current turn (--json stdout)
 # The codex session id (thread.started) keys the registry, so board-bind.sh /

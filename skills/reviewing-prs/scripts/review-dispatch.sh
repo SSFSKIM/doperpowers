@@ -52,6 +52,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+# Host identity for pid checks — a pid recorded on another machine (registry
+# migrated on a state volume) is not a live worker here. Same default as _lib.sh.
+DAEMON_HOST="${DAEMON_HOST:-$(hostname)}"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
@@ -84,7 +87,8 @@ ENGINE_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/engine-codex-review.md"
 FALLBACK_FILE="$SKILL_DIR/references/engine-blocks/fallback-engine.md"
 REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
-# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid" (empty if none).
+# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid|host"
+# (empty if none).
 _reviewer_meta() {
   DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
 import glob, json, os
@@ -103,16 +107,19 @@ for p in glob.glob(os.path.join(home, "*.json")):
             best = (key, m)
 if best:
     m = best[1]
-    print("%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
-                              m.get("engine") or "claude", m.get("pid", "")))
+    print("%s|%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
+                                 m.get("engine") or "claude", m.get("pid", ""), m.get("host", "")))
 PY
 }
 
 # rc 0 when the reviewer's CURRENT turn is live: claude → session uuid visible
-# in `claude agents`; codex → recorded pid alive.
-_is_live() {  # <current> <engine> <pid>
+# in `claude agents`; codex → recorded pid alive ON THIS HOST (a foreign-host
+# pid is dead by definition — only its number migrated with the registry).
+_is_live() {  # <current> <engine> <pid> <host>
   if [ "$2" = "codex" ]; then
-    [ -n "$3" ] && kill -0 "$3" 2>/dev/null
+    [ -n "$3" ] || return 1
+    [ -z "${4:-}" ] || [ "$4" = "$DAEMON_HOST" ] || return 1
+    kill -0 "$3" 2>/dev/null
     return
   fi
   claude agents --json --all 2>/dev/null | CUR="$1" python3 -c '
@@ -143,7 +150,7 @@ sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)' && retur
   # count ONLY codex metas with a live pid; a stale claude-engine `working`
   # meta must NOT start blocking removal (the claude path's fail-open
   # behavior above is unchanged).
-  DAEMON_HOME="$DAEMON_HOME" WT="$1" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" DAEMON_HOST="$DAEMON_HOST" WT="$1" python3 - <<'PY'
 import glob, json, os, sys
 home = os.environ["DAEMON_HOME"]; wt = os.environ["WT"]
 for p in glob.glob(os.path.join(home, "*.json")):
@@ -157,6 +164,9 @@ for p in glob.glob(os.path.join(home, "*.json")):
         continue
     if m.get("status") not in ("working", "blocked"):
         continue
+    host = str(m.get("host") or "")
+    if host and host != os.environ["DAEMON_HOST"]:
+        continue   # foreign-host pid — the process did not migrate with the registry
     pid = str(m.get("pid") or "")
     if pid.isdigit():
         try:
@@ -291,15 +301,16 @@ PY
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
 # Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid
+  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
   meta="$(_reviewer_meta "$pr")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
   uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
-  current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; pid="${rest#*|}"
+  current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; rest="${rest#*|}"
+  pid="${rest%%|*}"; whost="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current" "$engine" "$pid"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
+      if _is_live "$current" "$engine" "$pid" "$whost"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
     retired) echo "dispatch" ;;
     *)
       if [ "$mode" = "triggered" ]; then echo "respawn $uuid"

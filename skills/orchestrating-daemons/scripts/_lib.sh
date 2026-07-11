@@ -22,6 +22,13 @@ set -euo pipefail
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 mkdir -p "$DAEMON_HOME"
 
+# Host identity — stamped into metas as `host` at every registration. A pid
+# (and a `claude agents` short) is only meaningful on the machine that recorded
+# it: when the registry lives on a state volume that migrates to a new host,
+# a reused pid number would otherwise read as a live worker and wrongly block
+# resume / dedupe / retire. Override with DAEMON_HOST for tests.
+DAEMON_HOST="${DAEMON_HOST:-$(hostname)}"
+
 # How long the spawn/resume WATCHER polls `claude agents` for a turn to finish —
 # a wait bound only, NOT a turn budget. The toolkit never kills a turn: every turn
 # is an independent `--bg` process that keeps running regardless. Default 5 hours;
@@ -36,6 +43,17 @@ _err_path()   { printf '%s/%s.err' "$DAEMON_HOME" "$1"; }
 
 # Strip ANSI color codes (the `claude --bg` banner is colored even when piped).
 _strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
+
+# rc 0 iff pid <1> is a live process OF THIS HOST. <2> is the meta's recorded
+# `host` (empty = legacy meta with no host field → assume local, preserving
+# pre-host behavior). A host mismatch is DEAD regardless of kill -0: the
+# process did not migrate with the state volume, only its number did.
+_pid_alive() {
+  local pid="$1" host="${2:-}"
+  [ -n "$pid" ] || return 1
+  [ -z "$host" ] || [ "$host" = "$DAEMON_HOST" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
 
 # Merge key=value pairs into a daemon's metadata JSON (creates it if absent).
 # Usage: _meta_set <uuid> field1 value1 [field2 value2 ...]

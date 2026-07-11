@@ -89,7 +89,7 @@ status="working"
 _meta_set "$uuid" \
   uuid "$uuid" current "$uuid" short "$(printf '%.8s' "$uuid")" name "$name" \
   task "$task" cwd "$runcwd" worktree "$worktree" model "$model" effort "$effort" \
-  engine "codex" pid "$pid" event_log "$run.events.jsonl" \
+  engine "codex" pid "$pid" host "$DAEMON_HOST" event_log "$run.events.jsonl" \
   status "$status" created "$(_now)" updated "$(_now)" turns "1"
 # The wrapper may have finalized between our check and the write — re-apply.
 [ -f "$run.rc" ] && _meta_set "$uuid" \

@@ -118,7 +118,11 @@ design (FU-7) removed the main consumer, so exposure is small.
 
 - **GH_TOKEN in worker env** — visible to the worker's subprocesses; parity
   with what claude workers reach via the keychain, recorded in FU-3's
-  security note.
+  security note. A narrowing recipe now exists (token-wired remote: push
+  scope in the clone's remote URL, board scope in env — see
+  `2026-07-12-managed-agents-steals.md` §steal-3); apply it when
+  provisioning a dedicated worker host, where scoped tokens are real. On
+  this Mac the keychain token is full-power anyway, so the note stands.
 - **Mini ssh probe noise** — codex's `keepRemoteControlAwakeWhilePluggedIn`
   probes the unreachable `mini` host at spawn; user config, harmless.
 - **FU-2 known limitation** — a daemon resumed once and never

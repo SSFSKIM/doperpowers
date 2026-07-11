@@ -24,7 +24,7 @@ if [ "$engine" = "codex" ]; then
   status="$(_meta_get "$uuid" status)"
   pid="$(_meta_get "$uuid" pid)"
   if { [ "$status" = "working" ] || [ "$status" = "blocked" ]; } && \
-     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+     _pid_alive "$pid" "$(_meta_get "$uuid" host)"; then
     kill "$pid" 2>/dev/null || true
     # Killing the pid makes _codex_launch's own detached wrapper (the one
     # that finalizes status+reply once `wait` on the codex pid returns) wake

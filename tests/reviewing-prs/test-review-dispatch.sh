@@ -610,6 +610,59 @@ out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "stale claude-engine meta in the same cwd does not block removal (fail-open preserved)"
 reset_state
 
+# (d) host-aware: a codex meta whose pid is live HERE but was recorded on
+# another host (registry migrated on a state volume) is NOT an occupant —
+# the process did not migrate, only its number did.
+sleep 300 & WTPID=$!
+WT="$WT" PID="$WTPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8002-0000-4000-8000-000000000000",
+           "current": "cdec8002-0000-4000-8000-000000000000",
+           "name": "occupant", "engine": "codex", "cwd": os.environ["WT"],
+           "pid": os.environ["PID"], "host": "old-host", "status": "working",
+           "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8002-0000-4000-8000-000000000000.json"), "w"))
+PY
+: > "$SPAWN_LOG"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host codex pid does not block removal — dispatch proceeds"
+kill "$WTPID" 2>/dev/null; wait "$WTPID" 2>/dev/null || true
+reset_state
+
+# ---- dedupe is host-aware too ---------------------------------------------------
+# A working codex reviewer meta whose live-here pid carries a foreign host must
+# read as DEAD in _decide: respawn, not "skip active reviewer".
+echo "dedupe (host-aware):"
+sleep 300 & DEDUPID=$!
+PID="$DEDUPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
+           "current": "cdec8003-0000-4000-8000-000000000000",
+           "name": "review-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": "old-host", "status": "working",
+           "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8003-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:cdec8003" "foreign-host live pid → reviewer treated as dead and retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host live pid → respawned"
+reset_state
+# control: same live pid, HOST MATCHING this machine → still a live occupant
+PID="$DEDUPID" H="$(hostname)" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
+           "current": "cdec8003-0000-4000-8000-000000000000",
+           "name": "review-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": os.environ["H"], "status": "working",
+           "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8003-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$("$DISPATCH" 5)"
+assert_contains "$out" "active reviewer" "same-host live pid still skips as active"
+assert_equals "$(cat "$SPAWN_LOG")" "" "same-host live pid spawns nothing"
+kill "$DEDUPID" 2>/dev/null; wait "$DEDUPID" 2>/dev/null || true
+reset_state
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"; exit 1

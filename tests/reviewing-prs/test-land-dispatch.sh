@@ -250,6 +250,25 @@ reset_state; seed_lander idle
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished land worker retired (explicit dispatch = fresh signal)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "finished land worker re-dispatched"
 
+# host-aware: a working codex land worker whose live-here pid was recorded on
+# another host (registry migrated on a state volume) is DEAD → retire+respawn.
+reset_state
+sleep 300 & LANDPID=$!
+PID="$LANDPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
+           "current": "feed0000-0000-4000-8000-000000000000",
+           "name": "land-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": "old-host", "status": "working",
+           "updated": "2026-07-12T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "feed0000-0000-4000-8000-000000000000.json"), "w"))
+PY
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host live pid → land worker treated as dead and retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "foreign-host live pid → respawned"
+kill "$LANDPID" 2>/dev/null; wait "$LANDPID" 2>/dev/null || true
+
 # ---- ticketless PR --------------------------------------------------------------------
 echo "ticketless:"
 reset_state
