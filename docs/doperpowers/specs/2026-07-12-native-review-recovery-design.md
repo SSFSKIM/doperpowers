@@ -54,9 +54,10 @@ required", never "infrastructure failed".
   ```
 
   Reviews the full multi-commit range `origin/<base>...HEAD`; the fixed
-  developer policy supplies review discipline and reads ticket/PR criteria
-  from an explicitly untrusted data file. Output is the compact structured
-  verdict in the `-o` file. `codex exec review` (not
+  developer policy carries ONLY the spec-compliance addendum (the native
+  review owns code quality itself — Revision Note 3) and reads the ticket
+  text from an explicitly untrusted data file (Revision Note 2). Output is
+  the compact structured verdict in the `-o` file. `codex exec review` (not
   top-level `codex review`) is the right form — it has
   `-o`/`--json`/`-m`; top-level `codex review` has none of those.
 - The engine runs `git diff` **via shell** (`/bin/zsh -lc`), not
@@ -115,9 +116,11 @@ literally one script.
 
 - `references/engine-blocks/engine-codex-review.md`: drop the in-thread
   instruction, the cookbook form, and the "codex-in-codex is structurally
-  broken" prose. New shape: write the untrusted context file (PR claims +
-  ticket acceptance pasted from the brief; ticket "none" → correctness
-  only), run `{{REVIEW_ENGINE}}`, read the findings file. The
+  broken" prose. New shape: write the untrusted context file (the
+  ticket's requirements ONLY, as data — never into developer
+  instructions; ticket "none" → an empty file, and the engine then sends
+  no developer instructions at all — Revision Notes 2-4), run
+  `{{REVIEW_ENGINE}}`, read the findings file. The
   work-alone rule gets a one-line carve-out: the engine call is a tool
   invocation, not a nested agent (the same status the cookbook form had).
 - The protocol's ORIENT step drops its full-diff read (`git diff
@@ -305,3 +308,23 @@ Pending — written at finish.
    carrier elevated PR-controlled title and ticket text into developer
    instructions. The engine now keeps a fixed developer policy and reads
    all PR/ticket criteria from an explicitly untrusted data file.
+3. **2026-07-12 (human feedback, post-live-shakedown-start).** The criteria
+   template was over-prompted: it re-instructed things the native review
+   already does (review the full `--base` range, review correctness
+   rigorously, rate severity, cite file:lines) and carried checks smarter
+   models make moot (PR-body-vs-diff claims; ignored acceptance criteria).
+   Cut to the ONE thing the native review cannot know — the ticket's
+   spec-compliance addendum, framed as decision discipline: did the
+   implementer proceed only after surfacing every scope/product-taste fork
+   that needed a human call, and where it assumed, was the assumption
+   valid to make unasked. A ticketless PR now writes an EMPTY criteria
+   file (verified live: empty `developer_instructions` passes the parser,
+   rc=0, native review unaffected).
+4. **2026-07-12 (reconciliation).** Notes 2 and 3 landed concurrently — the
+   review worker hardened the carrier mid-shakedown while the human
+   minimized the content — and merged as structure-from-2 +
+   content-from-3: the fixed developer policy keeps the
+   untrusted-data-file carrier but instructs ONLY the
+   spec-compliance/decision-discipline addendum; the data file carries the
+   ticket requirements alone (no PR-claims section — Note 3 dropped that
+   check); a ticketless PR sends no developer instructions at all.
