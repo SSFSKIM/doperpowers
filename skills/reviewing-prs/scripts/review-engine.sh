@@ -35,6 +35,7 @@ command -v codex >/dev/null 2>&1 || { echo "review-engine: codex CLI not found" 
 
 model="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 effort="${CODEX_REVIEW_EFFORT:-xhigh}"
+source_codex_home="${CODEX_HOME:-$HOME/.codex}"
 
 # TLS trust anchors as a FILE bundle — a nested codex cannot reach the OS
 # keychain/trustd under the outer seatbelt (shakedown FU-6).
@@ -52,8 +53,8 @@ fi
 # symlinked so login state carries over. Removed on every exit path.
 eng_home="$(mktemp -d "${TMPDIR:-/tmp}/review-engine-home.XXXXXX")"
 trap 'rm -rf "$eng_home"' EXIT
-if [ -f "$HOME/.codex/auth.json" ]; then
-  ln -s "$HOME/.codex/auth.json" "$eng_home/auth.json"
+if [ -f "$source_codex_home/auth.json" ]; then
+  ln -s "$source_codex_home/auth.json" "$eng_home/auth.json"
 fi
 export CODEX_HOME="$eng_home"
 

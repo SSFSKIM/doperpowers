@@ -47,6 +47,7 @@ set -euo pipefail
   echo "ENV_SSL_CERT_FILE=${SSL_CERT_FILE:-}"
   echo "ENV_HOST_PATH=${CODEX_CODE_MODE_HOST_PATH:-}"
   echo "AUTH_LINK=$([ -L "${CODEX_HOME:-/nonexistent}/auth.json" ] && echo yes || echo no)"
+  echo "AUTH_TARGET=$(readlink "${CODEX_HOME:-/nonexistent}/auth.json" 2>/dev/null || true)"
 } >> "$ENGINE_LOG"
 prev=""; out=""
 for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
@@ -64,7 +65,7 @@ reset() { : > "$ENGINE_LOG"; rm -f "$TEST_ROOT/out.txt" "$TEST_ROOT/out.txt.even
 
 echo "happy path (non-nested):"
 reset
-env -u CODEX_SANDBOX -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+env -u CODEX_HOME -u CODEX_SANDBOX -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
   "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt"
 LOG="$(cat "$ENGINE_LOG")"
 assert_contains "$LOG" "exec review --base origin/main" "invokes the native review subcommand with the base"
@@ -78,10 +79,21 @@ assert_contains "$LOG" "AUTH_LINK=yes" "auth.json symlinked into the engine home
 assert_equals "$(find "$TMPDIR" -maxdepth 1 -name 'review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed after the run"
 assert_equals "$(cat "$TEST_ROOT/out.txt")" "- [P2] stub finding (ratio.py:2)" "findings land in --out"
 
+echo "custom CODEX_HOME auth:"
+reset
+CUSTOM_CODEX_HOME="$TEST_ROOT/custom-codex"
+mkdir -p "$CUSTOM_CODEX_HOME"
+echo '{"token":"custom"}' > "$CUSTOM_CODEX_HOME/auth.json"
+CODEX_HOME="$CUSTOM_CODEX_HOME" \
+env -u CODEX_SANDBOX -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+  "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt"
+LOG="$(cat "$ENGINE_LOG")"
+assert_contains "$LOG" "AUTH_TARGET=$CUSTOM_CODEX_HOME/auth.json" "auth is inherited from a custom CODEX_HOME"
+
 echo "nested:"
 reset
 CODEX_SANDBOX=seatbelt \
-env -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+env -u CODEX_HOME -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
   "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt"
 LOG="$(cat "$ENGINE_LOG")"
 assert_contains "$LOG" 'danger-full-access' "nested run skips self-profiling (outer profile confines)"
@@ -90,7 +102,7 @@ assert_contains "$LOG" "ENV_SSL_CERT_FILE=/etc/ssl/cert.pem" "TLS file bundle ex
 
 echo "only-if-unset env:"
 reset
-CODEX_SANDBOX=seatbelt SSL_CERT_FILE=/custom/pem CODEX_CODE_MODE_HOST_PATH=/custom/host \
+env -u CODEX_HOME CODEX_SANDBOX=seatbelt SSL_CERT_FILE=/custom/pem CODEX_CODE_MODE_HOST_PATH=/custom/host \
   "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt"
 LOG="$(cat "$ENGINE_LOG")"
 assert_contains "$LOG" "ENV_SSL_CERT_FILE=/custom/pem" "pre-set SSL_CERT_FILE preserved"
@@ -98,7 +110,7 @@ assert_contains "$LOG" "ENV_HOST_PATH=/custom/host" "pre-set host path preserved
 
 echo "rc passthrough:"
 reset
-rc=0; STUB_CODEX_RC=3 "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt" || rc=$?
+rc=0; env -u CODEX_HOME STUB_CODEX_RC=3 "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt" || rc=$?
 assert_equals "$rc" "3" "codex rc passes through"
 assert_equals "$(find "$TMPDIR" -maxdepth 1 -name 'review-engine-home.*' | wc -l | tr -d ' ')" "0" "engine home removed even on failure"
 
