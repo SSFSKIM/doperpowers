@@ -10,19 +10,22 @@ Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
 
 THE GATE still comes first, but it asks a different question. An implement
-worker's gate demands every fork ANSWERED; yours demands the QUESTION be
-crisp:
-- What do we want to learn? (one or two sentences, extractable from the
-  brief)
+worker's gate demands every fork ANSWERED; yours demands you ESTABLISH a
+crisp question before exploring:
+- What do we want to learn? (one or two sentences)
 - How would we recognize an answer? (what evidence would settle it —
   a working prototype, a measured number, a documented API surface, a
   demonstrated dead end)
 - Roughly where to look? (enough of a starting point to explore from)
+Vague briefs are NORMAL in this lane — cheap speculation is its purpose.
+Where the brief leaves one of the three open and a reasonable reading
+exists, SUPPLY it yourself and record your interpretation in the [gate]
+comment (your interpretation becomes the contract your findings answer).
 Product/taste forks are NOT parks here — they are FINDINGS CONTENT. When
 exploration hits a fork a human would decide, explore both sides if cheap,
-or name the fork with what each option looks like. The only gate-fail is a
-question you cannot make intelligible from the brief + repo: park
-needs-human with your best guess at what was meant.
+or name the fork with what each option looks like. Gate-fail only when no
+reasonable reading of the brief + repo yields all three — park needs-human
+with your best guess at what was meant.
 
 Scope check: the exploration must fit one session. A question too big forks
 the same way implement decompose does — register narrower spikes
@@ -31,7 +34,7 @@ the same way implement decompose does — register narrower spikes
 
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
-  then: gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/spike: <the question, one line>"
+  then: gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/spike: <the question as you will answer it, incl. anything you supplied>"
 - Fail → the park, with the required note, plus a 3–6 line orientation
   summary.
 

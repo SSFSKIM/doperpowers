@@ -740,6 +740,8 @@ assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike categ
 run board-transition.sh "$spike_t" in-progress >/dev/null
 out="$(run board-transition.sh "$spike_t" needs-human "findings ready: X is feasible via Y")"
 assert_contains "$(state "s['issues']['$spike_t']['comments'][-1]")" "findings ready" "spike handoff park lands with its note"
+run board-transition.sh "$spike_t" done >/dev/null   # the human read the findings
+assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-human → done: the human closes a read spike directly"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

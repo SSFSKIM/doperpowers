@@ -115,11 +115,16 @@ same ritual, same binding, no EXECUTION_BLOCK.
 
 What changes and what doesn't:
 
-- **Gate variant** — Check 1 asks the question be CRISP (what do we want
-  to learn / how would we recognize an answer / where to start), not that
-  every fork be answered. Taste forks met during exploration are findings
-  content ("this fork exists; A and B look like this"), never parks. Check
-  2 survives: too-big questions decompose into narrower child spikes.
+- **Gate variant** — Check 1 asks that the worker ESTABLISH a crisp
+  question (what do we want to learn / how would we recognize an answer /
+  where to start), not that every fork be answered. Vague briefs are
+  normal — where a reasonable reading exists the worker supplies the
+  missing piece itself and records the interpretation in the `[gate]`
+  comment (the contract its findings answer); it parks only when no
+  reasonable reading yields all three. Taste forks met during exploration
+  are findings content ("this fork exists; A and B look like this"),
+  never parks. Check 2 survives: too-big questions decompose into
+  narrower child spikes.
 - **Merge bar is free** — the optional evidence PR is a DRAFT (never
   `Closes #N`, never marked ready): review dispatch skips drafts and land
   dispatch refuses them, so spike code cannot enter the merge lane by
@@ -137,6 +142,10 @@ What changes and what doesn't:
   human.
 - Research-heavy spikes often want `engine:claude` (web reach); the label
   mechanism is unchanged.
+- Category labels are plain words by design (`bug`/`enhancement` always
+  were) — in a consumer repo that already used a descriptive `spike`
+  label, existing tickets carrying it now read as spike-lane tickets:
+  re-label them before dispatching there.
 
 ## Worker authority
 

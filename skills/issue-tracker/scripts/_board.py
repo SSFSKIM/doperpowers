@@ -41,8 +41,12 @@ LEGAL = {
                         "in-review", "done", "wontfix", "deferred"},
     "needs-info":      {"ready-for-agent", "in-progress", "needs-human",
                         "interactive-preferred", "wontfix", "deferred"},
+    # done from needs-human: the spike handoff — a finished spike parks
+    # needs-human "findings ready" and the human closes it after reading
+    # (done is the manual flip for non-PR work). Human-only in practice:
+    # worker doctrine forbids terminal states.
     "needs-human":     {"ready-for-agent", "in-progress", "needs-info",
-                        "interactive-preferred", "wontfix", "deferred"},
+                        "interactive-preferred", "done", "wontfix", "deferred"},
     "interactive-preferred": {"ready-for-agent", "in-progress", "needs-info",
                         "needs-human", "wontfix", "deferred"},
     # needs-human reachable from in-review: the reviewing-prs review loop's
