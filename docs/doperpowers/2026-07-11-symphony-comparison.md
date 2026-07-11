@@ -512,6 +512,15 @@ import as an *opt-in verb* the human writes when re-opening
 like the synthesis — the discriminant says approach-reset is a human-grade
 decision anyway.
 
+**CLOSED (2026-07-12, human decision): (c) — no rework clause.** Rationale:
+the pipeline assumes the ticket registrar provides maximally clear
+instructions up front (the pre-spec bar + the gate exist precisely to
+enforce that); rework-after-review is rare enough that when it happens, the
+human simply directs the reset in the unpark comment — which the FD-9
+answer-relay now carries to the worker verbatim. No standing clause needed.
+The continuation seam sub-question was separately resolved and shipped as
+FD-9 L1 (park = pause, not death).
+
 ### FD-2 · State machine ownership: prompt+config (soft) vs scripts/schema (hard)
 
 **Symphony:** tracker states are config lists (`active_states`,
@@ -562,6 +571,57 @@ phase — human approves `confident-ready`, a land-worker (or the review worker
 resumed) executes rebase/CI-retry/merge? Preconditions: runner registration
 (T2-5), auto-merge observation maturing, and a real conflict-resolution
 policy (a rebase that hits semantic conflicts is new code → whose review?).
+
+**Resolution direction (discussion, 2026-07-12) — a land phase under
+reviewing-prs, human approval as the only new gesture.** The pipeline
+completes its own logic: ticket → implement worker → PR → review worker →
+`confident-ready` → **human approves (decision only)** → land worker →
+merged → finalize. Every mechanical segment is a worker; the human's
+remaining act is pure judgment. Proposed shape:
+
+- **Signal:** a GitHub-native PR **Approve** review by a human on a
+  `confident-ready` PR (mobile-friendly, auditable, PR-event-triggerable on
+  the same runner as review dispatch), with a `land` label as the explicit
+  manual override. No new board state — `landing` would cost schema/lint/
+  transition machinery for what trail comments + PR state already show;
+  merge lands `done` via `Closes #N` as today.
+- **Actor:** reviewing-prs grows a land phase (`land-dispatch.sh <pr#>` + a
+  small land-worker protocol, same engine blocks) — NOT a third species;
+  "reviewing-prs owns the path to merge" already names this ownership. The
+  review worker's existing post-merge-finalize authority extends naturally:
+  the land worker runs `board-transition.sh <n> done` after merge, removing
+  a wake-ritual chore.
+- **Loop, native-first:** if GitHub auto-merge suffices (no conflicts,
+  checks configured), enable it and monitor — build custom machinery only
+  for what native can't do. Else: **merge origin/main into the branch, never
+  rebase** (no force-push ever; squash-merge at landing makes branch history
+  irrelevant anyway); babysit CI with bounded flaky retries (~2); merge via
+  the repo's configured method; trail comment naming what happened.
+- **Conflict policy — the crux, reusing the existing rubric:** judge the
+  *conflict-resolution delta* by the self-merge tier's own semantics. Tiny
+  (lockfiles/imports-class, ≤ the size bounds) + zero risk-surface touches +
+  CI green after resolution → proceed and note the delta in the trail
+  comment. Anything more → commit the resolution as WIP, park the ticket
+  `needs-human` with the delta described — the human either answers (FD-9
+  relay resumes the land worker) or takes over. No auto re-review loop in
+  v1: two outcomes only (proceed / park) keeps the
+  review→land→synchronize→review cycle from ever forming. The
+  `confident-ready`-demotion-on-synchronize automation stays correct: the
+  land worker's authority flows from the human's Approve, not the label.
+- **Rollout:** `LAND_ENABLED` staged flag (default off), mirroring
+  `AUTO_MERGE_ENABLED`; first mode is dry-run (report conflicts/CI/plan,
+  merge nothing). PRIVATE repos only, same runner caveat. **Manual dispatch
+  first** — `land-dispatch.sh <pr#>` run by the human/wake session is useful
+  immediately (the approved-but-unmerged PR class) and needs no runner;
+  the PR-review-event trigger arrives with T2-5, exactly the
+  review-dispatch.sh precedent.
+
+Open before build: (1) is native Approve the right signal, or does the
+human want the act to stay on the board side (a comment verb the wake
+ritual translates)? (2) conflict-delta rubric bounds — reuse ≤150/≤5
+verbatim or tighten for resolutions? (3) does the land worker also own
+closing superseded PRs / branch cleanup, or is that finalize-sweep
+territory?
 
 ### FD-5 · Exploration economics: gate-always vs cheap speculative tickets
 
