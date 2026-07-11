@@ -13,10 +13,18 @@ export interface Verdict {
   root_cause: string;
   ticket: TicketDraft;
   confidence: 'high' | 'medium' | 'low';
+  /** 보드 스냅샷(디스패처 제공) 안에서 같은 문제를 다루는 기존 이슈 번호 — 있으면 새 티켓 대신
+   * 그 이슈에 진단 코멘트를 남긴다. 디스패처가 후보 목록과 대조 검증한다. */
+  duplicate_of?: number;
+  /** 중복은 아니지만 관련 있는 기존 이슈 번호들 — 등록 후 relates 엣지(주석용)를 건다. */
+  related?: number[];
 }
 
 const CATS = ['bug', 'idea', 'question', 'other'] satisfies ResolvedCategory[];
 const STATES = ['ready-for-agent', 'needs-human', 'needs-info'] satisfies BirthState[];
+
+const asIssueNumber = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
 
 export function parseVerdict(text: string): Verdict | null {
   const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
@@ -46,5 +54,12 @@ export function parseVerdict(text: string): Verdict | null {
       note: typeof t.note === 'string' && t.note.trim() !== '' ? t.note : undefined,
     },
     confidence: o.confidence,
+    // dup/related는 자문(advisory) 라우팅 힌트 — 필수 필드처럼 fail시키지 않고, 형식이
+    // 어긋난 값만 조용히 버린다(좋은 티켓이 힌트 오형식 때문에 죽으면 안 된다). 실제 존재
+    // 여부 검증은 디스패처가 후보 목록과 대조해서 한다.
+    duplicate_of: asIssueNumber(o.duplicate_of),
+    related: Array.isArray(o.related)
+      ? (o.related.map(asIssueNumber).filter((n): n is number => n !== undefined))
+      : undefined,
   };
 }

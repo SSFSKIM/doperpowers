@@ -535,6 +535,41 @@ the implement loop is the autonomy, gated there.)
   so a verdict citing only a benign wrapper file while describing an
   auth-bypass fix is still demoted. Prose false-positives demote to
   `needs-human`, the safe direction.
+- **Dedup = candidates-in-prompt, worker judges, dispatcher validates;
+  duplicates comment-merge.** (2026-07-11.) The worker previously saw no
+  board context, so two users reporting the same bug produced two tickets.
+  Now the dispatcher injects a titles-only snapshot of open issues
+  (`gh issue list`, cap 40 — ~1–2k tokens, marginal next to the high-effort
+  diagnose turn; bodies are never included, which is what caps the cost)
+  and the verdict gains advisory `duplicate_of`/`related` fields. The
+  dispatcher honors `duplicate_of` **only if the number is in the candidate
+  list it supplied** (arbitrary/closed issues can't be targeted), and the
+  action is comment-merge: the diagnosis + provenance land as a comment on
+  the existing issue, no new ticket, writeback carries that issue's URL.
+  The existing ticket's state is never touched — so a malicious dup claim's
+  worst case is "a comment instead of a ticket", nothing is lost, and
+  repeated reports thickening one ticket is itself a priority signal.
+  `related` numbers (same candidate-list validation) get a best-effort
+  `board-relate.sh` annotation edge. `findExisting` now searches
+  `in:body,comments` since the dup path leaves its idempotency marker in a
+  comment. Malformed dup/related values are dropped, not fatal — advisory
+  hints must not kill a good ticket. Rejected: *dispatcher-side keyword/
+  embedding dedup* (Korean-text `gh` search recall is poor; embeddings are
+  infra overkill when a capable worker is already running per row).
+- **Ticket linting = three layers, only the middle one built.**
+  (2026-07-11.) Layer 1, schema lint, already exists (`board-register.sh`
+  birth invariants + `board-lint.sh` continuous board validation) — nothing
+  added. Layer 2, deterministic content lint, added to the gate's
+  `ready-for-agent` path only: the five protocol body sections must be
+  present, body ≤ 10k chars, and a ≥15-char title appearing verbatim in the
+  raw feedback is rejected as a copy-paste title; failures demote to
+  `needs-human` with the reason (the diagnosis is preserved — never
+  `failed`). Park-state tickets are not linted; a human reads those anyway.
+  Layer 3, semantic lint (an LLM editor turn judging well-defined-ness),
+  deliberately NOT built: the implement worker re-running its Ticket Gate
+  at dispatch IS the semantic lint, and building it here would pay the same
+  judgment twice. Revisit only if live `K=1` ticket quality shows the
+  implement gate rejecting triage tickets at a high rate.
 
 ## Surprises & Discoveries
 
@@ -689,3 +724,12 @@ since ticket-only is the terminal shape.)*
   references, "two kill switches"). p86 DDL gains `triage_lease UUID`. New
   module `src/trust.ts`; new env `TRIAGE_TRUSTED_ROLES`/`TRIAGE_DEV_CODE`;
   new label `source:dev-feedback`. 91 tests green.
+- 2026-07-11 — **Dedup + ticket lint.** Titles-only open-issue snapshot
+  injected into the worker prompt (cap 40); verdict gains advisory
+  `duplicate_of`/`related`; dispatcher validates against the supplied
+  candidate list — duplicates comment-merge onto the existing issue (state
+  untouched), related numbers get `board-relate.sh` annotation edges;
+  `findExisting` searches `in:body,comments`. Deterministic content lint on
+  the `ready-for-agent` path (five required body sections, ≤10k chars, no
+  copy-paste titles), failing to `needs-human` with reason; semantic lint
+  deliberately deferred to the implement gate's re-run. 105 tests green.

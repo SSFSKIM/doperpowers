@@ -49,4 +49,15 @@ describe('parseVerdict', () => {
   it('returns null when the fenced json is an array, not an object', () => {
     expect(parseVerdict('```json\n["bug","fix"]\n```')).toBeNull();
   });
+  it('parses optional duplicate_of and related issue numbers', () => {
+    const v = parseVerdict(fence({ ...goodObj, duplicate_of: 12, related: [34, 56] }));
+    expect(v?.duplicate_of).toBe(12);
+    expect(v?.related).toEqual([34, 56]);
+  });
+  it('drops malformed dup/related hints instead of failing the verdict (advisory fields)', () => {
+    const v = parseVerdict(fence({ ...goodObj, duplicate_of: '12번', related: [3.5, -1, 'x', 7] }));
+    expect(v).not.toBeNull();
+    expect(v?.duplicate_of).toBeUndefined();
+    expect(v?.related).toEqual([7]);
+  });
 });

@@ -62,4 +62,38 @@ describe('sideEffects', () => {
     const se = makeSideEffects(cfg, sh);
     await expect(se.findExisting('f9')).rejects.toThrow('rate limit');
   });
+
+  it('findExisting searches comments too — dup-merge leaves its marker in a comment, not an issue body', async () => {
+    const sh = vi.fn().mockResolvedValue('[]');
+    const se = makeSideEffects(cfg, sh);
+    await se.findExisting('f9');
+    const q = sh.mock.calls[0][1][sh.mock.calls[0][1].indexOf('--search') + 1];
+    expect(q).toContain('in:body,comments');
+  });
+
+  it('listOpenTickets returns number+title candidates, fails OPEN to [] (advisory feature)', async () => {
+    const ok = makeSideEffects(cfg, vi.fn().mockResolvedValue(JSON.stringify([{ number: 12, title: 't' }])));
+    expect(await ok.listOpenTickets()).toEqual([{ number: 12, title: 't' }]);
+    const down = makeSideEffects(cfg, vi.fn().mockRejectedValue(new Error('gh down')));
+    expect(await down.listOpenTickets()).toEqual([]);
+  });
+
+  it('commentOnIssue embeds the marker, strips the comment fragment from the returned URL, cleans up tmp', async () => {
+    const sh = vi.fn().mockResolvedValue('https://github.com/o/r/issues/12#issuecomment-555\n');
+    const writeTmp = vi.fn().mockReturnValue('/tmp/x/c.md');
+    const removeTmp = vi.fn();
+    const se = makeSideEffects(cfg, sh, writeTmp, removeTmp);
+    const url = await se.commentOnIssue({ feedbackId: 'f9', number: 12, body: '진단' });
+    expect(url).toBe('https://github.com/o/r/issues/12');
+    expect(writeTmp.mock.calls[0][1]).toContain(`${MARKER}f9`);
+    expect(sh.mock.calls[0][1].slice(0, 3)).toEqual(['issue', 'comment', '12']);
+    expect(removeTmp).toHaveBeenCalledWith('/tmp/x/c.md');
+  });
+
+  it('relateTickets calls board-relate.sh best-effort (failure swallowed)', async () => {
+    const sh = vi.fn().mockRejectedValue(new Error('meta lock'));
+    const se = makeSideEffects(cfg, sh);
+    await expect(se.relateTickets(9, 34)).resolves.toBeUndefined();
+    expect(sh).toHaveBeenCalledWith('/board/board-relate.sh', ['9', '34'], '/repo');
+  });
 });

@@ -16,7 +16,10 @@ export interface Deps {
   runTurn(o: { worktree: string; prompt: string }): Promise<{ text: string }>;
   se: {
     findExisting(id: string): Promise<{ issue?: string }>;
+    listOpenTickets(): Promise<{ number: number; title: string }[]>;
     registerTicket(a: { feedbackId: string; title: string; category: 'bug' | 'enhancement'; priority: 'P0'|'P1'|'P2'|'P3'; body: string; state: BirthState; note?: string; descriptiveLabels?: string[] }): Promise<string>;
+    commentOnIssue(a: { feedbackId: string; number: number; body: string }): Promise<string>;
+    relateTickets(a: number, b: number): Promise<void>;
   };
   db: { writeback(id: string, patch: { triage_state: TriageState; triage_issue_url?: string }): Promise<void> };
 }
@@ -31,22 +34,38 @@ export async function dispatchRow(row: FeedbackRow, d: Deps): Promise<TriageStat
   const trust = resolveTrust(row, d.cfg);
   const cleaned: FeedbackRow = { ...row, body: trust.body };
 
+  // 중복/관련 판단 후보: 열린 티켓 번호+제목(자문용 데이터 — 실패 시 빈 목록, 행은 계속).
+  const board = await d.se.listOpenTickets();
+
   const wt = await d.git.addWorktree(row.id);
   try {
-    // 단일 read-only 턴: 진단 + 티켓 저작
-    const { text } = await d.runTurn({ worktree: wt, prompt: renderTriagePrompt(cleaned, trust.level) });
+    // 단일 read-only 턴: 진단 + 티켓 저작 (+ 보드 스냅샷 대조)
+    const { text } = await d.runTurn({ worktree: wt, prompt: renderTriagePrompt(cleaned, trust.level, board) });
     const verdict = parseVerdict(text);
     if (!verdict) { await d.db.writeback(row.id, { triage_state: 'failed' }); return 'failed'; }
     // 모델이 다른 행의 id를 참칭하면(혼동 또는 프롬프트 인젝션) 신뢰하지 않고 실패 처리한다.
     if (verdict.feedback_id !== row.id) { await d.db.writeback(row.id, { triage_state: 'failed' }); return 'failed'; }
 
-    // 등록 게이트(R1–R5): 워커의 추천 상태를 디스패처가 재검증해 최종 birth state를 정한다.
-    const routed = routeTicket(trust.level, row.category, verdict);
+    // 등록 게이트(R1–R5 + 내용 린트): 워커의 추천 상태를 디스패처가 재검증해 최종 birth state를 정한다.
+    const routed = routeTicket(trust.level, row.category, verdict, cleaned.body);
 
     // 2차 멱등 확인(외부 리뷰 #4): 긴 Codex 턴 동안 다른 폴러가 이 행을 리클레임해 먼저
     // 티켓을 등록했을 수 있다 — 등록 직전에 fail-closed로 한 번 더 본다.
     const again = await d.se.findExisting(row.id);
     if (again.issue) { await d.db.writeback(row.id, { triage_state: 'ticketed', triage_issue_url: again.issue }); return 'ticketed'; }
+
+    // dup-병합: 워커가 지목한 기존 이슈가 "디스패처가 제공한 후보 목록"에 실제로 있을 때만
+    // 존중한다(임의/닫힌 이슈 지목 방지). 새 티켓 대신 그 이슈에 진단 코멘트를 남긴다 —
+    // 기존 이슈의 상태는 절대 바꾸지 않으므로, 악의적 dup 주장의 최악도 "티켓 대신 코멘트"다.
+    if (verdict.duplicate_of !== undefined && board.some((t) => t.number === verdict.duplicate_of)) {
+      const url = await d.se.commentOnIssue({
+        feedbackId: row.id,
+        number: verdict.duplicate_of,
+        body: `**동일 증상 피드백 접수** (자동 병합)\n\n${composeTicketBody(verdict, cleaned, trust.level)}`,
+      });
+      await d.db.writeback(row.id, { triage_state: 'ticketed', triage_issue_url: url });
+      return 'ticketed';
+    }
 
     const url = await d.se.registerTicket({
       feedbackId: row.id,
@@ -58,6 +77,15 @@ export async function dispatchRow(row: FeedbackRow, d: Deps): Promise<TriageStat
       note: routed.note,
       descriptiveLabels: descriptiveLabels(row, verdict, trust.level),
     });
+
+    // 관련(relates) 엣지: 후보 목록에 실존하는 번호만, best-effort 주석 — eligibility 무관.
+    const newNum = Number(url.trim().split('/').pop());
+    if (Number.isInteger(newNum) && newNum > 0) {
+      for (const rel of verdict.related ?? []) {
+        if (rel !== newNum && board.some((t) => t.number === rel)) await d.se.relateTickets(newNum, rel);
+      }
+    }
+
     await d.db.writeback(row.id, { triage_state: 'ticketed', triage_issue_url: url });
     return 'ticketed';
   } finally {

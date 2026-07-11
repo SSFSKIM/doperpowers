@@ -61,13 +61,32 @@ export function extractFileCitations(text: string): string[] {
 
 const PARK_NOTE_FALLBACK = '워커가 park 사유를 남기지 않음 — verdict 확인 필요';
 
+// 내용 린트(결정론적) — ready-for-agent로 태어나는 티켓만 대상. 프로토콜의 본문 템플릿
+// 5개 섹션이 전부 있어야 구현 게이트(well-defined 심사)가 읽을 수 있는 형태가 된다.
+export const REQUIRED_SECTIONS = ['## 증상', '## 진단', '## 제안 수정 방향', '## 스코프 추정', '## 불명확한 점'] as const;
+const BODY_MAX_CHARS = 10_000;
+
+/** ready-for-agent 후보 티켓의 형식 검사. 실패 사유를 돌려주면 routeTicket이 needs-human으로
+ * 강등한다(진단을 버리는 failed가 아니라 — 내용은 살리고 형식 미달만 사람에게 알린다). */
+export function lintTicket(t: { title: string; body: string }, rawBody: string): string | null {
+  const missing = REQUIRED_SECTIONS.filter((s) => !t.body.includes(s));
+  if (missing.length) return `필수 섹션 누락: ${missing.join(', ')}`;
+  if (t.body.length > BODY_MAX_CHARS) return `본문 과대(${t.body.length}자 > ${BODY_MAX_CHARS})`;
+  // 제목 원문-복붙 방지: 요약이 아니라 사용자 문장을 그대로 옮긴 제목은 보드 가독성을 해친다.
+  // 15자 이상이 원문에 그대로 나타나면 복붙으로 간주(짧은 제목의 우연 일치는 허용).
+  const title = t.title.trim();
+  if (title.length >= 15 && rawBody.includes(title)) return '제목이 원문 복사 — 요약 제목 필요';
+  return null;
+}
+
 /** 등록 게이트(R1–R5): 워커의 추천 상태는 참고용, 최종 birth state는 디스패처가 결정한다.
  * 신뢰 2단계(2026-07-11): user 피드백은 보수적으로 — idea/question 무조건 needs-human(R4),
  * ready-for-agent는 bug만(R1). developer 피드백(role/코드로 판별)은 지시로 취급 —
  * R1/R4를 적용하지 않아 아이디어·개선도 ready-for-agent로 태어날 수 있다.
  * 두 수준 공통: 실제 file:line 인용(R2)과 리스크 표면 무접촉(R3, 경로+심볼)은 항상 요구 —
- * 리스크 표면을 에이전트가 무인으로 만지는 위험은 요청자가 누구든 동일하다. */
-export function routeTicket(trust: TrustLevel, rowCategory: FeedbackCategory, v: Verdict): { state: BirthState; note: string | undefined } {
+ * 리스크 표면을 에이전트가 무인으로 만지는 위험은 요청자가 누구든 동일하다.
+ * rawBody(코드 제거 후 원문)는 내용 린트의 제목-복붙 검사에 쓰인다. */
+export function routeTicket(trust: TrustLevel, rowCategory: FeedbackCategory, v: Verdict, rawBody: string): { state: BirthState; note: string | undefined } {
   if (trust === 'user') {
     if (rowCategory === 'idea' || v.resolved_category === 'idea')
       return { state: 'needs-human', note: v.ticket.note ?? '아이디어 — 제품/스코프 판단은 사람 몫' };
@@ -89,6 +108,9 @@ export function routeTicket(trust: TrustLevel, rowCategory: FeedbackCategory, v:
   const sym = touchesRiskSymbol(text);
   if (sym)
     return { state: 'needs-human', note: `ready-for-agent 강등: 리스크 심볼 언급(${sym})` };
+  const lint = lintTicket(v.ticket, rawBody);
+  if (lint)
+    return { state: 'needs-human', note: `ready-for-agent 강등: ${lint}` };
 
   return { state: 'ready-for-agent', note: undefined };
 }

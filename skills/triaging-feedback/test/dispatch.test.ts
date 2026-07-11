@@ -16,12 +16,23 @@ const goodVerdict = {
 };
 const fence = (o: unknown) => '```json\n' + JSON.stringify(o) + '\n```';
 
+function seMock(over: any = {}) {
+  return {
+    findExisting: vi.fn().mockResolvedValue({}),
+    listOpenTickets: vi.fn().mockResolvedValue([{ number: 12, title: '오늘 카드 로딩 느림' }, { number: 34, title: '학부모 대시보드 그래프 깨짐' }]),
+    registerTicket: vi.fn().mockResolvedValue('https://gh/issues/9'),
+    commentOnIssue: vi.fn().mockResolvedValue('https://gh/issues/12'),
+    relateTickets: vi.fn(),
+    ...over,
+  };
+}
+
 function deps(over: any = {}) {
   return {
     cfg: { trustedRoles: ['admin'], devCode: undefined },
     git: { addWorktree: vi.fn().mockResolvedValue('/wt'), removeWorktree: vi.fn() },
     runTurn: vi.fn().mockResolvedValue({ text: fence(goodVerdict) }),
-    se: { findExisting: vi.fn().mockResolvedValue({}), registerTicket: vi.fn().mockResolvedValue('https://gh/issues/9') },
+    se: seMock(),
     db: { writeback: vi.fn() },
     ...over,
   };
@@ -50,7 +61,7 @@ describe('dispatchRow', () => {
   });
 
   it('second idempotency check finds an issue (registered by a reclaimer mid-turn) → reconcile, no duplicate', async () => {
-    const d = deps({ se: { findExisting: vi.fn().mockResolvedValueOnce({}).mockResolvedValueOnce({ issue: 'https://gh/issues/77' }), registerTicket: vi.fn() } });
+    const d = deps({ se: seMock({ findExisting: vi.fn().mockResolvedValueOnce({}).mockResolvedValueOnce({ issue: 'https://gh/issues/77' }), registerTicket: vi.fn() }) });
     const st = await dispatchRow(row, d);
     expect(st).toBe('ticketed');
     expect(d.se.registerTicket).not.toHaveBeenCalled();
@@ -114,7 +125,7 @@ describe('dispatchRow', () => {
   });
 
   it('already-handled row (idempotency) → skips acting, writes back existing url', async () => {
-    const d = deps({ se: { findExisting: vi.fn().mockResolvedValue({ issue: 'https://gh/issues/1' }), registerTicket: vi.fn() }, db: { writeback: vi.fn() } });
+    const d = deps({ se: seMock({ findExisting: vi.fn().mockResolvedValue({ issue: 'https://gh/issues/1' }), registerTicket: vi.fn() }), db: { writeback: vi.fn() } });
     const st = await dispatchRow(row, d);
     expect(st).toBe('ticketed');
     expect(d.se.registerTicket).not.toHaveBeenCalled();
@@ -153,6 +164,40 @@ describe('dispatchRow', () => {
     const call = d.se.registerTicket.mock.calls[0][0];
     expect(call.state).toBe('needs-info');
     expect(call.note).toBe('외부 API 스키마 조사 필요');
+  });
+
+  it('injects the open-ticket board snapshot into the prompt as data', async () => {
+    const d = deps();
+    await dispatchRow(row, d);
+    const prompt: string = d.runTurn.mock.calls[0][0].prompt;
+    expect(prompt).toContain('#12 오늘 카드 로딩 느림');
+    expect(prompt).toContain('#34 학부모 대시보드 그래프 깨짐');
+  });
+
+  it('duplicate_of pointing at a candidate → comment-merge on the existing issue, no new ticket', async () => {
+    const d = deps({ runTurn: vi.fn().mockResolvedValue({ text: fence({ ...goodVerdict, duplicate_of: 12 }) }) });
+    const st = await dispatchRow(row, d);
+    expect(st).toBe('ticketed');
+    expect(d.se.registerTicket).not.toHaveBeenCalled();
+    const c = d.se.commentOnIssue.mock.calls[0][0];
+    expect(c.number).toBe(12);
+    expect(c.body).toContain('동일 증상 피드백 접수');
+    expect(c.body).toContain('## 원문 피드백'); // 코멘트에도 provenance 유지
+    expect(d.db.writeback).toHaveBeenCalledWith('f1', expect.objectContaining({ triage_state: 'ticketed', triage_issue_url: 'https://gh/issues/12' }));
+  });
+
+  it('duplicate_of NOT in the candidate list (arbitrary/closed issue) → ignored, normal registration', async () => {
+    const d = deps({ runTurn: vi.fn().mockResolvedValue({ text: fence({ ...goodVerdict, duplicate_of: 999 }) }) });
+    await dispatchRow(row, d);
+    expect(d.se.commentOnIssue).not.toHaveBeenCalled();
+    expect(d.se.registerTicket).toHaveBeenCalled();
+  });
+
+  it('related numbers in the candidate list get relates edges after registration; others are dropped', async () => {
+    const d = deps({ runTurn: vi.fn().mockResolvedValue({ text: fence({ ...goodVerdict, related: [34, 999] }) }) });
+    await dispatchRow(row, d);
+    expect(d.se.relateTickets).toHaveBeenCalledTimes(1);
+    expect(d.se.relateTickets).toHaveBeenCalledWith(9, 34); // 새 이슈(#9) ↔ 후보에 실존하는 #34만
   });
 
   it('overlong authored title is collapsed and truncated to 120 chars', async () => {
