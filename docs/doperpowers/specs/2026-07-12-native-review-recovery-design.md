@@ -241,6 +241,29 @@ same only-if-unset pattern. Worker-shell flags unchanged.
   invocation form fails → the whole family is declared impossible. The
   correction each time was to vary the *carrier* (config vs positional;
   env vs flags), not the goal.
+- **Spike verdict — nested marker is `CODEX_SANDBOX=seatbelt` (Task 1,
+  live, 2026-07-12).** A seatbelted `codex exec` (`--sandbox
+  workspace-write`) was asked to run `env | sort | grep -iE
+  'codex|sandbox'`; its children see exactly three codex vars:
+  `CODEX_SANDBOX=seatbelt`, `CODEX_CI=1`, and
+  `CODEX_THREAD_ID=<uuid>`. This confirms the §1 hypothesis verbatim, so
+  the engine can detect nesting with a cheap, side-effect-free
+  `[ -n "$CODEX_SANDBOX" ]` and needs **no** `sandbox-exec` probe
+  fallback. (`CODEX_SANDBOX` also carries the mode name, `seatbelt` on
+  macOS — a truthiness test is enough; the value isn't parsed.)
+- **Spike verdict — raw multi-line `developer_instructions` survives,
+  embedded `"` and all (Task 1, live, 2026-07-12).** `codex exec review
+  --base base ... -c "developer_instructions=$(cat crit.md)"` with a
+  three-line criteria file whose middle line contains a literal
+  double-quote (`was "required" to ALSO add ... median(nums)`) returned
+  **rc=0** with no TOML parse error, and the model acted on the injected
+  criteria (flagged the missing `median` compliance gap). The raw
+  (non-TOML-quoted) value reaches the model intact — the Step-5
+  `json.dumps` escaping fallback is **not** needed. (One note: at
+  `model_reasoning_effort="low"` this run reported only the compliance
+  gap, not the `mean([])` div-by-zero; that is a model-effort artifact,
+  not a carrier failure — immaterial to the quoting question this spike
+  closes.)
 
 ## Outcomes & Retrospective
 
