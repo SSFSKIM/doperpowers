@@ -293,6 +293,21 @@ sleep 1
 if kill -0 "$pid_f" 2>/dev/null; then fail "retire stops the live codex turn"; else pass "retire stops the live codex turn"; fi
 assert_equals "$(meta_field "$uuid_f" status)" "retired" "retire records status"
 
+echo "== daemon-retire does not signal a terminal codex record's stale pid =="
+sleep 30 & stale_pid=$!
+uuid_stale="stalepid-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","name":"stale","short":"stale","engine":"codex","pid":"%s","status":"idle"}' \
+  "$uuid_stale" "$stale_pid" > "$DAEMON_HOME/$uuid_stale.json"
+"$SCRIPTS_DIR/daemon-retire.sh" "$uuid_stale" >/dev/null
+if kill -0 "$stale_pid" 2>/dev/null; then
+    pass "retire leaves a terminal codex record's stale pid alone"
+else
+    fail "retire leaves a terminal codex record's stale pid alone"
+fi
+kill "$stale_pid" 2>/dev/null || true
+wait "$stale_pid" 2>/dev/null || true
+assert_equals "$(meta_field "$uuid_stale" status)" "retired" "terminal codex record is still retired"
+
 echo "== _meta_set serializes concurrent RMW — no lost fields (FU-1) =="
 # The lost-update race: the detached _codex_launch wrapper and the foreground
 # spawn each read-modify-write the same meta; without serialization the later
