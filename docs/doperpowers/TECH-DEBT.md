@@ -36,7 +36,8 @@ flags the orphan **and a human acts**. The auto-attach trigger phase
 retry-on-transient policy: distinguish transient (stream disconnect,
 capacity) from real failures via the recorded turn error, bounded auto-resume
 for the former, park for the latter. Do not arm unattended dispatch without
-this.
+this. Reference design for the taxonomy, backoff, and stall detection:
+Symphony SPEC §7–8 — see `2026-07-11-symphony-comparison.md` §2/§10.
 
 ### 2. Silent-ish gh-token capture failure
 
