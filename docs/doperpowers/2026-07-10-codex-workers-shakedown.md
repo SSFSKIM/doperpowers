@@ -28,7 +28,7 @@ following the **issue-tracker dispatch ritual** renders
 engine's `references/engine-blocks/execution-<engine>.md`) and calls the
 spawner directly into a worktree. Runnable now.
 
-- [ ] **SD-1 · implement × Codex.** Pick one real, gate-ready ticket. Run the
+- [x] **SD-1 · implement × Codex.** PASSED 2026-07-11 (ida-solution #460 → PR #470; gate comment, PLAN-mode plan file, 5 commits, Closes-wired PR, in-review transition, follow-up #471 registered; survived 2 transient upstream turn deaths via codex-resume). Pick one real, gate-ready ticket. Run the
   issue-tracker dispatch with the default engine (or `WORKER_ENGINE=codex`).
   It spawns `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
   (model/effort default `gpt-5.6-sol`/`high`, overridable via
@@ -38,7 +38,7 @@ spawner directly into a worktree. Runnable now.
     multi-milestone ticket), commits on its worktree branch, opens a PR via
     `gh`, and posts the gate comment `[gate] pass — codex/<mode>: …`. Verify
     with `daemon-list.sh` (ENG column shows `codex`) and `daemon-reply.sh`.
-- [ ] **SD-2 · implement × Claude.** Same ticket-shaped work, dispatched with
+- [ ] **SD-2 · implement × Claude.** DEFERRED by the human 2026-07-11 — only one gate-ready code ticket existed; the claude implement path is the battle-tested one (18 registry daemons) and the engine switch's claude branch is exercised elsewhere. Same ticket-shaped work, dispatched with
   `WORKER_ENGINE=claude` or a `engine:claude` label → `daemon-spawn.sh`.
   - **Acceptance:** the Claude worker does the same end-to-end (TDD →
     commits → PR), gate comment reads `[gate] pass — claude/<mode>: …`.
@@ -53,7 +53,7 @@ self-hosted runner (`[self-hosted, claude-review]`), and invokes
 `review-dispatch.sh <PR#>`. That script also runs by hand against any PR
 number in a local clone, so a **manual** review shakedown needs no runner.
 
-- [ ] **SD-3 · review × Codex.** Against a real open PR (ideally the one SD-1
+- [x] **SD-3 · review × Codex.** PASSED 2026-07-11 round 4 (PR #470: in-thread engine, full-range self-diff, approve with 0 findings, 1,225 tests + tsc + build verified, self-merge tier correctly judged unmet → confident-ready). Rounds 1–3 were protocol-clean engine-transport failures that produced FU-6/FU-7. Against a real open PR (ideally the one SD-1
   produced), run `review-dispatch.sh <PR#>` with the default engine (or
   `WORKER_ENGINE=codex`) from a local clone (`LOCAL_REPO`).
   - **Acceptance:** dispatch resolves `engine=codex`, renders the cookbook
