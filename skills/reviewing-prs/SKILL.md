@@ -10,8 +10,8 @@ description: Use when operating or setting up the autonomous PR-review loop — 
 The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
-background daemon (`orchestrating-daemons`) that reviews it with a native
-Codex reviewer (`codex exec` self-diffing the PR), verifies every finding
+background daemon (`orchestrating-daemons`) that reviews it with the native
+Codex reviewer (`codex exec review` via review-engine.sh), verifies every finding
 against the code, applies the valid fixes, re-reviews
 when the fixes warrant it, and then either merges it (small/simple tier, CI
 green) or escalates the PR + its linked ticket to **`confident-ready`** for
@@ -26,10 +26,11 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`) |
+| `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + criteria via developer_instructions); both species call it |
 | `references/review-worker-protocol.md` | the Review Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
-| `references/engine-blocks/` | engine + per-species fallback blocks; `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex) |
+| `references/engine-blocks/` | engine block + the single shared fallback block; `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex) |
 | `confident-ready` state | owned by doperpowers:issue-tracker (state table there); this loop is its only writer |
 
 ## Dedupe & sweep policy
@@ -44,6 +45,7 @@ the newest `review-pr-<n>` registry entry:
 | ACTIVE (working/blocked), session live | skip | skip |
 | ACTIVE, session gone (daemon died) | retire → dispatch | retire → dispatch |
 | finished (idle/error/awaiting-human) | retire → dispatch (an explicit event is a fresh signal) | skip (finished stays finished) |
+| finished, reply carries ENGINE-UNAVAILABLE | retire → dispatch | retire → dispatch |
 
 The sweep (`review-dispatch.sh --sweep`, cron every ~30 min) is the self-heal
 net: PRs opened while the machine slept (GitHub queues self-hosted jobs only
@@ -98,20 +100,21 @@ verifies the claims were real.
 
 ## Review engine
 
-Both worker species apply the same native-Codex REVIEW CRITERIA — self-diff
-the PR against its base (`git diff origin/<base>...HEAD`), correctness
-discipline AND spec-compliance criteria (the linked ticket's acceptance) —
-no companion, no shared lock. Who runs the engine differs by species: a
-**Codex worker IS the engine** and reviews in-thread itself (codex-in-codex
-nesting is structurally broken under the worker sandbox — no seatbelt
-`sandbox_apply`, no keychain TLS trust — and the work-alone rule forbids
-nested agents anyway); a **Claude worker calls the engine** via the cookbook
-plain-`codex exec` form, which is not nested. (The `codex exec review`
-subcommand can't take custom criteria — its target flags reject a stdin
-prompt — so the cookbook form carries both.) The Claude species falls back
-to a fresh Claude high-effort reviewer subagent when codex is unavailable;
-the Codex species has no second engine and parks `needs-human` instead. The
-review-trail comment names the engine that reviewed.
+ONE engine for both worker species: the native `codex exec review --base
+origin/<base>` run by `scripts/review-engine.sh`, with correctness
+discipline + the ticket's acceptance criteria riding
+`-c developer_instructions=` (a config value — the CLI forbids combining
+`--base` with a positional prompt). The engine returns a compact
+structured verdict file; the PR diff never enters the worker's own
+context. Species differ only in nesting: a Codex worker's call runs
+inside its own sandbox (the script detects this and skips the inner
+self-profiling step — the outer workspace-write profile still confines
+it), a Claude worker's runs on the host. There is NO second engine: on
+engine failure the worker retries twice, then posts the trail comment,
+leaves the ticket in-review, and ends its turn with the
+`ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it.
+`needs-human` is never written for an infra outage. The review-trail
+comment names the engine that reviewed.
 
 ## Edge cases
 
