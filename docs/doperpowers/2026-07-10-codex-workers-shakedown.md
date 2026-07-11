@@ -194,6 +194,14 @@ Codex workers ever need full skills"). That path is now live:
   works unprompted; wall-clock cost ~1h for a 3-root-cause ticket. Whether
   workers should fan out sub-agents (latency/token multiplier) vs execute
   in-thread is a protocol-tuning question for after the shakedown.
+  **DECIDED (human, 2026-07-11): in-thread solo execution.** writing-plans
+  and subagent-driven-development are interactive-session doctrine, never a
+  daemon worker's. Both engine blocks now (a) rename the codex mode
+  PLAN → **EXECPLAN**, routing explicitly to the vendored
+  `doperpowers:execplan` doctrine (one self-contained plan, executed by the
+  worker itself, milestone by milestone), and (b) carry a work-ALONE clause
+  naming the forbidden skills — no sub-agents, no collab threads. Pinned by
+  the protocol-content test.
 
 ### FU-5 · `codex exec resume` rejects `--add-dir` — linked-worktree resume was broken
 

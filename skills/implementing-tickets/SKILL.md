@@ -21,7 +21,7 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `references/implement-worker-protocol.md` | the Implement Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
-| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline inlined) — composed into the protocol at render time |
+| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline via the vendored `.agents/skills` doctrine) — both mandate in-thread solo execution; composed into the protocol at render time |
 | The Ticket Gate | the pre-code pass/park verdict (below) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
@@ -40,9 +40,12 @@ repo docs. Trivial lookups are orient work, never a park.
 | non-trivial architecture (subsystem boundary, data model, API shape) | ticket + codebase; unanswered → gate-fail |
 | product design or taste, **major or minor** | the ticket; unanswered → gate-fail — even minor taste is never the worker's call |
 
-**Check 2 — well-scoped.** Fits ~1–2 ExecPlans. Too big forks on ONE
-question: *can the remainder be written as self-contained child pre-specs
-right now?* Yes → decompose. No → `interactive-preferred`.
+**Check 2 — well-scoped.** Fits ~1–2 ExecPlans — big-but-atomic work that
+cannot land halfway still counts as ONE unit (that is what ExecPlan mode
+exists for); decompose only work whose children could land on main
+independently. Too big forks on ONE question: *can the remainder be
+written as self-contained child pre-specs right now?* Yes → decompose.
+No → `interactive-preferred`.
 
 **The verdict is the worker's first board write.** Dispatch writes nothing;
 `in-progress` + a `[gate]` comment = pass, a park state = fail.
@@ -55,9 +58,15 @@ right now?* Yes → decompose. No → `interactive-preferred`.
 - **Knowledge work anyone could do** but substantial enough to be its own
   work-unit → `needs-info` (rare by design — the research threshold above
   keeps orient-work lookups out of it).
-- **Ongoing steering, not one answer** → `interactive-preferred` — summons
-  the human into a live doperpowers:brainstorming session; the note says
-  which decision areas need steering.
+- **Ongoing steering of the work's core, not one answer** — an
+  architecture spine or product-core design whose decisions are so
+  entangled that each answer reshapes the next question (a question list
+  cannot carry them) → `interactive-preferred` — summons the human into a
+  live doperpowers:brainstorming session; the note says which decision
+  areas need steering. Any *enumerable* set of open decisions, however
+  many and whatever the ticket's size, is `needs-human` — in practice
+  this state is rare and marks genuinely architecture-heavy or
+  taste-shaped work.
 
 ## Decompose — the one scoping behavior
 
@@ -75,10 +84,13 @@ worker re-runs the same gate; no depth machinery exists.
 
 ## Execution — two modes on gate pass
 
-- **Direct** — the pre-spec is the plan: TDD, commit, PR.
-- **ExecPlan** — doperpowers:execplan when the work has 2+ milestones or
-  enough design sequencing that a fresh session would need the document to
-  survive context death. The gate already served as execplan's grill.
+- **Direct** — the pre-spec is the plan: evidence-first execution
+  (testable logic → TDD; UI → build + verify rendered behavior;
+  config/docs → the relevant check passes), commit, PR.
+- **ExecPlan** — doperpowers:execplan when the work needs the document to
+  survive context death: multiple sequenced milestones, or big-but-atomic
+  work that cannot land halfway. The gate already served as execplan's
+  grill.
 
 There is no in-daemon execspec mode: work that wants a living spec with a
 human at the gates is precisely `interactive-preferred`.

@@ -60,7 +60,7 @@ the review loop (doperpowers:reviewing-prs) a PR passes through
 | `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
-| `interactive-preferred` | open + `status:interactive-preferred` | the ticket's shape wants continuous human steering — never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
+| `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
 | `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it) | PR link |
 | `confident-ready` | open + `status:confident-ready` | PR rigorously reviewed (reviewing-prs loop); merge/close with confidence | optional |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |

@@ -621,3 +621,28 @@ of the plan.
   (dispatchers hard-code them; the daemon script suite pins them).
   `issue-tracker`'s boundary paragraph updated to match. Frontmatter narrowed
   so "fan out work" phrasing routes to the board / native subagents, not here.
+- 2026-07-11: Execution-policy tuning from the codex-workers live shakedown
+  (design discussion + SD-1 observation; human-decided). Four amendments,
+  all pinned by the protocol-content test: (a) **Evidence ladder replaces
+  TDD-always** in both engine blocks — testable logic keeps failing-test-first
+  (green checks are what keep a PR self-merge-eligible), UI/visual verifies
+  the rendered behavior (no test theater), config/docs verify by the relevant
+  check; the absolute is "never claim completion on reasoning alone", which
+  is about ground truth, not model intelligence — smarter models shrink
+  reasoning errors, not epistemic gaps (the shakedown itself: a verified
+  runbook still 403'd inside the sandbox). (b) **Scoping: landability is the
+  decompose criterion, not size** — big-but-ATOMIC work that cannot land
+  halfway counts as ONE unit (that is what ExecPlan mode exists for);
+  decompose only work whose children could land on main independently.
+  (c) **interactive-preferred sharpened** — only for a work's CORE
+  (architecture spine / product-core design) whose decisions are so entangled
+  that each answer reshapes the next question; any ENUMERABLE set of open
+  decisions, however many and whatever the size, is needs-human. In practice
+  rare. (d) **Codex mode PLAN → EXECPLAN + work-ALONE clause in both
+  blocks** — SD-1's worker, seeing the doperpowers skills, self-elected
+  writing-plans + subagent-driven development (per-task codex sub-threads,
+  ~1h for a moderately small 3-root-cause ticket); those are
+  interactive-session skills, never a daemon worker's. The codex block now
+  routes explicitly to the vendored doperpowers:execplan doctrine (one
+  self-contained plan, executed in-thread by the worker itself) and both
+  blocks forbid sub-agent/collab fan-out by name.

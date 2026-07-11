@@ -26,7 +26,10 @@ Check 1 — WELL-DEFINED. Classify every fork the implementation will hit:
   unanswered → gate-fail. Even minor taste is never your call.
 
 Check 2 — WELL-SCOPED. The work must fit this ticket as one purpose-unit
-(roughly 1–2 ExecPlans). Too big? One question decides: can the remainder
+(roughly 1–2 ExecPlans — big-but-ATOMIC work that cannot land halfway
+still counts as ONE unit; that is what plan-mode execution exists for.
+Decompose only work whose children could land on main independently).
+Too big? One question decides: can the remainder
 be written down as self-contained child pre-specs right now?
 - Yes → DECOMPOSE. Register children:
   {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --parent {{ISSUE_NUMBER}}
@@ -59,7 +62,11 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
   - Knowledge work anyone could do, but substantial enough to be its own
     work-unit (or its outcome needs human review before decisions harden)
     → needs-info. Note = what is missing and why gating cannot proceed.
-  - Ongoing steering, not one answer → interactive-preferred.
+  - Ongoing steering of the work's CORE — an architecture spine or
+    product-core design whose decisions are so entangled that each answer
+    reshapes the next question, impossible to carry as a question list →
+    interactive-preferred. Any ENUMERABLE set of open decisions, however
+    many and whatever the ticket's size, is needs-human — not steering.
   End your turn stating the park crisply.
 
 {{EXECUTION_BLOCK}}
