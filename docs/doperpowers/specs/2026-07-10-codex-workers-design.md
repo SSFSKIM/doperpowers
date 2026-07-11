@@ -567,6 +567,22 @@ running the steps.
   `CODEX_HOME` with a symlinked `auth.json`, no bare `--ephemeral` sharing
   the outer's real `~/.codex`, and explicit `-m`/`-c` on the inner call —
   goes verbatim into the Task 6 engine block.**
+- **(c-superseded, 2026-07-11 live shakedown): the spike's nested success
+  does NOT generalize — codex-in-codex cannot run SHELL COMMANDS.** The
+  spike's inner call was `codex exec review --commit HEAD`, whose diff is
+  computed in-process (no command runner). The cookbook form instead has
+  the inner MODEL run `git diff` via the shell tool, and that dies before
+  executing even `pwd`: `sandbox-exec: sandbox_apply: Operation not
+  permitted` — macOS forbids a seatbelted process from applying a second
+  profile, in any inner sandbox mode. Two further nested walls surfaced
+  live first: keychain-blocked TLS trust (`invalid peer certificate:
+  UnknownIssuer`; fixed for pure-inference nesting by substrate-level
+  `SSL_CERT_FILE=/etc/ssl/cert.pem`, FU-6) and the keychain gh token
+  (FU-3). Consequence: the "same engine block for both species" decision
+  is superseded — REVIEW CRITERIA stay identical, but a Codex reviewer IS
+  the engine and reviews in-thread (also mandated by the work-alone rule),
+  while a Claude reviewer keeps the non-nested cookbook call. See the
+  shakedown runbook FU-6/FU-7.
 
 ## Outcomes & Retrospective
 

@@ -89,16 +89,20 @@ doperpowers:organizing-sprints input).
 
 ## Review engine
 
-Both worker species run the same engine: a native `codex exec` reviewer that
-self-diffs the PR against its base (`git diff origin/<base>...HEAD`), with
-correctness discipline AND spec-compliance criteria (the linked ticket's
-acceptance) inlined in the review prompt — no companion, no shared lock.
-(The `codex exec review` subcommand can't take custom criteria — its target
-flags reject a stdin prompt — so the cookbook plain-`codex exec` form carries
-both.) The Claude species falls back to a fresh Claude high-effort reviewer
-subagent when codex is unavailable; the Codex species has no second engine and
-parks `needs-human` instead. The review-trail comment names the engine that
-reviewed.
+Both worker species apply the same native-Codex REVIEW CRITERIA — self-diff
+the PR against its base (`git diff origin/<base>...HEAD`), correctness
+discipline AND spec-compliance criteria (the linked ticket's acceptance) —
+no companion, no shared lock. Who runs the engine differs by species: a
+**Codex worker IS the engine** and reviews in-thread itself (codex-in-codex
+nesting is structurally broken under the worker sandbox — no seatbelt
+`sandbox_apply`, no keychain TLS trust — and the work-alone rule forbids
+nested agents anyway); a **Claude worker calls the engine** via the cookbook
+plain-`codex exec` form, which is not nested. (The `codex exec review`
+subcommand can't take custom criteria — its target flags reject a stdin
+prompt — so the cookbook form carries both.) The Claude species falls back
+to a fresh Claude high-effort reviewer subagent when codex is unavailable;
+the Codex species has no second engine and parks `needs-human` instead. The
+review-trail comment names the engine that reviewed.
 
 ## Edge cases
 

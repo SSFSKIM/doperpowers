@@ -255,6 +255,32 @@ codex is unaffected (the sandbox constrains its *children*, not itself);
   while its *engine transport* failed — exactly the seam a shakedown exists
   to expose.
 
+### FU-7 · codex-in-codex cannot run commands — codex reviewers now review in-thread
+
+Round 3 (with FU-6's TLS fix live) advanced to the NEXT wall: the nested
+codex reached the API but its command runner failed before executing even
+`pwd` — `sandbox-exec: sandbox_apply: Operation not permitted`. macOS
+forbids an already-seatbelted process from applying a second profile, so a
+nested codex can never run shell commands, in ANY sandbox mode it selects.
+Combined with FU-6, codex-in-codex is structurally dead on macOS for
+command-running work (pure-inference nested calls do work — FU-6's probe).
+
+- **Fix (design, supersedes part of the "same engine block for both
+  species" decision):** the engine block is now species-conditional on WHO
+  RUNS the engine, with identical REVIEW CRITERIA. A **Codex reviewer IS
+  the native engine** — it reviews in-thread, itself (also consistent with
+  the work-alone rule: no nested agents). A **Claude reviewer calls** the
+  cookbook `codex exec` — not nested, unaffected. The freshly-spawned
+  codex reviewer already provides the fresh-eyes property the ephemeral
+  nested call existed for.
+- The alternative — inner `--sandbox danger-full-access`, confined by the
+  outer profile — was considered and dropped: in-thread needs no sandbox
+  flags at all, and the permission classifier rightly treats that flag as
+  a red flag even where it would be technically confined.
+- All three SD-3 rounds were protocol-clean failures (honest trails,
+  correct parks, no fabricated verdicts). Round 4 runs the in-thread
+  design.
+
 ### Remaining engine asymmetries — audited, deliberate (not gaps)
 
 | surface | claude worker | codex worker | verdict |
