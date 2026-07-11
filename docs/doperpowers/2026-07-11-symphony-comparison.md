@@ -417,7 +417,10 @@ the watchdog import.
    Where: implement-worker-protocol.md clause + a `[workpad]` comment
    convention. Cheap; consolidates our scattered trail; Confusions feeds
    harness improvement (our shakedown FU-list *was* a confusions ledger,
-   hand-kept). (WF step 1, workpad template.) **Contested — see FD-7.**
+   hand-kept). (WF step 1, workpad template.) **Resolved via FD-7
+   (2026-07-12): imported as scope-end closing artifacts (PR-body
+   Validation Evidence + Confusions + review-side cross-check; park-side
+   orientation summary), NOT as a live mirror.**
 2. **Reproduction-first rung** — for bug-category tickets, capture the
    failure signal before changing code; record it in the workpad. Extends the
    evidence ladder from *done* to *understood*. (WF step 1.8.)
@@ -619,6 +622,30 @@ on the phone/board) or purely a *routing surface* (then repo artifacts
 suffice and the workpad is duplication)? A middle exists: no live-updated
 workpad, but a mandatory structured **closing comment** (validation
 evidence + confusions) at PR-open/park time — one write, no drift window.
+
+**RESOLVED (2026-07-12, discussed + shipped).** Live workpad rejected;
+closing artifacts adopted at the two scope-end moments. The dissolving
+observation: Symphony's workpad is *primarily the worker's own cross-turn
+memory* — their re-dispatch-fresh recovery model requires an external
+memory, and the prompt's "reconcile the workpad first" exists for the
+worker, not the human. Our substrate already covers that function
+(one-id-for-life sessions + resume — FD-9 made even parks survivable;
+ExecPlan docs for big work), so only the *human-handoff* function was worth
+importing — and it belongs where scopes end, with no drift window. A live
+checklist is additionally a **supervision artifact** (watching % complete
+IS session-watching, the activity both systems agree to eliminate); our
+mid-flight surface stays the board state label, with FD-9 L3's attach
+affordances as the true-need escape hatch. Shipped: (1) implement protocol
+— PR body as CLOSING ARTIFACT (`Closes #N`, `## Validation Evidence` per
+evidence-ladder claim, `## Confusions` conditional, FOLLOW-UPS), park
+comments carry a 3–6 line ORIENTATION SUMMARY (prices the fresh-dispatch
+fallback); (2) review protocol — CROSS-CHECK clause: claimed evidence is
+verified against diff/repo/CI, *claimed-but-unverifiable evidence is
+itself a finding* (missing section = trail note only). This is the piece
+that goes beyond Symphony: their proof-of-work decorates a human review;
+our closing evidence is a **consumed contract** — the implement side must
+produce evidence, the review side verifies the claims were real. UI-media
+evidence deferred to FD-3 (repo-opt-in manifest territory).
 
 ### FD-8 · Board-driven cancellation: reconciliation kills vs kill-by-hand
 

@@ -67,7 +67,10 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
     reshapes the next question, impossible to carry as a question list →
     interactive-preferred. Any ENUMERABLE set of open decisions, however
     many and whatever the ticket's size, is needs-human — not steering.
-  End your turn stating the park crisply.
+  Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
+  comment (what you read, what you learned, where the answers will land) —
+  it prices the fresh-dispatch fallback cheaply while you are still
+  oriented. End your turn stating the park crisply.
 
 {{EXECUTION_BLOCK}}
 The gate lowers the odds of a park; it does not abolish parks.
@@ -75,7 +78,8 @@ A fork discovered mid-build is classified by the same rules: worker-grade →
 your call, keep building; human-grade → ASK EARLY: never build past it on
 assumptions, never batch it for the end. Commit WIP to your branch, post
 the open questions as a ticket comment (numbered, each with your
-recommended answer), park with the same discriminant (required note), and
+recommended answer, plus the same orientation summary every park carries),
+park with the same discriminant (required note), and
 end your turn. A park is a pause, not a death — your session stays bound
 to the ticket, and answers usually arrive as a resume.
 
@@ -96,9 +100,22 @@ that ticket, nothing more); scope beyond the ticket.
 
 Opening your PR closes out your scope:
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
-Register every residual as a ticket (--spawned-by {{ISSUE_NUMBER}}) BEFORE
-your turn-end message, then list what you registered (numbers) in a
-FOLLOW-UPS section — or the literal line "FOLLOW-UPS: none". A follow-up not registered does not exist.
+Your PR body is the CLOSING ARTIFACT — the one structured handoff. There is
+no live progress mirror in this pipeline; scope-end writes are the only
+status writes. The body carries:
+- "Closes #{{ISSUE_NUMBER}}".
+- "## Validation Evidence" — every claim of done from your execution, each
+  with the evidence backing it (test run + result, build + rendered
+  behavior, the relevant check). The review worker cross-checks this
+  section against the diff and CI: evidence claimed but not verifiable is
+  itself a finding — claim only what you actually ran.
+- "## Confusions" — ONLY when something was genuinely confusing during
+  execution (ambiguous docs, misleading code, tooling friction): concise
+  bullets. Omit the section entirely when nothing was.
+- A FOLLOW-UPS section: register every residual as a ticket (--spawned-by
+  {{ISSUE_NUMBER}}) BEFORE your turn-end message, then list what you
+  registered (numbers) — or the literal line "FOLLOW-UPS: none".
+  A follow-up not registered does not exist.
 From the PR on, the review loop (doperpowers:reviewing-prs) owns the path to merge.
 
 ---- Ticket #{{ISSUE_NUMBER}} brief: {{ISSUE_TITLE}} ----

@@ -15,6 +15,14 @@ Toolkit:
 ORIENT before anything else: read the PR diff against its base
 (git diff origin/{{BASE_REF}}...HEAD), the PR body, and the ticket brief.
 
+CROSS-CHECK the PR's closing artifact before the engine runs: the PR body's
+"## Validation Evidence" section claims evidence per claim of done — verify
+each claim against the diff, the repo, and CI (does the named test exist
+and exercise the change? does the claimed check actually pass?). Evidence
+claimed but not verifiable is itself a finding — bin it like any other. A
+PR without the section is not a finding: note its absence in the review
+trail and weigh the diff on its own merits.
+
 {{ENGINE_BLOCK}}
 
 {{FALLBACK_BLOCK}}

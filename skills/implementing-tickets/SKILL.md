@@ -95,6 +95,13 @@ worker re-runs the same gate; no depth machinery exists.
 There is no in-daemon execspec mode: work that wants a living spec with a
 human at the gates is precisely `interactive-preferred`.
 
+**No live progress mirror.** Status writes happen only where a scope ends:
+the PR body is the closing artifact (`Closes #N`, `## Validation Evidence`
+— cross-checked by the review worker, `## Confusions` when warranted,
+FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
+orientation summary. Mid-flight visibility is the board's state label —
+watching a worker work is supervision, which this pipeline removed.
+
 ## Worker authority
 
 Own ticket's open states via `board-transition.sh`; direct registration of

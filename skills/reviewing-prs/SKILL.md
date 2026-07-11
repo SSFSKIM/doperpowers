@@ -87,6 +87,15 @@ accumulated comments into real tickets during gardening passes (register
 via doperpowers:issue-tracker; a pile grown sprint-shaped is
 doperpowers:organizing-sprints input).
 
+## Closing-artifact cross-check
+
+Before the engine runs, the worker verifies the PR body's `## Validation
+Evidence` section (the implement worker's closing artifact) against the
+diff, the repo, and CI — evidence claimed but not verifiable is itself a
+finding; a missing section is only a review-trail note. This closes the
+evidence loop: the implement side must produce evidence, the review side
+verifies the claims were real.
+
 ## Review engine
 
 Both worker species apply the same native-Codex REVIEW CRITERIA — self-diff
