@@ -422,19 +422,21 @@ handles both). The engine call is a TOOL invocation, not a nested agent:
 it does not violate the work-alone rule. Never add
 --dangerously-bypass-approvals-and-sandbox / --yolo to anything.
 
-1. Write the REVIEW CRITERIA below to
-   /tmp/review-pr-{{PR_NUMBER}}-criteria.md — paste the ticket brief's
-   requirements into the COMPLIANCE section; when the ticket is "none",
-   drop that section and review correctness only.
-2. From the worktree root, run (round N uses findings-rN.txt):
+1. Run `mktemp -d "${TMPDIR:-/tmp}/review-pr-{{PR_NUMBER}}.XXXXXX"`
+   once. Treat the returned path as `<review-tmp>` for this invocation and
+   remove that directory before ending the turn.
+2. Write the REVIEW CRITERIA below to `<review-tmp>/criteria.md` — paste
+   the ticket brief's requirements into the COMPLIANCE section; when the
+   ticket is "none", drop that section and review correctness only.
+3. From the worktree root, run (round N uses findings-rN.txt):
 
    CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
    CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
      {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --criteria /tmp/review-pr-{{PR_NUMBER}}-criteria.md \
-     --out /tmp/review-pr-{{PR_NUMBER}}-findings-r1.txt
+     --criteria <review-tmp>/criteria.md \
+     --out <review-tmp>/findings-r1.txt
 
-3. Read the findings file — that compact verdict IS the engine's output.
+4. Read the findings file — that compact verdict IS the engine's output.
    Do NOT read the full PR diff yourself: the engine reviews the whole
    range; you read only the code each finding names.
 
