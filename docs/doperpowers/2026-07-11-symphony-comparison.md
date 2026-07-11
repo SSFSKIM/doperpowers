@@ -632,6 +632,17 @@ remaining act is pure judgment. Proposed shape:
    branch deletion stay with the finalize sweep / repo auto-delete
    setting. Minimal surface, simpler failure modes.
 
+**IMPLEMENTED (2026-07-12):** `skills/reviewing-prs/scripts/land-dispatch.sh`
+(authority gate → detached worktree → spawn `land-pr-<n>` → **bind to the
+ticket**, so the FD-9 `board-answer.sh` relay resumes a parked land worker
+in place, worktree and prepared resolution intact) +
+`references/land-worker-protocol.md` (native-first, merge-base-never-rebase,
+≤50/≤3 conflict bounds, out-of-bounds resolutions stay LOCAL commits,
+finalize `done`, no cleanup) + `tests/reviewing-prs/test-land-dispatch.sh`
+(45 asserts) + a Landing-phase section in the reviewing-prs SKILL.
+`LAND_ENABLED` defaults to dry-run; no sweep mode — landing always follows
+an explicit human signal.
+
 ### FD-5 · Exploration economics: gate-always vs cheap speculative tickets
 
 **Symphony:** *"추측성 작업을 띄우는 일이 아주 쉬워졌습니다"* — file a vague

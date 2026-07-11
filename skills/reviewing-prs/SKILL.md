@@ -1,6 +1,6 @@
 ---
 name: reviewing-prs
-description: Use when operating or setting up the autonomous PR-review loop — dispatching review workers onto opened PRs, the confident-ready escalation state, the Review Worker Protocol, the self-merge rubric, sweep/dedupe policy, or the self-hosted-runner trigger. The inverse of the issue-tracker dispatch loop, reviewing PRs instead of implementing tickets.
+description: Use when operating or setting up the autonomous PR-review loop — dispatching review workers onto opened PRs, the confident-ready escalation state, the Review Worker Protocol, the self-merge rubric, sweep/dedupe policy, the post-approval landing phase (land workers merging approved PRs), or the self-hosted-runner trigger. The inverse of the issue-tracker dispatch loop, reviewing PRs instead of implementing tickets.
 ---
 
 # Reviewing PRs — the autonomous review loop
@@ -27,7 +27,9 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`) |
 | `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + fixed policy in developer instructions + untrusted criteria file); both species call it |
+| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
 | `references/review-worker-protocol.md` | the Review Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
+| `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
 | `references/engine-blocks/` | engine block + the single shared fallback block; `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex) |
@@ -77,6 +79,42 @@ self-merge-eligible PR is routed to `confident-ready` instead of merged, with
 the trail comment naming what it *would* have merged. Watch a few of those,
 then set `AUTO_MERGE_ENABLED=true` (workflow / runner env) to let the worker
 actually merge the self-merge tier.
+
+## Landing phase (post-approval)
+
+The pipeline's last mile: after the human approves a `confident-ready` PR,
+the merge *mechanics* — base sync, CI babysitting, conflict triage,
+finalize — are worker-grade, not human-grade. `land-dispatch.sh <pr#>`
+spawns a **land worker** (same daemon machinery, not a third species)
+whose authority flows from the human's approval, never from a label.
+
+**Authority gate (dispatch refuses without both):** the PR carries
+`confident-ready` (the review loop's verdict), AND its GitHub review
+decision is APPROVED — or it carries a `land` label, the explicit manual
+override for PRs you cannot approve yourself (your own). No new board
+state: trail comments + PR state carry the record.
+
+**The worker is native-first:** mergeable + checks green → merge with the
+repo's preferred method; checks running → arm GitHub auto-merge and watch
+bounded (~30 min), then hand off; a red check → at most two flaky reruns,
+else park. Conflicts: **merge base into branch, never rebase, never
+force-push**. The conflict-resolution delta is unreviewed by construction,
+so its bounds are TIGHTER than the self-merge tier: ≤ 50 hand-resolved
+lines across ≤ 3 conflicted files, zero risk-surface touches — within
+bounds it pushes and lands; beyond, the resolution stays a LOCAL commit
+and the ticket parks `needs-human`. The dispatch **binds the daemon to the
+ticket**, so `board-answer.sh` resumes the parked land worker in place,
+worktree intact (park = pause, not death).
+
+After the merge the worker runs `board-transition.sh <n> done` and posts a
+land-trail comment. Cleanup (superseded PRs, branch deletion) is
+finalize-sweep territory, never the land worker's.
+
+**Staged rollout (`LAND_ENABLED`, default off = dry-run):** the worker
+analyzes (including a local merge attempt to discover conflicts) and posts
+what it *would* do, touching nothing. No sweep mode — landing always
+follows an explicit human signal; manual dispatch works today, the
+PR-review-event trigger arrives with runner registration.
 
 ## Tech-debt sink
 
