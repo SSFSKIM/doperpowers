@@ -265,6 +265,18 @@ same only-if-unset pattern. Worker-shell flags unchanged.
   not a carrier failure — immaterial to the quoting question this spike
   closes.)
 
+- **Finding recall is severity-of-signal-dependent, not effort-dependent.**
+  Acceptance runs (gpt-5.6-sol, efforts low→high) always caught the planted
+  compliance gap, but consistently declined to flag `mean([])`'s
+  ZeroDivisionError — a defensible judgment for an uncalled 2-line function
+  with no spec on empty input. Planting a DEFINITE bug (docstring promises
+  `safe_ratio` returns 0 on zero denominator; code raises) was flagged
+  immediately as [P2], alongside a correct out-of-scope finding on stray
+  files. The correctness channel works; weak-signal planted bugs are the
+  wrong acceptance probe. (Engine transport itself passed everywhere:
+  rc=0, criteria reach the model, nested run clean — 0 sandbox_apply,
+  0 host errors.)
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
