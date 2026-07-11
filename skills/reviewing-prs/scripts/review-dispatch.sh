@@ -79,8 +79,8 @@ esac
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
 ENGINE_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/engine-codex-review.md"
-FALLBACK_CLAUDE_FILE="$SKILL_DIR/references/engine-blocks/fallback-claude.md"
-FALLBACK_CODEX_FILE="$SKILL_DIR/references/engine-blocks/fallback-codex.md"
+FALLBACK_FILE="$SKILL_DIR/references/engine-blocks/fallback-engine.md"
+REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
 # Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid" (empty if none).
 _reviewer_meta() {
@@ -173,7 +173,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine fallback_file
+  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -201,8 +201,6 @@ PY
 )" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
   eval "$exports"
   engine="${ENGINE_LABEL:-${WORKER_ENGINE:-codex}}"
-  fallback_file="$FALLBACK_CODEX_FILE"
-  [ "$engine" = "claude" ] && fallback_file="$FALLBACK_CLAUDE_FILE"
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
@@ -254,8 +252,8 @@ PY
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" \
-    ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$fallback_file" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \
     PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
     RISK_FILE="$tmp/risk.md" \
     python3 - "$PROTOCOL_TEMPLATE" <<'PY'

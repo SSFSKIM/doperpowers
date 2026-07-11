@@ -12,8 +12,10 @@ Toolkit:
 - primary ticket: #{{ISSUE_NUMBER}} — when this is "none", skip EVERY board
   write below; escalation lands on the PR alone (label + comment).
 
-ORIENT before anything else: read the PR diff against its base
-(git diff origin/{{BASE_REF}}...HEAD), the PR body, and the ticket brief.
+ORIENT before anything else: read the PR body, the ticket brief, and the
+diff SHAPE only (git diff --stat origin/{{BASE_REF}}...HEAD). Do NOT read
+the full diff — the review engine reviews the whole range; you read only
+the code each finding names.
 
 CROSS-CHECK the PR's closing artifact before the engine runs: the PR body's
 "## Validation Evidence" section claims evidence per claim of done — verify
