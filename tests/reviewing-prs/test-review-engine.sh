@@ -65,7 +65,8 @@ reset() { : > "$ENGINE_LOG"; rm -f "$TEST_ROOT/out.txt" "$TEST_ROOT/out.txt.even
 
 echo "happy path (non-nested):"
 reset
-env -u CODEX_HOME -u CODEX_SANDBOX -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+env -u CODEX_HOME -u CODEX_SANDBOX -u CODEX_REVIEW_MODEL -u CODEX_REVIEW_EFFORT \
+  -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
   "$ENGINE" --base origin/main --criteria "$CRIT" --out "$TEST_ROOT/out.txt"
 LOG="$(cat "$ENGINE_LOG")"
 assert_contains "$LOG" "exec review --base origin/main" "invokes the native review subcommand with the base"
