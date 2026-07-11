@@ -292,7 +292,30 @@ same only-if-unset pattern. Worker-shell flags unchanged.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped 2026-07-12, one day of controlled-track execution (7 plan tasks,
+subagent-driven, zero fix rounds across all task reviews) plus a live
+dogfood shakedown. What the acceptance proved:
+
+- **The product core is back.** A codex review worker runs the native
+  engine nested, receives a ~1-3KB verdict per round, and never loads the
+  PR diff into its own context. PR #9 (this branch reviewing itself) ran
+  the full loop: 3 rounds, 7 findings verified and fixed, correct
+  four-clause HUMAN-tier judgment, confident-ready label.
+- **The dogfood bit back, usefully.** The reviewer found 7 real defects in
+  its own machinery — including two design-level ones the spec missed
+  (cross-repo /tmp collisions; PR-controlled text riding
+  developer_instructions = injection surface). The worker's hardening and
+  the human's concurrent content-minimization were reconciled as
+  structure-from-worker + content-from-human (Revision Notes 2-4).
+- **Two lessons for future acceptance probes**: weak-signal planted bugs
+  (uncalled `mean([])`) measure model judgment, not engine transport —
+  plant DEFINITE bugs (docstring-contradicts-code was flagged immediately);
+  and a live loop can land commits concurrent with controller edits — the
+  divergence cost one rebase with three conflict files.
+
+Deltas from plan: criteria content was redesigned twice post-plan (human
+feedback + worker finding) — both absorbed as Revision Notes rather than
+plan re-execution; everything else executed as written.
 
 ## Revision Notes
 

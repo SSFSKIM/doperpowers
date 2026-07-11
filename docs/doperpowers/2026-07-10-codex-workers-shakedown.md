@@ -62,12 +62,29 @@ number in a local clone, so a **manual** review shakedown needs no runner.
     correctness **and** the ticket's spec-compliance criteria, posts findings
     + a verdict, and transitions the board (or comments on a PR with no linked
     issue). The review-trail comment names `codex` as the engine.
-- [ ] **SD-4 · review × Claude.** Same PR (or SD-2's), dispatched with
-  `WORKER_ENGINE=claude` or `engine:claude` → `daemon-spawn.sh` Claude
-  reviewer, with the `fallback-claude` block.
-  - **Acceptance:** a Claude reviewer produces findings + verdict over the
-    same diff and criteria; review-trail names `claude`. Confirms both the
-    engine switch and the differing fallback blocks.
+- [ ] ~~**SD-4 · review × Claude.**~~ OBSOLETE 2026-07-12 — the native-review
+  recovery (`specs/2026-07-12-native-review-recovery-design.md`) deleted the
+  Claude reviewer fallback and the per-species fallback blocks this cell was
+  written to exercise; the reviewer is codex-only now. The `engine:claude`
+  worker SHELL still exists (calls the same `review-engine.sh` non-nested)
+  but has no separate engine to shake down. Superseded by SD-5 below.
+
+### SD-5 · review × Codex × native engine (native-review recovery) — PASSED 2026-07-12
+
+- [x] **SD-5 · native `codex exec review` end-to-end.** PASSED 2026-07-12
+  (doperpowers PR #9 — the recovery branch reviewing itself, dogfood).
+  Codex worker (gpt-5.6-sol, xhigh) ran `review-engine.sh` NESTED: 3 native
+  review rounds against `origin/main...HEAD`, 7 findings verified against
+  the code and ALL routed FIX NOW (7 commits pushed to the PR head),
+  round 3 clean → approve. Tier judgment correct on all four failing
+  clauses (size >150 lines, base=default branch, auth risk surface, no CI
+  checks) → HUMAN tier, `confident-ready` label, no board writes (no
+  linked ticket). Zero `sandbox_apply` / code-mode-host errors. The worker
+  ran with the PRE-minimization criteria (commit 0d00934 landed mid-review);
+  its own round-2 [P1] (PR/ticket text elevated into developer
+  instructions) produced the untrusted-carrier hardening that was then
+  reconciled with the human's minimal-content directive (spec Revision
+  Notes 2-4).
 
 ## Recommended path (covers all four, no runner)
 
