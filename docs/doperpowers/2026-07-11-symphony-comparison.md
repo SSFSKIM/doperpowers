@@ -1,357 +1,570 @@
-# Doperpowers board pipeline vs OpenAI Symphony — a component-level comparison
+# Symphony ↔ doperpowers board pipeline — comparative analysis
 
-> **What this is.** A judgment-bearing comparison of two ticket-driven agent
-> orchestration systems: OpenAI's **Symphony** (SPEC.md draft v1 +
-> WORKFLOW.md reference contract + launch essay, read 2026-07-11 from
-> `agent-harness/docs/symphony-original/`) and **this fork's board pipeline**
-> (issue-tracker + implementing-tickets + reviewing-prs + orchestrating-daemons,
-> as of v7.11.0, one live shakedown in). Not a parity checklist — each section
-> ends with a verdict and, where we lose, what to steal.
+> **Date:** 2026-07-11 (day after the codex-workers live shakedown; v7.11.0 cut).
+> **Purpose.** OpenAI's Symphony and this fork's board pipeline are independent
+> answers to the same problem: ticket-driven orchestration of coding agents,
+> with human attention as the bottleneck. This doc maps the two systems
+> component-by-component, judges superiority per axis (not overall), lists
+> what is worth importing, and isolates the **non-trivial forked decisions**
+> (§6) where both sides made a deliberate, defensible, *diverging* bet — the
+> discussion agenda.
 >
-> Honesty note on evidence: Symphony claims 6× merged-PR throughput on some
-> OpenAI teams over 3 weeks; our evidence is one live shakedown (SD-1
-> implement×codex, SD-3 review×codex) plus the v7.10.0-era claude-daemon
-> history. Their coordination layer is battle-tested at fleet scale; ours is
-> not yet armed for unattended operation (TECH-DEBT T1).
+> **Sources — Symphony** (local mirror:
+> `~/documents/github/agent-harness/docs/symphony-original/`):
+> - `SPEC.md` — Symphony Service Specification, Draft v1, language-agnostic
+>   (upstream: `github.com/openai/symphony/blob/main/SPEC.md`). Cited as
+>   **SPEC §N**.
+> - `WORKFLOW.md` — the reference worker contract (Linear + codex app-server,
+>   high-trust posture). Cited as **WF step N**.
+> - Blog: *"Codex 오케스트레이션을 위한 오픈소스 사양: Symphony"*
+>   (openai.com/index/open-source-codex-orchestration-symphony, Kotliarskyi /
+>   Zhu / Brock). Cited as **Blog**.
+>
+> **Sources — ours:**
+> - Skills: `skills/issue-tracker/`, `skills/implementing-tickets/`,
+>   `skills/reviewing-prs/`, `skills/orchestrating-daemons/` (+ their
+>   `references/` protocols and engine blocks, `scripts/`).
+> - Design docs: `docs/doperpowers/specs/2026-07-09-implement-worker-autonomy-design.md`,
+>   `specs/2026-07-08-pr-review-loop-design.md`,
+>   `specs/2026-07-10-codex-workers-design.md`.
+> - Live evidence: `docs/doperpowers/2026-07-10-codex-workers-shakedown.md`
+>   (SD-1/SD-3 passed, FU-3…FU-7), `docs/doperpowers/TECH-DEBT.md` (T1…T3).
 
-## 0. TL;DR — the two systems invert each other
+---
 
-**Symphony is an industrial coordination layer wrapped around a thin
-judgment layer.** A long-running orchestrator service guarantees liveness
-(every active ticket has a running agent — poll, dispatch, retry with
-backoff, stall-kill, reconcile), while the worker contract assumes every
-dispatched ticket is buildable and pushes through it; the only park is one
-overloaded state (`Human Review`) and the only reviewer is the human.
+## 0. Verdict up front
 
-**Doperpowers is a thick judgment layer wrapped around a deliberately thin
-coordination layer.** There is no orchestrator process at all — dispatch is
-a mechanical ritual (interim: human-run; next phase: issue-event trigger),
-liveness recovery is manual (TECH-DEBT T1) — while the judgment machinery is
-deep: a pre-code Ticket Gate, a three-way park taxonomy routed by *who can
-unpark it*, landability-based decomposition, an evidence ladder, a second
-autonomous **review species** with a self-merge rubric, risk surfaces, and
-staged rollout.
+The two systems attack the same bottleneck from opposite directions:
 
-Neither dominates. Symphony optimizes **throughput of a trusted fleet on a
-well-groomed board**; we optimize **correct routing of scarce human
-attention plus autonomous quality control**. The actionable conclusion:
-steal Symphony's coordination patterns for our trigger phase (bounded
-auto-resume, stall detection, concurrency caps, the land loop) without
-importing the always-on service — our review loop's event-trigger + cron
-sweep already proved that shape at near-zero infrastructure.
+- **Symphony reduces *supervision* cost.** An industrial scheduler — polling,
+  claims, retry queue, stall detection, continuation turns, concurrency caps —
+  with ALL work semantics delegated to one repo-owned prompt file. The tracker
+  is dumb; the runtime is rich.
+- **Ours reduces *review* cost.** A semantics-rich board — pre-code gate, three
+  park states with a who-unparks discriminant, decomposition doctrine, a
+  separate adversarial review species, tiered merge authority — with the
+  runtime deliberately thin (no resident process; the board IS the state).
 
-## 1. Architecture mapping
+Per-axis superiority is clear and split:
 
-| Symphony component | Doperpowers counterpart | Structural difference |
+| axis | winner | evidence anchor |
 |---|---|---|
-| Orchestrator (long-running service, poll tick, in-memory claims/retries) | **None by design.** Dispatch ritual + review-side event trigger & sweep; the board itself is the claim store | They centralize scheduling state in a process; we externalize it into GitHub labels + the daemon registry |
-| Workflow Loader (`WORKFLOW.md` = YAML config + Liquid prompt, hot-reload) | Protocol markdown + engine blocks in the versioned plugin, rendered by placeholder substitution at spawn | Theirs is per-repo config; ours is cross-repo versioned methodology |
-| Config Layer (typed getters, `$VAR`, validation, dynamic reload) | Env vars (`WORKER_ENGINE`, `CODEX_MODEL/EFFORT`, `AUTO_MERGE_ENABLED`, `BOARD_REPO`) + ticket labels | They configure a service; we parameterize scripts |
-| Issue Tracker Client (Linear GraphQL, read-only, normalization) | `gh` + `_board.py` against GitHub Issues (read **and** write, schema-enforcing) | Their tracker is a queue the orchestrator reads; our tracker IS the state machine, enforced at write time |
-| Workspace Manager (dir-per-issue + shell hooks, containment invariants) | Git worktrees per ticket + vendored skills (`.agents/skills`) | Clone-per-issue directories vs worktrees off the local clone |
-| Agent Runner (Codex **app-server**, stdio JSON-RPC, thread/turn loop, streaming events) | `codex exec --json` one-shot + `codex exec resume` / `claude --bg` | Persistent protocol client vs CLI spawn-and-resume |
-| Worker contract (WORKFLOW.md prompt body: workpad, status map, feedback sweep, land skill) | Implement Worker Protocol + Review Worker Protocol (+ Ticket Gate, park taxonomy, evidence ladder) | Theirs: one species, execution-focused. Ours: two species, judgment-focused |
-| Status surface (HTTP dashboard, `/api/v1/state`, token/rate-limit totals) | `daemon-list.sh`, `board-map.sh --serve` (board telemetry, not runtime telemetry) | They watch the *fleet*; we watch the *work* |
-| — (no counterpart) | **Review worker species** (reviewing-prs): findings, fix-in-place, self-merge tier, `confident-ready` | Symphony ships no autonomous reviewer; the human is the review engine |
+| Liveness / execution automation | **Symphony** | our T1/T2 tech-debt list ≈ their feature list (§2.1) |
+| Work semantics (gate, parks, decomposition, review) | **ours** | Symphony's contract has no pre-code gate, one overloaded park, no decomposition criterion, no self-review (§2.3) |
+| Safety posture | **ours** | SPEC punts to "implementation-defined"; reference impl is `approval_policy: never` (§2.6) |
+| Engine/species extensibility | **ours** | app-server locks Symphony to codex; we run 2 species × 2 engines on one registry (§2.5) |
+| Evidence richness *for humans* | **Symphony** | workpad, reproduction-first, video walkthroughs (§2.3, §4) |
+| Operability at team/monorepo scale | **Symphony** | dashboard, token accounting, SSH pool, land loop (§2.7, SPEC App. A) |
+| Operability for one person × N repos | **ours** | zero resident service; GitHub is the dashboard |
 
-## 2. Coordination layer — orchestrator, liveness, retries
+The right move is **not** to Symphony-ize (resident orchestrator + app-server)
+but to import their liveness as a *watchdog* and their evidence richness as
+*contract clauses*, keeping the no-orchestrator architecture (§4, §5).
 
-**What they have.** A single-authority orchestrator: poll every
-`interval_ms`, reconcile running issues against tracker state (terminal →
-kill + clean; non-active → kill; stalled past `stall_timeout_ms` since last
-event → kill + retry), dispatch by priority into global and per-state
-concurrency caps, exponential backoff on abnormal exits
-(`10s·2^(n−1)` capped at 5 min), a 1-second *continuation retry* after every
-normal exit so a still-active ticket immediately gets another worker, and an
-in-worker turn loop (`max_turns`, default 20) that re-checks ticket state
-after each turn and re-prompts the same live thread. Restart recovery is
-tracker+filesystem-driven; scheduler state is intentionally in-memory only.
+---
 
-**What we have.** Nothing sits between workers and the board. Claims are
-`status:in-progress` + `board-bind.sh`; death is discovered by
-`board-reconcile.sh` naming orphans; recovery is a human running
-`codex-resume.sh`/`daemon-resume.sh`. The review side already has the
-event-shaped equivalent: PR events → `review-dispatch.sh` on a self-hosted
-runner, plus a ~30-min cron sweep with registry-based dedupe. The implement
-side's trigger is unbuilt (`implementing-tickets/scripts/` is empty).
+## 1. The two bets
 
-**Verdict: Symphony wins this layer today, and it is exactly our named
-debt.** Their retry taxonomy (transient vs real, bounded backoff), stall
-detection keyed on last-event timestamps, and per-state concurrency caps are
-precisely what TECH-DEBT T1 #1/#2 and the trigger phase must answer. Two
-counterpoints keep this from being a rout:
+**Symphony's origin** (Blog): a team that mandated "no human-written code in
+the repo" hit its next bottleneck — context switching. Engineers could drive
+3–5 interactive Codex sessions before productivity collapsed: *"에이전트는
+빨랐지만 시스템의 병목은 인간의 주의력이었습니다."* Their answer: make the
+issue tracker the control plane; every open ticket gets a continuously running
+agent; humans manage work, not sessions. Notably, their own trajectory bent
+toward autonomy: early versions had the harness own GitHub integration and
+expected Codex to only edit code — *"하지만 그 접근은 너무 제한적이었습니다"* —
+and they ended at *"엄격한 전이 대신 에이전트에게 목표를 부여"* (give goals,
+not transitions).
 
-1. **Their liveness costs an always-on stateful service** (the reference
-   implementation is an Elixir app on a dev box) whose scheduler state dies
-   with the process and which assumes single-instance operation (claims are
-   in-memory — two orchestrators would double-dispatch). Our review loop
-   demonstrates the same liveness guarantee as *event trigger + idempotent
-   sweep + registry dedupe* — no resident process, safe across restarts
-   because the "orchestrator state" lives in GitHub and the registry.
-2. **Their transient-death recovery loses the thread.** A worker that dies
-   mid-run is re-dispatched fresh (attempt N, workspace + workpad comment as
-   the only carried context). Our `codex exec resume` recovers the actual
-   session from disk — proven three times in the live shakedown — which is
-   strictly better for the model-at-capacity / stream-disconnect class.
+**Our origin** (`2026-07-09-implement-worker-autonomy-design.md`): the same
+no-judge conclusion, arrived at from the review side — nobody sits between a
+worker and the board; escalation is a park state, not a message to a
+supervisor. But where Symphony's answer to a mis-specified ticket is cheap
+disposal (*"에이전트가 뭔가를 잘못하더라도 … 비용은 거의 0"* — Blog), ours is
+prevention: the Ticket Gate makes under-specified work park *before* code
+exists, because in a production repo the human's PR-review attention is the
+scarce resource a wrong PR burns.
 
-**Steal for the trigger phase:** the transient-vs-real failure split with
-bounded auto-resume (resume, not re-dispatch); stall detection computed from
-the `codex exec --json` event stream we already record; global + per-state
-concurrency caps; the 1-second continuation recheck after clean exits
-(ours: worker turn ended but the ticket is still `in-progress` → resume with
-continuation guidance, up to a turn cap).
+Symphony's endpoint (goals + tools, agent writes the tracker) is our starting
+axiom; we add hard gates only where human values are at stake (taste forks,
+terminal states, merge tiers). Their lesson trajectory validates the doctrine.
 
-## 3. Workflow loader + config layer
+---
 
-**What they have.** One repo-owned `WORKFLOW.md`: YAML front matter (typed,
-validated, `$VAR` indirection, defaults) + a Liquid prompt body rendered
-**strictly** — unknown variables or filters fail the render. The file is
-watched; edits hot-reload config and prompt without restarting the service.
-Preflight validation gates every dispatch tick.
+## 2. Component-by-component
 
-**What we have.** The worker contract lives in the plugin
-(`implement-worker-protocol.md` + engine blocks), versioned and released
-across all consumer repos at once; per-repo knobs are env vars, labels, and
-`.doperpowers/risk-surfaces.md`. Rendering is manual placeholder
-substitution — which already bit us once (the FU-4 render-order bug:
-`{{ISSUE_NUMBER}}` inside `{{EXECUTION_BLOCK}}` had to be substituted in the
-right order), and nothing fails loudly if a `{{PLACEHOLDER}}` survives into
-the spawn prompt.
+### 2.1 Orchestrator (SPEC §7–8, §14) vs no-orchestrator (issue-tracker ritual)
 
-**Verdict: split.** Their loader is better *engineering* (typed config,
-strict templates, hot reload — all real); our model is a better
-*distribution strategy* for a methodology maintained as a product: one
-plugin version bump upgrades every repo's workers, instead of N drifting
-WORKFLOW.md copies. The tension is per-repo customization, which we
-deliberately route through small surfaces (labels, env, risk-surfaces
-manifest) rather than letting each repo fork the whole contract.
+**Symphony.** A resident service owns a poll tick (default 30s): reconcile →
+validate → fetch candidates → dispatch until slots exhausted (SPEC §8.1).
+Internal claim states (`Unclaimed/Claimed/Running/RetryQueued/Released`, §7.1)
+live in a single-authority in-memory map. Failure-driven retries back off as
+`delay = min(10000 * 2^(attempt-1), max_retry_backoff_ms)` (§8.4); clean exits
+get a 1s *continuation retry* so the same ticket is re-checked and re-entered
+until it leaves the active states (§7.1: *"A successful worker exit does not
+mean the issue is done forever"*). Stall detection kills sessions silent past
+`stall_timeout_ms` (default 5m, §8.5A). Reconciliation refreshes tracker state
+for every running issue each tick and **terminates workers whose ticket left
+the active set** (§8.5B) — the human cancels work by moving a ticket. Restart
+recovery is deliberately stateless: *"No retry timers are restored … Service
+recovers by … fresh polling"* (§14.3); their own roadmap lists "Persist retry
+queue … across restarts" as a TODO (§18.2).
 
-**Steal (cheap):** strict rendering — after substitution, grep the spawn
-prompt for `{{[A-Z_]*}}` and abort the dispatch on any survivor. One line in
-the ritual/dispatch script; kills the FU-4 bug class permanently.
+**Ours.** No resident process, as doctrine: *"There is NO orchestrator …
+escalation targets are the board itself … and the human on their next wake"*
+(implement-worker-protocol.md; issue-tracker SKILL.md "There is no
+orchestrator-judge"). Scheduler state maps onto durable stores: claim =
+`status:in-progress` label; running = registry entry + pid/session liveness;
+retry queue = **nothing** (T1-1: transient-death recovery is manual — the
+shakedown recovered 3 transient deaths only because an operator ran
+`codex-resume.sh`); reconciliation = `board-reconcile.sh` (read-only,
+human-run) + the review sweep cron. Dispatch is a mechanical ritual (render →
+spawn → bind, write nothing) that an issue-event trigger will invoke next
+phase without changing.
 
-## 4. Worker contract — WORKFLOW.md prompt vs the two protocols
+**Judgment.** Symphony's orchestrator value decomposes almost entirely into
+*liveness*, not judgment — dead→retry, silent→kill, ineligible→stop. Liveness
+is importable as a watchdog (bounded auto-resume + sweep + caps: exactly
+T1's planned answer) without accepting the costs: a per-team service to build
+and babysit, volatile scheduler state, and a resident process standing where
+our doctrine says nobody stands. What we genuinely lack today and they have:
+**(a)** automatic transient recovery (T1-1), **(b)** stall detection,
+**(c)** board-driven cancellation of a running worker (→ FD-8),
+**(d)** concurrency caps (`max_concurrent_agents`, per-state caps — SPEC
+§5.3.5; required for our unattended phase). What we have and they don't:
+scheduler state that survives restarts *because it never lived in memory*,
+and a claim/verdict trail (`[gate]`, `[board]` comments) visible to the whole
+team instead of one devbox's RAM.
 
-**Their contract's strengths** (genuinely good, worth acknowledging
-specifically):
+### 2.2 Workflow loader + config layer (SPEC §5–6) vs plugin-owned protocol
 
-- **The workpad**: exactly one persistent tracker comment per issue
-  (`## Codex Workpad`) holding plan checkboxes, acceptance criteria,
-  validation requirements, notes, an environment stamp
-  (`host:path@sha`), and a `Confusions` section. It is the single source of
-  truth for progress and the context-death survival mechanism — their
-  ExecPlan-equivalent, living in the tracker instead of the repo.
-- **PR feedback sweep protocol**: every actionable reviewer comment (human
-  or bot, top-level or inline) is blocking until addressed or explicitly
-  pushed back on, re-swept until zero remain.
-- **Ticket-authored `Validation`/`Test Plan` sections are non-negotiable
-  acceptance input** — mirrored into the workpad as required checkboxes.
-- **Temporary proof edits** are allowed for validation confidence but must
-  be reverted before commit and documented in the workpad.
-- **The land skill**: once a human approves (`Merging`), the agent babysits
-  the PR to main — rebase, conflict resolution, CI monitoring, flaky-check
-  retries — in a loop until merged.
+**Symphony.** One repo-owned `WORKFLOW.md`: YAML front matter (typed config —
+tracker, polling, workspace, hooks, agent, codex; `$VAR` indirection; defaults;
+validation, §5.3/§6.1) + a Liquid prompt body rendered **strictly** — unknown
+variables/filters fail the render (§5.4). Dynamic reload is REQUIRED (§6.2):
+edit the file, the running service re-applies config and prompt without
+restart. Elegant, coherent, and self-contained (§5.2 design note).
 
-**Their contract's structural gap:** it assumes every dispatched ticket is
-buildable. There is no gate; the escape hatch exists only for missing
-tools/auth ("GitHub is not a valid blocker"), and underspecification has no
-routing — the agent builds *something*, and the essay owns the consequence
-("sometimes the agent produced completely off-target results… that too was
-useful information"). Failure is treated as cheap exploration. `Rework` is a
-full reset: close the PR, delete the workpad, fresh branch, start over.
+**Ours.** Protocol templates are **plugin-owned** (`references/*.md`, engine
+blocks composed at render time), substituted with `{{PLACEHOLDER}}`s by the
+dispatch ritual; config is env (`WORKER_ENGINE`, `CODEX_MODEL`,
+`AUTO_MERGE_ENABLED`, `BOARD_REPO`) + labels (`engine:*`, `priority:*`) + one
+narrow repo-owned manifest (`.doperpowers/risk-surfaces.md`, injected from the
+PR **base ref** so a PR cannot delist a surface it touches). No hot reload —
+nothing resident to reload. No strict templating — the FU-4 render-order bug
+(`{{ISSUE_NUMBER}}` inside the execution block) is exactly the defect class
+strict rendering catches; our test pins (`test-protocol-content.sh`) cover it
+statically, not at render time.
 
-**Our contract's strengths:** the Ticket Gate (well-defined + well-scoped)
-runs before any source file opens, with the fork-class table deciding what a
-worker may answer itself (mechanical forks: parking them is a protocol
-violation) versus what gate-fails (unanswered architecture, any product
-taste). Parks route by *who can unpark them*: `needs-human` (a decision or
-real-world input only the human possesses — with recommended answers
-attached), `needs-info` (delegable research), `interactive-preferred`
-(entangled architecture-core steering; enumerable decision lists never
-qualify). Decomposition is landability-based with typed edges and honest
-gate-triage of each child. Execution carries the evidence ladder (no claim
-of done on reasoning alone; testable logic → failing-test-first; UI →
-rendered behavior; config/docs → the relevant check), EXECPLAN mode for
-context-death-surviving work, and the work-alone clause. Authority rules are
-explicit: never terminal states, `wontfix` is recommended not decided,
-cross-ticket writes are comments.
+**Judgment.** Symphony wins on config coherence (one typed, validated,
+hot-reloading file). But the deeper fork is *ownership*: repo-owned means
+every team forks the whole behavioral contract — divergence, no central
+upgrades, prompt quality varies per team. Plugin-owned means v7.11.0 shipped
+the evidence ladder + EXECPLAN policy to every consumer repo at once. For one
+operator × N repos, central wins; for heterogeneous org teams, repo-owned
+wins. The synthesis worth discussing is a **narrow repo-owned config file**
+(bootstrap hooks, evidence add-ons) under a plugin-owned protocol — FD-3.
 
-**Verdict: ours is the stronger contract for unattended real product work;
-theirs is the stronger contract for high-throughput exploration.** The gate
-prevents the off-target class Symphony accepts as a cost of doing business —
-and on a personal/consumer codebase where a human reviews every
-non-trivial merge, a wasted end-to-end build is *not* nearly free; it costs
-the scarce resource (human review attention) both systems claim to protect.
-Symphony's bet makes sense at OpenAI's fleet scale with harness-engineered
-repos and dedicated groomers; ours makes sense where the board is the
-human's own backlog.
+### 2.3 Worker contract: WF (one generic worker) vs our two protocols
 
-**Steal:** the land loop, as a third small behavior — after the human
-approves a `confident-ready` PR, a worker (or the review worker's final act)
-babysits merge: rebase, conflict resolve, CI green, retry flaky, merge.
-Today that gap is invisible (small repos, fast CI) but it is the exact
-last-mile Symphony calls out as disproportionately painful in monorepos.
-Also worth copying cheaply: treating ticket-authored `Validation` sections
-as required acceptance checkboxes (our gate reads success criteria but the
-protocol doesn't make ticket-supplied test plans mandatory-verbatim), and
-the `Confusions` section — a per-run friction ledger is how our shakedown
-FU-list happened; institutionalizing it in the turn-end message costs
-nothing. The workpad-as-single-comment is *optional* for us: our progress
-artifacts live in the repo (ExecPlan doc, branch, PR body) by design —
-better for engineering review, slightly worse for phone-glanceable boards.
+**Symphony's WORKFLOW.md** (~330 lines) drives ONE worker species through the
+whole ticket lifecycle via a prompt-embedded status map (WF "Status map",
+steps 0–4): `Todo → In Progress → Human Review → Merging → Rework → Done`.
+Notable machinery:
 
-## 5. Workspace manager
+- **Workpad** (WF step 1): exactly one persistent tracker comment per issue —
+  plan checklist, Acceptance Criteria, Validation, Notes, an environment stamp
+  (`<host>:<abs-workdir>@<short-sha>`), and a **Confusions** section (*"only
+  include when something was confusing during execution"*). All progress goes
+  there; separate "done" comments are banned.
+- **Reproduction-first** (WF step 1.8): *"capture a concrete reproduction
+  signal and record it … before implementing."*
+- **Ticket-authored validation is non-negotiable** (WF Default posture):
+  `Validation`/`Test Plan` sections mirror into the workpad as required
+  checkboxes.
+- **PR feedback sweep** (WF protocol section): every actionable reviewer
+  comment is blocking until addressed or explicitly pushed back on; loop until
+  none remain and checks are green.
+- **App-touching changes require runtime validation + captured media** (WF
+  step 2.5: `launch-app`, `github-pr-media`) — video walkthroughs reach the
+  human reviewer (Blog: PMs/designers *"기능이 작동하는 모습을 담은 비디오
+  워크스루를 포함한 검토 패키지를 받게 됩니다"*).
+- **Land loop** (WF step 3.5): on `Merging`, follow the `land` skill until
+  merged — monitor CI, rebase, resolve conflicts, retry flaky checks; *"Do
+  not call `gh pr merge` directly."*
+- **Rework = full reset** (WF step 4): close the PR, delete the workpad,
+  fresh branch from `origin/main`, restart from planning.
+- **One park state**: the blocked-access escape hatch routes ALL blockage to
+  `Human Review` with a blocker brief (WF "Blocked-access escape hatch") —
+  the same state that means "PR ready for review." *"GitHub is not a valid
+  blocker by default."*
+- **Follow-ups become issues** (WF Default posture): out-of-scope discoveries
+  are filed as Backlog issues with `related`/`blockedBy` links — convergent
+  with our `--spawned-by` rule.
 
-Theirs: `<workspace.root>/<sanitized-issue-id>` directories, populated by
-repo-owned shell hooks (`after_create`: `git clone --depth 1 …`;
-`before_run`/`after_run`/`before_remove`), 60s hook timeouts, containment
-invariants (cwd == workspace path, path under root, sanitized names),
-workspaces preserved across runs and cleaned on terminal states.
+**Ours** splits the lifecycle across two species with a rigor gate at each
+seam (implementing-tickets SKILL.md: review's gate at the END, implement's at
+the START):
 
-Ours: a git worktree per ticket off the local clone (instant, shared object
-store, branch-native, no re-clone, auto-cleaned when unchanged), plus
-`_codex_vendor_skills` symlinking the doctrine into `.agents/skills` with a
-git-exclude, plus the sandbox env repairs (GH_TOKEN injection,
-SSL_CERT_FILE) the shakedown forced.
+- **The Ticket Gate** before any source file opens: Check 1 *well-defined*
+  (fork classification: mechanical → worker's call, parking it is a protocol
+  violation; architecture → ticket+codebase or gate-fail; taste **major or
+  minor** → ticket or gate-fail — "even minor taste is never your call");
+  Check 2 *well-scoped* (landability: decompose only children that could land
+  on main independently; big-but-atomic is ONE unit → ExecPlan).
+- **Three park states by who-unparks** (issue-tracker state table): the human
+  as themselves → `needs-human` (question list + recommended answers);
+  substantial anyone-could-do knowledge work → `needs-info`; entangled
+  steering of the work's core → `interactive-preferred` (summons a live
+  brainstorming session; "any ENUMERABLE set of open decisions … is
+  needs-human"). Notes are schema-required; the wake ritual consumes them.
+- **Decomposition doctrine**: children as self-contained pre-specs NOW,
+  `--parent`/`--blocked-by` typed edges, honest per-child gate-triage,
+  contingent phases as parent `## Roadmap`; the decomposing worker writes no
+  code.
+- **Evidence ladder** (engine blocks): every claim of done carries evidence —
+  testable logic → failing-test-first; UI → build + run rendered behavior (no
+  test theater); config/docs → the relevant check. Work-alone: no subagents,
+  no collab threads.
+- **End of scope = PR or park.** `in-review` requires the PR URL
+  (`board-transition.sh` gate); PR body carries `Closes #N`; residuals are
+  registered `--spawned-by` BEFORE turn-end ("a follow-up not registered does
+  not exist"). From the PR on, **reviewing-prs owns the path to merge**:
+  fresh-context adversarial review (native codex criteria), per-finding
+  verification, fix application, two-tier merge authority (self-merge iff
+  approve ∧ ≤150 lines ∧ ≤5 files ∧ non-default-branch base ∧ zero risk
+  surfaces ∧ all CI green; else `confident-ready` for the human), observation
+  mode (`AUTO_MERGE_ENABLED` default off), tech-debt sink issue.
 
-**Verdict: ours wins on substance** — worktrees are simply the better
-primitive for same-host workers (their shallow-clone-per-issue re-downloads
-and diverges from local state). **Theirs wins on extensibility**: the
-four-hook lifecycle is a clean, repo-owned seam for dependency bootstrap
-(`npm ci`, mise, codegen) that we currently hard-code or handle ad hoc (the
-ida-solution arm64/x64 `npm ci` note is exactly an `after_create` hook
-wanting to exist). Steal the *seam*, not the machinery: an optional
-per-consumer-repo `after-create` hook script that spawn scripts run in a
-fresh worktree would close it in ~10 lines. Their startup terminal-workspace
-cleanup also answers our FU-2 residue (un-swept run scratch) — fold a sweep
-into the trigger phase.
+**Judgment.** Where we are ahead: the gate (Symphony has none — a Todo goes
+straight to implementation; their answer to bad output is disposal, which
+prices human review attention at zero), the park discriminant (their single
+escape hatch overloads `Human Review` with two meanings — a modeling flaw),
+the decomposition criterion, and the existence of an adversarial review
+species at all (their merge confidence = CI + human + bots; nobody re-reviews
+the agent's work with fresh context). Where they are ahead, concretely worth
+importing (§4): the workpad (our trail is scattered across `[gate]` comments,
+`[board]` notes, and PR bodies; theirs is one readable artifact — and
+Confusions is a free harness-improvement feedback channel), reproduction-first
+(our ladder evidences *done*, not *understood*), media evidence for UI work,
+the rework doctrine (we can re-dispatch via `ready-for-agent` but no clause
+tells the next worker the old PR is non-reusable), and the land loop (our
+self-merge tier covers only trivial PRs; humans handle conflicts manually).
 
-## 6. Agent runner — app-server vs `codex exec` + resume (the direct question)
+### 2.4 Workspace manager (SPEC §9) vs worktrees
 
-Symphony launches `codex app-server` per worker: a persistent stdio JSON-RPC
-subprocess speaking the thread/turn protocol — streaming events, token and
-rate-limit telemetry, turn timeouts, mid-run cancellation, and cheap
-continuation turns on the same live thread without re-serializing context.
+**Symphony.** Per-issue directory under `workspace.root`
+(`<root>/<sanitized-identifier>`), persistent across runs, containment
+invariants (§9.5: cwd == workspace_path; path under root; sanitized names).
+Population is not built in — hooks do it (§9.3): `after_create` (fatal on
+fail), `before_run` (fatal), `after_run` (ignored), `before_remove` (ignored),
+each a repo-owned shell script with a timeout (§9.4). The reference WF clones
+the repo and runs `mise`/`mix deps.get` in `after_create`. Terminal issues get
+workspace cleanup (startup sweep + reconciliation).
 
-We launch `codex exec --json` one-shot per turn and `codex exec resume` (with
-config-space sandbox args) for continuation, under Seatbelt
-`workspace-write`; events land in `.jsonl` transcripts; the registry holds
-pid/state.
+**Ours.** Git worktrees, always, for anything that writes code
+(orchestrating-daemons "Isolating code daemons"): claude native `--worktree`,
+codex worktree + Seatbelt `workspace-write`; the branch IS the deliverable
+("a committed branch, not merged"); review workers get detached worktrees at
+the PR head SHA. Codex workspaces get skills vendored
+(`.agents/skills` symlink, FU-4) — single source since the plugin uninstall.
+Cleanup ties to daemon lifecycle (purge dirty-guards; `daemon-retire.sh`
+never deletes a worktree).
 
-**Is our way better than app-server for the implementer? For our
-architecture, yes — and the reasons are structural, not taste:**
+**Judgment.** Near-parity, different substrate. Worktrees get us cheap
+isolation (shared object store, no clone, no network) and native merge
+integration; their bare-dir+hooks model is more general (multi-repo tickets,
+pure-research tickets — Blog: *"어떤 이슈는 … 코드베이스를 전혀 건드리지 않는
+순수한 조사"*; ours handles that as a no-worktree research daemon, less
+first-class). Their genuinely better piece is the **declarative per-repo
+bootstrap hook**: our equivalent knowledge (e.g. ida-solution's arm64 `npm
+ci` requirement) lives in memory files and prose, not machine-run config —
+import candidate (§4.5, FD-3).
 
-1. **App-server's value is realized by a supervisor.** Streaming telemetry,
-   stall detection, turn cancellation, and the in-process turn loop all
-   assume a resident process consuming the stream and making scheduling
-   decisions. We deliberately have no such process; a protocol client with
-   nobody watching it is dead weight plus a protocol-drift liability (the
-   spec itself defers every schema question to "the targeted app-server
-   version").
-2. **Durability inverts the comparison.** An app-server thread lives in the
-   subprocess; when the worker or orchestrator dies, Symphony's recovery is
-   re-dispatch-fresh with only the workspace and workpad as carried context.
-   Our resume rehydrates the actual session from codex's on-disk state —
-   context intact. For the dominant failure class we actually observed
-   (upstream transients), CLI-resume is *stronger* than app-server.
-3. **What we genuinely give up:** live token/rate-limit accounting,
-   sub-turn-latency stall detection, and mid-turn cancellation
-   (reconciliation-style "ticket went terminal, kill the worker now"). All
-   three become relevant only in the unattended phase — and all three are
-   recoverable from the `--json` event stream + `kill` on the recorded pid,
-   without adopting the protocol client.
+### 2.5 Agent runner: app-server (SPEC §10) vs `codex exec` / `claude --bg`
 
-So: not parity-with-excuses — the two runners are each locally optimal for
-their coordination layer, and swapping either across would make that system
-worse. Revisit only if the trigger phase's monitoring wants event-level
-granularity that transcript-tailing can't provide.
+**Symphony.** Each worker launches `codex app-server` (via `bash -lc`, cwd =
+workspace, §10.1) and speaks the app-server stdio protocol: streamed events
+(§10.4: `session_started`, `turn_completed`, `turn_input_required`,
+`approval_auto_approved`, token usage, rate limits), turn-level control
+(read/turn/stall timeouts §10.6; mid-run cancellation via reconciliation),
+multi-turn threads kept alive across continuation turns (§10.3), and
+**client-side tool injection** — `linear_graphql` executes tracker mutations
+with orchestrator-held auth: *"do not require the coding agent to read raw
+tokens from disk"* (§10.5). The protocol is codex-version-owned; the spec
+defers to it and warns of drift (§10 preamble).
 
-## 7. Review, merge authority, and the missing species
+**Ours.** Detached processes: `codex exec --json` (one session id for life,
+`codex exec resume` to continue; sandbox + approvals flags per
+`_codex_lib.sh`) and `claude --bg` (each turn forks a new agent; registry
+chains session ids under one stable identity). Liveness = pid / `claude
+agents`; durability = transcripts + the board; status = registry. No event
+streaming (nobody listens), no token accounting, no stall detection, no
+mid-turn cancel short of killing the pid, no tool injection (workers get
+`GH_TOKEN` in env instead — FU-3, accepted note T3-9).
 
-Symphony's pipeline after the PR opens: the worker sweeps feedback written
-by others, a **human** reviews (`Human Review`), the human approves
-(`Merging`), the agent lands it. The system ships no reviewer — "proof of
-work" (CI status, complexity analysis, walkthrough videos) is decoration on
-a human review. Rework is a from-scratch reset.
+**Judgment — the direct answer to "is our way better than app-server?"**
+App-server is objectively the richer runtime interface, **and its value is
+conditional on a resident consumer**: streamed events need a listener, stall
+detection needs a watchdog process, turn loops need a driver, injected tools
+need a broker holding auth. We removed that process deliberately, so exec/bg
+is not the inferior option — it is the right-sized one, and it buys something
+app-server structurally cannot: **engine plurality**. The app-server protocol
+locks Symphony to codex; our substrate runs two engines under one registry
+and proved two species × two engines live (shakedown SD-1/SD-3). The two
+capabilities whose absence we actually felt — transient-death auto-recovery,
+stall detection — are watchdog features, not runner features; importing them
+via the trigger-phase watchdog (T1) gets ~80% of app-server's operational
+value at ~5% of its machinery, with zero standing judgment. Revisit only if
+we ever adopt a resident supervisor — which the doctrine rejects.
 
-Ours: every non-draft PR gets a fresh-context review worker — native-Codex
-review criteria (correctness + spec-compliance against the linked ticket's
-acceptance), every finding verified against the code before it counts,
-valid fixes applied in place, re-review when warranted, then either
-self-merge (two-tier rubric: approve verdict, ≤150 lines/≤5 files,
-non-default-branch base, zero risk-surface touches, all CI green — with
-risk surfaces read from the base ref so a PR can't delist what it touches)
-or escalation to `confident-ready` for a one-glance human merge. Staged
-rollout via observation mode. Findings that don't block go to the tech-debt
-sink.
+### 2.6 Safety (SPEC §15) — ours is concrete, theirs is documented-away
 
-**Verdict: ours wins outright — this is a whole pipeline stage Symphony
-doesn't have.** Their human reviews N× more PRs (their own 6× number makes
-the human the new bottleneck; the essay's cabin-wifi anecdote is charming
-precisely because review-from-phone only works when someone else did the
-rigor). `confident-ready` is our answer to exactly that bottleneck. The one
-sub-piece where they're ahead inside this stage is the post-approval land
-loop (§4), which composes cleanly with our `confident-ready`: human
-approves, land worker babysits.
+Symphony's spec explicitly declines a posture: approval/sandbox/operator
+confirmation are implementation-defined (§1, §10.5); the reference WF runs
+high-trust (`approval_policy: never`, `workspace-write`, network on). §15.5
+(Harness Hardening Guidance) is a good *threat-model narrative* — tracker
+data, repo contents, and tool args are not trustworthy — but lists hardening
+as SHOULDs. Ours is enforced at spawn: Seatbelt `workspace-write`; approvals
+auto-reviewer fail-closed (a codex daemon is never `blocked` — a declined
+escalation is a failed command it works around or parks over);
+`features.hooks=false` always (a checked-out PR could ship
+`.codex/hooks.json`); risk-surfaces injected from the base ref; and the twin
+bans (`--dangerously-skip-permissions` / `--yolo` /
+`--dangerously-bypass-approvals-and-sandbox`) written into the skills. Their
+§15.5 prose is worth emulating in our docs; their posture is not.
 
-## 8. Observability
+### 2.7 Observability (SPEC §13)
 
-Symphony: structured logs with issue/session context, live session rows
-(turn counts, last event, token totals, rate limits), an optional HTTP
-dashboard + `/api/v1/state` + per-issue debug endpoint. Ours:
-`daemon-list.sh` (registry truth), `board-map.sh --serve` (interactive DAG /
-kanban of the *work*), codex `.jsonl` transcripts, `[board]` audit comments.
+Symphony: structured logs with required context fields, runtime snapshot,
+optional HTTP dashboard (`/api/v1/state`: running rows, retry queue, token
+totals, rate limits — §13.7), humanized event summaries. Ours: `daemon-list`,
+`board-reconcile`, BOARD.html (layered DAG + kanban, hot-reload, hosted via
+Pages/Cloudflare-Access). Different objects: they observe *sessions*, we
+observe *work*. Their token/rate-limit accounting has no equivalent on our
+side (codex `--json` emits usage; we drop it) — a cheap registry field worth
+adding when the fleet grows. Their `turn_count`/stall telemetry belongs to
+the watchdog import.
 
-**Verdict: Symphony wins runtime telemetry; we win work telemetry.** Their
-dashboard answers "what are my agents doing right now / what is this fleet
-costing"; our board map answers "what is the state of the work and what
-needs me". At our current scale (single-digit concurrent workers,
-operator-paced) runtime telemetry is a nice-to-have; it becomes T1-adjacent
-the day the trigger phase arms unattended dispatch. When it does, derive it
-from what we already record (registry + transcripts) rather than a resident
-server — a `daemon-list --watch` or a static page next to BOARD.html.
+---
 
-## 9. Philosophy — the deepest agreement, and the real disagreement
+## 3. Settled axes (no discussion needed)
 
-The essay's hardest-won lesson — *"treating agents as rigid nodes in a state
-machine doesn't work; give them goals, tools, and context, like a good
-manager"* — is a lesson **both** systems now embody: their workers own all
-tracker writes; our workers own their ticket's open states, register their
-own children and follow-ups, and answer mechanical forks themselves under an
-authority contract. Convergent evolution from opposite starting points.
+- **Liveness automation: Symphony.** Settled not by adopting their
+  orchestrator but by T1's watchdog plan (bounded auto-resume distinguishing
+  transient from real failures, sweep, caps). Their retry-queue design is the
+  reference to steal from (backoff formula, continuation-vs-failure retry
+  distinction, stall timeout).
+- **Work semantics: ours.** Gate, parks, decomposition, review species, merge
+  tiers — Symphony's contract simply doesn't attempt these; their blog's
+  cheap-disposal economics is the honest alternative and it prices review
+  attention at zero.
+- **Safety: ours.** Enforced beats documented.
+- **Dual-engine substrate: ours.** Proven live; structurally impossible on
+  app-server.
+- **Scale evidence: theirs, by orders of magnitude.** Blog: merged PRs +500%
+  overall, 6× in the first 3 weeks on some teams; Linear's cofounder noted a
+  workspace surge. Ours: SD-1/SD-3 at n=1 each, claude engine branch untested
+  (T2-3). Our claims above are design-superiority claims, not
+  scale-validation claims.
 
-The real disagreement is **where scarce human attention goes**:
+---
 
-- Symphony spends it on **reviewing output** (accept/reject finished work;
-  failure is cheap, so overproduce and filter).
-- Doperpowers spends it on **answering questions** (parks with recommended
-  answers, confident-ready one-glance merges; failure is not cheap because
-  the human reviews what survives).
+## 4. Import candidates (prioritized)
 
-Which is right depends on the ratio of agent cost to review cost. At
-OpenAI's scale — free-ish tokens, harness-engineered repos, PMs filing
-tickets — overproduce-and-filter is rational. For a solo operator whose
-review bandwidth IS the bottleneck, gate-first + autonomous review is
-rational. Our design fits our deployment; theirs fits theirs. The
-architectures are honest about their respective bets.
+1. **Workpad** — one persistent structured issue comment (plan checklist /
+   AC / validation evidence / **Confusions**) written by the implement worker.
+   Where: implement-worker-protocol.md clause + a `[workpad]` comment
+   convention. Cheap; consolidates our scattered trail; Confusions feeds
+   harness improvement. (WF step 1, workpad template.)
+2. **Reproduction-first rung** — for bug-category tickets, capture the
+   failure signal before changing code; record it in the workpad. Extends the
+   evidence ladder from *done* to *understood*. (WF step 1.8.)
+3. **Rework clause** — when a human review rejects the approach: close the
+   old PR, fresh branch from origin/main, prior branch non-reusable, full
+   reset. Where: implement protocol edge case + issue-tracker wake ritual.
+   (WF step 4.)
+4. **Watchdog details for T1** — backoff formula, transient-vs-real
+   distinction, stall timeout, `max_concurrent_agents` (+ per-state caps).
+   (SPEC §8.4, §8.5, §5.3.5.) Also FD-8's cancellation sweep if adopted.
+5. **Per-repo bootstrap hook** — a narrow `.doperpowers/workspace-hooks`
+   (after-create/before-run analog) so consumer-repo setup (npm ci lesson)
+   is declarative, not tribal. (SPEC §9.4.) Scope carefully — FD-3.
+6. **UI media evidence** (pilot) — app-touching tickets attach a runtime
+   capture to the PR. (WF step 2.5.) Raises human-review confidence for the
+   exact tier that stays human (FD-7).
+7. **Token accounting** (later) — usage fields from `codex exec --json` into
+   the registry; surface in daemon-list. (SPEC §13.5.)
 
-## 10. Adoption list (concrete, tiered against TECH-DEBT.md)
+## 5. Deliberate non-imports
 
-| # | Steal | Where it lands | Tier |
-|---|---|---|---|
-| 1 | Transient-vs-real failure taxonomy + bounded auto-**resume** (not re-dispatch) + stall detection from recorded event timestamps | Trigger phase spec (TECH-DEBT T1 #1/#2) | T1 — already gated on that phase; Symphony §7–8 is the reference design |
-| 2 | Global + per-state concurrency caps and priority-ordered dispatch under them | Trigger phase | T1-adjacent |
-| 3 | Strict render check: abort dispatch if any `{{PLACEHOLDER}}` survives substitution | Dispatch ritual / future `implement-dispatch.sh` + `review-dispatch.sh` | cheap, do at next touch |
-| 4 | Post-approval **land loop** for `confident-ready` PRs (rebase, CI babysit, flaky retry, merge) | reviewing-prs (new small behavior or protocol block) | T2 — valuable as consumer repos grow CI |
-| 5 | Optional per-repo `after-create` worktree hook (dependency bootstrap seam) | orchestrating-daemons spawn scripts | T3 — the ida-solution `npm ci` note is the first customer |
-| 6 | Ticket-authored `Validation`/`Test Plan` sections as mandatory acceptance checkboxes | implement-worker-protocol | cheap prompt addition |
-| 7 | `Confusions`/frictions section in worker turn-end messages | both worker protocols | cheap prompt addition |
-| 8 | Terminal-workspace sweep at trigger startup (FU-2 residue) | trigger phase | T3 |
+- **Resident orchestrator** — replaced by watchdog + event trigger; doctrine
+  (no judge between worker and board) and durability both argue against.
+- **app-server runner** — value conditional on a resident consumer; kills
+  dual-engine (§2.5).
+- **Repo-owned full prompt** — kills central upgrades; keep repo ownership to
+  narrow manifests (risk-surfaces, maybe workspace-hooks).
+- **Polling** — the event trigger + sweep cron covers it with less machinery;
+  GitHub events beat 30s polls for our scale.
+- **Liquid strict templating wholesale** — but add a cheap render-time check:
+  fail dispatch if any `{{...}}` survives substitution (the FU-4 class).
+- **`Human Review` overloading** — their single park state is the flaw our
+  discriminant fixes; nothing to take.
 
-**Do not adopt:** the resident orchestrator service (our event+sweep shape
-reaches the same liveness without a process to keep alive), the app-server
-protocol client (§6), per-repo WORKFLOW.md forks of the contract (our
-plugin-versioned distribution is the point), full-reset Rework semantics
-(our fix-in-place review loop is cheaper for the common case; a human can
-always order a reset), and Linear (the board being GitHub Issues — same
-store as the PRs, zero extra SaaS — is a feature).
+---
+
+## 6. Forked decisions for discussion (non-trivial, skewed, both defensible)
+
+> Each FD names the fork, both bets, the skew (why the trade is asymmetric),
+> and the open question. These are the agenda items — settled axes (§3) are
+> deliberately excluded.
+
+### FD-1 · Worker lifetime: continuous attachment vs episodic dispatch
+
+**Symphony:** one worker + workspace + live thread rides the ticket's whole
+active life — continuation turns re-check the tracker after every turn and
+keep going (SPEC §7.1, §16.5; WF: *"Do not end the turn while the issue
+remains in an active state"*), up to `max_turns` 20; a 1s continuation retry
+re-enters after clean exits. Re-orientation cost ≈ 0; the workpad carries
+state forward. **Ours:** 1 dispatch = 1 scope (gate → PR | park); every
+re-dispatch is fresh context and re-runs the gate ("prior `[gate]` comments
+are context, not inherited trust"). Anchoring/context-rot resistance; honest
+re-evaluation; but every wake pays full re-orientation, and the seam between
+dispatches is where state gets lost (hence their workpad matters more to us,
+not less). **Skew:** they pay tokens continuously to hold context; we pay
+tokens repeatedly to rebuild it. Notably *they* chose fresh-start for rework
+specifically — evidence the fresh-context bet is right at decision seams.
+**Open:** is there any seam where we want continuation semantics (same
+session resumed) instead of re-dispatch — e.g. a `needs-human` answered
+within minutes, where the parked worker's context is fresher than any
+re-orientation could be? (`codex exec resume` makes this mechanically free
+for the codex species.)
+
+### FD-2 · State machine ownership: prompt+config (soft) vs scripts/schema (hard)
+
+**Symphony:** tracker states are config lists (`active_states`,
+`terminal_states`); the transition map is prose in the prompt; nothing
+enforces legality; hot-reload lets an operator reshape the workflow by
+editing one file mid-flight (SPEC §6.2). **Ours:** `_board.py` owns a legal
+transition graph, required notes, the in-review PR gate, cycle checks;
+illegal transitions fail loudly; changing the machine means changing the
+plugin (a release, with tests). **Skew:** their flexibility is also their
+fragility — a prompt-described state machine drifts per repo and nothing
+catches a worker writing an illegal state; our rigidity is also our friction
+(T3-6 two-hop restore exists *because* the schema refuses a
+`needs-human → in-review` edge). **Open:** where is the line between
+schema-worthy invariants and workflow choices a consumer repo should be able
+to reshape without a plugin release?
+
+### FD-3 · Contract ownership boundary: repo-owned WORKFLOW.md vs plugin-owned protocol
+
+**Symphony:** the whole contract (prompt + config + hooks) is versioned with
+the consumer repo — teams tune it like code, and the blog credits rapid
+guardrail iteration for their success (*"결과를 수동으로 수정하는 대신 …
+가드레일과 역량을 추가했습니다"*). **Ours:** doctrine is central (one release
+upgrades every repo); repo-specific knowledge is confined to narrow manifests
+(risk-surfaces today). **Skew:** central ownership optimizes for one operator
+× N repos and protocol quality; repo ownership optimizes for per-team
+iteration speed and heterogeneity. The costs surface differently: theirs as
+drift and fork-divergence, ours as "the plugin release train gates every
+workflow tweak." **Open:** which contract pieces should migrate to repo
+ownership? Candidates: workspace bootstrap hooks (§4.5), per-repo evidence
+add-ons (UI media required? which commands prove "build passes"?), per-repo
+park-note templates. Anti-candidates: the gate, the discriminant, merge
+tiers.
+
+### FD-4 · The last mile: land-loop automation vs human-click merge
+
+**Symphony:** human approval is *one state transition* (`Human Review →
+Merging`); the agent owns everything after — rebase, conflict resolution,
+flaky-check retries, merge-queue babysitting (WF step 3.5, land skill; Blog:
+monorepo landing as a core strength). The human never touches git. **Ours:**
+self-merge only for the trivial tier on non-default branches; everything else
+is `confident-ready` + a human performing the merge mechanics themselves,
+conflicts included. **Skew:** their design treats landing mechanics as
+worker-grade (it is — no taste, no irreversibility beyond what approval
+already authorized); ours currently conflates "the human decides" with "the
+human operates." Our own discriminant argues their way: the *decision* is
+human-grade, the *mechanics* are not. **Open:** add a post-approval landing
+phase — human approves `confident-ready`, a land-worker (or the review worker
+resumed) executes rebase/CI-retry/merge? Preconditions: runner registration
+(T2-5), auto-merge observation maturing, and a real conflict-resolution
+policy (a rebase that hits semantic conflicts is new code → whose review?).
+
+### FD-5 · Exploration economics: gate-always vs cheap speculative tickets
+
+**Symphony:** *"추측성 작업을 띄우는 일이 아주 쉬워졌습니다"* — file a vague
+ticket, let the agent explore, discard failures at ~zero cost; PMs/designers
+file features directly and get review packages back. The gate would park most
+of those tickets on our board. **Ours:** the gate taxes exactly this use
+case — deliberately, because our consumer repos' merge lane is
+attention-priced, and a wrong PR is not free. **Skew:** the gate's value
+scales with the cost of a wrong PR; exploration's value scales with the cost
+of NOT trying ideas. These coexist in one org but not in one lane. **Open:**
+do we want an explicit **spike lane** — e.g. a `spike` category whose gate
+relaxes Check-1 taste (output is information, not product), whose deliverable
+is a findings comment + optional draft PR, and which is hard-barred from
+merge? Or is "run it as an ad-hoc research daemon / interactive session" the
+honest answer and the board should stay production-only?
+
+### FD-6 · Credential topology: broker-held auth vs worker-env tokens
+
+**Symphony:** the orchestrator holds tracker auth and exposes a narrow
+injected tool (`linear_graphql`, one operation per call, §10.5): *"do not
+require the coding agent to read raw tokens from disk."* The agent never
+sees the token; the tool can be scoped (§15.5 suggests project-scoping).
+**Ours:** FU-3 exports `GH_TOKEN` into the worker env (accepted note T3-9,
+parity with claude's keychain reach); the worker wields full `gh` with the
+operator's identity. **Skew:** their design has a *place* to put mediation (a
+resident process); ours doesn't, so the token travels or the worker can't
+write the board — and unattended dispatch (T1) will widen exposure (tokens in
+env on a machine nobody is watching). **Open:** at which phase does a broker
+become worth its machinery — fine-grained PAT per repo now? a local
+credential-broker proxy at the unattended phase? never (Seatbelt + fail-closed
+approvals is enough)?
+
+### FD-7 · Evidence audience: machine-checkable discipline vs human-consumable richness
+
+**Symphony:** evidence targets the human reviewer's eyes — workpad checklists,
+mirrored ticket validation, complexity analysis, **video walkthroughs** (Blog,
+WF step 2.5). **Ours:** evidence targets the pipeline — the ladder disciplines
+the worker's *claims*, and the review worker verifies findings mechanically;
+the human at `confident-ready` gets a trail comment, a PR diff, and CI. **Skew:**
+we made the human the merge authority for everything non-trivial (FD-4), yet
+our evidence investment flows to the machine tier; Symphony's flows to the
+human tier they also gate on. If the human stays our expensive tier, their
+allocation is arguably more rational than ours. **Open:** how much of §4.1/.2/.6
+(workpad, reproduction-first, UI media) to mandate vs leave repo-optional
+(ties into FD-3's boundary) — and does the review worker *consume* the workpad
+(cross-checking claimed validation against the diff) or only the human?
+
+### FD-8 · Board-driven cancellation: reconciliation kills vs kill-by-hand
+
+**Symphony:** move a ticket out of the active states and reconciliation
+terminates its running worker within one tick (terminal → also cleans the
+workspace; §8.5B). The board is a *control* plane in both directions.
+**Ours:** the board only *records*; a running worker consults its ticket at
+gate time, not continuously — a human who wontfixes/parks a ticket mid-build
+changes nothing until the worker's next board write collides. Killing means
+finding the daemon and killing the pid by hand. **Skew:** read-only
+reconciliation was the right MVP (no resident process to do the killing), but
+it breaks the "board is the single interface" story exactly at the moment a
+human most wants it (runaway or obsolete work). **Open:** should the sweep
+cron gain a cancellation pass (ticket left open-active states → retire the
+bound daemon, comment the termination)? What are the semantics for the
+in-flight worktree (keep as WIP branch, per "committed branch not merged")?
+
+---
+
+## 7. Convergences worth noting (independent evolution, same answer)
+
+Both systems, independently: workers write the tracker themselves (SPEC
+§11.5 boundary ≈ our worker authority); success = a handoff state, not Done
+(SPEC §1: *"A successful run can end at a workflow-defined handoff state (for
+example `Human Review`)"* ≈ our in-review/park endings); out-of-scope
+discoveries become linked issues at the moment of discovery (WF Default
+posture ≈ our `--spawned-by` deferral rule); the tracker is the control
+plane; state machines for agents should carry goals, not micro-transitions
+(their blog lesson ≈ our no-judge doctrine). Convergence under independent
+evolution is evidence the problem shape, not fashion, dictates these — and
+it localizes the genuine disagreements to §6's eight forks.
