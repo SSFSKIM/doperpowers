@@ -400,7 +400,8 @@ if [ ! -e "$WORK/.agents" ]; then pass "non-git cwd: vendoring is a no-op"; else
     fail "non-git cwd: vendoring is a no-op"; fi
 
 echo "== spawn env: file-based TLS roots + loud gh-token warning (FU-6) =="
-warn_out="$(STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-warn "quick" "$WORK" 2>&1)"
+warn_out="$(env -u GH_TOKEN -u SSL_CERT_FILE -u CODEX_CODE_MODE_HOST_PATH \
+  STUB_SLEEP=0 "$SCRIPTS_DIR/codex-spawn.sh" --no-wait job-warn "quick" "$WORK" 2>&1)"
 # Hermetic HOME has no gh auth → the capture must fail LOUDLY, not silently.
 assert_contains "$warn_out" "no GitHub token captured" "spawn warns when gh token capture fails"
 if [ -f /etc/ssl/cert.pem ]; then
