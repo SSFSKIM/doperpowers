@@ -187,6 +187,11 @@ Codex workers ever need full skills"). That path is now live:
   Either uninstall the codex doperpowers plugin on worker machines (pin to
   working tree via vendoring) or skip vendoring when the plugin is present.
   Human call; not blocking the shakedown.
+  **RESOLVED (human, 2026-07-11): uninstall — vendoring is the single
+  source.** `codex plugin remove doperpowers@doperpowers-dev` executed on
+  this worker machine, orphaned hooks.state cleaned, verified by negative
+  probe (a non-vendored workspace surfaces zero `doperpowers:*` skills).
+  Details + the residual-friction ledger: `TECH-DEBT.md` (same directory).
 - **Live observation (SD-1):** the codex worker discovered the doperpowers
   skills (via the plugin cache — it predated vendoring) and elected
   subagent-driven development on its own: per-task codex sub-threads, 47
