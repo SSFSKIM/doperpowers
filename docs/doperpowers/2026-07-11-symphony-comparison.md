@@ -616,12 +616,21 @@ remaining act is pure judgment. Proposed shape:
   the PR-review-event trigger arrives with T2-5, exactly the
   review-dispatch.sh precedent.
 
-Open before build: (1) is native Approve the right signal, or does the
-human want the act to stay on the board side (a comment verb the wake
-ritual translates)? (2) conflict-delta rubric bounds — reuse ≤150/≤5
-verbatim or tighten for resolutions? (3) does the land worker also own
-closing superseded PRs / branch cleanup, or is that finalize-sweep
-territory?
+**RESOLVED (2026-07-12, human decisions on the three open points):**
+
+1. **Signal = GitHub-native Approve + `land` label as manual override.**
+   Mobile-friendly, auditable, event-triggerable on the same runner as
+   review dispatch; the label covers the own-PR case (GitHub forbids
+   approving your own PR). No new board state.
+2. **Conflict-delta bounds TIGHTENED below the self-merge tier: ≤50
+   lines / ≤3 files** (plus the unchanged qualitative clauses: zero
+   risk-surface touches, CI green after resolution). Rationale: a
+   conflict-resolution delta is unreviewed-by-construction — it deserves
+   a lower trust grade than the reviewed original diff.
+3. **Cleanup is finalize-sweep territory.** The land worker ends at
+   merged + `board-transition.sh <n> done`; superseded-PR closing and
+   branch deletion stay with the finalize sweep / repo auto-delete
+   setting. Minimal surface, simpler failure modes.
 
 ### FD-5 · Exploration economics: gate-always vs cheap speculative tickets
 
