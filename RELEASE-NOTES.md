@@ -1,5 +1,82 @@
 # Doperpowers Release Notes
 
+## v7.11.0 (2026-07-11)
+
+### Codex worker species — dual-engine implement & review pipelines, live-shaken
+
+The board pipeline now drives **two worker species under one registry**: the
+existing Claude daemons and a new detached `codex exec` species (`engine:
+codex` in the meta), selected per dispatch by `label → $WORKER_ENGINE →
+codex` on both the implement ritual and `review-dispatch.sh`. Nothing
+Claude-side was removed — symmetry, not replacement. The release closed only
+after a **live shakedown** (real ticket → PR → review on the consumer repo);
+that ran 2026-07-11: implement × codex and review × codex both passed
+end-to-end, and every defect the live run surfaced is fixed in this release.
+
+- **Substrate** (`orchestrating-daemons`): `codex-spawn.sh` / `codex-resume.sh`
+  — detached `codex exec --json` workers in the shared registry
+  (`daemon-list` ENG column, engine-routed `daemon-reply`/retire), worktree
+  isolation with `--add-dir` main-root, `$run.rc` as the completion barrier,
+  registration serialized under `.metalock` (FU-1) and age-gated run-scratch
+  GC (FU-2). Codex daemons are never `blocked`: `approval_policy=on-request`
+  with an `auto_review` approvals reviewer adjudicating in-flight.
+- **Sandbox reality, fixed live.** The macOS Seatbelt sandbox blocks the
+  keychain — three distinct breakages found and fixed during the shakedown:
+  `gh` ran unauthenticated (403) → spawn captures `gh auth token` and injects
+  `GH_TOKEN`, warning loudly when capture fails (FU-3/FU-6b); nested codex
+  had zero TLS trust anchors (`UnknownIssuer`) → substrate exports
+  `SSL_CERT_FILE=/etc/ssl/cert.pem` (FU-6); `codex exec resume` rejects
+  `--add-dir` → config-space `writable_roots` (FU-5).
+- **Codex-in-codex cannot run shell commands** (`sandbox_apply: Operation
+  not permitted` — macOS forbids nested Seatbelt profiles), so the review
+  engine block is species-conditional: a **Codex reviewer IS the engine**
+  and reviews in-thread; a Claude reviewer calls the non-nested cookbook
+  `codex exec` (FU-7). Identical REVIEW CRITERIA for both.
+- **Skills parity** (FU-4): codex scans `<workspace>/.agents/skills/`, so
+  spawn vendors the doperpowers skills there (symlink + shared-info/exclude —
+  invisible to `git status`, can't leak into a PR). Policy: vendoring is the
+  single skills source on worker machines; do not install the codex
+  marketplace plugin beside it (version skew + skills-context squeeze).
+
+### Execution policy — evidence ladder, EXECPLAN, work-alone
+
+Live observation (a worker self-electing subagent-driven development on a
+small ticket, ~1h of collab sub-threads) drove four amendments, all pinned by
+the protocol-content test:
+
+- **Evidence ladder replaces TDD-always** in both engine EXECUTION blocks:
+  testable logic keeps failing-test-first (green checks keep a PR
+  self-merge-eligible); UI/visual verifies the actual rendered behavior — no
+  test theater; config/docs verify by the relevant check. The absolute:
+  *never claim completion on reasoning alone.*
+- **Codex mode PLAN → EXECPLAN**, routing explicitly to the vendored
+  `doperpowers:execplan` doctrine — one self-contained plan, executed
+  in-thread by the worker itself.
+- **Work-ALONE clause in both blocks**: writing-plans,
+  subagent-driven-development, and dispatching-parallel-agents are
+  interactive-session skills — never a daemon worker's; no sub-agents, no
+  collab threads.
+- **Scoping: landability, not size, decides decompose** — big-but-atomic
+  work that cannot land halfway counts as ONE unit (that is what ExecPlan
+  mode exists for); decompose only work whose children could land on main
+  independently. And **interactive-preferred sharpened**: only for a work's
+  core (architecture spine / product-core design) whose decisions are too
+  entangled for a question list; any enumerable set of open decisions is
+  `needs-human`, whatever the size.
+
+### Docs & tracking
+
+- Live-shakedown runbook updated in place (cells SD-1/SD-3 PASSED with
+  evidence; SD-2/SD-4 deferred by the human) and the spec's Surprises
+  reconcile the Task-2 spike with live behavior (the spike's nested success
+  used in-process `review --commit`; the cookbook's model-runs-git does not
+  generalize).
+- **`docs/doperpowers/TECH-DEBT.md`** — new tiered tracker (T1–T3 with
+  promotion triggers) for the accepted residue: transient-death recovery and
+  token-capture hardening land with the future unattended-dispatch phase
+  (T1); untested claude branch, suite CI gate, runner registration (T2);
+  ergonomics/cosmetics (T3).
+
 ## v7.10.0 (2026-07-09)
 
 ### implementing-tickets — autonomous implement loop with a pre-code Ticket Gate (new skill)
