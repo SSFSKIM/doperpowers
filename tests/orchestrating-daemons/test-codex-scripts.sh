@@ -42,6 +42,10 @@ export DAEMON_TIMEOUT=10
 export DAEMON_UUID_POLL=5
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME" "$WORK" "$STUB_STATE"
+# Fake code-mode host under the hermetic HOME so _codex_launch's only-if-exists
+# export condition can fire (belt-and-suspenders CODEX_CODE_MODE_HOST_PATH).
+mkdir -p "$HOME/.local/bin"
+: > "$HOME/.local/bin/codex-code-mode-host"; chmod +x "$HOME/.local/bin/codex-code-mode-host"
 
 STUB_BIN="$TEST_ROOT/bin"
 mkdir -p "$STUB_BIN"
@@ -52,7 +56,7 @@ cat > "$STUB_BIN/codex" <<'STUB'
 set -euo pipefail
 mkdir -p "$STUB_STATE"
 echo "$*" >> "$STUB_STATE/calls.log"
-{ echo "SSL_CERT_FILE=${SSL_CERT_FILE:-}"; echo "GH_TOKEN_SET=${GH_TOKEN:+yes}"; } > "$STUB_STATE/env.log"
+{ echo "SSL_CERT_FILE=${SSL_CERT_FILE:-}"; echo "GH_TOKEN_SET=${GH_TOKEN:+yes}"; echo "CODE_MODE_HOST=${CODEX_CODE_MODE_HOST_PATH:-}"; } > "$STUB_STATE/env.log"
 [ "${1:-}" = "exec" ] || { echo "stub codex: only exec supported" >&2; exit 2; }
 shift
 resume=""
@@ -390,6 +394,8 @@ if [ -f /etc/ssl/cert.pem ]; then
 else
     pass "worker env carries file-based TLS roots (skipped: host has no /etc/ssl/cert.pem)"
 fi
+assert_contains "$(cat "$STUB_STATE/env.log")" "CODE_MODE_HOST=$HOME/.local/bin/codex-code-mode-host" \
+    "launch exports CODEX_CODE_MODE_HOST_PATH for nested engine calls"
 
 echo "== codex-resume from a linked worktree: writable_roots, never --add-dir (FU-5) =="
 # The job-vendor daemon above lives in the VWT linked worktree — resume it.

@@ -229,6 +229,13 @@ _codex_launch() {
   if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
     export SSL_CERT_FILE=/etc/ssl/cert.pem
   fi
+  # A NESTED codex (e.g. review-engine.sh run by a codex worker) resolves
+  # its code-mode command host to /usr/local/bin (absent here) instead of
+  # ~/.local/bin — export the explicit path so nested engine calls can run
+  # commands. Only when unset and the host binary exists.
+  if [ -z "${CODEX_CODE_MODE_HOST_PATH:-}" ] && [ -x "$HOME/.local/bin/codex-code-mode-host" ]; then
+    export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"
+  fi
   nohup bash -c '
     set -u
     DIR="$1"; cwd="$2"; taskf="$3"; run="$4"; shift 4
