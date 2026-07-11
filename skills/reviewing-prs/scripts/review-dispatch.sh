@@ -44,7 +44,9 @@
 # Dedupe policy (SKILL.md table): confident-ready-labeled PRs are never
 # dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
 # retire + respawn; a finished reviewer → triggered mode re-dispatches
-# (explicit event = fresh signal), sweep mode skips.
+# (explicit event = fresh signal), sweep mode skips; a finished reviewer
+# whose reply carries the ENGINE-UNAVAILABLE marker → retire + respawn
+# (sweep too).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -301,6 +303,10 @@ _decide() {
     retired) echo "dispatch" ;;
     *)
       if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
+      # an engine outage is a retryable condition, not a finished review —
+      # the worker marks it with a final-message marker line (fallback block)
+      elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
+        echo "respawn $uuid"
       else echo "skip finished reviewer ($status)"; fi ;;
   esac
 }

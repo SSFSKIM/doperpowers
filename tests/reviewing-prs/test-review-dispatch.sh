@@ -169,7 +169,7 @@ json.dump({"url": "https://github.com/test/repo/issues/7",
            "body": "Ticket seven brief body"}, open(os.path.join(d, "issue-7.json"), "w"))
 PY
 
-reset_state() { rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
+reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- triggered dispatch (happy path) ------------------------------------------
 echo "triggered dispatch:"
@@ -281,6 +281,35 @@ out="$("$DISPATCH" --sweep)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep dispatches the unbound open PR"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-6" "sweep never dispatches a draft"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-8" "sweep never dispatches a confident-ready PR"
+
+# ---- sweep retries an engine-unavailable reviewer -------------------------------
+reset_state
+U="feed0000-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-09T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf 'trail posted; engine down after 3 attempts.\nENGINE-UNAVAILABLE\n' \
+  > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "sweep retires an ENGINE-UNAVAILABLE reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches the PR after the outage"
+
+# ---- sweep still skips a normally-finished reviewer ------------------------------
+reset_state
+U="feed0000-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-09T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf 'review complete; confident-ready set.\n' \
+  > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep still skips a finished reviewer without the marker"
 
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
