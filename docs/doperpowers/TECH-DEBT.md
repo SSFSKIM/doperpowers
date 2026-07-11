@@ -22,6 +22,7 @@
 | 7 | T3 | Work-alone mandate is prompt-level, not mechanical | An observed post-clause violation |
 | 8 | T3 | `SSL_CERT_FILE` fix is macOS-path-specific | First Linux worker host |
 | 9 | T3 | Accepted notes: GH_TOKEN visible in worker env; mini ssh probe noise; resume-only daemons' run scratch un-swept until next spawn | — |
+| 10 | T2 | Answer relay is L1 only: comment-event automation (L2) and BOARD.html session affordances (L3) unbuilt | Same trigger phase (L2); board-map touch (L3) |
 
 ## T1 — structural: the unattended-dispatch phase must answer these
 
@@ -76,6 +77,18 @@ blocked on org admin for IDA-solution/ida-solution (tracked there as #302).
 Blocks both engines equally; the board's cron sweep stays deliberately
 un-armed meanwhile. Manual `review-dispatch.sh <PR#>` is the interim path —
 proven by the shakedown.
+
+### 10. Answer relay: L2 automation and L3 surface unbuilt
+
+FD-9's "park = pause, not death" shipped its L1 on 2026-07-12
+(`board-answer.sh` + protocol/wake-ritual clauses — the human runs the relay
+by hand at wake). L2 (an issue-comment event triggering the relay so an
+answer resumes the bound worker with nobody at the keyboard) belongs to the
+same unattended-dispatch phase as items 1–2 and shares their machinery and
+their gating. L3 (BOARD.html rendering per-ticket attach/resume affordances
+from the registry binding) is a cheap board-map touch, independent of the
+trigger phase. Design record:
+`2026-07-11-symphony-comparison.md` §FD-9.
 
 ## T3 — accepted / cosmetic
 

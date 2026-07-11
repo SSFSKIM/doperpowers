@@ -103,6 +103,7 @@ checkout's repo.
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
 | `board-show.sh <n>` | node + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
+| `board-answer.sh <n> <answers \| --posted>` | the wake ritual's `needs-human` relay: posts the answers as an `[answers]` comment (the ticket is the record), returns the ticket to `in-progress`, and resumes the BOUND session with the answers verbatim — park = pause, not death. Refuses unbound / mid-turn sessions (fresh dispatch is the fallback). Blocks for the worker's turn: bg shell |
 | `board-reconcile.sh` | read-only catch-up: the wake queue (parked tickets), orphaned tickets, dispatchables, then a lint pass |
 | `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required (the park trio + wontfix), no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`), the retired `status:blocked` label named with its migration FIX. Also WARNs close candidates. `FAIL … FIX: …` lines, exit 1 |
 | `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration: push a legacy `board.json` into GitHub (dry-run by default; legacy `blocked` lands as `needs-human`) |
@@ -175,9 +176,16 @@ reviewing-prs, and nobody sits between them and the board.
    orphaned in-progress tickets, dispatchables, then a lint pass.
 2. Answer the parks, on the ticket (answers belong in the body/comments —
    the next worker reads the ticket, not your chat):
-   - `needs-human` → answer the note's questions in a comment (or edit the
-     body), then `board-transition.sh <n> ready-for-agent` — the next
-     dispatch re-runs the gate against the enriched ticket.
+   - `needs-human` → relay the answers to the parked worker's bound session:
+     `board-answer.sh <n> "<answers>"` (bg shell — it blocks for the turn)
+     posts them as an `[answers]` comment, returns the ticket to
+     `in-progress`, and resumes the session. Park = pause, not death: the
+     worker keeps its orientation and re-states its gate verdict against
+     the answers before proceeding. Fallback — no/dead bound session, or
+     answers that reshape the ticket's scope: answer in a comment (or edit
+     the body), then `board-transition.sh <n> ready-for-agent` — the next
+     dispatch re-runs the gate against the enriched ticket from fresh
+     context.
    - `needs-info` → do (or delegate) the research; fold the findings into
      the body; back to `ready-for-agent`.
    - `interactive-preferred` → take it into a live doperpowers:brainstorming

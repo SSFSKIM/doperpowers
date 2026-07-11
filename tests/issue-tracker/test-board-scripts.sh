@@ -669,6 +669,68 @@ else
     echo "  [SKIP] node not installed — template JS tests not run"
 fi
 
+# ---- answer relay (park = pause, not death) ------------------------------------
+echo "board-answer:"
+STUB_DS="$TEST_ROOT/stub-daemon-scripts"; mkdir -p "$STUB_DS"
+export STUB_STATE="$TEST_ROOT/stub-state"; mkdir -p "$STUB_STATE"
+for eng in codex daemon; do
+    cat > "$STUB_DS/$eng-resume.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1" > "\$STUB_STATE/$eng-resume.uuid"
+printf '%s' "\$2" > "\$STUB_STATE/$eng-resume.msg"
+echo "resumed: [$eng stub]"
+STUB
+    chmod +x "$STUB_DS/$eng-resume.sh"
+done
+export DAEMON_SCRIPTS="$STUB_DS"
+
+out="$(run board-register.sh "Parked ticket" enhancement P2 --state needs-human --note "Q1? Q2?")"
+ans_t="${out%% *}"
+out="$(run board-register.sh "Unbound parked" enhancement P2 --state needs-human --note "Q?")"
+unb_t="${out%% *}"
+out="$(run board-register.sh "Open ticket" enhancement P2)"
+open_t="${out%% *}"
+cat > "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json" <<META
+{"uuid": "cccccccc-1111-2222-3333-444444444444", "engine": "codex",
+ "status": "idle", "ticket": "$ans_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+
+assert_fails run board-answer.sh "$open_t" "answer"     # not needs-human
+assert_fails run board-answer.sh "$unb_t" "answer"      # no bound session
+assert_fails run board-answer.sh "$ans_t"               # missing answers (arity)
+
+out="$(run board-answer.sh "$ans_t" "1: use X. 2: defer Y.")"
+assert_contains "$(state "s['issues']['$ans_t']['comments']")" "[answers] 1: use X. 2: defer Y." "answers posted on the ticket first"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:in-progress" "ticket resumed to in-progress"
+assert_equals "$(cat "$STUB_STATE/codex-resume.uuid")" "cccccccc-1111-2222-3333-444444444444" "codex meta routed to codex-resume"
+msg="$(cat "$STUB_STATE/codex-resume.msg")"
+assert_contains "$msg" "1: use X. 2: defer Y." "answers relayed verbatim"
+assert_contains "$msg" "[gate] re-pass" "relay carries the re-verdict guard"
+assert_contains "$msg" "the ticket remains the record" "relay names the record"
+
+# engine-less meta → claude resume; --posted relays a pointer, posts nothing
+run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
+rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
+cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
+{"uuid": "dddddddd-1111-2222-3333-444444444444", "status": "idle",
+ "ticket": "$ans_t", "cwd": "$WORK", "updated": "2026-07-12T00:00:00Z"}
+META
+out="$(run board-answer.sh "$ans_t" --posted)"
+assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
+assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
+assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "1" "--posted posts no second [answers] comment"
+
+# a mid-turn session is refused — nothing is waiting for answers
+run board-transition.sh "$ans_t" needs-human "round 3 questions" >/dev/null
+python3 - <<WORKING
+import json, os
+p = os.path.join(os.environ["DAEMON_HOME"], "dddddddd-1111-2222-3333-444444444444.json")
+m = json.load(open(p)); m["status"] = "working"; json.dump(m, open(p, "w"))
+WORKING
+assert_fails run board-answer.sh "$ans_t" "late answer"
+unset DAEMON_SCRIPTS STUB_STATE
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

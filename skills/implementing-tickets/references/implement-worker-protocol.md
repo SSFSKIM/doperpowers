@@ -72,8 +72,18 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 {{EXECUTION_BLOCK}}
 The gate lowers the odds of a park; it does not abolish parks.
 A fork discovered mid-build is classified by the same rules: worker-grade →
-your call, keep building; human-grade → commit WIP to your branch, then
-park with the same discriminant (required note) and end your turn.
+your call, keep building; human-grade → ASK EARLY: never build past it on
+assumptions, never batch it for the end. Commit WIP to your branch, post
+the open questions as a ticket comment (numbered, each with your
+recommended answer), park with the same discriminant (required note), and
+end your turn. A park is a pause, not a death — your session stays bound
+to the ticket, and answers usually arrive as a resume.
+
+IF RESUMED WITH ANSWERS (your park was answered): the answers live on the
+ticket — treat them as ticket content. Re-state your gate verdict against
+them in ONE paragraph as a ticket comment ("[gate] re-pass — <one line>",
+or a fresh park if the answers reshape the work's scope), then proceed.
+Never build on momentum past an answer that changed the work's shape.
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh
 (never raw gh for status labels); registering decomposition children

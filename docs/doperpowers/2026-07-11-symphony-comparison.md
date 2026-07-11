@@ -711,10 +711,14 @@ an optimization, not a semantics change); (3) one doctrine edit required:
 orchestrating-daemons' "don't hand-drive a pipeline worker" ban must be
 narrowed to permit *mechanical answer-relay resume* (the human remains the
 author, the ticket remains the record; the judge is NOT reintroduced) while
-still banning chat-answers that bypass the ticket. Layering: **L1** (now)
-protocol clause "ask early, cheaply" + resume-preferring wake ritual;
-**L2** (unattended phase) comment-event → answer-relay automation;
-**L3** (later) BOARD.html per-ticket session affordances — first as
+still banning chat-answers that bypass the ticket. Layering: **L1** (SHIPPED
+2026-07-12: `board-answer.sh` — validates the park + binding, posts the
+`[answers]` comment record-first, returns the ticket to `in-progress`,
+resumes the bound session engine-routed, with the re-verdict guard in the
+relay prompt; plus the ASK EARLY / IF RESUMED WITH ANSWERS protocol clauses
+and the narrowed hand-drive ban); **L2** (unattended phase, TECH-DEBT #10)
+comment-event → answer-relay automation; **L3** (later, TECH-DEBT #10)
+BOARD.html per-ticket session affordances — first as
 copy-paste `claude attach` / `codex resume` commands rendered from the
 registry binding (nearly free), and only as an embedded chat surface if
 ever justified — the sole branch where app-server earns its keep. Side

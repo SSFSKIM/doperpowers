@@ -40,6 +40,10 @@ assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract prese
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
 assert_contains "$proto" "{{EXECUTION_BLOCK}}" "execution block placeholder present"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
+assert_contains "$proto" "ASK EARLY" "ask-early clause present (no assumption-building past human-grade forks)"
+assert_contains "$proto" "a pause, not a death" "park-pause doctrine present"
+assert_contains "$proto" "IF RESUMED WITH ANSWERS" "answer-relay resume clause present"
+assert_contains "$proto" "[gate] re-pass" "re-verdict guard present"
 assert_contains "$proto" "big-but-ATOMIC" "atomic-counts-as-one-unit scoping clause present"
 assert_contains "$proto" "land on main independently" "landability decompose criterion present"
 assert_contains "$proto" "ENUMERABLE" "enumerable-decisions→needs-human discriminant present"
@@ -81,6 +85,7 @@ skill="$(cat "$SKILL")"
 assert_contains "$skill" "name: implementing-tickets" "frontmatter name"
 assert_contains "$skill" "references/implement-worker-protocol.md" "skill points at the protocol"
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
+assert_contains "$skill" "board-answer.sh" "skill names the answer relay (park = pause)"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
 
 echo

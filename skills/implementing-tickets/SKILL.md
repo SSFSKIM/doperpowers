@@ -109,9 +109,13 @@ proposals, registration and comments are the only channels.
 
 - **Dispatched onto an epic** — refuse: epics are never dispatched; end the
   turn naming the mistake (the sweep owns epic states).
-- **needs-human answered in comments** — the human flips the ticket back to
-  `ready-for-agent`; the next dispatch re-runs the gate with the comments
-  as ticket content. Answers belong in the body/comments, not in chat.
+- **needs-human answered** — preferred path: the wake ritual relays the
+  answers to the still-bound session (issue-tracker's `board-answer.sh` —
+  park = pause, not death); the resumed worker re-states its gate verdict
+  against the answers before proceeding. Fallback (no/dead session, or
+  scope-reshaping answers): flip back to `ready-for-agent`; the next
+  dispatch re-runs the gate with the comments as ticket content. Either
+  way, answers belong in the body/comments, not in chat.
 - **Worker dies mid-build** — `board-reconcile.sh` flags the orphaned
   `in-progress` ticket; respawn re-runs the gate from fresh context (prior
   `[gate]` comments are context, not inherited trust).
