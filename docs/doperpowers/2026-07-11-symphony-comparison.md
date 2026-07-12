@@ -42,6 +42,8 @@
 > landing phase v7.13.0, FD-5 spike lane v7.14.0, FD-7, FD-9) or DEFERRED
 > with named reopen triggers (FD-2 third schema-friction case; FD-6, FD-8
 > the unattended phase). Each verdict is recorded inline in its §6 entry.
+> When the unattended phase opens, start at **§9** — the sweep-tick
+> checklist FD-6 and FD-8 reopen into.
 
 ---
 
@@ -990,3 +992,63 @@ unmergeable / dry-run merge conflicts) and
 `implementing-tickets/references/implement-decompose.md` (trigger:
 Check-2 "too big, decomposable"). Always-on blocks (gate, discriminant,
 closing artifact, native-first) stay inline.
+
+## 9. Addendum (2026-07-12): the mechanical-orchestrator question — and the unattended-phase checklist
+
+Post-agenda follow-up: the agentic center (spawner + judge) is removed for
+good, but Symphony's orchestrator is also a *mechanical* program — is the
+code form worth adopting? **Resolution: import the functions, refuse the
+form.** Everything the mechanical orchestrator does is liveness (§2.1's
+decomposition — dead→retry, silent→kill, ineligible→stop, caps); none of it
+is judgment. And the fork was never agent-vs-code — we already run
+mechanical orchestration (dispatch scripts, review sweep, reconcile). The
+real fork is **resident vs invoked**: their loop is a `while True` in a
+process; ours is cron/event × idempotent one-shot passes over durable
+state.
+
+The argument that settles residency: in the local reference implementation
+(agent-harness `director/orchestrator.py`), `run_once()` and
+`run_forever()` share the same tick body. **Residency is not a capability —
+it is a scheduling choice**, and for us the worst one: claims in RAM force
+single-instance (clashes with live parallel sessions; two orchestrators
+double-dispatch, SPEC §7.1), restart evaporates the retry queue (their own
+§18.2 TODO), a resident service is a new failure domain that itself needs a
+watchdog, and their recovery verb (re-dispatch fresh) would displace our
+strictly-better one (`codex exec resume`, proven 3× in the shakedown).
+Porting the 1,632-line director is rewriting it — claim model, board
+interface, merge queue, recovery verb all mismatch. Its value is as a
+**checklist, not a process**: the tick order, `_backoff_s`
+(`min(base × 2^(n-1), cap)`), the transient-vs-real and
+continuation-vs-failure retry distinctions, `_stuck_report`,
+`_startup_recovery`, per-state caps.
+
+**The unattended-phase checklist.** The four gaps (§2.1a–d) stay manually
+covered while a human is at every wake; they become mandatory the moment
+nobody is. When the unattended trigger fires, build ONE artifact — grow
+`board-reconcile.sh` from read-only into a write-enabled **sweep tick**
+(cron ~5min; issue-event trigger covers the latency-sensitive path — the
+honest 30s-poll-vs-cron latency loss doesn't matter because the bottleneck
+is review bandwidth, not dispatch latency):
+
+1. **Reconcile** — existing checks, now with write actions.
+2. **Transient auto-resume** (T1-1, §2.1a) — dead worker + failure reads
+   transient (model-at-capacity, stream disconnect) → `codex-resume.sh`,
+   bounded attempts with the stolen backoff formula; real failures park,
+   never loop.
+3. **Stall detection** (§2.1b) — session silent past a stall timeout →
+   kill + park needs-human with an orientation comment.
+4. **Board-driven cancel** (§2.1c) — ticket left the active set while a
+   worker runs → kill the worker, per FD-8's recorded zombie-line design.
+5. **Dispatch-until-cap** (§2.1d) — ready tickets → dispatch ritual up to
+   `max_concurrent` / per-state caps; FD-6's credential ladder (PAT-first)
+   reopens here too.
+6. **Riders** — `_startup_recovery`-style sweep-start checks;
+   `_stuck_report` for stranded tickets; token accounting (import
+   candidate #9) rides the same tick.
+
+Every step idempotent; all state in GitHub + the registry, never in the
+tick's memory — N concurrent sweeps stay safe via registry dedupe, which
+the review sweep already proved in-house (it retries ENGINE-UNAVAILABLE
+reviewers today). This is Symphony SPEC §8.1's tick minus residency, and
+it is the umbrella artifact FD-6 and FD-8 reopen into. The §5 non-import
+("Resident orchestrator") stands unchanged.
