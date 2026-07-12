@@ -377,6 +377,10 @@ m["host"] = "old-host"
 m["boot_id"] = "boot-old"
 json.dump(m, open(p, "w"), indent=2)
 PY
+# The migrated short may be REUSED by an unrelated local agent — resume must
+# never stop/rm through it. Seed a jobs dir standing in for that local agent.
+mkdir -p "$HOME/.claude/jobs/$M_SHORT"
+: > "$STUB_STATE/log/calls.log"
 STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-resume.sh" "$M_SHORT" "continue locally" > "$TEST_ROOT/migrated-resume.out" 2>&1 &
 M_RESUME_PID=$!
 for _ in $(seq 1 20); do
@@ -391,6 +395,11 @@ assert_contains "$M_META" '"boot_id": "boot-current"' "running resume is re-stam
     && pass "running resume advances current before terminal polling" \
     || fail "running resume advances current before terminal polling"
 wait "$M_RESUME_PID" 2>/dev/null || true
+M_CALLS="$(cat "$STUB_STATE/log/calls.log")"
+assert_not_contains "$M_CALLS" "stop $M_SHORT" "migrated resume never stops through the foreign short"
+assert_not_contains "$M_CALLS" "rm $M_SHORT" "migrated resume never rms through the foreign short"
+[ -d "$HOME/.claude/jobs/$M_SHORT" ] && pass "migrated resume leaves the reused short's jobs dir intact" \
+    || fail "migrated resume leaves the reused short's jobs dir intact"
 
 # (a) The fork command itself fails (session not resumable). Resume must exit
 # nonzero, flip status=error, and leave `current`/turns untouched — the daemon

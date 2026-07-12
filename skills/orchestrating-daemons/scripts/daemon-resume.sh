@@ -43,10 +43,18 @@ wtpath=""; [ -n "$(_meta_get "$uuid" worktree)" ] && wtpath="$cwd"
 # before the fork rework have no `current`, so fall back to the daemon's uuid).
 cur="$(_meta_get "$uuid" current)"; [ -n "$cur" ] || cur="$uuid"
 curshort="$(_meta_get "$uuid" short)"
+# The recorded short is HOST-LOCAL (8-hex, reusable): stop/rm through it only
+# when the meta's identity belongs to this boot — on a migrated meta the same
+# short may name an unrelated local agent. Capture the verdict BEFORE the fork
+# re-stamps the meta to this host. Foreign → skip stop and purge entirely (a
+# leftover transcript/jobs entry from the old host is cosmetic; a purge through
+# a reused short is destructive).
+cur_is_local=0
+_identity_local "$(_meta_get "$uuid" host)" "$(_meta_get "$uuid" boot_id)" && cur_is_local=1
 
 # Release the current bg turn (idempotent — harmless if already stopped). This
 # also drops it from the active `claude agents` view before the next turn forks.
-[ -n "$curshort" ] && claude stop "$curshort" >/dev/null 2>&1 || true
+[ -n "$curshort" ] && [ "$cur_is_local" -eq 1 ] && claude stop "$curshort" >/dev/null 2>&1 || true
 
 _meta_set "$uuid" status "working" updated "$(_now)"
 
@@ -92,8 +100,11 @@ esac
 _meta_set "$uuid" current "$newuuid" short "$newshort" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   status "working" updated "$(_now)"
 # The fork is confirmed live — the superseded turn's session can go now rather
-# than waiting for terminal state.
-if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur" "$wtpath"; fi
+# than waiting for terminal state. Never purge through a foreign short: the
+# meta was re-stamped local above, but curshort still names the OLD host's turn.
+if [ "$cur" != "$newuuid" ] && [ "$cur_is_local" -eq 1 ]; then
+  _session_purge "$curshort" "$cur" "$wtpath"
+fi
 
 # Wait for the forked turn to finish, PRESERVING the watcher's exit status so we
 # can tell a terminal turn (rc 0) from a timeout (rc != 0). Parse via parameter
