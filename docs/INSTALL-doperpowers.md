@@ -1,12 +1,12 @@
 # Installing doperpowers
 
-`doperpowers` is a personal fork of [Doperpowers](https://github.com/obra/superpowers)
-by Jesse Vincent (MIT-licensed), with fork-specific skills such as
-`orchestrating-daemons`, `organizing-sprints`, `codebase-design`, and `domain-modeling`
-on top of the full brainstorm → plan → subagent-driven-TDD → review methodology.
+`doperpowers` is a two-track software-development methodology for coding agents:
+a human-gated controlled track (brainstorm → plan → subagent-driven-TDD → review)
+plus an autonomous board loop (`issue-tracker`, `implementing-tickets`,
+`reviewing-prs`, `orchestrating-daemons`) for well-scoped, unattended work.
 
 It ships as its own Claude Code plugin from a self-hosted marketplace in this repo,
-so it installs **side by side** with upstream Doperpowers.
+so it installs **side by side** with any other skills marketplace you use.
 
 ## Claude Code
 
@@ -27,10 +27,8 @@ Update later:
 /plugin install doperpowers@doperpowers
 ```
 
-## Coexisting with upstream
+## Coexisting with other marketplaces
 
 Plugin identity is namespaced as `plugin@marketplace`, so `doperpowers@doperpowers`
-and any upstream `doperpowers@doperpowers-marketplace` (or
-`doperpowers@claude-plugins-official`) can both be installed at once without
-colliding. The marketplace name (`doperpowers`) is distinct from upstream's
-`doperpowers-dev`, so adding this one never replaces upstream's.
+installs alongside any other skills plugin you already have without colliding.
+Adding this marketplace never replaces one you already registered.

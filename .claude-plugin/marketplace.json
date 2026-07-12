@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "description": "SSFSKIM's fork of the Superpowers skills library for Claude Code (derived from obra/superpowers).",
+  "description": "doperpowers — a two-track software-development methodology for coding agents, packaged as a Claude Code plugin.",
   "owner": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "doperpowers",
-      "description": "Fork of Superpowers (obra/superpowers): a full software-development methodology for coding agents — brainstorm, plan, subagent-driven TDD, review — plus fork-specific skills like orchestrating-daemons.",
+      "description": "A two-track methodology for coding agents: a human-gated controlled track (brainstorm → spec → plan → subagent-driven TDD → review → ship) plus an autonomous board loop that drives well-scoped work to reviewed PRs unattended.",
       "version": "7.17.0",
       "source": "./",
       "author": {

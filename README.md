@@ -1,273 +1,128 @@
-# Doperpowers
+# doperpowers
 
-Doperpowers is a complete software development methodology for your coding agents, built on top of a set of composable skills and some initial instructions that make sure your agent uses them.
+**A methodology your coding agent actually follows** — not a pile of prompts, but a set of skills that trigger themselves at the right moment and keep the agent honest from first idea to merged branch.
 
+```text
+                          d o p e r p o w e r s
 
-## We're Hiring!
+   what you're building  ─┬─▶  CONTROLLED  · you sign off at every gate
+                          │      brainstorm → spec → plan → subagent-TDD → review → ship
+                          │
+                          └─▶  AUTONOMOUS  · it runs while you're away
+                                 board → dispatch → build → review → merge
+```
 
-We're hiring someone to help out full time with Doperpowers community and code work. 
-You can read about the job at https://primeradiant.com/jobs/doperpowers-community-engineer/
-If this sounds like someone you know, definitely send them our way.
+Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers splits that in two. When the work needs your judgement, the **controlled track** shows you the design in readable chunks and stops for your approval at each seam. When the work is well-scoped and delegable, the **autonomous track** takes a ticket off the board and drives it to a reviewed pull request without waking you up. The skills route between the two based on what you actually asked for.
 
-## Quickstart
+Because every skill declares when it applies, you don't invoke any of this by hand. The agent checks for a relevant skill before it starts a task, and the right workflow just happens.
 
-Give your agent Doperpowers: [Claude Code](#claude-code), [Antigravity](#antigravity), [Codex App](#codex-app), [Codex CLI](#codex-cli), [Cursor](#cursor), [Factory Droid](#factory-droid), [GitHub Copilot CLI](#github-copilot-cli), [Kimi Code](#kimi-code), [OpenCode](#opencode), [Pi](#pi).
+---
 
-## How it works
+## Two tracks, one discipline
 
-It starts from the moment you fire up your coding agent. As soon as it sees that you're building something, it *doesn't* just jump into trying to write code. Instead, it steps back and asks you what you're really trying to do. 
+Both tracks enforce the same non-negotiables — design before code, tests before implementation, evidence before "done." They differ only in where the human sits.
 
-Once it's teased a spec out of the conversation, it shows it to you in chunks short enough to actually read and digest. 
+**Controlled** — for work where taste and intent matter.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks small enough for an unsupervised junior to follow (`writing-plans`), then executes each one through a fresh subagent with two-stage review — spec compliance, then code quality (`subagent-driven-development`). You approve each gate.
 
-After you've signed off on the design, your agent puts together an implementation plan that's clear enough for an enthusiastic junior engineer with poor taste, no judgement, no project context, and an aversion to testing to follow. It emphasizes true red/green TDD, YAGNI (You Aren't Gonna Need It), and DRY. 
+**Autonomous** — for work that's already well-scoped.
+A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`implementing-tickets`), a review loop lands the PRs (`reviewing-prs`), and durable background sessions keep it all running (`orchestrating-daemons`). Product feedback can even feed the board directly (`triaging-feedback`).
 
-Next up, once you say "go", it launches a *subagent-driven-development* process, having agents work through each engineering task, inspecting and reviewing their work, and continuing forward. It's not uncommon for your agent to work autonomously for a couple hours at a time without deviating from the plan you put together.
+---
 
-There's a bunch more to it, but that's the core of the system. And because the skills trigger automatically, you don't need to do anything special. Your coding agent just has Doperpowers.
-
-## Commercial Services
-
-If you're using Doperpowers in enterprise and could benefit from commercial support, additional tooling, or managed spending, please don't hesitate to drop us a line at sales@primeradiant.com.
-
-## Installation
-
-Installation differs by harness. If you use more than one, install Doperpowers separately for each one.
+## Install
 
 ### Claude Code
 
-Doperpowers is available via the [official Claude plugin marketplace](https://claude.com/plugins/superpowers)
+doperpowers ships as a Claude Code plugin from a self-hosted marketplace in this repo. It installs side by side with anything else you have.
 
-#### Official Marketplace
-
-- Install the plugin from Anthropic's official marketplace:
-
-  ```bash
-  /plugin install doperpowers@claude-plugins-official
-  ```
-
-#### Doperpowers Marketplace
-
-The Doperpowers marketplace provides Doperpowers and some other related plugins for Claude Code.
-
-- Register the marketplace:
-
-  ```bash
-  /plugin marketplace add obra/superpowers-marketplace
-  ```
-
-- Install the plugin from this marketplace:
-
-  ```bash
-  /plugin install doperpowers@doperpowers-marketplace
-  ```
-
-### Antigravity
-
-Install Doperpowers as a plugin from this repository:
-
-```bash
-agy plugin install https://github.com/obra/superpowers
+```text
+/plugin marketplace add SSFSKIM/doperpowers
+/plugin install doperpowers@doperpowers
 ```
 
-Doperpowers' skills install with the plugin and are available immediately.
-Reinstall with the same command to update.
+> Add it with the `owner/repo` form above, not a raw URL to `marketplace.json`. The plugin's source is the repo root, so Claude clones the whole repository for that path to resolve.
 
-### Codex App
+Update later:
 
-Doperpowers is available via the [official Codex plugin marketplace](https://github.com/openai/plugins).
-
-- In the Codex app, click on Plugins in the sidebar.
-- You should see `Doperpowers` in the Coding section.
-- Click the `+` next to Doperpowers and follow the prompts.
-
-### Codex CLI
-
-Doperpowers is available via the [official Codex plugin marketplace](https://github.com/openai/plugins).
-
-- Open the plugin search interface:
-
-  ```bash
-  /plugins
-  ```
-
-- Search for Doperpowers:
-
-  ```bash
-  doperpowers
-  ```
-
-- Select `Install Plugin`.
-
-### Cursor
-
-- In Cursor Agent chat, install from marketplace:
-
-  ```text
-  /add-plugin doperpowers
-  ```
-
-- Or search for "doperpowers" in the plugin marketplace.
-
-### Factory Droid
-
-- Register the marketplace:
-
-  ```bash
-  droid plugin marketplace add https://github.com/obra/superpowers
-  ```
-
-- Install the plugin:
-
-  ```bash
-  droid plugin install doperpowers@doperpowers
-  ```
-
-### GitHub Copilot CLI
-
-- Register the marketplace:
-
-  ```bash
-  copilot plugin marketplace add obra/superpowers-marketplace
-  ```
-
-- Install the plugin:
-
-  ```bash
-  copilot plugin install doperpowers@doperpowers-marketplace
-  ```
-
-### Kimi Code
-
-Doperpowers is available in Kimi Code's plugin marketplace.
-
-- Open Kimi Code's plugin manager:
-
-  ```text
-  /plugins
-  ```
-
-- Go to `Marketplace` > `Doperpowers` and install it.
-
-- Or install directly from this repository:
-
-  ```text
-  /plugins install https://github.com/obra/superpowers
-  ```
-
-- Detailed docs: [docs/README.kimi.md](docs/README.kimi.md)
-
-### OpenCode
-
-OpenCode uses its own plugin install; install Doperpowers separately even if you
-already use it in another harness.
-
-- Tell OpenCode:
-
-  ```
-  Fetch and follow instructions from https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/.opencode/INSTALL.md
-  ```
-
-- Detailed docs: [docs/README.opencode.md](docs/README.opencode.md)
-
-### Pi
-
-Install Doperpowers as a Pi package from this repository:
-
-```bash
-pi install git:github.com/obra/superpowers
+```text
+/plugin marketplace update doperpowers
+/plugin install doperpowers@doperpowers
 ```
 
-For local development, run Pi with this checkout loaded as a temporary package:
+Full details, including how it coexists with other marketplaces: [`docs/INSTALL-doperpowers.md`](docs/INSTALL-doperpowers.md).
 
-```bash
-pi -e /path/to/doperpowers
-```
+### Codex
 
-The Pi package loads the Doperpowers skills and a small extension that injects the `using-doperpowers` bootstrap at session startup and again after compaction. Pi has native skills, so no compatibility `Skill` tool is required. Subagent and task-list tools remain optional Pi companion packages.
+A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) and is distributed to the Codex plugins repository by [`scripts/sync-to-codex-plugin.sh`](scripts/sync-to-codex-plugin.sh). This is a maintainer sync, not a public marketplace search — run the script to publish a new version.
 
-## The Basic Workflow
+---
 
-1. **brainstorming** - Activates before writing code. Refines rough ideas through questions, explores alternatives, presents design in sections for validation. Saves design document.
+## The skills
 
-2. **using-git-worktrees** - Activates after design approval. Creates isolated workspace on new branch, runs project setup, verifies clean test baseline.
+Twenty-one skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
-3. **writing-plans** - Activates with approved design. Breaks work into bite-sized tasks (2-5 minutes each). Every task has exact file paths, complete code, verification steps.
+**Shape the work**
+- `brainstorming` — Socratic design refinement before any code is written
+- `execspec` — living design specs: decision log, rejected alternatives, retrospective
+- `codebase-design` — deep-module interface design and where to put a seam
+- `domain-modeling` — pin down the ubiquitous language and record ADRs
+- `writing-plans` — break a spec into bite-sized, exactly-specified tasks
+- `organizing-sprints` — turn a pile of raw observations into the next sprint
 
-4. **subagent-driven-development** or **executing-plans** - Activates with plan. Dispatches fresh subagent per task with two-stage review (spec compliance, then code quality), or executes in batches with human checkpoints.
+**Build it**
+- `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
+- `subagent-driven-development` — one fresh subagent per task, two-stage review
+- `executing-plans` — batch execution with human checkpoints
+- `execplan` — the autonomous single-plan track, gates front-loaded
+- `dispatching-parallel-agents` — fan independent work out concurrently
+- `using-git-worktrees` — isolated workspaces so parallel work never clashes
 
-5. **test-driven-development** - Activates during implementation. Enforces RED-GREEN-REFACTOR: write failing test, watch it fail, write minimal code, watch it pass, commit. Deletes code written before tests.
+**Keep it honest**
+- `systematic-debugging` — four-phase root-cause process, not guess-and-check
+- `verification-before-completion` — run the check, show the output, then claim success
 
-6. **requesting-code-review** - Activates between tasks. Reviews against plan, reports issues by severity. Critical issues block progress.
+**Run it unattended**
+- `issue-tracker` — the board, backed by GitHub issues
+- `implementing-tickets` — dispatch workers onto tickets, gate before building
+- `reviewing-prs` — the autonomous PR-review and self-merge loop
+- `orchestrating-daemons` — durable background sessions that survive the session ending
+- `triaging-feedback` — turn product feedback into grounded board tickets
+- `finishing-a-development-branch` — verify, then decide merge / PR / keep / discard
 
-7. **finishing-a-development-branch** - Activates when tasks complete. Verifies tests, presents options (merge/PR/keep/discard), cleans up worktree.
+**Extend it**
+- `writing-skills` — create and test new skills that shape agent behavior
 
-**The agent checks for relevant skills before any task.** Mandatory workflows, not suggestions.
+---
 
-## What's Inside
+## How the controlled track flows
 
-### Skills Library
+1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read.
+2. **using-git-worktrees** — Activates after design approval. Creates an isolated workspace on a new branch and verifies a clean test baseline.
+3. **writing-plans** — Breaks the approved design into tasks of a few minutes each, every one with exact file paths, complete code, and verification steps.
+4. **subagent-driven-development** / **executing-plans** — Dispatches a fresh subagent per task with two-stage review, or runs in batches with human checkpoints.
+5. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
+6. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.
+7. **finishing-a-development-branch** — Verifies tests, presents merge/PR/keep/discard, cleans up the worktree.
 
-**Testing**
-- **test-driven-development** - RED-GREEN-REFACTOR cycle (includes testing anti-patterns reference)
+These are mandatory workflows, not suggestions. The agent checks for a relevant skill before any task.
 
-**Debugging**
-- **systematic-debugging** - 4-phase root cause process (includes root-cause-tracing, defense-in-depth, condition-based-waiting techniques)
-- **verification-before-completion** - Ensure it's actually fixed
-
-**Collaboration** 
-- **brainstorming** - Socratic design refinement
-- **writing-plans** - Detailed implementation plans
-- **executing-plans** - Batch execution with checkpoints
-- **dispatching-parallel-agents** - Concurrent subagent workflows
-- **requesting-code-review** - Pre-review checklist
-- **receiving-code-review** - Responding to feedback
-- **using-git-worktrees** - Parallel development branches
-- **finishing-a-development-branch** - Merge/PR decision workflow
-- **subagent-driven-development** - Fast iteration with two-stage review (spec compliance, then code quality)
-
-**Meta**
-- **writing-skills** - Create new skills following best practices (includes testing methodology)
-- **using-doperpowers** - Introduction to the skills system
+---
 
 ## Philosophy
 
-- **Test-Driven Development** - Write tests first, always
-- **Systematic over ad-hoc** - Process over guessing
-- **Complexity reduction** - Simplicity as primary goal
-- **Evidence over claims** - Verify before declaring success
+- **Design before code** — understand the problem before proposing a solution.
+- **Test-driven** — write the failing test first, always.
+- **Systematic over ad-hoc** — a repeatable process beats guessing.
+- **Simplicity as a goal** — the minimum that solves the problem, captured with all its real complexity.
+- **Evidence over claims** — verify before declaring anything done.
 
-Read [the original release announcement](https://blog.fsck.com/2025/10/09/superpowers/).
+---
 
 ## Contributing
 
-The general contribution process for Doperpowers is below. Keep in mind that we don't generally accept contributions of new skills and that any updates to skills must work across all of the coding agents we support.
-
-1. Fork the repository
-2. Switch to the 'dev' branch
-3. Create a branch for your work
-4. Follow the `writing-skills` skill for creating and testing new and modified skills
-5. Submit a PR, being sure to fill in the pull request template.
-
-Skill-behavior tests use the drill eval harness from [superpowers-evals](https://github.com/prime-radiant-inc/superpowers-evals/), cloned into `evals/` — see `evals/README.md` for setup. Plugin-infrastructure tests live at `tests/` and run via the relevant `run-*.sh` or `npm test`.
-
-See `skills/writing-skills/SKILL.md` for the complete guide.
-
-## Updating
-
-Doperpowers updates are somewhat coding-agent dependent, but are often automatic.
+This is a personal fork, tuned to how its maintainer actually works. Skills are behavior-shaping code, not prose — changing one changes what the agent does, so use the `writing-skills` skill and test the change before relying on it. Issues and ideas: [github.com/SSFSKIM/doperpowers/issues](https://github.com/SSFSKIM/doperpowers/issues).
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Visual companion telemetry
-
-Because skills and plugins don't provide any feedback to creators, we have no idea how many of you are using Doperpowers. By default, the Prime Radiant logo on brainstorming's optional visual companion feature is loaded from our website. It includes the version of Doperpowers in use. It does not include any details about your project, prompt, or coding agent. We don't see your clicks or anything about what you're building. This helps us have a rough idea of how many folks are using Doperpowers and which version of Doperpowers they're using. It's 100% optional. To disable this, set the environment variable `DOPERPOWERS_DISABLE_TELEMETRY` to any true value. Doperpowers also honors Claude Code's `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` opt-outs.
-
-## Community
-
-Doperpowers is built by [Jesse Vincent](https://blog.fsck.com) and the rest of the folks at [Prime Radiant](https://primeradiant.com).
-
-- **Discord**: [Join us](https://discord.gg/35wsABTejz) for community support, questions, and sharing what you're building with Doperpowers
-- **Issues**: https://github.com/obra/superpowers/issues
-- **Release announcements**: [Sign up](https://primeradiant.com/doperpowers/) to get notified about new versions
+MIT — see [`LICENSE`](LICENSE). Attribution for the upstream work this derives from is recorded in [`NOTICE`](NOTICE) and [`LICENSE-FORK`](LICENSE-FORK).
