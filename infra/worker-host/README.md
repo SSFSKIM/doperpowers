@@ -34,7 +34,11 @@ First boot formats the volume ONLY if blank, mounts it at `/data`, creates
 home `/data/triage`, no sudo — see §5 for why they are separate), installs
 git/jq/python3/build-essential, Node LTS, `gh`, `codex` (global npm),
 `claude` (native installer, as worker), Tailscale, an 8G swapfile, and the
-`doper-triage` systemd timer (armed but inert until §5's seeding).
+`doper-triage` systemd timer (armed but inert until §5's seeding). It also
+sets the hostname to `doper-worker-<machine-id prefix>` — unique per body,
+which is what makes the registry's host-aware pid liveness hold across
+rebuilds (the Hetzner server *name* can stay `doper-worker-1`; only the OS
+hostname matters to the registry).
 
 After boot:
 
@@ -61,7 +65,14 @@ As `worker` (`sudo -iu worker`):
    git clone https://oauth2:<PUSH_TOKEN>@github.com/OWNER/REPO.git ~/repos/REPO
    ```
    Worktrees share the parent's remote config, so worker `git push` works
-   without the token ever entering worker env. Verify the split:
+   without the token ever entering worker env. Be honest about what that
+   buys: any process running as `worker` — including PR-derived code — can
+   still read the token (`git remote get-url origin`), so workers ARE
+   contents-write principals on the consumer repos. The containment is the
+   token's shape, not its hiding place: contents-only scope, consumer repos
+   only, and **branch protection on main/integration branches (require
+   PRs)** so the token cannot rewrite protected refs. Enable that protection
+   before the first worker runs. Verify the env-token split:
    `gh api repos/OWNER/REPO --jq .permissions` under `GH_TOKEN` must show
    push=false.
 5. **doperpowers itself** — `git clone` this repo to `~/doperpowers`
@@ -69,11 +80,23 @@ As `worker` (`sudo -iu worker`):
    vendoring / plugin install exactly as on the Mac).
 6. **Actions runner** (event trigger, PRIVATE repos only — standing
    constraint): download the runner into `~/runner`, then
-   `./config.sh --url https://github.com/OWNER/REPO --token <REG_TOKEN> --labels doper-worker`
-   and as root `./svc.sh install worker && ./svc.sh start`. Runner jobs must
-   only run the dispatch ritual (render → spawn --no-wait → bind) and exit;
-   workers are detached processes outside the job, so job timeouts never
-   touch them.
+   `./config.sh --url https://github.com/OWNER/REPO --token <REG_TOKEN> --labels claude-review`
+   — the label must be `claude-review`: the shipped `pr-review-dispatch.yml`
+   selects `runs-on: [self-hosted, claude-review]`, and a runner registered
+   under any other label leaves those jobs queued forever. Runner jobs read
+   env from `~/runner/.env` and PATH from `~/runner/.path`, NOT from
+   `.bashrc` (non-login shells; Ubuntu's stock `.bashrc` early-returns for
+   non-interactive). From a worker login shell where
+   `command -v gh git node python3 claude` all resolve:
+   ```bash
+   grep -Ev '^\s*(#|$)' ~/.env > ~/runner/.env   # runner .env is bare KEY=VALUE
+   echo "DOPERPOWERS_HOME=/data/worker/doperpowers" >> ~/runner/.env
+   echo "$PATH" > ~/runner/.path
+   ```
+   Then as root `cd /data/worker/runner && ./svc.sh install worker &&
+   ./svc.sh start`. Runner jobs must only run the dispatch ritual (render →
+   spawn --no-wait → bind) and exit; workers are detached processes outside
+   the job, so job timeouts never touch them.
 
 ## 3. Verification gate (before trusting it)
 
@@ -95,10 +118,15 @@ dogfood cell end-to-end on the VM and check, in order:
 
 Body loss is a non-event: create a new server with the same
 `cloud-init.yaml`, attach the same volume, re-run layer-1's `tailscale up`,
-restart the runner service. Every parked session resumes — the registry's
-stale pids are neutralized by host-aware liveness (metas carry `host`; a
-foreign-host pid reads as dead). Nothing in layer 3 repeats, because nothing
-in layer 3 lived on the body. The triage tenant needs no step at all: the
+and reinstall the runner service — its registration and config survive in
+`/data/worker/runner`, but the systemd unit `svc.sh install` wrote lived on
+the discarded root filesystem, so there is nothing to merely "restart":
+`cd /data/worker/runner && sudo ./svc.sh install worker && sudo ./svc.sh start`.
+Every parked session resumes — the registry's stale pids are neutralized by
+host-aware liveness (metas carry `host`; the rebuilt body's machine-id
+suffix gives it a NEW hostname, so every old meta reads foreign and its pid
+as dead). Nothing else in layer 3 repeats, because nothing else in layer 3
+lived on the body. The triage tenant needs no step at all: the
 timer is re-armed by cloud-init and its `ExecCondition` finds the seeded
 `.env` already on the volume.
 

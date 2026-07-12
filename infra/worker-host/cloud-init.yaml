@@ -12,7 +12,13 @@
 # one Hetzner Volume attached at server creation. Works on any KVM VM with
 # a by-id-addressable data disk if you adjust the bootcmd glob.
 
-hostname: doper-worker-1
+# hostname is set in runcmd, NOT here — it must be UNIQUE PER BODY. The daemon
+# registry stamps metas with $(hostname) (host-aware pid liveness in
+# orchestrating-daemons/_lib.sh); a rebuilt body reusing the old name would
+# make the previous body's metas read as local, so a recycled pid could alias
+# an unrelated process into resume/dedupe/retire. preserve_hostname stops
+# cloud-init's per-boot update module from reverting to the metadata name.
+preserve_hostname: true
 timezone: Etc/UTC
 
 package_update: true
@@ -97,6 +103,11 @@ write_files:
       WantedBy=timers.target
 
 runcmd:
+  # Per-body hostname (see header note). /etc/machine-id is minted at this
+  # body's first boot, so every rebuild gets a fresh suffix — old registry
+  # metas read as foreign-host and their pids as dead, which is what lets
+  # parked sessions resume safely after a rebuild.
+  - hostnamectl set-hostname "doper-worker-$(cut -c1-6 /etc/machine-id)"
   # Node.js LTS (consumer-repo builds/tests: npm ci, playwright, etc.)
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   - apt-get install -y nodejs
@@ -113,8 +124,10 @@ runcmd:
   # claude CLI — native installer, installed AS the worker (lands in ~/.local/bin
   # on the volume; harmless to re-run on a rebuilt body)
   - sudo -u worker bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
-  # worker shell wiring: source the seeded env file (layer 3) on login and in
-  # non-interactive bash -lc invocations (systemd runner jobs use those)
+  # worker shell wiring: source the seeded env file (layer 3) in INTERACTIVE
+  # shells (admin ssh, sudo -iu worker). Actions runner jobs do NOT read
+  # .bashrc — non-login shells, and Ubuntu's stock .bashrc early-returns for
+  # non-interactive ones — they get env from ~/runner/.env (README §2.6).
   - |
     sudo -u worker bash -c '
       touch /data/worker/.env && chmod 600 /data/worker/.env
