@@ -103,6 +103,19 @@ write_files:
       WantedBy=timers.target
 
 runcmd:
+  # HARD GATE: everything below assumes the state volume is mounted. The
+  # fstab entry keeps `nofail` on purpose (a missing volume must degrade to
+  # a reachable system, not systemd emergency mode), which means a missing/
+  # unlabeled volume silently leaves /data on the DISPOSABLE root fs — the
+  # users module has already created the homedirs there by now, and seeding
+  # into them would vanish on rebuild. Abort loudly instead: no CLIs, no
+  # timer, and `cloud-init status` reports the error. Recovery is to attach
+  # the volume and recreate the server (runcmd does not re-run).
+  - |
+    mountpoint -q /data || {
+      echo "FATAL: /data is not a mountpoint — state volume missing or unlabeled; aborting provisioning" >&2
+      exit 1
+    }
   # Per-body hostname (see header note). /etc/machine-id is minted at this
   # body's first boot, so every rebuild gets a fresh suffix — old registry
   # metas read as foreign-host and their pids as dead, which is what lets
@@ -138,4 +151,5 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now doper-triage.timer
 
-final_message: "doper-worker body ready after $UPTIME s — proceed to layer 3 seeding (infra/worker-host/README.md)"
+# final_message prints even when runcmd aborted — hence "check status", not "ready".
+final_message: "doper-worker body boot finished after $UPTIME s — confirm with 'cloud-init status --long' BEFORE layer 3 seeding (infra/worker-host/README.md)"

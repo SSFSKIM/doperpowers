@@ -43,6 +43,8 @@ hostname matters to the registry).
 After boot:
 
 ```bash
+cloud-init status --long              # must be done/no errors — the runcmd hard
+                                      # gate aborts here if /data didn't mount
 tailscale up                          # then close public SSH:
 ufw allow in on tailscale0; ufw allow ssh; ufw enable   # drop 'allow ssh' once tailscale login works
 ```
@@ -53,9 +55,16 @@ As `worker` (`sudo -iu worker`):
 
 1. **Env file** — copy `env.example` → `~/.env`, fill it (see the file for
    the two-token scope split), `chmod 600 ~/.env`.
-2. **codex auth** — from your logged-in machine:
-   `scp ~/.codex/auth.json worker@host:~/.codex/auth.json` (portable by
-   design; device-code flow is the fallback if the workspace enables it).
+2. **codex auth** — `worker` is deliberately not SSH-reachable (locked
+   password, no authorized keys), so copy through your login account (root
+   on Hetzner) and install with ownership and mode set from birth:
+   ```bash
+   ssh root@host 'install -d -m 700 -o worker -g worker /data/worker/.codex'
+   ssh root@host 'install -m 600 -o worker -g worker /dev/stdin /data/worker/.codex/auth.json' \
+     < ~/.codex/auth.json
+   ```
+   (auth.json is portable by design; device-code flow is the fallback if
+   the workspace enables it.)
 3. **claude auth** — nothing to do beyond `CLAUDE_CODE_OAUTH_TOKEN` in
    `~/.env` (generated locally with `claude setup-token`).
 4. **Canonical clones, push scope wired into the remote** (steal 3) — one
