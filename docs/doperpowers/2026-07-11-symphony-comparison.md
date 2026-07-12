@@ -36,6 +36,12 @@
 > exactly two import decisions, preserved as marked disagreements inside
 > FD-1 (rework full-reset) and FD-7 (workpad). Two independent readings
 > splitting on the same two points is itself evidence those forks are real.
+>
+> **Status (2026-07-12): agenda closed.** All nine forked decisions are
+> terminal — RESOLVED and shipped (FD-1, FD-3 repo-facts v7.15.0, FD-4
+> landing phase v7.13.0, FD-5 spike lane v7.14.0, FD-7, FD-9) or DEFERRED
+> with named reopen triggers (FD-2 third schema-friction case; FD-6, FD-8
+> the unattended phase). Each verdict is recorded inline in its §6 entry.
 
 ---
 
@@ -537,6 +543,19 @@ catches a worker writing an illegal state; our rigidity is also our friction
 schema-worthy invariants and workflow choices a consumer repo should be able
 to reshape without a plugin release?
 
+**DEFERRED (2026-07-12, human decision).** Hard schema stays; not a
+current consideration. The evidence to date cuts both ways and lands
+pro-schema: two friction cases so far (T3-6's refused edge; FD-5's
+missing `needs-human → done` edge) and both were correctly fixed by a
+schema release — while the same rigidity caught the FD-5 lifecycle hole
+at design time, in a topology with no human watching for illegal writes.
+Reopen trigger: a THIRD schema-friction case accumulates, or a consumer
+repo genuinely needs a workflow shape the schema refuses. The recorded
+compromise shape for that day: transition graph stays schema; only
+narrow policy choices (category vocabulary, specific edge allowances)
+considered for config — each such surface re-imports Symphony's per-repo
+drift, so none opens without a concrete case.
+
 ### FD-3 · Contract ownership boundary: repo-owned WORKFLOW.md vs plugin-owned protocol
 
 **Symphony:** the whole contract (prompt + config + hooks) is versioned with
@@ -738,6 +757,16 @@ become worth its machinery — fine-grained PAT per repo now? a local
 credential-broker proxy at the unattended phase? never (Seatbelt + fail-closed
 approvals is enough)?
 
+**DEFERRED (2026-07-12, human decision).** Not a current consideration:
+worker-env `GH_TOKEN` stays the accepted posture (T3-9) — the operator's
+machine, the operator's repos, attended dispatch. Reopen trigger: the
+unattended phase (T1 event-triggered dispatch / runner registration
+T2-5), which is exactly when "tokens in env on a machine nobody is
+watching" widens the exposure the note accepted. The candidate ladder
+recorded for that day: fine-grained per-repo PAT first (cheapest), a
+local credential-broker proxy only if the PAT's blast radius still
+reads too wide.
+
 ### FD-7 · Evidence audience: machine-checkable discipline vs human-consumable richness
 
 **Symphony:** evidence targets the human reviewer's eyes — workpad checklists,
@@ -806,6 +835,20 @@ human most wants it (runaway or obsolete work). **Open:** should the sweep
 cron gain a cancellation pass (ticket left open-active states → retire the
 bound daemon, comment the termination)? What are the semantics for the
 in-flight worktree (keep as WIP branch, per "committed branch not merged")?
+
+**DEFERRED (2026-07-12, human decision).** Not a current consideration:
+manual retire suffices at today's scale. The 2026-07-12 grounding pass
+found the gap narrower than the section reads — the kill primitive
+exists (`daemon-retire.sh`, both engines, session transcripts untouched)
+and the ticket→daemon binding exists; only detection (reconcile does not
+report the inverse zombie: closed/parked ticket with a LIVE bound
+daemon) and a one-command path are missing. The recorded design for
+pickup day: `board-cancel.sh <n>` (transition + retire bound daemon +
+`[board]` termination comment), a read-only zombie line in reconcile,
+worktrees never deleted (cancelled WIP stays a committed branch —
+cleanup is finalize-sweep territory per FD-4), cron auto-kill only at
+the unattended phase behind a staged flag. Reopen trigger: a real
+runaway/zombie incident, or the unattended phase (whichever first).
 
 ### FD-9 · Steering surface for parked work: attach-and-steer vs answers-on-ticket
 
