@@ -50,6 +50,7 @@ export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
 export DAEMON_TIMEOUT=10
+export DAEMON_UUID_POLL=5
 export DAEMON_BOOT_ID="boot-current"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME" "$WORK" "$STUB_STATE/agents"
@@ -362,6 +363,34 @@ assert_contains "$("$SCRIPTS_DIR/daemon-retire.sh" "$WT_SHORT")" "branch worktre
 echo "failure windows:"
 spawn_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ .*/\1/p' | head -1; }
 spawn_uuid()  { printf '%s' "$1" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1; }
+
+# A resumed turn must become locally owned as soon as its UUID appears, before
+# the long terminal-state watcher returns. Otherwise migrated metadata remains
+# foreign while a real local turn is running and dispatch can duplicate it.
+M_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "migrated-resume" "seed-m" "$WORK")"
+M_SHORT="$(spawn_short "$M_OUT")"; M_UUID="$(spawn_uuid "$M_OUT")"
+python3 - "$DAEMON_HOME/$M_UUID.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["host"] = "old-host"
+m["boot_id"] = "boot-old"
+json.dump(m, open(p, "w"), indent=2)
+PY
+STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-resume.sh" "$M_SHORT" "continue locally" > "$TEST_ROOT/migrated-resume.out" 2>&1 &
+M_RESUME_PID=$!
+for _ in $(seq 1 20); do
+    M_CUR="$(sed -n 's/.*"current": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$M_UUID.json")"
+    [ -n "$M_CUR" ] && [ "$M_CUR" != "$M_UUID" ] && break
+    sleep 0.25
+done
+M_META="$(cat "$DAEMON_HOME/$M_UUID.json")"
+assert_contains "$M_META" '"host": "'"$(hostname)"'"' "running resume is re-stamped to the local host before terminal polling"
+assert_contains "$M_META" '"boot_id": "boot-current"' "running resume is re-stamped to the local boot before terminal polling"
+[ -n "${M_CUR:-}" ] && [ "$M_CUR" != "$M_UUID" ] \
+    && pass "running resume advances current before terminal polling" \
+    || fail "running resume advances current before terminal polling"
+wait "$M_RESUME_PID" 2>/dev/null || true
 
 # (a) The fork command itself fails (session not resumable). Resume must exit
 # nonzero, flip status=error, and leave `current`/turns untouched — the daemon
