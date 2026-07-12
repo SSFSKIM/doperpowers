@@ -226,10 +226,13 @@ _codex_launch() {
   # review engine call) cannot reach the OS keychain/trustd under the
   # sandbox, so its rustls has no trust anchors and every connection dies
   # with `invalid peer certificate: UnknownIssuer`. /etc/ssl/cert.pem is the
-  # sandbox-readable file bundle (verified live: nested exec fails without,
-  # completes with). The outer codex itself is unsandboxed and unaffected.
-  if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
-    export SSL_CERT_FILE=/etc/ssl/cert.pem
+  # sandbox-readable file bundle on macOS (verified live: nested exec fails
+  # without, completes with); Debian/Ubuntu ships it as ca-certificates.crt.
+  # The outer codex itself is unsandboxed and unaffected.
+  if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for _cert in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt; do
+      if [ -f "$_cert" ]; then export SSL_CERT_FILE="$_cert"; break; fi
+    done
   fi
   # A NESTED codex (e.g. review-engine.sh run by a codex worker) resolves
   # its code-mode command host to /usr/local/bin (absent here) instead of

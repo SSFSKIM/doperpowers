@@ -1,0 +1,84 @@
+#cloud-config
+# Doperpowers worker host — the DISPOSABLE BODY (layer 1 of 3).
+#
+# Design: docs/doperpowers/2026-07-12-managed-agents-steals.md (steal 2).
+# Everything this file installs can be thrown away and rebuilt; everything
+# that must survive lives on the attached state volume mounted at /data
+# (the worker user's HOME sits on it, so ~/.claude, ~/.codex, the daemon
+# registry, and all clones ride the volume automatically). Secrets are NEVER
+# in this file — they are seeded once by hand (layer 3, see README.md).
+#
+# Target: Hetzner Cloud CX43 (8 vCPU / 16 GB, x86), Ubuntu 24.04 LTS, with
+# one Hetzner Volume attached at server creation. Works on any KVM VM with
+# a by-id-addressable data disk if you adjust the bootcmd glob.
+
+hostname: doper-worker-1
+timezone: Etc/UTC
+
+package_update: true
+packages:
+  - git
+  - curl
+  - jq
+  - python3
+  - build-essential   # npm native-module fallback builds (no arm64/x64 prebuilt)
+  - unzip
+  - ca-certificates   # provides /etc/ssl/certs/ca-certificates.crt (SSL_CERT_FILE)
+
+# ---- state volume (the soul) --------------------------------------------------
+# First boot formats the attached volume ONLY if it is blank (blkid probe),
+# so re-provisioning a new body against an existing soul never wipes it.
+# cloud-init runs bootcmd + mounts before users-groups, so the worker user's
+# home can live on the volume.
+bootcmd:
+  - |
+    dev="$(readlink -f /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -1)"
+    if [ -b "$dev" ] && ! blkid "$dev" >/dev/null 2>&1; then
+      mkfs.ext4 -L doperdata "$dev"
+    fi
+mounts:
+  - [ "LABEL=doperdata", /data, ext4, "defaults,nofail,discard", "0", "2" ]
+
+swap:
+  filename: /swap.img
+  size: 8G
+  maxsize: 8G
+
+# ---- users ---------------------------------------------------------------------
+# Fixed uid so a REBUILT body maps the volume's existing file ownership.
+# No sudo: the worker runs pipeline processes only; admin happens as root.
+users:
+  - default
+  - name: worker
+    uid: 1010
+    shell: /bin/bash
+    homedir: /data/worker
+    lock_passwd: true
+
+runcmd:
+  # Node.js LTS (consumer-repo builds/tests: npm ci, playwright, etc.)
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+  # gh CLI (board transitions, PR ops) — official apt repo
+  - mkdir -p -m 755 /etc/apt/keyrings
+  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  - chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  - apt-get update && apt-get install -y gh
+  # Tailscale (SSH access path — close public 22 after `tailscale up`, see README)
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  # codex CLI (global; worker-agnostic binary, auth is per-user on the volume)
+  - npm install -g @openai/codex
+  # claude CLI — native installer, installed AS the worker (lands in ~/.local/bin
+  # on the volume; harmless to re-run on a rebuilt body)
+  - sudo -u worker bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+  # worker shell wiring: source the seeded env file (layer 3) on login and in
+  # non-interactive bash -lc invocations (systemd runner jobs use those)
+  - |
+    sudo -u worker bash -c '
+      touch /data/worker/.env && chmod 600 /data/worker/.env
+      grep -q "source ~/.env" /data/worker/.bashrc 2>/dev/null || \
+        printf "\n# doperpowers worker env (seeded by hand — see infra/worker-host)\n[ -f ~/.env ] && set -a && source ~/.env && set +a\n" >> /data/worker/.bashrc
+    '
+
+final_message: "doper-worker body ready after $UPTIME s — proceed to layer 3 seeding (infra/worker-host/README.md)"

@@ -109,10 +109,12 @@ post-clause: disable collab tools via spawn-time `-c` config.
 
 ### 8. `SSL_CERT_FILE` is macOS-specific
 
-`_codex_launch` exports `/etc/ssl/cert.pem` when present (guarded — silently
-skipped elsewhere). A Linux worker host needs its distro bundle path wired
-in; the review engine block documents the requirement. The in-thread review
-design (FU-7) removed the main consumer, so exposure is small.
+**RESOLVED 2026-07-12**: `_codex_launch` and `review-engine.sh` now probe
+`/etc/ssl/cert.pem` (macOS) then `/etc/ssl/certs/ca-certificates.crt`
+(Debian/Ubuntu) and export the first hit; `infra/worker-host/env.example`
+also pins the Linux path explicitly as belt-and-suspenders. Remaining
+exposure: other distros' bundle paths — extend the probe list if a non-Debian
+host ever appears.
 
 ### 9. Accepted notes (recorded, no action intended)
 

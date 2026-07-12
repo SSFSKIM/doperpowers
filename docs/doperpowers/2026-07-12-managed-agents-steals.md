@@ -91,6 +91,10 @@ the migrated registry harmless. Nothing else in the pipeline needs backup
 discipline: the board (GitHub) already carries ticket state and the
 human-answer record.
 
+Runnable form: `infra/worker-host/` (cloud-init for the body, env.example
+for the seeding contract, README with the layer split, verification gate,
+and rebuild drill).
+
 Non-goal: we did NOT adopt per-worker ephemeral compute (their full cattle
 shape). At single-tenant scale with a few concurrent workers, dispatch
 latency is noise against multi-hour turns, and the refactor would reopen

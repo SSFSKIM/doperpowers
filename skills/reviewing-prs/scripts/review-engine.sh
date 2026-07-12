@@ -42,9 +42,12 @@ effort="${CODEX_REVIEW_EFFORT:-xhigh}"
 source_codex_home="${CODEX_HOME:-$HOME/.codex}"
 
 # TLS trust anchors as a FILE bundle — a nested codex cannot reach the OS
-# keychain/trustd under the outer seatbelt (shakedown FU-6).
-if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
-  export SSL_CERT_FILE=/etc/ssl/cert.pem
+# keychain/trustd under the outer seatbelt (shakedown FU-6). macOS ships the
+# bundle as cert.pem, Debian/Ubuntu as ca-certificates.crt.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+  for _cert in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt; do
+    if [ -f "$_cert" ]; then export SSL_CERT_FILE="$_cert"; break; fi
+  done
 fi
 # A nested codex resolves its code-mode command host to /usr/local/bin
 # (absent here) instead of ~/.local/bin — point it explicitly.
