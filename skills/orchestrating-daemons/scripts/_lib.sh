@@ -31,7 +31,9 @@ _boot_id() {
   if [ -r /proc/sys/kernel/random/boot_id ]; then
     cat /proc/sys/kernel/random/boot_id
   elif command -v sysctl >/dev/null 2>&1; then
-    sysctl -n kern.boottime 2>/dev/null | sed -E 's/.*sec = ([0-9]+).*/\1/' || true
+    # Anchor on the LEADING `{ sec = N,` field: a greedy `.*sec = ` lands on
+    # the `sec` inside `usec = ` and records the microseconds instead.
+    sysctl -n kern.boottime 2>/dev/null | sed -E 's/^\{ sec = ([0-9]+),.*/\1/' || true
   fi
 }
 DAEMON_BOOT_ID="${DAEMON_BOOT_ID:-$(_boot_id)}"

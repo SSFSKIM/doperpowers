@@ -347,6 +347,20 @@ printf '{"uuid":"%s","current":"%s","short":"face0000","name":"foreign","engine"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stop face0000" "retire does not stop a foreign-host Claude session"
 assert_contains "$(cat "$DAEMON_HOME/$FOREIGN_UUID.json")" '"status": "retired"' "foreign-host Claude record is still retired"
 
+# _boot_id must record the BOOT identity — on macOS the sec field, where a
+# greedy `.*sec = ` match lands inside `usec = ` and records microseconds.
+# Cross-check against an independent parse (Linux: the boot_id file verbatim;
+# macOS: the first integer in kern.boottime is the sec field).
+if [ -r /proc/sys/kernel/random/boot_id ]; then
+    BOOT_EXPECT="$(cat /proc/sys/kernel/random/boot_id)"
+else
+    BOOT_EXPECT="$(sysctl -n kern.boottime | grep -oE '[0-9]+' | head -1)"
+fi
+BOOT_GOT="$(bash -c "source '$SCRIPTS_DIR/_lib.sh' >/dev/null 2>&1; _boot_id")"
+[ -n "$BOOT_GOT" ] && [ "$BOOT_GOT" = "$BOOT_EXPECT" ] \
+    && pass "_boot_id records the boot identity, not a substring field" \
+    || fail "_boot_id records the boot identity, not a substring field (got: $BOOT_GOT, want: $BOOT_EXPECT)"
+
 # ---- 6) worktree isolation (native --worktree threading) ---------------------
 echo "worktree isolation:"
 WT_REPO="$TEST_ROOT/wtrepo"; mkdir -p "$WT_REPO"
