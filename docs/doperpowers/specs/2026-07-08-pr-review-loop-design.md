@@ -502,3 +502,16 @@ Pending — written at finish.
   recap could be read as licensing a merge in observation mode → now gated on
   "auto-merge is on", pinned by a regression assert) and two LOW (off-state
   prose wording; full-clone requirement for the base read, now documented).
+- 2026-07-13 (fix-forward routing): flipped the finding-routing default,
+  adopting agent-harness's burden-of-proof direction after SD-5 showed the
+  old default in action (7/7 findings routed FIX NOW, 3 engine rounds).
+  The engine's native severity is now the blocker bit: critical/high (P1
+  class) → FIX NOW; everything below → new LOG bin (renamed from
+  TOO SMALL), deferred to the standing tech-debt issue by default —
+  promoting a non-blocker to an in-loop fix is the argued exception, the
+  reverse of the old triple-condition deferral. RE-REVIEW gains a
+  statelessness clause: re-flagged already-logged findings are matched by
+  file+substance, not re-fixed/re-logged/re-counted; exit = no NEW
+  blocker, not a clean report. SELF-MERGE wording aligned ("non-blocker
+  findings, each explicitly routed"). Protocol + SKILL.md tech-debt sink
+  updated; spec body §Review Worker Protocol left as the historical draft.

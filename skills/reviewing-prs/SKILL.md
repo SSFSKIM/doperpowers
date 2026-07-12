@@ -129,8 +129,9 @@ PR-review-event trigger arrives with runner registration.
 
 ## Tech-debt sink
 
-Small valid-but-non-blocking findings go to ONE standing GitHub issue per
-repo (label `tech-debt`) as structured comments — never to a tracked file:
+Non-blocking findings — everything below the engine's critical/high class
+— go by DEFAULT to ONE standing GitHub issue per repo (label `tech-debt`)
+as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
 and the edit would land inside the very PR under review. Register the
 standing issue as a `deferred` P3 ticket so board-lint stays green. Promote
