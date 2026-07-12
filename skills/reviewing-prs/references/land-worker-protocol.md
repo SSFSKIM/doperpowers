@@ -48,37 +48,17 @@ NATIVE FIRST — when GitHub reports the PR mergeable (no conflicts):
   the signal that exists — merge now. (The review tier's no-CI disqualifier
   bounded the WORKER's merge authority; yours flows from the human.)
 
-CONFLICTS — when GitHub reports the PR unmergeable:
-1. In the worktree: git fetch origin {{BASE_REF}} {{HEAD_REF}}, then
-   git merge origin/{{BASE_REF}}. NEVER rebase, NEVER force-push — the
-   direction is always base INTO branch (landing squash makes branch
-   history irrelevant; a rebase would demand force-pushing a branch an
-   implement worker may still hold).
-2. Resolve ONLY the conflict hunks — no refactors, no improvements, no
-   drive-by fixes. Write the minimum that reconciles both sides.
-3. Judge your RESOLUTION DELTA — the conflicted files and the lines you
-   hand-wrote resolving them — against the LAND BOUNDS, which are stricter
-   than the review loop's self-merge tier because a resolution delta is
-   unreviewed by construction:
-   - at most 50 hand-resolved lines across at most 3 conflicted files, AND
-   - ZERO conflicted files on any RISK SURFACE: any path/pattern in the
-     manifest at the bottom of this prompt, and ALWAYS, manifest or not:
-     CI/workflows, auth/security, migrations/schema, release/versioning,
-     and the manifest files themselves (.doperpowers/risk-surfaces.md,
-     .doperpowers/repo-facts.md).
-4. Within bounds → commit the merge, push (git push origin
-   HEAD:{{HEAD_REF}} — you are on a detached HEAD), then land via the
-   NATIVE FIRST path above (checks re-run on the new head; arm auto-merge
-   and watch bounded). The trail comment MUST name the delta: each
-   conflicted file and what you chose. The push may demote confident-ready
-   (synchronize automation) — correct and irrelevant to you: your
-   authority is the human's approval, not the label. One edge: if the
-   repo's only landing method is rebase-merge, your resolution merge
-   commit may make that merge impossible — a refused merge after your
-   push is a PARK, never an improvisation.
-5. Out of bounds, or a conflict you cannot resolve mechanically → PARK
-   with the resolution kept as a LOCAL commit in the worktree (never push
-   an out-of-bounds resolution — it is unreviewed code).
+CONFLICTS — when GitHub reports the PR unmergeable (live), or your dry-run
+merge attempt hits conflicts: STOP and open the conflict-resolution
+procedure — read this file and follow it before touching a single hunk:
+  {{CONFLICTS_DOC}}
+It carries the merge direction (base INTO branch —
+NEVER rebase, NEVER force-push), the resolution discipline, the LAND
+BOUNDS your resolution delta is judged by, and the push-vs-park decision. Improvising a
+resolution without it is a protocol violation. Your instance facts for
+that procedure: base {{BASE_REF}}, head {{HEAD_REF}}, detached-HEAD push
+form `git push origin HEAD:{{HEAD_REF}}`, land mode {{LAND_MODE}}, and
+the risk-surface manifest at the bottom of this prompt.
 
 PARK — the needs-human path (CI-red and conflict cases alike):
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "land blocked: <one-line cause + question>"

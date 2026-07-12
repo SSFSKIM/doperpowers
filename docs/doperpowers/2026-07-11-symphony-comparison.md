@@ -956,3 +956,37 @@ plane; state machines for agents should carry goals, not micro-transitions
 (their blog lesson ≈ our no-judge doctrine). Convergence under independent
 evolution is evidence the problem shape, not fashion, dictates these — and
 it localizes the genuine disagreements to §6's nine forks.
+
+---
+
+## 8. Addendum (2026-07-12): the workspace-skills question
+
+Post-agenda follow-up: Symphony's WORKFLOW.md references five workspace
+skills (`linear`, `commit`, `push`, `pull`, `land` at `.codex/skills/`) —
+do we need equivalents? **No new artifact kind needed** — each function
+already has a home in a different shape, and the shapes follow from closed
+FDs: `linear` ≈ our board scripts (FD-2: enforcement beats instruction),
+`land` ≈ the land worker species (FD-1 episodic + FD-4), git hygiene ≈
+protocol clauses + engine blocks. Their skills are repo-owned behavioral
+instructions — exactly what FD-3 rejected for our repo-owned surface.
+
+The durable insight extracted: **our dispatch already IS progressive
+disclosure, resolved at render time** — the dispatcher selects the
+phase-scoped protocol the way a skill-loading agent would select a skill,
+which is the right timing for phase-scoped unattended workers (a missed
+runtime disclosure is a silent protocol violation when nobody watches;
+Symphony itself compensates with mandatory "open and follow" dereferences).
+The real pressure thick prompts face is attention dilution as protocols
+grow, so the **pointer-block rule** was adopted and applied
+(2026-07-12): a protocol block moves to a runtime-opened plugin file
+(pointer + mandatory dereference, absolute path rendered at dispatch) when
+ALL THREE hold — (1) conditional path (a minority of runs need it),
+(2) large, (3) mechanically detectable trigger. Runtime-opened docs are
+never rendered, so they are placeholder-free by construction: PROCEDURE
+lives in the doc, INSTANCE facts stay in the prompt — and the doc grants
+no authority beyond the prompt's. First two applications:
+`reviewing-prs/references/land-conflicts.md` (trigger: GitHub reports
+unmergeable / dry-run merge conflicts) and
+`implementing-tickets/references/implement-decompose.md` (trigger:
+Check-2 "too big, decomposable"). Always-on blocks (gate, discriminant,
+closing artifact, native-first) stay inline.

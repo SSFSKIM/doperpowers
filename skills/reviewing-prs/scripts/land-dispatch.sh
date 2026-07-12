@@ -39,12 +39,16 @@ export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 PROTOCOL_TEMPLATE="$SKILL_DIR/references/land-worker-protocol.md"
+# Runtime-opened procedure (progressive disclosure): the protocol renders
+# only a pointer; the worker opens this file when conflicts actually occur.
+CONFLICTS_DOC="$SKILL_DIR/references/land-conflicts.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 [ -f "$PROTOCOL_TEMPLATE" ] || die "protocol template missing: $PROTOCOL_TEMPLATE"
+[ -f "$CONFLICTS_DOC" ] || die "conflicts procedure missing: $CONFLICTS_DOC"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
 [ $# -ge 1 ] || die "usage: land-dispatch.sh <pr-number>"
@@ -208,7 +212,8 @@ prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
   P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
   P_ISSUE_LIST="${LINKED_ISSUES:-none}" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
   P_LAND_MODE="$LAND_MODE" P_APPROVAL_SIGNAL="$APPROVAL_SIGNAL" \
-  P_MERGE_METHOD="$MERGE_METHOD" RISK_FILE="$tmp/risk.md" \
+  P_MERGE_METHOD="$MERGE_METHOD" P_CONFLICTS_DOC="$CONFLICTS_DOC" \
+  RISK_FILE="$tmp/risk.md" \
   python3 - "$PROTOCOL_TEMPLATE" <<'PY'
 import os, re, sys
 t = open(sys.argv[1]).read()

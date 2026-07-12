@@ -32,8 +32,7 @@ assert_contains "$proto" "WELL-SCOPED" "check 2 present"
 assert_contains "$proto" "Even minor taste is never your call" "minor-taste rule present"
 assert_contains "$proto" "VERDICT IS YOUR FIRST BOARD WRITE" "verdict-first-write present"
 assert_contains "$proto" "WHO UNPARKS IT" "park discriminant present"
-assert_contains "$proto" "a chain IS" "serialization-as-edges present"
-assert_contains "$proto" "## Roadmap" "JIT roadmap escape hatch present"
+assert_contains "$proto" "{{DECOMPOSE_DOC}}" "decompose procedure pointer present (runtime-opened)"
 assert_contains "$proto" "FOLLOW-UPS: none" "follow-ups contract present"
 assert_contains "$proto" "A follow-up not registered does not exist" "direct registration doctrine"
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
@@ -58,7 +57,7 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-want="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "placeholder set is exactly: $want"; else
     fail "placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -77,6 +76,16 @@ assert_contains "$spike" 'NEVER "Closes #{{ISSUE_NUMBER}}"' "spike: Closes is fo
 assert_contains "$spike" 'needs-human "findings ready:' "spike: findings-ready handoff park"
 assert_contains "$spike" "terminal states" "spike: terminal states stay the human's"
 assert_contains "$spike" "[findings]" "spike: structured findings comment mandated"
+
+echo "decompose procedure (runtime-opened):"
+DECOMP="$REPO_ROOT/skills/implementing-tickets/references/implement-decompose.md"
+[ -f "$DECOMP" ] || { echo "missing $DECOMP"; exit 1; }
+decomp="$(cat "$DECOMP")"
+assert_contains "$decomp" "a chain IS" "decompose doc: serialization-as-edges present"
+assert_contains "$decomp" "## Roadmap" "decompose doc: JIT roadmap escape hatch present"
+assert_contains "$decomp" "NO code" "decompose doc: write-no-code clause present"
+assert_contains "$decomp" "grants no authority beyond your prompt" "decompose doc: no-extra-authority framing"
+assert_not_contains "$decomp" "{{" "decompose doc: placeholder-free (opened at runtime, never rendered)"
 
 echo "engine blocks:"
 EXEC_CLAUDE="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md"

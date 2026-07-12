@@ -31,22 +31,13 @@ still counts as ONE unit; that is what plan-mode execution exists for.
 Decompose only work whose children could land on main independently).
 Too big? One question decides: can the remainder
 be written down as self-contained child pre-specs right now?
-- Yes → DECOMPOSE. Register children:
-  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement|spike> <P0..P3> --parent {{ISSUE_NUMBER}}
-  (spike = a child whose deliverable is findings the other children need —
-  usually their --blocked-by)
-  (+ --blocked-by between siblings where order matters; a chain IS
-  serialization; + --state S --note "<why>" for a child born parked). Then
-  flesh out each child body (gh issue edit <n> --body-file -) to the
-  pre-spec bar: a fresh-context worker can start from the body alone.
-  Gate-triage each child honestly: ready-for-agent only if YOU believe it
-  passes this gate; an open human decision → born needs-human;
-  product-core → born interactive-preferred — required notes always.
-  Register only children you can spec self-contained NOW; contingent later
-  phases live as a "## Roadmap" section in the parent body — the worker
-  finishing phase K registers phase K+1 at PR time. Update the parent
-  (roadmap + a Decision log entry: why this cut), end your turn. Write no
-  code.
+- Yes → DECOMPOSE: open the decomposition procedure — read this file and
+  follow it before registering a single child:
+    {{DECOMPOSE_DOC}}
+  It carries the register command with typed edges, the pre-spec bar for
+  child bodies, honest gate-triage, the Roadmap escape hatch for
+  contingent phases, and the parent update. You write NO code; end your
+  turn when the children stand.
 - No — the slices need one continuously steered human context →
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} interactive-preferred "<which decision areas need steering>"
   and end your turn.

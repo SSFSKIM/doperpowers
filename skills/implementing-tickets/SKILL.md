@@ -22,6 +22,7 @@ audit trail, not requests. Full design + rationale:
 |---|---|
 | `references/implement-worker-protocol.md` | the Implement Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — rendered instead when the ticket's category is `spike` (the exploration lane below) |
+| `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
 | `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline via the vendored `.agents/skills` doctrine) — both mandate in-thread solo execution; composed into the protocol at render time (implement protocol only — spikes are exploration, not TDD) |
 | The Ticket Gate | the pre-code pass/park verdict (below) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |

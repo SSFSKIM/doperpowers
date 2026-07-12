@@ -150,7 +150,11 @@ pick by repo visibility:
    engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
    (or a "(no repo-facts manifest)" note when absent), and — implement
    protocol only — `EXECUTION_BLOCK` = the engine's
-   `references/engine-blocks/execution-<engine>.md`).
+   `references/engine-blocks/execution-<engine>.md` and `DECOMPOSE_DOC` =
+   the ABSOLUTE path of implementing-tickets'
+   `references/implement-decompose.md` (a runtime-opened procedure: the
+   prompt carries only the pointer; the worker opens it when Check-2
+   says decompose).
 3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    (model/effort default gpt-5.6-sol/high — override with
    `$CODEX_MODEL` / `$CODEX_EFFORT` as args 5–6). claude:
