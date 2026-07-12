@@ -45,8 +45,12 @@ swap:
   maxsize: 8G
 
 # ---- users ---------------------------------------------------------------------
-# Fixed uid so a REBUILT body maps the volume's existing file ownership.
-# No sudo: the worker runs pipeline processes only; admin happens as root.
+# Fixed uids so a REBUILT body maps the volume's existing file ownership.
+# No sudo: pipeline users run pipeline processes only; admin happens as root.
+# `triage` is a SEPARATE user from `worker` on purpose: its dispatcher env
+# holds SUPABASE_SERVICE_ROLE_KEY (RLS bypass — the strongest secret on this
+# host), while implement/review workers under `worker` execute PR-derived
+# code. Same user would let a compromised worker read that key.
 users:
   - default
   - name: worker
@@ -54,6 +58,43 @@ users:
     shell: /bin/bash
     homedir: /data/worker
     lock_passwd: true
+  - name: triage
+    uid: 1011
+    shell: /bin/bash
+    homedir: /data/triage
+    lock_passwd: true
+
+# ---- triage tenant: systemd timer (body-side; arming is guarded) ---------------
+# Replaces the Mac's launchd label (skills/triaging-feedback/references/setup.md
+# §6). systemd gives the same single-instance serialization the reclaim design
+# depends on: a timer never re-triggers a oneshot service that is still running.
+# ExecCondition makes pre-seed ticks silent no-ops, so the timer can be enabled
+# unconditionally — a rebuilt body against a seeded soul resumes polling with
+# zero manual steps.
+write_files:
+  - path: /etc/systemd/system/doper-triage.service
+    content: |
+      [Unit]
+      Description=Doperpowers feedback triage — one poll tick
+
+      [Service]
+      Type=oneshot
+      User=triage
+      Environment=HOME=/data/triage
+      ExecCondition=/usr/bin/test -f /data/triage/doperpowers/skills/triaging-feedback/.env
+      ExecStart=/data/triage/doperpowers/skills/triaging-feedback/scripts/feedback-poll.sh
+  - path: /etc/systemd/system/doper-triage.timer
+    content: |
+      [Unit]
+      Description=Doperpowers feedback triage — 10-minute poll
+
+      [Timer]
+      OnCalendar=*:00/10
+      RandomizedDelaySec=30
+      Persistent=false
+
+      [Install]
+      WantedBy=timers.target
 
 runcmd:
   # Node.js LTS (consumer-repo builds/tests: npm ci, playwright, etc.)
@@ -80,5 +121,8 @@ runcmd:
       grep -q "source ~/.env" /data/worker/.bashrc 2>/dev/null || \
         printf "\n# doperpowers worker env (seeded by hand — see infra/worker-host)\n[ -f ~/.env ] && set -a && source ~/.env && set +a\n" >> /data/worker/.bashrc
     '
+  # triage tenant timer — safe to arm before seeding (ExecCondition guards)
+  - systemctl daemon-reload
+  - systemctl enable --now doper-triage.timer
 
 final_message: "doper-worker body ready after $UPTIME s — proceed to layer 3 seeding (infra/worker-host/README.md)"

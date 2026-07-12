@@ -4,7 +4,8 @@ Runnable counterpart of `docs/doperpowers/2026-07-12-managed-agents-steals.md`
 §2 (state-volume convention). One persistent Linux VM runs the whole board
 pipeline: implement / review / land workers (detached processes under the
 daemon registry), the Actions runner that turns board events into dispatches,
-and nothing else. No Docker: workers are host processes keyed by
+and the feedback-triage poller (a separate unix user — see §5), and nothing
+else. No Docker: workers are host processes keyed by
 (host, pid, session) in the registry, codex brings its own Landlock sandbox
 on a real kernel, and single-tenant reproducibility comes from cloud-init,
 not images.
@@ -29,9 +30,11 @@ hcloud server create --name doper-worker-1 --type cx43 --image ubuntu-24.04 \
 ```
 
 First boot formats the volume ONLY if blank, mounts it at `/data`, creates
-`worker` (uid 1010, home `/data/worker`, no sudo), installs git/jq/python3/
-build-essential, Node LTS, `gh`, `codex` (global npm), `claude` (native
-installer, as worker), Tailscale, and an 8G swapfile.
+`worker` (uid 1010, home `/data/worker`, no sudo) and `triage` (uid 1011,
+home `/data/triage`, no sudo — see §5 for why they are separate), installs
+git/jq/python3/build-essential, Node LTS, `gh`, `codex` (global npm),
+`claude` (native installer, as worker), Tailscale, an 8G swapfile, and the
+`doper-triage` systemd timer (armed but inert until §5's seeding).
 
 After boot:
 
@@ -95,14 +98,52 @@ Body loss is a non-event: create a new server with the same
 restart the runner service. Every parked session resumes — the registry's
 stale pids are neutralized by host-aware liveness (metas carry `host`; a
 foreign-host pid reads as dead). Nothing in layer 3 repeats, because nothing
-in layer 3 lived on the body.
+in layer 3 lived on the body. The triage tenant needs no step at all: the
+timer is re-armed by cloud-init and its `ExecCondition` finds the seeded
+`.env` already on the volume.
 
-## 5. Not configured here, on purpose
+## 5. Triage tenant (`skills/triaging-feedback` poller)
+
+The first production tenant, and deliberately the burn-in one: real value
+from day one (24/7 feedback triage instead of a sleep-prone Mac's launchd),
+minimal blast radius (ticket-only — the poller diagnoses and files tickets;
+it never writes code or pushes). It has **no soul on this host**: all durable
+state lives in Supabase (`feedback.triage_state`/`triage_lease`) and GitHub
+(tickets), so unlike the workers it doesn't even need the state volume — it
+sits on it only because `$HOME` does.
+
+**Why a separate unix user.** The dispatcher env holds
+`SUPABASE_SERVICE_ROLE_KEY` (RLS bypass — the strongest secret here), while
+`worker` runs implement/review workers that execute PR-derived code. User
+separation (uid 1011, mode-600 `.env`) is the cheap wall between them.
+
+Seed as `triage` (`sudo -iu triage`) — prerequisites first: the p86
+migration must be live in Supabase and the descriptive labels created on
+ida-solution (`references/setup.md` §0/§4):
+
+1. **Clones** — `git clone` doperpowers to `~/doperpowers`; clone
+   ida-solution to `~/repos/ida-solution` with a contents-READ-only
+   fine-grained PAT in the remote URL (the poller fetches origin every tick,
+   never pushes).
+2. **Deps** — `cd ~/doperpowers/skills/triaging-feedback && npm ci`.
+3. **Env** — copy `env.triage.example` → that same skill dir's `.env`,
+   fill it, `chmod 600`. Keep `TRIAGE_K=1` until ticket quality is trusted
+   (`references/setup.md` §5).
+4. **Verify one tick** — `sudo systemctl start doper-triage.service`, then
+   `journalctl -u doper-triage.service -f`. The timer (installed by
+   cloud-init, 10-minute cadence) takes over from there.
+5. **Mac handoff** — once a VM tick has filed a correct ticket, unload the
+   Mac's launchd label (`references/setup.md` §6). Atomic claim + lease
+   makes the overlap window safe, but two pollers is a config smell, not a
+   feature.
+
+## 6. Not configured here, on purpose
 
 - **Watchdog** — T1 tech-debt (import of Symphony's liveness sweep); when it
   exists it becomes a cron/timer on this host. Until then
   `review-dispatch.sh --sweep` on a timer is the available partial.
-- **Feedback intake** (customer feedback → issue) — serverless territory
-  (Cloudflare Worker → GitHub API), not this VM.
+- **Feedback intake** (in-app 피드백 → Supabase `feedback` table) — that is
+  the product's own write path; this host only polls the table. No
+  serverless intake layer is needed for triage.
 - **ufw auto-enable in cloud-init** — deliberate: enabling the firewall
   before Tailscale is joined can lock you out of a fresh body.
