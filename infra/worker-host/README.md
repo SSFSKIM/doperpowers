@@ -57,11 +57,13 @@ As `worker` (`sudo -iu worker`):
    the two-token scope split), `chmod 600 ~/.env`.
 2. **codex auth** — `worker` is deliberately not SSH-reachable (locked
    password, no authorized keys), so copy through your login account (root
-   on Hetzner) and install with ownership and mode set from birth:
+   on Hetzner). GNU `install` refuses a pipe-backed `/dev/stdin` ("replaced
+   while being copied"), so write under `umask 077` — the file is born 0600
+   with no exposure window — then hand it to `worker`:
    ```bash
    ssh root@host 'install -d -m 700 -o worker -g worker /data/worker/.codex'
-   ssh root@host 'install -m 600 -o worker -g worker /dev/stdin /data/worker/.codex/auth.json' \
-     < ~/.codex/auth.json
+   ssh root@host 'umask 077 && cat > /data/worker/.codex/auth.json \
+     && chown worker:worker /data/worker/.codex/auth.json' < ~/.codex/auth.json
    ```
    (auth.json is portable by design; device-code flow is the fallback if
    the workspace enables it.)
