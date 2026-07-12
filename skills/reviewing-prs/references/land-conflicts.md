@@ -40,8 +40,12 @@ PROCEDURE and grants no authority beyond your prompt's.
    analysis and state in the one trail comment what a live run would have
    done (conflicted files, delta size, within bounds).
 
-5. Out of bounds, or a conflict you cannot resolve mechanically → PARK per
-   your prompt's PARK section, with the resolution kept as a LOCAL commit
-   in the worktree (never push an out-of-bounds resolution — it is
-   unreviewed code). Name the conflicted files and delta size in the park
-   comment.
+5. Out of bounds, or a conflict you cannot resolve mechanically:
+   - LIVE mode → PARK per your prompt's PARK section, with the resolution
+     kept as a LOCAL commit in the worktree (never push an out-of-bounds
+     resolution — it is unreviewed code). Name the conflicted files and
+     delta size in the park comment.
+   - DRY-RUN mode → your prompt's dry-run contract stands: NO board
+     writes, no pushes — `git merge --abort` and state in the one trail
+     comment what a live run would have done (out of bounds: these files,
+     this delta size, would park needs-human).
