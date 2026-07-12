@@ -56,6 +56,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+# shellcheck source=../../orchestrating-daemons/scripts/_lib.sh
+. "$SKILL_DIR/../orchestrating-daemons/scripts/_lib.sh"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
@@ -88,7 +90,8 @@ ENGINE_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/engine-codex-review.md"
 FALLBACK_FILE="$SKILL_DIR/references/engine-blocks/fallback-engine.md"
 REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
-# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid" (empty if none).
+# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid|host|boot"
+# (empty if none).
 _reviewer_meta() {
   DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
 import glob, json, os
@@ -107,16 +110,20 @@ for p in glob.glob(os.path.join(home, "*.json")):
             best = (key, m)
 if best:
     m = best[1]
-    print("%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
-                              m.get("engine") or "claude", m.get("pid", "")))
+    print("%s|%s|%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
+                                    m.get("engine") or "claude", m.get("pid", ""), m.get("host", ""),
+                                    m.get("boot_id", "")))
 PY
 }
 
 # rc 0 when the reviewer's CURRENT turn is live: claude → session uuid visible
-# in `claude agents`; codex → recorded pid alive.
-_is_live() {  # <current> <engine> <pid>
+# in `claude agents`; codex → recorded pid alive ON THIS HOST (a foreign-host
+# pid is dead by definition — only its number migrated with the registry).
+_is_live() {  # <current> <engine> <pid> <host> <boot>
+  _identity_local "${4:-}" "${5:-}" || return 1
   if [ "$2" = "codex" ]; then
-    [ -n "$3" ] && kill -0 "$3" 2>/dev/null
+    [ -n "$3" ] || return 1
+    kill -0 "$3" 2>/dev/null
     return
   fi
   claude agents --json --all 2>/dev/null | CUR="$1" python3 -c '
@@ -130,24 +137,45 @@ sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 
 _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 
-# rc 0 when some `claude agents` row's cwd equals worktree path <1> — a live
-# daemon (of ANY kind, not just a review worker) is sitting in it. This is
-# defense-in-depth ON TOP OF the registry dedupe check above, not a
-# replacement for it: fail-open on an `agents` flake (empty/unreadable list →
-# not occupied → removal proceeds) is correct here, do not invert it.
+# rc 0 when some LOCAL `claude agents` row's cwd equals worktree path <1>. A
+# visible row with matching foreign registry metadata migrated with the session
+# store, not the process, so it does not occupy the worktree. Unmanaged rows
+# have no identity evidence and remain conservatively local/occupied.
 _wt_occupied() {
-  claude agents --json --all 2>/dev/null | WT="$1" python3 -c '
-import json, os, sys
+  claude agents --json --all 2>/dev/null | \
+    DAEMON_HOME="$DAEMON_HOME" DAEMON_HOST="$DAEMON_HOST" DAEMON_BOOT_ID="$DAEMON_BOOT_ID" WT="$1" python3 -c '
+import glob, json, os, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     d = []
-sys.exit(0 if any(a.get("cwd") == os.environ["WT"] for a in d) else 1)' && return 0
+metas = {}
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if (m.get("engine") or "claude") == "claude" and m.get("current"):
+        metas[str(m["current"])] = m
+def local(m):
+    host = str(m.get("host") or "")
+    boot = str(m.get("boot_id") or "")
+    return (not host or host == os.environ["DAEMON_HOST"]) and \
+           (not boot or not os.environ["DAEMON_BOOT_ID"] or boot == os.environ["DAEMON_BOOT_ID"])
+for a in d:
+    if a.get("cwd") != os.environ["WT"]:
+        continue
+    m = metas.get(str(a.get("sessionId") or ""))
+    if m is None or local(m):
+        sys.exit(0)
+sys.exit(1)' && return 0
   # codex workers never appear in `claude agents` — scan the registry, but
   # count ONLY codex metas with a live pid; a stale claude-engine `working`
   # meta must NOT start blocking removal (the claude path's fail-open
   # behavior above is unchanged).
-  DAEMON_HOME="$DAEMON_HOME" WT="$1" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" DAEMON_HOST="$DAEMON_HOST" DAEMON_BOOT_ID="$DAEMON_BOOT_ID" WT="$1" python3 - <<'PY'
 import glob, json, os, sys
 home = os.environ["DAEMON_HOME"]; wt = os.environ["WT"]
 for p in glob.glob(os.path.join(home, "*.json")):
@@ -161,6 +189,12 @@ for p in glob.glob(os.path.join(home, "*.json")):
         continue
     if m.get("status") not in ("working", "blocked"):
         continue
+    host = str(m.get("host") or "")
+    if host and host != os.environ["DAEMON_HOST"]:
+        continue   # foreign-host pid — the process did not migrate with the registry
+    boot_id = str(m.get("boot_id") or "")
+    if boot_id and os.environ["DAEMON_BOOT_ID"] and boot_id != os.environ["DAEMON_BOOT_ID"]:
+        continue   # prior-boot pid — the pid namespace did not survive the reboot
     pid = str(m.get("pid") or "")
     if pid.isdigit():
         try:
@@ -299,15 +333,16 @@ PY
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
 # Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid
+  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
   meta="$(_reviewer_meta "$pr")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
   uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
-  current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; pid="${rest#*|}"
+  current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; rest="${rest#*|}"
+  pid="${rest%%|*}"; rest="${rest#*|}"; whost="${rest%%|*}"; wboot="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current" "$engine" "$pid"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
+      if _is_live "$current" "$engine" "$pid" "$whost" "$wboot"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
     retired) echo "dispatch" ;;
     *)
       if [ "$mode" = "triggered" ]; then echo "respawn $uuid"

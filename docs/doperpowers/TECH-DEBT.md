@@ -109,16 +109,22 @@ post-clause: disable collab tools via spawn-time `-c` config.
 
 ### 8. `SSL_CERT_FILE` is macOS-specific
 
-`_codex_launch` exports `/etc/ssl/cert.pem` when present (guarded — silently
-skipped elsewhere). A Linux worker host needs its distro bundle path wired
-in; the review engine block documents the requirement. The in-thread review
-design (FU-7) removed the main consumer, so exposure is small.
+**RESOLVED 2026-07-12**: `_codex_launch` and `review-engine.sh` now probe
+`/etc/ssl/cert.pem` (macOS) then `/etc/ssl/certs/ca-certificates.crt`
+(Debian/Ubuntu) and export the first hit; `infra/worker-host/env.example`
+also pins the Linux path explicitly as belt-and-suspenders. Remaining
+exposure: other distros' bundle paths — extend the probe list if a non-Debian
+host ever appears.
 
 ### 9. Accepted notes (recorded, no action intended)
 
 - **GH_TOKEN in worker env** — visible to the worker's subprocesses; parity
   with what claude workers reach via the keychain, recorded in FU-3's
-  security note.
+  security note. A narrowing recipe now exists (token-wired remote: push
+  scope in the clone's remote URL, board scope in env — see
+  `2026-07-12-managed-agents-steals.md` §steal-3); apply it when
+  provisioning a dedicated worker host, where scoped tokens are real. On
+  this Mac the keychain token is full-power anyway, so the note stands.
 - **Mini ssh probe noise** — codex's `keepRemoteControlAwakeWhilePluggedIn`
   probes the unreachable `mini` host at spawn; user config, harmless.
 - **FU-2 known limitation** — a daemon resumed once and never

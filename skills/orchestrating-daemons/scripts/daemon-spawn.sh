@@ -49,7 +49,12 @@ fi
 [ -n "$model" ] && args+=( --model "$model" )
 args+=( "$task" )
 
-banner="$(cd "$cwd" && claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
+# env -u RUNNER_TRACKING_ID: under a GitHub Actions runner the job env carries
+# this tracking marker, and the runner's post-job cleanup kills any surviving
+# process whose environ still has it — nohup/--bg detach the session, not the
+# env. Stripping it at spawn is what actually lets the daemon outlive a
+# dispatch job (a no-op everywhere else: env -u of an unset var).
+banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
 short="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 [ -n "$short" ] || { echo "spawn failed — could not parse background id from:" >&2; echo "$banner" >&2; exit 1; }
 
@@ -75,7 +80,7 @@ if [ "$nowait" -eq 1 ]; then
   esac
   _meta_set "$uuid" \
     uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
-    worktree "$worktree" model "$model" \
+    worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
     status "$status" created "$(_now)" updated "$(_now)" turns "1"
   echo "daemon spawned (no-wait): $name  [$short / $uuid]  status=$status  (reply: daemon-reply.sh $short)"
   exit 0
@@ -104,7 +109,7 @@ status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error
 _record_reply "$uuid" "$uuid" "$state"
 _meta_set "$uuid" \
   uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
-  worktree "$worktree" model "$model" \
+  worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   status "$status" created "$(_now)" updated "$(_now)" turns "1"
 
 wtnote=""; [ -n "$worktree" ] && wtnote="  worktree=$runcwd (branch worktree-$wt)"

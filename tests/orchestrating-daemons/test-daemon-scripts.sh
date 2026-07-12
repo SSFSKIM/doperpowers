@@ -33,6 +33,11 @@ assert_contains() {
     if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
         fail "$3"; echo "    expected to find: $2"; echo "    in: $1"; fi
 }
+assert_not_contains() {
+    if printf '%s' "$1" | grep -Fq -- "$2"; then
+        fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"
+    else pass "$3"; fi
+}
 assert_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
 }
@@ -45,6 +50,8 @@ export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
 export DAEMON_TIMEOUT=10
+export DAEMON_UUID_POLL=5
+export DAEMON_BOOT_ID="boot-current"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME" "$WORK" "$STUB_STATE/agents"
 
@@ -332,6 +339,28 @@ assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT2" "retire stop
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" purge >/dev/null
 assert_file_absent "$DAEMON_HOME/$UUID.json" "retire purge removes the registry record"
 
+FOREIGN_UUID="face0000-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","short":"face0000","name":"foreign","engine":"claude","host":"old-host","boot_id":"boot-old","status":"working"}' \
+  "$FOREIGN_UUID" "$FOREIGN_UUID" > "$DAEMON_HOME/$FOREIGN_UUID.json"
+: > "$STUB_STATE/log/calls.log"
+"$SCRIPTS_DIR/daemon-retire.sh" "$FOREIGN_UUID" >/dev/null
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stop face0000" "retire does not stop a foreign-host Claude session"
+assert_contains "$(cat "$DAEMON_HOME/$FOREIGN_UUID.json")" '"status": "retired"' "foreign-host Claude record is still retired"
+
+# _boot_id must record the BOOT identity — on macOS the sec field, where a
+# greedy `.*sec = ` match lands inside `usec = ` and records microseconds.
+# Cross-check against an independent parse (Linux: the boot_id file verbatim;
+# macOS: the first integer in kern.boottime is the sec field).
+if [ -r /proc/sys/kernel/random/boot_id ]; then
+    BOOT_EXPECT="$(cat /proc/sys/kernel/random/boot_id)"
+else
+    BOOT_EXPECT="$(sysctl -n kern.boottime | grep -oE '[0-9]+' | head -1)"
+fi
+BOOT_GOT="$(bash -c "source '$SCRIPTS_DIR/_lib.sh' >/dev/null 2>&1; _boot_id")"
+[ -n "$BOOT_GOT" ] && [ "$BOOT_GOT" = "$BOOT_EXPECT" ] \
+    && pass "_boot_id records the boot identity, not a substring field" \
+    || fail "_boot_id records the boot identity, not a substring field (got: $BOOT_GOT, want: $BOOT_EXPECT)"
+
 # ---- 6) worktree isolation (native --worktree threading) ---------------------
 echo "worktree isolation:"
 WT_REPO="$TEST_ROOT/wtrepo"; mkdir -p "$WT_REPO"
@@ -348,6 +377,43 @@ assert_contains "$("$SCRIPTS_DIR/daemon-retire.sh" "$WT_SHORT")" "branch worktre
 echo "failure windows:"
 spawn_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ .*/\1/p' | head -1; }
 spawn_uuid()  { printf '%s' "$1" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1; }
+
+# A resumed turn must become locally owned as soon as its UUID appears, before
+# the long terminal-state watcher returns. Otherwise migrated metadata remains
+# foreign while a real local turn is running and dispatch can duplicate it.
+M_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "migrated-resume" "seed-m" "$WORK")"
+M_SHORT="$(spawn_short "$M_OUT")"; M_UUID="$(spawn_uuid "$M_OUT")"
+python3 - "$DAEMON_HOME/$M_UUID.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["host"] = "old-host"
+m["boot_id"] = "boot-old"
+json.dump(m, open(p, "w"), indent=2)
+PY
+# The migrated short may be REUSED by an unrelated local agent — resume must
+# never stop/rm through it. Seed a jobs dir standing in for that local agent.
+mkdir -p "$HOME/.claude/jobs/$M_SHORT"
+: > "$STUB_STATE/log/calls.log"
+STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-resume.sh" "$M_SHORT" "continue locally" > "$TEST_ROOT/migrated-resume.out" 2>&1 &
+M_RESUME_PID=$!
+for _ in $(seq 1 20); do
+    M_CUR="$(sed -n 's/.*"current": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$M_UUID.json")"
+    [ -n "$M_CUR" ] && [ "$M_CUR" != "$M_UUID" ] && break
+    sleep 0.25
+done
+M_META="$(cat "$DAEMON_HOME/$M_UUID.json")"
+assert_contains "$M_META" '"host": "'"$(hostname)"'"' "running resume is re-stamped to the local host before terminal polling"
+assert_contains "$M_META" '"boot_id": "boot-current"' "running resume is re-stamped to the local boot before terminal polling"
+[ -n "${M_CUR:-}" ] && [ "$M_CUR" != "$M_UUID" ] \
+    && pass "running resume advances current before terminal polling" \
+    || fail "running resume advances current before terminal polling"
+wait "$M_RESUME_PID" 2>/dev/null || true
+M_CALLS="$(cat "$STUB_STATE/log/calls.log")"
+assert_not_contains "$M_CALLS" "stop $M_SHORT" "migrated resume never stops through the foreign short"
+assert_not_contains "$M_CALLS" "rm $M_SHORT" "migrated resume never rms through the foreign short"
+[ -d "$HOME/.claude/jobs/$M_SHORT" ] && pass "migrated resume leaves the reused short's jobs dir intact" \
+    || fail "migrated resume leaves the reused short's jobs dir intact"
 
 # (a) The fork command itself fails (session not resumable). Resume must exit
 # nonzero, flip status=error, and leave `current`/turns untouched — the daemon

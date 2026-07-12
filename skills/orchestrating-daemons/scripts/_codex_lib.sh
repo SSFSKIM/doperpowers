@@ -7,7 +7,9 @@
 # shell around the process finalizes the registry when the turn ends. The meta
 # is the same JSON contract as claude daemons plus:
 #   engine     "codex"
-#   pid        codex process pid of the CURRENT turn (liveness: kill -0)
+#   pid        codex process pid of the CURRENT turn (liveness: _pid_alive —
+#              kill -0 gated on `host` + `boot_id` matching this boot; migrated
+#              or prior-boot registry pids are dead here)
 #   effort     model_reasoning_effort
 #   event_log  JSONL event stream of the current turn (--json stdout)
 # The codex session id (thread.started) keys the registry, so board-bind.sh /
@@ -224,10 +226,13 @@ _codex_launch() {
   # review engine call) cannot reach the OS keychain/trustd under the
   # sandbox, so its rustls has no trust anchors and every connection dies
   # with `invalid peer certificate: UnknownIssuer`. /etc/ssl/cert.pem is the
-  # sandbox-readable file bundle (verified live: nested exec fails without,
-  # completes with). The outer codex itself is unsandboxed and unaffected.
-  if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
-    export SSL_CERT_FILE=/etc/ssl/cert.pem
+  # sandbox-readable file bundle on macOS (verified live: nested exec fails
+  # without, completes with); Debian/Ubuntu ships it as ca-certificates.crt.
+  # The outer codex itself is unsandboxed and unaffected.
+  if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for _cert in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt; do
+      if [ -f "$_cert" ]; then export SSL_CERT_FILE="$_cert"; break; fi
+    done
   fi
   # A NESTED codex (e.g. review-engine.sh run by a codex worker) resolves
   # its code-mode command host to /usr/local/bin (absent here) instead of
@@ -236,7 +241,11 @@ _codex_launch() {
   if [ -z "${CODEX_CODE_MODE_HOST_PATH:-}" ] && [ -x "$HOME/.local/bin/codex-code-mode-host" ]; then
     export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"
   fi
-  nohup bash -c '
+  # env -u RUNNER_TRACKING_ID: an Actions runner's post-job cleanup kills any
+  # process whose environ still carries the job's tracking marker — the
+  # wrapper and its codex child must outlive a runner dispatch job (see
+  # daemon-spawn.sh). No-op outside Actions.
+  nohup env -u RUNNER_TRACKING_ID bash -c '
     set -u
     DIR="$1"; cwd="$2"; taskf="$3"; run="$4"; shift 4
     # shellcheck source=/dev/null

@@ -19,10 +19,12 @@ msg="${2:?missing message}"
 [ "$(_meta_get "$uuid" engine)" = "codex" ] \
   || { echo "codex-resume: $uuid is not a codex daemon — use daemon-resume.sh" >&2; exit 1; }
 
-# One turn per daemon at a time (same invariant as claude daemons).
+# One turn per daemon at a time (same invariant as claude daemons). Host-aware:
+# a pid recorded on another machine (registry migrated on a state volume) is
+# dead by definition — resuming HERE is exactly the recovery act.
 if [ "$(_meta_get "$uuid" status)" = "working" ]; then
   pid="$(_meta_get "$uuid" pid)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if _pid_alive "$pid" "$(_meta_get "$uuid" host)" "$(_meta_get "$uuid" boot_id)"; then
     echo "codex-resume: a turn is still running (pid $pid) — wait for it or retire" >&2
     exit 1
   fi
@@ -116,6 +118,7 @@ fi
 
 turns="$(_meta_get "$uuid" turns)"; turns=$((${turns:-1} + 1))
 _meta_set "$uuid" pid "$(cat "$run.pid" 2>/dev/null || printf '')" \
+  host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   event_log "$run.events.jsonl" status "working" turns "$turns" updated "$(_now)"
 [ -f "$run.rc" ] && _meta_set "$uuid" \
   status "$(_codex_final_status "$(cat "$run.rc")" "$run.events.jsonl")" updated "$(_now)"

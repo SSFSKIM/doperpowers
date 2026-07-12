@@ -41,6 +41,7 @@ export BIND_LOG="$TEST_ROOT/bind.log"; : > "$BIND_LOG"
 export EDIT_LOG="$TEST_ROOT/edit.log"; : > "$EDIT_LOG"
 export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
+export DAEMON_BOOT_ID="boot-current"
 
 # real git: bare origin + working clone with main and a PR head branch
 ORIGIN="$TEST_ROOT/origin.git"
@@ -248,10 +249,57 @@ reset_state; seed_lander working    # agents.json [] → session gone
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "dead land worker retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "dead land worker respawned"
 
+reset_state
+python3 - <<'PY'
+import json, os
+u = "feed0000-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "land-pr-5", "engine": "claude",
+           "host": "old-host", "boot_id": "boot-old", "status": "working",
+           "updated": "2026-07-12T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host Claude land worker is retired despite a visible migrated session"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "foreign-host Claude land worker is respawned"
+
 reset_state; seed_lander idle
 "$DISPATCH" 5 > /dev/null
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished land worker retired (explicit dispatch = fresh signal)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "finished land worker re-dispatched"
+
+# host-aware: a working codex land worker whose live-here pid was recorded on
+# another host (registry migrated on a state volume) is DEAD → retire+respawn.
+reset_state
+sleep 300 & LANDPID=$!
+PID="$LANDPID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
+           "current": "feed0000-0000-4000-8000-000000000000",
+           "name": "land-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": "old-host", "status": "working",
+           "updated": "2026-07-12T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "feed0000-0000-4000-8000-000000000000.json"), "w"))
+PY
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host live pid → land worker treated as dead and retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "foreign-host live pid → respawned"
+reset_state
+PID="$LANDPID" H="$(hostname)" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
+           "current": "feed0000-0000-4000-8000-000000000000",
+           "name": "land-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": os.environ["H"], "boot_id": "boot-old",
+           "status": "working", "updated": "2026-07-12T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "feed0000-0000-4000-8000-000000000000.json"), "w"))
+PY
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "prior-boot live pid → land worker treated as dead and retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "prior-boot live pid → respawned"
+kill "$LANDPID" 2>/dev/null; wait "$LANDPID" 2>/dev/null || true
 
 # ---- ticketless PR --------------------------------------------------------------------
 echo "ticketless:"
