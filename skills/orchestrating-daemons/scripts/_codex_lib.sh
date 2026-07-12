@@ -241,7 +241,11 @@ _codex_launch() {
   if [ -z "${CODEX_CODE_MODE_HOST_PATH:-}" ] && [ -x "$HOME/.local/bin/codex-code-mode-host" ]; then
     export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"
   fi
-  nohup bash -c '
+  # env -u RUNNER_TRACKING_ID: an Actions runner's post-job cleanup kills any
+  # process whose environ still carries the job's tracking marker — the
+  # wrapper and its codex child must outlive a runner dispatch job (see
+  # daemon-spawn.sh). No-op outside Actions.
+  nohup env -u RUNNER_TRACKING_ID bash -c '
     set -u
     DIR="$1"; cwd="$2"; taskf="$3"; run="$4"; shift 4
     # shellcheck source=/dev/null

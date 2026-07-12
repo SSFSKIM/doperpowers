@@ -115,7 +115,10 @@ As `worker` (`sudo -iu worker`):
    Then as root `cd /data/worker/runner && ./svc.sh install worker &&
    ./svc.sh start`. Runner jobs must only run the dispatch ritual (render →
    spawn --no-wait → bind) and exit; workers are detached processes outside
-   the job, so job timeouts never touch them.
+   the job. What actually makes that true is not nohup/--bg but the spawn
+   paths stripping `RUNNER_TRACKING_ID` (daemon-spawn / daemon-resume /
+   `_codex_launch`) — the runner's post-job cleanup kills any surviving
+   process whose environ still carries that job marker, detached or not.
 
 ## 3. Verification gate (before trusting it)
 
@@ -164,7 +167,8 @@ sits on it only because `$HOME` does.
 `worker` runs implement/review workers that execute PR-derived code. User
 separation (uid 1011, mode-600 `.env`) is the cheap wall between them.
 
-Seed as `triage` (`sudo -iu triage`) — prerequisites first: the p86
+Seed as `triage` (`sudo -iu triage`; step 4 is the exception — it runs from
+the admin shell) — prerequisites first: the p86
 migration must be live in Supabase and the descriptive labels created on
 ida-solution (`references/setup.md` §0/§4):
 
@@ -176,7 +180,9 @@ ida-solution (`references/setup.md` §0/§4):
 3. **Env** — copy `env.triage.example` → that same skill dir's `.env`,
    fill it, `chmod 600`. Keep `TRIAGE_K=1` until ticket quality is trusted
    (`references/setup.md` §5).
-4. **Verify one tick** — `sudo systemctl start doper-triage.service`, then
+4. **Verify one tick** — from the ADMIN/root shell, not the triage shell
+   (`triage` has no sudo, a locked password, and cannot read the system
+   journal): `systemctl start doper-triage.service`, then
    `journalctl -u doper-triage.service -f`. The timer (installed by
    cloud-init, 10-minute cadence) takes over from there.
 5. **Mac handoff** — once a VM tick has filed a correct ticket, unload the

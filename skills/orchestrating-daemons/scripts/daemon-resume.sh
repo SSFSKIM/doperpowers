@@ -62,8 +62,11 @@ args+=( "$msg" )
 # the meta is stranded status=working with `current` still on the old (stopped)
 # turn. A nonzero exit AND a banner with no parseable short id both land in the
 # same error path.
+# env -u RUNNER_TRACKING_ID: the forked agent must survive a runner dispatch
+# job's post-job cleanup, which kills marker-carrying processes (see
+# daemon-spawn.sh).
 newshort=""
-if banner="$(cd "$cwd" && claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"; then
+if banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"; then
   newshort="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 fi
 if [ -z "$newshort" ]; then

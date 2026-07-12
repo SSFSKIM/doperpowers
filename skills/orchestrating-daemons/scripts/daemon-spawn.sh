@@ -49,7 +49,12 @@ fi
 [ -n "$model" ] && args+=( --model "$model" )
 args+=( "$task" )
 
-banner="$(cd "$cwd" && claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
+# env -u RUNNER_TRACKING_ID: under a GitHub Actions runner the job env carries
+# this tracking marker, and the runner's post-job cleanup kills any surviving
+# process whose environ still has it — nohup/--bg detach the session, not the
+# env. Stripping it at spawn is what actually lets the daemon outlive a
+# dispatch job (a no-op everywhere else: env -u of an unset var).
+banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
 short="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 [ -n "$short" ] || { echo "spawn failed — could not parse background id from:" >&2; echo "$banner" >&2; exit 1; }
 
