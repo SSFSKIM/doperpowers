@@ -103,6 +103,12 @@ write_files:
       WantedBy=timers.target
 
 runcmd:
+  # runcmd items are merged into ONE #!/bin/sh script, so this set -e governs
+  # every line below: any installer/apt/npm failure aborts provisioning and
+  # surfaces in `cloud-init status` instead of yielding a half-built body
+  # that reports success. (sh is dash — no pipefail — so the curl|bash
+  # installers below are split into download-then-execute.)
+  - set -e
   # HARD GATE: everything below assumes the state volume is mounted. The
   # fstab entry keeps `nofail` on purpose (a missing volume must degrade to
   # a reachable system, not systemd emergency mode), which means a missing/
@@ -116,13 +122,19 @@ runcmd:
       echo "FATAL: /data is not a mountpoint — state volume missing or unlabeled; aborting provisioning" >&2
       exit 1
     }
+  # UID boundary hardening: the users module creates the homes with the
+  # image's login.defs default, which may be group/other-traversable — that
+  # would let `triage` read worker's clones (the push PAT lives in each
+  # .git/config). Explicit 0700, idempotent against an existing soul.
+  - chmod 700 /data/worker /data/triage
   # Per-body hostname (see header note). /etc/machine-id is minted at this
   # body's first boot, so every rebuild gets a fresh suffix — old registry
   # metas read as foreign-host and their pids as dead, which is what lets
   # parked sessions resume safely after a rebuild.
   - hostnamectl set-hostname "doper-worker-$(cut -c1-6 /etc/machine-id)"
   # Node.js LTS (consumer-repo builds/tests: npm ci, playwright, etc.)
-  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource-setup.sh
+  - bash /tmp/nodesource-setup.sh
   - apt-get install -y nodejs
   # gh CLI (board transitions, PR ops) — official apt repo
   - mkdir -p -m 755 /etc/apt/keyrings
@@ -131,12 +143,14 @@ runcmd:
   - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
   - apt-get update && apt-get install -y gh
   # Tailscale (SSH access path — close public 22 after `tailscale up`, see README)
-  - curl -fsSL https://tailscale.com/install.sh | sh
+  - curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale-install.sh
+  - sh /tmp/tailscale-install.sh
   # codex CLI (global; worker-agnostic binary, auth is per-user on the volume)
   - npm install -g @openai/codex
   # claude CLI — native installer, installed AS the worker (lands in ~/.local/bin
-  # on the volume; harmless to re-run on a rebuilt body)
-  - sudo -u worker bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+  # on the volume; harmless to re-run on a rebuilt body). Inner shell is bash,
+  # so pipefail is available to keep a failed download from being masked.
+  - sudo -u worker bash -lc 'set -e -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
   # worker shell wiring: source the seeded env file (layer 3) in INTERACTIVE
   # shells (admin ssh, sudo -iu worker). Actions runner jobs do NOT read
   # .bashrc — non-login shells, and Ubuntu's stock .bashrc early-returns for
@@ -150,6 +164,18 @@ runcmd:
   # triage tenant timer — safe to arm before seeding (ExecCondition guards)
   - systemctl daemon-reload
   - systemctl enable --now doper-triage.timer
+  # Provisioning gate: set -e catches command failures; this catches
+  # semantically-wrong installs (missing binary, wrong Node major).
+  - |
+    for bin in git jq python3 node npm gh tailscale codex; do
+      command -v "$bin" >/dev/null || { echo "FATAL: $bin missing after provisioning" >&2; exit 1; }
+    done
+    node -e 'process.exit(parseInt(process.versions.node) >= 22 ? 0 : 1)' || {
+      echo "FATAL: node $(node --version) < 22" >&2; exit 1
+    }
+    sudo -u worker bash -lc 'command -v claude' >/dev/null || {
+      echo "FATAL: claude missing from worker PATH" >&2; exit 1
+    }
 
 # final_message prints even when runcmd aborted — hence "check status", not "ready".
 final_message: "doper-worker body boot finished after $UPTIME s — confirm with 'cloud-init status --long' BEFORE layer 3 seeding (infra/worker-host/README.md)"

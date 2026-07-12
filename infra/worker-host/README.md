@@ -84,6 +84,15 @@ As `worker` (`sudo -iu worker`):
    before the first worker runs. Verify the env-token split:
    `gh api repos/OWNER/REPO --jq .permissions` under `GH_TOKEN` must show
    push=false.
+   Seed the commit identity in the same sitting — a fresh volume has none,
+   and the implementation protocol's first commit dies with "Author identity
+   unknown" (git refuses to auto-detect from the machine-id hostname):
+   ```bash
+   git config --global user.name  "doper-worker"
+   git config --global user.email "<your-bot-or-noreply address>"
+   ```
+   Lives in `~/.gitconfig` on the volume — once per soul, like everything
+   else in this layer.
 5. **doperpowers itself** — `git clone` this repo to `~/doperpowers`
    (dispatch scripts are invoked by path from here; workers get skills via
    vendoring / plugin install exactly as on the Mac).
@@ -100,6 +109,7 @@ As `worker` (`sudo -iu worker`):
    ```bash
    grep -Ev '^\s*(#|$)' ~/.env > ~/runner/.env   # runner .env is bare KEY=VALUE
    echo "DOPERPOWERS_HOME=/data/worker/doperpowers" >> ~/runner/.env
+   chmod 600 ~/runner/.env                       # holds the same tokens as ~/.env
    echo "$PATH" > ~/runner/.path
    ```
    Then as root `cd /data/worker/runner && ./svc.sh install worker &&
