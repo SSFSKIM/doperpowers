@@ -35,8 +35,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
-# Host identity for pid checks — same semantics and default as review-dispatch.
-DAEMON_HOST="${DAEMON_HOST:-$(hostname)}"
+# shellcheck source=../../orchestrating-daemons/scripts/_lib.sh
+. "$SKILL_DIR/../orchestrating-daemons/scripts/_lib.sh"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
@@ -63,7 +63,7 @@ case "${LAND_ENABLED:-false}" in
   *) LAND_MODE="dry-run" ;;
 esac
 
-# Newest land-pr-<n> registry entry → "uuid|status|current|engine|pid|host"
+# Newest land-pr-<n> registry entry → "uuid|status|current|engine|pid|host|boot"
 # (empty if none).
 _land_meta() {
   DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
@@ -83,17 +83,18 @@ for p in glob.glob(os.path.join(home, "*.json")):
             best = (key, m)
 if best:
     m = best[1]
-    print("%s|%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
-                                 m.get("engine") or "claude", m.get("pid", ""), m.get("host", "")))
+    print("%s|%s|%s|%s|%s|%s|%s" % (m.get("uuid", ""), m.get("status", ""), m.get("current", ""),
+                                    m.get("engine") or "claude", m.get("pid", ""), m.get("host", ""),
+                                    m.get("boot_id", "")))
 PY
 }
 
 # rc 0 when the worker's CURRENT turn is live (same semantics as review-dispatch:
 # a codex pid counts only on the host that recorded it).
-_is_live() {  # <current> <engine> <pid> <host>
+_is_live() {  # <current> <engine> <pid> <host> <boot>
+  _identity_local "${4:-}" "${5:-}" || return 1
   if [ "$2" = "codex" ]; then
     [ -n "$3" ] || return 1
-    [ -z "${4:-}" ] || [ "$4" = "$DAEMON_HOST" ] || return 1
     kill -0 "$3" 2>/dev/null
     return
   fi
@@ -166,10 +167,10 @@ meta="$(_land_meta "$pr")"
 if [ -n "$meta" ]; then
   uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
   current="${rest%%|*}"; rest="${rest#*|}"; w_engine="${rest%%|*}"; rest="${rest#*|}"
-  w_pid="${rest%%|*}"; w_host="${rest#*|}"
+  w_pid="${rest%%|*}"; rest="${rest#*|}"; w_host="${rest%%|*}"; w_boot="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current" "$w_engine" "$w_pid" "$w_host"; then
+      if _is_live "$current" "$w_engine" "$w_pid" "$w_host" "$w_boot"; then
         echo "#$pr: skip active land worker"; exit 0
       fi
       _retire "$uuid" ;;

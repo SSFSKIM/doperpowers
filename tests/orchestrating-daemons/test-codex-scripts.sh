@@ -40,6 +40,7 @@ export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
 export DAEMON_TIMEOUT=10
 export DAEMON_UUID_POLL=5
+export DAEMON_BOOT_ID="boot-current"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME" "$WORK" "$STUB_STATE"
 # Fake code-mode host under the hermetic HOME so _codex_launch's only-if-exists
@@ -314,6 +315,7 @@ echo "== host-aware liveness: a foreign-host pid is dead by definition =="
 # resume proceeds (resuming here IS the recovery act) and retire never signals
 # an unrelated local process.
 assert_equals "$(meta_field "$uuid_e" host)" "$(hostname)" "codex-spawn stamps host"
+assert_equals "$(meta_field "$uuid_e" boot_id)" "$DAEMON_BOOT_ID" "codex-spawn stamps boot id"
 sleep 30 & foreign_pid=$!
 uuid_mig="hostmig1-0000-4000-8000-000000000000"
 printf '{"uuid":"%s","current":"%s","name":"migrated","short":"hostmig1","engine":"codex","pid":"%s","host":"old-host","status":"working","cwd":"%s"}' \
@@ -337,6 +339,29 @@ else
     fail "retire leaves a foreign-host working pid alone"
 fi
 assert_equals "$(meta_field "$uuid_mig2" status)" "retired" "foreign-host record is still retired"
+
+# Rebuilding the same named host also creates a fresh pid namespace. A stale
+# pid from the prior boot must therefore be treated like a foreign-host pid.
+uuid_reboot="reboot01-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","name":"rebooted","short":"reboot01","engine":"codex","pid":"%s","host":"%s","boot_id":"boot-old","status":"working","cwd":"%s"}' \
+  "$uuid_reboot" "$uuid_reboot" "$foreign_pid" "$(hostname)" "$WORK" > "$DAEMON_HOME/$uuid_reboot.json"
+if out="$("$SCRIPTS_DIR/codex-resume.sh" "$uuid_reboot" "resume after reboot" 2>&1)"; then
+    pass "resume treats a prior-boot pid as dead"
+else
+    fail "resume treats a prior-boot pid as dead"; echo "    in: $out"
+fi
+assert_contains "$out" "stub reply: resume after reboot" "resume proceeds after a same-host reboot"
+assert_equals "$(meta_field "$uuid_reboot" boot_id)" "$DAEMON_BOOT_ID" "resume re-stamps boot id"
+
+uuid_reboot2="reboot02-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","name":"rebooted2","short":"reboot02","engine":"codex","pid":"%s","host":"%s","boot_id":"boot-old","status":"working"}' \
+  "$uuid_reboot2" "$foreign_pid" "$(hostname)" > "$DAEMON_HOME/$uuid_reboot2.json"
+"$SCRIPTS_DIR/daemon-retire.sh" "$uuid_reboot2" >/dev/null
+if kill -0 "$foreign_pid" 2>/dev/null; then
+    pass "retire leaves a prior-boot pid alone"
+else
+    fail "retire leaves a prior-boot pid alone"
+fi
 kill "$foreign_pid" 2>/dev/null || true
 wait "$foreign_pid" 2>/dev/null || true
 

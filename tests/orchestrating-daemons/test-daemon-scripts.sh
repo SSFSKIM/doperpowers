@@ -33,6 +33,11 @@ assert_contains() {
     if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
         fail "$3"; echo "    expected to find: $2"; echo "    in: $1"; fi
 }
+assert_not_contains() {
+    if printf '%s' "$1" | grep -Fq -- "$2"; then
+        fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"
+    else pass "$3"; fi
+}
 assert_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
 }
@@ -45,6 +50,7 @@ export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
 export DAEMON_TIMEOUT=10
+export DAEMON_BOOT_ID="boot-current"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME" "$WORK" "$STUB_STATE/agents"
 
@@ -331,6 +337,14 @@ assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"status": "retired"' "retire
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT2" "retire stops the CURRENT turn's short"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" purge >/dev/null
 assert_file_absent "$DAEMON_HOME/$UUID.json" "retire purge removes the registry record"
+
+FOREIGN_UUID="face0000-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","short":"face0000","name":"foreign","engine":"claude","host":"old-host","boot_id":"boot-old","status":"working"}' \
+  "$FOREIGN_UUID" "$FOREIGN_UUID" > "$DAEMON_HOME/$FOREIGN_UUID.json"
+: > "$STUB_STATE/log/calls.log"
+"$SCRIPTS_DIR/daemon-retire.sh" "$FOREIGN_UUID" >/dev/null
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stop face0000" "retire does not stop a foreign-host Claude session"
+assert_contains "$(cat "$DAEMON_HOME/$FOREIGN_UUID.json")" '"status": "retired"' "foreign-host Claude record is still retired"
 
 # ---- 6) worktree isolation (native --worktree threading) ---------------------
 echo "worktree isolation:"

@@ -24,7 +24,7 @@ if [ "$engine" = "codex" ]; then
   status="$(_meta_get "$uuid" status)"
   pid="$(_meta_get "$uuid" pid)"
   if { [ "$status" = "working" ] || [ "$status" = "blocked" ]; } && \
-     _pid_alive "$pid" "$(_meta_get "$uuid" host)"; then
+     _pid_alive "$pid" "$(_meta_get "$uuid" host)" "$(_meta_get "$uuid" boot_id)"; then
     kill "$pid" 2>/dev/null || true
     # Killing the pid makes _codex_launch's own detached wrapper (the one
     # that finalizes status+reply once `wait` on the codex pid returns) wake
@@ -42,7 +42,9 @@ if [ "$engine" = "codex" ]; then
   fi
   resume_hint="codex resume $uuid"
 else
-  [ -n "$short" ] && claude stop "$short" >/dev/null 2>&1 || true
+  if _identity_local "$(_meta_get "$uuid" host)" "$(_meta_get "$uuid" boot_id)"; then
+    [ -n "$short" ] && claude stop "$short" >/dev/null 2>&1 || true
+  fi
   resume_hint="claude --resume $uuid"
 fi
 

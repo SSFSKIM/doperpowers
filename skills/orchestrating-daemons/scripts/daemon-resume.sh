@@ -96,7 +96,7 @@ if [ "$poll_rc" -ne 0 ] || [ -z "$newuuid" ]; then
     # chain to the new turn and mark status=working. Do NOT write the reply file
     # or bump turns; no final reply has landed. daemon-reply.sh reads the CURRENT
     # session's transcript, so it will surface the reply once the turn finishes.
-    _meta_set "$uuid" current "$newuuid" short "$newshort" host "$DAEMON_HOST" status "working" updated "$(_now)"
+    _meta_set "$uuid" current "$newuuid" short "$newshort" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" status "working" updated "$(_now)"
     # The fork is confirmed live — the superseded turn's session can go.
     if [ "$cur" != "$newuuid" ]; then _session_purge "$curshort" "$cur" "$wtpath"; fi
     echo "resume: watcher expired after $((DAEMON_TIMEOUT / 2)) polls; forked turn $newshort ($newuuid) is still running (status=working)." >&2
@@ -117,7 +117,7 @@ status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error
 
 # Reply file stays keyed by the ORIGINAL uuid; read the reply from the new turn.
 _record_reply "$newuuid" "$uuid" "$state"
-_meta_set "$uuid" current "$newuuid" short "$newshort" host "$DAEMON_HOST" \
+_meta_set "$uuid" current "$newuuid" short "$newshort" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   status "$status" updated "$(_now)" turns "$((turns + 1))"
 
 # Purge the superseded turn: deregister it (jobs entry + supervisor record) and

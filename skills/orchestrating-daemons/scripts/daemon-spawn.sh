@@ -75,7 +75,7 @@ if [ "$nowait" -eq 1 ]; then
   esac
   _meta_set "$uuid" \
     uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
-    worktree "$worktree" model "$model" host "$DAEMON_HOST" \
+    worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
     status "$status" created "$(_now)" updated "$(_now)" turns "1"
   echo "daemon spawned (no-wait): $name  [$short / $uuid]  status=$status  (reply: daemon-reply.sh $short)"
   exit 0
@@ -104,7 +104,7 @@ status="idle"; [ "$state" = "blocked" ] && status="blocked"; [ "$state" = "error
 _record_reply "$uuid" "$uuid" "$state"
 _meta_set "$uuid" \
   uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
-  worktree "$worktree" model "$model" host "$DAEMON_HOST" \
+  worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   status "$status" created "$(_now)" updated "$(_now)" turns "1"
 
 wtnote=""; [ -n "$worktree" ] && wtnote="  worktree=$runcwd (branch worktree-$wt)"

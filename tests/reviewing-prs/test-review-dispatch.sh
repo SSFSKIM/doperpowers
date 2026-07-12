@@ -40,6 +40,7 @@ export MOCK_LOG="$TEST_ROOT/gh-calls.log"; : > "$MOCK_LOG"
 export SPAWN_LOG="$TEST_ROOT/spawn.log"; : > "$SPAWN_LOG"
 export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
+export DAEMON_BOOT_ID="boot-current"
 
 # real git: bare origin + working clone with main and a PR head branch
 ORIGIN="$TEST_ROOT/origin.git"
@@ -242,6 +243,20 @@ out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "dead reviewer retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "dead reviewer respawned"
 
+reset_state
+H="old-host" B="boot-old" python3 - <<'PY'
+import json, os
+u = "feed0000-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
+           "host": os.environ["H"], "boot_id": os.environ["B"], "status": "working",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host Claude reviewer is retired despite a visible migrated session"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude reviewer is respawned"
+
 reset_state; seed_reviewer idle
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "triggered mode retires a finished reviewer"
@@ -347,6 +362,23 @@ assert_contains "$out" "live daemon occupies" "occupied worktree refuses removal
 assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn when the worktree is occupied by a live daemon"
 if [ -d "$WT" ]; then pass "worktree still exists after the refused dispatch"; else
     fail "worktree still exists after the refused dispatch"; fi
+reset_state
+
+# A session restored from a foreign state volume can still be visible in the
+# local dashboard, but its foreign registry identity must not occupy the worktree.
+U="foreign1-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "other-daemon", "engine": "claude",
+           "cwd": os.environ["WT"], "host": "old-host", "boot_id": "boot-old",
+           "status": "working", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"foreign1\", \"sessionId\": \"foreign1-0000-4000-8000-000000000000\", \"cwd\": \"$WT\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude session does not occupy the worktree"
+assert_not_contains "$out" "live daemon occupies" "foreign-host Claude session does not block removal"
 reset_state
 
 # ---- sweep failure isolation ----------------------------------------------------
@@ -647,13 +679,27 @@ out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:cdec8003" "foreign-host live pid → reviewer treated as dead and retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host live pid → respawned"
 reset_state
-# control: same live pid, HOST MATCHING this machine → still a live occupant
+# A rebuilt host can keep its hostname while getting a fresh pid namespace.
 PID="$DEDUPID" H="$(hostname)" python3 - <<'PY'
 import json, os
 json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
            "current": "cdec8003-0000-4000-8000-000000000000",
            "name": "review-pr-5", "engine": "codex",
-           "pid": os.environ["PID"], "host": os.environ["H"], "status": "working",
+           "pid": os.environ["PID"], "host": os.environ["H"], "boot_id": "boot-old",
+           "status": "working", "updated": "2026-07-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], "cdec8003-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:cdec8003" "prior-boot live pid → reviewer treated as dead and retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "prior-boot live pid → respawned"
+reset_state
+# control: same live pid, HOST MATCHING this machine → still a live occupant
+PID="$DEDUPID" H="$(hostname)" B="$DAEMON_BOOT_ID" python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
+           "current": "cdec8003-0000-4000-8000-000000000000",
+           "name": "review-pr-5", "engine": "codex",
+           "pid": os.environ["PID"], "host": os.environ["H"], "boot_id": os.environ["B"], "status": "working",
            "updated": "2026-07-10T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], "cdec8003-0000-4000-8000-000000000000.json"), "w"))
 PY
