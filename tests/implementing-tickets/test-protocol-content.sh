@@ -58,10 +58,25 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-want="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO}}"
+want="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "placeholder set is exactly: $want"; else
     fail "placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+
+echo "spike protocol:"
+SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.md"
+[ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
+spike="$(cat "$SPIKE")"
+want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
+    fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
+assert_contains "$spike" "DRAFT" "spike: evidence PR is draft-only"
+assert_not_contains "$spike" "{{EXECUTION_BLOCK}}" "spike: no engine execution block (exploration, not TDD)"
+assert_contains "$spike" 'NEVER "Closes #{{ISSUE_NUMBER}}"' "spike: Closes is forbidden"
+assert_contains "$spike" 'needs-human "findings ready:' "spike: findings-ready handoff park"
+assert_contains "$spike" "terminal states" "spike: terminal states stay the human's"
+assert_contains "$spike" "[findings]" "spike: structured findings comment mandated"
 
 echo "engine blocks:"
 EXEC_CLAUDE="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md"
