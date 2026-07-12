@@ -62,7 +62,7 @@ digraph process {
 
     "Read plan, note context and global constraints, create todos" [shape=box];
     "More tasks remain?" [shape=diamond];
-    "Dispatch final code reviewer subagent (../requesting-code-review/code-reviewer.md)" [shape=box];
+    "Dispatch final whole-branch review (external reviewer: codex)" [shape=box];
     "Use doperpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
     "Read plan, note context and global constraints, create todos" -> "Dispatch implementer subagent (./implementer-prompt.md)";
@@ -77,8 +77,8 @@ digraph process {
     "Task reviewer reports spec ✅ and quality approved?" -> "Mark task complete in todo list and progress ledger" [label="yes"];
     "Mark task complete in todo list and progress ledger" -> "More tasks remain?";
     "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
-    "More tasks remain?" -> "Dispatch final code reviewer subagent (../requesting-code-review/code-reviewer.md)" [label="no"];
-    "Dispatch final code reviewer subagent (../requesting-code-review/code-reviewer.md)" -> "Use doperpowers:finishing-a-development-branch";
+    "More tasks remain?" -> "Dispatch final whole-branch review (external reviewer: codex)" [label="no"];
+    "Dispatch final whole-branch review (external reviewer: codex)" -> "Use doperpowers:finishing-a-development-branch";
 }
 ```
 
@@ -268,7 +268,7 @@ a ledger file, not only in todos.
 
 - [implementer-prompt.md](implementer-prompt.md) - Dispatch implementer subagent
 - [task-reviewer-prompt.md](task-reviewer-prompt.md) - Dispatch task reviewer subagent (spec compliance + code quality)
-- Final whole-branch review: use doperpowers:requesting-code-review's [code-reviewer.md](../requesting-code-review/code-reviewer.md)
+- Final whole-branch review: dispatch an external reviewer (codex native review; a fresh Claude reviewer subagent if codex is unavailable)
 
 ## Example Workflow
 
@@ -409,7 +409,7 @@ Done!
 **Required workflow skills:**
 - **doperpowers:using-git-worktrees** - Ensures isolated workspace (creates one or verifies existing)
 - **doperpowers:writing-plans** - Creates the plan this skill executes
-- **doperpowers:requesting-code-review** - Code review template for the final whole-branch review
+- External code review (codex native review) - final whole-branch review before finishing
 - **doperpowers:finishing-a-development-branch** - Complete development after all tasks
 
 **Subagents should use:**
