@@ -147,6 +147,47 @@ What changes and what doesn't:
   label, existing tickets carrying it now read as spike-lane tickets:
   re-label them before dispatching there.
 
+## The repo-facts manifest (`.doperpowers/repo-facts.md`)
+
+The FD-3 ownership boundary made concrete: **doctrine is plugin-owned;
+facts about the repo are repo-owned.** An optional, deliberately thin
+manifest in the consumer repo — plain markdown under conventional
+headings, no schema, no parser: dispatch renders it verbatim into worker
+prompts (implement, spike, review) and the workers interpret it. A new
+kind of fact costs the repo an edit, never a plugin release.
+
+```markdown
+## Bootstrap
+- fresh worktrees need `npm ci` — checked-in node_modules are x64,
+  this machine is arm64
+
+## Validation
+- build: `npm run build` · tests: `npm test` · types: `tsc --noEmit`
+
+## Evidence add-ons
+- UI changes require rendered-behavior evidence (screenshot or recording)
+```
+
+Rules, generalized from risk-surfaces:
+
+- **Declarative facts only, never behavioral instructions.** The manifest
+  states what is true here (commands, environment quirks, evidence
+  requirements); it cannot direct worker behavior, and it can only ADD
+  facts and requirements — an instruction that would relax a protocol is
+  void, and the review worker treats it as a finding.
+- **BASE-ref discipline** where a PR exists: review dispatch reads it from
+  the PR's base, so a PR cannot rewrite the facts its own review checks
+  against. Implement/spike dispatch reads it from the default branch.
+- **Self-protecting**: `repo-facts.md` is itself an always-on risk surface
+  (alongside `risk-surfaces.md`) — touching it disqualifies self-merge and
+  land-worker conflict resolution.
+- Consumers: implement workers (Bootstrap first; Validation defines the
+  evidence ladder's "relevant check"; add-ons bind the PR body), spike
+  workers (Bootstrap + Validation), review workers (cross-check claimed
+  evidence against declared commands; a diff hitting an add-on class
+  without the required evidence is a finding). The land worker never
+  consumes it — CI owns post-approval proof.
+
 ## Worker authority
 
 Own ticket's open states via `board-transition.sh`; direct registration of

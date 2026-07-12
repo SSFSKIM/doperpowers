@@ -64,7 +64,8 @@ CONFLICTS — when GitHub reports the PR unmergeable:
    - ZERO conflicted files on any RISK SURFACE: any path/pattern in the
      manifest at the bottom of this prompt, and ALWAYS, manifest or not:
      CI/workflows, auth/security, migrations/schema, release/versioning,
-     and the manifest file itself (.doperpowers/risk-surfaces.md).
+     and the manifest files themselves (.doperpowers/risk-surfaces.md,
+     .doperpowers/repo-facts.md).
 4. Within bounds → commit the merge, push (git push origin
    HEAD:{{HEAD_REF}} — you are on a detached HEAD), then land via the
    NATIVE FIRST path above (checks re-run on the new head; arm auto-merge

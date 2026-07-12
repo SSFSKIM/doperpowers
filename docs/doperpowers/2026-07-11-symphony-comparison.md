@@ -554,6 +554,40 @@ add-ons (UI media required? which commands prove "build passes"?), per-repo
 park-note templates. Anti-candidates: the gate, the discriminant, merge
 tiers.
 
+**RESOLVED (2026-07-12, human decisions).** The line: **doctrine is
+plugin-owned; facts about the repo are repo-owned** — the pattern
+risk-surfaces already proved, generalized. Thickness = L1: declarative
+markdown under conventional headings, no schema, no parser — the
+consumers are LLM workers, so parsing rigor buys nothing, and an L2
+schema's field vocabulary would return to plugin ownership (a release per
+new fact kind), self-defeating for FD-3's purpose. L3 executable hooks
+(Symphony §4.5) rejected: declarative-facts-only is the injection
+discipline, and declaring "fresh worktrees need `npm ci`" achieves what a
+bootstrap script would with the worker's judgment intact. v1 scope = all
+three candidate sections: Bootstrap (live example: ida-solution's
+arm64-vs-x64 node_modules fact, which lived only in a session memory,
+invisible to workers), Validation (the evidence ladder's "relevant check"
+made canonical + the review cross-check's reference), Evidence add-ons
+(closing FD-7's deferral). Park-note templates rejected (park structure
+is doctrine-coupled). The "just write it in AGENTS.md" alternative lost
+on three counts: protocols don't bind to it, the cross-check has no
+canonical target, and AGENTS.md is read from the PR branch — the PR could
+edit its own review context; the manifest keeps risk-surfaces' BASE-ref
+discipline.
+
+**IMPLEMENTED (2026-07-12):** `.doperpowers/repo-facts.md` — format +
+rules documented in the implementing-tickets SKILL (declarative facts
+only; ADD-only: an instruction that would relax a protocol is void and
+itself a review finding; self-protecting: always-on risk surface
+alongside risk-surfaces.md, named in review + land protocols).
+Consumption: implement protocol (Bootstrap first, Validation proves
+claims, add-ons bind the PR body) + spike protocol (Bootstrap +
+Validation) via the dispatch ritual's new `REPO_FACTS` placeholder
+(default-branch read); review protocol cross-check extension +
+`review-dispatch.sh` renders it from the PR's BASE ref (never HEAD) with
+tests mirroring the risk-manifest BASE/HEAD-separation asserts. The land
+worker deliberately does not consume it — CI owns post-approval proof.
+
 ### FD-4 · The last mile: land-loop automation vs human-click merge
 
 **Symphony:** human approval is *one state transition* (`Human Review →
@@ -754,7 +788,8 @@ itself a finding* (missing section = trail note only). This is the piece
 that goes beyond Symphony: their proof-of-work decorates a human review;
 our closing evidence is a **consumed contract** — the implement side must
 produce evidence, the review side verifies the claims were real. UI-media
-evidence deferred to FD-3 (repo-opt-in manifest territory).
+evidence deferred to FD-3 (repo-opt-in manifest territory) — closed
+2026-07-12 by FD-3's `repo-facts.md` Evidence add-ons section.
 
 ### FD-8 · Board-driven cancellation: reconciliation kills vs kill-by-hand
 

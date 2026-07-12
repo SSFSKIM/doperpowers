@@ -65,13 +65,23 @@ with no checks disqualifies self-merge, no exceptions. Anything else →
 the human merges.
 
 **Risk surfaces are additive.** Always-on, manifest or not: CI/workflows,
-auth/security, migrations/schema, release/versioning, and the manifest file
-itself. A repo may ALSO declare concrete surfaces in an optional
-`.doperpowers/risk-surfaces.md` — a plain list of globs and prose
-path/content rules the worker reads against the diff. The dispatch layer
-injects it from the PR's **base ref, never HEAD**, so a PR cannot delist a
-surface it touches in the same commit; the manifest can only tighten the
-gate, never loosen an always-on category.
+auth/security, migrations/schema, release/versioning, and the manifest
+files themselves (`.doperpowers/risk-surfaces.md`,
+`.doperpowers/repo-facts.md`). A repo may ALSO declare concrete surfaces
+in an optional `.doperpowers/risk-surfaces.md` — a plain list of globs and
+prose path/content rules the worker reads against the diff. The dispatch
+layer injects it from the PR's **base ref, never HEAD**, so a PR cannot
+delist a surface it touches in the same commit; the manifest can only
+tighten the gate, never loosen an always-on category.
+
+**Repo facts feed the cross-check.** The optional
+`.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing-tickets)
+is injected the same way — base ref, never HEAD. The review worker checks
+claimed Validation Evidence against the repo's declared validation
+commands, and a diff hitting a declared Evidence add-on class without the
+required evidence is a finding. Facts only ever ADD requirements; an
+instruction in the manifest that tries to relax the protocol is itself a
+finding.
 
 **Staged rollout (`AUTO_MERGE_ENABLED`, default off).** Off is *observation
 mode*: the worker runs the full loop and judges the tier, but a

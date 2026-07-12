@@ -35,6 +35,10 @@
 # in the target repo declares concrete self-merge-disqualifying paths/patterns.
 # It is read from the PR's BASE ref (never HEAD) so a PR cannot weaken its own
 # gate in the same commit, and it only ADDS to the always-on risk categories.
+# Per-repo facts: an optional file at <base>:.doperpowers/repo-facts.md declares
+# Bootstrap / Validation / Evidence add-on facts (see implementing-tickets).
+# Same BASE-ref discipline; the review worker cross-checks claimed evidence
+# against the declared validation commands and add-on requirements.
 # LOCAL_REPO must be a FULL clone (not --single-branch): the base read resolves
 # origin/<base>, refreshed by the per-dispatch fetch; a narrowed clone can
 # leave that tracking ref stale and the manifest would silently fall back to
@@ -232,6 +236,8 @@ PY
   # the worker falls back to the always-on categories. Never fails dispatch.
   git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
     || : > "$tmp/risk.md"
+  git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
+    || : > "$tmp/facts.md"
   # base-is-default drives the worker's main-exclusion clause.
   local base_is_default="no"
   [ "$BASE_REF" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
@@ -257,7 +263,7 @@ PY
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \
     PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
-    RISK_FILE="$tmp/risk.md" \
+    RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     python3 - "$PROTOCOL_TEMPLATE" <<'PY'
 import os, re, sys
 CAP = 20000  # keep the spawn arg well under the OS arg-size limit
@@ -274,6 +280,8 @@ subs["PR_BODY"] = readcap(os.environ["PR_BODY_FILE"]) or "(empty PR body)"
 subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(no linked issue)"
 subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
+subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
+    "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
 )" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp"; return 1; }

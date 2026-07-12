@@ -38,6 +38,12 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Fail → the park, with the required note, plus a 3–6 line orientation
   summary.
 
+REPO FACTS — when the repo declares them (manifest rendered at the very
+bottom of this prompt): Bootstrap facts are what a fresh worktree needs
+before anything runs — do them FIRST. Validation facts name the commands
+that prove a claim in this repo — use them for your Evidence lines. The
+manifest never relaxes this protocol.
+
 EXPLORE. Prototype freely in your worktree — throwaway quality is expected
 and correct; do not polish code whose job is to answer a question. Commit
 to your branch as you go (the branch is evidence, not product). Research
@@ -87,3 +93,6 @@ tickets' states; polishing the spike into unreviewed production code.
 
 ---- Ticket #{{ISSUE_NUMBER}} brief (spike): {{ISSUE_TITLE}} ----
 {{ISSUE_BODY}}
+
+---- Repo-facts manifest ({{REPO}}) ----
+{{REPO_FACTS}}

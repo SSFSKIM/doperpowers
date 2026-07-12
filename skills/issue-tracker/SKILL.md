@@ -147,7 +147,9 @@ pick by repo visibility:
    `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
    `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
    issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
-   engine, and — implement protocol only — `EXECUTION_BLOCK` = the engine's
+   engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
+   (or a "(no repo-facts manifest)" note when absent), and — implement
+   protocol only — `EXECUTION_BLOCK` = the engine's
    `references/engine-blocks/execution-<engine>.md`).
 3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    (model/effort default gpt-5.6-sol/high — override with

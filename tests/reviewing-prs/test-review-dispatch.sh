@@ -190,6 +190,7 @@ assert_contains "$PROMPT" "auto-merge: off" "prompt renders auto-merge off by de
 assert_contains "$PROMPT" "only when auto-merge is on" "AUTHORITY recap gates merge on auto-merge (no observation-mode merge)"
 assert_contains "$PROMPT" "base-is-default: yes" "prompt marks base==default (PR 5 targets main, the default) → always human tier"
 assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
+assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-facts-absent fallback when the repo has none"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted placeholder survives"
 assert_contains "$PROMPT" "CROSS-CHECK" "prompt carries the closing-artifact cross-check (FD-7)"
 assert_contains "$PROMPT" "not verifiable is itself a finding" "unverifiable claimed evidence is a finding"
@@ -461,12 +462,14 @@ echo "risk manifest + rollout flags:"
 git -C "$CLONE" checkout -q main
 mkdir -p "$CLONE/.doperpowers"
 printf 'RISK-FROM-BASE\nlib/auth.ts\n' > "$CLONE/.doperpowers/risk-surfaces.md"
-git -C "$CLONE" add .doperpowers/risk-surfaces.md
-git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "add risk manifest"
+printf '## Validation\nFACTS-FROM-BASE: npm test\n' > "$CLONE/.doperpowers/repo-facts.md"
+git -C "$CLONE" add .doperpowers
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "add manifests"
 git -C "$CLONE" push -q origin main
 git -C "$CLONE" checkout -q -b feat/z main
 printf 'RISK-FROM-HEAD-SHOULD-NOT-APPEAR\n' > "$CLONE/.doperpowers/risk-surfaces.md"
-git -C "$CLONE" add .doperpowers/risk-surfaces.md
+printf 'FACTS-FROM-HEAD-SHOULD-NOT-APPEAR\n' > "$CLONE/.doperpowers/repo-facts.md"
+git -C "$CLONE" add .doperpowers
 git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "sneak manifest edit"
 git -C "$CLONE" push -q origin feat/z
 HEAD_SHA_Z="$(git -C "$CLONE" rev-parse HEAD)"
@@ -485,6 +488,8 @@ out="$(AUTO_MERGE_ENABLED=true DEFAULT_BRANCH=develop "$DISPATCH" 10)"
 P10="$(cat "$PROMPT_DIR/review-pr-10.prompt")"
 assert_contains "$P10" "RISK-FROM-BASE" "manifest content injected from the BASE ref"
 assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifest edit does not leak (read from base, not head)"
+assert_contains "$P10" "FACTS-FROM-BASE" "repo-facts content injected from the BASE ref"
+assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-facts edit does not leak (read from base, not head)"
 assert_contains "$P10" "auto-merge: on" "AUTO_MERGE_ENABLED=true renders auto-merge on"
 assert_contains "$P10" "base-is-default: no" "base (main) != default branch (develop) → not main-excluded"
 
