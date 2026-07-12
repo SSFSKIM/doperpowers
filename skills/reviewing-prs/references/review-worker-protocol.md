@@ -47,30 +47,43 @@ EVALUATE every finding against codebase reality before acting:
   for actual usage before accepting the scope.
 - Fix one finding at a time; test each before the next.
 
-ROUTE each finding to exactly one bin:
-- FIX NOW — valid and within this PR's scope: fix, test, commit, push
-  (git push origin HEAD:{{HEAD_REF}} — you are on a detached HEAD).
+ROUTE each finding to exactly one bin. The engine's native severity IS
+the blocker bit — trust it, don't re-derive it. Blocker = the engine's
+critical/high (P1) class: demonstrable bug, correctness/security issue,
+broken behavior, or a test that verifies nothing. Everything below that
+defaults to LOG, not to a fix — momentum outranks polish:
+- FIX NOW — a verified blocker within this PR's scope: fix, test, commit,
+  push (git push origin HEAD:{{HEAD_REF}} — you are on a detached HEAD).
+  Promoting a non-blocker to FIX NOW is the exception, never the default:
+  it takes a stated reason in the review trail (e.g. the engine
+  under-rated a real correctness issue).
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
   than about half the original PR's size): register a ticket —
   {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}
   — then flesh out its pre-spec body (gh issue edit <new> --body-file -).
   NEVER fix it in this PR.
-- TOO SMALL — valid, non-blocking, and fixing it costs momentum or an
-  unwarranted re-review round: append a structured comment to the standing
-  tech-debt issue (gh issue comment {{TECH_DEBT_ISSUE}}) — finding,
-  file:line, severity, why deferred.
+- LOG — valid non-blocker (the DEFAULT for every finding below
+  critical/high): append a structured comment to the standing tech-debt
+  issue (gh issue comment {{TECH_DEBT_ISSUE}}) — finding, file:line,
+  severity, why deferred — and move on.
 - INVALID — does not hold against the code: rebuttal comment on the PR
   citing the refuting code.
 
 RE-REVIEW (max 3 engine rounds total) when ANY: a critical/high finding led
 to a fix; cumulative fixes exceed ~50 changed lines or 3 files; any fix
 changed behavior (not comments/docs/renames). Skip when fixes were trivial
-or none. At the cap with unresolved critical/high findings: do NOT grant
-confidence — set ticket #{{ISSUE_NUMBER}} to needs-human with an impasse
-summary and end your turn.
+or none. The engine is stateless: a re-review round WILL re-flag findings
+you already logged. Match re-flagged findings against your tech-debt
+comments by file and substance (line numbers shift after fixes); a match
+is already routed — do not fix it, do not log it twice, do not count it
+toward the re-review triggers above. The exit condition is no NEW blocker,
+not a clean report. At the cap with unresolved critical/high findings: do
+NOT grant confidence — set ticket #{{ISSUE_NUMBER}} to needs-human with an
+impasse summary and end your turn.
 
 ESCALATE when review is complete. The SELF-MERGE tier requires ALL of:
-- final verdict approve (or only low findings, each explicitly routed);
+- final verdict approve (or only non-blocker findings, each explicitly
+  routed);
 - post-fix diff ≤ ~150 changed lines AND ≤ 5 files;
 - the PR base ({{BASE_REF}}) is NOT the repo default branch
   ({{DEFAULT_BRANCH}}); base-is-default: {{BASE_IS_DEFAULT}}. Self-merge lands
