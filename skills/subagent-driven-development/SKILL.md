@@ -268,7 +268,7 @@ a ledger file, not only in todos.
 
 - [implementer-prompt.md](implementer-prompt.md) - Dispatch implementer subagent
 - [task-reviewer-prompt.md](task-reviewer-prompt.md) - Dispatch task reviewer subagent (spec compliance + code quality)
-- Final whole-branch review: dispatch an external reviewer (codex native review; a fresh Claude reviewer subagent if codex is unavailable)
+- Final whole-branch review: dispatch an external reviewer (codex native review: `codex exec review --base <base-branch>`; a fresh Claude reviewer subagent if codex is unavailable)
 
 ## Example Workflow
 

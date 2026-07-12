@@ -36,4 +36,4 @@ This profile fits durable background daemons (doperpowers:orchestrating-daemons)
 
 ## Exit gate
 
-Exactly one, at the end. Before merging: dispatch the final whole-branch review to an external reviewer (codex native review; a fresh Claude reviewer subagent if codex is unavailable), then finish with doperpowers:finishing-a-development-branch. Its retrospective step writes into the ExecPlan's own `Outcomes & Retrospective` section — the ExecPlan is this track's spec-equivalent.
+Exactly one, at the end. Before merging: dispatch the final whole-branch review to an external reviewer (codex native review: `codex exec review --base <base-branch>`; a fresh Claude reviewer subagent if codex is unavailable), then finish with doperpowers:finishing-a-development-branch. Its retrospective step writes into the ExecPlan's own `Outcomes & Retrospective` section — the ExecPlan is this track's spec-equivalent.
