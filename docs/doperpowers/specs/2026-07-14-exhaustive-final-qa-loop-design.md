@@ -107,10 +107,10 @@ The campaign upgrades and replaces the ordinary final review for that run. The e
 
 ```text
 Final QA: none | targeted | exhaustive
-QA charter: <risk surfaces, required lenses, explicit non-goals>
+QA charter: {risk surfaces, required lenses, explicit non-goals}
 ```
 
-- `none` remains the default.
+- `none` remains the default. A legacy plan or ExecPlan with no `Final QA` field is interpreted as `none` for backward compatibility.
 - `targeted` uses campaign state and convergence rules with only the lenses materially relevant to the named risk.
 - `exhaustive` uses every materially applicable lens from the complete review panel.
 - Planning recommends a mode from risk signals, but the selected mode is explicit and auditable.
@@ -137,6 +137,10 @@ These are recommendation signals, not automatic triggers.
 - **Executing plans:** add the same optional final-review handoff before branch finishing so it cannot bypass a declared campaign.
 - **Manual use:** allow invocation against a committed branch range even when no plan declared it.
 - **Opened PR:** optionally attach PR metadata and comments, but do not require GitHub.
+
+For `targeted` and `exhaustive`, the living spec and plan retrospective must be written and committed before the campaign's final dry round. The dry round and final verification therefore cover that documentation commit as part of the immutable final head. `finishing-a-development-branch` consumes the converged campaign and must not create a post-QA retrospective commit. The existing post-review retrospective behavior remains unchanged for `none`.
+
+Each execution track records the exact campaign run path in its progress ledger. Branch finishing consumes that recorded path; manual invocation may ask the tracker to locate the unique non-abandoned campaign matching the current branch lineage and head. Zero matches or multiple matches fail closed instead of guessing.
 
 ### Relationship to verification
 
@@ -198,7 +202,7 @@ Each campaign gets a unique run directory:
 
 ```text
 .doperpowers/qa/
-└── <target>-<base12>-<started-at>/
+└── {sanitized-target}-{base12}-{started-at}/
     ├── RUN.md
     ├── BOARD.md
     ├── FINAL.md                 # written only at convergence
@@ -218,6 +222,8 @@ Each campaign gets a unique run directory:
 ```
 
 `.doperpowers/qa/` is local campaign state. It does not replace a shared team backlog.
+
+Every machine-managed Markdown artifact begins with a frontmatter block containing one strict JSON object between `---` delimiters. JSON is valid YAML, remains readable in Markdown, and is parseable with Python's standard library; arbitrary YAML syntax is not accepted. Human-readable evidence and history follow in the Markdown body. Imported worker reports use the same constrained representation and are validated as untrusted input before any canonical state changes.
 
 ### `RUN.md`
 
@@ -258,23 +264,26 @@ any active state
 
 Each finding is canonical in one Markdown file with structured frontmatter.
 
-```yaml
-id: QA-001
-fingerprint: v1:...
-title: Direct lifecycle writes bypass atomic RPCs
-severity: high
-confidence: high
-state: fixed-pending-rereview
-disposition: fix-now
-first_seen_round: 1
-last_seen_round: 2
-source_lenses: [security, lifecycle]
-anchor:
-  path: sql/p106_m5p4_lifecycle_foundation.sql
-  symbol: agent_proposals_own_all
-owner: fix-wave-1
-scope_head: 035d06b
-external_ref: null
+```json
+{
+  "id": "QA-001",
+  "fingerprint": "v1:...",
+  "title": "Direct lifecycle writes bypass atomic RPCs",
+  "severity": "high",
+  "confidence": "high",
+  "state": "fixed-pending-rereview",
+  "disposition": "fix-now",
+  "first_seen_round": 1,
+  "last_seen_round": 2,
+  "source_lenses": ["security", "lifecycle"],
+  "anchor": {
+    "path": "sql/p106_m5p4_lifecycle_foundation.sql",
+    "symbol": "agent_proposals_own_all"
+  },
+  "owner": "fix-wave-1",
+  "scope_head": "035d06b",
+  "external_ref": null
+}
 ```
 
 The body contains:
@@ -548,6 +557,8 @@ When the project uses the Doperpowers GitHub issue board:
 
 - invoke the issue-tracker workflow and its scripts;
 - preserve category, status, parent/dependency relationships, origin campaign, source finding ID, severity, and revisit condition;
+- write campaign provenance and the local `QA-NNN` finding ID into the issue body through `board-register.sh --body-file`;
+- use `--spawned-by` only when an actual originating GitHub issue number exists; a local campaign or finding ID is not an issue number;
 - store the resulting issue reference in the finding file.
 
 When another durable backlog exists, store its stable reference and equivalent ownership/revisit metadata.
@@ -640,6 +651,7 @@ Report ranges across repeated runs rather than single-run point claims.
 ## Acceptance Criteria
 
 - When a plan declares `Final QA: none`, execution performs the ordinary final review and does not create a QA campaign.
+- When a legacy plan has no `Final QA` field, execution treats it as `none`.
 - When a plan declares `targeted` or `exhaustive`, execution creates or resumes one campaign and uses it as the single final branch review.
 - A campaign always reviews a committed `merge-base..HEAD` snapshot, never an unstable uncommitted working tree.
 - Reviewer observations receive stable identities and are deduplicated before disposition.
@@ -655,6 +667,8 @@ Report ranges across repeated runs rather than single-run point claims.
 - Reaching the round ceiling escalates instead of passing.
 - A parked or spawned finding without a durable destination prevents convergence.
 - The campaign writes `FINAL.md` only after fresh final-head verification and one stable-head dry round.
+- For `targeted` and `exhaustive`, the committed retrospective is part of the reviewed final head and branch finishing creates no post-QA commit.
+- Branch finishing consumes the execution ledger's exact campaign path, or a unique lineage-and-head match for manual use; it fails on missing or ambiguous campaign state.
 - Branch finishing does not proceed through a declared incomplete campaign.
 - The new workflow does not replace or weaken `verification-before-completion`.
 - Real-session evals show that routine changes avoid the exhaustive path while high-risk scenarios retain state and recover from interruption.
@@ -723,6 +737,20 @@ Report ranges across repeated runs rather than single-run point claims.
 
 **Rejected: uncommitted working-tree target.** It weakens reproducibility, identity, and interruption recovery.
 
+### 2026-07-14 — Retrospective precedes head-bound convergence
+
+**Decision:** For `targeted` and `exhaustive`, write and commit the living spec and plan retrospective before the final dry round. Branch finishing verifies that retrospective and consumes `FINAL.md` without creating another commit.
+
+**Rejected: keep the existing post-review retrospective commit.** It advances `HEAD` after the dry round and makes the campaign's immutable final-head evidence stale before branch finishing begins.
+
+**Rejected: exempt documentation-only commits from stale-head checks.** The reviewed snapshot would still differ from the branch being finished, and documentation can change operational or acceptance meaning.
+
+### 2026-07-14 — Campaign lookup fails closed
+
+**Decision:** Execution ledgers record the exact campaign run path. Manual branch finishing may locate a campaign only when exactly one non-abandoned run matches the current branch lineage and head.
+
+**Rejected: select the newest campaign directory.** Timestamps do not prove lineage, completeness, or applicability, and can silently choose stale state after interruption.
+
 ## Surprises & Discoveries
 
 - `.doperpowers/` is intentionally ignored in this repository. It is suitable for resumable local execution state, not a shared team backlog.
@@ -732,6 +760,8 @@ Report ranges across repeated runs rather than single-run point claims.
 - Existing SDD cost evidence supports narrow task review plus one broad final review. Exhaustive QA must upgrade that one final review rather than adding broad review at every task boundary.
 - Connection cancellation and agent cancellation do not imply filesystem rollback. Recovery must inspect Git and files rather than treating worker status messages as authoritative.
 - The p106 fan-out incident was caused by recursive orchestration economics, not evidence of a general provider-concurrency regression. The design therefore governs review shape and visibility rather than changing a global concurrency setting.
+- Existing branch finishing commits the retrospective after review. A head-bound campaign cannot preserve that order; targeted and exhaustive runs must commit the retrospective before the dry round, while `none` retains the current behavior.
+- Legacy plans predate the `Final QA` field. Treating an absent declaration as `none` preserves compatibility without silently weakening any explicitly declared campaign.
 
 ## Outcomes & Retrospective
 
@@ -739,4 +769,6 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-07-14: Resolved final-head sequencing and compatibility details discovered during implementation planning: legacy missing declarations mean `none`; targeted/exhaustive retrospectives are committed before the dry round; execution ledgers record the campaign path and ambiguous lookup fails closed; GitHub durable routes carry campaign provenance in `--body-file`, not a fabricated `--spawned-by` value.
+- 2026-07-14: Constrained every machine-managed Markdown frontmatter block to one strict JSON object between `---` delimiters. This preserves the human-readable Markdown design while making parsing and validation feasible with the repository's Python-standard-library-only rule; arbitrary YAML is explicitly unsupported.
 - 2026-07-14: Initial design after the M5 Phase 4 p106 multi-round review/fix session. Chose a dedicated final QA skill, local finding ledger with durable routing, planned lens panels, centralized tracker ownership, and stable-head dry-round convergence.
