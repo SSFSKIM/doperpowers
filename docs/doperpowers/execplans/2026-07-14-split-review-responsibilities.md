@@ -19,7 +19,7 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - [x] (2026-07-14 11:08Z) Milestone 2: `review-engine.sh` reduced to `--base` + `--out`; criteria validation and all custom developer instructions removed while the nested environment recipe remained green.
 - [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE plus independent EVIDENCE FINDING routing.
 - [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
-- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex rounds 1–6 found nine verified findings: the prior six plus contradictory missing-validation routing P1, mutable issue-body authority P1, and unversioned implementer-contract P2. Each has a RED→GREEN fix, with final re-review remaining.
+- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex rounds 1–7 found eleven verified findings: the prior nine plus same-worktree validation concurrency P1 and retroactive missing-section enforcement P1. Each has a RED→GREEN fix, with final re-review remaining.
 - [ ] Milestone 6: complete this retrospective, commit final evidence on a new follow-up branch, and open a stacked draft PR whose base is `refactor/reviewing-prs-skill-entrypoint`; leave PR #14 and `main` unchanged.
 
 ## Surprises & Discoveries
@@ -56,6 +56,10 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
   Evidence: round 6 P1/P2 at `SKILL.md`; GitHub GraphQL schema inspection confirmed `Issue.userContentEdits` exposes `editedAt`, `editor`, and `diff`. The Implement Worker gate now records normalized issue-body and protocol-template SHA-256 values; review dispatch binds current hashes. Body drift is resolved against edit history, while missing/mismatched protocol provenance is an `AUDIT NOTE` and newer contract-only clauses are not applied retroactively. RED produced 9 skill, 2 dispatch, and 5 implement-protocol failures before the fix; focused GREEN and shell lint pass.
 - Observation: the first round-6 Codex process at xhigh effort exceeded the ten-minute foreground tool window and was terminated before a verdict; its event log contained only ongoing investigation. A detached high-effort retry completed and produced the three findings above.
   Evidence: first attempt rc 143 with no compact output file; retry rc 0 and compact verdict at `$CLAUDE_JOB_DIR/tmp/direct-review-r6-retry.txt`.
+- Observation: round 7 found that the intended concurrency boundary was too broad. Native Codex and the outer worker share one detached worktree, so running stateful tests or builds from both processes can contend on caches, generated files, databases, or ports.
+  Evidence: round 7 P1 at the closing-artifact cross-check. The worker now performs only read-only evidence inspection while Codex runs, marks command-backed checks pending, and runs required local commands serially after JOIN. Re-review rounds carry the same constraint. Focused RED produced two ordering failures; GREEN passes.
+- Observation: round 7 also found that the newly unified missing-section route still bypassed protocol-version provenance by requiring `## Validation Evidence` unconditionally for every ticketed PR.
+  Evidence: round 7 P1 at `SKILL.md`; missing-section absence is now an `EVIDENCE FINDING` only when a version-matched gate protocol, ticket, or repo facts establishes the requirement. Otherwise it is an `AUDIT NOTE`, including for legacy/in-flight PRs. Focused RED produced two routing failures; GREEN passes.
 
 ## Decision Log
 
@@ -89,9 +93,12 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - Decision: fingerprint the exact Implement Worker dispatch inputs in the gate comment: normalized issue-body SHA-256 and unrendered implement-protocol SHA-256. Review dispatch independently binds current values.
   Rationale: the issue body and installed plugin can both change between implementation and review. GitHub retains issue edit diffs, so a body mismatch can be reconstructed against the gate timestamp. The plugin contract is not guaranteed locally version-addressable, so a missing/mismatched protocol hash produces an audit note and excludes unmatched contract-only requirements rather than applying new rules retroactively. Rejected: trust current text; treat every mismatch as a protocol blocker; paste the full protocol into a noisy issue comment.
   Date/Author: 2026-07-14 / direct Codex round 6, verified and fixed by implementer.
-- Decision: classify a ticketed PR missing the mandatory `## Validation Evidence` section as `EVIDENCE FINDING`, never `SPEC FINDING`; preserve a ticketless missing section as `AUDIT NOTE` unless repo facts independently require evidence.
-  Rationale: evidence defects already have a dedicated fix-required, confidence-blocking route. Reusing `SPEC FINDING` creates contradictory instructions, while imposing the Implement Worker closing-artifact contract on every ticketless PR would expand policy beyond its source.
-  Date/Author: 2026-07-14 / direct Codex round 6, verified and fixed by implementer.
+- Decision: classify a missing `## Validation Evidence` section as `EVIDENCE FINDING`, never `SPEC FINDING`, only when the version-matched gate protocol, ticket, or repo facts proves that requirement. Without durable authority it is an `AUDIT NOTE`, whether the PR is ticketed or ticketless.
+  Rationale: evidence defects already have a dedicated fix-required, confidence-blocking route, but the route cannot bypass protocol provenance. Reusing `SPEC FINDING` creates contradictory instructions; applying the current Implement Worker contract to legacy or ticketless PRs would create retroactive policy.
+  Date/Author: 2026-07-14 / direct Codex rounds 6–7, verified and fixed by implementer.
+- Decision: keep concurrent Review Worker activity read-only in the shared detached worktree. Run command-backed evidence validation only after the native review task joins; apply the same rule to re-review rounds.
+  Rationale: both processes may run tests or builds, and simultaneous execution can contend on caches, generated outputs, test databases, or ports. A second worktree would add lifecycle complexity; serial command validation preserves most concurrency because ticket/spec analysis and inspection of existing CI remain parallel.
+  Date/Author: 2026-07-14 / direct Codex round 7, verified and fixed by implementer.
 
 ## Outcomes & Retrospective
 
@@ -261,4 +268,4 @@ The dispatcher and bootstrap gain trusted bindings from the installed plugin tre
 - 2026-07-14 (direct review): Codex round 1 found that a consumer-owned `.agents/skills` directory could hide the required skill, and round 4 showed that a same-name workspace skill could spoof it. Added `SKILL_FILE` and made dispatcher-owned canonical loading unconditional without duplicating protocol text.
 - 2026-07-14 (re-review rounds 2–3): added authoritative pre-resume human answers to the source hierarchy, pinned referenced repository specifications to the pre-PR base/immutable revision, and introduced `EVIDENCE FINDING` so closing-artifact failures remain routed and confidence-blocking on ticketless PRs.
 - 2026-07-14 (re-review rounds 4–5): made dispatcher-owned Review Worker doctrine unconditional to prevent workspace skill spoofing, and bound the canonical Implement Worker protocol so mandatory contract-only requirements are auditable.
-- 2026-07-14 (re-review round 6): removed contradictory missing-validation routes and added authorization-time issue-body / implement-protocol fingerprints. GitHub edit history resolves body drift; protocol drift is non-blocking provenance evidence and cannot make newer clauses retroactive.
+- 2026-07-14 (re-review rounds 6–7): removed contradictory and retroactive missing-validation routes; added authorization-time issue-body / implement-protocol fingerprints; and limited concurrent shared-worktree evidence audit to read-only inspection, with local commands serialized after JOIN.

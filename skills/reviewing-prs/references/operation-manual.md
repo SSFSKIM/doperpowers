@@ -137,15 +137,16 @@ doperpowers:organizing-sprints input).
 
 ## Closing-artifact cross-check
 
-After starting the native review in the background, the worker verifies the
+After starting the native review in the background, the worker inspects the
 PR body's `## Validation Evidence` section (the implement worker's closing
-artifact) against the diff, the repo, and CI while Codex runs. Evidence
-claimed but not verifiable is itself a finding. A ticketed PR missing the
-mandatory section is an `EVIDENCE FINDING`; a ticketless PR gets an `AUDIT NOTE`
-unless repo facts independently require the evidence. This closes the evidence
-loop without keeping the outer worker idle: the implement side produces
-evidence, and the review side verifies the claims independently of the native
-correctness verdict.
+artifact) read-only against the diff, repository structure, declared commands,
+and already-published CI. It does not run local tests or builds concurrently in
+the shared worktree; command-backed verification waits until the native process
+has joined. Evidence still not verifiable is a finding. A missing section is an
+`EVIDENCE FINDING` only when the version-matched dispatched protocol, ticket,
+or repo facts prove the requirement; otherwise it is an `AUDIT NOTE`. This
+closes the evidence loop without keeping the outer worker idle or introducing
+same-worktree test contention.
 
 ## Review engine and protocol audit
 

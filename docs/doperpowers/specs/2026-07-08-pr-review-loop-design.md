@@ -551,7 +551,10 @@ Pending — written at finish.
   records normalized issue-body and protocol-template SHA-256 values. Review
   dispatch binds current hashes; issue-body drift is resolved through GitHub
   `userContentEdits`, while a protocol hash mismatch prevents newer
-  contract-only requirements from being enforced retroactively. Missing
-  Validation Evidence on a ticketed PR has one route, `EVIDENCE FINDING`, rather
-  than contradictory audit-note/spec-finding outcomes. See
+  contract-only requirements from being enforced retroactively. Closing-artifact
+  inspection stays read-only while native Codex shares the worktree; local
+  command validation runs serially after the join. Missing Validation Evidence
+  has one route, `EVIDENCE FINDING`, only when a version-matched protocol,
+  ticket, or repo facts proves the requirement; otherwise it remains an audit
+  note rather than a retroactive blocker. See
   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.

@@ -68,15 +68,17 @@ START NATIVE CORRECTNESS REVIEW IN BACKGROUND:
 
 {{FALLBACK_BLOCK}}
 
-While that task runs, CROSS-CHECK the PR's closing artifact: the PR body's
-"## Validation Evidence" section claims evidence per claim of done — verify
-each claim against the diff, the repo, and CI (does the named test exist
-and exercise the change? does the claimed check actually pass?). Evidence
-claimed but not verifiable is an EVIDENCE FINDING. A ticketed PR without the
-"## Validation Evidence" section is an EVIDENCE FINDING because the closing
-artifact is incomplete. A ticketless PR without the section gets an AUDIT NOTE
-unless repo facts independently require that evidence; weigh its diff on its
-own merits.
+While that task runs, CROSS-CHECK the PR's closing artifact read-only: inspect
+the PR body's "## Validation Evidence" claims against the diff, repository
+structure, declared commands, and already-published CI results. Confirm that a
+named test exists and appears to exercise the change; mark any claim that needs
+a local command as pending. Do not run local tests or builds before JOIN THE TWO
+TRACKS: the native reviewer shares this worktree and may run them itself.
+Evidence claimed but not verifiable after the serialized command check is an
+EVIDENCE FINDING. A missing "## Validation Evidence" section is an EVIDENCE
+FINDING only when the version-matched gate protocol, ticket, or repo facts
+requires the section. Without that durable requirement, record an AUDIT NOTE
+for a ticketed or ticketless PR and weigh the diff on its own merits.
 When the repo declares facts (the repo-facts manifest at the very bottom of
 this prompt), the cross-check also runs against them: a claim proved by a
 command when the repo declares a different one for that proof is worth a
@@ -148,9 +150,11 @@ Before reading the native findings, write the completed independent audit to
 JOIN THE TWO TRACKS only after `protocol-audit.md` is complete: wait for the
 background native task and apply ENGINE FALLBACK if it failed. On success,
 read its compact findings file, then consider the native findings and the
-already-recorded audit together. Do not let either stream erase or rewrite
-the other. Derive the native verdict yourself: approve when no verified
-critical/high native finding remains unresolved; needs-attention otherwise.
+already-recorded audit together. After JOIN, run any local command needed to
+verify evidence, serially, before classifying or routing its result. Do not let
+either stream erase or rewrite the other. Derive the native verdict yourself:
+approve when no verified critical/high native finding remains unresolved;
+needs-attention otherwise.
 
 EVALUATE every native finding, SPEC FINDING, and EVIDENCE FINDING against
 codebase reality before acting:
@@ -200,9 +204,10 @@ NOTE use their audit routes above, not these bins:
 RE-REVIEW (max 3 engine rounds total) when ANY: a critical/high native finding,
 SPEC FINDING, or EVIDENCE FINDING led to a code fix; cumulative fixes exceed
 ~50 changed lines or 3 files; any fix changed behavior (not
-comments/docs/renames). Start each native
-round in the background. While it runs, re-check the affected settled
-requirements and update `protocol-audit.md`, then JOIN again. Historical weak
+comments/docs/renames). Start each native round in the background. While it
+runs, re-check the affected settled requirements read-only and update
+`protocol-audit.md`; defer local commands until JOIN, then run them serially.
+Historical weak
 process evidence stays an AUDIT NOTE; an unresolved PROTOCOL BLOCKER still
 requires a human answer and cannot be reviewed away.
 
