@@ -87,6 +87,8 @@ assert_contains "$MANUAL" '`SKILL.md` | the Review Worker Protocol' "operation m
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"
 assert_contains "$BOOTSTRAP" "REQUIRED SUB-SKILL: Use doperpowers:reviewing-prs" "bootstrap explicitly invokes the runtime skill"
+assert_contains "$BOOTSTRAP" "If the named skill is not discoverable" "bootstrap provides a canonical-file fallback"
+assert_contains "$BOOTSTRAP" "{{SKILL_FILE}}" "bootstrap binds the version-matched canonical skill file"
 assert_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "bootstrap supplies the engine-block binding"
 assert_contains "$BOOTSTRAP" "{{PR_BODY}}" "bootstrap supplies PR context"
 assert_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "bootstrap supplies ticket context"

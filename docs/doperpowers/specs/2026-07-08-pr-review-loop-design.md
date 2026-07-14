@@ -536,5 +536,8 @@ Pending — written at finish.
   then joins both streams. The linked issue body is primary specification;
   only documents it explicitly references are secondary. Protocol blockers
   route `needs-human`, settled requirement mismatches are fix-required, and
-  weak process evidence alone is a non-blocking audit note. See
+  weak process evidence alone is a non-blocking audit note. Direct review also
+  exposed that consumer-owned `.agents/skills` can prevent native discovery;
+  the bootstrap now binds the same installed version's absolute `SKILL.md` as
+  a canonical fallback rather than duplicating the protocol. See
   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.

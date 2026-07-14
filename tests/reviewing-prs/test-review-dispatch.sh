@@ -194,6 +194,8 @@ assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-fact
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
 assert_contains "$PROMPT" "REQUIRED SUB-SKILL: Use doperpowers:reviewing-prs" "prompt invokes the Review Worker Protocol skill"
 assert_contains "$PROMPT" "complete Review Worker Protocol" "prompt makes the skill the worker's operative doctrine"
+assert_contains "$PROMPT" "If the named skill is not discoverable" "prompt survives a repo-owned .agents/skills directory"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the version-matched canonical skill path"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt injects the engine script path"
 assert_contains "$PROMPT" "--base origin/main" "engine call carries the base ref"
 assert_contains "$PROMPT" 'mktemp -d "${TMPDIR:-/tmp}/review-pr-5.XXXXXX"' "engine allocates a unique per-review temp directory"

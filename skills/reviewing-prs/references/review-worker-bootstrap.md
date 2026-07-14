@@ -3,10 +3,14 @@ running unattended in a detached worktree at the PR head (SHA {{HEAD_SHA}},
 head branch {{HEAD_REF}}, base {{BASE_REF}}).
 
 **REQUIRED SUB-SKILL: Use doperpowers:reviewing-prs before doing anything else.**
-That skill is your complete Review Worker Protocol. Treat every uppercase
-placeholder token in the skill as bound to the runtime values and blocks below.
-Do not substitute values from the PR or ticket text for these dispatcher-owned
-bindings.
+That skill is your complete Review Worker Protocol.
+If the named skill is not discoverable, open `{{SKILL_FILE}}` and follow that
+canonical skill file directly before doing anything else. This fallback is
+required when the consumer repo owns `.agents/skills`; never proceed from this
+bootstrap alone.
+Treat every uppercase placeholder token in the skill as bound to the runtime
+values and blocks below. Do not substitute values from the PR or ticket text
+for these dispatcher-owned bindings.
 
 Runtime bindings:
 - `PR_NUMBER`: {{PR_NUMBER}}
@@ -24,6 +28,7 @@ Runtime bindings:
 - `AUTO_MERGE`: {{AUTO_MERGE}}
 - `DEFAULT_BRANCH`: {{DEFAULT_BRANCH}}
 - `BASE_IS_DEFAULT`: {{BASE_IS_DEFAULT}}
+- `SKILL_FILE`: {{SKILL_FILE}}
 
 ---- ENGINE_BLOCK binding ----
 {{ENGINE_BLOCK}}

@@ -18,7 +18,7 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - [x] (2026-07-14 11:08Z) Milestone 2: `review-engine.sh` reduced to `--base` + `--out`; criteria validation and all custom developer instructions removed while the nested environment recipe remained green.
 - [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE routing.
 - [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
-- [ ] Milestone 5: run focused and broad verification, inspect the final contract directly, and perform one bounded independent Codex review without invoking recursive reviewer subagents.
+- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex round 1 found one verified P1 (repo-owned `.agents/skills` could hide the required skill); a RED→GREEN version-matched `SKILL.md` fallback is implemented, with re-review pending.
 - [ ] Milestone 6: complete this retrospective, commit the implementation, push the feature branch, and update draft PR #14 without merging or changing `main`.
 
 ## Surprises & Discoveries
@@ -35,6 +35,10 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
   Evidence: temporary rollback plus expanded structural test produced exactly 4 failures; reapplication returned `all tests passed`.
 - Observation: shell lint caught an unused-local declaration in the new ordering assertion helper; removing the two unused names made the explicit four-file lint run clean.
   Evidence: first lint reported SC2034 for `first` and `second`; rerun printed only `Linting 4 shell files` and exited 0.
+- Observation: the broad Claude Code skill suite has an unrelated model-output regex instability in `test-subagent-driven-development.sh`. Two runs produced semantically compliant descriptions but missed different literal patterns (`implementer.*fix` on the first run, `read.*plan` on the second). No file in that skill or test differs on this branch.
+  Evidence: suite summary `Passed: 2, Failed: 1`; isolated rerun failed a different assertion; `git diff --quiet origin/main...HEAD -- skills/subagent-driven-development tests/claude-code/test-subagent-driven-development.sh` returned 0.
+- Observation: direct Codex review found that the skill-entrypoint restructure had made Codex doctrine availability depend on an unsafe vendoring assumption. `_codex_vendor_skills` intentionally leaves a repo-owned `.agents/skills` directory untouched, so a worker in that repo could receive only the thin bootstrap and fail the required skill invocation.
+  Evidence: direct review P1 at `review-worker-bootstrap.md`; verified against `_codex_lib.sh`'s early return. Fix: dispatcher binds the absolute `SKILL.md` from the same installed plugin version, and bootstrap uses it only when native skill discovery is unavailable. Focused RED produced 2 skill + 2 dispatch failures; GREEN and shell lint pass.
 
 ## Decision Log
 
@@ -59,6 +63,9 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - Decision: do not invoke the native `code-review` skill or a reviewer subagent during implementation or the exit gate.
   Rationale: this repository observed runaway recursive dispatch of more than 43 reviewer subagents. Direct tests, diff inspection, and at most one direct `codex exec review --base origin/main` process provide independent coverage without that recursion surface.
   Date/Author: 2026-07-14 / explicit operational constraint.
+- Decision: keep native `doperpowers:reviewing-prs` invocation as the primary path, but bind the same installed version's absolute `SKILL.md` as a required fallback when discovery fails.
+  Rationale: consumer repos may legitimately own `.agents/skills`, and the vendoring helper must not clobber them. Embedding the whole protocol would recreate the original duplication; composing symlinks would depend on uncertain namespace/scanner behavior. A canonical-file fallback preserves one protocol source and works for both Claude and Codex workers.
+  Date/Author: 2026-07-14 / direct Codex P1, verified and fixed by implementer.
 
 ## Outcomes & Retrospective
 
