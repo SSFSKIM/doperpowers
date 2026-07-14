@@ -3,7 +3,7 @@
 #
 # The trigger half of doperpowers:reviewing-prs — mechanical only, no model
 # judgment. Gathers PR + linked-ticket context, creates a DETACHED worktree
-# at the PR head SHA, renders the Review Worker Protocol, and spawns a
+# at the PR head SHA, renders the skill-invocation bootstrap, and spawns a
 # `review-pr-<n>` daemon via daemon-spawn.sh --no-wait.
 #
 # Usage:
@@ -24,8 +24,8 @@
 #   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
 #                       (default false = observation mode: the worker reviews
 #                       and judges the tier but routes self-merge-eligible PRs
-#                       to confident-ready instead of merging). Injected into
-#                       the protocol; the dispatch layer never merges.
+#                       to confident-ready instead of merging). Supplied as a
+#                       skill runtime binding; the dispatch layer never merges.
 #   DEFAULT_BRANCH      repo default branch (default: resolved via gh); the
 #                       worker never self-merges a PR whose base is this branch
 #   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
@@ -45,7 +45,7 @@
 # the always-on categories only (fail-safe — self-merge still never lands on
 # the default branch, but a repo-declared surface would go unenforced).
 #
-# Dedupe policy (SKILL.md table): confident-ready-labeled PRs are never
+# Dedupe policy (references/operation-manual.md table): confident-ready-labeled PRs are never
 # dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
 # retire + respawn; a finished reviewer → triggered mode re-dispatches
 # (explicit event = fresh signal), sweep mode skips; a finished reviewer
@@ -61,13 +61,13 @@ DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
-PROTOCOL_TEMPLATE="$SKILL_DIR/references/review-worker-protocol.md"
+BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
-[ -f "$PROTOCOL_TEMPLATE" ] || die "protocol template missing: $PROTOCOL_TEMPLATE"
+[ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
 if [ -z "${BOARD_REPO:-}" ]; then
@@ -298,7 +298,7 @@ PY
     ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \
     PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
-    python3 - "$PROTOCOL_TEMPLATE" <<'PY'
+    python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
 import os, re, sys
 CAP = 20000  # keep the spawn arg well under the OS arg-size limit
 def readcap(path):
