@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PROTO="$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md"
 SKILL="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
+TRACKER_SKILL="$REPO_ROOT/skills/issue-tracker/SKILL.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -31,6 +32,8 @@ assert_contains "$proto" "WELL-DEFINED" "check 1 present"
 assert_contains "$proto" "WELL-SCOPED" "check 2 present"
 assert_contains "$proto" "Even minor taste is never your call" "minor-taste rule present"
 assert_contains "$proto" "VERDICT IS YOUR FIRST BOARD WRITE" "verdict-first-write present"
+assert_contains "$proto" "issue-body-sha256={{ISSUE_BODY_SHA256}}" "gate records the authorization-time issue body hash"
+assert_contains "$proto" "implement-protocol-sha256={{IMPLEMENT_PROTOCOL_SHA256}}" "gate records the exact Implement Worker contract hash"
 assert_contains "$proto" "WHO UNPARKS IT" "park discriminant present"
 assert_contains "$proto" "{{DECOMPOSE_DOC}}" "decompose procedure pointer present (runtime-opened)"
 assert_contains "$proto" "FOLLOW-UPS: none" "follow-ups contract present"
@@ -57,8 +60,8 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
-got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{IMPLEMENT_PROTOCOL_SHA256}} {{ISSUE_BODY_SHA256}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+got="$(grep -o '{{[A-Z0-9_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "placeholder set is exactly: $want"; else
     fail "placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
 
@@ -67,7 +70,7 @@ SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.m
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
-got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+got_spike="$(grep -o '{{[A-Z0-9_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
 assert_contains "$spike" "DRAFT" "spike: evidence PR is draft-only"
@@ -114,6 +117,10 @@ skill="$(cat "$SKILL")"
 assert_contains "$skill" "name: implementing-tickets" "frontmatter name"
 assert_contains "$skill" "references/implement-worker-protocol.md" "skill points at the protocol"
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
+[ -f "$TRACKER_SKILL" ] || { echo "missing $TRACKER_SKILL"; exit 1; }
+tracker_skill="$(cat "$TRACKER_SKILL")"
+assert_contains "$tracker_skill" "ISSUE_BODY_SHA256" "dispatch ritual binds the exact issue-body snapshot hash"
+assert_contains "$tracker_skill" "IMPLEMENT_PROTOCOL_SHA256" "dispatch ritual binds the exact protocol-template hash"
 assert_contains "$skill" "board-answer.sh" "skill names the answer relay (park = pause)"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
 

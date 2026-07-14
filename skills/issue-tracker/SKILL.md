@@ -146,8 +146,12 @@ pick by repo visibility:
    `references/implement-worker-protocol.md`. Substitute every
    `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
    `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
-   issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
-   engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
+   issue body from `gh issue view <n> --json body`, `ISSUE_BODY_SHA256` =
+   lowercase SHA-256 of that body after CRLF→LF normalization and removing
+   trailing line endings, `IMPLEMENT_PROTOCOL_SHA256` = lowercase SHA-256 of
+   the exact unrendered `references/implement-worker-protocol.md` bytes,
+   `ENGINE_NAME` = the engine, `REPO_FACTS` =
+   `git show origin/<default-branch>:.doperpowers/repo-facts.md`
    (or a "(no repo-facts manifest)" note when absent), and — implement
    protocol only — `EXECUTION_BLOCK` = the engine's
    `references/engine-blocks/execution-<engine>.md` and `DECOMPOSE_DOC` =

@@ -24,7 +24,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | `scripts/review-engine.sh` | the pure native-correctness invocation and proven nested environment recipe; both worker species call it while the outer worker owns spec/protocol audit |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
-| `references/review-worker-bootstrap.md` | thin skill invocation + runtime bindings; supplies dispatcher-owned absolute paths for both `SKILL.md` and the Implement Worker protocol because workspace `.agents/skills` is PR-controlled |
+| `references/review-worker-bootstrap.md` | thin skill invocation + runtime bindings; supplies dispatcher-owned absolute paths plus current issue-body / Implement Worker protocol hashes because workspace `.agents/skills` is PR-controlled and audit inputs must be versioned |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
 | `references/land-conflicts.md` | runtime-opened conflict-resolution procedure — the protocol carries only a pointer (`{{CONFLICTS_DOC}}` = absolute path); the worker opens it when GitHub reports the PR unmergeable. Procedure in the plugin file, instance facts in the prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
@@ -140,10 +140,12 @@ doperpowers:organizing-sprints input).
 After starting the native review in the background, the worker verifies the
 PR body's `## Validation Evidence` section (the implement worker's closing
 artifact) against the diff, the repo, and CI while Codex runs. Evidence
-claimed but not verifiable is itself a finding; a missing section is only an
-`AUDIT NOTE`. This closes the evidence loop without keeping the outer worker
-idle: the implement side produces evidence, and the review side verifies the
-claims independently of the native correctness verdict.
+claimed but not verifiable is itself a finding. A ticketed PR missing the
+mandatory section is an `EVIDENCE FINDING`; a ticketless PR gets an `AUDIT NOTE`
+unless repo facts independently require the evidence. This closes the evidence
+loop without keeping the outer worker idle: the implement side produces
+evidence, and the review side verifies the claims independently of the native
+correctness verdict.
 
 ## Review engine and protocol audit
 
@@ -159,21 +161,30 @@ self-profiling step while the outer workspace-write profile still confines
 it), and a Claude worker's call runs on the host.
 
 The outer Review Worker starts that process in the background and directly
-performs the implementer-protocol audit. The linked issue body is the
-canonical primary specification; only documents it explicitly references
-are secondary specification evidence. Repository documents are resolved from
-the PR base (or an immutable revision named by the issue), never from PR head,
-so a PR cannot relax its own requirements. For a resumed park, a human answer
-recorded on the issue before implementation resumes is authoritative ticket
-content for that fork. The dispatcher also binds the installed
-`implement-worker-protocol.md`, which the reviewer opens as the authoritative
-contract for gate, park/resume, closing-artifact, and follow-up requirements;
-workspace copies are not trusted. The worker checks whether implementation
-started only after `ready-for-agent`, whether the issue was substantively
+performs the implementer-protocol audit. The linked issue body as supplied at
+authorization is the canonical primary specification; the Implement Worker
+records its normalized SHA-256 in the `[gate] pass` comment. Review dispatch
+binds the current body hash, and the reviewer uses GitHub's
+`Issue.userContentEdits` history when the hashes differ. Later body edits cannot
+retroactively authorize implementation; a fresh gate or a timestamped human
+answer before resume can amend the ticket. Only documents the authorization
+snapshot explicitly references are secondary specification evidence.
+Repository documents are resolved from the PR base (or an immutable revision
+named by the issue), never from PR head, so a PR cannot relax its own
+requirements.
+
+The dispatcher also binds the installed `implement-worker-protocol.md` and its
+SHA-256. The gate comment records the hash of the exact unrendered protocol
+template used by the Implement Worker. Matching hashes permit full
+contract-only audit. A missing or mismatched hash is an `AUDIT NOTE`, and newer
+contract-only requirements are not applied retroactively; ticket requirements
+and independently durable older-contract evidence still apply. Workspace
+copies are never trusted. The worker checks whether implementation started only
+after `ready-for-agent`, whether the issue was substantively
 implementation-ready, whether settled requirements were implemented, and
-whether the Implement Worker stopped instead of silently
-choosing a human-grade scope/product/taste fork. It records this audit before
-reading Codex's findings, then joins the two streams.
+whether the Implement Worker stopped instead of silently choosing a human-grade
+scope/product/taste fork. It records this audit before reading Codex's findings,
+then joins the two streams.
 
 Audit output has three forms. A `PROTOCOL BLOCKER` is a substantive gate
 failure or unauthorized human-grade decision; it prevents confidence and

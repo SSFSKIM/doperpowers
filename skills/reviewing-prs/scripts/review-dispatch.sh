@@ -66,10 +66,27 @@ IMPLEMENT_PROTOCOL_FILE="$(cd "$SKILL_DIR/../implementing-tickets/references" &&
 
 die() { echo "error: $*" >&2; exit 1; }
 
+_sha256_file() {
+  python3 - "$1" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
+_normalized_issue_body_sha256() {
+  python3 - "$1" <<'PY'
+import hashlib, pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text().replace("\r\n", "\n").rstrip("\r\n")
+print(hashlib.sha256(text.encode()).hexdigest())
+PY
+}
+
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -f "$IMPLEMENT_PROTOCOL_FILE" ] || die "implement worker protocol missing: $IMPLEMENT_PROTOCOL_FILE"
+IMPLEMENT_PROTOCOL_SHA256="$(_sha256_file "$IMPLEMENT_PROTOCOL_FILE")" \
+  || die "could not hash implement worker protocol: $IMPLEMENT_PROTOCOL_FILE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
 if [ -z "${BOARD_REPO:-}" ]; then
@@ -215,7 +232,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine
+  local pr="$1" tmp pr_json exports issue issue_url issue_body_sha256 td wt prompt engine
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -249,12 +266,15 @@ PY
   # primary ticket brief (first linked issue; the full list rides the prompt)
   issue="${LINKED_ISSUES%% *}"
   issue_url="none"
+  issue_body_sha256="none"
   : > "$tmp/issue-body.md"
   if [ -n "$issue" ]; then
     # degrade gracefully — a deleted linked issue must not block the review
     issue_url="$(gh issue view "$issue" -R "$BOARD_REPO" --json url -q .url 2>/dev/null || echo none)"
     gh issue view "$issue" -R "$BOARD_REPO" --json body -q .body > "$tmp/issue-body.md" 2>/dev/null \
       || : > "$tmp/issue-body.md"
+    issue_body_sha256="$(_normalized_issue_body_sha256 "$tmp/issue-body.md")" \
+      || { echo "#$pr: issue body hash failed" >&2; rm -rf "$tmp"; return 1; }
   fi
 
   # standing tech-debt sink (optional)
@@ -297,6 +317,8 @@ PY
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
+    P_IMPLEMENT_PROTOCOL_SHA256="$IMPLEMENT_PROTOCOL_SHA256" \
+    P_ISSUE_BODY_SHA256="$issue_body_sha256" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \

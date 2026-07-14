@@ -181,6 +181,16 @@ assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/review-pr-5.prompt")"
+IMPLEMENT_PROTOCOL_SHA256="$(python3 - "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+ISSUE_BODY_SHA256="$(python3 - <<'PY'
+import hashlib
+print(hashlib.sha256(b"Ticket seven brief body").hexdigest())
+PY
+)"
 assert_contains "$PROMPT" "REVIEW worker for PR #5" "prompt carries the worker bootstrap header"
 assert_contains "$PROMPT" "Adds f." "prompt carries the PR body"
 assert_contains "$PROMPT" "---- ISSUE_BODY binding: Ticket #7 brief ----" "prompt names the primary ticket (Closes #7 parsed from the body)"
@@ -199,6 +209,8 @@ assert_contains "$PROMPT" 'Do not resolve this protocol from the workspace `.age
 assert_not_contains "$PROMPT" "If the named skill is not discoverable" "prompt does not trust conditional workspace discovery"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the version-matched canonical skill path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" "prompt carries the canonical Implement Worker contract path"
+assert_contains "$PROMPT" "\`IMPLEMENT_PROTOCOL_SHA256\`: $IMPLEMENT_PROTOCOL_SHA256" "prompt carries the current Implement Worker contract hash"
+assert_contains "$PROMPT" "\`ISSUE_BODY_SHA256\`: $ISSUE_BODY_SHA256" "prompt carries the current normalized issue-body hash"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt injects the engine script path"
 assert_contains "$PROMPT" "--base origin/main" "engine call carries the base ref"
 assert_contains "$PROMPT" 'mktemp -d "${TMPDIR:-/tmp}/review-pr-5.XXXXXX"' "engine allocates a unique per-review temp directory"

@@ -546,5 +546,12 @@ Pending — written at finish.
   unconditionally opens the same installed version's dispatcher-owned absolute
   `SKILL.md`; workspace skills never define this review protocol. The dispatcher
   likewise binds the canonical Implement Worker protocol so contract-only gate,
-  closing-artifact, and follow-up requirements are auditable. See
+  closing-artifact, and follow-up requirements are auditable. Exit review then
+  exposed temporal provenance gaps: the Implement Worker gate comment now
+  records normalized issue-body and protocol-template SHA-256 values. Review
+  dispatch binds current hashes; issue-body drift is resolved through GitHub
+  `userContentEdits`, while a protocol hash mismatch prevents newer
+  contract-only requirements from being enforced retroactively. Missing
+  Validation Evidence on a ticketed PR has one route, `EVIDENCE FINDING`, rather
+  than contradictory audit-note/spec-finding outcomes. See
   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.

@@ -45,7 +45,10 @@ be written down as self-contained child pre-specs right now?
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
   then a one-line gate comment:
-  gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line>"
+  gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line> | issue-body-sha256={{ISSUE_BODY_SHA256}} | implement-protocol-sha256={{IMPLEMENT_PROTOCOL_SHA256}}"
+  The hashes identify the exact issue-body snapshot and unrendered protocol
+  template supplied at dispatch. Keep the original hashes on a bound-session
+  re-pass; timestamped human answers amend that original ticket snapshot.
 - Fail → the park state itself, with the required note. Park discriminant —
   WHO UNPARKS IT:
   - The human as themselves — a decision only they can make, or a
