@@ -24,7 +24,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | `scripts/review-engine.sh` | the pure native-correctness invocation and proven nested environment recipe; both worker species call it while the outer worker owns spec/protocol audit |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
-| `references/review-worker-bootstrap.md` | thin skill invocation + runtime bindings; also carries the same installed version's absolute `SKILL.md` fallback when a consumer-owned `.agents/skills` prevents native discovery |
+| `references/review-worker-bootstrap.md` | thin skill invocation + runtime bindings; unconditionally opens the dispatcher-owned absolute `SKILL.md` because workspace `.agents/skills` is PR-controlled and cannot be trusted as the review protocol |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
 | `references/land-conflicts.md` | runtime-opened conflict-resolution procedure — the protocol carries only a pointer (`{{CONFLICTS_DOC}}` = absolute path); the worker opens it when GitHub reports the PR unmergeable. Procedure in the plugin file, instance facts in the prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |

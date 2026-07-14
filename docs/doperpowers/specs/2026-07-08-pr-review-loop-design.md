@@ -541,7 +541,8 @@ Pending — written at finish.
   requirement mismatches are fix-required, weak process evidence alone is a
   non-blocking audit note, and unverifiable claimed validation is a separate
   confidence-blocking evidence finding even on ticketless PRs. Direct review also
-  exposed that consumer-owned `.agents/skills` can prevent native discovery;
-  the bootstrap now binds the same installed version's absolute `SKILL.md` as
-  a canonical fallback rather than duplicating the protocol. See
+  exposed that consumer-owned `.agents/skills` can prevent discovery and can
+  advertise a PR-controlled same-name skill. The bootstrap therefore
+  unconditionally opens the same installed version's dispatcher-owned absolute
+  `SKILL.md`; workspace skills never define this review protocol. See
   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.
