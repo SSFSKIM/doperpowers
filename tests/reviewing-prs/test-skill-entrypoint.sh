@@ -52,6 +52,7 @@ assert_contains "$SKILL" "IMPLEMENTER-PROTOCOL AUDIT" "runtime skill owns the sp
 assert_contains "$SKILL" "JOIN THE TWO TRACKS" "runtime skill joins independent review results before routing"
 assert_contains "$SKILL" "issue body is the canonical primary specification" "issue body is the primary specification"
 assert_contains "$SKILL" "only documents explicitly referenced by the issue body" "secondary specification evidence is issue-selected"
+assert_contains "$SKILL" "human answers recorded on the issue before implementation resumes are authoritative ticket content" "resumed-ticket answers refine the specification"
 assert_contains "$SKILL" "PROTOCOL BLOCKER" "worker audit defines the confidence-blocking protocol class"
 assert_contains "$SKILL" "SPEC FINDING" "worker audit defines clear requirement mismatches"
 assert_contains "$SKILL" "AUDIT NOTE" "worker audit keeps evidence gaps non-blocking when appropriate"

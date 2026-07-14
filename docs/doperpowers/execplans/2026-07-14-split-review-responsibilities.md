@@ -12,14 +12,15 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 
 - [x] (2026-07-14 10:57Z) Human-approved grill completed: issue body is the canonical primary specification; only documents explicitly referenced by it are secondary specification evidence; the outer worker owns spec and decision-discipline review.
 - [x] (2026-07-14 10:57Z) Human-approved protocol-blocker rule recorded: silently assuming an unresolved human-grade fork or implementing from a substantively unready ticket prevents confidence and routes `needs-human`; a clear settled requirement implemented incorrectly is fixed in scope; missing process evidence alone is a non-blocking review-trail note when the ticket was sufficient and no unauthorized decision exists.
-- [x] (2026-07-14 10:57Z) Autonomous track selected; current branch and existing draft PR #14 retained as the isolated delivery surface.
+- [x] (2026-07-14 10:57Z) Autonomous track selected; work began on the existing PR #14 branch as the isolated implementation surface.
+- [x] (2026-07-14 11:30Z) Human changed delivery only: keep PR #14 as the entrypoint restructure and publish this behavior change as a stacked PR based on `refactor/reviewing-prs-skill-entrypoint`.
 - [x] (2026-07-14 11:03Z) Current protocol, engine, dispatcher, tests, implement-worker gate, and prior living specs inspected; this ExecPlan authored.
 - [x] (2026-07-14 11:04Z) Milestone 1: focused RED tests added. Engine exited 2 on the retired missing-criteria contract; skill entrypoint reported 11 expected failures; rendered dispatch reported 6 expected failures.
 - [x] (2026-07-14 11:08Z) Milestone 2: `review-engine.sh` reduced to `--base` + `--out`; criteria validation and all custom developer instructions removed while the nested environment recipe remained green.
 - [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE routing.
 - [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
-- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex round 1 found one verified P1 (repo-owned `.agents/skills` could hide the required skill); a RED→GREEN version-matched `SKILL.md` fallback is implemented, with re-review pending.
-- [ ] Milestone 6: complete this retrospective, commit the implementation, push the feature branch, and update draft PR #14 without merging or changing `main`.
+- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex round 1's skill-discovery P1 and round 2's resumed-ticket human-answer P1 were each verified and fixed through RED→GREEN cycles; final re-review remains.
+- [ ] Milestone 6: complete this retrospective, commit final evidence on a new follow-up branch, and open a stacked draft PR whose base is `refactor/reviewing-prs-skill-entrypoint`; leave PR #14 and `main` unchanged.
 
 ## Surprises & Discoveries
 
@@ -38,7 +39,9 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - Observation: the broad Claude Code skill suite has an unrelated model-output regex instability in `test-subagent-driven-development.sh`. Two runs produced semantically compliant descriptions but missed different literal patterns (`implementer.*fix` on the first run, `read.*plan` on the second). No file in that skill or test differs on this branch.
   Evidence: suite summary `Passed: 2, Failed: 1`; isolated rerun failed a different assertion; `git diff --quiet origin/main...HEAD -- skills/subagent-driven-development tests/claude-code/test-subagent-driven-development.sh` returned 0.
 - Observation: direct Codex review found that the skill-entrypoint restructure had made Codex doctrine availability depend on an unsafe vendoring assumption. `_codex_vendor_skills` intentionally leaves a repo-owned `.agents/skills` directory untouched, so a worker in that repo could receive only the thin bootstrap and fail the required skill invocation.
-  Evidence: direct review P1 at `review-worker-bootstrap.md`; verified against `_codex_lib.sh`'s early return. Fix: dispatcher binds the absolute `SKILL.md` from the same installed plugin version, and bootstrap uses it only when native skill discovery is unavailable. Focused RED produced 2 skill + 2 dispatch failures; GREEN and shell lint pass.
+  Evidence: direct review round 1 P1 at `review-worker-bootstrap.md`; verified against `_codex_lib.sh`'s early return. Fix: dispatcher binds the absolute `SKILL.md` from the same installed plugin version, and bootstrap uses it only when native skill discovery is unavailable. Focused RED produced 2 skill + 2 dispatch failures; GREEN and shell lint pass.
+- Observation: direct Codex re-review found that the active protocol's source hierarchy omitted the Implement Worker resume contract. A human answer posted to a parked ticket becomes ticket content and may refine the issue body; treating all comments only as process evidence could cause a stale-spec fix.
+  Evidence: round 2 P1 at `SKILL.md`, confirmed against `implement-worker-protocol.md`'s “answers live on the ticket — treat them as ticket content” clause. Focused RED produced one failure; GREEN now makes pre-resume human answers authoritative for the answered fork while retaining the issue body as primary.
 
 ## Decision Log
 
@@ -117,7 +120,7 @@ Milestone 5 verifies the result. Run the three focused tests until green, then r
 
 For the independent exit review, do not invoke the native `code-review` skill and do not dispatch a reviewer subagent. After committing, run one direct bounded `codex exec review --base origin/main` from the branch, read only its final verdict, verify any finding against the code, and fix only confirmed issues. If the direct review cannot run, record the failure and complete the deterministic verification rather than falling back to recursive delegation.
 
-Milestone 6 finishes delivery. Update this plan's Progress, Surprises, Decision Log if needed, and Outcomes & Retrospective with exact verification evidence. Commit implementation changes without `Co-Authored-By` or other attribution. Fetch `origin` before push and ensure `origin/main...HEAD` contains only the reviewing-prs work. Push `refactor/reviewing-prs-skill-entrypoint`, then update draft PR #14's body to describe both commits, the new concurrent tracks, and actual test evidence. Keep the PR draft, do not merge it, and do not push directly to `main`.
+Milestone 6 finishes delivery. Update this plan's Progress, Surprises, Decision Log if needed, and Outcomes & Retrospective with exact verification evidence. Commit implementation changes without `Co-Authored-By` or other attribution. Create `refactor/reviewing-prs-split-review-responsibilities` at the current follow-up head, leaving remote `refactor/reviewing-prs-skill-entrypoint` at the original entrypoint commit. Fetch `origin`, verify the stacked diff against `origin/refactor/reviewing-prs-skill-entrypoint`, push only the new branch, and open a draft PR based on `refactor/reviewing-prs-skill-entrypoint`. Do not modify PR #14, merge either PR, or push directly to `main`.
 
 ## Concrete Steps
 
@@ -227,8 +230,9 @@ The Review Worker protocol gains one conceptual output, stored in its already-cr
 
 This is not a machine schema or a new script interface. It is an independence artifact written by the outer worker before it reads native findings. It contains zero or more `PROTOCOL BLOCKER` and `SPEC FINDING` entries plus any `AUDIT NOTE` entries, each with evidence from the issue body, issue-referenced documents, issue process history, and relevant changed code.
 
-The dispatcher and bootstrap interfaces do not gain new placeholders. `ISSUE_BODY`, `PR_BODY`, `ENGINE_BLOCK`, `FALLBACK_BLOCK`, and existing repo facts are sufficient. The active protocol may instruct the worker to use `gh` for issue comments or timeline evidence when needed; the issue body remains the primary specification regardless of those process records.
+The dispatcher and bootstrap gain one fallback binding, `SKILL_FILE`, whose value is the absolute `skills/reviewing-prs/SKILL.md` from the same installed plugin tree that ran the dispatcher. Native skill invocation remains primary; the worker reads this file only when `doperpowers:reviewing-prs` is not discoverable, such as when a consumer repo owns `.agents/skills`. `ISSUE_BODY`, `PR_BODY`, `ENGINE_BLOCK`, `FALLBACK_BLOCK`, and existing repo facts continue to carry all review-instance context. The active protocol may instruct the worker to use `gh` for issue comments or timeline evidence when needed; the issue body remains the primary specification regardless of those process records.
 
 ## Revision Notes
 
 - 2026-07-14: Initial autonomous ExecPlan authored after the human-approved grill and blocker rule. It deliberately supersedes only the responsibility split from the 2026-07-12 native-review recovery design; the proven nested Codex environment recipe, compact findings file, outage recovery, routing, and merge authority remain unchanged.
+- 2026-07-14 (direct review): Codex round 1 found that a consumer-owned `.agents/skills` directory could hide the required skill after the entrypoint restructure. Added the `SKILL_FILE` runtime binding and canonical-file fallback, preserving native invocation as primary without duplicating protocol text.
