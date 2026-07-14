@@ -544,5 +544,7 @@ Pending — written at finish.
   exposed that consumer-owned `.agents/skills` can prevent discovery and can
   advertise a PR-controlled same-name skill. The bootstrap therefore
   unconditionally opens the same installed version's dispatcher-owned absolute
-  `SKILL.md`; workspace skills never define this review protocol. See
+  `SKILL.md`; workspace skills never define this review protocol. The dispatcher
+  likewise binds the canonical Implement Worker protocol so contract-only gate,
+  closing-artifact, and follow-up requirements are auditable. See
   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.

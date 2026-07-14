@@ -198,6 +198,7 @@ assert_contains "$PROMPT" "unconditionally open" "prompt always loads dispatcher
 assert_contains "$PROMPT" 'Do not resolve this protocol from the workspace `.agents/skills`' "prompt rejects PR-owned same-name skill spoofing"
 assert_not_contains "$PROMPT" "If the named skill is not discoverable" "prompt does not trust conditional workspace discovery"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the version-matched canonical skill path"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" "prompt carries the canonical Implement Worker contract path"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt injects the engine script path"
 assert_contains "$PROMPT" "--base origin/main" "engine call carries the base ref"
 assert_contains "$PROMPT" 'mktemp -d "${TMPDIR:-/tmp}/review-pr-5.XXXXXX"' "engine allocates a unique per-review temp directory"

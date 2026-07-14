@@ -62,12 +62,14 @@ export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
+IMPLEMENT_PROTOCOL_FILE="$(cd "$SKILL_DIR/../implementing-tickets/references" && pwd)/implement-worker-protocol.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
+[ -f "$IMPLEMENT_PROTOCOL_FILE" ] || die "implement worker protocol missing: $IMPLEMENT_PROTOCOL_FILE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
 if [ -z "${BOARD_REPO:-}" ]; then
@@ -294,6 +296,7 @@ PY
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \

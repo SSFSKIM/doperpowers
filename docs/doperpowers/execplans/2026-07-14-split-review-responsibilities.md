@@ -19,7 +19,7 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - [x] (2026-07-14 11:08Z) Milestone 2: `review-engine.sh` reduced to `--base` + `--out`; criteria validation and all custom developer instructions removed while the nested environment recipe remained green.
 - [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE plus independent EVIDENCE FINDING routing.
 - [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
-- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex rounds 1–4 found five verified findings (skill-discovery P1, resumed-answer P1, mutable referenced-spec P1, ticketless evidence-routing P2, workspace skill spoofing P1); each has a RED→GREEN fix, with final re-review remaining.
+- [ ] (2026-07-14 11:18Z) Milestone 5 partially complete: deterministic suites and lint are green. Direct Codex rounds 1–5 found six verified findings (skill-discovery P1, resumed-answer P1, mutable referenced-spec P1, ticketless evidence-routing P2, workspace skill spoofing P1, missing canonical implementer-contract P2); each has a RED→GREEN fix, with final re-review remaining.
 - [ ] Milestone 6: complete this retrospective, commit final evidence on a new follow-up branch, and open a stacked draft PR whose base is `refactor/reviewing-prs-skill-entrypoint`; leave PR #14 and `main` unchanged.
 
 ## Surprises & Discoveries
@@ -48,6 +48,8 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
   Evidence: round 3 P2 at `SKILL.md`; fix introduces `EVIDENCE FINDING`, which is independently verified, fix-required, never logged as tech debt, and confidence-blocking. Ticketless unresolved evidence remains on the PR without `confident-ready`. The focused test failed before all three new clauses and passes after.
 - Observation: round 4 showed that conditional canonical fallback still trusted discovery too much. A PR-owned `.agents/skills` can advertise the exact required name, preventing the fallback and replacing merge authority with attacker-controlled doctrine.
   Evidence: round 4 P1 at `review-worker-bootstrap.md`. Fix redefines the required skill invocation as unconditional loading of dispatcher-owned `SKILL_FILE` and explicitly rejects workspace same-name skills. RED produced 3 skill + 3 dispatch failures; GREEN passes, and shellcheck caught and drove a quoting fix in the regression assertion.
+- Observation: round 5 found that declaring mandatory Implement Worker protocol requirements as a source was insufficient without supplying the source itself. Consumer repos cannot be expected to contain the canonical contract, and workspace copies are untrusted.
+  Evidence: round 5 P2 at `SKILL.md`; fix adds dispatcher-owned `IMPLEMENT_PROTOCOL_FILE`, requires the reviewer to open it before ticket audit, and expands the placeholder/render tests. RED produced 4 skill + 1 dispatch failures; GREEN and shell lint pass.
 
 ## Decision Log
 
@@ -75,6 +77,9 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - Decision: define `Use doperpowers:reviewing-prs` as unconditionally opening the same installed version's dispatcher-owned absolute `SKILL.md`; never resolve the review protocol from workspace `.agents/skills`.
   Rationale: consumer repos may legitimately own `.agents/skills`, and that path is also PR-controlled in the detached head. A conditional fallback fixes missing discovery but still permits a same-name spoofed skill. Embedding the whole protocol would recreate duplication, while the trusted absolute file preserves one source and works for both Claude and Codex workers.
   Date/Author: 2026-07-14 / direct Codex rounds 1 and 4, verified and fixed by implementer.
+- Decision: bind the dispatcher-owned absolute `implement-worker-protocol.md` as `IMPLEMENT_PROTOCOL_FILE` and require the Review Worker to open it before any ticket compliance audit.
+  Rationale: mandatory gate, park/resume, closing-artifact, and follow-up rules are not necessarily repeated in the issue body or consumer repo. Claiming to audit that contract without providing its trusted source creates silent gaps; workspace copies have the same PR-control problem as workspace review skills.
+  Date/Author: 2026-07-14 / direct Codex round 5, verified and fixed by implementer.
 
 ## Outcomes & Retrospective
 
@@ -236,10 +241,11 @@ The Review Worker protocol gains one conceptual output, stored in its already-cr
 
 This is not a machine schema or a new script interface. It is an independence artifact written by the outer worker before it reads native findings. It contains zero or more `PROTOCOL BLOCKER` and `SPEC FINDING` entries plus any `AUDIT NOTE` entries, each with evidence from the issue body, base-pinned issue-referenced documents, authoritative pre-resume human answers, issue process history, and relevant changed code. `EVIDENCE FINDING` entries originate from the concurrent closing-artifact cross-check and join the same routing pass without changing this file's protocol-audit role.
 
-The dispatcher and bootstrap gain one trusted binding, `SKILL_FILE`, whose value is the absolute `skills/reviewing-prs/SKILL.md` from the same installed plugin tree that ran the dispatcher. The bootstrap defines `Use doperpowers:reviewing-prs` as unconditionally opening this dispatcher-owned file before any review action; workspace `.agents/skills` is PR-controlled and never supplies this protocol. `ISSUE_BODY`, `PR_BODY`, `ENGINE_BLOCK`, `FALLBACK_BLOCK`, and existing repo facts continue to carry all review-instance context. The active protocol may instruct the worker to use `gh` for issue comments or timeline evidence when needed; the issue body remains the primary specification regardless of those process records.
+The dispatcher and bootstrap gain two trusted bindings from the installed plugin tree: `SKILL_FILE`, the absolute `skills/reviewing-prs/SKILL.md`, and `IMPLEMENT_PROTOCOL_FILE`, the absolute `skills/implementing-tickets/references/implement-worker-protocol.md`. The bootstrap defines `Use doperpowers:reviewing-prs` as unconditionally opening `SKILL_FILE`; the runtime skill requires opening `IMPLEMENT_PROTOCOL_FILE` before ticket audit. Workspace `.agents/skills` is PR-controlled and supplies neither contract. `ISSUE_BODY`, `PR_BODY`, `ENGINE_BLOCK`, `FALLBACK_BLOCK`, and existing repo facts continue to carry all review-instance context. The active protocol may instruct the worker to use `gh` for issue comments or timeline evidence when needed; the issue body remains the primary specification regardless of those process records.
 
 ## Revision Notes
 
 - 2026-07-14: Initial autonomous ExecPlan authored after the human-approved grill and blocker rule. It deliberately supersedes only the responsibility split from the 2026-07-12 native-review recovery design; the proven nested Codex environment recipe, compact findings file, outage recovery, routing, and merge authority remain unchanged.
 - 2026-07-14 (direct review): Codex round 1 found that a consumer-owned `.agents/skills` directory could hide the required skill, and round 4 showed that a same-name workspace skill could spoof it. Added `SKILL_FILE` and made dispatcher-owned canonical loading unconditional without duplicating protocol text.
 - 2026-07-14 (re-review rounds 2–3): added authoritative pre-resume human answers to the source hierarchy, pinned referenced repository specifications to the pre-PR base/immutable revision, and introduced `EVIDENCE FINDING` so closing-artifact failures remain routed and confidence-blocking on ticketless PRs.
+- 2026-07-14 (re-review rounds 4–5): made dispatcher-owned Review Worker doctrine unconditional to prevent workspace skill spoofing, and bound the canonical Implement Worker protocol so mandatory contract-only requirements are auditable.
