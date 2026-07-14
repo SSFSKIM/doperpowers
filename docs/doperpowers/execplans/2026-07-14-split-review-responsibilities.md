@@ -13,11 +13,11 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - [x] (2026-07-14 10:57Z) Human-approved grill completed: issue body is the canonical primary specification; only documents explicitly referenced by it are secondary specification evidence; the outer worker owns spec and decision-discipline review.
 - [x] (2026-07-14 10:57Z) Human-approved protocol-blocker rule recorded: silently assuming an unresolved human-grade fork or implementing from a substantively unready ticket prevents confidence and routes `needs-human`; a clear settled requirement implemented incorrectly is fixed in scope; missing process evidence alone is a non-blocking review-trail note when the ticket was sufficient and no unauthorized decision exists.
 - [x] (2026-07-14 10:57Z) Autonomous track selected; current branch and existing draft PR #14 retained as the isolated delivery surface.
-- [x] (2026-07-14 11:05Z) Current protocol, engine, dispatcher, tests, implement-worker gate, and prior living specs inspected; this ExecPlan authored.
-- [ ] Milestone 1: add focused tests and observe them fail for the old criteria-coupled, sequential behavior.
-- [ ] Milestone 2: make `review-engine.sh` a pure native correctness engine and update its invocation contract.
-- [ ] Milestone 3: make the Review Worker run an independent protocol-compliance audit concurrently, join both streams, and apply the approved blocker semantics.
-- [ ] Milestone 4: update operator guidance and the two existing living specs to record the new responsibility split and superseded assumptions.
+- [x] (2026-07-14 11:03Z) Current protocol, engine, dispatcher, tests, implement-worker gate, and prior living specs inspected; this ExecPlan authored.
+- [x] (2026-07-14 11:04Z) Milestone 1: focused RED tests added. Engine exited 2 on the retired missing-criteria contract; skill entrypoint reported 11 expected failures; rendered dispatch reported 6 expected failures.
+- [x] (2026-07-14 11:08Z) Milestone 2: `review-engine.sh` reduced to `--base` + `--out`; criteria validation and all custom developer instructions removed while the nested environment recipe remained green.
+- [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE routing.
+- [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
 - [ ] Milestone 5: run focused and broad verification, inspect the final contract directly, and perform one bounded independent Codex review without invoking recursive reviewer subagents.
 - [ ] Milestone 6: complete this retrospective, commit the implementation, push the feature branch, and update draft PR #14 without merging or changing `main`.
 
@@ -29,6 +29,12 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
   Evidence: `skills/reviewing-prs/SKILL.md` lines 25–28 and the prior recovery design's Purpose and Acceptance sections.
 - Observation: the Implement Worker already leaves a protocol-specific gate signal, `[gate] pass`, after moving the ticket to `in-progress`. Its absence is useful audit evidence but, by the approved rule, is not automatically a blocker if the issue was substantively ready and the diff contains no unauthorized product decision.
   Evidence: `skills/implementing-tickets/references/implement-worker-protocol.md` lines 45–49.
+- Observation: the RED tests separate all three stale contracts cleanly. The engine test cannot enter its happy path because production still requires `--criteria`; the skill test reports 11 missing ownership/order assertions; the rendered dispatcher test reports 6 failures for background execution, independence, and criteria removal.
+  Evidence: 2026-07-14 RED run — engine rc 2 with old usage, `11 test(s) FAILED`, and `6 test(s) FAILED` respectively.
+- Observation: direct contract inspection found four omissions after the first GREEN pass: explicit `ready-for-agent` timing, classification of mandatory closing-artifact violations, the non-blocking meaning of missing timeline history, and derivation of the native verdict after removing engine policy. The additions were re-run through a focused RED→GREEN cycle.
+  Evidence: temporary rollback plus expanded structural test produced exactly 4 failures; reapplication returned `all tests passed`.
+- Observation: shell lint caught an unused-local declaration in the new ordering assertion helper; removing the two unused names made the explicit four-file lint run clean.
+  Evidence: first lint reported SC2034 for `first` and `second`; rerun printed only `Linting 4 shell files` and exited 0.
 
 ## Decision Log
 

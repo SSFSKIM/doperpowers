@@ -21,7 +21,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`) |
-| `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + fixed policy in developer instructions + untrusted criteria file); both species call it |
+| `scripts/review-engine.sh` | the pure native-correctness invocation and proven nested environment recipe; both worker species call it while the outer worker owns spec/protocol audit |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
@@ -136,37 +136,51 @@ doperpowers:organizing-sprints input).
 
 ## Closing-artifact cross-check
 
-Before the engine runs, the worker verifies the PR body's `## Validation
-Evidence` section (the implement worker's closing artifact) against the
-diff, the repo, and CI — evidence claimed but not verifiable is itself a
-finding; a missing section is only a review-trail note. This closes the
-evidence loop: the implement side must produce evidence, the review side
-verifies the claims were real.
+After starting the native review in the background, the worker verifies the
+PR body's `## Validation Evidence` section (the implement worker's closing
+artifact) against the diff, the repo, and CI while Codex runs. Evidence
+claimed but not verifiable is itself a finding; a missing section is only an
+`AUDIT NOTE`. This closes the evidence loop without keeping the outer worker
+idle: the implement side produces evidence, and the review side verifies the
+claims independently of the native correctness verdict.
 
-## Review engine
+## Review engine and protocol audit
 
-ONE engine for both worker species: the native `codex exec review --base
-origin/<base>` run by `scripts/review-engine.sh`. The native review owns
-code quality on its own; the script's FIXED `-c developer_instructions=`
-policy (a config value — the CLI forbids combining `--base` with a
-positional prompt) adds ONLY the ticket's spec-compliance review — above
-all decision discipline: did the implementer surface every
-scope/product-taste fork that needed a human call, and where it assumed,
-was the assumption valid to make unasked. The ticket text itself rides an
-explicitly UNTRUSTED data file the policy references: PR/ticket-controlled
-text never enters developer instructions and cannot override policy or
-suppress findings. A ticketless PR adds no instructions at all. The
-engine returns a compact
-structured verdict file; the PR diff never enters the worker's own
-context. Species differ only in nesting: a Codex worker's call runs
-inside its own sandbox (the script detects this and skips the inner
-self-profiling step — the outer workspace-write profile still confines
-it), a Claude worker's runs on the host. There is NO second engine: on
-engine failure the worker retries twice, then posts the trail comment,
-leaves the ticket in-review, and ends its turn with the
-`ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it.
-`needs-human` is never written for an infra outage. The review-trail
-comment names the engine that reviewed.
+The loop has two concurrent review tracks with separate owners.
+
+The native track is `codex exec review --base origin/<base>` run by
+`scripts/review-engine.sh`. It is the pure native correctness reviewer: no
+criteria file, custom prompt, or developer instructions carry ticket text or
+spec policy into Codex. The script owns only the compact findings output and
+the proven environment recipe. Species differ only in nesting: a Codex
+worker's call runs inside its own sandbox (the script skips the inner
+self-profiling step while the outer workspace-write profile still confines
+it), and a Claude worker's call runs on the host.
+
+The outer Review Worker starts that process in the background and directly
+performs the implementer-protocol audit. The linked issue body is the
+canonical primary specification; only documents it explicitly references
+are secondary specification evidence. The worker checks whether implementation
+started only after `ready-for-agent`, whether the issue was substantively
+implementation-ready, whether settled requirements were implemented, and
+whether the Implement Worker stopped instead of silently
+choosing a human-grade scope/product/taste fork. It records this audit before
+reading Codex's findings, then joins the two streams.
+
+Audit output has three forms. A `PROTOCOL BLOCKER` is a substantive gate
+failure or unauthorized human-grade decision; it prevents confidence and
+routes `needs-human`. A `SPEC FINDING` is a clear settled requirement the
+implementation violates; it is fix-required rather than severity-derived.
+An `AUDIT NOTE` records weak process evidence when the ticket was otherwise
+ready and no unauthorized decision exists; it appears in the trail but does
+not block merge by itself. Native severity remains the blocker bit only for
+native correctness findings.
+
+There is NO second correctness engine. On native engine failure the worker
+retries twice, posts the trail comment, leaves the ticket in-review, and ends
+with `ENGINE-UNAVAILABLE`; the sweep re-dispatches when it sees the marker.
+`needs-human` is never written for an infrastructure outage. The review trail
+records both tracks, their findings or notes, and the final routing decision.
 
 ## Edge cases
 

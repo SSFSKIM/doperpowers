@@ -27,21 +27,45 @@ assert_not_contains() {
     if grep -Fq -- "$2" "$1" 2>/dev/null; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
+assert_order() {
+    local first_line second_line
+    first_line="$(grep -nFm1 -- "$2" "$1" 2>/dev/null | cut -d: -f1 || true)"
+    second_line="$(grep -nFm1 -- "$3" "$1" 2>/dev/null | cut -d: -f1 || true)"
+    if [[ -n "$first_line" && -n "$second_line" && "$first_line" -lt "$second_line" ]]; then
+        pass "$4"
+    else
+        fail "$4"; echo "    expected '$2' before '$3' in: $1"
+    fi
+}
 
 echo "runtime skill:"
 assert_file "$SKILL" "SKILL.md exists"
 assert_contains "$SKILL" "name: reviewing-prs" "skill frontmatter name is preserved"
 assert_contains "$SKILL" 'Operator or setup invocation: read `references/operation-manual.md` instead.' "operator invocations route to the reference manual"
 assert_contains "$SKILL" "You are a REVIEW worker for PR #{{PR_NUMBER}}" "SKILL.md is the Review Worker Protocol"
-assert_contains "$SKILL" "ROUTE each finding to exactly one bin" "finding routing lives in the runtime skill"
+assert_contains "$SKILL" "ROUTE each verified finding to exactly one bin" "finding routing lives in the runtime skill"
 assert_contains "$SKILL" "SELF-MERGE tier requires ALL" "merge authority lives in the runtime skill"
 assert_contains "$SKILL" "CROSS-CHECK the PR's closing artifact" "closing-artifact cross-check lives in the runtime skill"
 assert_contains "$SKILL" "not verifiable is itself a finding" "unverifiable claimed evidence remains a finding"
+assert_contains "$SKILL" "START NATIVE CORRECTNESS REVIEW IN BACKGROUND" "runtime skill starts native correctness review without waiting"
+assert_contains "$SKILL" "IMPLEMENTER-PROTOCOL AUDIT" "runtime skill owns the spec and decision-discipline audit"
+assert_contains "$SKILL" "JOIN THE TWO TRACKS" "runtime skill joins independent review results before routing"
+assert_contains "$SKILL" "issue body is the canonical primary specification" "issue body is the primary specification"
+assert_contains "$SKILL" "only documents explicitly referenced by the issue body" "secondary specification evidence is issue-selected"
+assert_contains "$SKILL" "PROTOCOL BLOCKER" "worker audit defines the confidence-blocking protocol class"
+assert_contains "$SKILL" "SPEC FINDING" "worker audit defines clear requirement mismatches"
+assert_contains "$SKILL" "AUDIT NOTE" "worker audit keeps evidence gaps non-blocking when appropriate"
+assert_contains "$SKILL" 'reached `ready-for-agent`' "worker audit checks dispatch authorization timing"
+assert_contains "$SKILL" "mandatory Implement Worker protocol contract" "worker audit covers closing-artifact protocol violations"
+assert_contains "$SKILL" "Missing timeline evidence" "missing authorization history alone remains an audit note"
+assert_contains "$SKILL" "Derive the native verdict yourself" "join derives the native verdict without custom engine policy"
+assert_contains "$SKILL" "native severity is the blocker bit only for native correctness findings" "native severity is scoped to native findings"
+assert_order "$SKILL" "START NATIVE CORRECTNESS REVIEW IN BACKGROUND" "IMPLEMENTER-PROTOCOL AUDIT" "native review starts before the worker audit"
+assert_order "$SKILL" "IMPLEMENTER-PROTOCOL AUDIT" "JOIN THE TWO TRACKS" "worker audit completes before native findings are joined"
 assert_contains "$SKILL" "only when auto-merge is on" "self-merge authority remains gated by auto-merge"
 assert_contains "$SKILL" "needs-human" "human park route remains in the runtime skill"
 assert_not_contains "$SKILL" "needs-info" "review-loop parks remain human-unparked"
 assert_not_contains "$SKILL" "→ blocked" "retired blocked vocabulary stays absent"
-assert_not_contains "$SKILL" "git diff origin/{{BASE_REF}}...HEAD)" "ORIENT still forbids a full-diff read"
 assert_not_contains "$SKILL" "## Adopting a repo (checklist)" "operator setup is absent from the runtime skill"
 want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BOARD_SCRIPTS}} {{DEFAULT_BRANCH}} {{ENGINE_BLOCK}} {{FALLBACK_BLOCK}} {{HEAD_REF}} {{HEAD_SHA}} {{ISSUE_BODY}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PR_BODY}} {{PR_NUMBER}} {{PR_TITLE}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{RISK_MANIFEST}} {{TECH_DEBT_ISSUE}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"

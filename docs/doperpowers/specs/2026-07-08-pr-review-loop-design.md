@@ -40,14 +40,16 @@ PR opened / ready_for_review (ida-solution)
   → GH workflow job on self-hosted runner (the Mac)      [trigger — mechanical]
     → review-dispatch.sh <pr#>                           [assembler — mechanical]
         dedupe → gather PR body + linked issue → detached
-        worktree at PR head SHA → daemon-spawn.sh --no-wait
-      → review daemon (claude --bg, fresh context)       [the worker — judgment]
-          orient → codex review --base <PR base> → verify
-          findings → route (fix / ticket / tech-debt /
-          rebut) → push fixes → re-review? → escalate:
+        worktree at PR head SHA → spawn worker --no-wait
+      → review worker (Claude or Codex, fresh context)   [worker — judgment]
+          start native Codex correctness review in background
+          ∥ audit implementer gate/spec/decision discipline directly
+          → join both streams → verify → route (fix / ticket /
+            tech-debt / rebut / needs-human) → push fixes
+          → re-review? → escalate:
             small + simple + CI green → SELF-MERGE       [autonomous tier]
-            else → confident-ready on PR + issue         [human tier]
-        → human merges confident-ready PRs on wake       [human — big tier only]
+            else → confident-ready or needs-human        [human tier]
+        → human handles escalated PRs on wake            [human — big/decision tier]
 ```
 
 Load-bearing properties:
@@ -111,8 +113,9 @@ whole-branch review; the escalation would have died at the board write).
   branches leave `closingIssuesReferences` empty); detached worktree
   (`git worktree add --detach <repo>/.claude/worktrees/review-pr-<n> <headRefOid>`
   after fetching; a stale worktree with no live daemon is force-removed and
-  re-added); spawn-prompt assembly (protocol verbatim + PR metadata + PR body
-  + linked issue body); then a no-wait spawn:
+  re-added); bootstrap assembly (explicit `doperpowers:reviewing-prs`
+  invocation + runtime bindings, PR body, and linked issue body); then a
+  no-wait spawn:
   `daemon-spawn.sh "review-pr-<n>" "<prompt>" <worktree-path>` with the
   no-wait mode selected (exact surface — flag before positionals or
   `DAEMON_NOWAIT=1` env — decided at implementation; it must not collide
@@ -525,3 +528,13 @@ Pending — written at finish.
   the skill and supplies all instance placeholders as runtime bindings. The
   former operator-oriented skill body moved intact to
   `references/operation-manual.md`. Review policy and routing are unchanged.
+- 2026-07-14 (split review responsibilities): native Codex review returned to
+  pure correctness with no ticket criteria or custom developer instructions.
+  The outer Review Worker now starts Codex in the background, independently
+  audits whether the Implement Worker passed the substantive ticket gate and
+  escalated human-grade forks, records that audit before reading Codex output,
+  then joins both streams. The linked issue body is primary specification;
+  only documents it explicitly references are secondary. Protocol blockers
+  route `needs-human`, settled requirement mismatches are fix-required, and
+  weak process evidence alone is a non-blocking audit note. See
+  `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.

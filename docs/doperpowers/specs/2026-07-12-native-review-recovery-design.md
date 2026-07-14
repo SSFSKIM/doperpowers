@@ -2,10 +2,19 @@
 
 ## Purpose
 
-Restore the review loop's product core: **a review worker calls the native
-`codex exec review` engine and receives a compact structured verdict — the
-PR diff never lands in the worker's own context.** The verdict→fix→re-review
-→confident-ready loop then runs exactly as today.
+This design restored the review loop's native Codex transport: a Review
+Worker calls `codex exec review --base`, receives a compact findings file,
+and retains the proven nested environment recipe. Its original responsibility
+split also put ticket spec compliance into fixed developer instructions and
+kept the PR diff out of the worker's context.
+
+**Current architecture (superseded responsibility split, 2026-07-14):** the
+transport and environment recipe remain, but the criteria/developer-instruction
+carrier does not. Codex now performs pure native correctness review in the
+background while the outer Review Worker reads the implementation through the
+issue's spec and decision-discipline lens. The worker records that independent
+audit before joining the compact Codex findings. See
+`docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.
 
 The current state deviates from that core. The codex-workers build
 (2026-07-10) hit two walls — the `--base`-vs-`[PROMPT]` clap conflict, then
@@ -43,7 +52,11 @@ required", never "infrastructure failed".
 
 ## Ground truth (verified live 2026-07-12)
 
-- The reviewer invocation, identical for both worker species:
+The nested-execution facts below remain evidence for the environment recipe.
+The criteria and developer-instruction portions describe the 2026-07-12
+shipped state and are superseded by the current-architecture note above.
+
+- The reviewer invocation, identical for both worker species at that time:
 
   ```
   codex exec review --base origin/<base> \
@@ -177,6 +190,13 @@ same only-if-unset pattern. Worker-shell flags unchanged.
 - Upstreaming — fork-local product core.
 
 ## Acceptance
+
+These are the acceptance conditions used to ship the 2026-07-12 recovery.
+Criteria/compliance findings in the native verdict are historical; current
+acceptance instead requires no criteria or custom developer instructions in
+the native invocation, plus a worker-owned audit recorded before the join.
+The compact output, nested execution, outage recovery, and no-fallback clauses
+remain active.
 
 - A codex review worker's transcript shows the PR verdict arriving as a
   compact findings file from `review-engine.sh` — no full-diff dump into
@@ -356,3 +376,13 @@ plan re-execution; everything else executed as written.
    the former operator-oriented skill body moved to
    `references/operation-manual.md`. The dispatcher now invokes the skill via
    a thin runtime-binding bootstrap; engine policy and behavior are unchanged.
+6. **2026-07-14 (responsibility split).** Live use showed that even the minimal
+   spec/decision addendum could distract the native correctness review. The
+   criteria interface and custom developer instructions were therefore removed
+   from `review-engine.sh`; its nested transport and environment recipe remain.
+   The outer Review Worker now starts Codex in the background, audits the
+   Implement Worker's gate and human-escalation discipline against the issue
+   body and issue-referenced documents, records that audit independently, and
+   joins both streams. This intentionally supersedes Notes 2–4's final carrier
+   while preserving them as the evidence trail that led here. See
+   `docs/doperpowers/execplans/2026-07-14-split-review-responsibilities.md`.
