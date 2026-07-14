@@ -534,11 +534,13 @@ Pending — written at finish.
   audits whether the Implement Worker passed the substantive ticket gate and
   escalated human-grade forks, records that audit before reading Codex output,
   then joins both streams. The linked issue body is primary specification;
-  only documents it explicitly references are secondary, while human answers
+  only documents it explicitly references are secondary, resolved from the PR
+  base or another immutable revision rather than PR head. Human answers
   recorded on a parked ticket before resume are authoritative ticket content
-  for the answered fork. Protocol blockers
-  route `needs-human`, settled requirement mismatches are fix-required, and
-  weak process evidence alone is a non-blocking audit note. Direct review also
+  for the answered fork. Protocol blockers route `needs-human`, settled
+  requirement mismatches are fix-required, weak process evidence alone is a
+  non-blocking audit note, and unverifiable claimed validation is a separate
+  confidence-blocking evidence finding even on ticketless PRs. Direct review also
   exposed that consumer-owned `.agents/skills` can prevent native discovery;
   the bootstrap now binds the same installed version's absolute `SKILL.md` as
   a canonical fallback rather than duplicating the protocol. See

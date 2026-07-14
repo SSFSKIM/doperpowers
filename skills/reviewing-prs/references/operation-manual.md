@@ -161,7 +161,9 @@ it), and a Claude worker's call runs on the host.
 The outer Review Worker starts that process in the background and directly
 performs the implementer-protocol audit. The linked issue body is the
 canonical primary specification; only documents it explicitly references
-are secondary specification evidence. For a resumed park, a human answer
+are secondary specification evidence. Repository documents are resolved from
+the PR base (or an immutable revision named by the issue), never from PR head,
+so a PR cannot relax its own requirements. For a resumed park, a human answer
 recorded on the issue before implementation resumes is authoritative ticket
 content for that fork. The worker checks whether implementation started only
 after `ready-for-agent`, whether the issue was substantively
@@ -176,8 +178,11 @@ routes `needs-human`. A `SPEC FINDING` is a clear settled requirement the
 implementation violates; it is fix-required rather than severity-derived.
 An `AUDIT NOTE` records weak process evidence when the ticket was otherwise
 ready and no unauthorized decision exists; it appears in the trail but does
-not block merge by itself. Native severity remains the blocker bit only for
-native correctness findings.
+not block merge by itself. Separately, an `EVIDENCE FINDING` is claimed
+validation that cannot be verified or a required evidence add-on that is
+missing. It is fix-required and blocks confidence even on ticketless PRs;
+ticketless escalation stays on the PR because there is no board node to park.
+Native severity remains the blocker bit only for native correctness findings.
 
 There is NO second correctness engine. On native engine failure the worker
 retries twice, posts the trail comment, leaves the ticket in-review, and ends
