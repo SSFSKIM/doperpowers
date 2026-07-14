@@ -20,7 +20,7 @@ A user can see the change in a rendered review-worker prompt and in the hermetic
 - [x] (2026-07-14 11:10Z) Milestone 3: runtime protocol now starts native correctness in the background, writes an independent implementer-protocol audit, joins both streams, and applies PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE plus independent EVIDENCE FINDING routing.
 - [x] (2026-07-14 11:12Z) Milestone 4: operation manual and both living specs updated to record the responsibility split and preserve the superseded criteria-carrier history.
 - [x] (2026-07-14 13:48Z) Milestone 5 complete: deterministic suites and lint are green. Direct Codex rounds 1–7 found eleven verified findings, each fixed through RED→GREEN; round 8 returned no actionable regressions and confirmed the final dispatch, provenance, concurrency, and routing contracts are internally consistent.
-- [ ] Milestone 6: complete this retrospective, commit final evidence on a new follow-up branch, and open a stacked draft PR whose base is `refactor/reviewing-prs-skill-entrypoint`; leave PR #14 and `main` unchanged.
+- [x] (2026-07-14 13:55Z) Milestone 6 complete: pushed `refactor/reviewing-prs-split-review-responsibilities`, opened draft PR #15 against `refactor/reviewing-prs-skill-entrypoint`, verified the stack merge-base is `8b17678`, confirmed PR #14 remains unchanged, and reset the stale local stack-base branch ref to its remote commit without pushing it.
 
 ## Surprises & Discoveries
 
@@ -106,7 +106,7 @@ The review loop now has two explicit owners instead of one overloaded prompt. Na
 
 Exit review materially strengthened the design beyond the initial responsibility split. Eleven verified findings across seven rounds closed trust gaps around workspace skill spoofing, current-versus-authoritative issue and protocol text, resumed human answers, mutable referenced documents, ticketless evidence routing, contradictory Validation Evidence classification, and same-worktree command concurrency. The final design binds dispatcher-owned Review and Implement Worker contracts, fingerprints authorization-time inputs in the gate comment, uses GitHub edit history for ticket drift, refuses retroactive contract enforcement, and keeps concurrent audit read-only until native review joins. Direct Codex round 8 found no actionable regressions.
 
-Focused review-engine, skill-entrypoint, rendered-dispatch, land-dispatch, Implement Worker protocol, Codex daemon substrate, Codex plugin-sync, shell-lint, and diff checks all pass. The broad Claude Code skill suite still has the unrelated model-output regex instability documented in Surprises & Discoveries; no changed file belongs to that skill or test. No live consumer Review Worker pressure session was run, so the stacked pull request remains draft for human diff review and later consumer shakedown.
+Focused review-engine, skill-entrypoint, rendered-dispatch, land-dispatch, Implement Worker protocol, Codex daemon substrate, Codex plugin-sync, shell-lint, and diff checks all pass. The broad Claude Code skill suite still has the unrelated model-output regex instability documented in Surprises & Discoveries; no changed file belongs to that skill or test. No live consumer Review Worker pressure session was run, so stacked PR #15 (`https://github.com/SSFSKIM/doperpowers/pull/15`) remains draft for human diff review and later consumer shakedown.
 
 ## Context and Orientation
 
@@ -274,3 +274,4 @@ The dispatcher and bootstrap gain trusted bindings from the installed plugin tre
 - 2026-07-14 (re-review rounds 4–5): made dispatcher-owned Review Worker doctrine unconditional to prevent workspace skill spoofing, and bound the canonical Implement Worker protocol so mandatory contract-only requirements are auditable.
 - 2026-07-14 (re-review rounds 6–7): removed contradictory and retroactive missing-validation routes; added authorization-time issue-body / implement-protocol fingerprints; and limited concurrent shared-worktree evidence audit to read-only inspection, with local commands serialized after JOIN.
 - 2026-07-14 (final review round 8): direct native Codex review returned no actionable regressions; completed Milestone 5 and the retrospective with the broad-suite model-output instability explicitly retained as an unrelated limitation.
+- 2026-07-14 (delivery): opened draft stacked PR #15 against the unchanged PR #14 branch, verified the remote stack, and restored the stale local base-branch ref to `8b17678`.
