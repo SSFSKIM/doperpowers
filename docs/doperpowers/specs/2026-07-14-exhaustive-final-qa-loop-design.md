@@ -1,5 +1,7 @@
 # Exhaustive Final QA Loop
 
+> **Status: Deferred (2026-07-14).** Preserved for future consideration; do not begin implementation until this design is explicitly reactivated.
+
 Add an optional, stateful final-branch quality-assurance campaign for high-risk work that needs more than one ordinary review pass. The campaign persists findings across review, fix, and re-review rounds; separates raw observations from verified defects; blocks completion on unresolved material findings; and preserves non-blocking work through explicit landing or durable routing.
 
 ## Problem

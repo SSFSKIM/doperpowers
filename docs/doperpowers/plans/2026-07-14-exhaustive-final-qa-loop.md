@@ -1,5 +1,7 @@
 # Exhaustive Final QA Loop Implementation Plan
 
+> **Status: Deferred (2026-07-14).** Preserved for future consideration; do not execute this plan until it is explicitly reactivated.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-development (recommended) or doperpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an optional, resumable final-branch QA campaign that persists and verifies findings across bounded review/fix/re-review rounds, converges only on one unchanged final head, and leaves routine work on the existing inexpensive review path.
