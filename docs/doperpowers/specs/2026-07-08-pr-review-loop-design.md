@@ -620,3 +620,27 @@ Pending — written at finish.
   revision may promote the fixer to a second-order orchestrator
   (per-finding parallel fixers in isolated worktrees merged by the
   fixer); the accountability contract above is already compatible.
+- 2026-07-16 (constraint-minimization, second pass): a sweep for leftover
+  means-bans and over-scoped DO-mandates the first pass missed. Removed:
+  the codex execution block's "execute it YOURSELF" emphasis (delegation
+  inside the worker's thread is its call; the thread boundary alone is
+  the rule); the spike decompose path's "no exploring" ban (replaced by
+  the deliverable statement — the registered children, not a half-answer;
+  recon that sharpens their notes was never the hazard); and the
+  operation manual's drift from pass one — "never a fixer / it never
+  edits code" became the ownership statement, "works the batch
+  sequentially" dropped, and both "below the engine's critical/high
+  class" definitions of non-blockers now defer to the worker's own
+  routing. Examined and deliberately KEPT, each mapping to a definite
+  failure state: audit-recorded-before-engine-output (independence is
+  unrecoverable once contaminated); TOO BIG never waves (ungated scope
+  entering the branch under wave authority); INVALID only via a graded
+  REFUTED disposition (a finding killed and rebutted publicly by the
+  same context that benefits from fewer waves — the two-context split is
+  the verification architecture, same as grading); ONE fixer tree per
+  wave (all fixers share one worktree — a second tree is exactly the
+  un-isolated-workspace hazard); verify-then-fix (the REFUTED lane
+  exists only because the fixer verifies); the read-only-until-JOIN
+  window (occupancy in practice — the engine holds the worktree the
+  whole span); and the land delta bounds/prohibitions (a resolution
+  delta is unreviewed by construction).

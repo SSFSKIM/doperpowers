@@ -17,7 +17,7 @@ Modes:
   .agents/skills/execplan): author ONE self-contained ExecPlan as
   docs/plans/issue-{{ISSUE_NUMBER}}.md on your branch (milestones with
   observable acceptance criteria, exact files per milestone), commit it,
-  then execute it YOURSELF to the letter, milestone by milestone — same
+  then execute it to the letter, milestone by milestone — same
   evidence discipline within each.
 Sub-agents and collab threads (research, exploration, parallel fan-out)
 are yours to use as the work warrants. writing-plans and

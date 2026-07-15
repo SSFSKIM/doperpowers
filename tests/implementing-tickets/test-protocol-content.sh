@@ -80,6 +80,7 @@ assert_contains "$spike" "terminal states" "spike: terminal states stay the huma
 assert_contains "$spike" "[findings]" "spike: structured findings comment mandated"
 assert_contains "$spike" "doperpowers:issue-tracker" "spike: graduation registration routes through the issue-tracker skill"
 assert_contains "$spike" "author its body at register time" "spike: graduated ticket body authored at register time"
+assert_not_contains "$spike" "no exploring" "spike: the decompose verdict states its deliverable, not an exploration ban"
 
 echo "decompose procedure (runtime-opened):"
 DECOMP="$REPO_ROOT/skills/implementing-tickets/references/implement-decompose.md"
@@ -103,6 +104,7 @@ assert_contains "$exec_codex" "EXECPLAN:" "codex block: execplan mode wired (not
 assert_contains "$exec_codex" "doperpowers:execplan" "codex block: routes to the execplan doctrine"
 assert_contains "$exec_codex" ".agents/skills" "codex block: vendored skill doctrine pointer"
 assert_not_contains "$exec_codex" "work ALONE" "codex block: no blanket work-alone constraint (subagents are the worker's call)"
+assert_not_contains "$exec_codex" "YOURSELF" "codex block: no solo-execution emphasis (delegation inside the thread is the worker's call)"
 assert_not_contains "$exec_claude" "work ALONE" "claude block: no blanket work-alone constraint (subagents are the worker's call)"
 assert_contains "$exec_codex" "writing-plans" "codex block: names writing-plans as interactive-only"
 assert_contains "$exec_claude" "writing-plans" "claude block: names writing-plans as interactive-only"

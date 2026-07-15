@@ -30,7 +30,8 @@ with your best guess at what was meant.
 Scope check: the exploration must fit one session. A question too big forks
 the same way implement decompose does — register narrower spikes
 ({{BOARD_SCRIPTS}}/board-register.sh "<title>" spike <P0..P3>
---parent {{ISSUE_NUMBER}}, honest notes) and end your turn, no exploring.
+--parent {{ISSUE_NUMBER}}, honest notes) and end your turn — the
+registered children, not a half-answer, are this turn's deliverable.
 
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress

@@ -153,7 +153,7 @@ ENGINE_BLOCK_REF="$REPO_ROOT/skills/reviewing-prs/references/engine-blocks/engin
 assert_contains "$ENGINE_BLOCK_REF" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
 assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code verification"
 assert_contains "$WAVEBOARD" "never implement from the finding text alone" "finding-text discipline survives in the fixer"
-assert_contains "$WAVEBOARD" "ONE fixer subagent per wave" "one fixer works the wave sequentially"
+assert_contains "$WAVEBOARD" "ONE fixer subagent per wave" "one accountable fixer tree per wave (shared-worktree isolation)"
 assert_contains "$WAVEBOARD" "subagents included" "delegation is the fixer's call"
 assert_contains "$WAVEBOARD" "claimed by exactly one item" "every commit is attributable from the board alone"
 assert_contains "$WAVEBOARD" "makes the affected item FAILED" "an unclaimed or mixed commit has an explicit grading route"
@@ -217,6 +217,9 @@ assert_not_contains "$MANUAL" "Before the engine runs" "cross-check is concurren
 assert_contains "$MANUAL" "[gate] pass" "manual carries the gate-comment-keyed evidence rule"
 assert_not_contains "$MANUAL" "--criteria" "retired criteria interface stays absent from the manual"
 assert_not_contains "$MANUAL" "developer instructions" "retired engine policy stays absent from the manual"
+assert_not_contains "$MANUAL" "it never edits code" "manual states edit ownership, not an edit prohibition"
+assert_not_contains "$MANUAL" "works the batch sequentially" "wave-work organization is the fixer's call"
+assert_not_contains "$MANUAL" "below the engine's critical/high class" "manual routes findings by the worker's judgment, not a severity class"
 
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"

@@ -67,8 +67,8 @@ dispatch — always re-dispatches regardless.
 ## Merge authority (two tiers)
 
 Encoded in the protocol's ESCALATE block — ALL clauses must hold for
-self-merge: final verdict approve (or only non-blocker findings — everything
-below the engine's critical/high class — each explicitly routed); no
+self-merge: final verdict approve (or only non-blocker findings by the
+worker's own routing, each explicitly routed); no
 unresolved PROTOCOL BLOCKER or SPEC FINDING from the worker's own
 compliance audit; post-fix
 diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
@@ -142,8 +142,8 @@ PR-review-event trigger arrives with runner registration.
 
 ## Tech-debt sink
 
-Non-blocking findings — everything below the engine's critical/high class
-— go by DEFAULT to ONE standing GitHub issue per repo (label `tech-debt`)
+Non-blocking findings — everything the worker routes LOG — go by DEFAULT
+to ONE standing GitHub issue per repo (label `tech-debt`)
 as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
 and the edit would land inside the very PR under review. Register the
@@ -193,11 +193,12 @@ infra outage. The review-trail comment names the engine that reviewed.
 
 ## The orchestrator and fix waves
 
-The review worker is an orchestrator, never a fixer — it never edits code.
-Verified-fixable findings (native critical/high + SPEC FINDINGs) go onto a
-wave-board file (`<review-tmp>/pr-<n>-fix-wave-<k>.md`, in the
+The review worker is an orchestrator: the edits are the fixer tree's; the
+grading and the trusted push chain are the worker's.
+Findings routed WAVE (blockers by the worker's routing + SPEC FINDINGs) go
+onto a wave-board file (`<review-tmp>/pr-<n>-fix-wave-<k>.md`, in the
 worker-created tmp directory — NEVER inside the PR worktree, never committed),
-and ONE fresh-context fixer subagent works the batch sequentially under a
+and ONE fresh-context fixer subagent works the batch under a
 verify-then-fix contract: read the cited code first, then FIX (commit + test
 evidence) or REFUTE (code citation). The worker waits for the whole task tree
 to quiesce, snapshots the submitted board, grades every disposition, and
