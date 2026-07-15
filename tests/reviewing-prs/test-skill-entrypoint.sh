@@ -135,6 +135,13 @@ assert_contains "$MANUAL" "## Adopting a repo (checklist)" "operation manual pre
 assert_contains "$MANUAL" '`SKILL.md` | the Review Worker Protocol' "operation manual points to the runtime skill"
 assert_contains "$MANUAL" "only non-blocker findings" "operation manual matches the protocol's self-merge findings clause"
 assert_not_contains "$MANUAL" "only low findings" "retired low-findings wording stays absent from the manual"
+assert_contains "$MANUAL" "fix wave" "operation manual describes the fix-wave delegation"
+assert_contains "$MANUAL" "wave-board.md" "operation manual points at the wave-board reference"
+assert_contains "$MANUAL" "outage cap" "operation manual records the sweep outage cap"
+assert_contains "$MANUAL" "PROTOCOL BLOCKER" "operation manual names the compliance-audit blocker class"
+assert_not_contains "$MANUAL" "worker species" "retired two-species vocabulary stays absent from the manual"
+assert_not_contains "$MANUAL" "--criteria" "retired criteria interface stays absent from the manual"
+assert_not_contains "$MANUAL" "developer instructions" "retired engine policy stays absent from the manual"
 
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"

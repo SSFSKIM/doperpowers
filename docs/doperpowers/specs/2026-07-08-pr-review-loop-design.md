@@ -7,11 +7,15 @@ happens by merge with no rigor gate. A daemon opens a PR and nothing stands
 between that PR and the human's merge button except the human's own reading
 time. After this change, every non-draft PR opened in a consumer repo is
 picked up within minutes by a fresh-context **review worker** — a background
-`claude` daemon that runs a Codex review against the PR's base, verifies each
-finding against the code, applies the valid fixes, re-reviews when the fixes
+Claude-harness daemon that runs the pure-correctness Codex engine against
+the PR's base while auditing implementer protocol/spec compliance itself,
+triages the joined findings on native severity, delegates fixing to
+fix-wave subagents and grades their dispositions, re-reviews when the fixes
 warrant it, and then either merges the PR itself (small/simple tier, CI
 green) or escalates it as **`confident-ready`** — a new board state meaning
-"rigorously reviewed; merge with confidence."
+"rigorously reviewed; merge with confidence." (As first shipped the worker
+fixed findings itself under a single criteria-coupled engine; the 2026-07-15
+Revision Note below records the orchestrator/fix-wave rebuild.)
 
 The loop is the inverse-symmetric counterpart of the implementing daemon:
 where an implementing worker turns a ticket into a PR, a review worker turns
@@ -541,3 +545,25 @@ Pending — written at finish.
   findings" while the protocol says non-blockers (everything below
   critical/high, medium included); the manual now matches, with regression
   asserts pinning both the manual wording and the tail's absence.
+- 2026-07-15 (orchestrator rebuild, one harness): three coupled changes landed
+  together on `redesign/reviewing-prs-orchestrator` (ExecPlan:
+  `docs/doperpowers/execplans/2026-07-15-reviewing-prs-orchestrator-rebuild.md`).
+  (1) Split responsibilities — the engine is pure correctness
+  (`review-engine.sh --base <ref> --out <file>`, no criteria, no
+  developer_instructions), started in the background; the worker itself
+  audits implementer protocol/spec compliance concurrently (issue body as
+  canonical primary spec, timestamp-anchored drift via GitHub edit history,
+  classes PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE) and records the
+  audit before JOIN. (2) Orchestrator, not fixer — the worker never edits
+  code: fix-required findings ride a wave-board file
+  (`.doperpowers/qa/pr-<n>-fix-wave-<k>.md`, never committed) worked by ONE
+  fixer subagent per wave under a verify-then-fix contract; the worker
+  grades dispositions, pushes, strips `confident-ready` in-loop; max 2
+  waves inside the 3-round cap; whole-range re-review with dedupe.
+  (3) One worker harness — the codex-CLI-as-worker species retired; the
+  default route spawns the same Claude-harness daemon with the clodex
+  gateway settings (`DAEMON_CLAUDE_SETTINGS`/`EFFORT`, persisted in registry
+  meta and reconstructed on resume forks), `engine:claude` opts into plain
+  models. The sweep gained a 3-consecutive-outage cap per PR. The FIX NOW
+  bin text above (§ finding routing) describes the pre-rebuild worker and
+  is superseded by WAVE.
