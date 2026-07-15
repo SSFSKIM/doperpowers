@@ -149,12 +149,16 @@ doperpowers:organizing-sprints input).
 
 ## Closing-artifact cross-check
 
-Before the engine runs, the worker verifies the PR body's `## Validation
-Evidence` section (the implement worker's closing artifact) against the
-diff, the repo, and CI — evidence claimed but not verifiable is itself a
-finding; a missing section is only a review-trail note. This closes the
-evidence loop: the implement side must produce evidence, the review side
-verifies the claims were real.
+Part of the worker's concurrent compliance audit: while the engine runs,
+the worker verifies the PR body's `## Validation Evidence` section (the
+implement worker's closing artifact) by inspection — read-only until
+JOIN, with command-backed checks deferred and run serially afterwards.
+Evidence claimed but not verifiable is a SPEC FINDING. A MISSING section
+is a SPEC FINDING only when the ticket carries a `[gate] pass` comment
+(the gate proves an implement worker under the current contract produced
+the PR); otherwise it is an AUDIT NOTE — no retroactive policy on legacy
+or non-loop PRs. This closes the evidence loop: the implement side must
+produce evidence, the review side verifies the claims were real.
 
 ## Review engine (pure correctness) + worker audit (compliance)
 

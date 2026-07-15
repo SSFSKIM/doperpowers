@@ -91,10 +91,16 @@ Classes — exactly three:
   state in the needs-human note that fixing continues, and keep running
   waves.
 - SPEC FINDING — a clear settled requirement implemented incorrectly, OR
-  claimed/required closing evidence that cannot be verified. Fix-required:
-  it joins the wave alongside native blockers and blocks confidence while
-  unresolved. An oversized correction (beyond TOO BIG bounds) is a
-  needs-human impasse, never silent deferral.
+  claimed/required closing evidence that cannot be verified. Fix-required
+  and confidence-blocking while unresolved, with the route split by kind:
+  a code defect joins the wave alongside native blockers; an evidence
+  defect (no actor here may edit the PR body) is
+  resolved by verification, not by a wave — after JOIN run the relevant
+  checks yourself, serially: pass → record the verified evidence in the review
+  trail and the finding resolves (the process gap stays an AUDIT NOTE);
+  fail → the failure is a correctness finding and waves. An oversized
+  correction (beyond TOO BIG bounds) is a needs-human impasse, never
+  silent deferral.
 - AUDIT NOTE — missing or weak process evidence where the ticket was
   substantively ready and no unauthorized product decision exists. Review
   trail only; never a merge blocker.
@@ -163,8 +169,11 @@ After a wave that fixed anything, rerun the engine — same command, fresh
 --out file, in the background again; max 3 engine rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
-dispositions (line numbers shift after fixes); a match is already routed —
-do not re-wave it, log it twice, or count it. The exit condition is no
+dispositions (line numbers shift after fixes). A match against a LOGGED
+finding or an accepted REFUTED disposition is already routed — do not
+re-wave it, log it twice, or count it. A re-flag matching a FIXED item is
+the opposite: the fix did not hold — that is a live blocker, never a
+dupe; re-wave it within the caps. The exit condition is no
 NEW blocker, not a clean report. At the cap with unresolved blockers: do
 NOT grant confidence — set ticket #{{ISSUE_NUMBER}} to needs-human with an
 impasse summary and end your turn.
@@ -198,6 +207,12 @@ If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge. Take
 the HUMAN-tier actions below and state in the trail that the self-merge
 tier WAS satisfied, naming the clauses it met ("auto-merge disabled — this
 is what I would have merged").
+
+PARKED tier — this ticket already sits at needs-human (a confirmed
+PROTOCOL BLOCKER, an unresolved SPEC FINDING, or blockers at the round
+cap): NEVER grant confident-ready over a park. Do not add the label, do
+not transition the ticket — post the review-trail comment (including
+everything the waves fixed) and end your turn with the park intact.
 
 HUMAN tier — anything else, or observation mode above:
   gh pr edit {{PR_NUMBER}} --add-label confident-ready
