@@ -525,3 +525,19 @@ Pending — written at finish.
   the skill and supplies all instance placeholders as runtime bindings. The
   former operator-oriented skill body moved intact to
   `references/operation-manual.md`. Review policy and routing are unchanged.
+- 2026-07-15 (entrypoint hardening before landing): adversarial review of the
+  restructure found two defects of the new file-based entrypoint itself and
+  one doc drift, fixed on the PR before landing. (1) Trust boundary: the
+  bootstrap now binds `SKILL_FILE` (dispatcher-owned absolute path) and
+  instructs the worker to open it unconditionally, never resolving the
+  protocol from the workspace `.agents/skills` — that path is PR-controlled
+  in the detached review head, so a PR could ship a same-named skill that
+  replaces the merge rubric. A rendered prompt was immune by construction;
+  a runtime-opened file needs the pinned path. (2) Dead template tail:
+  SKILL.md carried unrendered `---- PR brief ----` sections that nothing
+  renders (dispatch renders the bootstrap, not SKILL.md); removed — briefs
+  and manifests ride the dispatch prompt, and the protocol now says so.
+  (3) `operation-manual.md` still said self-merge tolerates "only low
+  findings" while the protocol says non-blockers (everything below
+  critical/high, medium included); the manual now matches, with regression
+  asserts pinning both the manual wording and the tail's absence.

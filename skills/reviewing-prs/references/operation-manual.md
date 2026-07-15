@@ -52,8 +52,9 @@ net: PRs opened while the machine slept (GitHub queues self-hosted jobs only
 ## Merge authority (two tiers)
 
 Encoded in the protocol's ESCALATE block — ALL clauses must hold for
-self-merge: final verdict approve (or only low findings, each explicitly
-routed); post-fix diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
+self-merge: final verdict approve (or only non-blocker findings — everything
+below the engine's critical/high class — each explicitly routed); post-fix
+diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
 **not** the repo default branch (self-merge lands only on integration
 branches); zero touches on a **risk surface**; every CI check green — a repo
 with no checks disqualifies self-merge, no exceptions. Anything else →
