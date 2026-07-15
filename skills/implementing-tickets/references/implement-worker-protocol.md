@@ -9,7 +9,7 @@ Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
 
 THE GATE comes before everything. Do not open a source file until the
-ticket passes. Interrogate the brief the way a brainstorming grill
+ticket passes. Interrogate the brief the way a doperpowers:brainstorming grill
 interrogates a human — but every answer must come from the ticket body, the
 codebase, or repo docs. Trivial lookups (docs, grep, an API's actual shape)
 are orient work: do them, never park for them.
