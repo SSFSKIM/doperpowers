@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "description": "doperpowers — a two-track software-development methodology for coding agents, packaged as a Claude Code plugin.",
+  "description": "Emerges by humans, Converges by Agents",
   "owner": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "doperpowers",
-      "description": "A two-track methodology for coding agents: a human-gated controlled track (brainstorm → spec → plan → subagent-driven TDD → review → ship) plus an autonomous board loop that drives well-scoped work to reviewed PRs unattended.",
+      "description": "Emerges by humans, Converges by Agent",
       "version": "7.17.0",
       "source": "./",
       "author": {

@@ -38,6 +38,16 @@ task="${2:?missing task}"
 cwd="${3:-$PWD}"
 worktree="${4:-}"
 model="${5:-}"
+# Gateway dimension (env-injected): DAEMON_CLAUDE_SETTINGS is a --settings JSON
+# path (e.g. a local-proxy gateway config), DAEMON_CLAUDE_EFFORT an --effort
+# value. Both are persisted in the registry meta because daemon-resume.sh
+# reconstructs the argv from meta on every fork — without the round-trip a
+# gateway daemon silently reverts to plain models on its first resume.
+gw_settings="${DAEMON_CLAUDE_SETTINGS:-}"
+gw_effort="${DAEMON_CLAUDE_EFFORT:-}"
+meta_extra=()
+[ -n "$gw_settings" ] && meta_extra+=( settings "$gw_settings" )
+[ -n "$gw_effort" ] && meta_extra+=( effort "$gw_effort" )
 
 # --bg manages the session id (it ignores --session-id), so we capture the short
 # id it prints and resolve the full UUID from `claude agents`.
@@ -47,6 +57,8 @@ if [ -n "$worktree" ]; then
   args+=( --worktree "$wt" )
 fi
 [ -n "$model" ] && args+=( --model "$model" )
+[ -n "$gw_settings" ] && args+=( --settings "$gw_settings" )
+[ -n "$gw_effort" ] && args+=( --effort "$gw_effort" )
 args+=( "$task" )
 
 # env -u RUNNER_TRACKING_ID: under a GitHub Actions runner the job env carries
@@ -81,7 +93,8 @@ if [ "$nowait" -eq 1 ]; then
   _meta_set "$uuid" \
     uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
     worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
-    status "$status" created "$(_now)" updated "$(_now)" turns "1"
+    status "$status" created "$(_now)" updated "$(_now)" turns "1" \
+    ${meta_extra[@]+"${meta_extra[@]}"}
   echo "daemon spawned (no-wait): $name  [$short / $uuid]  status=$status  (reply: daemon-reply.sh $short)"
   exit 0
 fi
@@ -110,7 +123,8 @@ _record_reply "$uuid" "$uuid" "$state"
 _meta_set "$uuid" \
   uuid "$uuid" current "$uuid" short "$short" name "$name" task "$task" cwd "$runcwd" \
   worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
-  status "$status" created "$(_now)" updated "$(_now)" turns "1"
+  status "$status" created "$(_now)" updated "$(_now)" turns "1" \
+  ${meta_extra[@]+"${meta_extra[@]}"}
 
 wtnote=""; [ -n "$worktree" ] && wtnote="  worktree=$runcwd (branch worktree-$wt)"
 echo "daemon spawned: $name  [$short / $uuid]  state=$state${wtnote}  (visible in 'claude agents')"

@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "description": "A two-track software-development methodology for coding agents: a controlled track (brainstorm → spec → plan → subagent-driven TDD → review → ship) with a human gate at every seam, plus an autonomous board loop (issue-tracker, implementing-tickets, reviewing-prs, orchestrating-daemons) that drives well-scoped work to reviewed PRs unattended.",
+  "description": "Emerges by humans, Converges by Agents",
   "version": "7.17.0",
   "author": {
     "name": "SSFSKIM",

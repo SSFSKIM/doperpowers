@@ -356,3 +356,15 @@ plan re-execution; everything else executed as written.
    the former operator-oriented skill body moved to
    `references/operation-manual.md`. The dispatcher now invokes the skill via
    a thin runtime-binding bootstrap; engine policy and behavior are unchanged.
+6. **2026-07-15 (engine purified — criteria path removed).** The
+   split-responsibilities rebuild (ExecPlan:
+   `docs/doperpowers/execplans/2026-07-15-reviewing-prs-orchestrator-rebuild.md`)
+   removed the entire criteria carrier this document designed: the engine
+   interface is now `review-engine.sh --base <ref> --out <file>` and sends
+   NO `developer_instructions` — ticket/spec compliance moved into the
+   Review Worker's own concurrent audit, and the worker delegates fixes to
+   fix-wave subagents. Sections above describing `--criteria`, the untrusted
+   criteria file, and the fixed policy addendum are historical record of the
+   recovery spike, not the current interface. The environment recipe this
+   document proved (temp CODEX_HOME, auth link, TLS bundle, code-mode host,
+   nested-sandbox handling) is unchanged and remains the live contract.

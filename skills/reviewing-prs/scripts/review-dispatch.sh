@@ -13,13 +13,19 @@
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL        optional model override for the review daemon (claude model;
-#                       only used when the resolved engine is claude)
-#   WORKER_ENGINE       which engine spawns the review worker: claude|codex
-#                       (default codex). Resolution order per PR: an
-#                       `engine:claude`/`engine:codex` label on the PR wins,
-#                       else this env var, else codex.
-#   CODEX_REVIEW_MODEL  codex model for the review engine (default gpt-5.6-sol)
+#   REVIEW_MODEL        optional model override for the review daemon
+#                       (gateway route defaults to fable, claude route to inherit)
+#   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: codex|claude
+#                       (default codex). Every worker is a Claude-harness
+#                       daemon; "codex" means the gateway settings ride the
+#                       spawn (GPT models via the local proxy), "claude" means
+#                       plain Claude models. Resolution order per PR: an
+#                       `engine:claude`/`engine:codex` label wins, else this
+#                       env var, else codex.
+#   CLODEX_SETTINGS     gateway settings file for the codex route
+#                       (default ~/.claude/clodex-settings.json)
+#   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
+#   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-5.6-sol)
 #   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
 #   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
 #                       (default false = observation mode: the worker reviews
@@ -30,6 +36,11 @@
 #                       worker never self-merges a PR whose base is this branch
 #   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
 #   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
+#   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
+#   REVIEW_BIND_ATTEMPTS / REVIEW_BIND_DELAY
+#                       ticket-bind retries (defaults 3 attempts, 2s delay)
+#   REVIEW_ACK_POLLS / REVIEW_ACK_DELAY
+#                       startup-barrier acknowledgement wait (600 x 0.2s)
 #
 # Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
 # in the target repo declares concrete self-merge-disqualifying paths/patterns.
@@ -47,10 +58,13 @@
 #
 # Dedupe policy (references/operation-manual.md table): confident-ready-labeled PRs are never
 # dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
-# retire + respawn; a finished reviewer → triggered mode re-dispatches
-# (explicit event = fresh signal), sweep mode skips; a finished reviewer
-# whose reply carries the ENGINE-UNAVAILABLE marker → retire + respawn
-# (sweep too).
+# retire + respawn; a cleanly finished reviewer → triggered mode re-dispatches
+# (explicit event = fresh signal), sweep mode skips; a FAILED reviewer —
+# reply carries the ENGINE-UNAVAILABLE marker, or the turn finalized
+# status=error (the worker died; a pre-first-turn gateway refusal leaves no
+# reply to carry any marker) → retire + respawn (sweep too, capped at 3
+# consecutive failed reviewers per PR — beyond that only an explicit PR
+# event re-dispatches).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -60,7 +74,7 @@ DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 . "$SKILL_DIR/../orchestrating-daemons/scripts/_lib.sh"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
+BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -140,7 +154,10 @@ _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 # rc 0 when some LOCAL `claude agents` row's cwd equals worktree path <1>. A
 # visible row with matching foreign registry metadata migrated with the session
 # store, not the process, so it does not occupy the worktree. Unmanaged rows
-# have no identity evidence and remain conservatively local/occupied.
+# have no identity evidence and remain conservatively local/occupied. A MANAGED
+# local row whose turn is over no longer occupies: finished daemons stay
+# LISTED with state=working while their process lingers — `status` (busy →
+# idle) is the turn signal, and retire + respawn deliberately reuses the path.
 _wt_occupied() {
   claude agents --json --all 2>/dev/null | \
     DAEMON_HOME="$DAEMON_HOME" DAEMON_HOST="$DAEMON_HOST" DAEMON_BOOT_ID="$DAEMON_BOOT_ID" WT="$1" python3 -c '
@@ -168,8 +185,13 @@ for a in d:
     if a.get("cwd") != os.environ["WT"]:
         continue
     m = metas.get(str(a.get("sessionId") or ""))
-    if m is None or local(m):
-        sys.exit(0)
+    if m is None:
+        sys.exit(0)   # unmanaged row: no identity evidence — conservatively occupied
+    if not local(m):
+        continue      # foreign identity: only the registry migrated
+    if a.get("status") == "idle" and a.get("state") != "blocked":
+        continue      # finished turn lingering in the listing — free for reuse
+    sys.exit(0)
 sys.exit(1)' && return 0
   # codex workers never appear in `claude agents` — scan the registry, but
   # count ONLY codex metas with a live pid; a stale claude-engine `working`
@@ -213,7 +235,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine
+  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -286,6 +308,21 @@ PY
   git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
     || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
 
+  # Startup barrier + orchestrator-only control state. The worker receives only
+  # the ready-file path; fixers receive neither it nor the sibling ledger path.
+  # A ticketed barrier is published only AFTER exclusive binding succeeds.
+  control_dir="$(mktemp -d "$DAEMON_HOME/review-pr-$pr-control.XXXXXX")" \
+    || { echo "#$pr: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }
+  bind_ready="$control_dir/bind-ready.json"
+  ledger="$control_dir/accepted-commits.json"
+  if ! chmod 700 "$control_dir" \
+    || ! printf '{"push_base":"","commits":{}}\n' > "$ledger" \
+    || ! chmod 600 "$ledger"; then
+    echo "#$pr: control state initialization failed" >&2
+    rm -rf "$tmp" "$control_dir"
+    return 1
+  fi
+
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
@@ -293,7 +330,8 @@ PY
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
-    P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing-tickets/references/implement-worker-protocol.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \
@@ -319,22 +357,155 @@ subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
     "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
-)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp"; return 1; }
+)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
   rm -rf "$tmp"
-  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
+  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
 
+  # ONE worker harness, two model routes. The default "codex" engine is a
+  # GATEWAY worker: the same Claude-harness daemon pointed at the local
+  # gateway (GPT models) via --settings — the codex CLI survives only as the
+  # review engine inside the worker. engine:claude opts a PR into plain
+  # Claude models. The codex-CLI-as-worker species is retired from this loop.
   if [ "$engine" = "codex" ]; then
-    "$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
-      "$CODEX_REVIEW_MODEL" "$CODEX_REVIEW_EFFORT"
+    spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
+      DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
+      "${REVIEW_MODEL:-fable}")" \
+      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
-    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
+    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}")" \
+      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
+  printf '%s\n' "$spawn_out"
+  uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+
+  # The worker's first protocol action waits on bind_ready. Publish it only
+  # after the new registry meta exists and (for ticketed PRs) board-bind has
+  # stripped every old owner and bound THIS reviewer. Thus spawn-before-bind
+  # cannot race into review work, and any failure leaves the barrier closed.
+  local bound="" attempts="${REVIEW_BIND_ATTEMPTS:-3}"
+  if [ -z "$uuid" ]; then
+    echo "#$pr: spawned reviewer UUID was not parseable — startup barrier stays closed" >&2
+    rm -rf "$control_dir"
+    return 1
+  fi
+  if [ -n "$issue" ]; then
+    local try=1
+    while [ "$try" -le "$attempts" ]; do
+      if "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue"; then bound=1; break; fi
+      [ "$try" -lt "$attempts" ] && sleep "${REVIEW_BIND_DELAY:-2}"
+      try=$((try + 1))
+    done
+    if [ -z "$bound" ]; then
+      _retire "$uuid"
+      rm -rf "$control_dir"
+      echo "#$pr: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
+      return 1
+    fi
+  fi
+  if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
+import json, os
+ready = os.environ["READY"]
+tmp = ready + ".tmp"
+with open(tmp, "w") as f:
+    json.dump({"uuid": os.environ["UUID"], "ticket": os.environ["TICKET"],
+               "ledger": os.environ["LEDGER"]}, f, indent=2)
+os.chmod(tmp, 0o600)
+os.replace(tmp, ready)
+PY
+  then
+    _retire "$uuid"
+    rm -rf "$control_dir"
+    echo "#$pr: could not publish startup barrier — review worker retired" >&2
+    return 1
+  fi
+
+  # Success means the worker actually crossed the barrier, not merely that the
+  # dispatcher published it. A model/auth failure or worker-side timeout never
+  # becomes an ordinary "finished" review that sweep would skip.
+  ack="$bind_ready.ack"
+  local poll=0 max_polls="${REVIEW_ACK_POLLS:-600}"
+  while [ ! -f "$ack" ] && [ "$poll" -lt "$max_polls" ]; do
+    sleep "${REVIEW_ACK_DELAY:-0.2}"
+    poll=$((poll + 1))
+  done
+  if [ ! -f "$ack" ] || ! ACK="$ack" UUID="$uuid" python3 - <<'PY'
+import json, os, sys
+try:
+    data = json.load(open(os.environ["ACK"]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if data.get("uuid") == os.environ["UUID"] else 1)
+PY
+  then
+    _retire "$uuid"
+    rm -rf "$control_dir"
+    echo "#$pr: worker did not acknowledge startup barrier — retired" >&2
+    return 1
+  fi
+}
+
+# Consecutive FAILED reviewers for PR <1>, newest first: a reply carrying the
+# ENGINE-UNAVAILABLE marker (engine outage) or a turn finalized status=error
+# (dead worker — e.g. the gateway refused its first turn, so no reply exists
+# to carry any marker). One shared streak, so interleaved failure kinds don't
+# reset the count; the sweep's cap reads it so neither a dead engine nor a
+# dead gateway can make the cron respawn a PR forever. Any cleanly finished
+# reviewer breaks the streak.
+_outage_streak() {
+  DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
+import glob, json, os
+home = os.environ["DAEMON_HOME"]; name = "review-pr-" + os.environ["PRN"]
+rows = []
+for p in glob.glob(os.path.join(home, "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("name") == name:
+        rows.append((str(m.get("updated") or m.get("created") or ""),
+                     m.get("uuid") or "", str(m.get("status") or "")))
+rows.sort(reverse=True)
+streak = 0
+for _, uuid, status in rows:
+    try:
+        lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
+    except Exception:
+        lines = None
+    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error":
+        streak += 1
+    else:
+        break
+print(streak)
+PY
+}
+
+# Verdict for a FINISHED reviewer of PR <1>, uuid <2>, mode <3>, status <4>.
+# Triggered mode always re-dispatches (explicit event = fresh signal). Sweep
+# mode retries two failure kinds: an engine outage — the worker marks it with
+# a final-message marker line (fallback block) — and a turn that finalized
+# status=error, where the WORKER died (a pre-first-turn gateway refusal
+# leaves no reply, so no marker can exist). Both share the 3-consecutive
+# failed-reviewer cap per PR; anything else finished stays finished.
+_finished_verdict() {
+  local pr="$1" uuid="$2" mode="$3" status="$4"
+  if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
+  elif [ "$status" = "error" ] \
+    || grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
+    if [ "$(_outage_streak "$pr")" -ge 3 ]; then
+      echo "skip outage/dead-worker failure persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
+    else
+      echo "respawn $uuid"
+    fi
+  else echo "skip finished reviewer ($status)"; fi
 }
 
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
 # Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot
+  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
   meta="$(_reviewer_meta "$pr")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
@@ -343,15 +514,27 @@ _decide() {
   pid="${rest%%|*}"; rest="${rest#*|}"; whost="${rest%%|*}"; wboot="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current" "$engine" "$pid" "$whost" "$wboot"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
+      if [ "$engine" = "codex" ]; then
+        # legacy codex-CLI metas: pid liveness (read path kept for old entries)
+        if _is_live "$current" "$engine" "$pid" "$whost" "$wboot"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi
+      elif ! _identity_local "$whost" "$wboot"; then
+        echo "respawn $uuid"    # foreign-host meta: only the registry migrated
+      else
+        # A --no-wait worker's meta stays status=working after its turn ends,
+        # and finished --bg sessions stay LISTED in `claude agents` — presence
+        # is not liveness. Finalize first (records reply + terminal status),
+        # then judge: live → skip; finished → the finished-reviewer verdict;
+        # session gone → dead worker → respawn.
+        fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null || echo "")"
+        case "$fin" in
+          live)       echo "skip active reviewer" ;;
+          idle|error) _finished_verdict "$pr" "$uuid" "$mode" "$fin" ;;
+          noop)       echo "skip finished reviewer (raced finalize)" ;;
+          *)          echo "respawn $uuid" ;;
+        esac
+      fi ;;
     retired) echo "dispatch" ;;
-    *)
-      if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
-      # an engine outage is a retryable condition, not a finished review —
-      # the worker marks it with a final-message marker line (fallback block)
-      elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
-        echo "respawn $uuid"
-      else echo "skip finished reviewer ($status)"; fi ;;
+    *) _finished_verdict "$pr" "$uuid" "$mode" "$status" ;;
   esac
 }
 

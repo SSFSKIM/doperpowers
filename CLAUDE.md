@@ -90,6 +90,18 @@ A working integration auto-triggers the `brainstorming` skill before any code is
 
 If you are not sure whether your integration loads the bootstrap at session start, it does not.
 
+## Golden Rule: Simplicity-First Protocols
+
+No restriction or process enforcement beyond what is necessary. Agents are
+not dumb — they carry their own situational judgment, and every constraint
+that substitutes for that judgment makes the worker dumber than the model
+running it. When authoring or editing skills and worker protocols, pursue
+the fewest hard gates and the least strict DO / DO-NOT language: a hard
+constraint earns its place only when the action it bans (or mandates) is
+truly validated — it maps to a definite failure state, observed or
+structural, not a hypothetical one. Everything else is stated as ownership
+and outcomes; the worker chooses its means.
+
 ## Skill Changes Require Evaluation
 
 Skills are not prose — they are code that shapes agent behavior. If you modify skill content:

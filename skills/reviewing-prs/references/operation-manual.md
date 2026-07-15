@@ -5,25 +5,31 @@
 The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
-background daemon (`orchestrating-daemons`) that reviews it with the native
-Codex reviewer (`codex exec review` via review-engine.sh), verifies every finding
-against the code, applies the valid fixes, re-reviews
-when the fixes warrant it, and then either merges it (small/simple tier, CI
-green) or escalates the PR + its linked ticket to **`confident-ready`** for
-the human.
+background daemon (`orchestrating-daemons`) that runs TWO review tracks at
+once: the native Codex engine (`codex exec review` via review-engine.sh, in
+the background) reviews pure code correctness, while the worker itself audits
+implementer protocol/spec compliance against the linked ticket. The worker
+never fixes anything: it triages the joined findings on its own judgment
+(the engine's native severity is the starting rank),
+delegates fixing to a **fix wave** — a fresh-context fixer subagent driven
+by a wave-board file — grades the fixer's dispositions, pushes, re-reviews
+when warranted, and then either merges (small/simple tier, CI green) or
+escalates the PR + its linked ticket to **`confident-ready`** for the human.
 
-**This loop has NO orchestrator.** A review worker's escalation targets are
-GitHub itself (labels, comments, tickets) and the human on their next wake.
+**No orchestrator sits above the workers.** A review worker's escalation
+targets are GitHub itself (labels, comments, tickets) and the human on their
+next wake; within its own turn the worker is the orchestrator of its fixers.
 Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md`.
 
 ## The pieces
 
 | piece | what |
 |---|---|
-| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`) |
-| `scripts/review-engine.sh` | the ONE native-review invocation (env recipe + fixed policy in developer instructions + untrusted criteria file); both species call it |
-| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
+| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
+| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind |
+| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
+| `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
 | `references/land-conflicts.md` | runtime-opened conflict-resolution procedure — the protocol carries only a pointer (`{{CONFLICTS_DOC}}` = absolute path); the worker opens it when GitHub reports the PR unmergeable. Procedure in the plugin file, instance facts in the prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
@@ -42,18 +48,29 @@ the newest `review-pr-<n>` registry entry:
 | none / retired | dispatch | dispatch |
 | ACTIVE (working/blocked), session live | skip | skip |
 | ACTIVE, session gone (daemon died) | retire → dispatch | retire → dispatch |
-| finished (idle/error/awaiting-human) | retire → dispatch (an explicit event is a fresh signal) | skip (finished stays finished) |
-| finished, reply carries ENGINE-UNAVAILABLE | retire → dispatch | retire → dispatch |
+| finished cleanly (idle/awaiting-human) | retire → dispatch (an explicit event is a fresh signal) | skip (finished stays finished) |
+| finished, reply carries ENGINE-UNAVAILABLE | retire → dispatch | retire → dispatch (capped) |
+| finalized `error` (worker died — e.g. gateway refused the first turn; no reply can carry a marker) | retire → dispatch | retire → dispatch (capped) |
 
 The sweep (`review-dispatch.sh --sweep`, cron every ~30 min) is the self-heal
 net: PRs opened while the machine slept (GitHub queues self-hosted jobs only
 24h) and reviewers that died mid-turn.
 
+**Failure cap.** A persistent outage must not make the sweep respawn a PR
+forever: after 3 CONSECUTIVE failed reviewers for one PR — ENGINE-UNAVAILABLE
+replies (engine outage) and `error`-finalized turns (dead worker, e.g. the
+gateway refused before any reply existed) count as ONE shared streak — the
+sweep skips it (naming the cap as the reason). Any cleanly finished reviewer
+breaks the streak. An explicit PR event — workflow trigger or manual
+dispatch — always re-dispatches regardless.
+
 ## Merge authority (two tiers)
 
 Encoded in the protocol's ESCALATE block — ALL clauses must hold for
-self-merge: final verdict approve (or only non-blocker findings — everything
-below the engine's critical/high class — each explicitly routed); post-fix
+self-merge: final verdict approve (or only non-blocker findings by the
+worker's own routing, each explicitly routed); no
+unresolved PROTOCOL BLOCKER or SPEC FINDING from the worker's own
+compliance audit; post-fix
 diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
 **not** the repo default branch (self-merge lands only on integration
 branches); zero touches on a **risk surface**; every CI check green — a repo
@@ -125,8 +142,8 @@ PR-review-event trigger arrives with runner registration.
 
 ## Tech-debt sink
 
-Non-blocking findings — everything below the engine's critical/high class
-— go by DEFAULT to ONE standing GitHub issue per repo (label `tech-debt`)
+Non-blocking findings — everything the worker routes LOG — go by DEFAULT
+to ONE standing GitHub issue per repo (label `tech-debt`)
 as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
 and the edit would land inside the very PR under review. Register the
@@ -137,37 +154,62 @@ doperpowers:organizing-sprints input).
 
 ## Closing-artifact cross-check
 
-Before the engine runs, the worker verifies the PR body's `## Validation
-Evidence` section (the implement worker's closing artifact) against the
-diff, the repo, and CI — evidence claimed but not verifiable is itself a
-finding; a missing section is only a review-trail note. This closes the
-evidence loop: the implement side must produce evidence, the review side
-verifies the claims were real.
+Part of the worker's concurrent compliance audit: while the engine runs,
+the worker verifies the PR body's `## Validation Evidence` section (the
+implement worker's closing artifact) by inspection — read-only until
+JOIN, with command-backed checks deferred until the worktree is free.
+Evidence claimed but not verifiable is a SPEC FINDING. A MISSING section
+is a SPEC FINDING only when the ticket carries a `[gate] pass` comment
+(the gate proves an implement worker under the current contract produced
+the PR); otherwise it is an AUDIT NOTE — no retroactive policy on legacy
+or non-loop PRs. This closes the evidence loop: the implement side must
+produce evidence, the review side verifies the claims were real.
 
-## Review engine
+## Review engine (pure correctness) + worker audit (compliance)
 
-ONE engine for both worker species: the native `codex exec review --base
-origin/<base>` run by `scripts/review-engine.sh`. The native review owns
-code quality on its own; the script's FIXED `-c developer_instructions=`
-policy (a config value — the CLI forbids combining `--base` with a
-positional prompt) adds ONLY the ticket's spec-compliance review — above
-all decision discipline: did the implementer surface every
-scope/product-taste fork that needed a human call, and where it assumed,
-was the assumption valid to make unasked. The ticket text itself rides an
-explicitly UNTRUSTED data file the policy references: PR/ticket-controlled
-text never enters developer instructions and cannot override policy or
-suppress findings. A ticketless PR adds no instructions at all. The
-engine returns a compact
-structured verdict file; the PR diff never enters the worker's own
-context. Species differ only in nesting: a Codex worker's call runs
-inside its own sandbox (the script detects this and skips the inner
-self-profiling step — the outer workspace-write profile still confines
-it), a Claude worker's runs on the host. There is NO second engine: on
-engine failure the worker retries twice, then posts the trail comment,
-leaves the ticket in-review, and ends its turn with the
-`ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it.
-`needs-human` is never written for an infra outage. The review-trail
-comment names the engine that reviewed.
+Review responsibility is split between two concurrent tracks with one owner
+each. The ENGINE — the native `codex exec review --base origin/<base>` run
+by `scripts/review-engine.sh` — receives no ticket, spec, or policy input of
+any kind: coupling spec policy into the native reviewer measurably weakened
+its correctness review, so the interface is now `--base` + `--out`, full
+stop. The worker starts it in the background, and the engine returns a
+compact structured verdict file; the PR diff never enters the worker's own
+context. A hung engine (no result within 45 minutes) is killed and treated
+as a failure.
+
+The WORKER meanwhile audits implementer protocol/spec compliance itself,
+read-only, and records the audit BEFORE reading engine output: the issue
+body is the canonical primary spec; drift since the `[gate] pass` comment
+is resolved through GitHub edit-history timestamps; the verdict classes are
+PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
+progress), SPEC FINDING (fix-required; waves with native blockers), and
+AUDIT NOTE (trail-only). The two streams JOIN before triage.
+
+There is NO second engine: on engine failure the worker retries twice, then
+posts the trail comment, leaves the ticket in-review, and ends its turn
+with the `ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it
+(capped; see the outage cap above). `needs-human` is never written for an
+infra outage. The review-trail comment names the engine that reviewed.
+
+## The orchestrator and fix waves
+
+The review worker is an orchestrator: the edits are the fixer tree's; the
+grading and the trusted push chain are the worker's.
+Findings routed WAVE (blockers by the worker's routing + SPEC FINDINGs) go
+onto a wave-board file (`<review-tmp>/pr-<n>-fix-wave-<k>.md`, in the
+worker-created tmp directory — NEVER inside the PR worktree, never committed),
+and a fresh-context fixer subagent works the batch under a
+verify-then-fix contract: read the cited code first, then FIX (commit + test
+evidence) or REFUTE (code citation). The worker waits for the whole task tree
+to quiesce, snapshots the submitted board, grades every disposition, and
+validates the full unpushed commit range against its accepted-commit ledger.
+It removes stale `confident-ready` before pushing — fail-safe order:
+expiry first, then the new head.
+At most 2 waves per review inside the 3-engine-round cap; whole-range re-review
+between waves with dedupe-by-substance. Full mechanics:
+`references/wave-board.md`. This
+separation keeps the merge judgment in a clean context and out of
+self-review bias: the entity that grades the fixes never wrote them.
 
 ## Edge cases
 
@@ -204,6 +246,9 @@ comment names the engine that reviewed.
    workflow env. Flip it to `true` only after the trail comments show the
    self-merge tier judging as you'd want.
 9. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
-10. Codex workers (the default engine): `codex` CLI installed and authed
-    (`codex login`) on the runner machine; set `WORKER_ENGINE=claude` (env) or
-    label `engine:claude` to opt a repo/PR out.
+10. The `codex` CLI installed and authed (`codex login`) on the runner
+    machine — it is the review engine inside every worker. The default
+    worker route additionally needs the clodex gateway settings
+    (`~/.claude/clodex-settings.json`, override via `CLODEX_SETTINGS`) and
+    the local gateway running; set `WORKER_ENGINE=claude` (env) or label
+    `engine:claude` to route a repo/PR onto plain Claude models instead.

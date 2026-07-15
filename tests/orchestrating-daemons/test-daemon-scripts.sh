@@ -129,7 +129,7 @@ if [ $has_bg -eq 1 ]; then
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
   # STUB_BG_STATE pins the created agent's reported state (default done). Setting
   # it to `running` keeps the turn non-terminal so the resume watcher times out.
-  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
+  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"; echo "status=${STUB_BG_STATUS:-}"; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
   # A resume FORKS a new session: the new turn's transcript records which session
   # it forked from, so the test can prove the registry chains ids across turns.
   if [ -z "$uuid" ]; then
@@ -330,6 +330,97 @@ assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT1" "second resu
     || fail "second resume purges the middle turn's transcript"
 SHORT2="$(meta_field short)"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "$SHORT2" "list SHORT column shows the current turn's short"
+
+# ---- 4b) gateway settings/effort dimension ------------------------------------
+# A daemon spawned with DAEMON_CLAUDE_SETTINGS/DAEMON_CLAUDE_EFFORT must carry
+# --settings/--effort on the spawn argv, persist both in its registry meta, and
+# — the part that actually bites — reconstruct BOTH on every resume fork.
+# Without the meta round-trip, a gateway daemon silently reverts to plain
+# Anthropic models on its first resume.
+echo "gateway settings:"
+GW_SETTINGS="$TEST_ROOT/gw-settings.json"
+echo '{}' > "$GW_SETTINGS"
+GW_OUT="$(DAEMON_CLAUDE_SETTINGS="$GW_SETTINGS" DAEMON_CLAUDE_EFFORT="xhigh" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "gwdaemon" "GW-TASK-1" "$WORK")"
+GW_UUID="$(printf '%s' "$GW_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+GW_SPAWN_CALL="$(grep -- "GW-TASK-1" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GW_SPAWN_CALL" "--settings $GW_SETTINGS" "gateway spawn argv carries --settings"
+assert_contains "$GW_SPAWN_CALL" "--effort xhigh" "gateway spawn argv carries --effort"
+GW_META="$(cat "$DAEMON_HOME/$GW_UUID.json")"
+assert_contains "$GW_META" "\"settings\": \"$GW_SETTINGS\"" "gateway spawn persists settings in the registry meta"
+assert_contains "$GW_META" '"effort": "xhigh"' "gateway spawn persists effort in the registry meta"
+GW_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$GW_UUID.json")"
+mkdir -p "$HOME/.claude/jobs/$GW_SHORT"
+GW_RESUME_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$GW_SHORT" "GW-FOLLOWUP-2")"
+assert_contains "$GW_RESUME_OUT" "FORKED:$GW_UUID:ANSWER:GW-FOLLOWUP-2" "gateway resume forks the session"
+GW_FORK_CALL="$(grep -- "GW-FOLLOWUP-2" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GW_FORK_CALL" "--settings $GW_SETTINGS" "gateway resume fork argv carries --settings (no silent model swap)"
+assert_contains "$GW_FORK_CALL" "--effort xhigh" "gateway resume fork argv carries --effort"
+PLAIN_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "plaindaemon" "PLAIN-TASK-9" "$WORK")"
+PLAIN_UUID="$(printf '%s' "$PLAIN_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+PLAIN_CALL="$(grep -- "PLAIN-TASK-9" "$STUB_STATE/log/calls.log" | head -1)"
+assert_not_contains "$PLAIN_CALL" "--settings" "plain spawn argv carries no --settings"
+assert_not_contains "$PLAIN_CALL" "--effort" "plain spawn argv carries no --effort"
+assert_not_contains "$(cat "$DAEMON_HOME/$PLAIN_UUID.json")" '"settings"' "plain spawn meta has no settings field"
+
+# ---- 4c) finalize (the claude-species finisher) --------------------------------
+# A --no-wait daemon registers status=working and NOTHING ever finalized it:
+# daemon-reply only reads, and the self-finalizer belonged to the codex
+# species. daemon-finalize.sh records a finished --bg turn's reply + terminal
+# status into the registry so dispatch dedupe can tell finished from live.
+echo "finalize:"
+FIN_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finwork" "FIN-TASK-1" "$WORK")"
+FIN_UUID="$(printf '%s' "$FIN_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN_UUID.json")"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "live" "finalize reports a running turn live and touches nothing"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.json")" '"status": "working"' "finalize leaves a live turn's meta working"
+assert_file_absent "$DAEMON_HOME/$FIN_UUID.reply.txt" "finalize writes no reply for a live turn"
+sed -i '' 's/^state=running$/state=done/' "$STUB_STATE/agents/$FIN_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "idle" "finalize records a done turn as idle"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.json")" '"status": "idle"' "finalize persists the idle status"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.reply.txt")" "ANSWER:FIN-TASK-1" "finalize records the turn's reply from the transcript"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "noop" "finalize is idempotent on an already-final meta"
+FIN2_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finerr" "FIN-TASK-2" "$WORK")"
+FIN2_UUID="$(printf '%s' "$FIN2_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN2_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN2_UUID.json")"
+sed -i '' 's/^state=running$/state=blocked/' "$STUB_STATE/agents/$FIN2_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN2_UUID")" "live" "finalize treats a prompt-blocked session as live (resumable)"
+sed -i '' 's/^state=blocked$/state=error/' "$STUB_STATE/agents/$FIN2_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN2_UUID")" "error" "finalize records an errored turn as error"
+FIN3_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "fingone" "FIN-TASK-3" "$WORK")"
+FIN3_UUID="$(printf '%s' "$FIN3_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN3_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN3_UUID.json")"
+rm -f "$STUB_STATE/agents/$FIN3_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN3_UUID")" "absent" "finalize reports a vanished session absent, meta untouched"
+assert_contains "$(cat "$DAEMON_HOME/$FIN3_UUID.json")" '"status": "working"' "absent session leaves the meta for the caller's dead-worker path"
+CODEX_FIN="cdxf0000-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","short":"cdxf0000","name":"cdxfin","engine":"codex","status":"working"}' \
+  "$CODEX_FIN" "$CODEX_FIN" > "$DAEMON_HOME/$CODEX_FIN.json"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$CODEX_FIN")" "noop" "finalize noops on codex-engine metas (they self-finalize)"
+rm -f "$DAEMON_HOME/$CODEX_FIN.json"
+
+# Production shape (observed live 2026-07-15): a finished --bg session LINGERS
+# in `claude agents` with state=working while its harness process stays alive;
+# the turn signal is `status` (busy while a turn runs, idle after). Keying on
+# state alone reads a finished daemon as live forever.
+FIN5_OUT="$(STUB_BG_STATE=working STUB_BG_STATUS=busy "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finling" "FIN-TASK-5" "$WORK")"
+FIN5_UUID="$(printf '%s' "$FIN5_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN5_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN5_UUID.json")"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "live" "state=working with status=busy is a live turn"
+sed -i '' 's/^status=busy$/status=idle/' "$STUB_STATE/agents/$FIN5_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "idle" "state=working with status=idle is a FINISHED lingering turn, not live"
+assert_contains "$(cat "$DAEMON_HOME/$FIN5_UUID.reply.txt")" "ANSWER:FIN-TASK-5" "lingering finished turn's reply is recorded"
+
+# The blocking-mode watcher must see the same truth: a lingering finished
+# session (state=working, status=idle) terminates _poll_until_done as done
+# instead of polling to timeout.
+POLL_OUT="$(
+  export PATH="$STUB_BIN:$PATH"
+  # shellcheck source=/dev/null
+  . "$SCRIPTS_DIR/_lib.sh"
+  _poll_until_done "$FIN5_SHORT" 2
+)" || true
+assert_contains "$POLL_OUT" " done " "poll normalizes the lingering finished shape to done"
 
 # ---- 5) retire ---------------------------------------------------------------
 echo "retire:"
