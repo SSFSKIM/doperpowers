@@ -53,11 +53,13 @@
 #
 # Dedupe policy (references/operation-manual.md table): confident-ready-labeled PRs are never
 # dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
-# retire + respawn; a finished reviewer → triggered mode re-dispatches
-# (explicit event = fresh signal), sweep mode skips; a finished reviewer
-# whose reply carries the ENGINE-UNAVAILABLE marker → retire + respawn
-# (sweep too, capped at 3 consecutive outage reviewers per PR — beyond that
-# only an explicit PR event re-dispatches).
+# retire + respawn; a cleanly finished reviewer → triggered mode re-dispatches
+# (explicit event = fresh signal), sweep mode skips; a FAILED reviewer —
+# reply carries the ENGINE-UNAVAILABLE marker, or the turn finalized
+# status=error (the worker died; a pre-first-turn gateway refusal leaves no
+# reply to carry any marker) → retire + respawn (sweep too, capped at 3
+# consecutive failed reviewers per PR — beyond that only an explicit PR
+# event re-dispatches).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -346,10 +348,13 @@ PY
   fi
 }
 
-# Consecutive ENGINE-UNAVAILABLE reviewers for PR <1>, newest first — the
-# sweep's outage cap counts these so a dead engine cannot make the cron
-# respawn a PR forever. Any reviewer whose reply lacks the marker (or has no
-# reply yet) breaks the streak.
+# Consecutive FAILED reviewers for PR <1>, newest first: a reply carrying the
+# ENGINE-UNAVAILABLE marker (engine outage) or a turn finalized status=error
+# (dead worker — e.g. the gateway refused its first turn, so no reply exists
+# to carry any marker). One shared streak, so interleaved failure kinds don't
+# reset the count; the sweep's cap reads it so neither a dead engine nor a
+# dead gateway can make the cron respawn a PR forever. Any cleanly finished
+# reviewer breaks the streak.
 _outage_streak() {
   DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
 import glob, json, os
@@ -363,15 +368,16 @@ for p in glob.glob(os.path.join(home, "*.json")):
     except Exception:
         continue
     if m.get("name") == name:
-        rows.append((str(m.get("updated") or m.get("created") or ""), m.get("uuid") or ""))
+        rows.append((str(m.get("updated") or m.get("created") or ""),
+                     m.get("uuid") or "", str(m.get("status") or "")))
 rows.sort(reverse=True)
 streak = 0
-for _, uuid in rows:
+for _, uuid, status in rows:
     try:
         lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
     except Exception:
-        break
-    if "ENGINE-UNAVAILABLE" in lines:
+        lines = None
+    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error":
         streak += 1
     else:
         break
@@ -381,15 +387,18 @@ PY
 
 # Verdict for a FINISHED reviewer of PR <1>, uuid <2>, mode <3>, status <4>.
 # Triggered mode always re-dispatches (explicit event = fresh signal). Sweep
-# mode retries an engine outage — the worker marks it with a final-message
-# marker line (fallback block) — capped at 3 consecutive outage reviewers per
-# PR; anything else finished stays finished.
+# mode retries two failure kinds: an engine outage — the worker marks it with
+# a final-message marker line (fallback block) — and a turn that finalized
+# status=error, where the WORKER died (a pre-first-turn gateway refusal
+# leaves no reply, so no marker can exist). Both share the 3-consecutive
+# failed-reviewer cap per PR; anything else finished stays finished.
 _finished_verdict() {
   local pr="$1" uuid="$2" mode="$3" status="$4"
   if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
-  elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
+  elif [ "$status" = "error" ] \
+    || grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
     if [ "$(_outage_streak "$pr")" -ge 3 ]; then
-      echo "skip engine outage persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
+      echo "skip outage/dead-worker failure persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
     else
       echo "respawn $uuid"
     fi

@@ -445,6 +445,69 @@ OUT_EVT="$("$DISPATCH" 5 2>&1 || true)"
 assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "an explicit PR event ignores the outage cap"
 [ -s "$SPAWN_LOG" ] || echo "    dispatch said: $OUT_EVT"
 
+# ---- sweep retries a dead worker (terminal error, no reply marker) ---------------
+# A worker that dies BEFORE it can speak — e.g. the gateway refuses its very
+# first turn — finalizes status=error with an EMPTY reply: no assistant
+# message exists to carry ENGINE-UNAVAILABLE. The sweep must treat terminal
+# worker errors as retryable (same 3-consecutive cap), or a gateway outage
+# parks the PR out of the sweep until an explicit event.
+echo "sweep dead-worker retry:"
+reset_state; seed_reviewer error
+printf '\n' > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "sweep retires an errored worker whose reply is empty"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a dead worker"
+
+# one-harness lifecycle: an unfinalized worker whose SESSION errored is
+# finalized to status=error by the sweep itself, then retried in the same pass.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "error"' "sweep finalized the errored session through daemon-finalize"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
+
+# dead workers share the outage cap: 3 consecutive errored reviewers (empty
+# replies — the marker never existed) stop the sweep respawning.
+seed_error_metas() {  # $1 = how many consecutive errored reviewers to seed
+  local i
+  for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
+  for i in $(seq 1 "$1"); do
+    U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
+import json, os
+u = os.environ["U"]; i = os.environ["I"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5",
+           "status": "error", "updated": "2026-07-0%sT00:00:00Z" % i},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+    printf '\n' > "$DAEMON_HOME/feed000$i-0000-4000-8000-000000000000.reply.txt"
+  done
+}
+reset_state
+seed_error_metas 2
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep still respawns below the cap (2 consecutive dead workers)"
+reset_state
+seed_error_metas 3
+OUT_DEAD="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips a PR after 3 consecutive dead workers"
+assert_contains "$OUT_DEAD" "3 consecutive" "sweep names the failure cap as the skip reason"
+
+# marker outages and dead workers form ONE streak — interleaving them must
+# not reset the count.
+reset_state
+seed_error_metas 2
+U="feed0003-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-03T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
+  > "$DAEMON_HOME/feed0003-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as one 3-streak"
+
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
 reset_state

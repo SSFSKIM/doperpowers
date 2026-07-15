@@ -47,17 +47,21 @@ the newest `review-pr-<n>` registry entry:
 | none / retired | dispatch | dispatch |
 | ACTIVE (working/blocked), session live | skip | skip |
 | ACTIVE, session gone (daemon died) | retire → dispatch | retire → dispatch |
-| finished (idle/error/awaiting-human) | retire → dispatch (an explicit event is a fresh signal) | skip (finished stays finished) |
-| finished, reply carries ENGINE-UNAVAILABLE | retire → dispatch | retire → dispatch |
+| finished cleanly (idle/awaiting-human) | retire → dispatch (an explicit event is a fresh signal) | skip (finished stays finished) |
+| finished, reply carries ENGINE-UNAVAILABLE | retire → dispatch | retire → dispatch (capped) |
+| finalized `error` (worker died — e.g. gateway refused the first turn; no reply can carry a marker) | retire → dispatch | retire → dispatch (capped) |
 
 The sweep (`review-dispatch.sh --sweep`, cron every ~30 min) is the self-heal
 net: PRs opened while the machine slept (GitHub queues self-hosted jobs only
 24h) and reviewers that died mid-turn.
 
-**Outage cap.** A persistent engine outage must not make the sweep respawn a
-PR forever: after 3 CONSECUTIVE ENGINE-UNAVAILABLE reviewers for one PR the
-sweep skips it (naming the cap as the reason). An explicit PR event —
-workflow trigger or manual dispatch — always re-dispatches regardless.
+**Failure cap.** A persistent outage must not make the sweep respawn a PR
+forever: after 3 CONSECUTIVE failed reviewers for one PR — ENGINE-UNAVAILABLE
+replies (engine outage) and `error`-finalized turns (dead worker, e.g. the
+gateway refused before any reply existed) count as ONE shared streak — the
+sweep skips it (naming the cap as the reason). Any cleanly finished reviewer
+breaks the streak. An explicit PR event — workflow trigger or manual
+dispatch — always re-dispatches regardless.
 
 ## Merge authority (two tiers)
 
