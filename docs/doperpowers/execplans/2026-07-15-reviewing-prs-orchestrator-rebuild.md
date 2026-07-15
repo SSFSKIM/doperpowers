@@ -14,7 +14,7 @@ You can see it working three ways: the hermetic test suites under `tests/reviewi
 
 - [x] (2026-07-15 22:40Z) Human-approved grill completed in the interactive session; all design decisions recorded in the Decision Log below.
 - [x] (2026-07-15 22:50Z) Fresh branch `redesign/reviewing-prs-orchestrator` created from `origin/main` at `c1bc2af`; this ExecPlan authored.
-- [ ] Milestone 1: clodex spike (spawn under supervisor, settings survival on hand-rolled resume forks, subagent model inheritance, codex CLI reachable, engine-suite mechanics in-session).
+- [ ] Milestone 1 partially complete (2026-07-15 23:40Z). Done: `claude --bg` accepts `--settings`; a gateway-settings spawn routes end-to-end through the cliproxy (its probe turn failed with the proxy's own "All credentials for model claude-fable-5 are cooling down" 429 — error text that only the gateway emits, so routing is proven); a control spawn without `--settings` recorded plain `claude-fable-5` in its transcript. Remaining (blocked on the codex-account rate limit behind the gateway, confirmed transient by the human): one completed gateway turn to verify subagent model inheritance, in-session `codex --version`, and `--settings` carry on a live resume fork. Retry at end of session; the hermetic milestones proceed per the plan's contingency note.
 - [ ] Milestone 2: `DAEMON_CLAUDE_SETTINGS`/`DAEMON_CLAUDE_EFFORT` support in daemon-spawn/daemon-resume via TDD.
 - [ ] Milestone 3: engine purified to `--base`+`--out`; engine block rewritten for background start + bounded JOIN.
 - [ ] Milestone 4: SKILL.md rebuilt as the orchestrator protocol; `references/wave-board.md` added; `IMPLEMENT_PROTOCOL_FILE` bound.

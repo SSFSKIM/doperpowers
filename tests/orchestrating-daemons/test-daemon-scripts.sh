@@ -331,6 +331,38 @@ assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT1" "second resu
 SHORT2="$(meta_field short)"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "$SHORT2" "list SHORT column shows the current turn's short"
 
+# ---- 4b) gateway settings/effort dimension ------------------------------------
+# A daemon spawned with DAEMON_CLAUDE_SETTINGS/DAEMON_CLAUDE_EFFORT must carry
+# --settings/--effort on the spawn argv, persist both in its registry meta, and
+# — the part that actually bites — reconstruct BOTH on every resume fork.
+# Without the meta round-trip, a gateway daemon silently reverts to plain
+# Anthropic models on its first resume.
+echo "gateway settings:"
+GW_SETTINGS="$TEST_ROOT/gw-settings.json"
+echo '{}' > "$GW_SETTINGS"
+GW_OUT="$(DAEMON_CLAUDE_SETTINGS="$GW_SETTINGS" DAEMON_CLAUDE_EFFORT="xhigh" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "gwdaemon" "GW-TASK-1" "$WORK")"
+GW_UUID="$(printf '%s' "$GW_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+GW_SPAWN_CALL="$(grep -- "GW-TASK-1" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GW_SPAWN_CALL" "--settings $GW_SETTINGS" "gateway spawn argv carries --settings"
+assert_contains "$GW_SPAWN_CALL" "--effort xhigh" "gateway spawn argv carries --effort"
+GW_META="$(cat "$DAEMON_HOME/$GW_UUID.json")"
+assert_contains "$GW_META" "\"settings\": \"$GW_SETTINGS\"" "gateway spawn persists settings in the registry meta"
+assert_contains "$GW_META" '"effort": "xhigh"' "gateway spawn persists effort in the registry meta"
+GW_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$GW_UUID.json")"
+mkdir -p "$HOME/.claude/jobs/$GW_SHORT"
+GW_RESUME_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$GW_SHORT" "GW-FOLLOWUP-2")"
+assert_contains "$GW_RESUME_OUT" "FORKED:$GW_UUID:ANSWER:GW-FOLLOWUP-2" "gateway resume forks the session"
+GW_FORK_CALL="$(grep -- "GW-FOLLOWUP-2" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GW_FORK_CALL" "--settings $GW_SETTINGS" "gateway resume fork argv carries --settings (no silent model swap)"
+assert_contains "$GW_FORK_CALL" "--effort xhigh" "gateway resume fork argv carries --effort"
+PLAIN_OUT="$("$SCRIPTS_DIR/daemon-spawn.sh" "plaindaemon" "PLAIN-TASK-9" "$WORK")"
+PLAIN_UUID="$(printf '%s' "$PLAIN_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+PLAIN_CALL="$(grep -- "PLAIN-TASK-9" "$STUB_STATE/log/calls.log" | head -1)"
+assert_not_contains "$PLAIN_CALL" "--settings" "plain spawn argv carries no --settings"
+assert_not_contains "$PLAIN_CALL" "--effort" "plain spawn argv carries no --effort"
+assert_not_contains "$(cat "$DAEMON_HOME/$PLAIN_UUID.json")" '"settings"' "plain spawn meta has no settings field"
+
 # ---- 5) retire ---------------------------------------------------------------
 echo "retire:"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" >/dev/null
