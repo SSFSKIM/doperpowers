@@ -95,9 +95,13 @@ whole-branch review; the escalation would have died at the board write).
 
 ### 3. New skill `skills/reviewing-prs/` — the product
 
-- **`SKILL.md`** — loop doctrine, the Review Worker Protocol (embedded
-  verbatim in spawn prompts, like issue-tracker's Worker Protocol), the three
-  rubrics, the authority table, tech-debt-sink doctrine, codex-lock handling.
+- **`SKILL.md`** — the canonical Review Worker Protocol. Every dispatched
+  worker explicitly invokes this skill; the bootstrap supplies its per-PR
+  placeholders as runtime bindings.
+- **`references/operation-manual.md`** — loop doctrine, setup, operating
+  policy, the rubrics, authority model, tech-debt sink, and adoption checklist.
+- **`references/review-worker-bootstrap.md`** — the thin per-PR spawn prompt:
+  skill invocation plus dispatcher-owned runtime bindings and context.
 - **`scripts/review-dispatch.sh <pr#> | --sweep`** — dedupe (a live daemon
   registry entry named `review-pr-<n>` means skip); context gathering
   (`gh pr view --json title,body,baseRefName,headRefName,headRefOid,url,labels`
@@ -515,3 +519,25 @@ Pending — written at finish.
   blocker, not a clean report. SELF-MERGE wording aligned ("non-blocker
   findings, each explicitly routed"). Protocol + SKILL.md tech-debt sink
   updated; spec body §Review Worker Protocol left as the historical draft.
+- 2026-07-14 (skill-entrypoint restructure): restored the runtime boundary the
+  original design intended. `SKILL.md` is now the canonical Review Worker
+  Protocol; `review-dispatch.sh` emits a thin bootstrap that explicitly invokes
+  the skill and supplies all instance placeholders as runtime bindings. The
+  former operator-oriented skill body moved intact to
+  `references/operation-manual.md`. Review policy and routing are unchanged.
+- 2026-07-15 (entrypoint hardening before landing): adversarial review of the
+  restructure found two defects of the new file-based entrypoint itself and
+  one doc drift, fixed on the PR before landing. (1) Trust boundary: the
+  bootstrap now binds `SKILL_FILE` (dispatcher-owned absolute path) and
+  instructs the worker to open it unconditionally, never resolving the
+  protocol from the workspace `.agents/skills` — that path is PR-controlled
+  in the detached review head, so a PR could ship a same-named skill that
+  replaces the merge rubric. A rendered prompt was immune by construction;
+  a runtime-opened file needs the pinned path. (2) Dead template tail:
+  SKILL.md carried unrendered `---- PR brief ----` sections that nothing
+  renders (dispatch renders the bootstrap, not SKILL.md); removed — briefs
+  and manifests ride the dispatch prompt, and the protocol now says so.
+  (3) `operation-manual.md` still said self-merge tolerates "only low
+  findings" while the protocol says non-blockers (everything below
+  critical/high, medium included); the manual now matches, with regression
+  asserts pinning both the manual wording and the tail's absence.
