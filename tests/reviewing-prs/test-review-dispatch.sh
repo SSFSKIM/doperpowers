@@ -111,7 +111,57 @@ cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "retire:$1" >> "$SPAWN_LOG"
 STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
+# Faithful stand-in for daemon-finalize.sh: same contract (noop/live/absent/
+# idle/error on stdout), driven by the registry meta + the mock agents view;
+# reply content comes from an optional $MOCK_DIR/reply-<uuid>.txt fixture.
+cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+meta=""
+for f in "$DAEMON_HOME"/*.json; do
+  case "$f" in *.reply.json) continue ;; esac
+  case "$(basename "$f" .json)" in "$1"*) meta="$f"; break ;; esac
+done
+[ -n "$meta" ] || { echo "noop"; exit 0; }
+uuid="$(basename "$meta" .json)"
+out="$(M="$meta" A="$MOCK_DIR/agents.json" python3 <<'PY'
+import json, os
+m = json.load(open(os.environ["M"]))
+if m.get("engine") == "codex" or m.get("status") not in ("working", "blocked"):
+    print("noop"); raise SystemExit
+cur = m.get("current") or m.get("uuid")
+try:
+    rows = json.load(open(os.environ["A"]))
+except Exception:
+    rows = []
+state = next((r.get("state") or "" for r in rows if r.get("sessionId") == cur), "")
+if state == "":
+    print("absent")
+elif state in ("working", "blocked"):
+    print("live")
+elif state == "done":
+    print("idle")
+else:
+    print("error")
+PY
+)"
+case "$out" in
+  idle|error)
+    if [ -f "$MOCK_DIR/reply-$uuid.txt" ]; then
+      cp "$MOCK_DIR/reply-$uuid.txt" "$DAEMON_HOME/$uuid.reply.txt"
+    else
+      echo "review finished." > "$DAEMON_HOME/$uuid.reply.txt"
+    fi
+    M="$meta" S="$out" python3 -c '
+import json, os
+m = json.load(open(os.environ["M"]))
+m["status"] = os.environ["S"]
+json.dump(m, open(os.environ["M"], "w"))
+' ;;
+esac
+echo "$out"
+STUB
+chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh" "$STUB_DAEMONS/daemon-finalize.sh"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
@@ -235,7 +285,7 @@ json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
 PY
 }
 reset_state; seed_reviewer working
-echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$out" "active reviewer" "live ACTIVE reviewer → skip"
 assert_equals "$(cat "$SPAWN_LOG")" "" "live ACTIVE reviewer spawns nothing"
@@ -254,7 +304,7 @@ json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
            "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host Claude reviewer is retired despite a visible migrated session"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude reviewer is respawned"
@@ -263,6 +313,36 @@ reset_state; seed_reviewer idle
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "triggered mode retires a finished reviewer"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered mode re-dispatches after an explicit event"
+
+# ---- finished-but-unfinalized reviewer (the one-harness lifecycle) ---------------
+# A --no-wait worker's meta stays status=working after its turn ends; only
+# `claude agents` knows the truth, and finished --bg sessions stay LISTED
+# indefinitely — presence alone is NOT liveness. Dispatch must finalize
+# through daemon-finalize.sh before deciding.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "dispatch finalized the meta through daemon-finalize"
+
+# The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
+# so the sweep's outage retry works on the one-harness lifecycle.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' > "$MOCK_DIR/reply-feed0000-0000-4000-8000-000000000000.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "sweep finalizes and retries an unfinalized ENGINE-UNAVAILABLE reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after finalizing the outage turn"
+rm -f "$MOCK_DIR/reply-feed0000-0000-4000-8000-000000000000.txt"
+
+# A normally-finished turn finalizes to idle and the sweep SKIPS it — no
+# endless respawn of completed reviews.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep finalizes a normally-finished reviewer and skips it"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "a finalized finished reviewer is not retired by the sweep"
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -283,7 +363,7 @@ json.dump({"uuid": os.environ["U"], "current": os.environ["U"],
            "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["D"], os.environ["U"] + ".json"), "w"))
 PY
-echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\"}]" > "$MOCK_DIR/agents.json"
+echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\", \"state\": \"working\"}]" > "$MOCK_DIR/agents.json"
 out="$(env -u DAEMON_HOME HOME="$HOME" PATH="$PATH" LOCAL_REPO="$LOCAL_REPO" BOARD_REPO="$BOARD_REPO" \
     DAEMON_SCRIPTS="$DAEMON_SCRIPTS" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
     PROMPT_DIR="$PROMPT_DIR" STUB_COUNT="$STUB_COUNT" "$DISPATCH" 5)"

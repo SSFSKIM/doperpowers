@@ -363,6 +363,42 @@ assert_not_contains "$PLAIN_CALL" "--settings" "plain spawn argv carries no --se
 assert_not_contains "$PLAIN_CALL" "--effort" "plain spawn argv carries no --effort"
 assert_not_contains "$(cat "$DAEMON_HOME/$PLAIN_UUID.json")" '"settings"' "plain spawn meta has no settings field"
 
+# ---- 4c) finalize (the claude-species finisher) --------------------------------
+# A --no-wait daemon registers status=working and NOTHING ever finalized it:
+# daemon-reply only reads, and the self-finalizer belonged to the codex
+# species. daemon-finalize.sh records a finished --bg turn's reply + terminal
+# status into the registry so dispatch dedupe can tell finished from live.
+echo "finalize:"
+FIN_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finwork" "FIN-TASK-1" "$WORK")"
+FIN_UUID="$(printf '%s' "$FIN_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN_UUID.json")"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "live" "finalize reports a running turn live and touches nothing"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.json")" '"status": "working"' "finalize leaves a live turn's meta working"
+assert_file_absent "$DAEMON_HOME/$FIN_UUID.reply.txt" "finalize writes no reply for a live turn"
+sed -i '' 's/^state=running$/state=done/' "$STUB_STATE/agents/$FIN_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "idle" "finalize records a done turn as idle"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.json")" '"status": "idle"' "finalize persists the idle status"
+assert_contains "$(cat "$DAEMON_HOME/$FIN_UUID.reply.txt")" "ANSWER:FIN-TASK-1" "finalize records the turn's reply from the transcript"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN_UUID")" "noop" "finalize is idempotent on an already-final meta"
+FIN2_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finerr" "FIN-TASK-2" "$WORK")"
+FIN2_UUID="$(printf '%s' "$FIN2_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN2_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN2_UUID.json")"
+sed -i '' 's/^state=running$/state=blocked/' "$STUB_STATE/agents/$FIN2_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN2_UUID")" "live" "finalize treats a prompt-blocked session as live (resumable)"
+sed -i '' 's/^state=blocked$/state=error/' "$STUB_STATE/agents/$FIN2_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN2_UUID")" "error" "finalize records an errored turn as error"
+FIN3_OUT="$(STUB_BG_STATE=running "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "fingone" "FIN-TASK-3" "$WORK")"
+FIN3_UUID="$(printf '%s' "$FIN3_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN3_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN3_UUID.json")"
+rm -f "$STUB_STATE/agents/$FIN3_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN3_UUID")" "absent" "finalize reports a vanished session absent, meta untouched"
+assert_contains "$(cat "$DAEMON_HOME/$FIN3_UUID.json")" '"status": "working"' "absent session leaves the meta for the caller's dead-worker path"
+CODEX_FIN="cdxf0000-0000-4000-8000-000000000000"
+printf '{"uuid":"%s","current":"%s","short":"cdxf0000","name":"cdxfin","engine":"codex","status":"working"}' \
+  "$CODEX_FIN" "$CODEX_FIN" > "$DAEMON_HOME/$CODEX_FIN.json"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$CODEX_FIN")" "noop" "finalize noops on codex-engine metas (they self-finalize)"
+rm -f "$DAEMON_HOME/$CODEX_FIN.json"
+
 # ---- 5) retire ---------------------------------------------------------------
 echo "retire:"
 "$SCRIPTS_DIR/daemon-retire.sh" "$SHORT" >/dev/null

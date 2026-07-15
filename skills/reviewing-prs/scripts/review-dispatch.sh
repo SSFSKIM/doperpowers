@@ -379,10 +379,27 @@ print(streak)
 PY
 }
 
+# Verdict for a FINISHED reviewer of PR <1>, uuid <2>, mode <3>, status <4>.
+# Triggered mode always re-dispatches (explicit event = fresh signal). Sweep
+# mode retries an engine outage — the worker marks it with a final-message
+# marker line (fallback block) — capped at 3 consecutive outage reviewers per
+# PR; anything else finished stays finished.
+_finished_verdict() {
+  local pr="$1" uuid="$2" mode="$3" status="$4"
+  if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
+  elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
+    if [ "$(_outage_streak "$pr")" -ge 3 ]; then
+      echo "skip engine outage persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
+    else
+      echo "respawn $uuid"
+    fi
+  else echo "skip finished reviewer ($status)"; fi
+}
+
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
 # Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot
+  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
   meta="$(_reviewer_meta "$pr")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
@@ -391,21 +408,27 @@ _decide() {
   pid="${rest%%|*}"; rest="${rest#*|}"; whost="${rest%%|*}"; wboot="${rest#*|}"
   case "$status" in
     working|blocked)
-      if _is_live "$current" "$engine" "$pid" "$whost" "$wboot"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi ;;
+      if [ "$engine" = "codex" ]; then
+        # legacy codex-CLI metas: pid liveness (read path kept for old entries)
+        if _is_live "$current" "$engine" "$pid" "$whost" "$wboot"; then echo "skip active reviewer"; else echo "respawn $uuid"; fi
+      elif ! _identity_local "$whost" "$wboot"; then
+        echo "respawn $uuid"    # foreign-host meta: only the registry migrated
+      else
+        # A --no-wait worker's meta stays status=working after its turn ends,
+        # and finished --bg sessions stay LISTED in `claude agents` — presence
+        # is not liveness. Finalize first (records reply + terminal status),
+        # then judge: live → skip; finished → the finished-reviewer verdict;
+        # session gone → dead worker → respawn.
+        fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null || echo "")"
+        case "$fin" in
+          live)       echo "skip active reviewer" ;;
+          idle|error) _finished_verdict "$pr" "$uuid" "$mode" "$fin" ;;
+          noop)       echo "skip finished reviewer (raced finalize)" ;;
+          *)          echo "respawn $uuid" ;;
+        esac
+      fi ;;
     retired) echo "dispatch" ;;
-    *)
-      if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
-      # an engine outage is a retryable condition, not a finished review —
-      # the worker marks it with a final-message marker line (fallback block).
-      # But the cron sweep caps the retries: 3 consecutive outage reviewers
-      # for one PR → stop respawning until an explicit PR event arrives.
-      elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
-        if [ "$(_outage_streak "$pr")" -ge 3 ]; then
-          echo "skip engine outage persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
-        else
-          echo "respawn $uuid"
-        fi
-      else echo "skip finished reviewer ($status)"; fi ;;
+    *) _finished_verdict "$pr" "$uuid" "$mode" "$status" ;;
   esac
 }
 
