@@ -216,10 +216,10 @@ reviewing-prs, and nobody sits between them and the board.
 ## Worker protocols
 
 The implement-side protocol lives in doperpowers:implementing-tickets
-(`references/implement-worker-protocol.md`); the review-side protocol in
-doperpowers:reviewing-prs (`references/review-worker-protocol.md`). Both are
-embedded VERBATIM in spawn prompts. This file owns only the schema they
-write against.
+(`references/implement-worker-protocol.md`) and is embedded verbatim in its
+spawn prompts. The review-side protocol is doperpowers:reviewing-prs itself
+(`SKILL.md`); its spawn bootstrap invokes the skill and supplies runtime
+bindings. This file owns only the schema they write against.
 
 ## The ticket body (pre-spec)
 

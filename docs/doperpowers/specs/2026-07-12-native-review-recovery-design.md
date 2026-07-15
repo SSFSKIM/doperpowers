@@ -161,9 +161,9 @@ same only-if-unset pattern. Worker-shell flags unchanged.
 
 ### 5. Documentation surfaces
 
-- `skills/reviewing-prs/SKILL.md` "Review engine" section rewritten: one
-  native engine, one script, both species; species differ only in
-  nesting; engine-down semantics per §3.
+- `skills/reviewing-prs/references/operation-manual.md` "Review engine"
+  section rewritten: one native engine, one script, both species; species
+  differ only in nesting; engine-down semantics per §3.
 - codex-workers spec (`2026-07-10-codex-workers-design.md`): Revision
   Note recording the two overturned conclusions, pointing here.
 - Shakedown doc FU-7 section: dated correction note pointing here.
@@ -351,3 +351,8 @@ plan re-execution; everything else executed as written.
    spec-compliance/decision-discipline addendum; the data file carries the
    ticket requirements alone (no PR-claims section — Note 3 dropped that
    check); a ticketless PR sends no developer instructions at all.
+5. **2026-07-14 (skill-entrypoint restructure).** The Review Worker Protocol
+   moved from a supporting reference into `skills/reviewing-prs/SKILL.md` and
+   the former operator-oriented skill body moved to
+   `references/operation-manual.md`. The dispatcher now invokes the skill via
+   a thin runtime-binding bootstrap; engine policy and behavior are unchanged.
