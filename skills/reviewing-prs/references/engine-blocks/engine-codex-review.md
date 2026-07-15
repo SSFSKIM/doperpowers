@@ -7,7 +7,9 @@ nested agent. Never add --dangerously-bypass-approvals-and-sandbox /
 
 1. Run `mktemp -d "${TMPDIR:-/tmp}/review-pr-{{PR_NUMBER}}.XXXXXX"`
    once. Treat the returned path as `<review-tmp>` for this invocation and
-   remove that directory before ending the turn.
+   remove that directory before ending the turn —
+   EXCEPT a needs-human park: wave boards live there and the resumed
+   turn reads them.
 2. From the worktree root, start the engine IN THE BACKGROUND (round N
    uses findings-rN.txt):
 

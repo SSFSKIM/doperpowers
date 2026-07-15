@@ -154,7 +154,7 @@ below that defaults to LOG — momentum outranks polish.
 Zero WAVE items → skip to RE-REVIEW/ESCALATE. Otherwise open
 `references/wave-board.md` (next to this file) — the board schema, the
 fixer dispatch contract, and the grading procedure live there. The shape:
-write `.doperpowers/qa/pr-{{PR_NUMBER}}-fix-wave-<k>.md` (worker-local
+write `<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-<k>.md` (worker-local
 state — never commit or push it), dispatch ONE fixer subagent for the
 whole wave, grade every disposition when it returns (an empty slot is a
 failed item: re-wave once, then needs-human), then push the graded fixes

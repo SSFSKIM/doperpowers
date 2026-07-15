@@ -7,11 +7,20 @@ You still never edit code.
 
 ## The board file
 
-Path: `.doperpowers/qa/pr-<PR>-fix-wave-<k>.md` inside the PR worktree
-(create `.doperpowers/qa/` if needed). This is worker-local state —
-NEVER commit or push it. Before every push, confirm it is untracked or unstaged
-(git status --short). Because it lives in the worktree, it survives a
-needs-human park: a resumed turn picks up mid-wave from the board.
+Path: `<review-tmp>/pr-<PR>-fix-wave-<k>.md` — the same dispatcher-session
+tmp directory the engine writes findings into. NEVER place the board (or
+any wave state) inside the PR worktree: the PR head is untrusted content,
+and a symlink pre-created at a board path component would redirect your
+unattended write anywhere on this machine. `<review-tmp>` comes fresh from
+mktemp, so no PR-controlled component ever sits on the write path.
+
+This is worker-local state — NEVER commit or push it. The durable record
+of every wave is the review trail comment (per-item outcomes ride it); the
+file itself is scratch. A needs-human park keeps `<review-tmp>` in place
+(the engine block's cleanup rule carves out the park), so a resumed turn
+picks up mid-wave from the board; if the OS pruned the tmp dir during a
+long park, mktemp a fresh one and rebuild the board from the trail
+comment's wave record.
 
 Frontmatter is ONE strict JSON object between `---` delimiters (JSON is
 valid YAML and parses with the standard library; arbitrary YAML syntax is
@@ -91,10 +100,11 @@ and the whole-range re-review reviews the net diff. If the wave ends at
 needs-human, the unaccepted commits stay LOCAL: the worktree keeps them
 for the human, and nothing unaccepted ever rides a push.
 
-Before pushing, also confirm that no board path (.doperpowers/qa/)
-appears in the commits being pushed (git log --name-only, unpushed range) —
-a clean working tree does not prove a clean history when a fixer staged
-too broadly. A committed board re-waves with one instruction: redo your
+Before pushing, also confirm that no board copy (any `pr-<PR>-fix-wave-*`
+path) appears in the commits being pushed (git log --name-only, unpushed
+range) — the board lives outside the worktree, but a clean working tree
+does not prove a clean history when a fixer copied wave state in or
+staged too broadly. A committed board re-waves with one instruction: redo your
 own UNPUSHED commits without the board file. This is the single sanctioned
 exception to fix-forward, and it is scoped to unpushed local commits —
 published history is never rewritten.
