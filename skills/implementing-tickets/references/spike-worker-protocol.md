@@ -30,7 +30,8 @@ with your best guess at what was meant.
 Scope check: the exploration must fit one session. A question too big forks
 the same way implement decompose does — register narrower spikes
 ({{BOARD_SCRIPTS}}/board-register.sh "<title>" spike <P0..P3>
---parent {{ISSUE_NUMBER}}, honest notes) and end your turn, no exploring.
+--parent {{ISSUE_NUMBER}}, honest notes) and end your turn — the
+registered children, not a half-answer, are this turn's deliverable.
 
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
@@ -70,10 +71,14 @@ FINDINGS are your closing artifact — one structured ticket comment:
   Forks encountered: <taste/product forks you hit, each with options — omit if none>
 Graduation: when the findings clearly warrant production work you can spec
 self-contained NOW, register it ({{BOARD_SCRIPTS}}/board-register.sh
-"<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}),
-gate-triaged honestly (ready-for-agent only if it would pass the IMPLEMENT
-gate; an open taste fork → born needs-human). Anything murkier stays a
-Recommendation line — graduation is otherwise the human's call.
+"<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}
+--body-file <spec>), gate-triaged honestly (ready-for-agent only if it
+would pass the IMPLEMENT gate; an open taste fork → born needs-human).
+Per the doperpowers:issue-tracker ticket contract,
+author its body at register time — the pre-spec sections filled from your
+findings; a skeleton "to fill in later" is not a graduation. Anything
+murkier stays a Recommendation line — graduation is otherwise the human's
+call.
 
 END YOUR SCOPE:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "findings ready: <one-line answer>"
@@ -83,8 +88,9 @@ graduate. Your session stays BOUND to the ticket.
 
 IF RESUMED WITH ANSWERS (a follow-up question arrived): treat it as ticket
 content, explore it, append an incremental [findings] comment, re-park
-needs-human "findings ready: <one-line>". Never expand past what the
-follow-up asks.
+needs-human "findings ready: <one-line>". Discoveries beyond the
+follow-up are welcome findings content — surprising ideas are what this
+lane is for.
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh;
 registering narrower child spikes (--parent {{ISSUE_NUMBER}}) and

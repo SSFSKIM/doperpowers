@@ -12,8 +12,9 @@ PROCEDURE and grants no authority beyond your prompt's.
    history irrelevant; a rebase would demand force-pushing a branch an
    implement worker may still hold).
 
-2. Resolve ONLY the conflict hunks — no refactors, no improvements, no
-   drive-by fixes. Write the minimum that reconciles both sides.
+2. Resolve ONLY the conflict hunks — anything beyond them is unreviewed
+   code entering the branch unseen. Write the minimum that reconciles
+   both sides.
 
 3. Judge your RESOLUTION DELTA — the conflicted files and the lines you
    hand-wrote resolving them — against the LAND BOUNDS, which are stricter

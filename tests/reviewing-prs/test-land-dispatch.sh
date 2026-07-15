@@ -78,7 +78,18 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-12T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+ready="$(printf '%s\n' "$task" | grep '^- startup barrier:' | cut -d' ' -f4- || true)"
+if [ -n "$ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
+  READY="$ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
+import json,os,time
+for _ in range(500):
+    if os.path.isfile(os.environ['READY']):
+        p=os.environ['READY']+'.ack'; tmp=p+'.tmp'
+        json.dump({'uuid':os.environ['UUID']},open(tmp,'w')); os.replace(tmp,p); break
+    time.sleep(0.01)
+PY
+fi
+echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
 STUB
 cat > "$STUB_DAEMONS/codex-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -97,13 +108,40 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-12T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+ready="$(printf '%s\n' "$task" | grep '^- startup barrier:' | cut -d' ' -f4- || true)"
+if [ -n "$ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
+  READY="$ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
+import json,os,time
+for _ in range(500):
+    if os.path.isfile(os.environ['READY']):
+        p=os.environ['READY']+'.ack'; tmp=p+'.tmp'
+        json.dump({'uuid':os.environ['UUID']},open(tmp,'w')); os.replace(tmp,p); break
+    time.sleep(0.01)
+PY
+fi
+echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
 STUB
 cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "retire:$1" >> "$SPAWN_LOG"
 STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
+cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "finalize:$1" >> "$SPAWN_LOG"
+M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+[ -n "$M" ] || { echo absent; exit 0; }
+M="$M" python3 - <<'PY'
+import json,os
+p=os.environ['M']; m=json.load(open(p))
+if m.get('status') in ('working','blocked') and m.get('turn_state') == 'idle':
+    m['status']='idle'; json.dump(m,open(p,'w'),indent=2); print('idle')
+elif m.get('status') in ('working','blocked') and m.get('turn_state') == 'absent': print('absent')
+elif m.get('status') in ('working','blocked'): print('live')
+else: print('noop')
+PY
+STUB
+chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh" "$STUB_DAEMONS/daemon-finalize.sh"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
 export WORKER_ENGINE=claude
 
@@ -113,6 +151,18 @@ cat > "$STUB_BOARD/board-bind.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "bind:$1:$2" >> "$BIND_LOG"
 if [ -n "${FAIL_BIND:-}" ]; then echo "stub bind: simulated failure" >&2; exit 1; fi
+Q="$1" T="$2" D="$DAEMON_HOME" python3 - <<'PY'
+import glob,json,os
+hits=[p for p in glob.glob(os.path.join(os.environ['D'],'*.json'))
+      if os.path.basename(p)[:-5].startswith(os.environ['Q'])]
+if len(hits)!=1: raise SystemExit(1)
+target=hits[0]
+for p in glob.glob(os.path.join(os.environ['D'],'*.json')):
+    m=json.load(open(p))
+    if p!=target and str(m.get('ticket','')).lstrip('#')==os.environ['T'].lstrip('#'):
+        m.pop('ticket',None); json.dump(m,open(p,'w'),indent=2)
+m=json.load(open(target)); m['ticket']=os.environ['T']; json.dump(m,open(target,'w'),indent=2)
+PY
 STUB
 chmod +x "$STUB_BOARD/board-bind.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
@@ -167,7 +217,7 @@ pr(11, labels=["confident-ready"], title="chore: tidy",
 pr(12, labels=["confident-ready", "engine:codex"])                 # engine label
 PY
 
-reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; : > "$BIND_LOG"; : > "$EDIT_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
+reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; rm -rf "$DAEMON_HOME"/land-pr-*-control.*; : > "$SPAWN_LOG"; : > "$BIND_LOG"; : > "$EDIT_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- happy path (approved + confident-ready, default dry-run) -------------------
 echo "happy path:"
@@ -179,15 +229,23 @@ if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/land-pr-5.prompt")"
 assert_contains "$PROMPT" "LAND worker for PR #5" "prompt carries the protocol header"
+LAND_READY="$(printf '%s\n' "$PROMPT" | grep '^- startup barrier:' | cut -d' ' -f4- || true)"
+assert_contains "$PROMPT" "BINDING BARRIER" "land worker blocks before any merge action until binding completes"
+if [ -n "$LAND_READY" ] && [ -f "$LAND_READY" ]; then pass "land ready barrier opens after binding"; else fail "land ready barrier opens after binding"; fi
+if [ -f "$LAND_READY.ack" ]; then pass "land dispatch waits for worker barrier acknowledgement"; else fail "land dispatch waits for worker barrier acknowledgement"; fi
 assert_contains "$PROMPT" "Land mode: dry-run" "LAND_ENABLED unset renders dry-run (staged rollout)"
 assert_contains "$PROMPT" "GitHub review decision APPROVED" "prompt names the approval signal"
 assert_contains "$PROMPT" "gh pr merge 5 --squash" "prompt carries the resolved native merge method"
 assert_contains "$PROMPT" "primary ticket: #7" "prompt names the primary ticket (Closes #7 parsed)"
 assert_contains "$PROMPT" "NEVER rebase, NEVER force-push" "merge-main-never-rebase is pinned"
 assert_contains "$PROMPT" "references/land-conflicts.md" "prompt carries the runtime conflicts-procedure pointer (absolute path)"
+assert_not_contains "$PROMPT" "protocol violation" "the conflicts doc binds by its bounds, not a violation flourish"
+assert_not_contains "$PROMPT" "before touching a single hunk" "no read-choreography mandate — the bounds live in the doc and bind"
 CONFLICTS_DOC_CONTENT="$(cat "$REPO_ROOT/skills/reviewing-prs/references/land-conflicts.md")"
 assert_contains "$CONFLICTS_DOC_CONTENT" "at most 50 hand-resolved lines across at most 3 conflicted files" "land bounds live in the runtime-opened procedure"
 assert_not_contains "$CONFLICTS_DOC_CONTENT" "{{" "conflicts procedure is placeholder-free (opened at runtime, never rendered)"
+assert_contains "$CONFLICTS_DOC_CONTENT" "Resolve ONLY the conflict hunks" "hunks-only bound survives"
+assert_not_contains "$CONFLICTS_DOC_CONTENT" "no refactors, no improvements" "hunks-only is stated as the unreviewed-code state, not a prohibition list"
 assert_contains "$PROMPT" "needs-human" "out-of-bounds conflicts park needs-human"
 assert_contains "$PROMPT" "IF RESUMED WITH ANSWERS" "prompt carries the board-answer resume clause"
 assert_contains "$PROMPT" "board-transition.sh 7 done" "post-merge finalize transitions the ticket"
@@ -318,6 +376,12 @@ assert_contains "$(cat "$SPAWN_LOG")" "retire:aaaa" "the spawned worker is retir
 assert_contains "$out" "bind to ticket #7 failed" "failure names the ticket"
 assert_not_contains "$out" "land worker dispatched" "no success report on a failed bind"
 
+reset_state
+rc=0; out="$(STUB_NO_BIND_ACK=1 LAND_ACK_POLLS=2 LAND_ACK_DELAY=0.01 "$DISPATCH" 5 2>&1)" || rc=$?
+assert_equals "$rc" "1" "missing land-worker barrier ack fails dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "missing land ack retires the non-started worker"
+assert_not_contains "$out" "land worker dispatched" "no success report before worker ack"
+
 # ---- exclusive ticket ownership (board-answer must resume THE LAND WORKER) -------------
 echo "exclusive binding:"
 reset_state
@@ -326,18 +390,44 @@ python3 - <<'PY'
 import json, os
 json.dump({"uuid": "0000impl-0000-4000-8000-000000000000",
            "current": "0000impl-0000-4000-8000-000000000000",
-           "name": "impl-7", "status": "idle", "ticket": "7",
+           "name": "review-pr-570", "status": "working", "turn_state": "idle", "ticket": "7",
            "updated": "2026-07-11T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"],
                             "0000impl-0000-4000-8000-000000000000.json"), "w"))
 PY
 "$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "finalize:0000impl" "land handoff finalizes a lingering finished reviewer before bind"
 old_ticket="$(python3 -c '
 import json, os
 m = json.load(open(os.path.join(os.environ["DAEMON_HOME"], "0000impl-0000-4000-8000-000000000000.json")))
 print(m.get("ticket", "STRIPPED"))')"
 assert_equals "$old_ticket" "STRIPPED" "the implement worker's stale binding is stripped (ownership transferred)"
 assert_contains "$(cat "$BIND_LOG")" ":7" "the land worker holds the binding"
+
+# A genuinely active owner blocks BEFORE the write-capable land worker starts.
+reset_state
+python3 - <<'PY'
+import json,os
+json.dump({'uuid':'active-review-0000-4000-8000-000000000000','current':'active-review-0000-4000-8000-000000000000',
+           'name':'review-pr-570','status':'working','turn_state':'busy','ticket':'7'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'active-review-0000-4000-8000-000000000000.json'),'w'))
+PY
+echo '[{"id":"active-re","sessionId":"active-review-0000-4000-8000-000000000000","state":"working","status":"busy"}]' > "$MOCK_DIR/agents.json"
+rc=0; out="$($DISPATCH 5 2>&1)" || rc=$?
+assert_equals "$rc" "1" "active ticket owner blocks land dispatch"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "land worker never starts before ownership is available"
+
+# A dead/absent stale owner is retired, then handoff proceeds.
+reset_state
+python3 - <<'PY'
+import json,os
+json.dump({'uuid':'dead-review-0000-4000-8000-000000000000','current':'dead-review-0000-4000-8000-000000000000',
+           'name':'review-pr-570','status':'working','turn_state':'absent','ticket':'7'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'dead-review-0000-4000-8000-000000000000.json'),'w'))
+PY
+"$DISPATCH" 5 >/dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "retire:dead-review" "absent stale owner is retired before land handoff"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "land dispatch proceeds after dead owner cleanup"
 
 # ---- stale approval refused --------------------------------------------------------------
 echo "stale approval:"

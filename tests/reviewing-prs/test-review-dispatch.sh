@@ -65,6 +65,7 @@ cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "spawn:$*" >> "$SPAWN_LOG"
+echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
 [ "${1:-}" = "--no-wait" ] && shift
 name="$1"; task="$2"; cwd="${3:-}"
 if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
@@ -81,7 +82,28 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+# Simulate the worker's first protocol action: wait for the dispatcher-owned
+# ready file, validate it, then acknowledge before ORIENT. Tests can suppress
+# this to prove dispatch does not report success for a worker that never starts.
+bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
+if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
+  READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
+import json, os, time
+ready=os.environ["READY"]
+for _ in range(500):
+    if os.path.isfile(ready):
+        ack=ready+".ack"; tmp=ack+".tmp"
+        with open(tmp,"w") as f: json.dump({"uuid":os.environ["UUID"]},f)
+        os.replace(tmp,ack)
+        break
+    time.sleep(0.01)
+PY
+fi
+if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
+  echo "daemon spawned without parseable identity"
+else
+  echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
+fi
 STUB
 cat > "$STUB_DAEMONS/codex-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -104,14 +126,97 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
 STUB
 cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "retire:$1" >> "$SPAWN_LOG"
 STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
+# Faithful stand-in for daemon-finalize.sh: same contract (noop/live/absent/
+# idle/error on stdout), driven by the registry meta + the mock agents view;
+# reply content comes from an optional $MOCK_DIR/reply-<uuid>.txt fixture.
+cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+meta=""
+for f in "$DAEMON_HOME"/*.json; do
+  case "$f" in *.reply.json) continue ;; esac
+  case "$(basename "$f" .json)" in "$1"*) meta="$f"; break ;; esac
+done
+[ -n "$meta" ] || { echo "noop"; exit 0; }
+uuid="$(basename "$meta" .json)"
+out="$(M="$meta" A="$MOCK_DIR/agents.json" python3 <<'PY'
+import json, os
+m = json.load(open(os.environ["M"]))
+if m.get("engine") == "codex" or m.get("status") not in ("working", "blocked"):
+    print("noop"); raise SystemExit
+cur = m.get("current") or m.get("uuid")
+try:
+    rows = json.load(open(os.environ["A"]))
+except Exception:
+    rows = []
+row = next((r for r in rows if r.get("sessionId") == cur), None)
+state = (row or {}).get("state") or ""
+# mirror the real script: a lingering finished session stays state=working;
+# status (busy -> idle) is the turn signal
+if row is not None and state == "working" and row.get("status") == "idle":
+    state = "done"
+if state == "":
+    print("absent")
+elif state in ("working", "blocked"):
+    print("live")
+elif state == "done":
+    print("idle")
+else:
+    print("error")
+PY
+)"
+case "$out" in
+  idle|error)
+    if [ -f "$MOCK_DIR/reply-$uuid.txt" ]; then
+      cp "$MOCK_DIR/reply-$uuid.txt" "$DAEMON_HOME/$uuid.reply.txt"
+    else
+      echo "review finished." > "$DAEMON_HOME/$uuid.reply.txt"
+    fi
+    M="$meta" S="$out" python3 -c '
+import json, os
+m = json.load(open(os.environ["M"]))
+m["status"] = os.environ["S"]
+json.dump(m, open(os.environ["M"], "w"))
+' ;;
+esac
+echo "$out"
+STUB
+chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh" "$STUB_DAEMONS/daemon-finalize.sh"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
+
+# Minimal board-bind stand-in: this suite tests dispatch ownership mechanics,
+# while the issue-tracker suite tests board-bind's GitHub validation itself.
+STUB_BOARD="$TEST_ROOT/stub-board"; mkdir -p "$STUB_BOARD"
+cat > "$STUB_BOARD/board-bind.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+q="$1"; ticket="$2"; hit=""
+for p in "$DAEMON_HOME"/*.json; do
+  [ "$(basename "$p" .json)" = "$q" ] || [[ "$(basename "$p" .json)" == "$q"* ]] || continue
+  [ -z "$hit" ] || exit 1
+  hit="$p"
+done
+[ -n "$hit" ] || exit 1
+M="$hit" T="$ticket" D="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+p=os.environ["M"]; ticket=os.environ["T"]
+for q in glob.glob(os.path.join(os.environ["D"], "*.json")):
+    if q == p or q.endswith(".reply.json"): continue
+    m=json.load(open(q))
+    if str(m.get("ticket", "")).lstrip("#") == ticket.lstrip("#"):
+        del m["ticket"]; json.dump(m, open(q,"w"), indent=2)
+m=json.load(open(p)); m["ticket"]=ticket
+json.dump(m, open(p,"w"), indent=2)
+PY
+STUB
+chmod +x "$STUB_BOARD/board-bind.sh"
+export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
 # explicit WORKER_ENGINE=codex prefix.
@@ -170,18 +275,25 @@ json.dump({"url": "https://github.com/test/repo/issues/7",
            "body": "Ticket seven brief body"}, open(os.path.join(d, "issue-7.json"), "w"))
 PY
 
-reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
+reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; rm -rf "$DAEMON_HOME"/review-pr-*-control.*; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- triggered dispatch (happy path) ------------------------------------------
 echo "triggered dispatch:"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "spawns --no-wait with the registry name"
+assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"ticket": "7"' "ticketed review worker is bound for board-answer resume"
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out at the PR head SHA"
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/review-pr-5.prompt")"
+BIND_READY="$(printf '%s\n' "$PROMPT" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
 assert_contains "$PROMPT" "REVIEW worker for PR #5" "prompt carries the worker bootstrap header"
+assert_contains "$PROMPT" '`BIND_READY_FILE`:' "prompt carries the startup binding barrier"
+if [ -n "$BIND_READY" ] && [ -f "$BIND_READY" ]; then pass "bind-ready barrier opens after exclusive binding"; else fail "bind-ready barrier opens after exclusive binding"; fi
+assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ticket": "7"' "barrier proves the primary ticket binding"
+assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ledger"' "barrier carries the undisclosed ledger path to the orchestrator"
+if [ -f "$BIND_READY.ack" ]; then pass "dispatch waits for worker barrier acknowledgement"; else fail "dispatch waits for worker barrier acknowledgement"; fi
 assert_contains "$PROMPT" "Adds f." "prompt carries the PR body"
 assert_contains "$PROMPT" "---- ISSUE_BODY binding: Ticket #7 brief ----" "prompt names the primary ticket (Closes #7 parsed from the body)"
 assert_contains "$PROMPT" "Ticket seven brief body" "prompt carries the linked issue body"
@@ -197,6 +309,7 @@ assert_contains "$PROMPT" "complete Review Worker Protocol" "prompt makes the sk
 assert_contains "$PROMPT" "unconditionally open" "prompt always loads dispatcher-owned doctrine"
 assert_contains "$PROMPT" 'Do not resolve this protocol from the workspace `.agents/skills`' "prompt rejects PR-owned same-name skill spoofing"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt injects the engine script path"
 assert_contains "$PROMPT" "--base origin/main" "engine call carries the base ref"
 assert_contains "$PROMPT" 'mktemp -d "${TMPDIR:-/tmp}/review-pr-5.XXXXXX"' "engine allocates a unique per-review temp directory"
@@ -208,6 +321,66 @@ assert_not_contains "$PROMPT" "IN-THREAD" "in-thread review is gone"
 assert_not_contains "$PROMPT" "cookbook" "cookbook engine form is gone"
 assert_not_contains "$PROMPT" "Claude reviewer subagent" "claude fallback engine is gone"
 assert_not_contains "$PROMPT" "git diff origin/main...HEAD)" "ORIENT no longer instructs a full-diff read"
+
+# Ticket ownership is exclusive: the reviewer replaces the finished implement
+# worker as board-answer's resume target.
+echo "review ticket binding:"
+reset_state
+OLD="impl0000-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["OLD"]
+json.dump({"uuid": u, "current": u, "name": "implement-ticket-7",
+           "status": "idle", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+"$DISPATCH" 5 >/dev/null
+NEW_META="$(python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m=json.load(open(p))
+    if m.get("name") == "review-pr-5": print(p); break
+PY
+)"
+assert_contains "$(cat "$NEW_META")" '"ticket": "7"' "new reviewer owns ticket #7"
+assert_not_contains "$(cat "$DAEMON_HOME/impl0000-0000-4000-8000-000000000000.json")" '"ticket"' "old implement worker binding is stripped"
+
+# Binding is mandatory: an unbound reviewer could park needs-human where the
+# answer relay cannot reach it. Retire it instead of allowing the dispatch.
+FAIL_BOARD="$TEST_ROOT/fail-board"; mkdir -p "$FAIL_BOARD"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_BOARD/board-bind.sh"
+chmod +x "$FAIL_BOARD/board-bind.sh"
+reset_state
+if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "bind failure aborts review dispatch"
+else
+    pass "bind failure aborts review dispatch"
+fi
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable reviewer"
+assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "bind failure never opens the startup barrier"
+
+# A published barrier is not success until the worker acknowledges it. A model
+# that died/timed out before reading the prompt is retired and dispatch fails.
+reset_state
+if STUB_NO_BIND_ACK=1 REVIEW_ACK_POLLS=2 REVIEW_ACK_DELAY=0.01 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "missing worker barrier ack fails dispatch"
+else
+    pass "missing worker barrier ack fails dispatch"
+fi
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "missing barrier ack retires the non-started reviewer"
+
+# Exact spawn identity is mandatory. A changed/unparseable banner must fail
+# closed, never fall back to a same-name registry heuristic.
+reset_state
+if STUB_BAD_SPAWN_BANNER=1 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "unparseable spawn UUID fails dispatch"
+else
+    pass "unparseable spawn UUID fails dispatch"
+fi
+assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "identity parse failure never opens the barrier"
+
+# Every control-state initialization step is explicitly guarded in sweep mode;
+# set -e is suspended beneath the per-PR `||` wrapper.
+assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "control-state setup has a fail-closed guard"
 
 # ---- skips --------------------------------------------------------------------
 echo "skips:"
@@ -233,7 +406,7 @@ json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
 PY
 }
 reset_state; seed_reviewer working
-echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$out" "active reviewer" "live ACTIVE reviewer → skip"
 assert_equals "$(cat "$SPAWN_LOG")" "" "live ACTIVE reviewer spawns nothing"
@@ -252,7 +425,7 @@ json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
            "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host Claude reviewer is retired despite a visible migrated session"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude reviewer is respawned"
@@ -261,6 +434,54 @@ reset_state; seed_reviewer idle
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "triggered mode retires a finished reviewer"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered mode re-dispatches after an explicit event"
+
+# ---- finished-but-unfinalized reviewer (the one-harness lifecycle) ---------------
+# A --no-wait worker's meta stays status=working after its turn ends; only
+# `claude agents` knows the truth, and finished --bg sessions stay LISTED
+# indefinitely — presence alone is NOT liveness. Dispatch must finalize
+# through daemon-finalize.sh before deciding.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "dispatch finalized the meta through daemon-finalize"
+
+# The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
+# so the sweep's outage retry works on the one-harness lifecycle.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' > "$MOCK_DIR/reply-feed0000-0000-4000-8000-000000000000.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "sweep finalizes and retries an unfinalized ENGINE-UNAVAILABLE reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after finalizing the outage turn"
+rm -f "$MOCK_DIR/reply-feed0000-0000-4000-8000-000000000000.txt"
+
+# A normally-finished turn finalizes to idle and the sweep SKIPS it — no
+# endless respawn of completed reviews.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep finalizes a normally-finished reviewer and skips it"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "a finalized finished reviewer is not retired by the sweep"
+
+# Production shape (observed live 2026-07-15): a finished daemon LINGERS in
+# `claude agents` with state=working while its process lives — `status`
+# (busy → idle) is the turn signal. An explicit PR event must still finalize
+# and re-dispatch such a reviewer instead of skipping it as active forever.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working", "status": "idle"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished reviewer (state=working, status=idle) is finalized + retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "lingering finished reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "lingering finished reviewer's meta finalized idle"
+
+# ...and a genuinely mid-turn reviewer (status=busy) still skips as active.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$out" "active reviewer" "busy reviewer still skips as active"
+assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -281,7 +502,7 @@ json.dump({"uuid": os.environ["U"], "current": os.environ["U"],
            "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["D"], os.environ["U"] + ".json"), "w"))
 PY
-echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\"}]" > "$MOCK_DIR/agents.json"
+echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\", \"state\": \"working\"}]" > "$MOCK_DIR/agents.json"
 out="$(env -u DAEMON_HOME HOME="$HOME" PATH="$PATH" LOCAL_REPO="$LOCAL_REPO" BOARD_REPO="$BOARD_REPO" \
     DAEMON_SCRIPTS="$DAEMON_SCRIPTS" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
     PROMPT_DIR="$PROMPT_DIR" STUB_COUNT="$STUB_COUNT" "$DISPATCH" 5)"
@@ -328,6 +549,103 @@ printf 'review complete; confident-ready set.\n' \
   > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_equals "$(cat "$SPAWN_LOG")" "" "sweep still skips a finished reviewer without the marker"
+
+# ---- sweep outage cap ------------------------------------------------------------
+# A persistent engine outage must not make the cron sweep respawn forever:
+# after 3 CONSECUTIVE ENGINE-UNAVAILABLE reviewers for one PR, the sweep
+# skips it. An explicit PR event (triggered mode) always re-dispatches.
+echo "sweep outage cap:"
+seed_outage_metas() {  # $1 = how many consecutive outage reviewers to seed
+  local i
+  for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
+  for i in $(seq 1 "$1"); do
+    U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
+import json, os
+u = os.environ["U"]; i = os.environ["I"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-0%sT00:00:00Z" % i},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+    printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
+      > "$DAEMON_HOME/feed000$i-0000-4000-8000-000000000000.reply.txt"
+  done
+}
+reset_state
+seed_outage_metas 2
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep still respawns below the outage cap (2 consecutive)"
+reset_state
+seed_outage_metas 3
+OUT_CAP="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips a PR at the outage cap (3 consecutive)"
+assert_contains "$OUT_CAP" "outage" "sweep names the outage cap as the skip reason"
+: > "$SPAWN_LOG"
+OUT_EVT="$("$DISPATCH" 5 2>&1 || true)"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "an explicit PR event ignores the outage cap"
+[ -s "$SPAWN_LOG" ] || echo "    dispatch said: $OUT_EVT"
+
+# ---- sweep retries a dead worker (terminal error, no reply marker) ---------------
+# A worker that dies BEFORE it can speak — e.g. the gateway refuses its very
+# first turn — finalizes status=error with an EMPTY reply: no assistant
+# message exists to carry ENGINE-UNAVAILABLE. The sweep must treat terminal
+# worker errors as retryable (same 3-consecutive cap), or a gateway outage
+# parks the PR out of the sweep until an explicit event.
+echo "sweep dead-worker retry:"
+reset_state; seed_reviewer error
+printf '\n' > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "sweep retires an errored worker whose reply is empty"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a dead worker"
+
+# one-harness lifecycle: an unfinalized worker whose SESSION errored is
+# finalized to status=error by the sweep itself, then retried in the same pass.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "error"' "sweep finalized the errored session through daemon-finalize"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
+
+# dead workers share the outage cap: 3 consecutive errored reviewers (empty
+# replies — the marker never existed) stop the sweep respawning.
+seed_error_metas() {  # $1 = how many consecutive errored reviewers to seed
+  local i
+  for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
+  for i in $(seq 1 "$1"); do
+    U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
+import json, os
+u = os.environ["U"]; i = os.environ["I"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5",
+           "status": "error", "updated": "2026-07-0%sT00:00:00Z" % i},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+    printf '\n' > "$DAEMON_HOME/feed000$i-0000-4000-8000-000000000000.reply.txt"
+  done
+}
+reset_state
+seed_error_metas 2
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep still respawns below the cap (2 consecutive dead workers)"
+reset_state
+seed_error_metas 3
+OUT_DEAD="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips a PR after 3 consecutive dead workers"
+assert_contains "$OUT_DEAD" "3 consecutive" "sweep names the failure cap as the skip reason"
+
+# marker outages and dead workers form ONE streak — interleaving them must
+# not reset the count.
+reset_state
+seed_error_metas 2
+U="feed0003-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-03T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
+  > "$DAEMON_HOME/feed0003-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as one 3-streak"
 
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
@@ -379,6 +697,41 @@ echo "[{\"id\": \"foreign1\", \"sessionId\": \"foreign1-0000-4000-8000-000000000
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude session does not occupy the worktree"
 assert_not_contains "$out" "live daemon occupies" "foreign-host Claude session does not block removal"
+reset_state
+
+# A MANAGED local session whose turn is over (lingering shape: state=working,
+# status=idle — finished daemons stay listed) must NOT occupy the worktree:
+# retire + respawn deliberately reuses that path.
+U="linger01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "retired",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"linger01\", \"sessionId\": \"linger01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"working\", \"status\": \"idle\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a finished lingering session frees the worktree for re-dispatch"
+assert_not_contains "$out" "live daemon occupies" "finished lingering session does not block worktree removal"
+reset_state
+
+# ...while a managed local session that is genuinely mid-turn (status=busy)
+# still occupies it.
+U="linger01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "other-daemon", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "working",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"linger01\", \"sessionId\": \"linger01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"working\", \"status\": \"busy\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "live daemon occupies" "busy managed session still occupies the worktree"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn over a busy session's worktree"
 reset_state
 
 # ---- sweep failure isolation ----------------------------------------------------
@@ -542,24 +895,30 @@ PY
 }
 run_dispatch() { "$DISPATCH" "$@"; }
 
-echo "engine switch:"
+echo "engine switch (one harness, two model routes):"
 reset_state
 : > "$SPAWN_LOG"
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
 WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "default-codex env spawns the one-harness daemon"
+assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
 assert_contains "$prompt" "review-engine.sh --base origin/main" "prompt carries the engine block (script path + BASE_REF rendered)"
-assert_contains "$prompt" "Ticket requirements / acceptance criteria" "prompt carries untrusted compliance criteria"
+assert_contains "$prompt" "IN THE BACKGROUND" "prompt starts the engine in the background"
+assert_contains "$prompt" "45 minutes" "prompt bounds the engine wait (hung-engine timeout)"
+assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
+assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
 
 : > "$SPAWN_LOG"
 gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:" "engine:claude label overrides env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:claude label overrides env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "ENGINE-UNAVAILABLE" "claude species gets the same single merged fallback"
+assert_contains "$prompt42" "ENGINE-UNAVAILABLE" "claude route gets the same single merged fallback"
 
 echo "codex reviewer liveness in dedupe:"
 sleep 300 & LIVEPID=$!
@@ -576,7 +935,7 @@ assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 : > "$SPAWN_LOG"
 out="$(WORKER_ENGINE=codex run_dispatch 43)"
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "dead codex pid retires + respawns"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
 
 # ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
 # The "live worktree guard" section above pins _wt_occupied's FIRST branch (a

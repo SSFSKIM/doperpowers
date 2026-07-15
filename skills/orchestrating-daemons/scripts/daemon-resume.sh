@@ -34,6 +34,9 @@ msg="${2:?missing message}"
 
 name="$(_meta_get "$uuid" name)"
 cwd="$(_meta_get "$uuid" cwd)"; model="$(_meta_get "$uuid" model)"
+# Gateway dimension: restore --settings/--effort on the fork, or a gateway
+# daemon silently reverts to plain models mid-conversation (see daemon-spawn.sh).
+gw_settings="$(_meta_get "$uuid" settings)"; gw_effort="$(_meta_get "$uuid" effort)"
 turns="$(_meta_get "$uuid" turns)"; [ -n "$turns" ] || turns=0
 # Worktree'd daemon → purge needs the worktree path to dirty-guard it while
 # `claude rm` runs (rm deletes a CLEAN worktree with the owning turn).
@@ -62,6 +65,8 @@ _meta_set "$uuid" status "working" updated "$(_now)"
 # context. `-n` keeps the daemon's display name stable across turns.
 args=( --bg --resume "$cur" --permission-mode auto -n "$name" )
 [ -n "$model" ] && args+=( --model "$model" )
+[ -n "$gw_settings" ] && args+=( --settings "$gw_settings" )
+[ -n "$gw_effort" ] && args+=( --effort "$gw_effort" )
 args+=( "$msg" )
 
 # Fork the new native bg agent. Capture the banner WITHOUT tripping `set -e`: a

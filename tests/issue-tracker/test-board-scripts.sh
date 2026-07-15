@@ -62,10 +62,14 @@ run() { (cd "$WORK" && "$SCRIPTS_DIR/$1" "${@:2}"); }
 # state(): eval is safe here — the expression is a test-author-written literal
 # from THIS file (never external input), evaluated against the mock's state.
 state() { python3 -c "import json,sys;print(eval(sys.argv[1], {'s': json.load(open('$MOCK_GH_STATE'))}))" "$1"; }
+# A filled spec body: ready-for-agent births require one (a pre-spec skeleton
+# is never implementable — see the pre-spec guard section).
+SPEC_BODY="$TEST_ROOT/spec-body.md"
+printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiable\n' > "$SPEC_BODY"
 
 # ---- register ----------------------------------------------------------------
 echo "board-register:"
-out="$(run board-register.sh "Epic: alpha" enhancement P2)"
+out="$(run board-register.sh "Epic: alpha" enhancement P2 --body-file "$SPEC_BODY")"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
 assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
 
@@ -75,11 +79,11 @@ assert_contains "$(state "s['issues']['2']['labels']")" "status:needs-human" "bi
 assert_contains "$(state "s['issues']['2']['comments'][0]")" "[board] needs-human: waiting on A" "birth note posted as [board] comment"
 assert_contains "$(state "s['issues']['2']['body']")" "note: waiting on A" "birth note in board:meta"
 
-out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2)"
+out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2 --body-file "$SPEC_BODY")"
 assert_equals "$(state "s['issues']['3']['parent']")" "1" "parent sub-issue edge created"
 assert_contains "$(state "s['issues']['3']['body']")" "spawned-by: #2" "spawned-by in board:meta"
 
-out="$(run board-register.sh "Child B" enhancement P2 --parent 1 --blocked-by 3)"
+out="$(run board-register.sh "Child B" enhancement P2 --parent 1 --blocked-by 3 --body-file "$SPEC_BODY")"
 assert_equals "$(state "s['issues']['4']['blockedBy']")" "[3]" "blocked_by dependency edge created"
 
 assert_fails run board-register.sh "X" gadget P2
@@ -146,10 +150,10 @@ assert_fails run board-transition.sh 3 in-progress                     # termina
 
 # ---- edge: cycles, deadlocks, sweeps ------------------------------------------
 echo "board-edge:"
-run board-register.sh "Epic: beta" enhancement P2 >/dev/null                            # 5
-run board-register.sh "B1" enhancement P2 --parent 5 >/dev/null                         # 6
-run board-register.sh "B2" enhancement P2 --parent 5 --blocked-by 6 >/dev/null          # 7
-run board-register.sh "Loose" enhancement P3 >/dev/null                                 # 8
+run board-register.sh "Epic: beta" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                            # 5
+run board-register.sh "B1" enhancement P2 --parent 5  --body-file "$SPEC_BODY" >/dev/null                         # 6
+run board-register.sh "B2" enhancement P2 --parent 5 --blocked-by 6  --body-file "$SPEC_BODY" >/dev/null          # 7
+run board-register.sh "Loose" enhancement P3  --body-file "$SPEC_BODY" >/dev/null                                 # 8
 
 assert_fails run board-edge.sh 6 --block 6                              # self
 assert_fails run board-edge.sh 6 --block 7                              # cycle (7 waits on 6)
@@ -310,9 +314,87 @@ echo "board-bind / board-show / board-reconcile:"
 cat > "$DAEMON_HOME/aaaa-bbbb.json" <<'J'
 {"uuid": "aaaa-bbbb", "status": "running", "cwd": "/tmp", "worktree": "wt-9"}
 J
+cat > "$DAEMON_HOME/old9-impl.json" <<'J'
+{"uuid": "old9-impl", "status": "idle", "ticket": "9", "cwd": "/tmp/old"}
+J
 out="$(run board-bind.sh aaaa 9)"
 assert_contains "$out" "bound #9 ← aaaa-bbbb" "bind writes registry"
 assert_equals "$(python3 -c "import json;print(json.load(open('$DAEMON_HOME/aaaa-bbbb.json'))['ticket'])")" "9" "registry meta has ticket"
+assert_not_contains "$(cat "$DAEMON_HOME/old9-impl.json")" '"ticket"' "exclusive bind strips the old ticket owner before binding the new one"
+# A live owner is stable: a second reviewer cannot steal its answer route.
+python3 - <<PY
+import json
+p='$DAEMON_HOME/aaaa-bbbb.json'; m=json.load(open(p)); m.update(name='review-pr-9', status='working'); json.dump(m,open(p,'w'))
+json.dump({'uuid':'cccc-dddd','name':'review-pr-10','status':'working'},open('$DAEMON_HOME/cccc-dddd.json','w'))
+PY
+assert_fails run board-bind.sh cccc 9
+assert_contains "$(cat "$DAEMON_HOME/aaaa-bbbb.json")" '"ticket": "9"' "active owner keeps the ticket binding"
+assert_not_contains "$(cat "$DAEMON_HOME/cccc-dddd.json")" '"ticket"' "rejected takeover never binds the contender"
+# An idle needs-human owner is also stable until board-answer resumes it.
+cat > "$DAEMON_HOME/parked-two.json" <<'J'
+{"uuid":"parked-two","name":"review-pr-2","status":"idle","ticket":"2"}
+J
+cat > "$DAEMON_HOME/park-contender.json" <<'J'
+{"uuid":"park-contender","name":"review-pr-22","status":"working"}
+J
+assert_fails run board-bind.sh park-contender 2
+assert_contains "$(cat "$DAEMON_HOME/parked-two.json")" '"ticket":"2"' "parked needs-human owner keeps its binding"
+assert_not_contains "$(cat "$DAEMON_HOME/park-contender.json")" '"ticket"' "parked ticket rejects a new owner"
+
+# The registry lock serializes two simultaneous claims: exactly one wins and
+# exactly one meta owns the ticket afterward.
+cat > "$DAEMON_HOME/race-one.json" <<'J'
+{"uuid":"race-one","name":"review-pr-81","status":"working"}
+J
+cat > "$DAEMON_HOME/race-two.json" <<'J'
+{"uuid":"race-two","name":"review-pr-82","status":"working"}
+J
+( set +e; run board-bind.sh race-one 8 >"$TEST_ROOT/race1.out" 2>&1; echo $? >"$TEST_ROOT/race1.rc" ) & p1=$!
+( set +e; run board-bind.sh race-two 8 >"$TEST_ROOT/race2.out" 2>&1; echo $? >"$TEST_ROOT/race2.rc" ) & p2=$!
+wait "$p1"; wait "$p2"
+successes="$(python3 - <<PY
+r=[int(open('$TEST_ROOT/race1.rc').read()),int(open('$TEST_ROOT/race2.rc').read())]
+print(sum(x==0 for x in r))
+PY
+)"
+owners="$(python3 - <<PY
+import glob,json
+print(sum(str(json.load(open(p)).get('ticket',''))=='8' for p in glob.glob('$DAEMON_HOME/*.json')))
+PY
+)"
+assert_equals "$successes" "1" "concurrent bind has exactly one winner"
+assert_equals "$owners" "1" "concurrent bind leaves exactly one ticket owner"
+
+# Park state must be read after acquiring the metadata lock. Reproduce a bind
+# waiting on the lock while the ticket transitions ready-for-agent→needs-human:
+# a pre-lock snapshot would wrongly strip the newly parked owner.
+python3 - <<'PY'
+import json,os
+p=os.environ['MOCK_GH_STATE']; s=json.load(open(p)); src=dict(s['issues']['8'])
+src.update(number=999,id='ID_999',title='bind race park',state='OPEN',stateReason=None,
+           labels=['bug','status:ready-for-agent','priority:P2'],body='## Problem & intent\n\nrace')
+s['issues']['999']=src; json.dump(s,open(p,'w'))
+json.dump({'uuid':'park-race-old','name':'review-pr-999','status':'idle','ticket':'999'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'park-race-old.json'),'w'))
+json.dump({'uuid':'park-race-new','name':'review-pr-1000','status':'working'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'park-race-new.json'),'w'))
+PY
+LOCK="$DAEMON_HOME/.metalock" MARK="$TEST_ROOT/lock-held" python3 - <<'PY' & lock_pid=$!
+import fcntl,os,time
+f=open(os.environ['LOCK'],'a'); fcntl.flock(f,fcntl.LOCK_EX)
+open(os.environ['MARK'],'w').write('held')
+time.sleep(1.0)
+fcntl.flock(f,fcntl.LOCK_UN); f.close()
+PY
+while [ ! -f "$TEST_ROOT/lock-held" ]; do sleep 0.01; done
+( set +e; run board-bind.sh park-race-new 999 >"$TEST_ROOT/park-race.out" 2>&1; echo $? >"$TEST_ROOT/park-race.rc" ) & bind_pid=$!
+sleep 0.2
+run board-transition.sh 999 needs-human "human decision" >/dev/null
+wait "$lock_pid"; wait "$bind_pid"
+assert_equals "$(cat "$TEST_ROOT/park-race.rc")" "1" "bind re-reads needs-human after lock acquisition"
+assert_contains "$(cat "$DAEMON_HOME/park-race-old.json")" '"ticket": "999"' "lock-wait park keeps the original owner"
+assert_not_contains "$(cat "$DAEMON_HOME/park-race-new.json")" '"ticket"' "lock-wait contender never acquires the parked ticket"
+
 out="$(run board-show.sh 9)"
 assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
 assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
@@ -433,9 +515,9 @@ assert_contains "$(state "s['issues']['10']['body']")" "spawned-by: #8" "created
 
 # ---- finalize: PR-merge auto-close ("Closes #N") -----------------------------
 echo "finalize (merge auto-close):"
-run board-register.sh "Epic: delta" enhancement P2 >/dev/null                    # 11
-run board-register.sh "D1" enhancement P0 --parent 11 >/dev/null                 # 12
-run board-register.sh "D2" enhancement P2 --blocked-by 12 >/dev/null             # 13
+run board-register.sh "Epic: delta" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                    # 11
+run board-register.sh "D1" enhancement P0 --parent 11  --body-file "$SPEC_BODY" >/dev/null                 # 12
+run board-register.sh "D2" enhancement P2 --blocked-by 12  --body-file "$SPEC_BODY" >/dev/null             # 13
 top="$(run board-list.sh | head -1)"
 assert_contains "$top" "P0" "P0 row floats to the top of the list"
 run board-transition.sh 12 in-progress >/dev/null
@@ -473,9 +555,9 @@ assert_fails run board-transition.sh 13 ready-for-agent           # already read
 # html payload. All-CLOSED-unmerged (abandoned attempt) and any OPEN linked PR
 # are NOT candidates.
 echo "close-candidate:"
-run board-register.sh "Cand ready" enhancement P2 >/dev/null            # 14: closes MERGED + xref CLOSED
-run board-register.sh "Abandoned only" enhancement P2 >/dev/null        # 15: closes CLOSED (no merge)
-run board-register.sh "Still open PR" enhancement P2 >/dev/null         # 16: MERGED + xref OPEN
+run board-register.sh "Cand ready" enhancement P2  --body-file "$SPEC_BODY" >/dev/null            # 14: closes MERGED + xref CLOSED
+run board-register.sh "Abandoned only" enhancement P2  --body-file "$SPEC_BODY" >/dev/null        # 15: closes CLOSED (no merge)
+run board-register.sh "Still open PR" enhancement P2  --body-file "$SPEC_BODY" >/dev/null         # 16: MERGED + xref OPEN
 python3 - <<'PRS'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
@@ -542,7 +624,7 @@ assert_not_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "truncated
 # Reachable only from in-review (a review verdict presupposes a PR); demotes
 # back to in-review on a new push; closes normally. Note optional.
 echo "confident-ready:"
-run board-register.sh "Review target" enhancement P2 >/dev/null                  # 17
+run board-register.sh "Review target" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                  # 17
 assert_fails run board-transition.sh 17 confident-ready                          # ready → confident-ready illegal
 run board-transition.sh 17 in-progress >/dev/null
 assert_fails run board-transition.sh 17 confident-ready                          # in-progress → illegal (must pass through in-review)
@@ -565,7 +647,7 @@ out="$(run board-transition.sh 17 "done")"
 assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "confident-ready → done closes the issue"
 assert_equals "$(state "s['issues']['17']['stateReason']")" "COMPLETED" "closes as completed"
 
-run board-register.sh "CR map probe" enhancement P2 >/dev/null                    # 18
+run board-register.sh "CR map probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                    # 18
 run board-transition.sh 18 in-progress >/dev/null
 run board-transition.sh 18 in-review "pr" --pr https://github.com/test/repo/pull/81 >/dev/null
 run board-transition.sh 18 confident-ready >/dev/null
@@ -600,7 +682,7 @@ assert_contains "$(state "s['issues']['18']['labels']")" "status:needs-human" "n
 # ---- interactive-preferred (park: ticket shape wants live human steering) -----
 echo "interactive-preferred:"
 assert_fails run board-register.sh "IP birth" enhancement P2 --state interactive-preferred  # note required
-run board-register.sh "IP birth" enhancement P2 --state interactive-preferred --note "product-core: onboarding voice" >/dev/null   # 19
+run board-register.sh "IP birth" enhancement P2 --state interactive-preferred --note "product-core: onboarding voice" --body-file "$SPEC_BODY" >/dev/null   # 19
 assert_contains "$(state "s['issues']['19']['labels']")" "status:interactive-preferred" "birth state honored"
 out="$(run board-list.sh)"
 line19="$(printf '%s\n' "$out" | grep '^#19 ')"
@@ -620,7 +702,7 @@ assert_equals "$lint_rc" "0" "board with a noted interactive-preferred ticket li
 
 # ---- needs-human (park: the human as themselves unparks) ---------------------
 echo "needs-human:"
-run board-register.sh "NH probe" enhancement P2 >/dev/null                     # 20
+run board-register.sh "NH probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                     # 20
 assert_fails run board-transition.sh 20 needs-human                            # note required
 out="$(run board-transition.sh 20 needs-human "pick auth provider: A or B (rec: A)")"
 assert_contains "$out" "#20: ready-for-agent → needs-human" "gate-fail park applied"
@@ -682,13 +764,42 @@ echo "resumed: [$eng stub]"
 STUB
     chmod +x "$STUB_DS/$eng-resume.sh"
 done
+cat > "$STUB_DS/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$STUB_STATE/finalize.log"
+M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+[ -n "$M" ] || { echo absent; exit 0; }
+M="$M" python3 - <<'PY'
+import json,os
+p=os.environ['M']; m=json.load(open(p))
+if m.get('status') in ('working','blocked') and m.get('turn_state') == 'idle':
+    m['status']='idle'; json.dump(m,open(p,'w'),indent=2); print('idle')
+elif m.get('status') in ('working','blocked') and m.get('turn_state') == 'absent': print('absent')
+elif m.get('status') in ('working','blocked'): print('live')
+else: print('noop')
+PY
+STUB
+chmod +x "$STUB_DS/daemon-finalize.sh"
+cat > "$STUB_DS/daemon-retire.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$STUB_STATE/retire.log"
+M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+[ -n "$M" ] || exit 0
+M="$M" python3 - <<'PY'
+import json,os
+p=os.environ['M']; m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'),indent=2)
+PY
+STUB
+chmod +x "$STUB_DS/daemon-retire.sh"
 export DAEMON_SCRIPTS="$STUB_DS"
 
 out="$(run board-register.sh "Parked ticket" enhancement P2 --state needs-human --note "Q1? Q2?")"
 ans_t="${out%% *}"
 out="$(run board-register.sh "Unbound parked" enhancement P2 --state needs-human --note "Q?")"
 unb_t="${out%% *}"
-out="$(run board-register.sh "Open ticket" enhancement P2)"
+out="$(run board-register.sh "Open ticket" enhancement P2 --body-file "$SPEC_BODY")"
 open_t="${out%% *}"
 cat > "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json" <<META
 {"uuid": "cccccccc-1111-2222-3333-444444444444", "engine": "codex",
@@ -713,10 +824,11 @@ assert_contains "$msg" "the ticket remains the record" "relay names the record"
 run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
 rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
 cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
-{"uuid": "dddddddd-1111-2222-3333-444444444444", "status": "idle",
+{"uuid": "dddddddd-1111-2222-3333-444444444444", "status": "working", "turn_state": "idle",
  "ticket": "$ans_t", "cwd": "$WORK", "updated": "2026-07-12T00:00:00Z"}
 META
 out="$(run board-answer.sh "$ans_t" --posted)"
+assert_contains "$(cat "$STUB_STATE/finalize.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay finalizes a lingering finished Claude owner before status check"
 assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
 assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
 assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "1" "--posted posts no second [answers] comment"
@@ -726,14 +838,39 @@ run board-transition.sh "$ans_t" needs-human "round 3 questions" >/dev/null
 python3 - <<WORKING
 import json, os
 p = os.path.join(os.environ["DAEMON_HOME"], "dddddddd-1111-2222-3333-444444444444.json")
-m = json.load(open(p)); m["status"] = "working"; json.dump(m, open(p, "w"))
+m = json.load(open(p)); m["status"] = "working"; m["turn_state"] = "busy"; json.dump(m, open(p, "w"))
 WORKING
 assert_fails run board-answer.sh "$ans_t" "late answer"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "active-owner refusal leaves the ticket parked"
+
+# Dead/error/retired owners are fresh-dispatch cases: never transition the
+# ticket to in-progress and attempt a doomed resume.
+python3 - <<ABSENT
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='working'; m['turn_state']='absent'; json.dump(m,open(p,'w'))
+ABSENT
+assert_fails run board-answer.sh "$ans_t" "after dead owner"
+assert_contains "$(cat "$STUB_STATE/retire.log")" "dddddddd-1111-2222-3333-444444444444" "absent owner is retired for fresh dispatch"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "absent owner leaves ticket needs-human"
+python3 - <<ERROR
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='error'; json.dump(m,open(p,'w'))
+ERROR
+assert_fails run board-answer.sh "$ans_t" "after error"
+python3 - <<RETIRED
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'))
+RETIRED
+assert_fails run board-answer.sh "$ans_t" "after retirement"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "terminal owners never orphan the ticket in-progress"
 unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------
 echo "spike category:"
-spike_t="$(run board-register.sh "Spike: is X feasible" spike P2 | awk '{print $1}')"
+spike_t="$(run board-register.sh "Spike: is X feasible" spike P2  --body-file "$SPEC_BODY" | awk '{print $1}')"
 assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-agent', 'priority:P2']" "spike category + status + priority labels"
 assert_contains "$(state "s['labels']")" "spike" "spike label auto-created by ensure_labels"
 assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike category"
@@ -742,6 +879,33 @@ out="$(run board-transition.sh "$spike_t" needs-human "findings ready: X is feas
 assert_contains "$(state "s['issues']['$spike_t']['comments'][-1]")" "findings ready" "spike handoff park lands with its note"
 run board-transition.sh "$spike_t" "done" >/dev/null   # the human read the findings
 assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-human → done: the human closes a read spike directly"
+
+# ---- pre-spec guard (the #567 hole) --------------------------------------------
+# A ticket whose body is still the pre-spec skeleton was born ready-for-agent
+# and auto-dispatched to an implementer 45 seconds later — before any spec
+# existed. A skeleton is never implementable: explicit ready-for-agent birth
+# refuses it, a default birth demotes to needs-info, and the promotion to
+# ready-for-agent re-checks the body.
+echo "pre-spec guard:"
+assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-agent
+out="$(run board-register.sh "Skeleton follow-up" bug P2 --spawned-by 2)"
+skel="${out%% *}"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:needs-info" "default skeleton birth demotes to needs-info"
+assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a skeleton is never born ready-for-agent"
+assert_contains "$(state "s['issues']['$skel']['comments'][0]")" "pre-spec" "demotion posts the spec-pending note"
+assert_fails run board-transition.sh "$skel" ready-for-agent
+SKEL="$skel" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+s = json.load(open(p))
+s["issues"][os.environ["SKEL"]]["body"] = "## Problem & intent\n\nnow specified\n"
+json.dump(s, open(p, "w"))
+PY
+out="$(run board-transition.sh "$skel" ready-for-agent)"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a filled body promotes to ready-for-agent"
+# a body-file that still carries the placeholder is a skeleton too
+printf '## Problem & intent\n\n_(pre-spec: fill in)_\n' > "$TEST_ROOT/still-skel.md"
+assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-agent --body-file "$TEST_ROOT/still-skel.md"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

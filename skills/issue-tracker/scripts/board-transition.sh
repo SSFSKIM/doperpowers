@@ -80,6 +80,9 @@ if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
 if to == "in-review" and not env["T_PR"]:
     B.die("a PR link is required when moving to in-review (--pr URL)")
+if to == "ready-for-agent" and "(pre-spec: fill in)" in (n.get("body") or ""):
+    B.die("#%s is still a pre-spec skeleton — fill the body (gh issue edit "
+          "%s --body-file <spec>) before ready-for-agent" % (tid, tid))
 
 B.ensure_labels()
 extra = {}

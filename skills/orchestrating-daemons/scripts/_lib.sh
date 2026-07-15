@@ -279,6 +279,9 @@ _record_reply() {
 # Echoes "<full-uuid> <state> <cwd>" (cwd is the daemon's ACTUAL working dir —
 # the worktree path when spawned with --worktree). Non-zero on timeout.
 # max=0 polls with no iteration cap (pairs with DAEMON_TIMEOUT=0).
+# `state` alone lies for finished sessions whose process lingers (stays
+# "working"); `status` is the turn signal (busy → idle) — the printer
+# normalizes the lingering finished shape to done.
 _poll_until_done() {
   local short="$1" max="${2:-120}" i=0 uuid state cwd
   while :; do
@@ -293,7 +296,10 @@ for a in d:
     # A row with an empty sessionId is unusable (and would jumble the whitespace
     # parsing downstream) — keep polling until the uuid materializes.
     if a.get("id") == s and a.get("sessionId"):
-        print(a.get("sessionId"), a.get("state", ""), a.get("cwd", "")); break
+        st = a.get("state", "")
+        if st == "working" and a.get("status") == "idle":
+            st = "done"
+        print(a.get("sessionId"), st, a.get("cwd", "")); break
 ') || true
     case "$state" in
       done | blocked | error) printf '%s %s %s' "$uuid" "$state" "$cwd"; return 0 ;;
@@ -323,7 +329,10 @@ except Exception:
     d = []
 for a in d:
     if a.get("id") == s and a.get("sessionId"):
-        print(a.get("sessionId"), a.get("state", ""), a.get("cwd", "")); break
+        st = a.get("state", "")
+        if st == "working" and a.get("status") == "idle":
+            st = "done"
+        print(a.get("sessionId"), st, a.get("cwd", "")); break
 ') || true
     if [ -n "${uuid:-}" ]; then printf '%s %s %s' "$uuid" "$state" "$cwd"; return 0; fi
     i=$((i + 1))

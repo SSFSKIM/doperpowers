@@ -16,6 +16,12 @@
 #   sub-issue / dependency relations. --spawned-by is provenance (board:meta).
 #   --body-file seeds the issue body (else a pre-spec skeleton is used).
 #
+# A pre-spec skeleton is never implementable: explicit `--state
+# ready-for-agent` without a real body is refused, and a DEFAULT birth with
+# the skeleton demotes to needs-info (with a spec-pending note). Fill the
+# body, then board-transition.sh to ready-for-agent — the transition
+# re-checks the body.
+#
 # Prints "<number> <url>" — then YOU flesh out the pre-spec body:
 #   gh issue edit <number> --body-file <file>
 set -euo pipefail
@@ -26,10 +32,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 3 ] || { usage_from_header "$0" >&2; exit 2; }
 title="$1" category="$2" priority="$3"
 shift 3
-state="ready-for-agent" note="" parent="" blocked_by="" spawned_by="" body_file=""
+state="ready-for-agent" state_explicit=0 note="" parent="" blocked_by="" spawned_by="" body_file=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --state) _need_arg "$1" "${2:-}"; state="$2"; shift 2 ;;
+    --state) _need_arg "$1" "${2:-}"; state="$2"; state_explicit=1; shift 2 ;;
     --note) _need_arg "$1" "${2:-}"; note="$2"; shift 2 ;;
     --parent) _need_arg "$1" "${2:-}"; parent="$2"; shift 2 ;;
     --blocked-by) _need_arg "$1" "${2:-}"; blocked_by="$2"; shift 2 ;;
@@ -41,6 +47,7 @@ done
 [ -z "$body_file" ] || [ -f "$body_file" ] || die "no such file: $body_file"
 
 T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
+T_STATE_EXPLICIT="$state_explicit" \
 T_NOTE="$note" T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \
 T_BODY_FILE="$body_file" _py - <<'PY'
 import os
@@ -86,6 +93,20 @@ if env["T_BODY_FILE"]:
         body = f.read()
 else:
     body = PRE_SPEC
+
+# A pre-spec skeleton is never implementable: born ready-for-agent, it is
+# dispatchable to an implementer before any spec exists (observed live:
+# ticket registered + auto-dispatched within 45 seconds, spec never written,
+# the implementer decided the security contract itself). Explicit
+# ready-for-agent refuses a skeleton; the default demotes to needs-info.
+if state == "ready-for-agent" and "(pre-spec: fill in)" in body:
+    if env["T_STATE_EXPLICIT"] == "1":
+        B.die("a pre-spec skeleton cannot be born ready-for-agent — pass "
+              "--body-file with the spec, or birth it needs-info/needs-human")
+    state = "needs-info"
+    if not note:
+        note = ("pre-spec skeleton — fill the body, then "
+                "board-transition.sh to ready-for-agent")
 meta = {}
 if spawned:
     meta["spawned-by"] = "#%s" % spawned

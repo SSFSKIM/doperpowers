@@ -7,11 +7,15 @@ happens by merge with no rigor gate. A daemon opens a PR and nothing stands
 between that PR and the human's merge button except the human's own reading
 time. After this change, every non-draft PR opened in a consumer repo is
 picked up within minutes by a fresh-context **review worker** — a background
-`claude` daemon that runs a Codex review against the PR's base, verifies each
-finding against the code, applies the valid fixes, re-reviews when the fixes
+Claude-harness daemon that runs the pure-correctness Codex engine against
+the PR's base while auditing implementer protocol/spec compliance itself,
+triages the joined findings on native severity, delegates fixing to
+fix-wave subagents and grades their dispositions, re-reviews when the fixes
 warrant it, and then either merges the PR itself (small/simple tier, CI
 green) or escalates it as **`confident-ready`** — a new board state meaning
-"rigorously reviewed; merge with confidence."
+"rigorously reviewed; merge with confidence." (As first shipped the worker
+fixed findings itself under a single criteria-coupled engine; the 2026-07-15
+Revision Note below records the orchestrator/fix-wave rebuild.)
 
 The loop is the inverse-symmetric counterpart of the implementing daemon:
 where an implementing worker turns a ticket into a PR, a review worker turns
@@ -541,3 +545,152 @@ Pending — written at finish.
   findings" while the protocol says non-blockers (everything below
   critical/high, medium included); the manual now matches, with regression
   asserts pinning both the manual wording and the tail's absence.
+- 2026-07-15 (orchestrator rebuild, one harness): three coupled changes landed
+  together on `redesign/reviewing-prs-orchestrator` (ExecPlan:
+  `docs/doperpowers/execplans/2026-07-15-reviewing-prs-orchestrator-rebuild.md`).
+  (1) Split responsibilities — the engine is pure correctness
+  (`review-engine.sh --base <ref> --out <file>`, no criteria, no
+  developer_instructions), started in the background; the worker itself
+  audits implementer protocol/spec compliance concurrently (issue body as
+  canonical primary spec, timestamp-anchored drift via GitHub edit history,
+  classes PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE) and records the
+  audit before JOIN. (2) Orchestrator, not fixer — the worker never edits
+  code: fix-required findings ride a wave-board file (initially
+  `.doperpowers/qa/pr-<n>-fix-wave-<k>.md`, superseded by dispatcher-created
+  `<review-tmp>` in the first dog-food revision below) worked by ONE
+  fixer subagent per wave under a verify-then-fix contract; the worker
+  grades dispositions, pushes, strips `confident-ready` in-loop; max 2
+  waves inside the 3-round cap; whole-range re-review with dedupe.
+  (3) One worker harness — the codex-CLI-as-worker species retired; the
+  default route spawns the same Claude-harness daemon with the clodex
+  gateway settings (`DAEMON_CLAUDE_SETTINGS`/`EFFORT`, persisted in registry
+  meta and reconstructed on resume forks), `engine:claude` opts into plain
+  models. The sweep gained a 3-consecutive-outage cap per PR. The FIX NOW
+  bin text above (§ finding routing) describes the pre-rebuild worker and
+  is superseded by WAVE.
+- 2026-07-15 (first dog-food revision): ida-solution PR #570 validated the
+  assembled engine/audit/push/re-review/park spine and exposed the fix-wave
+  control plane under live pressure. The engine found a real P1 attachment-URL
+  bypass; the worker fixed/re-reviewed it and parked the empty, ungated ticket,
+  but nested write-capable descendants escaped an immediate-child stop,
+  overlapped the re-wave, late-mutated the board, and forced an undefined
+  history recovery. The live protocol now (a) binds each ticketed reviewer
+  exclusively under the daemon-meta lock behind a dispatcher-owned ready/ack
+  startup barrier so `board-answer.sh` reaches the parked owner, concurrent
+  claims have one winner, and no review action races or outlives the bind;
+  the write-capable land worker uses the same barrier after preflighting the
+  previous owner, while board-answer normalizes lingering/dead owners before
+  resume, (b) stores boards
+  under dispatcher-created `<review-tmp>` rather than the PR-controlled
+  worktree, (c) records clean local/remote wave boundaries and an
+  orchestrator-owned accepted-commit ledger, (d) requires content-sensitive
+  whole-task-tree quiescence and immutable submitted-board snapshots, (e)
+  discards unauthorized writer state before a blank re-wave, and (f) validates
+  the full unpushed range while expiring stale confidence before push. The
+  issue tracker now also prevents a pre-spec skeleton from entering
+  `ready-for-agent`; #567 had auto-dispatched 46 seconds after birth with no
+  specification. Observation mode remains on; this live run is evidence of
+  the hardened loop, not merge authorization for the doperpowers branch.
+- 2026-07-16 (constraint-minimization pass): a deliberate audit of every
+  worker protocol removed constraints that banned the MEANS of a failure
+  instead of the failure state itself — the surviving hard rules each map
+  1:1 to a concrete failure (unauthorized commits, unauthorized product
+  decisions, provenance contamination, interactive-session skills inside
+  daemons). Changes: (1) triage routes on the worker's own judgment — the
+  engine's native severity is the starting rank, not the verdict; the
+  "don't re-derive severity" ban is retired (Codex P2s are often real
+  blockers), with departures from the native rank recorded in the trail.
+  (2) The orchestrator's blanket "never edit code / no code reading /
+  don't read the full diff" prohibitions are rewritten as ownership
+  statements (the engine owns correctness review; code reaches the branch
+  only as graded fixer commits). (3) The fixer contract drops
+  one-item-at-a-time ordering and the nested-writer delegation ban:
+  delegation is the fixer's call, and accountability replaces the ban —
+  every commit must be claimed by exactly one item with its test
+  evidence, the fixer answers for its whole task tree, and "unauthorized
+  writer" now means a writer outside the mapped tree or one still writing
+  after return (the state-defense layer — quiescence fingerprints,
+  ledger, full-range push gate — is what makes this relaxation safe; it
+  postdates the ban it replaces). (4) Implement/spike engine blocks drop
+  "work ALONE"; only writing-plans and subagent-driven-development stay
+  excluded (the observed failure). (5) Serial-execution mandates become
+  a worktree-occupancy condition. (6) The land worker's "do NOT read the
+  PR diff" and the spike worker's "never expand past the follow-up" are
+  removed; role statements already carry the real constraint. A future
+  revision may promote the fixer to a second-order orchestrator
+  (per-finding parallel fixers in isolated worktrees merged by the
+  fixer); the accountability contract above is already compatible.
+- 2026-07-16 (constraint-minimization, second pass): a sweep for leftover
+  means-bans and over-scoped DO-mandates the first pass missed. Removed:
+  the codex execution block's "execute it YOURSELF" emphasis (delegation
+  inside the worker's thread is its call; the thread boundary alone is
+  the rule); the spike decompose path's "no exploring" ban (replaced by
+  the deliverable statement — the registered children, not a half-answer;
+  recon that sharpens their notes was never the hazard); and the
+  operation manual's drift from pass one — "never a fixer / it never
+  edits code" became the ownership statement, "works the batch
+  sequentially" dropped, and both "below the engine's critical/high
+  class" definitions of non-blockers now defer to the worker's own
+  routing. Examined and deliberately KEPT, each mapping to a definite
+  failure state: audit-recorded-before-engine-output (independence is
+  unrecoverable once contaminated); TOO BIG never waves (ungated scope
+  entering the branch under wave authority); INVALID only via a graded
+  REFUTED disposition (a finding killed and rebutted publicly by the
+  same context that benefits from fewer waves — the two-context split is
+  the verification architecture, same as grading); verify-then-fix (the REFUTED lane
+  exists only because the fixer verifies); the read-only-until-JOIN
+  window (occupancy in practice — the engine holds the worktree the
+  whole span); and the land delta bounds/prohibitions (a resolution
+  delta is unreviewed by construction).
+- 2026-07-16 (second pass, human rulings): the ONE-fixer-per-wave mandate
+  is also removed — the protocol still says "dispatch the wave's fixer"
+  and grades its task tree, but a count is not specified: crewing the
+  wave is the orchestrator's situational call, the accountability
+  contract and quiescence gate bind whatever it dispatches, and a hard
+  ONE would only add friction to the planned second-order-orchestrator
+  fixer (per-group fixers in isolated worktrees). The
+  INVALID-only-via-graded-REFUTED rule is confirmed kept. The authoring
+  principle behind both passes is now a repo golden rule in CLAUDE.md:
+  simplicity-first — no restriction or process enforcement beyond
+  necessary; hard gates only for truly validated failure states.
+- 2026-07-16 (constraint-minimization, third pass — enforcement becomes
+  guidance): the strictest sweep yet, aimed at procedural enforcement
+  whose *enforcement framing* (not its content) exceeded the validated
+  failure state; each item keeps its detail but is now a statement of
+  the fact or bound instead of a command. Removed/refactored: the fixer
+  contract's "read the cited code first — never implement from the
+  finding text alone" is now "judge the finding against the cited code —
+  a finding can be wrong, and REFUTED with evidence is as good an
+  outcome as FIXED" (grounding + calibration, no prohibition); the
+  fixer contract's "Stage only the files your fix touches — never a
+  blanket add" staging mandate is dropped entirely (the board lives
+  outside the worktree since the symlink fix, an unclaimed or mixed
+  commit already FAILs at grading, and the board-file ban survives in
+  the You-never list and the push-gate content scan); the "in one shell
+  command" packaging mandate is gone from all three surfaces (protocol
+  FIX WAVES, wave-board push rule, operation manual) — the load-bearing
+  and still-pinned rule is the fail-safe ORDER, confidence expiry before
+  the new head publishes; RE-REVIEW's dedupe tail "do not re-wave it,
+  log it twice, or count it" collapsed into "already routed and needs
+  nothing more"; the round-cap exit "do NOT grant confidence" became the
+  fact "there is no confidence to grant"; the engine block's "Do NOT
+  wait on it and do NOT read the findings file yet" became "leave it
+  running and the findings unread" (the hard independence gate remains
+  the protocol's audit-before-engine-output clause, and JOIN stays the
+  only read point); the land protocol's conflict entry lost its "STOP …
+  before touching a single hunk" choreography and the "improvising …
+  is a protocol violation" flourish — the pointer plus "those bounds
+  bind your resolution" carries it; and land-conflicts step 2's
+  "no refactors, no improvements, no drive-by fixes" list became the
+  reason itself — anything beyond the hunks is unreviewed code entering
+  the branch unseen. Examined and kept as hard, each on a validated
+  failure state: every unattended-loop cap (2 waves, 3 engine rounds,
+  2 CI reruns, bounded watches, the 120s barriers), the binding
+  barriers, board-out-of-worktree and never-commit-the-board, the push
+  chain / ledger / quiescence / submitted-snapshot machinery,
+  gate-before-code with its anti-park calibration, ASK-EARLY on
+  human-grade forks, minor-taste-never-the-worker's, every authority
+  NEVER list, never-rebase/never-force-push, the land bounds, the spike
+  draft-PR bans, the dangerous-flag bans, the bootstrap's
+  workspace-skill refusal, the Board Write Hard Gate, and register-time
+  body authorship.
