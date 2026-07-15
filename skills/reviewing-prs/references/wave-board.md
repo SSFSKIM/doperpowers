@@ -61,8 +61,12 @@ head branch, and this contract:
       board file must never enter a commit.
     - It does not hold → set disposition "REFUTED" and append the exact
       code citation (file:line) and the reasoning that refutes it.
-    Fix one item and test it before starting the next. You may use
-    read-only helper subagents (e.g. Explore) at your own judgment.
+    Fix one item and test it before starting the next.
+    You personally perform every code edit and commit.
+    You may use read-only helper subagents (e.g. Explore) at your own
+    judgment, but never delegate implementation or fixing to a nested
+    writer; doing so makes the affected item FAILED and none of that
+    writer's commits acceptable.
     You never: run the review engine or any review skill, push, touch
     GitHub state (comments, labels, tickets), commit the board file, or
     fix anything not on the board — scope creep you notice goes into

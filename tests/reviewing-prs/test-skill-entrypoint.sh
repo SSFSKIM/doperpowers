@@ -131,6 +131,8 @@ assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code ve
 assert_contains "$WAVEBOARD" "never implement from the finding text alone" "finding-text discipline survives in the fixer"
 assert_contains "$WAVEBOARD" "ONE fixer subagent per wave" "one fixer works the wave sequentially"
 assert_contains "$WAVEBOARD" "read-only helper subagents" "fixer may use helper subagents at its judgment"
+assert_contains "$WAVEBOARD" "You personally perform every code edit and commit" "fixer cannot delegate implementation to a nested writer"
+assert_contains "$WAVEBOARD" "makes the affected item FAILED" "nested-writer violation has an explicit grading route"
 assert_contains "$WAVEBOARD" "You never: run the review engine" "fixer role boundaries are stated"
 assert_contains "$WAVEBOARD" "REFUTED" "refute disposition exists"
 assert_contains "$WAVEBOARD" "NEVER commit or push it" "the board file never enters the PR"
