@@ -13,13 +13,19 @@
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL        optional model override for the review daemon (claude model;
-#                       only used when the resolved engine is claude)
-#   WORKER_ENGINE       which engine spawns the review worker: claude|codex
-#                       (default codex). Resolution order per PR: an
-#                       `engine:claude`/`engine:codex` label on the PR wins,
-#                       else this env var, else codex.
-#   CODEX_REVIEW_MODEL  codex model for the review engine (default gpt-5.6-sol)
+#   REVIEW_MODEL        optional model override for the review daemon
+#                       (gateway route defaults to fable, claude route to inherit)
+#   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: codex|claude
+#                       (default codex). Every worker is a Claude-harness
+#                       daemon; "codex" means the gateway settings ride the
+#                       spawn (GPT models via the local proxy), "claude" means
+#                       plain Claude models. Resolution order per PR: an
+#                       `engine:claude`/`engine:codex` label wins, else this
+#                       env var, else codex.
+#   CLODEX_SETTINGS     gateway settings file for the codex route
+#                       (default ~/.claude/clodex-settings.json)
+#   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
+#   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-5.6-sol)
 #   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
 #   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
 #                       (default false = observation mode: the worker reviews
@@ -50,7 +56,8 @@
 # retire + respawn; a finished reviewer → triggered mode re-dispatches
 # (explicit event = fresh signal), sweep mode skips; a finished reviewer
 # whose reply carries the ENGINE-UNAVAILABLE marker → retire + respawn
-# (sweep too).
+# (sweep too, capped at 3 consecutive outage reviewers per PR — beyond that
+# only an explicit PR event re-dispatches).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -324,12 +331,52 @@ PY
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
 
+  # ONE worker harness, two model routes. The default "codex" engine is a
+  # GATEWAY worker: the same Claude-harness daemon pointed at the local
+  # gateway (GPT models) via --settings — the codex CLI survives only as the
+  # review engine inside the worker. engine:claude opts a PR into plain
+  # Claude models. The codex-CLI-as-worker species is retired from this loop.
   if [ "$engine" = "codex" ]; then
-    "$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
-      "$CODEX_REVIEW_MODEL" "$CODEX_REVIEW_EFFORT"
+    DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
+    DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
+      "${REVIEW_MODEL:-fable}"
   else
     "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
   fi
+}
+
+# Consecutive ENGINE-UNAVAILABLE reviewers for PR <1>, newest first — the
+# sweep's outage cap counts these so a dead engine cannot make the cron
+# respawn a PR forever. Any reviewer whose reply lacks the marker (or has no
+# reply yet) breaks the streak.
+_outage_streak() {
+  DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
+import glob, json, os
+home = os.environ["DAEMON_HOME"]; name = "review-pr-" + os.environ["PRN"]
+rows = []
+for p in glob.glob(os.path.join(home, "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("name") == name:
+        rows.append((str(m.get("updated") or m.get("created") or ""), m.get("uuid") or ""))
+rows.sort(reverse=True)
+streak = 0
+for _, uuid in rows:
+    try:
+        lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
+    except Exception:
+        break
+    if "ENGINE-UNAVAILABLE" in lines:
+        streak += 1
+    else:
+        break
+print(streak)
+PY
 }
 
 # Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
@@ -349,9 +396,15 @@ _decide() {
     *)
       if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
       # an engine outage is a retryable condition, not a finished review —
-      # the worker marks it with a final-message marker line (fallback block)
+      # the worker marks it with a final-message marker line (fallback block).
+      # But the cron sweep caps the retries: 3 consecutive outage reviewers
+      # for one PR → stop respawning until an explicit PR event arrives.
       elif grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
-        echo "respawn $uuid"
+        if [ "$(_outage_streak "$pr")" -ge 3 ]; then
+          echo "skip engine outage persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
+        else
+          echo "respawn $uuid"
+        fi
       else echo "skip finished reviewer ($status)"; fi ;;
   esac
 }

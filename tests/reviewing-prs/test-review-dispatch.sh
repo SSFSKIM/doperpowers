@@ -65,6 +65,7 @@ cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "spawn:$*" >> "$SPAWN_LOG"
+echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
 [ "${1:-}" = "--no-wait" ] && shift
 name="$1"; task="$2"; cwd="${3:-}"
 if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
@@ -330,6 +331,40 @@ printf 'review complete; confident-ready set.\n' \
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_equals "$(cat "$SPAWN_LOG")" "" "sweep still skips a finished reviewer without the marker"
 
+# ---- sweep outage cap ------------------------------------------------------------
+# A persistent engine outage must not make the cron sweep respawn forever:
+# after 3 CONSECUTIVE ENGINE-UNAVAILABLE reviewers for one PR, the sweep
+# skips it. An explicit PR event (triggered mode) always re-dispatches.
+echo "sweep outage cap:"
+seed_outage_metas() {  # $1 = how many consecutive outage reviewers to seed
+  local i
+  for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
+  for i in $(seq 1 "$1"); do
+    U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
+import json, os
+u = os.environ["U"]; i = os.environ["I"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-0%sT00:00:00Z" % i},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+    printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
+      > "$DAEMON_HOME/feed000$i-0000-4000-8000-000000000000.reply.txt"
+  done
+}
+reset_state
+seed_outage_metas 2
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep still respawns below the outage cap (2 consecutive)"
+reset_state
+seed_outage_metas 3
+OUT_CAP="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips a PR at the outage cap (3 consecutive)"
+assert_contains "$OUT_CAP" "outage" "sweep names the outage cap as the skip reason"
+: > "$SPAWN_LOG"
+OUT_EVT="$("$DISPATCH" 5 2>&1 || true)"
+assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "an explicit PR event ignores the outage cap"
+[ -s "$SPAWN_LOG" ] || echo "    dispatch said: $OUT_EVT"
+
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
 reset_state
@@ -543,12 +578,14 @@ PY
 }
 run_dispatch() { "$DISPATCH" "$@"; }
 
-echo "engine switch:"
+echo "engine switch (one harness, two model routes):"
 reset_state
 : > "$SPAWN_LOG"
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
 WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "default-codex env spawns the one-harness daemon"
+assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
 assert_contains "$prompt" "review-engine.sh --base origin/main" "prompt carries the engine block (script path + BASE_REF rendered)"
 assert_contains "$prompt" "IN THE BACKGROUND" "prompt starts the engine in the background"
@@ -561,9 +598,10 @@ assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prom
 : > "$SPAWN_LOG"
 gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:" "engine:claude label overrides env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:claude label overrides env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "ENGINE-UNAVAILABLE" "claude species gets the same single merged fallback"
+assert_contains "$prompt42" "ENGINE-UNAVAILABLE" "claude route gets the same single merged fallback"
 
 echo "codex reviewer liveness in dedupe:"
 sleep 300 & LIVEPID=$!
@@ -580,7 +618,7 @@ assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 : > "$SPAWN_LOG"
 out="$(WORKER_ENGINE=codex run_dispatch 43)"
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "dead codex pid retires + respawns"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
 
 # ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
 # The "live worktree guard" section above pins _wt_occupied's FIRST branch (a
