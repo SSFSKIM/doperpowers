@@ -62,10 +62,14 @@ run() { (cd "$WORK" && "$SCRIPTS_DIR/$1" "${@:2}"); }
 # state(): eval is safe here — the expression is a test-author-written literal
 # from THIS file (never external input), evaluated against the mock's state.
 state() { python3 -c "import json,sys;print(eval(sys.argv[1], {'s': json.load(open('$MOCK_GH_STATE'))}))" "$1"; }
+# A filled spec body: ready-for-agent births require one (a pre-spec skeleton
+# is never implementable — see the pre-spec guard section).
+SPEC_BODY="$TEST_ROOT/spec-body.md"
+printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiable\n' > "$SPEC_BODY"
 
 # ---- register ----------------------------------------------------------------
 echo "board-register:"
-out="$(run board-register.sh "Epic: alpha" enhancement P2)"
+out="$(run board-register.sh "Epic: alpha" enhancement P2 --body-file "$SPEC_BODY")"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
 assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
 
@@ -75,11 +79,11 @@ assert_contains "$(state "s['issues']['2']['labels']")" "status:needs-human" "bi
 assert_contains "$(state "s['issues']['2']['comments'][0]")" "[board] needs-human: waiting on A" "birth note posted as [board] comment"
 assert_contains "$(state "s['issues']['2']['body']")" "note: waiting on A" "birth note in board:meta"
 
-out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2)"
+out="$(run board-register.sh "Child A" enhancement P1 --parent 1 --spawned-by 2 --body-file "$SPEC_BODY")"
 assert_equals "$(state "s['issues']['3']['parent']")" "1" "parent sub-issue edge created"
 assert_contains "$(state "s['issues']['3']['body']")" "spawned-by: #2" "spawned-by in board:meta"
 
-out="$(run board-register.sh "Child B" enhancement P2 --parent 1 --blocked-by 3)"
+out="$(run board-register.sh "Child B" enhancement P2 --parent 1 --blocked-by 3 --body-file "$SPEC_BODY")"
 assert_equals "$(state "s['issues']['4']['blockedBy']")" "[3]" "blocked_by dependency edge created"
 
 assert_fails run board-register.sh "X" gadget P2
@@ -146,10 +150,10 @@ assert_fails run board-transition.sh 3 in-progress                     # termina
 
 # ---- edge: cycles, deadlocks, sweeps ------------------------------------------
 echo "board-edge:"
-run board-register.sh "Epic: beta" enhancement P2 >/dev/null                            # 5
-run board-register.sh "B1" enhancement P2 --parent 5 >/dev/null                         # 6
-run board-register.sh "B2" enhancement P2 --parent 5 --blocked-by 6 >/dev/null          # 7
-run board-register.sh "Loose" enhancement P3 >/dev/null                                 # 8
+run board-register.sh "Epic: beta" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                            # 5
+run board-register.sh "B1" enhancement P2 --parent 5  --body-file "$SPEC_BODY" >/dev/null                         # 6
+run board-register.sh "B2" enhancement P2 --parent 5 --blocked-by 6  --body-file "$SPEC_BODY" >/dev/null          # 7
+run board-register.sh "Loose" enhancement P3  --body-file "$SPEC_BODY" >/dev/null                                 # 8
 
 assert_fails run board-edge.sh 6 --block 6                              # self
 assert_fails run board-edge.sh 6 --block 7                              # cycle (7 waits on 6)
@@ -433,9 +437,9 @@ assert_contains "$(state "s['issues']['10']['body']")" "spawned-by: #8" "created
 
 # ---- finalize: PR-merge auto-close ("Closes #N") -----------------------------
 echo "finalize (merge auto-close):"
-run board-register.sh "Epic: delta" enhancement P2 >/dev/null                    # 11
-run board-register.sh "D1" enhancement P0 --parent 11 >/dev/null                 # 12
-run board-register.sh "D2" enhancement P2 --blocked-by 12 >/dev/null             # 13
+run board-register.sh "Epic: delta" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                    # 11
+run board-register.sh "D1" enhancement P0 --parent 11  --body-file "$SPEC_BODY" >/dev/null                 # 12
+run board-register.sh "D2" enhancement P2 --blocked-by 12  --body-file "$SPEC_BODY" >/dev/null             # 13
 top="$(run board-list.sh | head -1)"
 assert_contains "$top" "P0" "P0 row floats to the top of the list"
 run board-transition.sh 12 in-progress >/dev/null
@@ -473,9 +477,9 @@ assert_fails run board-transition.sh 13 ready-for-agent           # already read
 # html payload. All-CLOSED-unmerged (abandoned attempt) and any OPEN linked PR
 # are NOT candidates.
 echo "close-candidate:"
-run board-register.sh "Cand ready" enhancement P2 >/dev/null            # 14: closes MERGED + xref CLOSED
-run board-register.sh "Abandoned only" enhancement P2 >/dev/null        # 15: closes CLOSED (no merge)
-run board-register.sh "Still open PR" enhancement P2 >/dev/null         # 16: MERGED + xref OPEN
+run board-register.sh "Cand ready" enhancement P2  --body-file "$SPEC_BODY" >/dev/null            # 14: closes MERGED + xref CLOSED
+run board-register.sh "Abandoned only" enhancement P2  --body-file "$SPEC_BODY" >/dev/null        # 15: closes CLOSED (no merge)
+run board-register.sh "Still open PR" enhancement P2  --body-file "$SPEC_BODY" >/dev/null         # 16: MERGED + xref OPEN
 python3 - <<'PRS'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
@@ -542,7 +546,7 @@ assert_not_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "truncated
 # Reachable only from in-review (a review verdict presupposes a PR); demotes
 # back to in-review on a new push; closes normally. Note optional.
 echo "confident-ready:"
-run board-register.sh "Review target" enhancement P2 >/dev/null                  # 17
+run board-register.sh "Review target" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                  # 17
 assert_fails run board-transition.sh 17 confident-ready                          # ready → confident-ready illegal
 run board-transition.sh 17 in-progress >/dev/null
 assert_fails run board-transition.sh 17 confident-ready                          # in-progress → illegal (must pass through in-review)
@@ -565,7 +569,7 @@ out="$(run board-transition.sh 17 "done")"
 assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "confident-ready → done closes the issue"
 assert_equals "$(state "s['issues']['17']['stateReason']")" "COMPLETED" "closes as completed"
 
-run board-register.sh "CR map probe" enhancement P2 >/dev/null                    # 18
+run board-register.sh "CR map probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                    # 18
 run board-transition.sh 18 in-progress >/dev/null
 run board-transition.sh 18 in-review "pr" --pr https://github.com/test/repo/pull/81 >/dev/null
 run board-transition.sh 18 confident-ready >/dev/null
@@ -600,7 +604,7 @@ assert_contains "$(state "s['issues']['18']['labels']")" "status:needs-human" "n
 # ---- interactive-preferred (park: ticket shape wants live human steering) -----
 echo "interactive-preferred:"
 assert_fails run board-register.sh "IP birth" enhancement P2 --state interactive-preferred  # note required
-run board-register.sh "IP birth" enhancement P2 --state interactive-preferred --note "product-core: onboarding voice" >/dev/null   # 19
+run board-register.sh "IP birth" enhancement P2 --state interactive-preferred --note "product-core: onboarding voice" --body-file "$SPEC_BODY" >/dev/null   # 19
 assert_contains "$(state "s['issues']['19']['labels']")" "status:interactive-preferred" "birth state honored"
 out="$(run board-list.sh)"
 line19="$(printf '%s\n' "$out" | grep '^#19 ')"
@@ -620,7 +624,7 @@ assert_equals "$lint_rc" "0" "board with a noted interactive-preferred ticket li
 
 # ---- needs-human (park: the human as themselves unparks) ---------------------
 echo "needs-human:"
-run board-register.sh "NH probe" enhancement P2 >/dev/null                     # 20
+run board-register.sh "NH probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                     # 20
 assert_fails run board-transition.sh 20 needs-human                            # note required
 out="$(run board-transition.sh 20 needs-human "pick auth provider: A or B (rec: A)")"
 assert_contains "$out" "#20: ready-for-agent → needs-human" "gate-fail park applied"
@@ -688,7 +692,7 @@ out="$(run board-register.sh "Parked ticket" enhancement P2 --state needs-human 
 ans_t="${out%% *}"
 out="$(run board-register.sh "Unbound parked" enhancement P2 --state needs-human --note "Q?")"
 unb_t="${out%% *}"
-out="$(run board-register.sh "Open ticket" enhancement P2)"
+out="$(run board-register.sh "Open ticket" enhancement P2 --body-file "$SPEC_BODY")"
 open_t="${out%% *}"
 cat > "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json" <<META
 {"uuid": "cccccccc-1111-2222-3333-444444444444", "engine": "codex",
@@ -733,7 +737,7 @@ unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------
 echo "spike category:"
-spike_t="$(run board-register.sh "Spike: is X feasible" spike P2 | awk '{print $1}')"
+spike_t="$(run board-register.sh "Spike: is X feasible" spike P2  --body-file "$SPEC_BODY" | awk '{print $1}')"
 assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-agent', 'priority:P2']" "spike category + status + priority labels"
 assert_contains "$(state "s['labels']")" "spike" "spike label auto-created by ensure_labels"
 assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike category"
@@ -742,6 +746,33 @@ out="$(run board-transition.sh "$spike_t" needs-human "findings ready: X is feas
 assert_contains "$(state "s['issues']['$spike_t']['comments'][-1]")" "findings ready" "spike handoff park lands with its note"
 run board-transition.sh "$spike_t" "done" >/dev/null   # the human read the findings
 assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-human → done: the human closes a read spike directly"
+
+# ---- pre-spec guard (the #567 hole) --------------------------------------------
+# A ticket whose body is still the pre-spec skeleton was born ready-for-agent
+# and auto-dispatched to an implementer 45 seconds later — before any spec
+# existed. A skeleton is never implementable: explicit ready-for-agent birth
+# refuses it, a default birth demotes to needs-info, and the promotion to
+# ready-for-agent re-checks the body.
+echo "pre-spec guard:"
+assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-agent
+out="$(run board-register.sh "Skeleton follow-up" bug P2 --spawned-by 2)"
+skel="${out%% *}"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:needs-info" "default skeleton birth demotes to needs-info"
+assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a skeleton is never born ready-for-agent"
+assert_contains "$(state "s['issues']['$skel']['comments'][0]")" "pre-spec" "demotion posts the spec-pending note"
+assert_fails run board-transition.sh "$skel" ready-for-agent
+SKEL="$skel" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+s = json.load(open(p))
+s["issues"][os.environ["SKEL"]]["body"] = "## Problem & intent\n\nnow specified\n"
+json.dump(s, open(p, "w"))
+PY
+out="$(run board-transition.sh "$skel" ready-for-agent)"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a filled body promotes to ready-for-agent"
+# a body-file that still carries the placeholder is a skeleton too
+printf '## Problem & intent\n\n_(pre-spec: fill in)_\n' > "$TEST_ROOT/still-skel.md"
+assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-agent --body-file "$TEST_ROOT/still-skel.md"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
