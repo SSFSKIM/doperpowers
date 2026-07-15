@@ -26,6 +26,10 @@ status="$(_meta_get "$uuid" status)"
 case "$status" in working|blocked) ;; *) echo "noop"; exit 0 ;; esac
 
 cur="$(_meta_get "$uuid" current)"; [ -n "$cur" ] || cur="$uuid"
+# `state` alone lies for a finished session whose harness process lingers —
+# it stays "working" indefinitely. `status` is the turn signal (busy while a
+# turn runs, idle after); normalize the lingering shape to done before the
+# case table. Observed live 2026-07-15 on a finished review worker.
 state="$(claude agents --json --all 2>/dev/null | CUR="$cur" python3 -c '
 import json, os, sys
 try:
@@ -34,7 +38,10 @@ except Exception:
     rows = []
 for r in rows:
     if r.get("sessionId") == os.environ["CUR"]:
-        print(r.get("state") or "")
+        st = r.get("state") or ""
+        if st == "working" and r.get("status") == "idle":
+            st = "done"
+        print(st)
         break
 ')"
 

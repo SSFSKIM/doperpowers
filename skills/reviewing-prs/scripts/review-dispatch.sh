@@ -149,7 +149,10 @@ _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 # rc 0 when some LOCAL `claude agents` row's cwd equals worktree path <1>. A
 # visible row with matching foreign registry metadata migrated with the session
 # store, not the process, so it does not occupy the worktree. Unmanaged rows
-# have no identity evidence and remain conservatively local/occupied.
+# have no identity evidence and remain conservatively local/occupied. A MANAGED
+# local row whose turn is over no longer occupies: finished daemons stay
+# LISTED with state=working while their process lingers — `status` (busy →
+# idle) is the turn signal, and retire + respawn deliberately reuses the path.
 _wt_occupied() {
   claude agents --json --all 2>/dev/null | \
     DAEMON_HOME="$DAEMON_HOME" DAEMON_HOST="$DAEMON_HOST" DAEMON_BOOT_ID="$DAEMON_BOOT_ID" WT="$1" python3 -c '
@@ -177,8 +180,13 @@ for a in d:
     if a.get("cwd") != os.environ["WT"]:
         continue
     m = metas.get(str(a.get("sessionId") or ""))
-    if m is None or local(m):
-        sys.exit(0)
+    if m is None:
+        sys.exit(0)   # unmanaged row: no identity evidence — conservatively occupied
+    if not local(m):
+        continue      # foreign identity: only the registry migrated
+    if a.get("status") == "idle" and a.get("state") != "blocked":
+        continue      # finished turn lingering in the listing — free for reuse
+    sys.exit(0)
 sys.exit(1)' && return 0
   # codex workers never appear in `claude agents` — scan the registry, but
   # count ONLY codex metas with a live pid; a stale claude-engine `working`

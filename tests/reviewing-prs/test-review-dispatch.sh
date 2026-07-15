@@ -134,7 +134,12 @@ try:
     rows = json.load(open(os.environ["A"]))
 except Exception:
     rows = []
-state = next((r.get("state") or "" for r in rows if r.get("sessionId") == cur), "")
+row = next((r for r in rows if r.get("sessionId") == cur), None)
+state = (row or {}).get("state") or ""
+# mirror the real script: a lingering finished session stays state=working;
+# status (busy -> idle) is the turn signal
+if row is not None and state == "working" and row.get("status") == "idle":
+    state = "done"
 if state == "":
     print("absent")
 elif state in ("working", "blocked"):
@@ -343,6 +348,24 @@ echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep finalizes a normally-finished reviewer and skips it"
 assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "a finalized finished reviewer is not retired by the sweep"
+
+# Production shape (observed live 2026-07-15): a finished daemon LINGERS in
+# `claude agents` with state=working while its process lives — `status`
+# (busy → idle) is the turn signal. An explicit PR event must still finalize
+# and re-dispatch such a reviewer instead of skipping it as active forever.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working", "status": "idle"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished reviewer (state=working, status=idle) is finalized + retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "lingering finished reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "lingering finished reviewer's meta finalized idle"
+
+# ...and a genuinely mid-turn reviewer (status=busy) still skips as active.
+reset_state; seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5)"
+assert_contains "$out" "active reviewer" "busy reviewer still skips as active"
+assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -558,6 +581,41 @@ echo "[{\"id\": \"foreign1\", \"sessionId\": \"foreign1-0000-4000-8000-000000000
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude session does not occupy the worktree"
 assert_not_contains "$out" "live daemon occupies" "foreign-host Claude session does not block removal"
+reset_state
+
+# A MANAGED local session whose turn is over (lingering shape: state=working,
+# status=idle — finished daemons stay listed) must NOT occupy the worktree:
+# retire + respawn deliberately reuses that path.
+U="linger01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "retired",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"linger01\", \"sessionId\": \"linger01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"working\", \"status\": \"idle\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a finished lingering session frees the worktree for re-dispatch"
+assert_not_contains "$out" "live daemon occupies" "finished lingering session does not block worktree removal"
+reset_state
+
+# ...while a managed local session that is genuinely mid-turn (status=busy)
+# still occupies it.
+U="linger01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "other-daemon", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "working",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"linger01\", \"sessionId\": \"linger01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"working\", \"status\": \"busy\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "live daemon occupies" "busy managed session still occupies the worktree"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn over a busy session's worktree"
 reset_state
 
 # ---- sweep failure isolation ----------------------------------------------------

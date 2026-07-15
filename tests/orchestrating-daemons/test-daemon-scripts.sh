@@ -129,7 +129,7 @@ if [ $has_bg -eq 1 ]; then
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
   # STUB_BG_STATE pins the created agent's reported state (default done). Setting
   # it to `running` keeps the turn non-terminal so the resume watcher times out.
-  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"; echo "status="; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
+  { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"; echo "status=${STUB_BG_STATUS:-}"; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
   # A resume FORKS a new session: the new turn's transcript records which session
   # it forked from, so the test can prove the registry chains ids across turns.
   if [ -z "$uuid" ]; then
@@ -398,6 +398,29 @@ printf '{"uuid":"%s","current":"%s","short":"cdxf0000","name":"cdxfin","engine":
   "$CODEX_FIN" "$CODEX_FIN" > "$DAEMON_HOME/$CODEX_FIN.json"
 assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$CODEX_FIN")" "noop" "finalize noops on codex-engine metas (they self-finalize)"
 rm -f "$DAEMON_HOME/$CODEX_FIN.json"
+
+# Production shape (observed live 2026-07-15): a finished --bg session LINGERS
+# in `claude agents` with state=working while its harness process stays alive;
+# the turn signal is `status` (busy while a turn runs, idle after). Keying on
+# state alone reads a finished daemon as live forever.
+FIN5_OUT="$(STUB_BG_STATE=working STUB_BG_STATUS=busy "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finling" "FIN-TASK-5" "$WORK")"
+FIN5_UUID="$(printf '%s' "$FIN5_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN5_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN5_UUID.json")"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "live" "state=working with status=busy is a live turn"
+sed -i '' 's/^status=busy$/status=idle/' "$STUB_STATE/agents/$FIN5_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "idle" "state=working with status=idle is a FINISHED lingering turn, not live"
+assert_contains "$(cat "$DAEMON_HOME/$FIN5_UUID.reply.txt")" "ANSWER:FIN-TASK-5" "lingering finished turn's reply is recorded"
+
+# The blocking-mode watcher must see the same truth: a lingering finished
+# session (state=working, status=idle) terminates _poll_until_done as done
+# instead of polling to timeout.
+POLL_OUT="$(
+  export PATH="$STUB_BIN:$PATH"
+  # shellcheck source=/dev/null
+  . "$SCRIPTS_DIR/_lib.sh"
+  _poll_until_done "$FIN5_SHORT" 2
+)" || true
+assert_contains "$POLL_OUT" " done " "poll normalizes the lingering finished shape to done"
 
 # ---- 5) retire ---------------------------------------------------------------
 echo "retire:"
