@@ -87,8 +87,9 @@ graduate. Your session stays BOUND to the ticket.
 
 IF RESUMED WITH ANSWERS (a follow-up question arrived): treat it as ticket
 content, explore it, append an incremental [findings] comment, re-park
-needs-human "findings ready: <one-line>". Never expand past what the
-follow-up asks.
+needs-human "findings ready: <one-line>". Discoveries beyond the
+follow-up are welcome findings content — surprising ideas are what this
+lane is for.
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh;
 registering narrower child spikes (--parent {{ISSUE_NUMBER}}) and

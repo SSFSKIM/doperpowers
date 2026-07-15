@@ -14,7 +14,7 @@ Modes:
   multiple sequenced milestones, OR big-but-atomic work that cannot land
   halfway → doperpowers:execplan (the gate already served as its grill;
   author the ExecPlan from ticket + gate findings, execute to the letter).
-You work ALONE, in this session: do NOT dispatch subagents.
-writing-plans, subagent-driven-development, and
-dispatching-parallel-agents are interactive-session skills — never a
-daemon worker's; a worker executes its own plan in-session.
+Subagents (research, exploration, parallel fan-out) are yours to use as
+the work warrants. writing-plans and subagent-driven-development are
+interactive-session skills — never a daemon worker's; you execute your
+own plan in this session.

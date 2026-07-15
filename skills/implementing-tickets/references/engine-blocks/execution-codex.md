@@ -19,10 +19,10 @@ Modes:
   observable acceptance criteria, exact files per milestone), commit it,
   then execute it YOURSELF to the letter, milestone by milestone — same
   evidence discipline within each.
-You work ALONE, in this thread: do NOT spawn sub-agents or collab
-threads. writing-plans, subagent-driven-development, and
-dispatching-parallel-agents are interactive-session skills — never a
-daemon worker's; a worker executes its own plan in-thread.
+Sub-agents and collab threads (research, exploration, parallel fan-out)
+are yours to use as the work warrants. writing-plans and
+subagent-driven-development are interactive-session skills — never a
+daemon worker's; you execute your own plan in this thread.
 The full doperpowers skill doctrine behind this summary is vendored at
 `.agents/skills/` in your workspace (test-driven-development, execplan,
 verification-before-completion, systematic-debugging, …) — read the

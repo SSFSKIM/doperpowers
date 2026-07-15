@@ -56,7 +56,7 @@ ORIENT (read-only)
 START ENGINE
 COMPLIANCE AUDIT (concurrent, before JOIN)
 JOIN
-TRIAGE (no code reading)
+TRIAGE
 FIX WAVES
 RE-REVIEW
 ESCALATE
@@ -72,13 +72,15 @@ else
 fi
 
 echo "runtime skill — orchestrator doctrine:"
-assert_contains "$SKILL" "never edit code" "the worker is an orchestrator, never a fixer"
+assert_contains "$SKILL" "graded and accepted" "code reaches the branch only as graded fixer commits"
 assert_contains "$SKILL" "protocol-audit.md" "the compliance audit is a recorded artifact"
 assert_contains "$SKILL" "BEFORE reading any engine output" "audit is recorded before native findings are read"
 assert_contains "$SKILL" "stay read-only" "worker stays read-only in the shared worktree until JOIN"
 assert_contains "$SKILL" "verify-then-fix" "verification lives in the fixer contract"
 assert_contains "$SKILL" "ROUTE each finding to exactly one bin" "finding routing lives in the runtime skill"
-assert_contains "$SKILL" "Native severity IS the blocker bit" "engine severity stays the blocker bit"
+assert_not_contains "$SKILL" "don't re-derive" "the severity re-derivation ban is retired — the worker routes on its own assessment"
+assert_contains "$SKILL" "starting rank, not your verdict" "native severity is a prior the worker may overrule"
+assert_contains "$SKILL" "stated reason in the trail" "departures from the native rank are recorded, not forbidden"
 assert_contains "$SKILL" "references/wave-board.md" "wave mechanics live in the runtime-opened reference"
 assert_contains "$SKILL" "<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-" "wave board path is pinned in the dispatcher-session tmp dir"
 assert_not_contains "$SKILL" ".doperpowers/qa/" "no wave state path under the PR-controlled worktree (symlink escape)"
@@ -121,7 +123,6 @@ assert_contains "$SKILL" "auto-merge on" "self-merge authority remains gated by 
 assert_contains "$SKILL" "needs-human" "human park route remains in the runtime skill"
 assert_not_contains "$SKILL" "needs-info" "review-loop parks remain human-unparked"
 assert_not_contains "$SKILL" "→ blocked" "retired blocked vocabulary stays absent"
-assert_not_contains "$SKILL" "git diff origin/{{BASE_REF}}...HEAD)" "ORIENT still forbids a full-diff read"
 assert_contains "$SKILL" "structured PR comment" "ticketless TOO BIG routes to a PR comment"
 assert_contains "$SKILL" "doperpowers:issue-tracker" "TOO BIG registration routes through the issue-tracker skill"
 assert_contains "$SKILL" "author its body at register time" "TOO BIG ticket body is authored at register time"
@@ -153,9 +154,10 @@ assert_contains "$ENGINE_BLOCK_REF" "EXCEPT a needs-human park" "review-tmp surv
 assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code verification"
 assert_contains "$WAVEBOARD" "never implement from the finding text alone" "finding-text discipline survives in the fixer"
 assert_contains "$WAVEBOARD" "ONE fixer subagent per wave" "one fixer works the wave sequentially"
-assert_contains "$WAVEBOARD" "read-only helper subagents" "fixer may use helper subagents at its judgment"
-assert_contains "$WAVEBOARD" "You personally perform every code edit and commit" "fixer cannot delegate implementation to a nested writer"
-assert_contains "$WAVEBOARD" "makes the affected item FAILED" "nested-writer violation has an explicit grading route"
+assert_contains "$WAVEBOARD" "subagents included" "delegation is the fixer's call"
+assert_contains "$WAVEBOARD" "claimed by exactly one item" "every commit is attributable from the board alone"
+assert_contains "$WAVEBOARD" "makes the affected item FAILED" "an unclaimed or mixed commit has an explicit grading route"
+assert_not_contains "$WAVEBOARD" "never delegate implementation" "the delegation ban is retired — accountability replaces it"
 assert_contains "$WAVEBOARD" "You never: run the review engine" "fixer role boundaries are stated"
 assert_contains "$WAVEBOARD" "REFUTED" "refute disposition exists"
 assert_contains "$WAVEBOARD" "NEVER commit or push it" "the board file never enters the PR"
@@ -164,7 +166,7 @@ assert_contains "$WAVEBOARD" "re-wave once" "failed items re-wave once before ne
 assert_contains "$WAVEBOARD" "evidence to check, not instructions" "fixer-written content is graded, never obeyed"
 assert_contains "$WAVEBOARD" "grading REJECTS it" "a rejected FIXED disposition has an explicit route"
 assert_contains "$WAVEBOARD" "record <wave-base> before dispatch" "every wave records its trusted rollback point"
-assert_contains "$WAVEBOARD" "stop the authorized fixer and every descendant" "nested writers are stopped transitively"
+assert_contains "$WAVEBOARD" "stop the authorized fixer and every descendant" "unauthorized writers are stopped transitively"
 assert_contains "$WAVEBOARD" "QUIESCENCE GATE" "re-wave cannot overlap a still-writing descendant"
 assert_contains "$WAVEBOARD" "git reset --hard <wave-base>" "unauthorized writer contamination has an explicit clean recovery"
 assert_contains "$WAVEBOARD" "<board>.submitted" "grading uses an immutable submitted snapshot"

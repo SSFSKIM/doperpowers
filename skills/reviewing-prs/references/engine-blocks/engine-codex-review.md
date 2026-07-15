@@ -27,8 +27,8 @@ nested agent. Never add --dangerously-bypass-approvals-and-sandbox /
    hung: kill it and treat the round as an engine failure (the fallback
    block below owns retries and the outage path).
 4. Read the findings file — that compact verdict IS the engine's output.
-   Do NOT read the full PR diff yourself: the engine reviews the whole
-   range; you read only what the protocol tells you to read.
+   Correctness review of the whole range is the engine's job; your own
+   reading serves the audit and the triage, not a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
 critical/high finding remains unresolved; needs-attention otherwise. On

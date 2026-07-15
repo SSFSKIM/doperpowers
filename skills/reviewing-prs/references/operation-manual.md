@@ -9,7 +9,8 @@ background daemon (`orchestrating-daemons`) that runs TWO review tracks at
 once: the native Codex engine (`codex exec review` via review-engine.sh, in
 the background) reviews pure code correctness, while the worker itself audits
 implementer protocol/spec compliance against the linked ticket. The worker
-never fixes anything: it triages the joined findings on native severity,
+never fixes anything: it triages the joined findings on its own judgment
+(the engine's native severity is the starting rank),
 delegates fixing to a **fix wave** — one fresh-context fixer subagent driven
 by a wave-board file — grades the fixer's dispositions, pushes, re-reviews
 when warranted, and then either merges (small/simple tier, CI green) or
@@ -156,7 +157,7 @@ doperpowers:organizing-sprints input).
 Part of the worker's concurrent compliance audit: while the engine runs,
 the worker verifies the PR body's `## Validation Evidence` section (the
 implement worker's closing artifact) by inspection — read-only until
-JOIN, with command-backed checks deferred and run serially afterwards.
+JOIN, with command-backed checks deferred until the worktree is free.
 Evidence claimed but not verifiable is a SPEC FINDING. A MISSING section
 is a SPEC FINDING only when the ticket carries a `[gate] pass` comment
 (the gate proves an implement worker under the current contract produced

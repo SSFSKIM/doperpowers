@@ -32,7 +32,8 @@ acknowledgement exists may ORIENT begin. If the barrier never appears or any
 check fails, end without touching repo/GitHub/board state; dispatch retires the
 failed worker.
 
-ORIENT (gh only — do NOT read the PR diff; it was reviewed and approved):
+ORIENT (the diff was already reviewed and approved — your questions are
+mechanical, and gh answers them):
 - gh pr view {{PR_NUMBER}} --json state,headRefOid,mergeable,mergeStateStatus,reviewDecision,labels
 - STOP conditions — comment on the PR and end your turn if either holds:
   the PR is not OPEN; the head SHA is no longer {{HEAD_SHA}} (commits after

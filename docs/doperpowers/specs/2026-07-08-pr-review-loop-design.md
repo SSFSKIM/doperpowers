@@ -591,3 +591,32 @@ Pending — written at finish.
   `ready-for-agent`; #567 had auto-dispatched 46 seconds after birth with no
   specification. Observation mode remains on; this live run is evidence of
   the hardened loop, not merge authorization for the doperpowers branch.
+- 2026-07-16 (constraint-minimization pass): a deliberate audit of every
+  worker protocol removed constraints that banned the MEANS of a failure
+  instead of the failure state itself — the surviving hard rules each map
+  1:1 to a concrete failure (unauthorized commits, unauthorized product
+  decisions, provenance contamination, interactive-session skills inside
+  daemons). Changes: (1) triage routes on the worker's own judgment — the
+  engine's native severity is the starting rank, not the verdict; the
+  "don't re-derive severity" ban is retired (Codex P2s are often real
+  blockers), with departures from the native rank recorded in the trail.
+  (2) The orchestrator's blanket "never edit code / no code reading /
+  don't read the full diff" prohibitions are rewritten as ownership
+  statements (the engine owns correctness review; code reaches the branch
+  only as graded fixer commits). (3) The fixer contract drops
+  one-item-at-a-time ordering and the nested-writer delegation ban:
+  delegation is the fixer's call, and accountability replaces the ban —
+  every commit must be claimed by exactly one item with its test
+  evidence, the fixer answers for its whole task tree, and "unauthorized
+  writer" now means a writer outside the mapped tree or one still writing
+  after return (the state-defense layer — quiescence fingerprints,
+  ledger, full-range push gate — is what makes this relaxation safe; it
+  postdates the ban it replaces). (4) Implement/spike engine blocks drop
+  "work ALONE"; only writing-plans and subagent-driven-development stay
+  excluded (the observed failure). (5) Serial-execution mandates become
+  a worktree-occupancy condition. (6) The land worker's "do NOT read the
+  PR diff" and the spike worker's "never expand past the follow-up" are
+  removed; role statements already carry the real constraint. A future
+  revision may promote the fixer to a second-order orchestrator
+  (per-finding parallel fixers in isolated worktrees merged by the
+  fixer); the accountability contract above is already compatible.
