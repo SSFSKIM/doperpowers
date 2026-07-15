@@ -314,9 +314,87 @@ echo "board-bind / board-show / board-reconcile:"
 cat > "$DAEMON_HOME/aaaa-bbbb.json" <<'J'
 {"uuid": "aaaa-bbbb", "status": "running", "cwd": "/tmp", "worktree": "wt-9"}
 J
+cat > "$DAEMON_HOME/old9-impl.json" <<'J'
+{"uuid": "old9-impl", "status": "idle", "ticket": "9", "cwd": "/tmp/old"}
+J
 out="$(run board-bind.sh aaaa 9)"
 assert_contains "$out" "bound #9 ← aaaa-bbbb" "bind writes registry"
 assert_equals "$(python3 -c "import json;print(json.load(open('$DAEMON_HOME/aaaa-bbbb.json'))['ticket'])")" "9" "registry meta has ticket"
+assert_not_contains "$(cat "$DAEMON_HOME/old9-impl.json")" '"ticket"' "exclusive bind strips the old ticket owner before binding the new one"
+# A live owner is stable: a second reviewer cannot steal its answer route.
+python3 - <<PY
+import json
+p='$DAEMON_HOME/aaaa-bbbb.json'; m=json.load(open(p)); m.update(name='review-pr-9', status='working'); json.dump(m,open(p,'w'))
+json.dump({'uuid':'cccc-dddd','name':'review-pr-10','status':'working'},open('$DAEMON_HOME/cccc-dddd.json','w'))
+PY
+assert_fails run board-bind.sh cccc 9
+assert_contains "$(cat "$DAEMON_HOME/aaaa-bbbb.json")" '"ticket": "9"' "active owner keeps the ticket binding"
+assert_not_contains "$(cat "$DAEMON_HOME/cccc-dddd.json")" '"ticket"' "rejected takeover never binds the contender"
+# An idle needs-human owner is also stable until board-answer resumes it.
+cat > "$DAEMON_HOME/parked-two.json" <<'J'
+{"uuid":"parked-two","name":"review-pr-2","status":"idle","ticket":"2"}
+J
+cat > "$DAEMON_HOME/park-contender.json" <<'J'
+{"uuid":"park-contender","name":"review-pr-22","status":"working"}
+J
+assert_fails run board-bind.sh park-contender 2
+assert_contains "$(cat "$DAEMON_HOME/parked-two.json")" '"ticket":"2"' "parked needs-human owner keeps its binding"
+assert_not_contains "$(cat "$DAEMON_HOME/park-contender.json")" '"ticket"' "parked ticket rejects a new owner"
+
+# The registry lock serializes two simultaneous claims: exactly one wins and
+# exactly one meta owns the ticket afterward.
+cat > "$DAEMON_HOME/race-one.json" <<'J'
+{"uuid":"race-one","name":"review-pr-81","status":"working"}
+J
+cat > "$DAEMON_HOME/race-two.json" <<'J'
+{"uuid":"race-two","name":"review-pr-82","status":"working"}
+J
+( set +e; run board-bind.sh race-one 8 >"$TEST_ROOT/race1.out" 2>&1; echo $? >"$TEST_ROOT/race1.rc" ) & p1=$!
+( set +e; run board-bind.sh race-two 8 >"$TEST_ROOT/race2.out" 2>&1; echo $? >"$TEST_ROOT/race2.rc" ) & p2=$!
+wait "$p1"; wait "$p2"
+successes="$(python3 - <<PY
+r=[int(open('$TEST_ROOT/race1.rc').read()),int(open('$TEST_ROOT/race2.rc').read())]
+print(sum(x==0 for x in r))
+PY
+)"
+owners="$(python3 - <<PY
+import glob,json
+print(sum(str(json.load(open(p)).get('ticket',''))=='8' for p in glob.glob('$DAEMON_HOME/*.json')))
+PY
+)"
+assert_equals "$successes" "1" "concurrent bind has exactly one winner"
+assert_equals "$owners" "1" "concurrent bind leaves exactly one ticket owner"
+
+# Park state must be read after acquiring the metadata lock. Reproduce a bind
+# waiting on the lock while the ticket transitions ready-for-agent→needs-human:
+# a pre-lock snapshot would wrongly strip the newly parked owner.
+python3 - <<'PY'
+import json,os
+p=os.environ['MOCK_GH_STATE']; s=json.load(open(p)); src=dict(s['issues']['8'])
+src.update(number=999,id='ID_999',title='bind race park',state='OPEN',stateReason=None,
+           labels=['bug','status:ready-for-agent','priority:P2'],body='## Problem & intent\n\nrace')
+s['issues']['999']=src; json.dump(s,open(p,'w'))
+json.dump({'uuid':'park-race-old','name':'review-pr-999','status':'idle','ticket':'999'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'park-race-old.json'),'w'))
+json.dump({'uuid':'park-race-new','name':'review-pr-1000','status':'working'},
+          open(os.path.join(os.environ['DAEMON_HOME'],'park-race-new.json'),'w'))
+PY
+LOCK="$DAEMON_HOME/.metalock" MARK="$TEST_ROOT/lock-held" python3 - <<'PY' & lock_pid=$!
+import fcntl,os,time
+f=open(os.environ['LOCK'],'a'); fcntl.flock(f,fcntl.LOCK_EX)
+open(os.environ['MARK'],'w').write('held')
+time.sleep(1.0)
+fcntl.flock(f,fcntl.LOCK_UN); f.close()
+PY
+while [ ! -f "$TEST_ROOT/lock-held" ]; do sleep 0.01; done
+( set +e; run board-bind.sh park-race-new 999 >"$TEST_ROOT/park-race.out" 2>&1; echo $? >"$TEST_ROOT/park-race.rc" ) & bind_pid=$!
+sleep 0.2
+run board-transition.sh 999 needs-human "human decision" >/dev/null
+wait "$lock_pid"; wait "$bind_pid"
+assert_equals "$(cat "$TEST_ROOT/park-race.rc")" "1" "bind re-reads needs-human after lock acquisition"
+assert_contains "$(cat "$DAEMON_HOME/park-race-old.json")" '"ticket": "999"' "lock-wait park keeps the original owner"
+assert_not_contains "$(cat "$DAEMON_HOME/park-race-new.json")" '"ticket"' "lock-wait contender never acquires the parked ticket"
+
 out="$(run board-show.sh 9)"
 assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
 assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
@@ -686,6 +764,35 @@ echo "resumed: [$eng stub]"
 STUB
     chmod +x "$STUB_DS/$eng-resume.sh"
 done
+cat > "$STUB_DS/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$STUB_STATE/finalize.log"
+M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+[ -n "$M" ] || { echo absent; exit 0; }
+M="$M" python3 - <<'PY'
+import json,os
+p=os.environ['M']; m=json.load(open(p))
+if m.get('status') in ('working','blocked') and m.get('turn_state') == 'idle':
+    m['status']='idle'; json.dump(m,open(p,'w'),indent=2); print('idle')
+elif m.get('status') in ('working','blocked') and m.get('turn_state') == 'absent': print('absent')
+elif m.get('status') in ('working','blocked'): print('live')
+else: print('noop')
+PY
+STUB
+chmod +x "$STUB_DS/daemon-finalize.sh"
+cat > "$STUB_DS/daemon-retire.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$STUB_STATE/retire.log"
+M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+[ -n "$M" ] || exit 0
+M="$M" python3 - <<'PY'
+import json,os
+p=os.environ['M']; m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'),indent=2)
+PY
+STUB
+chmod +x "$STUB_DS/daemon-retire.sh"
 export DAEMON_SCRIPTS="$STUB_DS"
 
 out="$(run board-register.sh "Parked ticket" enhancement P2 --state needs-human --note "Q1? Q2?")"
@@ -717,10 +824,11 @@ assert_contains "$msg" "the ticket remains the record" "relay names the record"
 run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
 rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
 cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
-{"uuid": "dddddddd-1111-2222-3333-444444444444", "status": "idle",
+{"uuid": "dddddddd-1111-2222-3333-444444444444", "status": "working", "turn_state": "idle",
  "ticket": "$ans_t", "cwd": "$WORK", "updated": "2026-07-12T00:00:00Z"}
 META
 out="$(run board-answer.sh "$ans_t" --posted)"
+assert_contains "$(cat "$STUB_STATE/finalize.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay finalizes a lingering finished Claude owner before status check"
 assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
 assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
 assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "1" "--posted posts no second [answers] comment"
@@ -730,9 +838,34 @@ run board-transition.sh "$ans_t" needs-human "round 3 questions" >/dev/null
 python3 - <<WORKING
 import json, os
 p = os.path.join(os.environ["DAEMON_HOME"], "dddddddd-1111-2222-3333-444444444444.json")
-m = json.load(open(p)); m["status"] = "working"; json.dump(m, open(p, "w"))
+m = json.load(open(p)); m["status"] = "working"; m["turn_state"] = "busy"; json.dump(m, open(p, "w"))
 WORKING
 assert_fails run board-answer.sh "$ans_t" "late answer"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "active-owner refusal leaves the ticket parked"
+
+# Dead/error/retired owners are fresh-dispatch cases: never transition the
+# ticket to in-progress and attempt a doomed resume.
+python3 - <<ABSENT
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='working'; m['turn_state']='absent'; json.dump(m,open(p,'w'))
+ABSENT
+assert_fails run board-answer.sh "$ans_t" "after dead owner"
+assert_contains "$(cat "$STUB_STATE/retire.log")" "dddddddd-1111-2222-3333-444444444444" "absent owner is retired for fresh dispatch"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "absent owner leaves ticket needs-human"
+python3 - <<ERROR
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='error'; json.dump(m,open(p,'w'))
+ERROR
+assert_fails run board-answer.sh "$ans_t" "after error"
+python3 - <<RETIRED
+import json,os
+p=os.path.join(os.environ['DAEMON_HOME'],'dddddddd-1111-2222-3333-444444444444.json')
+m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'))
+RETIRED
+assert_fails run board-answer.sh "$ans_t" "after retirement"
+assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "terminal owners never orphan the ticket in-progress"
 unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------

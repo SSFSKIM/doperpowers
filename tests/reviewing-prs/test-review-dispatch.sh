@@ -82,7 +82,28 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+# Simulate the worker's first protocol action: wait for the dispatcher-owned
+# ready file, validate it, then acknowledge before ORIENT. Tests can suppress
+# this to prove dispatch does not report success for a worker that never starts.
+bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
+if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
+  READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
+import json, os, time
+ready=os.environ["READY"]
+for _ in range(500):
+    if os.path.isfile(ready):
+        ack=ready+".ack"; tmp=ack+".tmp"
+        with open(tmp,"w") as f: json.dump({"uuid":os.environ["UUID"]},f)
+        os.replace(tmp,ack)
+        break
+    time.sleep(0.01)
+PY
+fi
+if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
+  echo "daemon spawned without parseable identity"
+else
+  echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
+fi
 STUB
 cat > "$STUB_DAEMONS/codex-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -105,7 +126,7 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "status": "working", "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name"
+echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
 STUB
 cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -168,6 +189,34 @@ echo "$out"
 STUB
 chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh" "$STUB_DAEMONS/daemon-finalize.sh"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
+
+# Minimal board-bind stand-in: this suite tests dispatch ownership mechanics,
+# while the issue-tracker suite tests board-bind's GitHub validation itself.
+STUB_BOARD="$TEST_ROOT/stub-board"; mkdir -p "$STUB_BOARD"
+cat > "$STUB_BOARD/board-bind.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+q="$1"; ticket="$2"; hit=""
+for p in "$DAEMON_HOME"/*.json; do
+  [ "$(basename "$p" .json)" = "$q" ] || [[ "$(basename "$p" .json)" == "$q"* ]] || continue
+  [ -z "$hit" ] || exit 1
+  hit="$p"
+done
+[ -n "$hit" ] || exit 1
+M="$hit" T="$ticket" D="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+p=os.environ["M"]; ticket=os.environ["T"]
+for q in glob.glob(os.path.join(os.environ["D"], "*.json")):
+    if q == p or q.endswith(".reply.json"): continue
+    m=json.load(open(q))
+    if str(m.get("ticket", "")).lstrip("#") == ticket.lstrip("#"):
+        del m["ticket"]; json.dump(m, open(q,"w"), indent=2)
+m=json.load(open(p)); m["ticket"]=ticket
+json.dump(m, open(p,"w"), indent=2)
+PY
+STUB
+chmod +x "$STUB_BOARD/board-bind.sh"
+export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
 # explicit WORKER_ENGINE=codex prefix.
@@ -226,18 +275,25 @@ json.dump({"url": "https://github.com/test/repo/issues/7",
            "body": "Ticket seven brief body"}, open(os.path.join(d, "issue-7.json"), "w"))
 PY
 
-reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
+reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; rm -rf "$DAEMON_HOME"/review-pr-*-control.*; : > "$SPAWN_LOG"; echo "[]" > "$MOCK_DIR/agents.json"; }
 
 # ---- triggered dispatch (happy path) ------------------------------------------
 echo "triggered dispatch:"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "spawns --no-wait with the registry name"
+assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"ticket": "7"' "ticketed review worker is bound for board-answer resume"
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out at the PR head SHA"
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/review-pr-5.prompt")"
+BIND_READY="$(printf '%s\n' "$PROMPT" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
 assert_contains "$PROMPT" "REVIEW worker for PR #5" "prompt carries the worker bootstrap header"
+assert_contains "$PROMPT" '`BIND_READY_FILE`:' "prompt carries the startup binding barrier"
+if [ -n "$BIND_READY" ] && [ -f "$BIND_READY" ]; then pass "bind-ready barrier opens after exclusive binding"; else fail "bind-ready barrier opens after exclusive binding"; fi
+assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ticket": "7"' "barrier proves the primary ticket binding"
+assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ledger"' "barrier carries the undisclosed ledger path to the orchestrator"
+if [ -f "$BIND_READY.ack" ]; then pass "dispatch waits for worker barrier acknowledgement"; else fail "dispatch waits for worker barrier acknowledgement"; fi
 assert_contains "$PROMPT" "Adds f." "prompt carries the PR body"
 assert_contains "$PROMPT" "---- ISSUE_BODY binding: Ticket #7 brief ----" "prompt names the primary ticket (Closes #7 parsed from the body)"
 assert_contains "$PROMPT" "Ticket seven brief body" "prompt carries the linked issue body"
@@ -265,6 +321,66 @@ assert_not_contains "$PROMPT" "IN-THREAD" "in-thread review is gone"
 assert_not_contains "$PROMPT" "cookbook" "cookbook engine form is gone"
 assert_not_contains "$PROMPT" "Claude reviewer subagent" "claude fallback engine is gone"
 assert_not_contains "$PROMPT" "git diff origin/main...HEAD)" "ORIENT no longer instructs a full-diff read"
+
+# Ticket ownership is exclusive: the reviewer replaces the finished implement
+# worker as board-answer's resume target.
+echo "review ticket binding:"
+reset_state
+OLD="impl0000-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["OLD"]
+json.dump({"uuid": u, "current": u, "name": "implement-ticket-7",
+           "status": "idle", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+"$DISPATCH" 5 >/dev/null
+NEW_META="$(python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m=json.load(open(p))
+    if m.get("name") == "review-pr-5": print(p); break
+PY
+)"
+assert_contains "$(cat "$NEW_META")" '"ticket": "7"' "new reviewer owns ticket #7"
+assert_not_contains "$(cat "$DAEMON_HOME/impl0000-0000-4000-8000-000000000000.json")" '"ticket"' "old implement worker binding is stripped"
+
+# Binding is mandatory: an unbound reviewer could park needs-human where the
+# answer relay cannot reach it. Retire it instead of allowing the dispatch.
+FAIL_BOARD="$TEST_ROOT/fail-board"; mkdir -p "$FAIL_BOARD"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_BOARD/board-bind.sh"
+chmod +x "$FAIL_BOARD/board-bind.sh"
+reset_state
+if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "bind failure aborts review dispatch"
+else
+    pass "bind failure aborts review dispatch"
+fi
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable reviewer"
+assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "bind failure never opens the startup barrier"
+
+# A published barrier is not success until the worker acknowledges it. A model
+# that died/timed out before reading the prompt is retired and dispatch fails.
+reset_state
+if STUB_NO_BIND_ACK=1 REVIEW_ACK_POLLS=2 REVIEW_ACK_DELAY=0.01 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "missing worker barrier ack fails dispatch"
+else
+    pass "missing worker barrier ack fails dispatch"
+fi
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "missing barrier ack retires the non-started reviewer"
+
+# Exact spawn identity is mandatory. A changed/unparseable banner must fail
+# closed, never fall back to a same-name registry heuristic.
+reset_state
+if STUB_BAD_SPAWN_BANNER=1 "$DISPATCH" 5 >/dev/null 2>&1; then
+    fail "unparseable spawn UUID fails dispatch"
+else
+    pass "unparseable spawn UUID fails dispatch"
+fi
+assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "identity parse failure never opens the barrier"
+
+# Every control-state initialization step is explicitly guarded in sweep mode;
+# set -e is suspended beneath the per-PR `||` wrapper.
+assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "control-state setup has a fail-closed guard"
 
 # ---- skips --------------------------------------------------------------------
 echo "skips:"

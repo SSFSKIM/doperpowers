@@ -36,6 +36,11 @@
 #                       worker never self-merges a PR whose base is this branch
 #   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
 #   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
+#   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
+#   REVIEW_BIND_ATTEMPTS / REVIEW_BIND_DELAY
+#                       ticket-bind retries (defaults 3 attempts, 2s delay)
+#   REVIEW_ACK_POLLS / REVIEW_ACK_DELAY
+#                       startup-barrier acknowledgement wait (600 x 0.2s)
 #
 # Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
 # in the target repo declares concrete self-merge-disqualifying paths/patterns.
@@ -69,7 +74,7 @@ DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 . "$SKILL_DIR/../orchestrating-daemons/scripts/_lib.sh"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-BOARD_SCRIPTS="$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)"
+BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -230,7 +235,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine
+  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -303,6 +308,21 @@ PY
   git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
     || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
 
+  # Startup barrier + orchestrator-only control state. The worker receives only
+  # the ready-file path; fixers receive neither it nor the sibling ledger path.
+  # A ticketed barrier is published only AFTER exclusive binding succeeds.
+  control_dir="$(mktemp -d "$DAEMON_HOME/review-pr-$pr-control.XXXXXX")" \
+    || { echo "#$pr: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }
+  bind_ready="$control_dir/bind-ready.json"
+  ledger="$control_dir/accepted-commits.json"
+  if ! chmod 700 "$control_dir" \
+    || ! printf '{"push_base":"","commits":{}}\n' > "$ledger" \
+    || ! chmod 600 "$ledger"; then
+    echo "#$pr: control state initialization failed" >&2
+    rm -rf "$tmp" "$control_dir"
+    return 1
+  fi
+
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
@@ -310,7 +330,7 @@ PY
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
-    P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing-tickets/references/implement-worker-protocol.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
@@ -337,9 +357,9 @@ subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
     "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
-)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp"; return 1; }
+)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
   rm -rf "$tmp"
-  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
+  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
 
   # ONE worker harness, two model routes. The default "codex" engine is a
   # GATEWAY worker: the same Claude-harness daemon pointed at the local
@@ -347,12 +367,81 @@ PY
   # review engine inside the worker. engine:claude opts a PR into plain
   # Claude models. The codex-CLI-as-worker species is retired from this loop.
   if [ "$engine" = "codex" ]; then
-    DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
-    DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
+    spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
+      DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
       "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
-      "${REVIEW_MODEL:-fable}"
+      "${REVIEW_MODEL:-fable}")" \
+      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
-    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}"
+    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}")" \
+      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
+  fi
+  printf '%s\n' "$spawn_out"
+  uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+
+  # The worker's first protocol action waits on bind_ready. Publish it only
+  # after the new registry meta exists and (for ticketed PRs) board-bind has
+  # stripped every old owner and bound THIS reviewer. Thus spawn-before-bind
+  # cannot race into review work, and any failure leaves the barrier closed.
+  local bound="" attempts="${REVIEW_BIND_ATTEMPTS:-3}"
+  if [ -z "$uuid" ]; then
+    echo "#$pr: spawned reviewer UUID was not parseable — startup barrier stays closed" >&2
+    rm -rf "$control_dir"
+    return 1
+  fi
+  if [ -n "$issue" ]; then
+    local try=1
+    while [ "$try" -le "$attempts" ]; do
+      if "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue"; then bound=1; break; fi
+      [ "$try" -lt "$attempts" ] && sleep "${REVIEW_BIND_DELAY:-2}"
+      try=$((try + 1))
+    done
+    if [ -z "$bound" ]; then
+      _retire "$uuid"
+      rm -rf "$control_dir"
+      echo "#$pr: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
+      return 1
+    fi
+  fi
+  if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
+import json, os
+ready = os.environ["READY"]
+tmp = ready + ".tmp"
+with open(tmp, "w") as f:
+    json.dump({"uuid": os.environ["UUID"], "ticket": os.environ["TICKET"],
+               "ledger": os.environ["LEDGER"]}, f, indent=2)
+os.chmod(tmp, 0o600)
+os.replace(tmp, ready)
+PY
+  then
+    _retire "$uuid"
+    rm -rf "$control_dir"
+    echo "#$pr: could not publish startup barrier — review worker retired" >&2
+    return 1
+  fi
+
+  # Success means the worker actually crossed the barrier, not merely that the
+  # dispatcher published it. A model/auth failure or worker-side timeout never
+  # becomes an ordinary "finished" review that sweep would skip.
+  ack="$bind_ready.ack"
+  local poll=0 max_polls="${REVIEW_ACK_POLLS:-600}"
+  while [ ! -f "$ack" ] && [ "$poll" -lt "$max_polls" ]; do
+    sleep "${REVIEW_ACK_DELAY:-0.2}"
+    poll=$((poll + 1))
+  done
+  if [ ! -f "$ack" ] || ! ACK="$ack" UUID="$uuid" python3 - <<'PY'
+import json, os, sys
+try:
+    data = json.load(open(os.environ["ACK"]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if data.get("uuid") == os.environ["UUID"] else 1)
+PY
+  then
+    _retire "$uuid"
+    rm -rf "$control_dir"
+    echo "#$pr: worker did not acknowledge startup barrier — retired" >&2
+    return 1
   fi
 }
 

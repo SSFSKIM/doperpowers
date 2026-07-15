@@ -28,6 +28,32 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 tid="$1" answers="$2" posted=""
 if [ "$answers" = "--posted" ]; then posted=1 answers=""; fi
 [ -n "$posted" ] || [ -n "$answers" ] || die "empty answers"
+DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$SCRIPT_DIR/../../orchestrating-daemons/scripts}"
+[ -d "$DAEMON_SCRIPTS" ] || die "orchestrating-daemons scripts not found at $DAEMON_SCRIPTS (set DAEMON_SCRIPTS)"
+
+# Normalize a lingering finished Claude owner before the status gate. A real
+# mid-turn remains working (`daemon-finalize` returns live); a finished
+# state=working/status=idle turn becomes registry status=idle and is resumable.
+bound_uuid="$(T_ID="$tid" T_DHOME="$DAEMON_HOME" _py - <<'PY'
+import glob, json, os
+for path in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
+    if path.endswith(".reply.json"):
+        continue
+    try: meta=json.load(open(path))
+    except Exception: continue
+    if str(meta.get("ticket", "")).lstrip("#") == os.environ["T_ID"].lstrip("#"):
+        print(meta.get("uuid") or "")
+        break
+PY
+)"
+finalize_state=""
+if [ -n "$bound_uuid" ]; then
+  finalize_state="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$bound_uuid" 2>/dev/null || true)"
+  if [ "$finalize_state" = "absent" ]; then
+    "$DAEMON_SCRIPTS/daemon-retire.sh" "$bound_uuid" >/dev/null 2>&1 || true
+    die "#$tid's bound session ${bound_uuid:0:8} is gone — left needs-human; use the documented fresh-dispatch path"
+  fi
+fi
 
 # Validate the park + find the binding; post the [answers] comment only once
 # the relay is certain to proceed (a refused relay posts nothing — the human
@@ -59,9 +85,15 @@ for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
 if meta is None:
     B.die("#%s has no bound session — fresh dispatch instead: comment the answers, "
           "then board-transition.sh %s ready-for-agent" % (tid, tid))
-if meta.get("status") == "working":
-    B.die("#%s's bound session %s is mid-turn (status=working) — nothing is waiting "
-          "for answers; investigate with daemon-list.sh" % (tid, meta.get("uuid", "?")))
+status = meta.get("status") or ""
+if status in ("working", "blocked"):
+    B.die("#%s's bound session %s is mid-turn (status=%s) — nothing is waiting "
+          "for answers; investigate with daemon-list.sh" %
+          (tid, meta.get("uuid", "?"), status))
+if status not in ("idle", "awaiting-human"):
+    B.die("#%s's bound session %s is terminal (%s) — left needs-human; "
+          "use the documented fresh-dispatch path" %
+          (tid, meta.get("uuid", "?"), status or "unknown"))
 if env["T_ANSWERS"]:
     B.comment(tid, "[answers] " + env["T_ANSWERS"])
 print("%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
@@ -90,8 +122,6 @@ that changed the work's shape.
 ---- answers (verbatim from the ticket) ----
 $block"
 
-DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$SCRIPT_DIR/../../orchestrating-daemons/scripts}"
-[ -d "$DAEMON_SCRIPTS" ] || die "orchestrating-daemons scripts not found at $DAEMON_SCRIPTS (set DAEMON_SCRIPTS)"
 case "$engine" in
   codex) exec "$DAEMON_SCRIPTS/codex-resume.sh" "$uuid" "$relay" ;;
   *)     exec "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$relay" ;;

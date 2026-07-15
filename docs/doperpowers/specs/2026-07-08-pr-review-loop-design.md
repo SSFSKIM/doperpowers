@@ -555,8 +555,9 @@ Pending — written at finish.
   canonical primary spec, timestamp-anchored drift via GitHub edit history,
   classes PROTOCOL BLOCKER / SPEC FINDING / AUDIT NOTE) and records the
   audit before JOIN. (2) Orchestrator, not fixer — the worker never edits
-  code: fix-required findings ride a wave-board file
-  (`.doperpowers/qa/pr-<n>-fix-wave-<k>.md`, never committed) worked by ONE
+  code: fix-required findings ride a wave-board file (initially
+  `.doperpowers/qa/pr-<n>-fix-wave-<k>.md`, superseded by dispatcher-created
+  `<review-tmp>` in the first dog-food revision below) worked by ONE
   fixer subagent per wave under a verify-then-fix contract; the worker
   grades dispositions, pushes, strips `confident-ready` in-loop; max 2
   waves inside the 3-round cap; whole-range re-review with dedupe.
@@ -567,3 +568,26 @@ Pending — written at finish.
   models. The sweep gained a 3-consecutive-outage cap per PR. The FIX NOW
   bin text above (§ finding routing) describes the pre-rebuild worker and
   is superseded by WAVE.
+- 2026-07-15 (first dog-food revision): ida-solution PR #570 validated the
+  assembled engine/audit/push/re-review/park spine and exposed the fix-wave
+  control plane under live pressure. The engine found a real P1 attachment-URL
+  bypass; the worker fixed/re-reviewed it and parked the empty, ungated ticket,
+  but nested write-capable descendants escaped an immediate-child stop,
+  overlapped the re-wave, late-mutated the board, and forced an undefined
+  history recovery. The live protocol now (a) binds each ticketed reviewer
+  exclusively under the daemon-meta lock behind a dispatcher-owned ready/ack
+  startup barrier so `board-answer.sh` reaches the parked owner, concurrent
+  claims have one winner, and no review action races or outlives the bind;
+  the write-capable land worker uses the same barrier after preflighting the
+  previous owner, while board-answer normalizes lingering/dead owners before
+  resume, (b) stores boards
+  under dispatcher-created `<review-tmp>` rather than the PR-controlled
+  worktree, (c) records clean local/remote wave boundaries and an
+  orchestrator-owned accepted-commit ledger, (d) requires content-sensitive
+  whole-task-tree quiescence and immutable submitted-board snapshots, (e)
+  discards unauthorized writer state before a blank re-wave, and (f) validates
+  the full unpushed range while expiring stale confidence before push. The
+  issue tracker now also prevents a pre-spec skeleton from entering
+  `ready-for-agent`; #567 had auto-dispatched 46 seconds after birth with no
+  specification. Observation mode remains on; this live run is evidence of
+  the hardened loop, not merge authorization for the doperpowers branch.

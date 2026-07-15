@@ -24,9 +24,9 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 
 | piece | what |
 |---|---|
-| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) |
+| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind |
-| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → detached worktree → spawn a `land-pr-<n>` daemon → bind it to the ticket |
+| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
@@ -194,15 +194,17 @@ infra outage. The review-trail comment names the engine that reviewed.
 
 The review worker is an orchestrator, never a fixer — it never edits code.
 Verified-fixable findings (native critical/high + SPEC FINDINGs) go onto a
-wave-board file (`.doperpowers/qa/pr-<n>-fix-wave-<k>.md`, worker-local,
-never committed), and ONE fresh-context fixer subagent works the batch
-sequentially under a verify-then-fix contract: read the cited code first,
-then FIX (commit + test evidence) or REFUTE (code citation). The worker
-grades every disposition — fixer output is evidence to check, not
-instructions — re-waves failed items once, pushes the accepted commits,
-and strips `confident-ready` in the same step. At most 2 waves per review
-inside the 3-engine-round cap; whole-range re-review between waves with
-dedupe-by-substance. Full mechanics: `references/wave-board.md`. This
+wave-board file (`<review-tmp>/pr-<n>-fix-wave-<k>.md`, in the
+worker-created tmp directory — NEVER inside the PR worktree, never committed),
+and ONE fresh-context fixer subagent works the batch sequentially under a
+verify-then-fix contract: read the cited code first, then FIX (commit + test
+evidence) or REFUTE (code citation). The worker waits for the whole task tree
+to quiesce, snapshots the submitted board, grades every disposition, and
+validates the full unpushed commit range against its accepted-commit ledger.
+It removes stale `confident-ready` before pushing, in one fail-safe shell step.
+At most 2 waves per review inside the 3-engine-round cap; whole-range re-review
+between waves with dedupe-by-substance. Full mechanics:
+`references/wave-board.md`. This
 separation keeps the merge judgment in a clean context and out of
 self-review bias: the entity that grades the fixes never wrote them.
 

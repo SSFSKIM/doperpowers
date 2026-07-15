@@ -20,6 +20,17 @@ Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
 - primary ticket: #{{ISSUE_NUMBER}} — when this is "none", skip EVERY board
   write below; escalation lands on the PR alone (comment).
+- startup barrier: {{BIND_READY_FILE}}
+
+BINDING BARRIER — before ORIENT or ANY GitHub/git/board action: wait up to
+120 seconds for the dispatcher-owned startup barrier to appear. Read its JSON;
+verify ticket matches #{{ISSUE_NUMBER}}, UUID registry meta names this
+`land-pr-{{PR_NUMBER}}` worker in this worktree, and no other meta owns the
+ticket. Ticketless dispatch binds `none`. Atomically write
+`{{BIND_READY_FILE}}.ack` as JSON containing the verified UUID. Only after the
+acknowledgement exists may ORIENT begin. If the barrier never appears or any
+check fails, end without touching repo/GitHub/board state; dispatch retires the
+failed worker.
 
 ORIENT (gh only — do NOT read the PR diff; it was reviewed and approved):
 - gh pr view {{PR_NUMBER}} --json state,headRefOid,mergeable,mergeStateStatus,reviewDecision,labels
@@ -77,8 +88,10 @@ FINALIZE after the merge lands (live mode only):
 - {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done
 - post the land-trail comment on the PR: path taken (native / conflict),
   the resolution delta if any, CI reruns if any, and the merge method.
-- NO cleanup: superseded PRs and branch deletion are finalize-sweep
+- NO repo cleanup: superseded PRs and branch deletion are finalize-sweep
   territory, never yours.
+- Session scratch: preserve the startup-barrier parent directory only for a
+  needs-human park; every non-park terminal path removes it after the trail.
 
 YOUR AUTHORITY: merging PR #{{PR_NUMBER}} and nothing else — the human's
 approval ({{APPROVAL_SIGNAL}}) is the grant; pushing ONLY in-bounds

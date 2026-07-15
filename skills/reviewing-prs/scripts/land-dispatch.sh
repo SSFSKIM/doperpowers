@@ -30,6 +30,8 @@
 #   BOARD_SCRIPTS   issue-tracker scripts dir override (tests)
 #   DAEMON_SCRIPTS  orchestrating-daemons scripts dir override (tests)
 #   DAEMON_HOME     daemon registry dir (default ~/.claude/orchestrating-daemons)
+#   LAND_ACK_POLLS / LAND_ACK_DELAY
+#                   startup-barrier acknowledgement wait (600 x 0.2s)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -200,6 +202,47 @@ print("--squash" if d.get("squashMergeAllowed") else
 
 issue="${LINKED_ISSUES%% *}"
 
+# Normalize and preflight existing ticket ownership BEFORE spawning the
+# write-capable land worker. A lingering finished Claude reviewer finalizes to
+# idle; a vanished owner is retired; a genuinely live owner blocks the handoff.
+if [ -n "$issue" ]; then
+  while IFS= read -r owner; do
+    [ -n "$owner" ] || continue
+    fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$owner" 2>/dev/null || true)"
+    if [ "$fin" = "absent" ]; then
+      _retire "$owner"
+      continue
+    fi
+    owner_meta="$(DAEMON_HOME="$DAEMON_HOME" UUID="$owner" python3 - <<'PY'
+import glob,json,os
+for p in glob.glob(os.path.join(os.environ['DAEMON_HOME'],'*.json')):
+    try: m=json.load(open(p))
+    except Exception: continue
+    if m.get('uuid')==os.environ['UUID']:
+        print('%s|%s|%s|%s|%s|%s' % (m.get('status',''),m.get('current') or m.get('uuid',''),
+              m.get('engine') or 'claude',m.get('pid',''),m.get('host',''),m.get('boot_id','')))
+        break
+PY
+)"
+    IFS='|' read -r owner_status owner_current owner_engine owner_pid owner_host owner_boot <<<"$owner_meta"
+    if [ "$owner_status" = "working" ] || [ "$owner_status" = "blocked" ]; then
+      if _is_live "$owner_current" "$owner_engine" "$owner_pid" "$owner_host" "$owner_boot"; then
+        die "#$pr: ticket #$issue is still owned by active daemon ${owner:0:8} — land worker not started"
+      fi
+      _retire "$owner"
+    fi
+  done < <(DAEMON_HOME="$DAEMON_HOME" TICKET="$issue" python3 - <<'PY'
+import glob,json,os
+for p in glob.glob(os.path.join(os.environ['DAEMON_HOME'],'*.json')):
+    if p.endswith('.reply.json'): continue
+    try: m=json.load(open(p))
+    except Exception: continue
+    if str(m.get('ticket','')).lstrip('#')==os.environ['TICKET'].lstrip('#'):
+        print(m.get('uuid') or '')
+PY
+)
+fi
+
 # ---- detached worktree at the PR head SHA --------------------------------------
 wt="$LOCAL_REPO/.claude/worktrees/land-pr-$pr"
 git -C "$LOCAL_REPO" fetch -q origin "$HEAD_REF" "$BASE_REF" \
@@ -214,6 +257,14 @@ git -C "$LOCAL_REPO" worktree prune
 git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
   || die "#$pr: worktree add failed"
 
+control_dir="$(mktemp -d "$DAEMON_HOME/land-pr-$pr-control.XXXXXX")" \
+  || die "#$pr: land control dir allocation failed"
+bind_ready="$control_dir/bind-ready.json"
+if ! chmod 700 "$control_dir"; then
+  rm -rf "$control_dir"
+  die "#$pr: land control state initialization failed"
+fi
+
 # ---- render + spawn + bind ------------------------------------------------------
 prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
   P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
@@ -221,6 +272,7 @@ prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
   P_ISSUE_LIST="${LINKED_ISSUES:-none}" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
   P_LAND_MODE="$LAND_MODE" P_APPROVAL_SIGNAL="$APPROVAL_SIGNAL" \
   P_MERGE_METHOD="$MERGE_METHOD" P_CONFLICTS_DOC="$CONFLICTS_DOC" \
+  P_BIND_READY_FILE="$bind_ready" \
   RISK_FILE="$tmp/risk.md" \
   python3 - "$PROTOCOL_TEMPLATE" <<'PY'
 import os, re, sys
@@ -231,54 +283,60 @@ subs["RISK_MANIFEST"] = risk or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
-)" || die "#$pr: prompt render failed"
-[ -n "$prompt" ] || die "#$pr: empty prompt — not dispatching"
+)" || { rm -rf "$control_dir"; die "#$pr: prompt render failed"; }
+[ -n "$prompt" ] || { rm -rf "$control_dir"; die "#$pr: empty prompt — not dispatching"; }
 
 if [ "$engine" = "codex" ]; then
-  "$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" ""
+  spawn_out="$("$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "")" \
+    || { rm -rf "$control_dir"; die "#$pr: land worker spawn failed"; }
 else
-  "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "" "${LAND_MODEL:-}"
+  spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "" "${LAND_MODEL:-}")" \
+    || { rm -rf "$control_dir"; die "#$pr: land worker spawn failed"; }
 fi
+printf '%s\n' "$spawn_out"
+uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+[ -n "$uuid" ] || { rm -rf "$control_dir"; die "#$pr: spawned land-worker UUID was not parseable — startup barrier stays closed"; }
 
-# Bind the daemon to the ticket so a needs-human park is resumable via
-# board-answer.sh (park = pause, not death). The binding is MANDATORY for a
-# ticketed PR: an unbound land worker would park into a state the answer
-# relay cannot reach, so a failed bind is a failed dispatch — the worker is
-# retired (daemon-retire.sh stops a live codex pid too), not left running.
+# Binding is mandatory for ticketed PRs. board-bind owns exclusive metadata
+# mutation under the registry lock; no unlocked cleanup follows it.
 if [ -n "$issue" ]; then
-  meta="$(_land_meta "$pr")"; uuid="${meta%%|*}"
   bound=""
-  if [ -n "$uuid" ]; then
-    for _try in 1 2 3; do
-      if "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue"; then bound=1; break; fi
-      sleep 2
-    done
-  fi
+  for _try in 1 2 3; do
+    if "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$issue"; then bound=1; break; fi
+    sleep 2
+  done
   if [ -z "$bound" ]; then
-    [ -n "$uuid" ] && _retire "$uuid"
+    _retire "$uuid"
+    rm -rf "$control_dir"
     die "#$pr: bind to ticket #$issue failed after 3 attempts — land worker retired (a parked land worker must be resumable via board-answer; if #$issue is not a board ticket, drop the Closes link or merge by hand)"
   fi
-  # Ticket ownership is EXCLUSIVE: strip the binding from every other meta
-  # (typically the finished implement worker's) — board-answer.sh resumes
-  # the first bound match it finds, and it must be THIS land worker.
-  DAEMON_HOME="$DAEMON_HOME" TICKET="$issue" KEEP="$uuid" python3 - <<'PY'
-import glob, json, os
-home = os.environ["DAEMON_HOME"]; tk = os.environ["TICKET"].lstrip("#")
-keep = os.environ["KEEP"]
-for p in glob.glob(os.path.join(home, "*.json")):
-    if p.endswith(".reply.json"):
-        continue
-    try:
-        m = json.load(open(p))
-    except Exception:
-        continue
-    if str(m.get("ticket", "")).lstrip("#") != tk or m.get("uuid") == keep:
-        continue
-    del m["ticket"]
-    tmp = p + ".tmp"
-    json.dump(m, open(tmp, "w"), indent=2)
-    os.replace(tmp, p)
+fi
+
+# Publish ready only after ownership is established, then require the worker's
+# UUID-matching acknowledgement before reporting a successful dispatch.
+if ! READY="$bind_ready" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
+import json,os
+p=os.environ['READY']; tmp=p+'.tmp'
+json.dump({'uuid':os.environ['UUID'],'ticket':os.environ['TICKET']},open(tmp,'w'),indent=2)
+os.chmod(tmp,0o600); os.replace(tmp,p)
 PY
+then
+  _retire "$uuid"; rm -rf "$control_dir"
+  die "#$pr: could not publish land startup barrier — worker retired"
+fi
+ack="$bind_ready.ack"; poll=0; max_polls="${LAND_ACK_POLLS:-600}"
+while [ ! -f "$ack" ] && [ "$poll" -lt "$max_polls" ]; do
+  sleep "${LAND_ACK_DELAY:-0.2}"; poll=$((poll + 1))
+done
+if [ ! -f "$ack" ] || ! ACK="$ack" UUID="$uuid" python3 - <<'PY'
+import json,os,sys
+try: data=json.load(open(os.environ['ACK']))
+except Exception: sys.exit(1)
+sys.exit(0 if data.get('uuid')==os.environ['UUID'] else 1)
+PY
+then
+  _retire "$uuid"; rm -rf "$control_dir"
+  die "#$pr: land worker did not acknowledge startup barrier — retired"
 fi
 # The land label is SINGLE-USE authority: a live dispatch consumes it so a
 # lingering label can never authorize commits the human has not seen. A
