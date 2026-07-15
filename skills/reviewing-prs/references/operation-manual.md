@@ -203,7 +203,8 @@ verify-then-fix contract: read the cited code first, then FIX (commit + test
 evidence) or REFUTE (code citation). The worker waits for the whole task tree
 to quiesce, snapshots the submitted board, grades every disposition, and
 validates the full unpushed commit range against its accepted-commit ledger.
-It removes stale `confident-ready` before pushing, in one fail-safe shell step.
+It removes stale `confident-ready` before pushing — fail-safe order:
+expiry first, then the new head.
 At most 2 waves per review inside the 3-engine-round cap; whole-range re-review
 between waves with dedupe-by-substance. Full mechanics:
 `references/wave-board.md`. This

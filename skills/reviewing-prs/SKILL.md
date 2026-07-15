@@ -186,8 +186,8 @@ board, and grade every disposition (an empty slot is a failed item: re-wave
 once, then needs-human). An unauthorized writer restores the recorded
 wave boundary before re-wave — none of its work is inherited. On acceptance,
 remove stale confidence (`gh pr edit {{PR_NUMBER}} --remove-label confident-ready`)
-and then push the graded fixes in one shell command (you are on a detached
-HEAD). Maximum 2 waves per review.
+and then push the graded fixes (you are on a detached HEAD).
+Maximum 2 waves per review.
 
 ## RE-REVIEW
 
@@ -196,13 +196,13 @@ After a wave that fixed anything, rerun the engine — same command, fresh
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
-finding or an accepted REFUTED disposition is already routed — do not
-re-wave it, log it twice, or count it. A re-flag matching a FIXED item is
+finding or an accepted REFUTED disposition is already routed and needs
+nothing more. A re-flag matching a FIXED item is
 the opposite: the fix did not hold — that is a live blocker, never a
 dupe; re-wave it within the caps. The exit condition is no
-NEW blocker, not a clean report. At the cap with unresolved blockers: do
-NOT grant confidence — set ticket #{{ISSUE_NUMBER}} to needs-human with an
-impasse summary and end your turn.
+NEW blocker, not a clean report. At the cap with unresolved blockers
+there is no confidence to grant: set ticket #{{ISSUE_NUMBER}} to
+needs-human with an impasse summary and end your turn.
 
 ## ESCALATE
 

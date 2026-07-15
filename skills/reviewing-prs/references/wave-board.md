@@ -66,14 +66,13 @@ head branch, and this contract:
     You are a review FIXER in <worktree> on a detached HEAD. The wave
     board at <board-path> lists findings; its frontmatter is one JSON
     object.
-    Per item, VERIFY THEN FIX: read the cited code first —
-    never implement from the finding text alone.
+    Per item, VERIFY THEN FIX: judge the finding against the cited code —
+    a finding can be wrong, and REFUTED with evidence is as good an
+    outcome as FIXED.
     - The finding holds → fix it minimally, add or adjust the test that
       proves the fix, run that test, commit locally (no attribution
       lines), set the item's disposition to "FIXED:<commit-sha>", and
       append the test evidence to the item's notes.
-      Stage only the files your fix touches — never a blanket add; the
-      board file must never enter a commit.
     - It does not hold → set disposition "REFUTED" and append the exact
       code citation (file:line) and the reasoning that refutes it.
     How you organize the work — order, batching, delegation — is your
@@ -177,9 +176,9 @@ board re-waves with one instruction: redo the fixer's own UNPUSHED commits
 without the board file. This sanctioned exception to fix-forward is scoped to
 unpublished history; published history is never rewritten.
 
-On a clean push, expire stale confidence BEFORE publishing the new head, in
-one shell command: inspect labels; if `confident-ready` is present, remove it;
-only after successful inspection/removal run `git push origin
+On a clean push, expire stale confidence BEFORE publishing the new head:
+inspect labels; if `confident-ready` is present, remove it; only after
+successful inspection/removal run `git push origin
 HEAD:<head-branch>`. If label inspection/removal fails, do not push. If the
 remote head differs from <push-base> or the push is rejected, do not rebase
 or salvage the local chain: park needs-human with both SHAs. This fail-safe

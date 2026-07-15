@@ -653,3 +653,44 @@ Pending — written at finish.
   principle behind both passes is now a repo golden rule in CLAUDE.md:
   simplicity-first — no restriction or process enforcement beyond
   necessary; hard gates only for truly validated failure states.
+- 2026-07-16 (constraint-minimization, third pass — enforcement becomes
+  guidance): the strictest sweep yet, aimed at procedural enforcement
+  whose *enforcement framing* (not its content) exceeded the validated
+  failure state; each item keeps its detail but is now a statement of
+  the fact or bound instead of a command. Removed/refactored: the fixer
+  contract's "read the cited code first — never implement from the
+  finding text alone" is now "judge the finding against the cited code —
+  a finding can be wrong, and REFUTED with evidence is as good an
+  outcome as FIXED" (grounding + calibration, no prohibition); the
+  fixer contract's "Stage only the files your fix touches — never a
+  blanket add" staging mandate is dropped entirely (the board lives
+  outside the worktree since the symlink fix, an unclaimed or mixed
+  commit already FAILs at grading, and the board-file ban survives in
+  the You-never list and the push-gate content scan); the "in one shell
+  command" packaging mandate is gone from all three surfaces (protocol
+  FIX WAVES, wave-board push rule, operation manual) — the load-bearing
+  and still-pinned rule is the fail-safe ORDER, confidence expiry before
+  the new head publishes; RE-REVIEW's dedupe tail "do not re-wave it,
+  log it twice, or count it" collapsed into "already routed and needs
+  nothing more"; the round-cap exit "do NOT grant confidence" became the
+  fact "there is no confidence to grant"; the engine block's "Do NOT
+  wait on it and do NOT read the findings file yet" became "leave it
+  running and the findings unread" (the hard independence gate remains
+  the protocol's audit-before-engine-output clause, and JOIN stays the
+  only read point); the land protocol's conflict entry lost its "STOP …
+  before touching a single hunk" choreography and the "improvising …
+  is a protocol violation" flourish — the pointer plus "those bounds
+  bind your resolution" carries it; and land-conflicts step 2's
+  "no refactors, no improvements, no drive-by fixes" list became the
+  reason itself — anything beyond the hunks is unreviewed code entering
+  the branch unseen. Examined and kept as hard, each on a validated
+  failure state: every unattended-loop cap (2 waves, 3 engine rounds,
+  2 CI reruns, bounded watches, the 120s barriers), the binding
+  barriers, board-out-of-worktree and never-commit-the-board, the push
+  chain / ledger / quiescence / submitted-snapshot machinery,
+  gate-before-code with its anti-park calibration, ASK-EARLY on
+  human-grade forks, minor-taste-never-the-worker's, every authority
+  NEVER list, never-rebase/never-force-push, the land bounds, the spike
+  draft-PR bans, the dangerous-flag bans, the bootstrap's
+  workspace-skill refusal, the Board Write Hard Gate, and register-time
+  body authorship.

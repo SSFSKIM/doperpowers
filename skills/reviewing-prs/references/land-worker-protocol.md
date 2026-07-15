@@ -61,13 +61,12 @@ NATIVE FIRST — when GitHub reports the PR mergeable (no conflicts):
   bounded the WORKER's merge authority; yours flows from the human.)
 
 CONFLICTS — when GitHub reports the PR unmergeable (live), or your dry-run
-merge attempt hits conflicts: STOP and open the conflict-resolution
-procedure — read this file and follow it before touching a single hunk:
+merge attempt hits conflicts: open the conflict-resolution procedure at
   {{CONFLICTS_DOC}}
 It carries the merge direction (base INTO branch —
 NEVER rebase, NEVER force-push), the resolution discipline, the LAND
-BOUNDS your resolution delta is judged by, and the push-vs-park decision. Improvising a
-resolution without it is a protocol violation. Your instance facts for
+BOUNDS your resolution delta is judged by, and the push-vs-park
+decision — those bounds bind your resolution. Your instance facts for
 that procedure: base {{BASE_REF}}, head {{HEAD_REF}}, detached-HEAD push
 form `git push origin HEAD:{{HEAD_REF}}`, land mode {{LAND_MODE}}, and
 the risk-surface manifest at the bottom of this prompt.

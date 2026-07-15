@@ -19,8 +19,8 @@ nested agent. Never add --dangerously-bypass-approvals-and-sandbox /
      --out <review-tmp>/findings-r1.txt
 
    Use your harness's background execution for this command and keep the
-   task handle. Do NOT wait on it and do NOT read the findings file yet —
-   the protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
+   task handle. Leave it running and the findings unread — the
+   protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
    JOIN step is the only place engine output is read.
 3. At JOIN: wait for the background task. Bound the wait — an engine
    task that has neither completed nor failed 45 minutes after start is
