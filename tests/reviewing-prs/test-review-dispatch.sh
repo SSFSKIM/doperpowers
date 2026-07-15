@@ -550,7 +550,10 @@ WORKER_ENGINE=codex run_dispatch 41
 assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "default-codex env spawns codex"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
 assert_contains "$prompt" "review-engine.sh --base origin/main" "prompt carries the engine block (script path + BASE_REF rendered)"
-assert_contains "$prompt" "Ticket requirements / acceptance criteria" "prompt carries untrusted compliance criteria"
+assert_contains "$prompt" "IN THE BACKGROUND" "prompt starts the engine in the background"
+assert_contains "$prompt" "45 minutes" "prompt bounds the engine wait (hung-engine timeout)"
+assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
+assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
 
