@@ -180,8 +180,8 @@ Zero WAVE items → skip to RE-REVIEW/ESCALATE. Otherwise open
 `references/wave-board.md` (next to this file) — the board schema, the
 fixer dispatch contract, and the grading procedure live there. The shape:
 write `<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-<k>.md` (worker-local
-state — never commit or push it), dispatch ONE fixer subagent for the
-whole wave, wait for its whole task tree to quiesce, snapshot the submitted
+state — never commit or push it), dispatch the wave's fixer, wait for
+its whole task tree to quiesce, snapshot the submitted
 board, and grade every disposition (an empty slot is a failed item: re-wave
 once, then needs-human). An unauthorized writer restores the recorded
 wave boundary before re-wave — none of its work is inherited. On acceptance,

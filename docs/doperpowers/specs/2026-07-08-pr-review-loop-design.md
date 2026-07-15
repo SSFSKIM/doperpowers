@@ -637,10 +637,19 @@ Pending — written at finish.
   entering the branch under wave authority); INVALID only via a graded
   REFUTED disposition (a finding killed and rebutted publicly by the
   same context that benefits from fewer waves — the two-context split is
-  the verification architecture, same as grading); ONE fixer tree per
-  wave (all fixers share one worktree — a second tree is exactly the
-  un-isolated-workspace hazard); verify-then-fix (the REFUTED lane
+  the verification architecture, same as grading); verify-then-fix (the REFUTED lane
   exists only because the fixer verifies); the read-only-until-JOIN
   window (occupancy in practice — the engine holds the worktree the
   whole span); and the land delta bounds/prohibitions (a resolution
   delta is unreviewed by construction).
+- 2026-07-16 (second pass, human rulings): the ONE-fixer-per-wave mandate
+  is also removed — the protocol still says "dispatch the wave's fixer"
+  and grades its task tree, but a count is not specified: crewing the
+  wave is the orchestrator's situational call, the accountability
+  contract and quiescence gate bind whatever it dispatches, and a hard
+  ONE would only add friction to the planned second-order-orchestrator
+  fixer (per-group fixers in isolated worktrees). The
+  INVALID-only-via-graded-REFUTED rule is confirmed kept. The authoring
+  principle behind both passes is now a repo golden rule in CLAUDE.md:
+  simplicity-first — no restriction or process enforcement beyond
+  necessary; hard gates only for truly validated failure states.

@@ -59,7 +59,7 @@ head still equals `<push-base>`, and every existing commit in
 this wave. A re-wave may have prior accepted fixer commits in the range, but
 no unknown commit and no dirty worktree is allowed.
 
-ONE fixer subagent per wave (Task tool, general-purpose agent). Its
+Dispatch the wave's fixer (Task tool, general-purpose agent). Its
 dispatch prompt carries the absolute board path, the worktree root, the
 head branch, and this contract:
 

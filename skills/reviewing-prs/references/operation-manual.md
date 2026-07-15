@@ -11,7 +11,7 @@ the background) reviews pure code correctness, while the worker itself audits
 implementer protocol/spec compliance against the linked ticket. The worker
 never fixes anything: it triages the joined findings on its own judgment
 (the engine's native severity is the starting rank),
-delegates fixing to a **fix wave** — one fresh-context fixer subagent driven
+delegates fixing to a **fix wave** — a fresh-context fixer subagent driven
 by a wave-board file — grades the fixer's dispositions, pushes, re-reviews
 when warranted, and then either merges (small/simple tier, CI green) or
 escalates the PR + its linked ticket to **`confident-ready`** for the human.
@@ -198,7 +198,7 @@ grading and the trusted push chain are the worker's.
 Findings routed WAVE (blockers by the worker's routing + SPEC FINDINGs) go
 onto a wave-board file (`<review-tmp>/pr-<n>-fix-wave-<k>.md`, in the
 worker-created tmp directory — NEVER inside the PR worktree, never committed),
-and ONE fresh-context fixer subagent works the batch under a
+and a fresh-context fixer subagent works the batch under a
 verify-then-fix contract: read the cited code first, then FIX (commit + test
 evidence) or REFUTE (code citation). The worker waits for the whole task tree
 to quiesce, snapshots the submitted board, grades every disposition, and
