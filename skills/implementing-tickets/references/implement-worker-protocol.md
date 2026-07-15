@@ -118,7 +118,15 @@ status writes. The body carries:
 - A FOLLOW-UPS section: register every residual as a ticket (--spawned-by
   {{ISSUE_NUMBER}}) BEFORE your turn-end message, then list what you
   registered (numbers) — or the literal line "FOLLOW-UPS: none".
-  A follow-up not registered does not exist.
+  A follow-up not registered does not exist. Registration follows the
+  doperpowers:issue-tracker skill's ticket contract:
+  author its body at register time (--body-file, the pre-spec sections
+  filled from what you just learned), gate-triaged honestly (--state
+  needs-human for an open human fork). You are the person who knows the
+  most about this residual right now; a skeleton registered "to fill in
+  later" is silent scope loss with a ticket number. --note stays a
+  one-line summary — it lives in an invisible meta block, never carries
+  the spec.
 From the PR on, the review loop (doperpowers:reviewing-prs) owns the path to merge.
 
 ---- Ticket #{{ISSUE_NUMBER}} brief: {{ISSUE_TITLE}} ----

@@ -123,6 +123,9 @@ assert_not_contains "$SKILL" "needs-info" "review-loop parks remain human-unpark
 assert_not_contains "$SKILL" "→ blocked" "retired blocked vocabulary stays absent"
 assert_not_contains "$SKILL" "git diff origin/{{BASE_REF}}...HEAD)" "ORIENT still forbids a full-diff read"
 assert_contains "$SKILL" "structured PR comment" "ticketless TOO BIG routes to a PR comment"
+assert_contains "$SKILL" "doperpowers:issue-tracker" "TOO BIG registration routes through the issue-tracker skill"
+assert_contains "$SKILL" "author its body at register time" "TOO BIG ticket body is authored at register time"
+assert_not_contains "$SKILL" "then flesh out its pre-spec body" "the two-step register-then-fill wording is retired"
 assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to the trail"
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 

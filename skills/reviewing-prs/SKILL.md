@@ -156,9 +156,10 @@ below that defaults to LOG — momentum outranks polish.
   on the wave board (FIX WAVES). Promoting a non-blocker to WAVE is the
   exception, never the default: it takes a stated reason in the trail.
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
-  than about half the original PR's size): register a ticket —
-  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}
-  — then flesh out its pre-spec body (gh issue edit <new> --body-file -).
+  than about half the original PR's size): register a ticket per the
+  doperpowers:issue-tracker ticket contract — author its body at register time
+  (the pre-spec sections, filled from the finding) and pass it in one step:
+  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <spec>
   NEVER wave it. On a ticketless PR, post a structured PR comment
   describing the scope fork instead — board writes are skipped.
 - LOG — valid non-blocker (the DEFAULT below critical/high): append a

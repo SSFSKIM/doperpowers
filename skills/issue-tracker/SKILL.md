@@ -94,7 +94,7 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing-tickets); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; prints `<number> <url>` — then the registrar fleshes out the pre-spec body (`gh issue edit <n> --body-file …`) |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing-tickets); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for `ready-for-agent` and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
@@ -223,13 +223,19 @@ bindings. This file owns only the schema they write against.
 
 ## The ticket body (pre-spec)
 
-The issue body — seeded by register, fleshed out by the registrar (register
-time, plus a terminal outcome comment). Sections: Problem & intent /
-Constraints / Success criteria / Open questions / Decision log — plus, on a
-decomposed parent, Roadmap (the one sanctioned form of "ticket that doesn't
-exist yet"). The trailing `<!-- board:meta … -->` block is script-owned
-(spawned-by / relates-to / branch / pr / note) — edit around it, never
-inside it.
+Whoever registers a ticket authors its body AT REGISTER TIME — write the
+sections to a temp file and pass `--body-file` in the same step. The
+registrar is the person who knows the most about the work at that moment;
+"register now, fill in later" loses exactly that context (the fill-in
+step is skipped under pressure, and register refuses/demotes a skeleton
+anyway). Sections: Problem & intent / Constraints / Success criteria /
+Open questions / Decision log — plus, on a decomposed parent, Roadmap
+(the one sanctioned form of "ticket that doesn't exist yet"). A terminal
+outcome comment updates the record at close. The trailing
+`<!-- board:meta … -->` block is script-owned (spawned-by / relates-to /
+branch / pr / note) — edit around it, never inside it. Note that the
+meta block is an HTML comment: INVISIBLE on the rendered issue page —
+`--note` is a one-line status summary, never the spec's home.
 
 ## Scope-outs become tickets (deferral rule)
 
