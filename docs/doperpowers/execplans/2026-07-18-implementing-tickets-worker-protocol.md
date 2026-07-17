@@ -14,10 +14,10 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 
 - [x] (2026-07-17 14:00Z) Grill completed in the interactive brainstorming session (shared with work item 1): restructure mirrors PR #14's reviewing-prs shape; spawn switches to the bootstrap pattern; migration landed first so this plan designs against the one-harness world.
 - [x] (2026-07-18 05:50Z) Worktree `implementing-tickets-worker-protocol` created from `origin/main` at `7276f54`; all reference sites of the protocol path enumerated (see Context and Orientation).
-- [ ] Milestone 0: baseline suites green in this worktree.
-- [ ] Milestone 1: SKILL.md ⇄ protocol swap — SKILL.md becomes the Implement Worker Protocol (operator-routing line at top); operator content moves to `references/operation-manual.md`; `references/implement-worker-protocol.md` deleted; RED→GREEN in test-protocol-content.sh.
-- [ ] Milestone 2: `references/worker-bootstrap.md` created (one parameterized bootstrap for both lanes); issue-tracker dispatch ritual re-pointed at it; RED→GREEN.
-- [ ] Milestone 3: cross-skill bindings follow — review-dispatch.sh `IMPLEMENT_PROTOCOL_FILE` → the new SKILL.md; its test assertion updated; issue-tracker "Worker protocols" section updated.
+- [x] (2026-07-18 06:20Z) Milestone 0: baseline sweep green (all 7 suites).
+- [x] (2026-07-18 06:40Z) Milestone 1: swap complete (RED 26 → GREEN; protocol clauses carried verbatim under new `##` sections; placeholder set pinned to the 7 surviving tokens; old protocol file `git rm`'d; operation-manual authored); commit `e8cc147`.
+- [x] (2026-07-18 06:50Z) Milestone 2: `worker-bootstrap.md` written (12-token set pinned; unconditional-open + never-resolve-from-workspace + 3 binding sections); dispatch ritual step 2 renders the bootstrap with ROLE/PROTOCOL_FILE lane selection; "Worker protocols" section states both loops' skill-file+bootstrap shape; commit `b826e4d`.
+- [x] (2026-07-18 06:55Z) Milestone 3: review-dispatch `IMPLEMENT_PROTOCOL_FILE` → implementing-tickets/SKILL.md (test-first); reference sweep clean (only the test's own negative assertions mention the old filename); commit `78905e2`.
 - [ ] Milestone 4: live shakedown — bootstrap-dispatched gateway worker end-to-end on a scratch board; evidence pasted here.
 - [ ] Milestone 5: full verification set; exit review (codex, disposable clone) + independent fresh-context reviewer; push; PR; retrospective.
 
