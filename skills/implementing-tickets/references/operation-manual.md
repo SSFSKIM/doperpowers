@@ -24,30 +24,17 @@ audit trail, not requests. Full design + rationale:
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
 | `references/engine-blocks/execution.md` | the EXECUTION text — one block for both model routes, since every worker is a Claude-harness session (the engine label picks the model route: `codex` = clodex gateway/GPT, `claude` = plain Claude); keeps interactive-session skills (writing-plans, subagent-driven-development) out of daemon workers; rides the bootstrap's EXECUTION_BLOCK binding (implement lane only — spikes are exploration, not TDD) |
-| The Ticket Gate | the pre-code pass/park verdict (below) |
+| The Ticket Gate | the pre-code pass/park verdict (below; check definitions in issue-tracker's `references/ticket-gate.md`) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
 
 ## The Ticket Gate
 
-Runs during ORIENT, before any source file opens — brainstorming's grill in
-absentia: every answer must come from the ticket body, the codebase, or
-repo docs. Trivial lookups are orient work, never a park.
-
-**Check 1 — well-defined.** Every fork the implementation will hit:
-
-| fork class | who answers |
-|---|---|
-| mechanical/technical, one obvious best answer | the worker — parking these is a protocol violation, not caution |
-| non-trivial architecture (subsystem boundary, data model, API shape) | ticket + codebase; unanswered → gate-fail |
-| product design or taste, **major or minor** | the ticket; unanswered → gate-fail — even minor taste is never the worker's call |
-
-**Check 2 — well-scoped.** Fits ~1–2 ExecPlans — big-but-atomic work that
-cannot land halfway still counts as ONE unit (that is what ExecPlan mode
-exists for); decompose only work whose children could land on main
-independently. Too big forks on ONE question: *can the remainder be
-written as self-contained child pre-specs right now?* Yes → decompose.
-No → `interactive-preferred`.
+Runs during ORIENT, before any source file opens — brainstorming's grill
+in absentia. The two checks' definitions (WELL-DEFINED fork ownership,
+WELL-SCOPED sizing) are board schema, owned by doperpowers:issue-tracker
+in `references/ticket-gate.md` — one copy for workers and registrars
+alike; the worker protocol routes there at gate time.
 
 **The verdict is the worker's first board write.** Dispatch writes nothing;
 `in-progress` + a `[gate]` comment = pass, a park state = fail.
@@ -130,7 +117,7 @@ What changes and what doesn't:
   re-parks), or graduates.
 - **Graduation** — production work the findings clearly justify is
   registered `--spawned-by <spike>` with honest gate-triage against the
-  IMPLEMENT gate; murkier outcomes stay a Recommendation line for the
+  Ticket Gate; murkier outcomes stay a Recommendation line for the
   human.
 - The engine label picks a model route only (web reach is harness-level —
   every worker has it); choose per the work's model fit, mechanism

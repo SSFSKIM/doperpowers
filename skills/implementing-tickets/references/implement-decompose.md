@@ -20,7 +20,8 @@ only the PROCEDURE and grants no authority beyond your prompt's.
 
 3. Gate-triage each child HONESTLY per the doperpowers:issue-tracker
    ticket contract and park discriminant — `ready-for-agent` only if YOU
-   believe it passes the Ticket Gate.
+   believe it passes the Ticket Gate
+   (`<BOARD_SCRIPTS>/../references/ticket-gate.md`).
 
 4. Register only children you can spec self-contained NOW. Contingent
    later phases live as a `## Roadmap` section in the parent body — the
