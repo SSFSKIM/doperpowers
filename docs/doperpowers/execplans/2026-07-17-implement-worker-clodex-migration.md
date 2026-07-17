@@ -201,7 +201,23 @@ Shakedown evidence (Milestone 5, all from SSFSKIM/doperpowers-shakedown — repo
     PR #2 "Add hello.sh version flag": Closes #1; TDD red phase recorded
     (test.sh exited 1 before, 0 after); FOLLOW-UPS: none; ticket → in-review.
 
-Exit-review verdict: appended at Milestone 6.
+Exit-review verdict (Milestone 6): `codex exec review --base main` from a
+disposable clone returned exactly ONE finding —
+
+    [P1] Finalize gateway landers before deduping — land-dispatch.sh
+    After a default dry-run lander finishes, daemon-spawn --no-wait leaves
+    its registry status as `working` ... the existing dedupe path treats any
+    listed Claude session as active and exits with `skip active land
+    worker`, so the live landing never starts.
+
+Verified real (the retired codex lander self-finalized; the gateway lander
+does not) and fixed test-first: the dedupe's `working|blocked` arm now runs
+`daemon-finalize.sh` after `_is_live` passes for a claude-species lander and
+skips only on a genuinely `live` verdict (commits `4d4223f`, `534df62`); the
+host-awareness semantics of `_is_live` are unchanged, and codex legacy metas
+keep the pid-liveness path. A second independent review (fresh-context Claude
+reviewer subagent over the full final branch) covered the post-codex-review
+commits; its verdict is recorded in Outcomes & Retrospective.
 
 ## Interfaces and Dependencies
 
