@@ -24,7 +24,10 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 
 ## Surprises & Discoveries
 
-- Observation: none yet at authoring time. (Maintain this section during execution; concise evidence snippets, test output preferred.)
+- Observation: the shakedown's park→answer path failed on first try — `board-answer.sh` refused with "bound session … is mid-turn (status=working)" although the worker had cleanly parked and ended its turn. Root cause: the ended session lingered in `claude agents` as `state=blocked, status=idle`, and `daemon-finalize.sh` normalized only the `state=working, status=idle` lying shape (observed 2026-07-15); `blocked` mapped to "live", so the registry meta stayed `working` forever. The legacy codex species never hit this because it self-finalized. This would have broken EVERY gateway implement worker's park→answer flow — exactly what the live shakedown existed to catch.
+  Evidence: `claude agents` row `{'status': 'idle', 'state': 'blocked'}` for session c901fbcb while `daemon-finalize.sh` printed `live` and the meta read `status=working`; after the fix (commit `7f1814c`) the same invocation printed `idle` and `board-answer.sh` relayed: `relay: #1 → claude session c901fbcb (status=idle …)`, `#1: needs-human → in-progress`.
+- Observation: the worker gate behaved exactly per protocol on the deliberately-unsettled taste fork: first board write was the park (`status:needs-human` label + `[gate] fail` comment naming the greeting decision, with a recommended answer and orientation summary), no code written.
+  Evidence: issue #1 labels `["enhancement","status:needs-human","priority:P3"]`; comment "[gate] fail — needs-human: the exact no-argument greeting is an unresolved product-wording decision required by acceptance."
 
 ## Decision Log
 
@@ -46,6 +49,9 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 - Decision: the gate-comment format `[gate] pass — {{ENGINE_NAME}}/<mode>` is unchanged; `ENGINE_NAME` now names the route (`codex` or `claude`).
   Rationale: the review worker's compliance audit and the board's history parse this line; the route name carries the same operational information (which model family built this).
   Date/Author: 2026-07-17, authoring.
+- Decision: mid-execution scope addition — `skills/orchestrating-daemons/scripts/daemon-finalize.sh` gains a second lying-shape normalization (`state=blocked, status=idle` → ended, finalized `idle`, reply recorded through the blocked renderer so a pending AskUserQuestion still surfaces). This amends the plan's original "substrate scripts byte-identical" intent (which was about the LEGACY codex machinery; daemon-finalize is claude-species machinery).
+  Rationale: discovered live in Milestone 5 — without it, every gateway implement worker's park→answer relay dead-ends on a stale `working` meta, because claude-species `--no-wait` daemons have no self-finalizer and `board-answer.sh`'s built-in finalize call read the lingering `blocked` state as a live turn. Keeping the harness `status` field as the single turn signal matches the script's own documented doctrine. Rejected alternative: documenting a manual `daemon-finalize` step in the wake ritual (pushes a mechanical reconciliation onto the human; the relay already calls finalize — it just missed this shape).
+  Date/Author: 2026-07-17, during Milestone 5.
 
 ## Outcomes & Retrospective
 
@@ -176,7 +182,7 @@ No new code interfaces. The contract surfaces at the end of this plan:
 
 - `skills/implementing-tickets/references/engine-blocks/execution.md` exists; `execution-claude.md` and `execution-codex.md` do not.
 - `skills/issue-tracker/SKILL.md` dispatch ritual: engine = model route; both routes spawn via `skills/orchestrating-daemons/scripts/daemon-spawn.sh`; the codex route's documented invocation carries `DAEMON_CLAUDE_SETTINGS` (default `${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}`), `DAEMON_CLAUDE_EFFORT` (default `${CLODEX_EFFORT:-xhigh}`), and model `fable`.
-- `skills/orchestrating-daemons/scripts/*` byte-identical to `main`.
+- `skills/orchestrating-daemons/scripts/*` byte-identical to `main`, with ONE exception decided mid-flight (Decision Log): `daemon-finalize.sh` normalizes the ended `state=blocked, status=idle` shape to a finalized-idle meta. All LEGACY codex machinery (`codex-spawn.sh`, `codex-resume.sh`, `_codex_lib.sh`) is byte-identical.
 - `skills/implementing-tickets/references/implement-worker-protocol.md` and `spike-worker-protocol.md` byte-identical to `main` (placeholder sets unchanged).
 - External dependencies, unchanged from the review loop's: the local cliproxy gateway on `localhost:8317`, `~/.claude/clodex-settings.json`, the `claude` CLI daemon supervisor, `gh`.
 
