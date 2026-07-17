@@ -211,6 +211,25 @@ assert_not_contains "$daemons" "discriminant in doperpowers:implementing-tickets
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
+echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
+assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
+assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
+assert_contains "$tracker" "implement-dispatch.sh" "tracker: ritual names its mechanical executable"
+assert_contains "$tracker" "Running the ritual by hand stays valid" "tracker: manual dispatch stays a first-class path"
+sweepdoc="$(cat "$REPO_ROOT/skills/issue-tracker/references/sweep-setup.md")"
+assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the macOS path"
+assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
+assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
+assert_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: runner-day land template named"
+for tpl in "$REPO_ROOT/skills/implementing-tickets/references/issue-dispatch.yml" \
+           "$REPO_ROOT/skills/reviewing-prs/references/land-on-approve.yml"; do
+  tname="$(basename "$tpl")"
+  tbody="$(cat "$tpl")"
+  assert_contains "$tbody" "permissions: {}" "$tname: zero-permission job"
+  assert_not_contains "$tbody" "uses: actions/checkout" "$tname: never checks out repo code"
+  assert_not_contains "$tbody" ".title" "$tname: no title/body interpolation (injection surface)"
+done
+
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
 echo "all tests passed"

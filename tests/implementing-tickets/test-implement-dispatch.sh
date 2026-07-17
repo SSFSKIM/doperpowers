@@ -117,6 +117,7 @@ s = {"next": 6, "labels": [], "issues": {
     "3": issue(3, "Probe the cache layer", ["status:ready-for-agent", "priority:P0", "spike"]),
     "4": issue(4, "Mid-flight work", ["status:in-progress"]),
     "5": issue(5, "Tune the copy", ["status:ready-for-agent", "priority:P2", "engine:claude"]),
+    "6": issue(6, "Delivered, awaiting review", ["status:in-review"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
@@ -226,6 +227,19 @@ rm -f "$DAEMON_HOME"/aaaa*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
 n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
 assert_contains "$n_spawns" "1" "review/land workers never count against the implement cap"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+python3 - <<'PY'
+import json, os
+json.dump({"uuid": "dddd0006-0000-4000-8000-000000000000", "current": "z",
+           "name": "6-delivered", "ticket": "6", "status": "working",
+           "updated": "2026-07-18T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "dddd0006-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
+n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
+assert_contains "$n_spawns" "2" "a stale working meta on an in-review ticket does not eat a slot"
 
 echo "implement-dispatch: failure isolation + strict render"
 

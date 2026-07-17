@@ -116,11 +116,17 @@ if best:
 PY
 }
 
-# Occupied implement/spike slots: bound metas in an active status, excluding
-# the review and land species.
+# Occupied implement/spike slots: bound metas in an active status whose
+# ticket is still in an active lane (ready-for-agent covers the pre-gate
+# window; in-progress covers the build). Review/land species excluded, and a
+# stale `working` meta on an in-review or parked ticket never eats a slot —
+# that worker's scope ended when the ticket moved on.
 _slots_used() {
-  python3 - <<'PY'
-import glob, json, os
+  BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+import glob, json, os, sys
+sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
+import _board as B
+tickets = B.snapshot()
 used = 0
 for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -132,7 +138,10 @@ for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     name = str(m.get("name") or "")
     if name.startswith("review-pr-") or name.startswith("land-pr-"):
         continue
-    if m.get("ticket") and m.get("status") in ("working", "blocked", "error"):
+    tk = str(m.get("ticket") or "").lstrip("#")
+    if not tk or m.get("status") not in ("working", "blocked", "error"):
+        continue
+    if tickets.get(tk, {}).get("state") in ("ready-for-agent", "in-progress"):
         used += 1
 print(used)
 PY

@@ -13,8 +13,8 @@
 
 | # | Tier | Item | Trigger |
 |---|---|---|---|
-| 1 | T1 | Recovery from transient worker deaths is manual | Building the auto-attach dispatch trigger |
-| 2 | T1 | gh-token capture failure is a stderr warning, not a spawn abort | Same trigger phase; or the warning recurring |
+| 1 | T1 | ~~Recovery from transient worker deaths is manual~~ **SHIPPED 2026-07-18** (board-sweep RECOVER pass) | — |
+| 2 | T1 | ~~gh-token capture failure~~ **NA on the one-harness pipeline** (the capture lived in retired codex-spawn) | Reopens only if a codex-CLI worker is ever spawned again |
 | 3 | T2 | Claude engine branch untested by the shakedown (SD-2, SD-4 deferred) | First real claude-engine dispatch |
 | 4 | T2 | No CI/pre-push gate on the shell test suites | Next test-drift incident, or opportunistically |
 | 5 | T2 | Automated review trigger blocked: self-hosted runner unregistered | Org admin grants (ida-solution#302) |
@@ -22,7 +22,7 @@
 | 7 | T3 | Work-alone mandate is prompt-level, not mechanical | An observed post-clause violation |
 | 8 | T3 | `SSL_CERT_FILE` fix is macOS-path-specific | First Linux worker host |
 | 9 | T3 | Accepted notes: GH_TOKEN visible in worker env; mini ssh probe noise; resume-only daemons' run scratch un-swept until next spawn | — |
-| 10 | T2 | Answer relay is L1 only: comment-event automation (L2) and BOARD.html session affordances (L3) unbuilt | Same trigger phase (L2); board-map touch (L3) |
+| 10 | T2 | ~~Answer relay L2~~ **SHIPPED 2026-07-18** (board-sweep RELAY pass); L3 (BOARD.html session affordances) still unbuilt | Board-map touch (L3) |
 
 ## T1 — structural: the unattended-dispatch phase must answer these
 
@@ -130,6 +130,23 @@ host ever appears.
 - **FU-2 known limitation** — a daemon resumed once and never
   spawned/resumed again leaves its run scratch un-swept until the next
   spawn; growth is bounded by active resuming.
+
+### 1 + 10-L2: SHIPPED 2026-07-18 — the unattended sweep
+
+`skills/issue-tracker/scripts/board-sweep.sh` (cron/launchd tick; arming in
+`references/sweep-setup.md`) closed both items: RECOVER gives dead/stalled
+in-progress workers a bounded resume (3 attempts, then park `needs-human`
+with an orientation note — resume, not re-dispatch, per the Symphony
+comparison §2.1), and RELAY resumes a parked `needs-human` worker when a
+fresh human comment lands on its ticket (`board-answer.sh --posted`, with
+the relayed-comment id recorded in the meta as the re-fire guard). Item 2
+was verified NOT APPLICABLE on the one-harness pipeline: the gh-token spawn
+capture existed only in the retired codex-spawn path — `claude --bg`
+workers reach gh through the keychain, and `implement-dispatch.sh` spawns
+nothing but those. Item 5's runner remains unregistered; the sweep is the
+transport that needs nobody's permission, and all three lanes now ship
+event templates for the runner day (`pr-review-dispatch.yml`,
+`issue-dispatch.yml`, `land-on-approve.yml`).
 
 ## Resolved since tracking began
 
