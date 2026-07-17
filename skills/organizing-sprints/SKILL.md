@@ -38,7 +38,7 @@ Create a task per phase; complete them in order.
    Lose none; merge none silently. Where each observation came from (who
    said it, seeing what) rides along — it becomes the epic's context line.
 2. **Ground every observation in code** — fan out parallel explorations by
-   area (doperpowers:dispatching-parallel-agents) and classify each
+   area (native subagents) and classify each
    observation against code reality (see The verification table below). A
    question the codebase can answer is answered by reading, never asked.
 3. **Tentative decomposition** — cut streams and epics. An epic is an
