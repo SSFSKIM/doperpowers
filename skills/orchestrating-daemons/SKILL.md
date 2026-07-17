@@ -7,7 +7,7 @@ description: Use when spawning, resuming, tracking, or debugging durable backgro
 
 ## Overview
 
-A **daemon** is a durable background `claude` session, spawned with `claude --bg` so it runs as its own process, is visible in `claude agents`, and survives this session ending. The substrate drives two engines under one registry: `claude --bg` daemons and detached `codex exec` workers (`engine: codex` in the meta) — the board pipeline picks per dispatch (label → `WORKER_ENGINE` → codex). This skill is the *substrate*: the scripts that spawn, resume, track, and retire daemons, and the mechanics that make those operations safe. It is not an orchestration doctrine — the fleets that used to be driven from here now live in the board pipeline, where workers escalate via park states and nobody judges their turn-ends.
+A **daemon** is a durable background `claude` session, spawned with `claude --bg` so it runs as its own process, is visible in `claude agents`, and survives this session ending. The board pipeline dispatches Claude-harness daemons only; its engine label picks the model ROUTE of the spawn (`codex` = the clodex gateway settings via `DAEMON_CLAUDE_SETTINGS`, GPT models through the local proxy; `claude` = plain Claude models). Detached `codex exec` workers (`engine: codex` in the meta) are a **legacy species**: existing registry metas stay readable, resumable, and retirable, but no pipeline path creates new ones. This skill is the *substrate*: the scripts that spawn, resume, track, and retire daemons, and the mechanics that make those operations safe. It is not an orchestration doctrine — the fleets that used to be driven from here now live in the board pipeline, where workers escalate via park states and nobody judges their turn-ends.
 
 **Where work goes** (decide this before spawning anything):
 
@@ -36,8 +36,8 @@ Paths are relative to this skill's directory. The scripts hide every sharp edge 
 | `daemon-list.sh [status]` | Fleet view; optional status filter. |
 | `daemon-mark.sh <id> <status> [note]` | Record a judgment state (`awaiting-human`, `done`) + why. |
 | `daemon-retire.sh <id> [purge]` | Drop from active fleet; transcript stays resumable. |
-| `codex-spawn.sh [--no-wait] <name> <task> [cwd] [worktree] [model] [effort]` | Spawn a detached `codex exec --json` worker into the same registry (`engine: codex`, pid liveness). Defaults gpt-5.6-sol/high. Launch in a bg shell. |
-| `codex-resume.sh <id> <message>` | Continue a codex daemon (`codex exec resume` — same session id, no forking). Launch in a bg shell. |
+| `codex-spawn.sh [--no-wait] <name> <task> [cwd] [worktree] [model] [effort]` | LEGACY — retired from board dispatch (no pipeline path spawns codex-CLI workers; kept until no bound codex sessions remain). Spawns a detached `codex exec --json` worker into the same registry (`engine: codex`, pid liveness). |
+| `codex-resume.sh <id> <message>` | Continue a LEGACY codex daemon (`codex exec resume` — same session id, no forking). Launch in a bg shell. |
 
 ## Driving an ad-hoc daemon by hand
 
@@ -87,7 +87,7 @@ A daemon also goes `blocked` when it calls **AskUserQuestion** — headless, nob
 
 A daemon can also block on a **harness permission prompt** that holds a tool call before it ever reaches the transcript (observed live: an AskUserQuestion call stuck at the permission layer). The recorded reply then carries a `[blocked on a harness prompt …]` marker instead of a rendered question — the daemon's last text states what it wanted; resume with your answer/instruction (the pending call is interrupted), or `claude attach` the session to approve it interactively.
 
-Codex workers get the same posture, spelled differently: `--sandbox
+Legacy codex workers get the same posture, spelled differently: `--sandbox
 workspace-write` plus the approvals auto-reviewer (`-c
 approval_policy=on-request -c approvals_reviewer=…`) — safe ops continue,
 genuinely unsafe escalations are declined in-flight (fail-closed). A codex
