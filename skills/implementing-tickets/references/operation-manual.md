@@ -54,21 +54,12 @@ No → `interactive-preferred`.
 
 ## Park discriminant — who unparks it?
 
-- **The human as themselves** (a decision only they can make, or a
-  real-world input only they possess: credentials, auth, production data)
-  → `needs-human`. Note = the question list, each with a recommended answer.
-- **Knowledge work anyone could do** but substantial enough to be its own
-  work-unit → `needs-info` (rare by design — the research threshold above
-  keeps orient-work lookups out of it).
-- **Ongoing steering of the work's core, not one answer** — an
-  architecture spine or product-core design whose decisions are so
-  entangled that each answer reshapes the next question (a question list
-  cannot carry them) → `interactive-preferred` — summons the human into a
-  live doperpowers:brainstorming session; the note says which decision
-  areas need steering. Any *enumerable* set of open decisions, however
-  many and whatever the ticket's size, is `needs-human` — in practice
-  this state is rare and marks genuinely architecture-heavy or
-  taste-shaped work.
+Owned by doperpowers:issue-tracker — the board schema's single home
+(state vocabulary, park discriminant, dependencies-are-edges); workers
+and operators classify every park there, one copy, no drift. The worker
+protocol layers on only the worker-side park mechanics: the required
+note, the 3–6 line orientation summary, and ending the turn with the
+park stated crisply.
 
 ## Decompose — the one scoping behavior
 
