@@ -39,6 +39,15 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 - Decision: the protocol text itself is carried over essentially verbatim (section headers added for skill-file readability); the ticket brief and repo-facts manifest move from the protocol's tail into bootstrap binding sections, exactly as reviewing-prs binds PR_BODY/ISSUE_BODY/REPO_FACTS.
   Rationale: this work item is a structural move, not a behavioral edit — the protocol's clauses are eval-tuned and test-pinned; changing conduct here would mix concerns and invalidate the pinned invariants. The content tests keep asserting the same load-bearing clauses against the new file.
   Date/Author: 2026-07-18, authoring.
+- Decision: the Milestone 4 shakedown exercises the gate-PASS branch (fully settled ticket → `[gate] pass` as first board write → build → PR), not the park→resume branch the plan text originally sketched.
+  Rationale: work item 1's shakedown (18 hours earlier, same substrate, protocol clauses unchanged by this move) already proved the park→answer→resume→re-pass branch live; duplicating it would re-test what did not change, while the pass branch had never been observed live. Together the two shakedowns cover both gate verdicts.
+  Date/Author: 2026-07-18, during Milestone 4.
+- Decision: the spike protocol's raw-token brief tail is trimmed in this branch after all (superseding the authored byte-identity constraint), and its "at the bottom of this prompt" line becomes the same bindings language as the implement side.
+  Rationale: the independent exit reviewer confirmed the tail was coherent-but-redundant under bootstrap dispatch (a worker opening the file raw sees a "brief" heading holding unrendered tokens) — shipping a knowingly awkward lane contradicts the symmetry this work item exists to create, and the trim is 7 lines, test-pinned. The reviewer re-verified the delta commit separately.
+  Date/Author: 2026-07-18, exit-review triage.
+- Decision: the codex exit review is recorded as UNAVAILABLE for this branch (two runs from fresh disposable clones both died with "Selected model is at capacity" before producing findings); the exit gate rests on the documented fallback — the independent fresh-context Claude reviewer, which verified the full diff (clause-by-clause move fidelity, byte-identity constraints, placeholder consistency, suites) and returned Ready, plus a delta re-verification of the post-review fix.
+  Rationale: the execplan track's exit gate names exactly this fallback when codex is unavailable; waiting indefinitely on an upstream capacity outage blocks landing without adding review coverage the fallback did not already provide.
+  Date/Author: 2026-07-18, Milestone 5.
 
 ## Outcomes & Retrospective
 
