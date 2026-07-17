@@ -43,7 +43,7 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 08:40Z) ExecPlan authored and committed.
 - [x] (2026-07-18 09:10Z) M1: `implement-dispatch.sh` (triggered + `--sweep` + cap + dedupe + strict render) + hermetic suite green (34 asserts; RED first — suite failed before the script existed), shellcheck clean.
 - [x] (2026-07-18 09:45Z) M2: `board-sweep.sh` (recover / cancel / dispatch / review / land / relay / report passes, mkdir lock — macOS has no flock(1)) + hermetic suite green (26 asserts; RED verified by absence check, exit 127), shellcheck clean.
-- [ ] M3: prose routing (dispatch ritual, TECH-DEBT), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; all suites + shellcheck + cross-doc lint green.
+- [x] (2026-07-18 10:30Z) M3: prose routing (dispatch ritual, TECH-DEBT strikes for items 1/2/10-L2), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; full battery green (see Surprises for the slot-counter defect a pre-arm registry inspection surfaced).
 - [ ] M4: live shakedown on ida-solution (arm from this worktree; observe acceptance behaviors; record evidence in Artifacts).
 - [ ] M5: codex whole-branch review → fix findings → open PR to main (NOT merged — human gate per instruction) → retrospective.
 
@@ -61,7 +61,16 @@ the daemon registry, never in the tick's memory.
   blocked, ida-solution#302).
   Evidence: `gh run list --workflow=pr-review-dispatch.yml` shows
   `queued … 23h57m` rows ending `cancelled`.
-(Further entries land here as implementation proceeds.)
+- Observation (M3, pre-arm registry inspection): the live registry held a
+  `working` meta bound to ticket #489, whose ticket is `in-review` — the
+  worker finished long ago (nothing finalizes an implement worker's meta
+  when its ticket moves on), and the original slot counter would have
+  counted it against the cap FOREVER. Fixed: `_slots_used` joins registry
+  status with board state and counts only workers whose ticket is still
+  `ready-for-agent`/`in-progress`; pinned by the "stale working meta on an
+  in-review ticket does not eat a slot" assert.
+  Evidence: registry dump showed `('489', '489-report-ia', 'working', …)`
+  with #489 in-review on the live board.
 
 ## Decision Log
 
@@ -367,11 +376,17 @@ Run the new suites and the neighbors they touch:
 Each prints an explicit all-passed line (e.g. `all tests passed`,
 `all cross-doc references resolve`); any FAIL line is a stop.
 
-Arm the shakedown (M4) — write the launchd plist per
-`skills/issue-tracker/references/sweep-setup.md` with
-`DOPERPOWERS_HOME=<this worktree>` so the un-merged branch is what runs,
-then:
+Arm the shakedown (M4) — the plist lives in this branch at
+`infra/board-sweep/com.user.doperpowers-board-sweep.plist` with
+`DOPERPOWERS_HOME=<this worktree>` so the un-merged branch is what runs.
+Per sweep-setup.md, the first tick is run BY HAND and verified before the
+timer is trusted:
 
+    DOPERPOWERS_HOME=<worktree> LOCAL_REPO=<ida-solution clone> \
+      AUTO_MERGE_ENABLED=true LAND_ENABLED=true IMPLEMENT_MAX_CONCURRENT=5 \
+      "$DOPERPOWERS_HOME/skills/issue-tracker/scripts/board-sweep.sh"
+
+    cp infra/board-sweep/com.user.doperpowers-board-sweep.plist ~/Library/LaunchAgents/
     launchctl load ~/Library/LaunchAgents/com.user.doperpowers-board-sweep.plist
     tail -f ~/.claude/orchestrating-daemons/sweep.log
 
