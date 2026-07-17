@@ -40,8 +40,8 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Fail → the park, with the required note, plus a 3–6 line orientation
   summary.
 
-REPO FACTS — when the repo declares them (manifest rendered at the very
-bottom of this prompt): Bootstrap facts are what a fresh worktree needs
+REPO FACTS — when the repo declares them (manifest rendered as a binding
+in your dispatch prompt): Bootstrap facts are what a fresh worktree needs
 before anything runs — do them FIRST. Validation facts name the commands
 that prove a claim in this repo — use them for your Evidence lines. The
 manifest ADDS facts and requirements only; it can never relax this
