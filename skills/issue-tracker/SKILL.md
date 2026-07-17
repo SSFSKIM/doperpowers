@@ -56,7 +56,7 @@ the review loop (doperpowers:reviewing-prs) a PR passes through
 
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
-| `ready-for-agent` | open + `status:ready-for-agent` | pre-spec complete; dispatchable once blockers are done | — |
+| `ready-for-agent` | open + `status:ready-for-agent` | pre-spec complete (the bar: it would pass the implement gate — well-defined + well-scoped, doperpowers:implementing-tickets; the next worker re-runs that gate, so this claim is a recommendation, never inherited trust); dispatchable once blockers are done | — |
 | `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
@@ -75,7 +75,7 @@ recommended answer. Knowledge work that anyone could in principle do
 (substantial research, spec-deepening) → `needs-info`; the note says what
 is missing. Not one answer but ongoing steering of the work's core →
 `interactive-preferred`; any ENUMERABLE set of open decisions, however
-many, is `needs-human` — not steering. Waiting on other tickets is NOT a
+many and whatever the ticket's size, is `needs-human` — not steering. Waiting on other tickets is NOT a
 park: dependencies are edges — cut `blocked-by` and return the ticket to
 `ready-for-agent` (the note names any banked branch); the unblock sweep
 re-surfaces it the moment its blockers land, which no park state does.
