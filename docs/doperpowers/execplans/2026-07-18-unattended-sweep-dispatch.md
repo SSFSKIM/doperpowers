@@ -42,7 +42,7 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 08:30Z) Worktree `worktree-unattended-sweep` created from origin/main (fb1c3be, v7.21.1).
 - [x] (2026-07-18 08:40Z) ExecPlan authored and committed.
 - [x] (2026-07-18 09:10Z) M1: `implement-dispatch.sh` (triggered + `--sweep` + cap + dedupe + strict render) + hermetic suite green (34 asserts; RED first — suite failed before the script existed), shellcheck clean.
-- [ ] M2: `board-sweep.sh` (recover / cancel / dispatch / review / land / relay / report passes) + hermetic suite green (RED first).
+- [x] (2026-07-18 09:45Z) M2: `board-sweep.sh` (recover / cancel / dispatch / review / land / relay / report passes, mkdir lock — macOS has no flock(1)) + hermetic suite green (26 asserts; RED verified by absence check, exit 127), shellcheck clean.
 - [ ] M3: prose routing (dispatch ritual, TECH-DEBT), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; all suites + shellcheck + cross-doc lint green.
 - [ ] M4: live shakedown on ida-solution (arm from this worktree; observe acceptance behaviors; record evidence in Artifacts).
 - [ ] M5: codex whole-branch review → fix findings → open PR to main (NOT merged — human gate per instruction) → retrospective.
