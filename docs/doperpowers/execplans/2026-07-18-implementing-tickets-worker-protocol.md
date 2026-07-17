@@ -18,7 +18,7 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 - [x] (2026-07-18 06:40Z) Milestone 1: swap complete (RED 26 → GREEN; protocol clauses carried verbatim under new `##` sections; placeholder set pinned to the 7 surviving tokens; old protocol file `git rm`'d; operation-manual authored); commit `e8cc147`.
 - [x] (2026-07-18 06:50Z) Milestone 2: `worker-bootstrap.md` written (12-token set pinned; unconditional-open + never-resolve-from-workspace + 3 binding sections); dispatch ritual step 2 renders the bootstrap with ROLE/PROTOCOL_FILE lane selection; "Worker protocols" section states both loops' skill-file+bootstrap shape; commit `b826e4d`.
 - [x] (2026-07-18 06:55Z) Milestone 3: review-dispatch `IMPLEMENT_PROTOCOL_FILE` → implementing-tickets/SKILL.md (test-first); reference sweep clean (only the test's own negative assertions mention the old filename); commit `78905e2`.
-- [ ] Milestone 4: live shakedown — bootstrap-dispatched gateway worker end-to-end on a scratch board; evidence pasted here.
+- [x] (2026-07-18 07:30Z) Milestone 4: live shakedown complete on SSFSKIM/doperpowers-shakedown2 — the rendered bootstrap was 4.1k chars (vs the old ~10.6k verbatim protocol); the gateway worker opened the dispatcher-owned protocol (its PR records the exact SKILL.md path it opened), gate-PASSED as its first board write (`[gate] pass — codex/DIRECT` — the pass branch, complementing work item 1's park branch), built with tests, and closed with a full closing artifact (`Closes #1`, Validation Evidence incl. the env probe `http://localhost:8317`, a genuine Confusions entry about bash 3.2 `set -e` behavior, `FOLLOW-UPS: none`). Evidence in Artifacts and Notes.
 - [ ] Milestone 5: full verification set; exit review (codex, disposable clone) + independent fresh-context reviewer; push; PR; retrospective.
 
 ## Surprises & Discoveries
@@ -113,7 +113,24 @@ All edits are tracked-file changes on an isolated branch (`git revert`-able); th
 
 ## Artifacts and Notes
 
-Shakedown transcripts and exit-review verdicts: appended during execution. The old protocol text needs no snapshot here — it is preserved verbatim inside the new SKILL.md and in git history at `origin/main`.
+The old protocol text needs no snapshot here — it is preserved verbatim inside the new SKILL.md and in git history at `origin/main`.
+
+Shakedown evidence (Milestone 4, SSFSKIM/doperpowers-shakedown2 — repo left for manual deletion, gh token lacks `delete_repo`):
+
+    # bootstrap render: 4103 chars, no placeholders left  (old verbatim prompt: 10643)
+    daemon spawned (no-wait): 1-hello-version-b  [5fe69e6f / ...]  status=working
+    meta: {'model': 'fable', 'settings': '~/.claude/clodex-settings.json', 'effort': 'xhigh'}
+    # first board write = gate verdict, PASS branch:
+    "[gate] pass — codex/DIRECT: exact CLI behavior and test artifact are
+     fully specified; the change is one atomic shell-script unit."
+    # PR #2 Validation Evidence (verbatim lines):
+    echo "${ANTHROPIC_BASE_URL:-unset}"  →  http://localhost:8317
+    "Worker protocol opened at the start of the turn:
+     .../skills/implementing-tickets/SKILL.md"
+    # closing artifact: Closes #1; tests red-proofed; Confusions (bash 3.2
+    # set -e nuance); FOLLOW-UPS: none; ticket → in-review.
+
+Exit-review verdicts: appended at Milestone 5.
 
 ## Interfaces and Dependencies
 
