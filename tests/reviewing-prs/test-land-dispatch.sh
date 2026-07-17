@@ -286,15 +286,17 @@ assert_contains "$(cat "$PROMPT_DIR/land-pr-9.prompt")" "manual 'land' label" "p
 
 # ---- dedupe -------------------------------------------------------------------------
 echo "dedupe:"
-seed_lander() {  # $1=status
-    S="$1" python3 - <<'PY'
+seed_lander() {  # $1=status [$2=turn_state — drives the daemon-finalize stub]
+    S="$1" TS="${2:-}" python3 - <<'PY'
 import json, os
-json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
-           "current": "feed0000-0000-4000-8000-000000000000",
-           "name": "land-pr-5", "status": os.environ["S"],
-           "updated": "2026-07-12T00:00:00Z"},
-          open(os.path.join(os.environ["DAEMON_HOME"],
-                            "feed0000-0000-4000-8000-000000000000.json"), "w"))
+m = {"uuid": "feed0000-0000-4000-8000-000000000000",
+     "current": "feed0000-0000-4000-8000-000000000000",
+     "name": "land-pr-5", "status": os.environ["S"],
+     "updated": "2026-07-12T00:00:00Z"}
+if os.environ["TS"]:
+    m["turn_state"] = os.environ["TS"]
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"],
+                               "feed0000-0000-4000-8000-000000000000.json"), "w"))
 PY
 }
 reset_state; seed_lander working
@@ -307,6 +309,17 @@ reset_state; seed_lander working    # agents.json [] → session gone
 "$DISPATCH" 5 > /dev/null
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "dead land worker retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "dead land worker respawned"
+
+# A gateway (claude-species) lander has NO self-finalizer: after its turn ends
+# the registry meta lingers status=working and the session can stay visible in
+# `claude agents`. Dedupe must finalize before believing the meta — otherwise a
+# finished dry-run lander blocks every later live dispatch forever.
+reset_state; seed_lander working idle    # visible in agents, but the turn is over
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "finalize:feed0000" "lingering finished lander is finalized before dedupe"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished lander retired, not skipped"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "lingering finished lander re-dispatched"
 
 reset_state
 python3 - <<'PY'

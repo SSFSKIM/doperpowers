@@ -185,7 +185,18 @@ if [ -n "$meta" ]; then
   case "$status" in
     working|blocked)
       if _is_live "$current" "$w_engine" "$w_pid" "$w_host" "$w_boot"; then
-        echo "#$pr: skip active land worker"; exit 0
+        if [ "$w_engine" = "codex" ]; then
+          echo "#$pr: skip active land worker"; exit 0
+        fi
+        # A claude-species lander has no self-finalizer: a finished turn
+        # lingers status=working while its session stays visible in
+        # `claude agents`. Finalize first (as review-dispatch does) — only
+        # a genuinely live turn is an active worker; anything else
+        # (idle/error/absent/noop) is a finished lander to retire.
+        fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null || true)"
+        if [ "$fin" = "live" ]; then
+          echo "#$pr: skip active land worker"; exit 0
+        fi
       fi
       _retire "$uuid" ;;
     *) _retire "$uuid" ;;   # finished/retired — an explicit dispatch is a fresh signal
