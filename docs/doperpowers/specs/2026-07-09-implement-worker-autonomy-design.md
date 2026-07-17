@@ -646,3 +646,9 @@ of the plan.
   routes explicitly to the vendored doperpowers:execplan doctrine (one
   self-contained plan, executed in-thread by the worker itself) and both
   blocks forbid sub-agent/collab fan-out by name.
+- 2026-07-17: the two per-engine execution blocks described above collapsed
+  into one `references/engine-blocks/execution.md` — implement/spike workers
+  migrated to the one-harness model (Claude-harness daemon; engine label =
+  model route via the clodex gateway), so the codex-CLI block and its
+  vendored-doctrine routing no longer exist. See
+  `docs/doperpowers/execplans/2026-07-17-implement-worker-clodex-migration.md`.

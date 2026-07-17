@@ -731,3 +731,16 @@ mechanical rather than lucky.
    **superseded** by `specs/2026-07-12-native-review-recovery-design.md`:
    one native `codex exec review` engine for both species, owned by a
    substrate script.
+- 2026-07-17: The codex-CLI implement/spike worker species this spec created
+  is **retired from dispatch** (ExecPlan:
+  `docs/doperpowers/execplans/2026-07-17-implement-worker-clodex-migration.md`).
+  The dispatch ritual now spawns every implement/spike worker as a
+  Claude-harness daemon via `daemon-spawn.sh`; the engine label survives as
+  a model ROUTE (`codex` = clodex gateway settings/GPT models,
+  `claude` = plain Claude models), mirroring the review loop's 2026-07-15
+  migration. The per-engine execution blocks collapsed into one
+  `references/engine-blocks/execution.md` (the `.agents/skills`
+  vendored-doctrine pointer was codex-CLI-only and is gone with it).
+  `codex-spawn.sh`/`codex-resume.sh` and the codex read/kill paths remain
+  as legacy machinery for existing bound sessions; full deletion is a
+  separate follow-up.
