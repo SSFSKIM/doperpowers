@@ -1,6 +1,6 @@
 ---
 name: orchestrating-daemons
-description: Use when spawning, resuming, tracking, or debugging durable background `claude` sessions (daemons) — the process substrate the board pipeline's dispatchers call, or the rare ad-hoc task that must survive this session ending and has no board to hold it. NOT the default for fanning out work: ticket-shaped work goes to the board (doperpowers:implementing-tickets), in-session fan-out is native subagents (doperpowers:dispatching-parallel-agents).
+description: Use when spawning, resuming, tracking, or debugging durable background `claude` sessions (daemons) — the process substrate the board pipeline's dispatchers call, or the rare ad-hoc task that must survive this session ending and has no board to hold it. NOT the default for fanning out work: ticket-shaped work goes to the board (doperpowers:implementing-tickets), in-session fan-out is native subagents.
 ---
 
 # Daemons — the durable-session substrate
@@ -15,7 +15,7 @@ A **daemon** is a durable background `claude` session, spawned with `claude --bg
 |---|---|
 | ticket-shaped, or must survive your session | the board — register it (doperpowers:issue-tracker); implement workers (doperpowers:implementing-tickets) and review workers (doperpowers:reviewing-prs) are daemons the *dispatch rituals* spawn through this substrate |
 | needing the human's live steering | the board, parked `interactive-preferred` |
-| ephemeral fan-out inside this session | native subagents (doperpowers:dispatching-parallel-agents) — they share your session's lifetime, and that's fine because the work does too |
+| ephemeral fan-out inside this session | native subagents — they share your session's lifetime, and that's fine because the work does too |
 | must survive your session AND there is no board to hold it (a repo without issue-tracker, an overnight run in a bare directory) | a raw ad-hoc daemon — the escape hatch this skill's hand-driven loop below exists for |
 
 That last row is rare by design. "Must survive my session" is practically the definition of "worth a ticket": durable work wants durable state, and the board is the durable state layer. Reach for a raw daemon only when there is genuinely no board.
@@ -100,7 +100,7 @@ features.hooks=false` is always on: a checked-out PR could ship
 
 ## Common mistakes
 
-- **Defaulting to a daemon to fan out work** — ticket-shaped work belongs on the board (registered, gated, parked there); in-session parallelism is native subagents (doperpowers:dispatching-parallel-agents). A raw daemon is for work that must survive this session and has no board to hold it.
+- **Defaulting to a daemon to fan out work** — ticket-shaped work belongs on the board (registered, gated, parked there); in-session parallelism is native subagents. A raw daemon is for work that must survive this session and has no board to hold it.
 - **Hand-rolling `claude --bg --resume` to continue a daemon** — it forks a new agent but leaves the registry behind: the new short/uuid aren't chained into `current`, so `daemon-reply.sh` / `daemon-list.sh` / `daemon-retire.sh` lose track of the live turn. Always go through `daemon-resume.sh`, which forks *and* updates the chain.
 - **Resuming from the wrong directory** — `claude --resume` is scoped to the daemon's cwd/project. The scripts record and restore cwd; hand-rolled resumes fail with "No conversation found".
 - **Running a daemon turn in the foreground** — it blocks your main loop for the whole turn. Always launch spawn/resume under a Monitor or in a background shell.

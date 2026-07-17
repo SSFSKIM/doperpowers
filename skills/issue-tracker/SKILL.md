@@ -191,7 +191,7 @@ itself does not change.
 
 **doperpowers:orchestrating-daemons is the spawn substrate this ritual
 calls, not a parallel doctrine.** For your own work: in-session fan-out is
-native subagents (doperpowers:dispatching-parallel-agents); a raw ad-hoc
+native subagents; a raw ad-hoc
 daemon is reserved for work that must survive your session with no board to
 hold it. Board pipeline workers' doctrine is implementing-tickets /
 reviewing-prs, and nobody sits between them and the board.
