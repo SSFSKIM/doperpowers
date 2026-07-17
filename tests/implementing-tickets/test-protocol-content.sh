@@ -8,8 +8,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PROTO="$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md"
+# The skill IS the protocol: SKILL.md carries the Implement Worker Protocol
+# (mirroring reviewing-prs); the operator doctrine lives in
+# references/operation-manual.md; spawn goes through references/worker-bootstrap.md.
+PROTO="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
 SKILL="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
+MANUAL="$REPO_ROOT/skills/implementing-tickets/references/operation-manual.md"
+BOOTSTRAP="$REPO_ROOT/skills/implementing-tickets/references/worker-bootstrap.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -59,16 +64,54 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+# The ticket brief and repo-facts tails moved to the bootstrap's binding
+# sections; the protocol keeps only the tokens its own clauses use.
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
-if [ "$got" = "$want" ]; then pass "placeholder set is exactly: $want"; else
-    fail "placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
+    fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+
+echo "skill-as-protocol shape:"
+assert_contains "$proto" "name: implementing-tickets" "frontmatter survives on the protocol skill file"
+assert_contains "$proto" "references/operation-manual.md" "operator-routing line points at the operation manual"
+if [ -e "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" ]; then
+    fail "the old separate protocol file is retired (the skill IS the protocol)"
+else
+    pass "the old separate protocol file is retired (the skill IS the protocol)"
+fi
+
+echo "worker bootstrap:"
+[ -f "$BOOTSTRAP" ] || { echo "missing $BOOTSTRAP"; exit 1; }
+bootstrap="$(cat "$BOOTSTRAP")"
+assert_contains "$bootstrap" 'unconditionally open' "bootstrap: unconditional-open instruction"
+assert_contains "$bootstrap" "{{PROTOCOL_FILE}}" "bootstrap: dispatcher-owned protocol path token"
+assert_contains "$bootstrap" "Do not resolve this protocol from the workspace" "bootstrap: never-resolve-from-workspace guard"
+assert_contains "$bootstrap" "Never proceed from this bootstrap alone" "bootstrap: no protocol-free conduct"
+assert_contains "$bootstrap" "{{ROLE}}" "bootstrap: one parameterized bootstrap for both lanes"
+assert_contains "$bootstrap" "ISSUE_BODY binding" "bootstrap: ticket brief rides as a binding section"
+assert_contains "$bootstrap" "REPO_FACTS binding" "bootstrap: repo-facts manifest rides as a binding section"
+assert_contains "$bootstrap" "EXECUTION_BLOCK binding" "bootstrap: execution block rides as a binding section"
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO_FACTS}} {{REPO}} {{ROLE}}"
+got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
+    fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
+
+echo "operation manual:"
+[ -f "$MANUAL" ] || { echo "missing $MANUAL"; exit 1; }
+manual="$(cat "$MANUAL")"
+assert_contains "$manual" "SKILL.md" "manual: names the skill file as the protocol"
+assert_contains "$manual" "worker-bootstrap.md" "manual: names the spawn bootstrap"
+assert_contains "$manual" "repo-facts" "manual: repo-facts doctrine present"
+assert_contains "$manual" "board-answer.sh" "manual: names the answer relay (park = pause)"
+assert_contains "$manual" "doperpowers:issue-tracker" "manual: points at the board schema"
+assert_not_contains "$manual" "status:blocked" "manual: no retired vocabulary"
 
 echo "spike protocol:"
 SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
-want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+# The brief/facts tails ride the bootstrap's binding sections for both lanes.
+want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
@@ -119,12 +162,9 @@ echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
 skill="$(cat "$SKILL")"
 assert_contains "$skill" "name: implementing-tickets" "frontmatter name"
-assert_contains "$skill" "references/implement-worker-protocol.md" "skill points at the protocol"
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
-assert_contains "$skill" "board-answer.sh" "skill names the answer relay (park = pause)"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
 assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
-assert_contains "$skill" "model route" "skill: engine described as a model route, not a worker species"
 
 echo "dispatch ritual (issue-tracker):"
 TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
@@ -133,8 +173,10 @@ tracker="$(cat "$TRACKER")"
 assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
 assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: gateway route rides daemon-spawn via settings env"
 assert_contains "$tracker" "daemon-spawn.sh" "ritual: one spawn command for both routes"
-assert_contains "$tracker" "engine-blocks/execution.md" "ritual: EXECUTION_BLOCK binds to the single block"
 assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
+assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
+assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
+assert_not_contains "$tracker" "implement-worker-protocol.md" "ritual: no reference to the retired protocol file"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
