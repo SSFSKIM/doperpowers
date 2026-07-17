@@ -66,6 +66,7 @@ cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "spawn:$*" >> "$SPAWN_LOG"
+echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
 [ "${1:-}" = "--no-wait" ] && shift
 name="$1"; task="$2"; cwd="${3:-}"
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
@@ -449,13 +450,25 @@ reset_state
 assert_equals "$(cat "$EDIT_LOG")" "" "dry-run leaves the land label in place"
 
 # ---- engine resolution -------------------------------------------------------------------
+# ONE worker species: both routes spawn via daemon-spawn.sh; the codex route
+# rides the clodex gateway settings (mirrors review-dispatch.sh).
 echo "engine resolution:"
 reset_state
 WORKER_ENGINE=codex "$DISPATCH" 5 > /dev/null
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:--no-wait land-pr-5" "WORKER_ENGINE=codex spawns via codex"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "WORKER_ENGINE=codex spawns the one worker species via daemon-spawn"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "codex route rides the gateway DAEMON_CLAUDE_SETTINGS/EFFORT"
+if grep -q "codex-spawn:" "$SPAWN_LOG"; then
+    fail "no codex-CLI worker is ever spawned (species retired)"
+else
+    pass "no codex-CLI worker is ever spawned (species retired)"
+fi
 reset_state
 "$DISPATCH" 12 > /dev/null     # suite default WORKER_ENGINE=claude; label must win
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:--no-wait land-pr-12" "engine:codex label overrides the env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-12" "engine:codex label overrides the env (gateway route)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "label-selected codex route also rides the gateway settings"
+reset_state
+"$DISPATCH" 5 > /dev/null      # suite default WORKER_ENGINE=claude
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
 
 # ---- merge-method resolution ----------------------------------------------------------------
 echo "merge method:"

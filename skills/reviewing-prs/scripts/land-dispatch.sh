@@ -23,8 +23,16 @@
 # Env:
 #   LOCAL_REPO      canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO      owner/name (default: resolved from LOCAL_REPO via gh)
-#   WORKER_ENGINE   claude|codex (default codex); an engine:* PR label wins
-#   LAND_MODEL      optional claude model override for the land daemon
+#   WORKER_ENGINE   which MODEL ROUTE the land daemon uses: codex|claude
+#                   (default codex). Every worker is a Claude-harness daemon;
+#                   "codex" rides the clodex gateway settings (GPT models via
+#                   the local proxy), "claude" = plain Claude models. An
+#                   engine:* PR label wins over the env.
+#   CLODEX_SETTINGS gateway settings file for the codex route
+#                   (default ~/.claude/clodex-settings.json)
+#   CLODEX_EFFORT   reasoning effort for the codex route (default xhigh)
+#   LAND_MODEL      optional model override for the land daemon (gateway
+#                   route defaults to fable, claude route to inherit)
 #   LAND_ENABLED    staged rollout (default false = DRY-RUN mode: the worker
 #                   analyzes and posts what it WOULD do; merges nothing)
 #   BOARD_SCRIPTS   issue-tracker scripts dir override (tests)
@@ -286,8 +294,15 @@ PY
 )" || { rm -rf "$control_dir"; die "#$pr: prompt render failed"; }
 [ -n "$prompt" ] || { rm -rf "$control_dir"; die "#$pr: empty prompt — not dispatching"; }
 
+# ONE worker species, two model routes (mirrors review-dispatch.sh): the
+# default "codex" engine is a GATEWAY worker — the same Claude-harness daemon
+# pointed at the local gateway (GPT models) via --settings. engine:claude
+# opts a PR into plain Claude models. No path spawns a codex-CLI worker.
 if [ "$engine" = "codex" ]; then
-  spawn_out="$("$DAEMON_SCRIPTS/codex-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "")" \
+  spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
+    DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
+    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "" \
+    "${LAND_MODEL:-fable}")" \
     || { rm -rf "$control_dir"; die "#$pr: land worker spawn failed"; }
 else
   spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "land-pr-$pr" "$prompt" "$wt" "" "${LAND_MODEL:-}")" \
