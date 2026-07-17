@@ -74,7 +74,8 @@ Graduation: when the findings clearly warrant production work you can spec
 self-contained NOW, register it ({{BOARD_SCRIPTS}}/board-register.sh
 "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}
 --body-file <spec>), gate-triaged honestly (ready-for-agent only if it
-would pass the IMPLEMENT gate; an open taste fork → born needs-human).
+would pass the Ticket Gate — {{BOARD_SCRIPTS}}/../references/ticket-gate.md;
+an open taste fork → born needs-human).
 Per the doperpowers:issue-tracker ticket contract,
 author its body at register time — the pre-spec sections filled from your
 findings; a skeleton "to fill in later" is not a graduation. Anything

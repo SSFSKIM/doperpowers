@@ -15,7 +15,8 @@ launchd-cron'd) claims pending rows, drives a read-only Codex-SDK worker
 through the Triage Worker Protocol (`references/triage-worker-protocol.md`)
 in a disposable detached worktree, and registers the ticket the worker
 authored — born `ready-for-agent` when the diagnosis is grounded and the
-ticket honestly passes the implement-side gate definitions, else parked
+ticket honestly passes the Ticket Gate (the board schema's
+`references/ticket-gate.md` in doperpowers:issue-tracker), else parked
 (`needs-human`/`needs-info`) with an explicit note saying what is unclear.
 
 **The worker is a translator, not a fixer.** It writes no code and opens no
@@ -147,7 +148,7 @@ network. It cannot register a ticket or write to the `feedback` table — it
 can only emit a diagnosis and a structured verdict (the fenced JSON block)
 that the dispatcher parses. But *within* that verdict the worker has full
 editorial voice: it authors the ticket's title and body to the board's
-standard (the implement-side well-defined + well-scoped gate is the
+standard (the board's well-defined + well-scoped Ticket Gate is the
 authoring bar) and recommends the birth state.
 
 The dispatcher (`dispatch.ts`, running with real credentials) is the only

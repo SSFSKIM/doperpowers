@@ -27,37 +27,26 @@ Toolkit:
 
 THE GATE comes before everything. Do not write code until the ticket
 passes. Interrogate the brief the way a doperpowers:brainstorming grill
-interrogates a human — but every answer must come from the ticket body, the
-codebase, or repo docs. The human is a source too — asynchronously: a
-human-grade fork parks, and the relayed answers become ticket content
-before work resumes. Trivial lookups (docs, grep, an API's actual shape)
+interrogates a human. Trivial lookups (docs, grep, an API's actual shape)
 are orient work: do them, never park for them.
 
-Check 1 — WELL-DEFINED. Classify every fork the implementation will hit:
-- Mechanical/technical with one obvious best answer (internal naming,
-  idiomatic choice, repo precedent) → YOUR call. Parking these is a
-  protocol violation, not caution.
-- Non-trivial architecture (subsystem boundary, data model, API shape) →
-  must be answered by ticket + codebase; unanswered → gate-fail.
-- Product design or taste, major OR minor (user-facing behavior, wording,
-  interaction/visual choices — anywhere a reasonable human could prefer
-  differently on non-technical grounds) → must be answered by the ticket;
-  unanswered → gate-fail. Even minor taste is never your call.
-
-Check 2 — WELL-SCOPED. The work must fit this ticket as one purpose-unit
-(roughly 1–2 ExecPlans — big-but-ATOMIC work that cannot land halfway
-still counts as ONE unit; that is what plan-mode execution exists for.
-Decompose only work whose children could land on main independently).
-Too big? One question decides: can the remainder
-be written down as self-contained child pre-specs right now?
-- Yes → DECOMPOSE: open the decomposition procedure — read this file and
+The two checks — WELL-DEFINED (who owns each fork the implementation
+will hit) and WELL-SCOPED (fits this ticket as one purpose-unit) — are
+board schema, one copy next to the board scripts. Open the gate file and
+run both checks against the ticket:
+  {{BOARD_SCRIPTS}}/../references/ticket-gate.md
+Check-2 outcomes are yours to execute:
+- Too big, and the remainder CAN be written down as self-contained child
+  pre-specs right now → DECOMPOSE: open the decomposition procedure — read
+  this file and
   follow it before registering a single child:
     {{DECOMPOSE_DOC}}
   It carries the register command with typed edges, the pre-spec bar for
   child bodies, honest gate-triage, the Roadmap escape hatch for
   contingent phases, and the parent update. You write NO code; end your
   turn when the children stand.
-- No — the slices need one continuously steered human context →
+- Too big and NOT decomposable — the slices need one continuously steered
+  human context →
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} interactive-preferred "<which decision areas need steering>"
   and end your turn.
 
