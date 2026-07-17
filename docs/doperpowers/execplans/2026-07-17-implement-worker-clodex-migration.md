@@ -14,11 +14,11 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 
 - [x] (2026-07-17 13:55Z) Brainstorming grill completed in the interactive session; roadmap decision (migration first, skill-as-protocol restructure as a separate later ExecPlan), codex-machinery decision (retire the dispatch path only, keep legacy resume/read paths, no file deletion in this change), and spawn-mechanism decision for the later restructure recorded.
 - [x] (2026-07-17 14:05Z) Isolated worktree created at `.claude/worktrees/implement-worker-clodex-migration` on branch `worktree-implement-worker-clodex-migration`, branched from `origin/main` (local main == origin/main at `36bb600`).
-- [ ] Milestone 0: baseline suites green before any edit (implementing-tickets, orchestrating-daemons daemon+codex suites, issue-tracker board suite, codex-plugin sync hermetic suite).
-- [ ] Milestone 1: engine blocks collapsed to one `execution.md` (RED→GREEN in test-protocol-content.sh).
-- [ ] Milestone 2: dispatch ritual rewritten (issue-tracker SKILL.md steps 2–3) + implementing-tickets SKILL.md pieces row and spike web-reach note updated, with RED→GREEN assertions.
-- [ ] Milestone 3: orchestrating-daemons SKILL.md re-framed (one-harness dispatch; codex-spawn.sh marked legacy).
-- [ ] Milestone 4: dated Revision Notes appended to `2026-07-10-codex-workers-design.md` and `2026-07-09-implement-worker-autonomy-design.md`.
+- [x] (2026-07-17 14:20Z) Milestone 0: baseline suites green before any edit — implementing-tickets protocol suite, orchestrating-daemons daemon+codex suites, issue-tracker board suite, codex-plugin sync hermetic suite, all "all tests passed"/PASS.
+- [x] (2026-07-17 14:35Z) Milestone 1: engine blocks collapsed to one `execution.md` (`git mv` of execution-claude.md; execution-codex.md removed). RED shown first (suite hard-failed on missing execution.md), then 11 single-block assertions GREEN; commit `fadf79f`.
+- [x] (2026-07-17 14:45Z) Milestone 2: 6 new assertions RED first, then dispatch ritual steps 2–3 rewritten (route semantics, one `daemon-spawn.sh` command, gateway env + model `fable`, codex-spawn.sh dereferenced), implementing-tickets pieces row + spike web-reach note updated; suite GREEN; commit `35592af`.
+- [x] (2026-07-17 14:50Z) Milestone 3: orchestrating-daemons SKILL.md re-framed (one-harness dispatch, codex-CLI = legacy species, codex-spawn.sh/codex-resume.sh rows marked LEGACY); daemon+codex suites still green unchanged; commit `d58cb9b`.
+- [x] (2026-07-17 14:55Z) Milestone 4: dated Revision Notes appended to `2026-07-10-codex-workers-design.md` and `2026-07-09-implement-worker-autonomy-design.md`; commit `dcc1c8c`.
 - [ ] Milestone 5: live shakedown — gateway implement worker end-to-end on a synthetic ticket in a scratch repo; evidence pasted into Artifacts and Notes.
 - [ ] Milestone 6: full verification set green; exit review from a disposable clone; branch pushed; PR opened; retrospective written.
 

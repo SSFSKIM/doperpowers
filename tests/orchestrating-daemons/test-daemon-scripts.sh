@@ -411,6 +411,21 @@ sed -i '' 's/^status=busy$/status=idle/' "$STUB_STATE/agents/$FIN5_SHORT"
 assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "idle" "state=working with status=idle is a FINISHED lingering turn, not live"
 assert_contains "$(cat "$DAEMON_HOME/$FIN5_UUID.reply.txt")" "ANSWER:FIN-TASK-5" "lingering finished turn's reply is recorded"
 
+# Second lying shape (observed live 2026-07-17 on a cleanly-parked gateway
+# implement worker): the ended session lingers with state=blocked while
+# status=idle. `status` stays the turn signal — an ended blocked-shape turn
+# (clean park with a stuck flag, or a turn that ended ON a pending question)
+# must finalize resumable, with the reply recorded through the blocked
+# renderer so a pending question, when present, still surfaces.
+FIN6_OUT="$(STUB_BG_STATE=blocked STUB_BG_STATUS=busy "$SCRIPTS_DIR/daemon-spawn.sh" --no-wait "finblk" "FIN-TASK-6" "$WORK")"
+FIN6_UUID="$(printf '%s' "$FIN6_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+FIN6_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$FIN6_UUID.json")"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN6_UUID")" "live" "state=blocked with status=busy is a live turn"
+sed -i '' 's/^status=busy$/status=idle/' "$STUB_STATE/agents/$FIN6_SHORT"
+assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN6_UUID")" "idle" "state=blocked with status=idle is an ENDED turn — finalized resumable"
+assert_contains "$(cat "$DAEMON_HOME/$FIN6_UUID.json")" '"status": "idle"' "ended blocked-shape turn's meta finalizes idle"
+assert_contains "$(cat "$DAEMON_HOME/$FIN6_UUID.reply.txt")" "ANSWER:FIN-TASK-6" "ended blocked-shape turn's reply is recorded"
+
 # The blocking-mode watcher must see the same truth: a lingering finished
 # session (state=working, status=idle) terminates _poll_until_done as done
 # instead of polling to timeout.

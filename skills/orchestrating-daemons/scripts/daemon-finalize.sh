@@ -27,9 +27,14 @@ case "$status" in working|blocked) ;; *) echo "noop"; exit 0 ;; esac
 
 cur="$(_meta_get "$uuid" current)"; [ -n "$cur" ] || cur="$uuid"
 # `state` alone lies for a finished session whose harness process lingers —
-# it stays "working" indefinitely. `status` is the turn signal (busy while a
-# turn runs, idle after); normalize the lingering shape to done before the
-# case table. Observed live 2026-07-15 on a finished review worker.
+# it stays "working" (observed live 2026-07-15 on a finished review worker)
+# or "blocked" (observed live 2026-07-17 on a cleanly-parked gateway implement
+# worker) indefinitely. `status` is the turn signal (busy while a turn runs,
+# idle after); normalize both lingering shapes before the case table. An ended
+# blocked-shape turn finalizes through the blocked reply renderer: when the
+# transcript ends on a pending AskUserQuestion the question surfaces in the
+# reply, otherwise the recorded reply is the turn text with the harness-prompt
+# marker — either way the session is over and resumable.
 state="$(claude agents --json --all 2>/dev/null | CUR="$cur" python3 -c '
 import json, os, sys
 try:
@@ -39,8 +44,8 @@ except Exception:
 for r in rows:
     if r.get("sessionId") == os.environ["CUR"]:
         st = r.get("state") or ""
-        if st == "working" and r.get("status") == "idle":
-            st = "done"
+        if r.get("status") == "idle" and st in ("working", "blocked"):
+            st = "done" if st == "working" else "done-blocked"
         print(st)
         break
 ')"
@@ -50,6 +55,10 @@ case "$state" in
   working|blocked) echo "live" ;;
   done)
     _record_reply "$cur" "$uuid" "done"
+    _meta_set "$uuid" status "idle" updated "$(_now)"
+    echo "idle" ;;
+  done-blocked)
+    _record_reply "$cur" "$uuid" "blocked"
     _meta_set "$uuid" status "idle" updated "$(_now)"
     echo "idle" ;;
   error|stopped)
