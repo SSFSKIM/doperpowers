@@ -19,7 +19,7 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 - [x] (2026-07-18 06:50Z) Milestone 2: `worker-bootstrap.md` written (12-token set pinned; unconditional-open + never-resolve-from-workspace + 3 binding sections); dispatch ritual step 2 renders the bootstrap with ROLE/PROTOCOL_FILE lane selection; "Worker protocols" section states both loops' skill-file+bootstrap shape; commit `b826e4d`.
 - [x] (2026-07-18 06:55Z) Milestone 3: review-dispatch `IMPLEMENT_PROTOCOL_FILE` → implementing-tickets/SKILL.md (test-first); reference sweep clean (only the test's own negative assertions mention the old filename); commit `78905e2`.
 - [x] (2026-07-18 07:30Z) Milestone 4: live shakedown complete on SSFSKIM/doperpowers-shakedown2 — the rendered bootstrap was 4.1k chars (vs the old ~10.6k verbatim protocol); the gateway worker opened the dispatcher-owned protocol (its PR records the exact SKILL.md path it opened), gate-PASSED as its first board write (`[gate] pass — codex/DIRECT` — the pass branch, complementing work item 1's park branch), built with tests, and closed with a full closing artifact (`Closes #1`, Validation Evidence incl. the env probe `http://localhost:8317`, a genuine Confusions entry about bash 3.2 `set -e` behavior, `FOLLOW-UPS: none`). Evidence in Artifacts and Notes.
-- [ ] Milestone 5: full verification set; exit review (codex, disposable clone) + independent fresh-context reviewer; push; PR; retrospective.
+- [x] (2026-07-18 08:40Z) Milestone 5: full verification set green (7 suites + lint + diff-check); codex exit review unavailable (two fresh-clone runs died on upstream "model at capacity" — recorded in the Decision Log; the track's documented fallback applies); independent fresh-context reviewer over the full branch: Ready, one P3 (spike raw-token tail) — fixed (`0f5289e`), delta re-verified by the same reviewer, its one residual wording nit swept (`493e32d`); pushed; PR opened; retrospective below.
 
 ## Surprises & Discoveries
 
@@ -51,7 +51,13 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Achieved, against the original purpose: the implement loop's constitution now lives where the pipeline's philosophy says it must — in the skill itself. `skills/implementing-tickets/SKILL.md` IS the Implement Worker Protocol; a spawn prompt is a 4.1k-character bootstrap (down from a 10.6k verbatim render) that points the worker at the dispatcher-owned protocol file and binds the runtime values; operators land in `references/operation-manual.md`; the spike lane shares the same bootstrap with its own protocol file; and the review loop's compliance audit follows the contract to its new home. Both loops are now structurally symmetric: skill-file protocol, bootstrap spawn, operator manual.
+
+Proven live, not just hermetically: a bootstrap-dispatched gateway worker opened the exact SKILL.md path (self-recorded in its PR), gate-PASSED as its first board write — the pass branch, which work item 1's park-branch shakedown had left unobserved — built test-first, and closed with a complete closing artifact while staying on the gateway (env probe recorded). The move itself was verified clause-by-clause against git history by an independent reviewer: zero semantic drift beyond the two documented wording changes.
+
+What the reviews caught: the spike protocol's raw-token brief tail was coherent under the bootstrap's bind-tokens rule but visibly awkward (a worker reading a "brief" heading holding `{{ISSUE_BODY}}`) — trimmed, plus one leftover "bottom of this prompt" phrase the delta re-review spotted. The codex exit review was unavailable throughout (upstream capacity outage across two fresh-clone attempts); the track's documented fallback (fresh-context Claude reviewer) carried the exit gate, including a delta re-verification. Lesson: when a structural move claims "content carried verbatim", make the reviewer diff against git history mechanically (headings stripped) rather than trust the claim — that check is what made the Ready verdict meaningful.
+
+Remaining, deliberately out of scope: the plugin release carrying both roadmap work items to consumers (do it once, after this merges); the legacy codex machinery deletion follow-up (unchanged from work item 1); scratch repos `SSFSKIM/doperpowers-shakedown` and `doperpowers-shakedown2` await manual deletion (`gh auth refresh -h github.com -s delete_repo`).
 
 ## Context and Orientation
 
