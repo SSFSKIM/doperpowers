@@ -123,6 +123,18 @@ assert_contains "$skill" "references/implement-worker-protocol.md" "skill points
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
 assert_contains "$skill" "board-answer.sh" "skill names the answer relay (park = pause)"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
+assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
+assert_contains "$skill" "model route" "skill: engine described as a model route, not a worker species"
+
+echo "dispatch ritual (issue-tracker):"
+TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
+[ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
+tracker="$(cat "$TRACKER")"
+assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
+assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: gateway route rides daemon-spawn via settings env"
+assert_contains "$tracker" "daemon-spawn.sh" "ritual: one spawn command for both routes"
+assert_contains "$tracker" "engine-blocks/execution.md" "ritual: EXECUTION_BLOCK binds to the single block"
+assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
