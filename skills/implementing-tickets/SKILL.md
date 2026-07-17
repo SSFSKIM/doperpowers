@@ -23,7 +23,7 @@ audit trail, not requests. Full design + rationale:
 | `references/implement-worker-protocol.md` | the Implement Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every spawn prompt |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — rendered instead when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
-| `references/engine-blocks/` | per-engine EXECUTION text (claude: TDD/execplan skills; codex: the same discipline via the vendored `.agents/skills` doctrine) — both keep interactive-session skills (writing-plans, subagent-driven-development) out of daemon workers; composed into the protocol at render time (implement protocol only — spikes are exploration, not TDD) |
+| `references/engine-blocks/execution.md` | the EXECUTION text — one block for both model routes, since every worker is a Claude-harness session (the engine label picks the model route: `codex` = clodex gateway/GPT, `claude` = plain Claude); keeps interactive-session skills (writing-plans, subagent-driven-development) out of daemon workers; composed into the protocol at render time (implement protocol only — spikes are exploration, not TDD) |
 | The Ticket Gate | the pre-code pass/park verdict (below) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
@@ -141,8 +141,9 @@ What changes and what doesn't:
   registered `--spawned-by <spike>` with honest gate-triage against the
   IMPLEMENT gate; murkier outcomes stay a Recommendation line for the
   human.
-- Research-heavy spikes often want `engine:claude` (web reach); the label
-  mechanism is unchanged.
+- The engine label picks a model route only (web reach is harness-level —
+  every worker has it); choose per the work's model fit, mechanism
+  unchanged.
 - Category labels are plain words by design (`bug`/`enhancement` always
   were) — in a consumer repo that already used a descriptive `spike`
   label, existing tickets carrying it now read as spike-lane tickets:

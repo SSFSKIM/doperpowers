@@ -140,7 +140,10 @@ pick by repo visibility:
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
 2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
-   `$WORKER_ENGINE` → default `codex`. Render the worker protocol
+   `$WORKER_ENGINE` → default `codex`. Every worker is ONE species — a
+   Claude-harness daemon; the engine names only its model route (`codex` =
+   the clodex gateway settings, GPT models through the local proxy;
+   `claude` = plain Claude models). Render the worker protocol
    (`doperpowers:implementing-tickets`): category `spike` →
    `references/spike-worker-protocol.md`, else
    `references/implement-worker-protocol.md`. Substitute every
@@ -149,17 +152,21 @@ pick by repo visibility:
    issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
    engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
    (or a "(no repo-facts manifest)" note when absent), and — implement
-   protocol only — `EXECUTION_BLOCK` = the engine's
-   `references/engine-blocks/execution-<engine>.md` and `DECOMPOSE_DOC` =
-   the ABSOLUTE path of implementing-tickets'
+   protocol only — `EXECUTION_BLOCK` = implementing-tickets'
+   `references/engine-blocks/execution.md` (one block, both routes) and
+   `DECOMPOSE_DOC` = the ABSOLUTE path of implementing-tickets'
    `references/implement-decompose.md` (a runtime-opened procedure: the
    prompt carries only the pointer; the worker opens it when Check-2
    says decompose).
-3. codex: `codex-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
-   (model/effort default gpt-5.6-sol/high — override with
-   `$CODEX_MODEL` / `$CODEX_EFFORT` as args 5–6). claude:
-   `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`. Both
+3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
+   The codex route prefixes the gateway env and pins the gateway's model
+   alias as arg 5:
+   `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" daemon-spawn.sh … fable`
+   (daemon-spawn persists settings/effort into the registry meta;
+   daemon-resume restores them on every fork — without that a gateway
+   worker silently reverts to plain models on its first resume). The
+   claude route passes no gateway env; the model inherits unless pinned.
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) means
    the gate passed; a park state means it failed.

@@ -93,28 +93,27 @@ assert_contains "$decomp" "grants no authority beyond your prompt" "decompose do
 assert_not_contains "$decomp" "{{" "decompose doc: placeholder-free (opened at runtime, never rendered)"
 
 echo "engine blocks:"
-EXEC_CLAUDE="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md"
-EXEC_CODEX="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-codex.md"
-[ -f "$EXEC_CLAUDE" ] || { echo "missing $EXEC_CLAUDE"; exit 1; }
-[ -f "$EXEC_CODEX" ] || { echo "missing $EXEC_CODEX"; exit 1; }
-exec_claude="$(cat "$EXEC_CLAUDE")"
-exec_codex="$(cat "$EXEC_CODEX")"
-assert_contains "$exec_claude" "doperpowers:execplan" "claude block: execplan mode wired"
-assert_contains "$exec_codex" "EXECPLAN:" "codex block: execplan mode wired (not bare PLAN)"
-assert_contains "$exec_codex" "doperpowers:execplan" "codex block: routes to the execplan doctrine"
-assert_contains "$exec_codex" ".agents/skills" "codex block: vendored skill doctrine pointer"
-assert_not_contains "$exec_codex" "work ALONE" "codex block: no blanket work-alone constraint (subagents are the worker's call)"
-assert_not_contains "$exec_codex" "YOURSELF" "codex block: no solo-execution emphasis (delegation inside the thread is the worker's call)"
-assert_not_contains "$exec_claude" "work ALONE" "claude block: no blanket work-alone constraint (subagents are the worker's call)"
-assert_contains "$exec_codex" "writing-plans" "codex block: names writing-plans as interactive-only"
-assert_contains "$exec_claude" "writing-plans" "claude block: names writing-plans as interactive-only"
-assert_contains "$exec_codex" "subagent-driven-development" "codex block: names the forbidden interactive skills"
-assert_contains "$exec_claude" "subagent-driven-development" "claude block: names the forbidden interactive skills"
-assert_contains "$exec_claude" "never" "claude block: evidence mandate present"
-assert_contains "$exec_claude" "claim completion on reasoning alone" "claude block: no-evidence-no-done clause"
-assert_contains "$exec_codex" "claim completion on reasoning alone" "codex block: no-evidence-no-done clause"
-assert_contains "$exec_claude" "big-but-atomic" "claude block: atomic execplan trigger"
-assert_contains "$exec_codex" "big-but-atomic" "codex block: atomic plan trigger"
+# One harness, one block: both model routes (gateway "codex" / plain "claude")
+# are Claude-harness sessions, so a single execution block serves both.
+EXEC="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution.md"
+[ -f "$EXEC" ] || { echo "missing $EXEC"; exit 1; }
+exec_block="$(cat "$EXEC")"
+if [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md" ] \
+   || [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-codex.md" ]; then
+    fail "per-engine execution blocks are retired (one harness, one block)"
+else
+    pass "per-engine execution blocks are retired (one harness, one block)"
+fi
+assert_contains "$exec_block" "EXECPLAN:" "block: execplan mode wired (not bare PLAN)"
+assert_contains "$exec_block" "doperpowers:execplan" "block: routes to the execplan doctrine"
+assert_not_contains "$exec_block" ".agents/skills" "block: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
+assert_not_contains "$exec_block" "work ALONE" "block: no blanket work-alone constraint (subagents are the worker's call)"
+assert_not_contains "$exec_block" "YOURSELF" "block: no solo-execution emphasis (delegation inside the thread is the worker's call)"
+assert_contains "$exec_block" "writing-plans" "block: names writing-plans as interactive-only"
+assert_contains "$exec_block" "subagent-driven-development" "block: names the forbidden interactive skills"
+assert_contains "$exec_block" "never" "block: evidence mandate present"
+assert_contains "$exec_block" "claim completion on reasoning alone" "block: no-evidence-no-done clause"
+assert_contains "$exec_block" "big-but-atomic" "block: atomic execplan trigger"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
@@ -124,6 +123,18 @@ assert_contains "$skill" "references/implement-worker-protocol.md" "skill points
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
 assert_contains "$skill" "board-answer.sh" "skill names the answer relay (park = pause)"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
+assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
+assert_contains "$skill" "model route" "skill: engine described as a model route, not a worker species"
+
+echo "dispatch ritual (issue-tracker):"
+TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
+[ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
+tracker="$(cat "$TRACKER")"
+assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
+assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: gateway route rides daemon-spawn via settings env"
+assert_contains "$tracker" "daemon-spawn.sh" "ritual: one spawn command for both routes"
+assert_contains "$tracker" "engine-blocks/execution.md" "ritual: EXECUTION_BLOCK binds to the single block"
+assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

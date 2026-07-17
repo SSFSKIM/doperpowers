@@ -66,6 +66,7 @@ cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "spawn:$*" >> "$SPAWN_LOG"
+echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
 [ "${1:-}" = "--no-wait" ] && shift
 name="$1"; task="$2"; cwd="${3:-}"
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
@@ -285,27 +286,44 @@ assert_contains "$(cat "$PROMPT_DIR/land-pr-9.prompt")" "manual 'land' label" "p
 
 # ---- dedupe -------------------------------------------------------------------------
 echo "dedupe:"
-seed_lander() {  # $1=status
-    S="$1" python3 - <<'PY'
+seed_lander() {  # $1=status [$2=turn_state — drives the daemon-finalize stub]
+    S="$1" TS="${2:-}" python3 - <<'PY'
 import json, os
-json.dump({"uuid": "feed0000-0000-4000-8000-000000000000",
-           "current": "feed0000-0000-4000-8000-000000000000",
-           "name": "land-pr-5", "status": os.environ["S"],
-           "updated": "2026-07-12T00:00:00Z"},
-          open(os.path.join(os.environ["DAEMON_HOME"],
-                            "feed0000-0000-4000-8000-000000000000.json"), "w"))
+m = {"uuid": "feed0000-0000-4000-8000-000000000000",
+     "current": "feed0000-0000-4000-8000-000000000000",
+     "name": "land-pr-5", "status": os.environ["S"],
+     "updated": "2026-07-12T00:00:00Z"}
+if os.environ["TS"]:
+    m["turn_state"] = os.environ["TS"]
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"],
+                               "feed0000-0000-4000-8000-000000000000.json"), "w"))
 PY
 }
 reset_state; seed_lander working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$out" "active land worker" "live ACTIVE land worker → skip"
-assert_equals "$(cat "$SPAWN_LOG")" "" "live ACTIVE land worker spawns nothing"
+if grep -qE "^(spawn|codex-spawn|retire):" "$SPAWN_LOG" 2>/dev/null; then
+    fail "live ACTIVE land worker spawns and retires nothing"
+else
+    pass "live ACTIVE land worker spawns and retires nothing"
+fi
 
 reset_state; seed_lander working    # agents.json [] → session gone
 "$DISPATCH" 5 > /dev/null
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "dead land worker retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "dead land worker respawned"
+
+# A gateway (claude-species) lander has NO self-finalizer: after its turn ends
+# the registry meta lingers status=working and the session can stay visible in
+# `claude agents`. Dedupe must finalize before believing the meta — otherwise a
+# finished dry-run lander blocks every later live dispatch forever.
+reset_state; seed_lander working idle    # visible in agents, but the turn is over
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
+"$DISPATCH" 5 > /dev/null
+assert_contains "$(cat "$SPAWN_LOG")" "finalize:feed0000" "lingering finished lander is finalized before dedupe"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished lander retired, not skipped"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "lingering finished lander re-dispatched"
 
 reset_state
 python3 - <<'PY'
@@ -449,13 +467,25 @@ reset_state
 assert_equals "$(cat "$EDIT_LOG")" "" "dry-run leaves the land label in place"
 
 # ---- engine resolution -------------------------------------------------------------------
+# ONE worker species: both routes spawn via daemon-spawn.sh; the codex route
+# rides the clodex gateway settings (mirrors review-dispatch.sh).
 echo "engine resolution:"
 reset_state
 WORKER_ENGINE=codex "$DISPATCH" 5 > /dev/null
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:--no-wait land-pr-5" "WORKER_ENGINE=codex spawns via codex"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-5" "WORKER_ENGINE=codex spawns the one worker species via daemon-spawn"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "codex route rides the gateway DAEMON_CLAUDE_SETTINGS/EFFORT"
+if grep -q "codex-spawn:" "$SPAWN_LOG"; then
+    fail "no codex-CLI worker is ever spawned (species retired)"
+else
+    pass "no codex-CLI worker is ever spawned (species retired)"
+fi
 reset_state
 "$DISPATCH" 12 > /dev/null     # suite default WORKER_ENGINE=claude; label must win
-assert_contains "$(cat "$SPAWN_LOG")" "codex-spawn:--no-wait land-pr-12" "engine:codex label overrides the env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait land-pr-12" "engine:codex label overrides the env (gateway route)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "label-selected codex route also rides the gateway settings"
+reset_state
+"$DISPATCH" 5 > /dev/null      # suite default WORKER_ENGINE=claude
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
 
 # ---- merge-method resolution ----------------------------------------------------------------
 echo "merge method:"
