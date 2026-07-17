@@ -20,7 +20,7 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 - [x] (2026-07-17 14:50Z) Milestone 3: orchestrating-daemons SKILL.md re-framed (one-harness dispatch, codex-CLI = legacy species, codex-spawn.sh/codex-resume.sh rows marked LEGACY); daemon+codex suites still green unchanged; commit `d58cb9b`.
 - [x] (2026-07-17 14:55Z) Milestone 4: dated Revision Notes appended to `2026-07-10-codex-workers-design.md` and `2026-07-09-implement-worker-autonomy-design.md`; commit `dcc1c8c`.
 - [x] (2026-07-17 15:50Z) Milestone 5: live shakedown complete on SSFSKIM/doperpowers-shakedown — gateway worker spawned via the new ritual (meta: settings+effort+model=fable persisted), parked the taste fork as its FIRST board write, exposed and drove the daemon-finalize blocked-shape fix (commit `7f1814c`, test-first), resumed via `board-answer.sh` still on the gateway (in-session probe `http://localhost:8317` recorded verbatim in the PR), `[gate] re-pass — codex/direct`, PR #2 with `Closes #1` + TDD red→green Validation Evidence + `FOLLOW-UPS: none`. Evidence in Artifacts and Notes.
-- [ ] Milestone 6: full verification set green; exit review from a disposable clone; branch pushed; PR opened; retrospective written.
+- [x] (2026-07-18 05:30Z) Milestone 6: reference sweep exposed the land-dispatch codex spawn (migrated test-first, commits `9d21158`/`4d4223f`/`534df62`); full verification set green (7 suites + repo shell lint + `git diff --check`); codex exit review from a disposable clone returned ONE P1 (land dedupe deadlock) — verified, fixed test-first; second independent fresh-context reviewer over the final branch returned Ready with no findings and confirmed every byte-identical constraint; branch pushed; PR opened; retrospective below.
 
 ## Surprises & Discoveries
 
@@ -58,7 +58,11 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Achieved, against the original purpose: the board pipeline is now genuinely one worker species end-to-end. Implement, spike, AND land workers all spawn as Claude-harness daemons through `daemon-spawn.sh`; the engine label survives purely as a model route (gateway GPT vs plain Claude); the codex CLI has no remaining spawn path anywhere in the pipeline, while every legacy read/resume path stayed byte-identical for existing bound sessions. The migration was proven live, not just hermetically: a gateway implement worker ran the full protocol lifecycle on a scratch board — gate-park on a taste fork as its first board write, `board-answer.sh` resume that kept the gateway (in-session probe `http://localhost:8317` recorded in the PR it opened), `[gate] re-pass — codex/direct`, and a closing PR with TDD red→green evidence.
+
+The plan grew twice mid-flight, both times through the mechanisms designed for it: (1) the live shakedown caught that claude-species daemons finalize differently from the self-finalizing codex species — the `state=blocked/status=idle` lingering shape would have dead-ended every gateway worker's park→answer relay (fixed in `daemon-finalize.sh`, test-first); (2) the exit reviews caught that the grill's "implement dispatch is the last codex-spawn consumer" premise was false (land-dispatch was a second consumer, migrated here) and that the migrated lander needed the same finalize-before-dedupe discipline review-dispatch already had (the codex review's single P1, fixed test-first). Lesson worth keeping: when a species with self-finalizing lifecycle semantics is replaced by one without them, audit every consumer that *reads* the lifecycle fields, not just the spawn sites — both scope additions were exactly that class of gap.
+
+Remaining, deliberately out of scope: full deletion of the legacy codex machinery once no bound codex session exists anywhere; the skill-as-protocol restructure of `skills/implementing-tickets` (work item 2 of the 2026-07-17 roadmap, next ExecPlan); a plugin release carrying both work items to consumers. One operational leftover: the scratch repo `SSFSKIM/doperpowers-shakedown` could not be deleted (gh token lacks the `delete_repo` scope) — delete it manually or after `gh auth refresh -h github.com -s delete_repo`.
 
 ## Context and Orientation
 
