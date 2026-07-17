@@ -23,7 +23,8 @@ This is work item 2 of the two-item roadmap the human partner confirmed on 2026-
 
 ## Surprises & Discoveries
 
-- Observation: none yet at authoring time.
+- Observation: running the seven suites back-to-back in one shell loop intermittently fails a single suite that then passes repeatedly standalone (work item 1's final sweep: test-board-scripts once; this branch's final sweep: test-review-dispatch once). The failures are transient cross-suite interference in the shared shell/tmp environment, not diff-related — each suspect suite was re-run standalone (including once under `env -i`) and passed every time.
+  Evidence: `FAILED: tests/reviewing-prs/test-review-dispatch.sh` in the loop, followed immediately by two standalone runs printing "all tests passed". Same pattern, different suite, in the prior branch. A future hygiene follow-up could isolate each suite's env in the loop; not this plan's scope.
 
 ## Decision Log
 
