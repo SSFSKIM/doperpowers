@@ -185,6 +185,7 @@ assert_contains "$tracker" "recommended answer" "tracker: needs-human note contr
 assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-human rule is canonical here"
 assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + ready-for-agent)"
 assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
+assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
 daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
 assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
 assert_not_contains "$daemons" "discriminant in doperpowers:implementing-tickets" "daemons: no stale pointer at the old vendored copy"

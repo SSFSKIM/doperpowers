@@ -245,8 +245,12 @@ they write against.
 
 ## The ticket body (pre-spec)
 
-Whoever registers a ticket authors its body AT REGISTER TIME — write the
-sections to a temp file and pass `--body-file` in the same step. The
+First search the open board for an existing ticket covering the same
+defect or scope — parallel workers hit the same base regressions blind;
+if one exists, comment your evidence there
+instead of registering a duplicate. Whoever registers a ticket authors
+its body AT REGISTER TIME — write the sections to a temp file and pass
+`--body-file` in the same step. The
 registrar is the person who knows the most about the work at that moment;
 "register now, fill in later" loses exactly that context (the fill-in
 step is skipped under pressure, and register refuses/demotes a skeleton
