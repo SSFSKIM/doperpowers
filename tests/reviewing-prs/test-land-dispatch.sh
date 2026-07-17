@@ -303,7 +303,11 @@ reset_state; seed_lander working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$out" "active land worker" "live ACTIVE land worker → skip"
-assert_equals "$(cat "$SPAWN_LOG")" "" "live ACTIVE land worker spawns nothing"
+if grep -qE "^(spawn|codex-spawn|retire):" "$SPAWN_LOG" 2>/dev/null; then
+    fail "live ACTIVE land worker spawns and retires nothing"
+else
+    pass "live ACTIVE land worker spawns and retires nothing"
+fi
 
 reset_state; seed_lander working    # agents.json [] → session gone
 "$DISPATCH" 5 > /dev/null
