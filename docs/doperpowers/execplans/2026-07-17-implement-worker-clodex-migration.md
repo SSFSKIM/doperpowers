@@ -19,7 +19,7 @@ This was deliberately deferred scope: the 2026-07-15 review-loop rebuild (see `d
 - [x] (2026-07-17 14:45Z) Milestone 2: 6 new assertions RED first, then dispatch ritual steps 2–3 rewritten (route semantics, one `daemon-spawn.sh` command, gateway env + model `fable`, codex-spawn.sh dereferenced), implementing-tickets pieces row + spike web-reach note updated; suite GREEN; commit `35592af`.
 - [x] (2026-07-17 14:50Z) Milestone 3: orchestrating-daemons SKILL.md re-framed (one-harness dispatch, codex-CLI = legacy species, codex-spawn.sh/codex-resume.sh rows marked LEGACY); daemon+codex suites still green unchanged; commit `d58cb9b`.
 - [x] (2026-07-17 14:55Z) Milestone 4: dated Revision Notes appended to `2026-07-10-codex-workers-design.md` and `2026-07-09-implement-worker-autonomy-design.md`; commit `dcc1c8c`.
-- [ ] Milestone 5: live shakedown — gateway implement worker end-to-end on a synthetic ticket in a scratch repo; evidence pasted into Artifacts and Notes.
+- [x] (2026-07-17 15:50Z) Milestone 5: live shakedown complete on SSFSKIM/doperpowers-shakedown — gateway worker spawned via the new ritual (meta: settings+effort+model=fable persisted), parked the taste fork as its FIRST board write, exposed and drove the daemon-finalize blocked-shape fix (commit `7f1814c`, test-first), resumed via `board-answer.sh` still on the gateway (in-session probe `http://localhost:8317` recorded verbatim in the PR), `[gate] re-pass — codex/direct`, PR #2 with `Closes #1` + TDD red→green Validation Evidence + `FOLLOW-UPS: none`. Evidence in Artifacts and Notes.
 - [ ] Milestone 6: full verification set green; exit review from a disposable clone; branch pushed; PR opened; retrospective written.
 
 ## Surprises & Discoveries
@@ -174,7 +174,31 @@ Current dispatch-ritual step 3 (`skills/issue-tracker/SKILL.md`), the text being
        `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`. Both
        from `orchestrating-daemons` — always a worktree; workers write code.
 
-Shakedown evidence, resume-probe transcript, and exit-review verdict: appended during execution.
+Shakedown evidence (Milestone 5, all from SSFSKIM/doperpowers-shakedown — repo deleted after; transcripts preserved here):
+
+    # spawn (new ritual, gateway route):
+    daemon spawned (no-wait): 1-hello-version  [c901fbcb / c901fbcb-...]  status=working
+    # registry meta after spawn:
+    {'name': '1-hello-version', 'model': 'fable',
+     'settings': '/Users/new/.claude/clodex-settings.json', 'effort': 'xhigh', ...}
+    # first board write = the gate verdict (park, no code):
+    labels: ["enhancement","status:needs-human","priority:P3"]
+    "[gate] fail — needs-human: the exact no-argument greeting is an
+     unresolved product-wording decision required by acceptance." (+ recommended
+     answer `hello`, + orientation summary)
+    # answer relay (after the daemon-finalize fix):
+    relay: #1 → claude session c901fbcb (status=idle, ...)
+    #1: needs-human → in-progress
+    # resumed fork still on the gateway — worker's in-session probe, verbatim
+    # from PR #2's Validation Evidence:
+    echo "${ANTHROPIC_BASE_URL:-unset}"   →   http://localhost:8317
+    # gate re-verdict and closure:
+    "[gate] re-pass — codex/direct: the human approved the exact default
+     greeting `hello` ..."
+    PR #2 "Add hello.sh version flag": Closes #1; TDD red phase recorded
+    (test.sh exited 1 before, 0 after); FOLLOW-UPS: none; ticket → in-review.
+
+Exit-review verdict: appended at Milestone 6.
 
 ## Interfaces and Dependencies
 
