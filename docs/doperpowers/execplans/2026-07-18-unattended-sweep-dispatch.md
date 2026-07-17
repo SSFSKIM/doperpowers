@@ -44,7 +44,8 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 09:10Z) M1: `implement-dispatch.sh` (triggered + `--sweep` + cap + dedupe + strict render) + hermetic suite green (34 asserts; RED first — suite failed before the script existed), shellcheck clean.
 - [x] (2026-07-18 09:45Z) M2: `board-sweep.sh` (recover / cancel / dispatch / review / land / relay / report passes, mkdir lock — macOS has no flock(1)) + hermetic suite green (26 asserts; RED verified by absence check, exit 127), shellcheck clean.
 - [x] (2026-07-18 10:30Z) M3: prose routing (dispatch ritual, TECH-DEBT strikes for items 1/2/10-L2), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; full battery green (see Surprises for the slot-counter defect a pre-arm registry inspection surfaced).
-- [ ] M4: live shakedown on ida-solution (arm from this worktree; observe acceptance behaviors; record evidence in Artifacts).
+- [x] (2026-07-18 11:05Z) M4 (core): live shakedown on ida-solution — tick 1 dispatched all three ELIGIBLE tickets (#492/#593/#595, spawn→bind→gateway meta) + attached review-pr-574; all three workers passed the ROUTED ticket-gate and wrote `[gate] pass` verdicts (the 7.21.x schema's first live exercise); tick 2 dispatched nothing (idempotence proven); launchd agent installed and loaded (`launchctl list` exit 0). Evidence in Artifacts.
+- [ ] M4 (tail): observe the first launchd-context tick (TCC survival of a timer-context spawn — the next worker PR's review attach is the natural probe).
 - [ ] M5: codex whole-branch review → fix findings → open PR to main (NOT merged — human gate per instruction) → retrospective.
 
 ## Surprises & Discoveries
@@ -487,7 +488,42 @@ is NOT merged — the human merges. Retrospective written.
 
 ## Artifacts and Notes
 
-Shakedown evidence (log excerpts, board timeline) lands here during M4.
+Shakedown evidence (M4, 2026-07-18, all verbatim from
+`~/.claude/orchestrating-daemons/sweep.log` and the live board):
+
+    [sweep 2026-07-17T21:48:04Z] tick — repo=IDA-solution/ida-solution
+    [sweep] RECOVER: 0 acted        (finalize normalized #490's stale
+                                     working meta to idle — binding kept)
+    [sweep] CANCEL: 0 acted
+    dispatched #492 → 492-m4-7-ep-52 [4cb35bad-…] engine=codex role=IMPLEMENT
+    dispatched #593 → 593-fix-types-dailytask-typescript [fd4db6b7-…] …
+    dispatched #595 → 595-fix-next-generate-plan-route-han [5db9e748-…] …
+    daemon spawned (no-wait): review-pr-574  [dcd582d5 / …]
+    [sweep] LAND: 0 acted
+    [sweep] RELAY: 0 acted
+    FAIL #573: needs-human without a note     (REPORT surfacing a real
+    board-lint: 304 issue(s), 1 FAIL, 24 WARN  wake-ritual item)
+    [sweep] tick complete
+
+Worker registry meta for #492 confirmed the gateway route persisted:
+`settings=True model=fable status=working`. Within ~10 minutes all three
+workers wrote substantive gate verdicts and self-transitioned:
+
+    #492 → in-progress · "[gate] pass — codex/DIRECT: 기존 완료·시간 비율
+      데이터와 현행 UI 토큰으로 새 제품 결정 없이 … 한 단위로 구현 가능"
+    #593 → in-progress · "[gate] pass — codex/DIRECT: 동일 타입…중복 선언
+      한 세트만 제거하는 단일 파일 기계적 수정…"
+    #595 → in-progress · "[gate] pass — codex/DIRECT: Route Handler를 얇은
+      HTTP 어댑터로 만들고 … 단일 목적 작업"
+
+This was simultaneously the first live exercise of the ROUTED Ticket Gate
+(v7.21.x board schema): the workers resolved
+`{{BOARD_SCRIPTS}}/../references/ticket-gate.md` from the dispatched
+bindings and produced classification-grade verdicts.
+
+Tick 2 (manual, minutes later): `RECOVER: 0 · CANCEL: 0 · DISPATCH: (no
+eligible tickets — all three now in-progress) · #574: skip active
+reviewer · LAND: 0 · RELAY: 0` — nothing double-dispatched.
 
 ## Revision Notes
 
