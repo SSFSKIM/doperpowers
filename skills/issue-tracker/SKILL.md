@@ -143,21 +143,25 @@ pick by repo visibility:
    `$WORKER_ENGINE` → default `codex`. Every worker is ONE species — a
    Claude-harness daemon; the engine names only its model route (`codex` =
    the clodex gateway settings, GPT models through the local proxy;
-   `claude` = plain Claude models). Render the worker protocol
-   (`doperpowers:implementing-tickets`): category `spike` →
-   `references/spike-worker-protocol.md`, else
-   `references/implement-worker-protocol.md`. Substitute every
-   `{{PLACEHOLDER}}` (`ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
+   `claude` = plain Claude models). Render the spawn bootstrap
+   (`doperpowers:implementing-tickets` `references/worker-bootstrap.md` —
+   the worker opens its protocol from the dispatcher-owned file the
+   bootstrap names). Substitute every `{{PLACEHOLDER}}`: `ROLE` = `SPIKE`
+   when the ticket's category is `spike`, else `IMPLEMENT`;
+   `PROTOCOL_FILE` = the ABSOLUTE plugin path of the lane's protocol
+   (spike → implementing-tickets' `references/spike-worker-protocol.md`,
+   else implementing-tickets' `SKILL.md` — the skill IS the implement
+   protocol); `ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
    `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
    issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
    engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
-   (or a "(no repo-facts manifest)" note when absent), and — implement
-   protocol only — `EXECUTION_BLOCK` = implementing-tickets'
-   `references/engine-blocks/execution.md` (one block, both routes) and
-   `DECOMPOSE_DOC` = the ABSOLUTE path of implementing-tickets'
+   (or a "(no repo-facts manifest)" note when absent), `EXECUTION_BLOCK` =
+   implementing-tickets' `references/engine-blocks/execution.md` (one
+   block, both routes; bind the literal note "(none — spike lane)" for a
+   spike), and `DECOMPOSE_DOC` = the ABSOLUTE path of implementing-tickets'
    `references/implement-decompose.md` (a runtime-opened procedure: the
    prompt carries only the pointer; the worker opens it when Check-2
-   says decompose).
+   says decompose; "(none — spike lane)" for a spike).
 3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
    The codex route prefixes the gateway env and pins the gateway's model
@@ -222,11 +226,14 @@ reviewing-prs, and nobody sits between them and the board.
 
 ## Worker protocols
 
-The implement-side protocol lives in doperpowers:implementing-tickets
-(`references/implement-worker-protocol.md`) and is embedded verbatim in its
-spawn prompts. The review-side protocol is doperpowers:reviewing-prs itself
-(`SKILL.md`); its spawn bootstrap invokes the skill and supplies runtime
-bindings. This file owns only the schema they write against.
+Both loops keep their protocol in the skill file and spawn through a short
+bootstrap that names the dispatcher-owned protocol path and supplies the
+runtime bindings: the implement-side protocol is doperpowers:implementing-tickets
+itself (`SKILL.md`; spike lane → its `references/spike-worker-protocol.md`;
+bootstrap `references/worker-bootstrap.md`), the review-side protocol is
+doperpowers:reviewing-prs itself (`SKILL.md`; bootstrap
+`references/review-worker-bootstrap.md`). This file owns only the schema
+they write against.
 
 ## The ticket body (pre-spec)
 
