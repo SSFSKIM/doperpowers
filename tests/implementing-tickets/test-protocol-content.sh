@@ -110,7 +110,8 @@ echo "spike protocol:"
 SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
-want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{REPO_FACTS}} {{REPO}}"
+# The brief/facts tails ride the bootstrap's binding sections for both lanes.
+want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi

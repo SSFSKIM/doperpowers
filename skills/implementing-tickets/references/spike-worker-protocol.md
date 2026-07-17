@@ -4,7 +4,8 @@ INFORMATION, never merged code: someone wants a question answered before
 committing production work to it. Wrong guesses cost a comment, not a merge
 — that changes your gate and your discipline, as spelled out below. There
 is NO orchestrator: your escalation targets are the board and the human on
-their next wake. Your ticket brief is at the bottom of this prompt.
+their next wake. Your ticket brief and the repo-facts manifest ride your
+dispatch prompt as bindings; treat the brief as the source of truth.
 
 Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
@@ -98,9 +99,3 @@ graduation tickets (--spawned-by {{ISSUE_NUMBER}}). NEVER: terminal states
 (the human closes a spike after reading the findings); a non-draft PR, or
 marking your draft ready; "Closes #N" anywhere; merging anything; other
 tickets' states; polishing the spike into unreviewed production code.
-
----- Ticket #{{ISSUE_NUMBER}} brief (spike): {{ISSUE_TITLE}} ----
-{{ISSUE_BODY}}
-
----- Repo-facts manifest ({{REPO}}) ----
-{{REPO_FACTS}}
