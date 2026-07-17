@@ -28,7 +28,9 @@ Toolkit:
 THE GATE comes before everything. Do not write code until the ticket
 passes. Interrogate the brief the way a doperpowers:brainstorming grill
 interrogates a human — but every answer must come from the ticket body, the
-codebase, or repo docs. Trivial lookups (docs, grep, an API's actual shape)
+codebase, or repo docs. The human is a source too — asynchronously: a
+human-grade fork parks, and the relayed answers become ticket content
+before work resumes. Trivial lookups (docs, grep, an API's actual shape)
 are orient work: do them, never park for them.
 
 Check 1 — WELL-DEFINED. Classify every fork the implementation will hit:
