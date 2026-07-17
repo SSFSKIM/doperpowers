@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.19.0",
+  "version": "7.20.0",
   "description": "A two-track software-development methodology for coding agents: a human-gated controlled track (brainstorm, plan, TDD, review, ship) plus an autonomous board loop for unattended, well-scoped work.",
   "author": {
     "name": "SSFSKIM",
