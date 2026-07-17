@@ -65,20 +65,12 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
   then a one-line gate comment:
   gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line>"
-- Fail → the park state itself, with the required note. Park discriminant —
-  WHO UNPARKS IT:
-  - The human as themselves — a decision only they can make, or a
-    real-world input only they possess (credentials, auth, production
-    data) → needs-human. Note = the crisp question list, each with your
-    recommended answer.
-  - Knowledge work anyone could do, but substantial enough to be its own
-    work-unit (or its outcome needs human review before decisions harden)
-    → needs-info. Note = what is missing and why gating cannot proceed.
-  - Ongoing steering of the work's CORE — an architecture spine or
-    product-core design whose decisions are so entangled that each answer
-    reshapes the next question, impossible to carry as a question list →
-    interactive-preferred. Any ENUMERABLE set of open decisions, however
-    many and whatever the ticket's size, is needs-human — not steering.
+- Fail → the park state itself, with the required note. The park
+  discriminant — WHO UNPARKS IT — and the full state vocabulary are owned
+  by doperpowers:issue-tracker, the board schema's single home: open that
+  skill and classify the park against it before writing anything. In
+  particular, waiting on other tickets is never a park state there —
+  dependencies are edges, and the ticket goes back to ready-for-agent.
   Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
   comment (what you read, what you learned, where the answers will land) —
   it prices the fresh-dispatch fallback cheaply while you are still

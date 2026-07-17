@@ -18,10 +18,9 @@ only the PROCEDURE and grants no authority beyond your prompt's.
 2. Flesh out each child body (`gh issue edit <n> --body-file -`) to the
    pre-spec bar: a fresh-context worker can start from the body alone.
 
-3. Gate-triage each child HONESTLY: `ready-for-agent` only if YOU believe
-   it passes the Ticket Gate; an open human decision → born `needs-human`;
-   product-core steering → born `interactive-preferred` — required notes
-   always.
+3. Gate-triage each child HONESTLY per the doperpowers:issue-tracker
+   ticket contract and park discriminant — `ready-for-agent` only if YOU
+   believe it passes the Ticket Gate.
 
 4. Register only children you can spec self-contained NOW. Contingent
    later phases live as a `## Roadmap` section in the parent body — the

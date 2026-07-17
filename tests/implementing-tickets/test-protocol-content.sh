@@ -57,7 +57,8 @@ assert_contains "$proto" "ORIENTATION SUMMARY" "park orientation summary mandate
 assert_contains "$proto" "no live progress mirror" "no-mirror doctrine stated in the protocol"
 assert_contains "$proto" "big-but-ATOMIC" "atomic-counts-as-one-unit scoping clause present"
 assert_contains "$proto" "land on main independently" "landability decompose criterion present"
-assert_contains "$proto" "ENUMERABLE" "enumerable-decisions→needs-human discriminant present"
+assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
+assert_not_contains "$proto" "Knowledge work anyone could do" "needs-info definition not re-vendored in the protocol"
 assert_contains "$proto" "doperpowers:reviewing-prs" "handoff to the review loop named"
 assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
@@ -177,6 +178,18 @@ assert_contains "$tracker" "model route" "ritual: engine resolution states route
 assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
 assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
 assert_not_contains "$tracker" "implement-worker-protocol.md" "ritual: no reference to the retired protocol file"
+
+echo "board schema single-source (issue-tracker owns the discriminant):"
+assert_contains "$tracker" "Park discriminant — who unparks it?" "tracker: canonical discriminant lives here"
+assert_contains "$tracker" "recommended answer" "tracker: needs-human note contract (question list with recommendations)"
+assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-human rule is canonical here"
+assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + ready-for-agent)"
+assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
+daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
+assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
+assert_not_contains "$daemons" "discriminant in doperpowers:implementing-tickets" "daemons: no stale pointer at the old vendored copy"
+assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
+assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

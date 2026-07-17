@@ -67,12 +67,20 @@ the review loop (doperpowers:reviewing-prs) a PR passes through
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |
 
-**Park discriminant — who unparks it?** The human acting as themselves (a
-decision, or a real-world input) → `needs-human`. Knowledge work that anyone
-could in principle do (substantial research, spec-deepening) → `needs-info`.
-Not one answer but ongoing steering → `interactive-preferred`. (`blocked`
-was retired in v8: its meaning was absorbed by `needs-human`; lint names any
-legacy label with the migration FIX.)
+**Park discriminant — who unparks it?** This paragraph is the single
+authoritative copy — worker protocols route here instead of restating it.
+The human acting as themselves (a decision, or a real-world input) →
+`needs-human`; the note is the crisp question list, each with a
+recommended answer. Knowledge work that anyone could in principle do
+(substantial research, spec-deepening) → `needs-info`; the note says what
+is missing. Not one answer but ongoing steering of the work's core →
+`interactive-preferred`; any ENUMERABLE set of open decisions, however
+many, is `needs-human` — not steering. Waiting on other tickets is NOT a
+park: dependencies are edges — cut `blocked-by` and return the ticket to
+`ready-for-agent` (the note names any banked branch); the unblock sweep
+re-surfaces it the moment its blockers land, which no park state does.
+(`blocked` was retired in v8: its meaning was absorbed by `needs-human`;
+lint names any legacy label with the migration FIX.)
 
 Exactly one `status:*` label on every open issue; terminal states are the
 close reason (no label). An issue outside this scheme is `untracked` (no
