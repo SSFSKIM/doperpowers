@@ -33,7 +33,7 @@ jobs:
     runs-on: [self-hosted, claude-review]
     timeout-minutes: 10
     env:
-      LOCAL_REPO: /Users/new/documents/github/ida-solution
+      LOCAL_REPO: /Users/new/Developer/GitHub/ida-solution
       BOARD_REPO: ${{ github.repository }}
     steps:
       - name: Dispatch implement worker

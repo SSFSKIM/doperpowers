@@ -10,8 +10,8 @@
     <string>"$DOPERPOWERS_HOME/skills/issue-tracker/scripts/board-sweep.sh"</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>DOPERPOWERS_HOME</key><string>/Users/new/Documents/GitHub/doperpowers/.claude/worktrees/unattended-sweep</string>
-    <key>LOCAL_REPO</key><string>/Users/new/Documents/GitHub/ida-solution</string>
+    <key>DOPERPOWERS_HOME</key><string>/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/unattended-sweep</string>
+    <key>LOCAL_REPO</key><string>/Users/new/Developer/GitHub/ida-solution</string>
     <key>AUTO_MERGE_ENABLED</key><string>true</string>
     <key>LAND_ENABLED</key><string>true</string>
     <key>IMPLEMENT_MAX_CONCURRENT</key><string>5</string>
