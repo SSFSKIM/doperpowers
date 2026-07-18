@@ -118,6 +118,9 @@ that ticket, nothing more); scope beyond the ticket.
 
 Opening your PR closes out your scope:
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
+Open it READY FOR REVIEW, never as a draft — the review loop deliberately
+skips drafts (draft is the spike lane's not-for-merge marker), so a draft
+closing PR strands the ticket in in-review with no reviewer ever attaching.
 Your PR body is the CLOSING ARTIFACT — the one structured handoff. There is
 no live progress mirror in this pipeline; scope-end writes are the only
 status writes. The body carries:

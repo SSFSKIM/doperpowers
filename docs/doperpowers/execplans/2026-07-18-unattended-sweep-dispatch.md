@@ -90,6 +90,25 @@ the daemon registry, never in the tick's memory.
   (the finalize stub now refuses to produce verdicts the real one cannot).
   Evidence: suite RED on exactly the six finding-driven asserts before the
   fixes, GREEN after; reviewer verdict excerpt in Artifacts.
+- Observation (M4 tail, coordination): TWO sessions worked this branch in
+  parallel. The other session diagnosed the launchd TCC failure first
+  (entry above, commit d4cca59) and its interim terminal-session loop
+  (pid 87645) is what actually ran the 09:09Z+ ticks — this session
+  initially misread those as launchd ticks (`launchctl print` in fact
+  showed `runs = 148, last exit code = 126`, every attempt dead at exec).
+  That loop later died; the tick now runs as loop pid 25917 from this
+  session, and the launchd agent is re-loaded per the recorded
+  self-arms-on-grant decision. Dual runners were never a hazard — the
+  mkdir lock plus per-pass idempotence is exactly the N-concurrent-sweeps
+  property the design claimed, incidentally proven live.
+- Observation (M4 tail, live finding): all three implement workers
+  delivered their PRs as DRAFTS (#597, #598, #599 — and #596 from the
+  earlier dogfood round), and the review sweep deliberately skips drafts,
+  so the pipeline stalled at in-review with no reviewer ever attaching.
+  No protocol clause governed draft-ness — draft is the SPIKE lane's
+  not-for-merge marker; the implement protocol now mandates READY FOR
+  REVIEW for the closing PR (clause + pin added; the three PRs were
+  marked ready by hand, and the next tick attached their reviewers).
 - Observation (M5): the pre-existing reviewing-prs suites
   (test-review-dispatch, test-land-dispatch) flaked twice during full-
   battery runs on this now-busy machine (different asserts each time; both
@@ -252,10 +271,12 @@ cannot produce make load-bearing asserts vacuous** — the fix included
 making the finalize stub refuse impossible verdicts, which is the durable
 guard.
 
-**Remaining, by design or deferral.** The launchd tick runs clean from
-timer context, but a timer-context SPAWN (TCC survival) has not fired yet
-— the natural probe is the next worker PR's review attach; watch the first
-one. The Actions runner path stays blocked on ida-solution#302; templates
+**Remaining, by design or deferral.** The launchd timer itself is the open
+item: TCC blocks a launchd bash from touching `~/Documents` (script AND
+repos), so every timer attempt died at exec — durable arming needs one
+human gesture (Full Disk Access for the tick's interpreter, or hosting the
+repos outside ~/Documents); a login-session loop carries the tick
+meanwhile. The Actions runner path stays blocked on ida-solution#302; templates
 for all three lanes are shipped and arm themselves when it resolves. After
 this branch merges and releases, repoint the armed plist's
 `DOPERPOWERS_HOME` from the worktree to the marketplace path. L3 (BOARD.html
@@ -604,9 +625,11 @@ bindings and produced classification-grade verdicts.
 
 Tick 2 (manual, minutes later): `RECOVER: 0 · CANCEL: 0 · DISPATCH: (no
 eligible tickets — all three now in-progress) · #574: skip active
-reviewer · LAND: 0 · RELAY: 0` — nothing double-dispatched. Two
-launchd-timer ticks then completed clean (all passes execute from timer
-context; gh/python3/board snapshot resolve under `bash -lc`).
+reviewer · LAND: 0 · RELAY: 0` — nothing double-dispatched. (An earlier
+draft of this section credited launchd with clean timer ticks — wrong:
+every launchd attempt failed at exec with TCC's "Operation not permitted";
+see the M4-tail Surprises entry. The ticks that kept running came from a
+login-session context.)
 
 Fresh-context review verdict (M5, before fixes):
 
