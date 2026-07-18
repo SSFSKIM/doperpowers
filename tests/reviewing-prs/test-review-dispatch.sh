@@ -236,6 +236,7 @@ case "${1:-} ${2:-}" in
     case "$*" in
       *"--json url"*)  N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["url"])' ;;
       *"--json body"*) N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["body"])' ;;
+      *"--json labels"*) N="$3" python3 -c 'import json,os;d=json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"));print(json.dumps({"labels": d.get("labels") or []}))' ;;
       *) echo "mock gh: unhandled issue view: $*" >&2; exit 1 ;;
     esac ;;
   "issue list") cat "$MOCK_DIR/techdebt-number.txt" ;;
@@ -510,6 +511,25 @@ out="$("$DISPATCH" --sweep)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep dispatches the unbound open PR"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-6" "sweep never dispatches a draft"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-8" "sweep never dispatches a confident-ready PR"
+
+# ---- sweep skips a PR whose primary ticket is parked ----------------------------
+# A prior reviewer parked the ticket on the human; every tick would otherwise
+# spawn a reviewer that board-bind refuses (observed live: PR #574 / #548).
+# Triggered dispatch still proceeds — resolving the park is the operator's call.
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:needs-human"}]
+json.dump(d, open(p, "w"))'
+out="$("$DISPATCH" --sweep)"
+assert_contains "$out" "primary ticket #7 is parked (status:needs-human)" "sweep names the park it skips"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep spawns no reviewer over a parked ticket"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered dispatch still proceeds over the park"
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d.pop("labels", None)
+json.dump(d, open(p, "w"))'
 
 # ---- sweep retries an engine-unavailable reviewer -------------------------------
 reset_state

@@ -236,7 +236,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
+  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid park
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -269,6 +269,28 @@ PY
   # primary ticket (first linked issue; the full list rides the prompt as
   # numbers only — the worker reads PR and ticket bodies live via gh)
   issue="${LINKED_ISSUES%% *}"
+
+  # A parked primary ticket means this PR's review is already waiting on the
+  # human (a prior reviewer's park) — board-bind would refuse the fresh
+  # worker anyway ("answer/resume it before rebinding"), so the sweep's
+  # catch-up lane skips BEFORE spawning instead of burning a spawn+retire
+  # every tick (observed live: PR #574 churned one reviewer per tick against
+  # parked #548). Triggered/manual dispatch still proceeds: resolving the
+  # park first is the operator's call, and bind protection stays the gate.
+  if [ "$mode" = "sweep" ] && [ -n "$issue" ]; then
+    park="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
+import json, sys
+try:
+    labels = [l.get("name") for l in json.load(sys.stdin).get("labels") or []]
+except Exception:
+    labels = []
+parks = [l for l in labels if l in ("status:needs-human", "status:needs-info", "status:interactive-preferred")]
+print(parks[0] if parks else "")')" || park=""
+    if [ -n "$park" ]; then
+      echo "#$pr: skip — primary ticket #$issue is parked ($park); the review resumes via board-answer, not a fresh dispatch"
+      rm -rf "$tmp"; return 0
+    fi
+  fi
 
   # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
@@ -557,8 +579,8 @@ run_for() {  # $1=pr $2=mode $3=cr-label
   local verdict
   verdict="$(_decide "$1" "$2" "$3")"
   case "$verdict" in
-    dispatch)  dispatch_one "$1" ;;
-    respawn\ *) _retire "${verdict#respawn }"; dispatch_one "$1" ;;
+    dispatch)  dispatch_one "$1" "$2" ;;
+    respawn\ *) _retire "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
     *)         echo "#$1: $verdict" ;;
   esac
 }
