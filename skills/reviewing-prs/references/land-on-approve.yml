@@ -1,0 +1,40 @@
+# land-on-approve.yml — dispatch a local land worker the moment a human
+# Approves a reviewed PR. Template from doperpowers:reviewing-prs — copy
+# into .github/workflows/ of the consumer repo.
+#
+# SETUP (per adopting repo — same posture as pr-review-dispatch.yml; see
+# runner-setup.md):
+#   1. PRIVATE REPOS ONLY, self-hosted runner labeled `claude-review`.
+#   2. Security properties this template maintains — keep them:
+#      - NO actions/checkout; permissions: {}; numeric-only interpolation;
+#        actor allowlist (the APPROVER, not the PR author — the approval is
+#        the authority signal).
+#   3. land-dispatch.sh re-verifies the full authority gate itself
+#      (confident-ready label + APPROVED decision or `land` label), so a
+#      stray approval on an unreviewed PR dispatches nothing. The board
+#      sweep covers this lane as catch-up; LAND_ENABLED stays the staged
+#      rollout flag either way.
+name: Land on approve
+on:
+  pull_request_review:
+    types: [submitted]
+permissions: {}
+concurrency:
+  group: land-dispatch-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    # org-owned repo: repository_owner is the ORG login — explicit allowlist instead
+    # EDIT ME when adopting: the actor allowlist and LOCAL_REPO below are one
+    # consumer repo's instance values, not part of the template.
+    if: github.event.review.state == 'approved' && github.actor == 'SSFSKIM'
+    runs-on: [self-hosted, claude-review]
+    timeout-minutes: 10
+    env:
+      LOCAL_REPO: /Users/new/Developer/GitHub/ida-solution
+      BOARD_REPO: ${{ github.repository }}
+      LAND_ENABLED: "true"
+    steps:
+      - name: Dispatch land worker
+        run: |
+          "${DOPERPOWERS_HOME:-$HOME/.claude/plugins/marketplaces/doperpowers}/skills/reviewing-prs/scripts/land-dispatch.sh" "${{ github.event.pull_request.number }}"

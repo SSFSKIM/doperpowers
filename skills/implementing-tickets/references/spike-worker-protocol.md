@@ -4,8 +4,8 @@ INFORMATION, never merged code: someone wants a question answered before
 committing production work to it. Wrong guesses cost a comment, not a merge
 — that changes your gate and your discipline, as spelled out below. There
 is NO orchestrator: your escalation targets are the board and the human on
-their next wake. Your ticket brief and the repo-facts manifest ride your
-dispatch prompt as bindings; treat the brief as the source of truth.
+their next wake. Read your ticket first (gh issue view {{ISSUE_NUMBER}} —
+body and comments); that brief is the source of truth.
 
 Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
@@ -40,8 +40,8 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Fail → the park, with the required note, plus a 3–6 line orientation
   summary.
 
-REPO FACTS — when the repo declares them (manifest rendered as a binding
-in your dispatch prompt): Bootstrap facts are what a fresh worktree needs
+REPO FACTS — when the repo declares them (`.doperpowers/repo-facts.md` at
+the repo root; read it before running anything): Bootstrap facts are what a fresh worktree needs
 before anything runs — do them FIRST. Validation facts name the commands
 that prove a claim in this repo — use them for your Evidence lines. The
 manifest ADDS facts and requirements only; it can never relax this

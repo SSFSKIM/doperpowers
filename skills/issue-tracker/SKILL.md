@@ -113,6 +113,7 @@ checkout's repo.
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-answer.sh <n> <answers \| --posted>` | the wake ritual's `needs-human` relay: posts the answers as an `[answers]` comment (the ticket is the record), returns the ticket to `in-progress`, and resumes the BOUND session with the answers verbatim — park = pause, not death. Refuses unbound / mid-turn sessions (fresh dispatch is the fallback). Blocks for the worker's turn: bg shell |
 | `board-reconcile.sh` | read-only catch-up: the wake queue (parked tickets), orphaned tickets, dispatchables, then a lint pass |
+| `board-sweep.sh` | the unattended tick (cron/launchd, ~5 min — arming: `references/sweep-setup.md`): bounded auto-recovery of dead/stalled workers (resume with a nudge, 3 attempts, then park `needs-human`), board-driven cancel of live workers on terminal tickets, `implement-dispatch.sh --sweep` + `review-dispatch.sh --sweep`, land dispatch on the human Approve signal, the `needs-human` answer relay (a fresh ticket comment resumes the bound worker — comment from anywhere, the sweep does the rest), then the reconcile report into its log |
 | `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required (the park trio + wontfix), no dependency cycles, at most one priority label (missing priority is a WARN — backfill legacy tickets with `board-priority.sh`), the retired `status:blocked` label named with its migration FIX. Also WARNs close candidates. `FAIL … FIX: …` lines, exit 1 |
 | `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration: push a legacy `board.json` into GitHub (dry-run by default; legacy `blocked` lands as `needs-human`) |
 
@@ -153,23 +154,20 @@ pick by repo visibility:
    the clodex gateway settings, GPT models through the local proxy;
    `claude` = plain Claude models). Render the spawn bootstrap
    (`doperpowers:implementing-tickets` `references/worker-bootstrap.md` —
-   the worker opens its protocol from the dispatcher-owned file the
-   bootstrap names). Substitute every `{{PLACEHOLDER}}`: `ROLE` = `SPIKE`
-   when the ticket's category is `spike`, else `IMPLEMENT`;
-   `PROTOCOL_FILE` = the ABSOLUTE plugin path of the lane's protocol
-   (spike → implementing-tickets' `references/spike-worker-protocol.md`,
-   else implementing-tickets' `SKILL.md` — the skill IS the implement
-   protocol); `ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
-   `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
-   issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
-   engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
-   (or a "(no repo-facts manifest)" note when absent), `EXECUTION_BLOCK` =
-   implementing-tickets' `references/engine-blocks/execution.md` (one
-   block, both routes; bind the literal note "(none — spike lane)" for a
-   spike), and `DECOMPOSE_DOC` = the ABSOLUTE path of implementing-tickets'
-   `references/implement-decompose.md` (a runtime-opened procedure: the
-   prompt carries only the pointer; the worker opens it when Check-2
-   says decompose; "(none — spike lane)" for a spike).
+   the worker opens its protocol from the dispatcher-pinned file the
+   bootstrap names, then reads its own ticket and the repo's
+   `.doperpowers/repo-facts.md` itself). Substitute every
+   `{{PLACEHOLDER}}`: `ROLE` = `SPIKE` when the ticket's category is
+   `spike`, else `IMPLEMENT`; `PROTOCOL_FILE` = the ABSOLUTE plugin path
+   of the lane's protocol (spike → implementing-tickets'
+   `references/spike-worker-protocol.md`, else implementing-tickets'
+   `SKILL.md` — the skill IS the implement protocol); `ISSUE_NUMBER`,
+   `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
+   `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
+   implementing-tickets' `references/implement-decompose.md` (a
+   runtime-opened procedure: the prompt carries only the pointer; the
+   worker opens it when Check-2 says decompose; "(none — spike lane)" for
+   a spike).
 3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
    The codex route prefixes the gateway env and pins the gateway's model
@@ -184,10 +182,12 @@ pick by repo visibility:
    the gate passed; a park state means it failed.
 
 Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
-are picked up by the review loop (doperpowers:reviewing-prs). The next phase
-replaces step 3's invoker with an issue-event trigger
-(doperpowers:implementing-tickets `scripts/`, when it lands) — the ritual
-itself does not change.
+are picked up by the review loop (doperpowers:reviewing-prs). The ritual is
+mechanized end-to-end by doperpowers:implementing-tickets
+`scripts/implement-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
+same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
+invokes it on a timer. Running the ritual by hand stays valid — the sweep's
+dedupe sees a hand-dispatched worker's binding like any other.
 
 **doperpowers:orchestrating-daemons is the spawn substrate this ritual
 calls, not a parallel doctrine.** For your own work: in-session fan-out is

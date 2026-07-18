@@ -1,0 +1,46 @@
+# issue-dispatch.yml — dispatch a local implement/spike worker when a ticket
+# becomes ready. Template from doperpowers:implementing-tickets — copy into
+# .github/workflows/ of the consumer repo.
+#
+# SETUP (per adopting repo — same posture as pr-review-dispatch.yml in
+# doperpowers:reviewing-prs; see runner-setup.md there):
+#   1. PRIVATE REPOS ONLY, self-hosted runner labeled `claude-review`.
+#   2. Security properties this template maintains — keep them:
+#      - NO actions/checkout: the job never executes repo code; the worker
+#        runs in its own worktree behind --permission-mode auto.
+#      - permissions: {} — the dispatch script uses the runner machine's
+#        own `gh` auth.
+#      - Only ${{ github.event.issue.number }} (numeric) is interpolated.
+#        NEVER interpolate issue title/body here (injection).
+#      - The actor gate keeps other accounts' label events off the runner.
+#   3. The board sweep (issue-tracker references/sweep-setup.md) covers the
+#      same lane as catch-up — this trigger only lowers latency. Dispatch
+#      is idempotent: implement-dispatch.sh re-verifies eligibility and
+#      dedupes against the registry, so a label event racing a sweep tick
+#      normally spawns one worker. (The dedupe window is not airtight:
+#      between one dispatcher's registry check and its spawn materializing
+#      the meta, a racing dispatcher can double-spawn; board-bind then
+#      strips one owner, but both processes run out their turn.)
+name: Issue dispatch
+on:
+  issues:
+    types: [labeled]
+permissions: {}
+concurrency:
+  group: issue-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    # org-owned repo: repository_owner is the ORG login — explicit allowlist instead
+    # EDIT ME when adopting: the actor allowlist and LOCAL_REPO below are one
+    # consumer repo's instance values, not part of the template.
+    if: github.event.label.name == 'status:ready-for-agent' && github.actor == 'SSFSKIM'
+    runs-on: [self-hosted, claude-review]
+    timeout-minutes: 10
+    env:
+      LOCAL_REPO: /Users/new/Developer/GitHub/ida-solution
+      BOARD_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch implement worker
+        run: |
+          "${DOPERPOWERS_HOME:-$HOME/.claude/plugins/marketplaces/doperpowers}/skills/implementing-tickets/scripts/implement-dispatch.sh" "${{ github.event.issue.number }}"
