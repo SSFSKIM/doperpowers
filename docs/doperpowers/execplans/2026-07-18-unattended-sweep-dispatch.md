@@ -676,3 +676,11 @@ finding-driven asserts before the fixes and full green after.
   the normalize itself bumps). Plan of Work pass 6, the Surprises entry,
   and the Decision Log record the why; the M2 suite's fixtures now refuse
   to seed states the real daemon-finalize cannot produce.
+- 2026-07-18 (post-shakedown, human call): the closing-PR clause's "never
+  as a draft" hard ban violated the repo's golden rule (constraint
+  minimization — the validated failure state is *waiting for review as a
+  draft*, not the draft mechanism itself). Reworded to outcome + known
+  consequence: when done, open ready for review; draft stays available
+  when the work genuinely isn't reviewable yet, with the stated
+  consequence that the review loop skips drafts until marked ready. The
+  test pin moved from the ban phrase to the consequence sentence.

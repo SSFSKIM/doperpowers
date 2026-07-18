@@ -212,7 +212,7 @@ assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
 echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
-assert_contains "$proto" "READY FOR REVIEW, never as a draft" "proto: the closing PR is never a draft (a draft strands the ticket — live shakedown finding)"
+assert_contains "$proto" "review loop deliberately skips drafts" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
 assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
 assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
 assert_contains "$tracker" "implement-dispatch.sh" "tracker: ritual names its mechanical executable"
