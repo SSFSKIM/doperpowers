@@ -187,6 +187,9 @@ for a in d:
         sys.exit(0)   # unmanaged row: no identity evidence — conservatively occupied
     if not local(m):
         continue      # foreign identity: only the registry migrated
+    if m.get("status") == "retired":
+        continue      # dispatcher-retired identity: its listing row lingers
+                      # stopped/status-less and would otherwise occupy forever
     if a.get("status") == "idle" and a.get("state") != "blocked":
         continue      # finished turn lingering in the listing — free for reuse
     sys.exit(0)

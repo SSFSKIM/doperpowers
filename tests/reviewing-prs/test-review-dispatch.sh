@@ -707,6 +707,42 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a finished 
 assert_not_contains "$out" "live daemon occupies" "finished lingering session does not block worktree removal"
 reset_state
 
+# The observed post-retire shape (2026-07-19 live board, PR #574): the
+# retired reviewer's row lingers state=stopped with NO status field, so the
+# idle escape never matches — only the meta's `retired` status can free the
+# worktree.
+U="retire01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "retired",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"retire01\", \"sessionId\": \"retire01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"stopped\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a retired reviewer's statusless stopped row frees the worktree"
+assert_not_contains "$out" "live daemon occupies" "retired meta overrides the statusless stopped row"
+reset_state
+
+# ...but a PARKED worker's stopped row (meta NOT retired — its worktree is
+# the resume context) must still occupy.
+U="parked01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "other-daemon", "engine": "claude",
+           "cwd": os.environ["WT"], "status": "working",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo "[{\"id\": \"parked01\", \"sessionId\": \"parked01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"stopped\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "live daemon occupies" "a parked (non-retired) stopped session still occupies the worktree"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn over a parked session's worktree"
+reset_state
+
 # ...while a managed local session that is genuinely mid-turn (status=busy)
 # still occupies it.
 U="linger01-0000-4000-8000-000000000000" WT="$WT" python3 - <<'PY'
