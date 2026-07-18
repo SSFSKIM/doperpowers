@@ -51,6 +51,13 @@ DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 export DAEMON_HOME BOARD_SCRIPTS
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 export LOCAL_REPO
+# The board scripts this tick invokes bare (board-reconcile, board-answer,
+# board-transition) anchor _lib.sh's BOARD_ROOT on the CURRENT directory —
+# under launchd/cron the cwd is not a repo and they die at source time
+# ("not inside a git repo"; REPORT failed every launchd tick, and RELAY
+# would stamp its at-most-once guard and then lose the answer the same
+# way). Run the whole tick from the consumer repo.
+cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exit 1; }
 IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing-tickets/scripts/implement-dispatch.sh}"
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
 LAND_DISPATCH_CMD="${LAND_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/land-dispatch.sh}"

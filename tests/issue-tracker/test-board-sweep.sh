@@ -41,6 +41,12 @@ export SWEEP_LOG="$TEST_ROOT/sweep.log"
 export MOCK_PR_LIST="$TEST_ROOT/pr-list.json"; echo "[]" > "$MOCK_PR_LIST"
 export COMMENTS_DIR="$TEST_ROOT/comments"; mkdir -p "$COMMENTS_DIR"
 export FINALIZE_MAP="$TEST_ROOT/finalize.json"; echo "{}" > "$FINALIZE_MAP"
+# A consumer repo distinct from the invocation cwd: launchd/cron start the
+# tick outside any repo, and the bare board scripts (reconcile, answer,
+# transition) anchor _lib.sh on the current directory — the sweep must cd.
+# A real git repo, as in production: board-transition runs against it live.
+export LOCAL_REPO="$TEST_ROOT/consumer"
+git init -q "$LOCAL_REPO"
 
 # gh overlay: pr list + issue-view comments are test fixtures; everything
 # else delegates to the shared issue-tracker mock.
@@ -115,6 +121,7 @@ STUB
 cat > "$TEST_ROOT/reconcile" <<'STUB'
 #!/usr/bin/env bash
 echo "reconcile-ran" >> "$ACTION_LOG"
+echo "reconcile-pwd:$PWD" >> "$ACTION_LOG"
 echo "reconcile report line"
 STUB
 chmod +x "$TEST_ROOT/impl-dispatch" "$TEST_ROOT/review-dispatch" \
@@ -277,6 +284,7 @@ assert_contains "$relayed" "IC_15a" "relayed comment id is recorded in the meta"
 
 # REPORT
 assert_contains "$log" "reconcile-ran" "report pass runs reconcile"
+assert_contains "$log" "reconcile-pwd:$LOCAL_REPO" "tick runs from LOCAL_REPO (launchd cwd is not a repo)"
 assert_contains "$(cat "$SWEEP_LOG")" "reconcile report line" "sweep log captures the report"
 
 echo "board-sweep: idempotence + isolation + lock"
