@@ -47,7 +47,7 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 11:05Z) M4 (core): live shakedown on ida-solution — tick 1 dispatched all three ELIGIBLE tickets (#492/#593/#595, spawn→bind→gateway meta) + attached review-pr-574; all three workers passed the ROUTED ticket-gate and wrote `[gate] pass` verdicts (the 7.21.x schema's first live exercise); tick 2 dispatched nothing (idempotence proven); launchd agent installed and loaded (`launchctl list` exit 0). Evidence in Artifacts.
 - [x] (2026-07-18 11:25Z) M4 (tail): launchd tick FAILED as the TCC memory predicted — `Operation not permitted` executing anything under `~/Documents` from launchd context (probe: `launchctl submit -- /bin/ls ~/Documents/GitHub` → EPERM). Not a code defect: a machine-level folder-protection constraint. Mitigated three ways: sweep-setup.md documents the remedies (one-time bash grant / terminal-session timer / relocation), an interim detached timer loop was started from the TCC-granted session (pid 87645, automation live now), and the launchd agent stays loaded so it self-arms the moment the grant is made (mkdir lock + idempotence make dual timers safe).
 - [x] (2026-07-18 12:10Z) M5 (review): whole-branch fresh-context review (native reviewer subagent — the human declined the codex launch; see Decision Log) returned 2×P1 + P2 + P3, ALL confirmed real and fixed test-first (finalize-noop fallback in RECOVER; RELAY rebuilt on finalize-normalize + transcript-mtime ordering; DEFAULT_BRANCH fallback reachable under errexit; `mkdir -p DAEMON_HOME` before the lock). Full battery re-run green.
-- [ ] M5 (handoff): open PR to main (NOT merged — human gate per instruction) → retrospective.
+- [x] (2026-07-18 12:40Z) M5 (handoff): retrospective written; PR opened to main and left for the human to merge.
 
 ## Surprises & Discoveries
 
@@ -90,6 +90,17 @@ the daemon registry, never in the tick's memory.
   (the finalize stub now refuses to produce verdicts the real one cannot).
   Evidence: suite RED on exactly the six finding-driven asserts before the
   fixes, GREEN after; reviewer verdict excerpt in Artifacts.
+- Observation (M5): the pre-existing reviewing-prs suites
+  (test-review-dispatch, test-land-dispatch) flaked twice during full-
+  battery runs on this now-busy machine (different asserts each time; both
+  pass repeatedly in isolation, 4/4 across re-runs). They read the GLOBAL
+  `claude agents` view, and this initiative makes a live worker fleet the
+  machine's steady state — the quiet-machine assumption those suites were
+  written under no longer holds. Untouched by this branch; noted as a
+  hermeticity follow-up, not fixed here.
+  Evidence: battery run 1 failed in test-review-dispatch, battery run 2 in
+  test-land-dispatch (1–3 asserts, non-repeating), isolated re-runs all
+  green.
 - Observation (M3, pre-arm registry inspection): the live registry held a
   `working` meta bound to ticket #489, whose ticket is `in-review` — the
   worker finished long ago (nothing finalizes an implement worker's meta
