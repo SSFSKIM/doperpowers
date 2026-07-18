@@ -28,13 +28,12 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
-| `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings |
+| `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
 | `references/land-conflicts.md` | runtime-opened conflict-resolution procedure — the protocol carries only a pointer (`{{CONFLICTS_DOC}}` = absolute path); the worker opens it when GitHub reports the PR unmergeable. Procedure in the plugin file, instance facts in the prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
-| `references/engine-blocks/` | engine block + the single shared fallback block; `review-dispatch.sh` resolves the worker engine (label → `WORKER_ENGINE` → codex) |
 | `confident-ready` state | owned by doperpowers:issue-tracker (state table there); this loop is its only writer |
 
 ## Dedupe & sweep policy

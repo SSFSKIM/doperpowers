@@ -100,8 +100,6 @@ case "${AUTO_MERGE_ENABLED:-false}" in
 esac
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
-ENGINE_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/engine-codex-review.md"
-FALLBACK_FILE="$SKILL_DIR/references/engine-blocks/fallback-engine.md"
 REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
 # Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid|host|boot"
@@ -235,7 +233,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" tmp pr_json exports issue issue_url td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
+  local pr="$1" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -243,7 +241,6 @@ dispatch_one() {
   exports="$(TMP="$tmp" python3 - <<'PY'
 import json, os, re, shlex
 d = json.load(open(os.path.join(os.environ["TMP"], "pr.json")))
-open(os.path.join(os.environ["TMP"], "pr-body.md"), "w").write(d.get("body") or "")
 def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
 q("PR_TITLE", d["title"]); q("BASE_REF", d["baseRefName"]); q("HEAD_REF", d["headRefName"])
 q("HEAD_SHA", d["headRefOid"]); q("PR_URL", d["url"]); q("PR_STATE", d["state"])
@@ -266,16 +263,9 @@ PY
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
-  # primary ticket brief (first linked issue; the full list rides the prompt)
+  # primary ticket (first linked issue; the full list rides the prompt as
+  # numbers only — the worker reads PR and ticket bodies live via gh)
   issue="${LINKED_ISSUES%% *}"
-  issue_url="none"
-  : > "$tmp/issue-body.md"
-  if [ -n "$issue" ]; then
-    # degrade gracefully — a deleted linked issue must not block the review
-    issue_url="$(gh issue view "$issue" -R "$BOARD_REPO" --json url -q .url 2>/dev/null || echo none)"
-    gh issue view "$issue" -R "$BOARD_REPO" --json body -q .body > "$tmp/issue-body.md" 2>/dev/null \
-      || : > "$tmp/issue-body.md"
-  fi
 
   # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
@@ -351,10 +341,10 @@ EOF2
     return 1
   fi
 
-  prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_PR_TITLE="$PR_TITLE" \
+  prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
-    P_ISSUE_URL="$issue_url" P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
+    P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
@@ -362,8 +352,6 @@ EOF2
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing-tickets/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
-    ENGINE_BLOCK_FILE="$ENGINE_BLOCK_FILE" FALLBACK_FILE="$FALLBACK_FILE" \
-    PR_BODY_FILE="$tmp/pr-body.md" ISSUE_BODY_FILE="$tmp/issue-body.md" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
 import os, re, sys
@@ -374,11 +362,7 @@ def readcap(path):
         t = t[:CAP] + "\n[... truncated for dispatch — read the rest on GitHub]"
     return t
 t = open(sys.argv[1]).read()
-t = t.replace("{{ENGINE_BLOCK}}", open(os.environ["ENGINE_BLOCK_FILE"]).read())
-t = t.replace("{{FALLBACK_BLOCK}}", open(os.environ["FALLBACK_FILE"]).read())
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
-subs["PR_BODY"] = readcap(os.environ["PR_BODY_FILE"]) or "(empty PR body)"
-subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(no linked issue)"
 subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \

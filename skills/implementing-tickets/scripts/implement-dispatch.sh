@@ -46,7 +46,6 @@ BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pw
 BOOTSTRAP_TEMPLATE="${IMPLEMENT_BOOTSTRAP_TEMPLATE:-$SKILL_DIR/references/worker-bootstrap.md}"
 SPIKE_PROTOCOL="$SKILL_DIR/references/spike-worker-protocol.md"
 IMPLEMENT_PROTOCOL="$SKILL_DIR/SKILL.md"
-EXECUTION_BLOCK_FILE="$SKILL_DIR/references/engine-blocks/execution.md"
 DECOMPOSE_DOC="$SKILL_DIR/references/implement-decompose.md"
 CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
 
@@ -55,7 +54,6 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
-[ -f "$EXECUTION_BLOCK_FILE" ] || die "execution block missing: $EXECUTION_BLOCK_FILE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
 if [ -z "${BOARD_REPO:-}" ]; then
@@ -64,16 +62,11 @@ fi
 [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
 export BOARD_REPO
 
-# `|| true` keeps errexit+pipefail from killing the script when origin/HEAD
-# is unset (a hand-added remote) — the fallback below is the handler.
-DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
-[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
-
 # Board facts for ticket <1>, shell-quoted (state, eligibility, title, url,
-# category, engine label, body → temp file). _board.py is the single
-# eligibility authority — the same predicate board-list.sh tags ELIGIBLE.
+# category, engine label). _board.py is the single eligibility authority —
+# the same predicate board-list.sh tags ELIGIBLE.
 _ticket_exports() {
-  T_ID="$1" T_BODY_FILE="$2" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+  T_ID="$1" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
 import os, shlex, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
@@ -84,7 +77,6 @@ if tid not in tickets:
     q("T_STATE", "missing"); q("T_ELIGIBLE", 0)
     raise SystemExit(0)
 n = tickets[tid]
-open(os.environ["T_BODY_FILE"], "w").write(n.get("body") or "")
 q("T_STATE", n["state"])
 q("T_ELIGIBLE", 1 if B.eligible(tickets, tid) else 0)
 q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
@@ -153,8 +145,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" tmp exports engine role protocol_file decompose exec_note prompt name spawn_out uuid meta status
-  tmp="$(mktemp -d)"
+  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -162,21 +153,21 @@ dispatch_one() {
     case "$status" in
       working|blocked|error)
         echo "skip #$n: bound worker ${meta%%|*} status=$status"
-        rm -rf "$tmp"; return 0 ;;
+        return 0 ;;
     esac
   fi
 
-  exports="$(_ticket_exports "$n" "$tmp/issue-body.md")" \
-    || { echo "#$n: board snapshot failed" >&2; rm -rf "$tmp"; return 1; }
+  exports="$(_ticket_exports "$n")" \
+    || { echo "#$n: board snapshot failed" >&2; return 1; }
   eval "$exports"
   if [ "${T_ELIGIBLE:-0}" != "1" ]; then
     echo "skip #$n: not eligible (state=${T_STATE:-unknown})"
-    rm -rf "$tmp"; return 0
+    return 0
   fi
 
   if [ "$(_slots_used)" -ge "$CAP" ]; then
     echo "cap reached ($CAP): #$n stays queued for the next sweep"
-    rm -rf "$tmp"; return 0
+    return 0
   fi
 
   engine="${T_ENGINE_LABEL:-}"
@@ -184,36 +175,23 @@ dispatch_one() {
 
   if [ "$T_CATEGORY" = "spike" ]; then
     role="SPIKE"; protocol_file="$SPIKE_PROTOCOL"
-    decompose="(none — spike lane)"; exec_note="(none — spike lane)"
+    decompose="(none — spike lane)"
   else
     role="IMPLEMENT"; protocol_file="$IMPLEMENT_PROTOCOL"
-    decompose="$DECOMPOSE_DOC"; exec_note=""
+    decompose="$DECOMPOSE_DOC"
   fi
-  [ -f "$protocol_file" ] || { echo "#$n: protocol file missing: $protocol_file" >&2; rm -rf "$tmp"; return 1; }
+  [ -f "$protocol_file" ] || { echo "#$n: protocol file missing: $protocol_file" >&2; return 1; }
 
-  git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
-    || : > "$tmp/facts.md"
-
+  # The prompt carries bindings only — the worker reads its ticket (and the
+  # repo's .doperpowers/repo-facts.md, if any) from gh / its own worktree.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
-    P_ISSUE_TITLE="$T_TITLE" P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
     P_ENGINE_NAME="$engine" P_PROTOCOL_FILE="$protocol_file" \
-    P_DECOMPOSE_DOC="$decompose" EXEC_NOTE="$exec_note" \
-    EXECUTION_BLOCK_FILE="$EXECUTION_BLOCK_FILE" \
-    ISSUE_BODY_FILE="$tmp/issue-body.md" FACTS_FILE="$tmp/facts.md" \
+    P_DECOMPOSE_DOC="$decompose" \
     python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
 import os, re, sys
-CAP = 20000  # keep the spawn arg well under the OS arg-size limit
-def readcap(path):
-    t = open(path).read()
-    if len(t) > CAP:
-        t = t[:CAP] + "\n[... truncated for dispatch — read the rest on GitHub]"
-    return t
 t = open(sys.argv[1]).read()
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
-subs["EXECUTION_BLOCK"] = os.environ["EXEC_NOTE"] or open(os.environ["EXECUTION_BLOCK_FILE"]).read()
-subs["ISSUE_BODY"] = readcap(os.environ["ISSUE_BODY_FILE"]) or "(empty issue body)"
-subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
-    "(no repo-facts manifest at .doperpowers/repo-facts.md)"
 out = re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), m.group(0)), t)
 left = sorted(set(re.findall(r"\{\{[A-Z_]+\}\}", out)))
 if left:
@@ -221,8 +199,7 @@ if left:
     sys.exit(1)
 print(out)
 PY
-)" || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; rm -rf "$tmp"; return 1; }
-  rm -rf "$tmp"
+)" || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; return 1; }
   [ -n "$prompt" ] || { echo "#$n: empty prompt — not dispatching" >&2; return 1; }
 
   name="$n-$T_SLUG"

@@ -154,23 +154,20 @@ pick by repo visibility:
    the clodex gateway settings, GPT models through the local proxy;
    `claude` = plain Claude models). Render the spawn bootstrap
    (`doperpowers:implementing-tickets` `references/worker-bootstrap.md` —
-   the worker opens its protocol from the dispatcher-owned file the
-   bootstrap names). Substitute every `{{PLACEHOLDER}}`: `ROLE` = `SPIKE`
-   when the ticket's category is `spike`, else `IMPLEMENT`;
-   `PROTOCOL_FILE` = the ABSOLUTE plugin path of the lane's protocol
-   (spike → implementing-tickets' `references/spike-worker-protocol.md`,
-   else implementing-tickets' `SKILL.md` — the skill IS the implement
-   protocol); `ISSUE_NUMBER`, `ISSUE_URL`, `ISSUE_TITLE`, `REPO`,
-   `BOARD_SCRIPTS` = this skill's scripts dir, `ISSUE_BODY` = the full
-   issue body from `gh issue view <n> --json body`, `ENGINE_NAME` = the
-   engine, `REPO_FACTS` = `git show origin/<default-branch>:.doperpowers/repo-facts.md`
-   (or a "(no repo-facts manifest)" note when absent), `EXECUTION_BLOCK` =
-   implementing-tickets' `references/engine-blocks/execution.md` (one
-   block, both routes; bind the literal note "(none — spike lane)" for a
-   spike), and `DECOMPOSE_DOC` = the ABSOLUTE path of implementing-tickets'
-   `references/implement-decompose.md` (a runtime-opened procedure: the
-   prompt carries only the pointer; the worker opens it when Check-2
-   says decompose; "(none — spike lane)" for a spike).
+   the worker opens its protocol from the dispatcher-pinned file the
+   bootstrap names, then reads its own ticket and the repo's
+   `.doperpowers/repo-facts.md` itself). Substitute every
+   `{{PLACEHOLDER}}`: `ROLE` = `SPIKE` when the ticket's category is
+   `spike`, else `IMPLEMENT`; `PROTOCOL_FILE` = the ABSOLUTE plugin path
+   of the lane's protocol (spike → implementing-tickets'
+   `references/spike-worker-protocol.md`, else implementing-tickets'
+   `SKILL.md` — the skill IS the implement protocol); `ISSUE_NUMBER`,
+   `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
+   `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
+   implementing-tickets' `references/implement-decompose.md` (a
+   runtime-opened procedure: the prompt carries only the pointer; the
+   worker opens it when Check-2 says decompose; "(none — spike lane)" for
+   a spike).
 3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
    The codex route prefixes the gateway env and pins the gateway's model

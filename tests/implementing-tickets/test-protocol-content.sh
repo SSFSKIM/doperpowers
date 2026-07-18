@@ -45,7 +45,7 @@ assert_contains "$proto" "doperpowers:issue-tracker" "registration routes throug
 assert_contains "$proto" "author its body at register time" "follow-up body is authored at register time"
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
-assert_contains "$proto" "{{EXECUTION_BLOCK}}" "execution block placeholder present"
+assert_contains "$proto" "EXECUTION (gate passed)" "execution doctrine lives inline in the protocol (no binding indirection)"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
 assert_contains "$proto" "ASK EARLY" "ask-early clause present (no assumption-building past human-grade forks)"
 assert_contains "$proto" "a pause, not a death" "park-pause doctrine present"
@@ -65,9 +65,9 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "placeholders:"
-# The ticket brief and repo-facts tails moved to the bootstrap's binding
-# sections; the protocol keeps only the tokens its own clauses use.
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+# The protocol keeps only the tokens its own clauses use; the worker reads
+# its ticket and the repo-facts manifest itself (no inlined bodies).
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -84,15 +84,14 @@ fi
 echo "worker bootstrap:"
 [ -f "$BOOTSTRAP" ] || { echo "missing $BOOTSTRAP"; exit 1; }
 bootstrap="$(cat "$BOOTSTRAP")"
-assert_contains "$bootstrap" 'unconditionally open' "bootstrap: unconditional-open instruction"
+assert_contains "$bootstrap" "dispatcher-pinned copy" "bootstrap: protocol comes from the dispatcher-pinned file"
 assert_contains "$bootstrap" "{{PROTOCOL_FILE}}" "bootstrap: dispatcher-owned protocol path token"
-assert_contains "$bootstrap" "Do not resolve this protocol from the workspace" "bootstrap: never-resolve-from-workspace guard"
-assert_contains "$bootstrap" "Never proceed from this bootstrap alone" "bootstrap: no protocol-free conduct"
+assert_contains "$bootstrap" "open it first and follow it" "bootstrap: protocol-before-work instruction"
 assert_contains "$bootstrap" "{{ROLE}}" "bootstrap: one parameterized bootstrap for both lanes"
-assert_contains "$bootstrap" "ISSUE_BODY binding" "bootstrap: ticket brief rides as a binding section"
-assert_contains "$bootstrap" "REPO_FACTS binding" "bootstrap: repo-facts manifest rides as a binding section"
-assert_contains "$bootstrap" "EXECUTION_BLOCK binding" "bootstrap: execution block rides as a binding section"
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{EXECUTION_BLOCK}} {{ISSUE_BODY}} {{ISSUE_NUMBER}} {{ISSUE_TITLE}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO_FACTS}} {{REPO}} {{ROLE}}"
+assert_not_contains "$bootstrap" "ISSUE_BODY" "bootstrap: no inlined ticket body (the worker reads its ticket via gh)"
+assert_not_contains "$bootstrap" "REPO_FACTS" "bootstrap: no inlined repo-facts (the worker reads the manifest from its worktree)"
+assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-block binding (the doctrine lives in the protocol)"
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -136,28 +135,24 @@ assert_contains "$decomp" "NO code" "decompose doc: write-no-code clause present
 assert_contains "$decomp" "grants no authority beyond your prompt" "decompose doc: no-extra-authority framing"
 assert_not_contains "$decomp" "{{" "decompose doc: placeholder-free (opened at runtime, never rendered)"
 
-echo "engine blocks:"
-# One harness, one block: both model routes (gateway "codex" / plain "claude")
-# are Claude-harness sessions, so a single execution block serves both.
-EXEC="$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution.md"
-[ -f "$EXEC" ] || { echo "missing $EXEC"; exit 1; }
-exec_block="$(cat "$EXEC")"
-if [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-claude.md" ] \
-   || [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks/execution-codex.md" ]; then
-    fail "per-engine execution blocks are retired (one harness, one block)"
+echo "execution doctrine (inline — no engine-blocks indirection):"
+# One harness, one doctrine: both model routes (gateway "codex" / plain
+# "claude") are Claude-harness sessions, and the execution text lives in
+# the protocol's own Execution section.
+if [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks" ]; then
+    fail "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 else
-    pass "per-engine execution blocks are retired (one harness, one block)"
+    pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 fi
-assert_contains "$exec_block" "EXECPLAN:" "block: execplan mode wired (not bare PLAN)"
-assert_contains "$exec_block" "doperpowers:execplan" "block: routes to the execplan doctrine"
-assert_not_contains "$exec_block" ".agents/skills" "block: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
-assert_not_contains "$exec_block" "work ALONE" "block: no blanket work-alone constraint (subagents are the worker's call)"
-assert_not_contains "$exec_block" "YOURSELF" "block: no solo-execution emphasis (delegation inside the thread is the worker's call)"
-assert_contains "$exec_block" "writing-plans" "block: names writing-plans as interactive-only"
-assert_contains "$exec_block" "subagent-driven-development" "block: names the forbidden interactive skills"
-assert_contains "$exec_block" "never" "block: evidence mandate present"
-assert_contains "$exec_block" "claim completion on reasoning alone" "block: no-evidence-no-done clause"
-assert_contains "$exec_block" "big-but-atomic" "block: atomic execplan trigger"
+assert_contains "$proto" "EXECPLAN:" "execution: execplan mode wired (not bare PLAN)"
+assert_contains "$proto" "doperpowers:execplan" "execution: routes to the execplan doctrine"
+assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
+assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
+assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
+assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
+assert_contains "$proto" "subagent-driven-development" "execution: names the forbidden interactive skills"
+assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
+assert_contains "$proto" "big-but-atomic" "execution: atomic execplan trigger"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }

@@ -136,9 +136,9 @@ assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | head -1)" "model=fable" \
   "codex route pins the gateway model alias"
 PROMPT="$PROMPT_DIR/1-fix-the-report-builder-pipeline.prompt"
 assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries the IMPLEMENT role"
-assert_file_contains "$PROMPT" "BUILD-MARKER" "prompt embeds the issue body"
-assert_file_contains "$PROMPT" "ARM64-FACT" "prompt embeds repo-facts from origin default branch"
-assert_file_contains "$PROMPT" "EXECUTION (gate passed)" "prompt embeds the execution block"
+assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
+assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-facts (the worker reads the manifest from its worktree)"
+assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
 assert_file_contains "$PROMPT" "implementing-tickets/SKILL.md" "implement lane opens the SKILL protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
 meta_ticket="$(python3 -c "
@@ -163,7 +163,7 @@ out="$(run 3)"
 PROMPT3="$PROMPT_DIR/3-probe-the-cache-layer.prompt"
 assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "spike role"
 assert_file_contains "$PROMPT3" "spike-worker-protocol.md" "spike lane opens the spike protocol"
-assert_file_contains "$PROMPT3" "(none — spike lane)" "spike gets the literal no-execution-block binding"
+assert_file_contains "$PROMPT3" "(none — spike lane)" "spike gets the literal no-decompose binding"
 
 out="$(run 5)"
 assert_contains "$(grep 'spawn:--no-wait 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
@@ -255,12 +255,12 @@ out="$(IMPLEMENT_BOOTSTRAP_TEMPLATE="$BAD_TEMPLATE" run 1)" || true
 assert_contains "$out" "unrendered placeholder" "strict render aborts on a surviving placeholder"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "strict-render failure spawns nothing"
 
-echo "implement-dispatch: default-branch fallback"
+echo "implement-dispatch: no origin/HEAD dependency"
 
 git -C "$CLONE" symbolic-ref -d refs/remotes/origin/HEAD
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(run 1)"
-assert_contains "$out" "dispatched #1" "a clone without origin/HEAD still dispatches (main fallback)"
+assert_contains "$out" "dispatched #1" "a clone without origin/HEAD still dispatches (nothing reads the default branch)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

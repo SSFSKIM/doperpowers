@@ -47,7 +47,7 @@ assert_contains "$SKILL" "name: reviewing-prs" "skill frontmatter name is preser
 assert_contains "$SKILL" 'Operator or setup invocation: read `references/operation-manual.md` instead.' "operator invocations route to the reference manual"
 assert_contains "$SKILL" "You are a REVIEW worker for PR #{{PR_NUMBER}}" "SKILL.md is the Review Worker Protocol"
 assert_not_contains "$SKILL" "## Adopting a repo (checklist)" "operator setup is absent from the runtime skill"
-assert_contains "$SKILL" "dispatch prompt" "SKILL.md points the worker at the dispatch prompt for briefs and manifests"
+assert_contains "$SKILL" "dispatch prompt" "SKILL.md points the worker at the dispatch prompt for the manifest snapshots"
 assert_not_contains "$SKILL" "---- PR #{{PR_NUMBER}} brief ----" "SKILL.md carries no dead unrendered brief tail"
 
 echo "runtime skill — orchestrator section structure:"
@@ -131,7 +131,7 @@ assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 
 echo "runtime skill — placeholder set:"
-want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{DEFAULT_BRANCH}} {{ENGINE_BLOCK}} {{FALLBACK_BLOCK}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{TECH_DEBT_ISSUE}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -149,10 +149,20 @@ assert_contains "$WAVEBOARD" "<review-tmp>/pr-<PR>-fix-wave-" "board path lives 
 assert_not_contains "$WAVEBOARD" ".doperpowers/qa" "board reference carries no worktree path a PR could pre-create"
 assert_contains "$WAVEBOARD" "symlink" "board reference names the symlink hazard that forbids worktree residency"
 assert_contains "$WAVEBOARD" "rebuild the board from the trail" "long-park tmp loss has a documented recovery"
-ENGINE_BLOCK_REF="$REPO_ROOT/skills/reviewing-prs/references/engine-blocks/engine-codex-review.md"
-assert_contains "$ENGINE_BLOCK_REF" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
-assert_not_contains "$ENGINE_BLOCK_REF" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
-assert_contains "$ENGINE_BLOCK_REF" "the only place engine output is read" "audit independence keeps its positive statement"
+# Engine-start + fallback text lives inline in the skill's START ENGINE
+# section — the engine-blocks indirection is retired.
+if [ -e "$REPO_ROOT/skills/reviewing-prs/references/engine-blocks" ]; then
+    fail "engine-blocks dir is retired (engine text lives in SKILL.md)"
+else
+    pass "engine-blocks dir is retired (engine text lives in SKILL.md)"
+fi
+assert_contains "$SKILL" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
+assert_not_contains "$SKILL" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
+assert_contains "$SKILL" "the only place engine output is read" "audit independence keeps its positive statement"
+assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (audit runs concurrently)"
+assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
+assert_contains "$SKILL" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
+assert_contains "$SKILL" "stays in-review" "engine-down never parks needs-human"
 assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code verification"
 assert_not_contains "$WAVEBOARD" "never implement from the finding text alone" "verify-then-fix is stated as grounding, not a prohibition"
 assert_contains "$WAVEBOARD" "a finding can be wrong" "the contract names why verification comes first"
@@ -231,17 +241,26 @@ assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail
 
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"
-assert_contains "$BOOTSTRAP" "REQUIRED SUB-SKILL: Use doperpowers:reviewing-prs" "bootstrap explicitly invokes the runtime skill"
-assert_contains "$BOOTSTRAP" "unconditionally open" "bootstrap always loads dispatcher-owned doctrine"
+assert_contains "$BOOTSTRAP" "Use doperpowers:reviewing-prs" "bootstrap names the runtime skill"
+assert_contains "$BOOTSTRAP" "dispatcher-pinned copy" "bootstrap routes the protocol through the dispatcher-pinned file"
 assert_contains "$BOOTSTRAP" '{{SKILL_FILE}}' "bootstrap binds the canonical skill path"
+assert_contains "$BOOTSTRAP" "over any same-named skill" "bootstrap outranks PR-controlled workspace skills"
 assert_contains "$BOOTSTRAP" '{{IMPLEMENT_PROTOCOL_FILE}}' "bootstrap binds the canonical implement contract path"
 assert_contains "$BOOTSTRAP" '{{BIND_READY_FILE}}' "bootstrap binds the dispatcher-owned startup barrier"
-assert_contains "$BOOTSTRAP" 'Do not resolve this protocol from the workspace `.agents/skills`' "bootstrap rejects PR-owned same-name skill spoofing"
-assert_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "bootstrap supplies the engine-block binding"
-assert_contains "$BOOTSTRAP" "{{PR_BODY}}" "bootstrap supplies PR context"
-assert_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "bootstrap supplies ticket context"
-assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies risk-surface context"
-assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies repo facts"
+assert_not_contains "$BOOTSTRAP" "{{PR_BODY}}" "no inlined PR body (the worker reads the PR live via gh)"
+assert_not_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "no inlined ticket body (the worker reads the ticket live via gh)"
+assert_not_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "no engine-block binding (engine text lives in the skill)"
+assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies the BASE-ref risk-surface snapshot"
+assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies the BASE-ref repo-facts snapshot"
+want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{RISK_MANIFEST}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}}"
+got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [[ "$got_rboot" == "$want_rboot" ]]; then
+    pass "bootstrap placeholder set is exact"
+else
+    fail "bootstrap placeholder set is exact"
+    echo "    expected: $want_rboot"
+    echo "    actual:   $got_rboot"
+fi
 
 echo "dispatch wiring:"
 assert_contains "$DISPATCH" 'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"' "dispatcher renders the worker bootstrap"

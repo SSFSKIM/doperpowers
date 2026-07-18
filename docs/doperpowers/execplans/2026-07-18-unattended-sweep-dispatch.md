@@ -684,3 +684,30 @@ finding-driven asserts before the fixes and full green after.
   when the work genuinely isn't reviewable yet, with the stated
   consequence that the review loop skips drafts until marked ready. The
   test pin moved from the ban phrase to the consequence sentence.
+- 2026-07-19 (post-shakedown, human call): worker prompt simplification —
+  the bootstraps carried explanation and hard guards the worker doesn't
+  need, and inlined bodies the worker can read itself. (1) The
+  skill-invocation preamble ("For this dispatch, X means: unconditionally
+  open…", the `.agents/skills` spoofing guard, the placeholder lecture,
+  "never proceed from this bootstrap alone") collapsed to two sentences:
+  use the skill, protocol = the dispatcher-pinned copy at the bound path,
+  authoritative for the turn. The pinned-path mechanism stays — it is the
+  version-pinning device (the plugin cache lags the dispatcher's tree) and
+  the path is derived from the dispatch script's own location at render
+  time, so it survives relocation/VM moves. (2) PR_BODY and ISSUE_BODY
+  are no longer inlined (were up to 20k chars each): workers read PR and
+  ticket live via gh — fresher, no truncation cap, smaller spawn args.
+  RISK_MANIFEST and REPO_FACTS stay inlined on the REVIEW side only:
+  they are BASE-ref snapshots a PR must not be able to edit (the
+  self-merge gate reads them); the implement worker reads
+  `.doperpowers/repo-facts.md` from its own worktree instead. (3) The
+  static engine text folded into the protocols: execution.md into
+  implementing-tickets SKILL.md §Execution, engine-codex-review.md +
+  fallback-engine.md into reviewing-prs SKILL.md §START ENGINE
+  (post-clodex-migration there is one route and one engine — the
+  binding indirection preserved a distinction with no referent);
+  `references/engine-blocks/` is gone on both sides, and the review
+  bootstrap binds REVIEW_ENGINE / CODEX_REVIEW_MODEL / CODEX_REVIEW_EFFORT
+  as plain values. Implement-dispatch lost its DEFAULT_BRANCH resolution
+  (its only consumer was the repo-facts snapshot) and all body/facts
+  temp-file plumbing.

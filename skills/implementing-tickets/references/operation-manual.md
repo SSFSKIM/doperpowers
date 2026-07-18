@@ -20,10 +20,9 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `SKILL.md` (the skill root) | the Implement Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
-| `references/worker-bootstrap.md` | the spawn bootstrap for BOTH lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE), `{{PROTOCOL_FILE}}` (the dispatcher-owned absolute path of the lane's protocol), the runtime bindings, and the multi-line binding sections (execution block, ticket brief, repo-facts manifest) |
+| `references/worker-bootstrap.md` | the spawn bootstrap for BOTH lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
-| `references/engine-blocks/execution.md` | the EXECUTION text — one block for both model routes, since every worker is a Claude-harness session (the engine label picks the model route: `codex` = clodex gateway/GPT, `claude` = plain Claude); keeps interactive-session skills (writing-plans, subagent-driven-development) out of daemon workers; rides the bootstrap's EXECUTION_BLOCK binding (implement lane only — spikes are exploration, not TDD) |
 | The Ticket Gate | the pre-code pass/park verdict (below; check definitions in issue-tracker's `references/ticket-gate.md`) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
@@ -90,7 +89,7 @@ ideas — they coexist on one board but never in one lane. A spike ticket's
 deliverable is **information** (a structured `[findings]` comment), never a
 merge; failures discard at the cost of reading a comment. Dispatch binds
 `references/spike-worker-protocol.md` as the protocol instead of the
-implement protocol — same ritual, same binding, no EXECUTION_BLOCK.
+implement protocol — same ritual, same bindings.
 
 What changes and what doesn't:
 
