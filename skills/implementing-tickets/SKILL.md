@@ -104,9 +104,10 @@ own plan in this session.
 
 Pre-PR self-review: one independent review pass before opening the PR
 (and fixing what it finds while your context is warm) is fine judgment —
-scale it to the change. Do not run review-fix LOOPS: the loop is the
-review worker's, and it attaches to every non-draft PR you open (external
-engine + fix waves). Open the PR and hand off.
+scale it to the change, and a small diff needs none: skip straight to the
+PR and let the reviewer see it all. Do not run review-fix LOOPS: the loop
+is the review worker's, and it attaches to every non-draft PR you open
+(external engine + fix waves). Open the PR and hand off.
 
 ## Mid-build Forks and Parks
 
