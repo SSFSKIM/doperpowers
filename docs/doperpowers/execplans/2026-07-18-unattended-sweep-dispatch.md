@@ -45,7 +45,7 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 09:45Z) M2: `board-sweep.sh` (recover / cancel / dispatch / review / land / relay / report passes, mkdir lock — macOS has no flock(1)) + hermetic suite green (26 asserts; RED verified by absence check, exit 127), shellcheck clean.
 - [x] (2026-07-18 10:30Z) M3: prose routing (dispatch ritual, TECH-DEBT strikes for items 1/2/10-L2), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; full battery green (see Surprises for the slot-counter defect a pre-arm registry inspection surfaced).
 - [x] (2026-07-18 11:05Z) M4 (core): live shakedown on ida-solution — tick 1 dispatched all three ELIGIBLE tickets (#492/#593/#595, spawn→bind→gateway meta) + attached review-pr-574; all three workers passed the ROUTED ticket-gate and wrote `[gate] pass` verdicts (the 7.21.x schema's first live exercise); tick 2 dispatched nothing (idempotence proven); launchd agent installed and loaded (`launchctl list` exit 0). Evidence in Artifacts.
-- [ ] M4 (tail): observe the first launchd-context tick (TCC survival of a timer-context spawn — the next worker PR's review attach is the natural probe).
+- [x] (2026-07-18 11:25Z) M4 (tail): launchd tick FAILED as the TCC memory predicted — `Operation not permitted` executing anything under `~/Documents` from launchd context (probe: `launchctl submit -- /bin/ls ~/Documents/GitHub` → EPERM). Not a code defect: a machine-level folder-protection constraint. Mitigated three ways: sweep-setup.md documents the remedies (one-time bash grant / terminal-session timer / relocation), an interim detached timer loop was started from the TCC-granted session (pid 87645, automation live now), and the launchd agent stays loaded so it self-arms the moment the grant is made (mkdir lock + idempotence make dual timers safe).
 - [ ] M5: codex whole-branch review → fix findings → open PR to main (NOT merged — human gate per instruction) → retrospective.
 
 ## Surprises & Discoveries
@@ -62,6 +62,16 @@ the daemon registry, never in the tick's memory.
   blocked, ida-solution#302).
   Evidence: `gh run list --workflow=pr-review-dispatch.yml` shows
   `queued … 23h57m` rows ending `cancelled`.
+- Observation (M4 tail): the launchd path is blocked on this machine by
+  macOS folder protection, not by anything in the sweep — a launchd-context
+  shell gets EPERM on ANY read under `~/Documents`, where both the plugin
+  worktree and the consumer repo live. The spawned WORKERS were never the
+  problem (they run under the resident claude daemon, which holds grants);
+  the tick script's own reads are. Documented in sweep-setup.md with three
+  remedies; interim terminal-session timer carries the automation.
+  Evidence: `/tmp/board-sweep-launchd.log` → three `Operation not
+  permitted` lines; `launchctl submit -- /bin/ls ~/Documents/GitHub` →
+  `ls: … Operation not permitted`.
 - Observation (M3, pre-arm registry inspection): the live registry held a
   `working` meta bound to ticket #489, whose ticket is `in-review` — the
   worker finished long ago (nothing finalizes an implement worker's meta

@@ -12,11 +12,30 @@ the daemon registry.
 Arming the sweep IS the opt-in: nothing runs until you install a timer for
 it. One timer per consumer repo (the sweep is scoped by `LOCAL_REPO`).
 
-## launchd (macOS — recommended)
+## macOS and TCC — read this first
 
-A launchd **user agent** runs in your login session, which keeps TCC
-(privacy) grants intact for the daemons the sweep spawns — the known
-failure mode of cron-context spawning on macOS. Save as
+If the plugin checkout or the target repo lives under `~/Documents`,
+`~/Desktop`, or `~/Downloads`, a launchd- or cron-launched shell CANNOT
+read it — macOS folder protection denies with `Operation not permitted`
+(verified live 2026-07-18: `launchctl submit -- /bin/ls ~/Documents/GitHub`
+→ EPERM, while the identical sweep ran clean from a terminal). Pick one:
+
+- **Grant access once**: System Settings → Privacy & Security → Full Disk
+  Access (or Files and Folders → Documents) → add `/bin/bash`. The
+  launchd agent below then works as-is. Broadest fix, one gesture; note
+  it widens what ANY launchd bash job on this machine can read.
+- **Terminal-session timer**: run the tick loop from any terminal/tmux
+  session (TCC flows from the terminal app) —
+  `while true; do board-sweep.sh; sleep 300; done` detached with nohup.
+  Survives the session, not a reboot; re-arm after restarts. The mkdir
+  lock + idempotence make it safe to ALSO leave the launchd agent loaded:
+  whichever timer fires, one tick runs.
+- **Relocate**: keep the plugin checkout and repo clone outside the
+  protected folders; the launchd agent needs no grant at all.
+
+## launchd (macOS)
+
+A launchd **user agent** (not a system daemon) — save as
 `~/Library/LaunchAgents/com.user.doperpowers-board-sweep.plist`
 (adjust the three UPPERCASE placeholders):
 
