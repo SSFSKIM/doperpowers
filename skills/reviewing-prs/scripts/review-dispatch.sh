@@ -294,6 +294,34 @@ PY
     || : > "$tmp/risk.md"
   git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
     || : > "$tmp/facts.md"
+  # Normalize lingering finished ticket owners BEFORE binding (same
+  # preflight as land-dispatch): a claude-species implement worker has no
+  # self-finalizer, so its meta lingers status=working after its turn ends
+  # and board-bind protects it as a stable ACTIVE owner — which blocked the
+  # reviewer's bind and retired three reviewers in the 2026-07-18 live
+  # shakedown. finalize settles the truth (a genuinely live owner stays
+  # live and bind still refuses — correctly).
+  if [ -n "$issue" ]; then
+    while IFS= read -r owner; do
+      [ -n "$owner" ] || continue
+      "$DAEMON_SCRIPTS/daemon-finalize.sh" "$owner" >/dev/null 2>&1 || true
+    done <<EOF2
+$(DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$issue" python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if str(m.get("ticket", "")).lstrip("#") == os.environ["T_ISSUE"] \
+            and m.get("status") in ("working", "blocked"):
+        print(m.get("uuid", ""))
+PY
+)
+EOF2
+  fi
   # base-is-default drives the worker's main-exclusion clause.
   local base_is_default="no"
   [ "$BASE_REF" = "$DEFAULT_BRANCH" ] && base_is_default="yes"

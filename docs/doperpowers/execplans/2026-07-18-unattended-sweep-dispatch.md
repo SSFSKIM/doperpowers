@@ -109,17 +109,37 @@ the daemon registry, never in the tick's memory.
   not-for-merge marker; the implement protocol now mandates READY FOR
   REVIEW for the closing PR (clause + pin added; the three PRs were
   marked ready by hand, and the next tick attached their reviewers).
-- Observation (M5): the pre-existing reviewing-prs suites
-  (test-review-dispatch, test-land-dispatch) flaked twice during full-
-  battery runs on this now-busy machine (different asserts each time; both
-  pass repeatedly in isolation, 4/4 across re-runs). They read the GLOBAL
-  `claude agents` view, and this initiative makes a live worker fleet the
-  machine's steady state — the quiet-machine assumption those suites were
-  written under no longer holds. Untouched by this branch; noted as a
-  hermeticity follow-up, not fixed here.
-  Evidence: battery run 1 failed in test-review-dispatch, battery run 2 in
-  test-land-dispatch (1–3 asserts, non-repeating), isolated re-runs all
-  green.
+- Observation (M4 tail, live finding — a latent v7.19 one-harness gap):
+  after the PRs went ready, all three reviewers spawned and were then
+  RETIRED on "bind to ticket failed after 3 attempts". Root cause: a
+  claude-species implement worker has no self-finalizer, so its meta
+  lingers `status=working` after its turn ends, and board-bind protects a
+  working owner as STABLE — refusing to hand the ticket to the reviewer.
+  The codex-species workers this loop replaced self-finalized, which is
+  why the manual-era reviews never hit it. Fix: review-dispatch gained
+  the same normalize-owners-before-bind preflight land-dispatch already
+  had (daemon-finalize each working/blocked owner of the linked issue; a
+  genuinely live owner stays live and bind still refuses, correctly).
+  Validated LIVE: the next tick spawned and BOUND all three reviewers
+  (`bound #492/#593/#595 ←`); the bind-orphan sessions from the failed
+  round had already self-ended at their barrier timeout. A dedicated
+  hermetic case for the preflight is a noted gap — coverage today is the
+  live validation plus the review suite's regression green.
+- Observation (M5, root cause found and FIXED): the "flaky" reviewing-prs
+  suites were not environment-sensitive logic — the assert helpers
+  themselves were broken under load. `printf '%s' "$big_log" | grep -Fq`
+  under `set -o pipefail`: when grep matches EARLY and exits, printf takes
+  SIGPIPE (rc 141), the pipeline reads as failure, and a PRESENT match
+  reports FAIL. Every captured failure showed the expected string sitting
+  inside the "in:" text plus a "printf: write error: Broken pipe" line —
+  the smoking gun. Machine load (this initiative's steady-state worker
+  fleet) changes scheduling enough to make grep's early exit beat printf's
+  write, which is why quiet machines never saw it. Fixed in all four
+  suites (the two pre-existing and the two new ones that copied the
+  pattern): the pipe became a herestring (`grep -Fq -- "$2" <<<"$1"`), no
+  pipe, no SIGPIPE.
+  Evidence: three captured FAILs each contain their expected string
+  verbatim in the actual text; stability re-runs green after the swap.
 - Observation (M3, pre-arm registry inspection): the live registry held a
   `working` meta bound to ticket #489, whose ticket is `in-review` — the
   worker finished long ago (nothing finalizes an implement worker's meta

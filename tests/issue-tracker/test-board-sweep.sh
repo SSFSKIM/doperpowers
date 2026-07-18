@@ -21,11 +21,11 @@ trap cleanup EXIT
 pass() { echo "  [PASS] $1"; }
 fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
 assert_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
+    if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
         fail "$3"; echo "    expected to find: $2"; echo "    in: $1"; fi
 }
 assert_not_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then
+    if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
 
