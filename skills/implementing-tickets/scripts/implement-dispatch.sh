@@ -64,7 +64,9 @@ fi
 [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
 export BOARD_REPO
 
-DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+# `|| true` keeps errexit+pipefail from killing the script when origin/HEAD
+# is unset (a hand-added remote) — the fallback below is the handler.
+DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
 
 # Board facts for ticket <1>, shell-quoted (state, eligibility, title, url,

@@ -46,7 +46,8 @@ the daemon registry, never in the tick's memory.
 - [x] (2026-07-18 10:30Z) M3: prose routing (dispatch ritual, TECH-DEBT strikes for items 1/2/10-L2), `sweep-setup.md`, `issue-dispatch.yml` + `land-on-approve.yml` templates, protocol-content pins; full battery green (see Surprises for the slot-counter defect a pre-arm registry inspection surfaced).
 - [x] (2026-07-18 11:05Z) M4 (core): live shakedown on ida-solution — tick 1 dispatched all three ELIGIBLE tickets (#492/#593/#595, spawn→bind→gateway meta) + attached review-pr-574; all three workers passed the ROUTED ticket-gate and wrote `[gate] pass` verdicts (the 7.21.x schema's first live exercise); tick 2 dispatched nothing (idempotence proven); launchd agent installed and loaded (`launchctl list` exit 0). Evidence in Artifacts.
 - [x] (2026-07-18 11:25Z) M4 (tail): launchd tick FAILED as the TCC memory predicted — `Operation not permitted` executing anything under `~/Documents` from launchd context (probe: `launchctl submit -- /bin/ls ~/Documents/GitHub` → EPERM). Not a code defect: a machine-level folder-protection constraint. Mitigated three ways: sweep-setup.md documents the remedies (one-time bash grant / terminal-session timer / relocation), an interim detached timer loop was started from the TCC-granted session (pid 87645, automation live now), and the launchd agent stays loaded so it self-arms the moment the grant is made (mkdir lock + idempotence make dual timers safe).
-- [ ] M5: codex whole-branch review → fix findings → open PR to main (NOT merged — human gate per instruction) → retrospective.
+- [x] (2026-07-18 12:10Z) M5 (review): whole-branch fresh-context review (native reviewer subagent — the human declined the codex launch; see Decision Log) returned 2×P1 + P2 + P3, ALL confirmed real and fixed test-first (finalize-noop fallback in RECOVER; RELAY rebuilt on finalize-normalize + transcript-mtime ordering; DEFAULT_BRANCH fallback reachable under errexit; `mkdir -p DAEMON_HOME` before the lock). Full battery re-run green.
+- [ ] M5 (handoff): open PR to main (NOT merged — human gate per instruction) → retrospective.
 
 ## Surprises & Discoveries
 
@@ -72,6 +73,23 @@ the daemon registry, never in the tick's memory.
   Evidence: `/tmp/board-sweep-launchd.log` → three `Operation not
   permitted` lines; `launchctl submit -- /bin/ls ~/Documents/GitHub` →
   `ls: … Operation not permitted`.
+- Observation (M5, fresh-context review — two CONFIRMED P1s, both were
+  masked by test fixtures that seeded states the real `daemon-finalize`
+  cannot produce): (1) RECOVER had no `noop` branch — finalize prints
+  `noop` for a meta already in status error/idle, so a failed resume fork
+  or fast-failed spawn was silently abandoned forever, breaking the
+  3-attempt ladder; fixed by falling back to the meta's own status when
+  finalize says noop. (2) RELAY gated on `status=idle`, which nothing sets
+  on the park path (a `--no-wait` worker has no finisher) — the pass could
+  never fire in the standard flow; and the naive fix (finalize first)
+  would have bumped the meta's `updated` field PAST the human's comment,
+  destroying the ordering signal. The ordering signal moved to the current
+  turn's TRANSCRIPT MTIME — stable once the turn ends, untouched by
+  finalize, and it naturally classifies the worker's own pre-park comments
+  as trail, not answers. Both re-pinned with production-faithful fixtures
+  (the finalize stub now refuses to produce verdicts the real one cannot).
+  Evidence: suite RED on exactly the six finding-driven asserts before the
+  fixes, GREEN after; reviewer verdict excerpt in Artifacts.
 - Observation (M3, pre-arm registry inspection): the live registry held a
   `working` meta bound to ticket #489, whose ticket is `in-review` — the
   worker finished long ago (nothing finalizes an implement worker's meta
@@ -168,6 +186,13 @@ the daemon registry, never in the tick's memory.
   a bind_ready file; adding one here would change the worker protocol for
   no observed failure (constraint-minimization golden rule).
   Date/Author: 2026-07-18 / agent.
+- Decision: the M5 whole-branch review runs as a native fresh-context
+  reviewer subagent instead of `codex exec review`.
+  Rationale: the human declined the codex launch at the tool boundary
+  mid-execution; the standing instruction for that case is self/native
+  review as the substitute. The reviewer gets the full diff, merge-base,
+  and a description of every intended invariant to attack.
+  Date/Author: 2026-07-18 / human (tool rejection) + agent.
 - Decision: the final branch is opened as a PR to main and left unmerged;
   the human merges.
   Rationale: explicit human instruction at the grill ("메인에 PR 오픈만
@@ -193,7 +218,37 @@ the daemon registry, never in the tick's memory.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Outcome.** The manual-dispatch era of the board pipeline is over on this
+branch: one mechanical five-minute tick (`board-sweep.sh`) now recovers,
+cancels, dispatches (implement + review), lands on the human's Approve,
+and relays park answers — importing Symphony's orchestrator *functions*
+with zero residency, exactly as `2026-07-11-symphony-comparison.md` §9
+prescribed. It is not merely built but LIVE: the launchd agent is armed on
+ida-solution, tick 1 dispatched all three eligible tickets and attached a
+reviewer, all three workers passed the routed Ticket Gate with substantive
+verdicts (also the v7.21.x schema's first live exercise), and tick 2
+dispatched nothing (idempotence). TECH-DEBT items 1, 2 (NA-verified), and
+10-L2 closed.
+
+**What the process caught that authoring did not.** Three of the four
+serious defects were found by evidence practices, not by writing care:
+the pre-arm registry inspection caught the slot-leak (stale `working` meta
+on an in-review ticket), and the fresh-context review caught both P1 logic
+holes (RECOVER's finalize-noop fallthrough; RELAY's impossible idle gate
+plus the updated-timestamp self-destruction). The shared root cause of the
+P1s is worth keeping: **test fixtures that seed states the real subsystem
+cannot produce make load-bearing asserts vacuous** — the fix included
+making the finalize stub refuse impossible verdicts, which is the durable
+guard.
+
+**Remaining, by design or deferral.** The launchd tick runs clean from
+timer context, but a timer-context SPAWN (TCC survival) has not fired yet
+— the natural probe is the next worker PR's review attach; watch the first
+one. The Actions runner path stays blocked on ida-solution#302; templates
+for all three lanes are shipped and arm themselves when it resolves. After
+this branch merges and releases, repoint the armed plist's
+`DOPERPOWERS_HOME` from the worktree to the marketplace path. L3 (BOARD.html
+session affordances) remains open in TECH-DEBT #10.
 
 ## Context and Orientation
 
@@ -327,10 +382,15 @@ never stops the rest:
    is APPROVED or which carries a `land` label, and for which NO
    `land-pr-<n>` meta exists: `land-dispatch.sh <n>` (one sweep attempt per
    PR, per the Decision Log).
-6. RELAY — for each `needs-human` ticket with a bound resumable session
-   whose newest issue comment is newer than the park note / newest
-   `[answers]` comment: record the comment id in the meta
-   (`relayed_comment`), then background `board-answer.sh <n> --posted`.
+6. RELAY — for each `needs-human` ticket with a bound session:
+   finalize-normalize it (a `--no-wait` worker that parked lingers
+   `working`; only a genuinely ended turn is resumable), then relay when
+   the newest issue comment postdates the current turn's TRANSCRIPT MTIME
+   (the turn-end signal — stable, and unlike the meta's `updated` field
+   not bumped by the finalize itself), is not machine-prefixed
+   (`[answers]`/`[board]`/`[gate]`/`[findings]`), and differs from
+   `relayed_comment`. Record the comment id in the meta, then background
+   `board-answer.sh <n> --posted`.
 7. REPORT — `board-reconcile.sh` output into the log; `CLOSE?` candidates
    surface there for the human's wake.
 
@@ -533,8 +593,32 @@ bindings and produced classification-grade verdicts.
 
 Tick 2 (manual, minutes later): `RECOVER: 0 · CANCEL: 0 · DISPATCH: (no
 eligible tickets — all three now in-progress) · #574: skip active
-reviewer · LAND: 0 · RELAY: 0` — nothing double-dispatched.
+reviewer · LAND: 0 · RELAY: 0` — nothing double-dispatched. Two
+launchd-timer ticks then completed clean (all passes execute from timer
+context; gh/python3/board snapshot resolve under `bash -lc`).
+
+Fresh-context review verdict (M5, before fixes):
+
+    [P1] RECOVER treats finalize `noop` as healthy — error/idle metas
+         never recover … the recovery ladder stops at attempt 1
+    [P1] RELAY gates on `status=idle`, which nothing sets after a
+         needs-human park … the pass can never fire in the standard flow
+    [P2] errexit makes the DEFAULT_BRANCH="main" fallback unreachable
+    [P3] Sweep never creates DAEMON_HOME; first arming no-ops
+    Verdict: patch is incorrect (confidence 0.85) — "both are masked by
+    test fixtures that seed states the real daemon-finalize semantics
+    cannot produce."
+
+All four fixed test-first; the suite showed RED on exactly the six
+finding-driven asserts before the fixes and full green after.
 
 ## Revision Notes
 
 - 2026-07-18 (author): initial plan.
+- 2026-07-18 (M5): RELAY's design changed after the fresh-context review —
+  the resumability gate is finalize-normalize (not a pre-existing `idle`
+  status, which nothing produces on the park path) and the ordering signal
+  is the current turn's transcript mtime (not the meta's `updated`, which
+  the normalize itself bumps). Plan of Work pass 6, the Surprises entry,
+  and the Decision Log record the why; the M2 suite's fixtures now refuse
+  to seed states the real daemon-finalize cannot produce.

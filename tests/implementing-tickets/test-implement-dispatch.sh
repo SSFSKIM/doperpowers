@@ -255,6 +255,13 @@ out="$(IMPLEMENT_BOOTSTRAP_TEMPLATE="$BAD_TEMPLATE" run 1)" || true
 assert_contains "$out" "unrendered placeholder" "strict render aborts on a surviving placeholder"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "strict-render failure spawns nothing"
 
+echo "implement-dispatch: default-branch fallback"
+
+git -C "$CLONE" symbolic-ref -d refs/remotes/origin/HEAD
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(run 1)"
+assert_contains "$out" "dispatched #1" "a clone without origin/HEAD still dispatches (main fallback)"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"

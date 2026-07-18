@@ -68,7 +68,10 @@ export BOARD_REPO
 
 # Single instance per registry — an mkdir lock (portable; macOS ships no
 # flock). Idempotence is the real safety; the lock only prevents wasted
-# work, so a stale lock (older than 30 min) is stolen, not obeyed.
+# work, so a stale lock (older than 30 min) is stolen, not obeyed. The
+# registry dir may not exist yet on a fresh machine — a missing parent
+# would make every mkdir fail and read as "held" forever.
+mkdir -p "$DAEMON_HOME"
 LOCK="$DAEMON_HOME/board-sweep.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +"${SWEEP_LOCK_STALE:-30}" 2>/dev/null)" ]; then
@@ -136,6 +139,14 @@ PY
 
 _transcript() { find "$HOME/.claude/projects" -name "$1.jsonl" 2>/dev/null | head -1; }
 
+# File mtime as UTC ISO-8601 (BSD stat first, GNU fallback) — the turn-end
+# ordering signal for the relay pass.
+_mtime_iso() {
+  local e
+  e="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null)" || return 1
+  date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
+}
+
 _recover() {  # <ticket> <uuid> <recoveries> <why>
   local tk="$1" uuid="$2" recov="$3" why="$4"
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
@@ -155,11 +166,15 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
 }
 
 pass_recover() {
-  local acted=0 state tk uuid status current updated recov fin tx age
-  while IFS='|' read -r state tk uuid status current updated recov; do
+  local acted=0 state tk uuid status current recov fin tx age
+  while IFS='|' read -r state tk uuid status current _ recov; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked|error) ;; *) [ "$status" = "idle" ] || continue ;; esac
     fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null)" || fin="noop"
+    # finalize says noop for an ALREADY-terminal meta (error/idle) — the
+    # meta's own status is the verdict then, or the recovery ladder would
+    # silently abandon exactly the failed-resume and fast-fail-spawn shapes.
+    [ "$fin" = "noop" ] && fin="$status"
     case "$state" in
       in-progress)
         case "$fin" in
@@ -192,8 +207,8 @@ EOF
 }
 
 pass_cancel() {
-  local acted=0 state tk uuid status current updated recov fin
-  while IFS='|' read -r state tk uuid status current updated recov; do
+  local acted=0 state tk uuid status current recov fin
+  while IFS='|' read -r state tk uuid status current _ recov; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked) ;; *) continue ;; esac
     fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null)" || fin="noop"
@@ -247,12 +262,27 @@ EOF
 }
 
 pass_relay() {
-  local acted=0 state tk uuid status current updated recov verdict cid
-  while IFS='|' read -r state tk uuid status current updated recov; do
+  local acted=0 state tk uuid status current recov fin tx turn_end verdict cid
+  while IFS='|' read -r state tk uuid status current _ recov; do
     [ -n "$uuid" ] || continue
-    [ "$status" = "idle" ] || continue
+    # Normalize first: a --no-wait worker that parked leaves its meta
+    # status=working forever (nothing else finalizes it). Only a genuinely
+    # ended turn is resumable; finalize prints noop for already-terminal
+    # metas, so fall back to the meta's own status.
+    case "$status" in working|blocked|idle) ;; *) continue ;; esac
+    fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null)" || fin="noop"
+    [ "$fin" = "noop" ] && fin="$status"
+    [ "$fin" = "idle" ] || continue
+    # Turn-end ordering signal: the current turn's transcript mtime. It is
+    # stable once the turn ends, and — unlike the meta's `updated` field,
+    # which the finalize above just bumped — it cannot postdate (and so
+    # hide) the human's answer. Comments from before the turn ended are
+    # the worker's own trail, never an answer to relay.
+    tx="$(_transcript "$current")"
+    [ -n "$tx" ] || continue
+    turn_end="$(_mtime_iso "$tx")" || continue
     verdict="$(gh issue view "$tk" -R "$BOARD_REPO" --json comments 2>/dev/null | \
-      T_UPDATED="$updated" T_UUID="$uuid" python3 -c '
+      T_TURN_END="$turn_end" T_UUID="$uuid" python3 -c '
 import json, os, sys
 try:
     comments = json.load(sys.stdin).get("comments") or []
@@ -264,7 +294,7 @@ last = comments[-1]
 body = (last.get("body") or "").lstrip()
 if body.startswith(("[answers]", "[board]", "[gate]", "[findings]")):
     sys.exit(0)
-if str(last.get("createdAt") or "") <= os.environ["T_UPDATED"]:
+if str(last.get("createdAt") or "") <= os.environ["T_TURN_END"]:
     sys.exit(0)
 home = os.environ["DAEMON_HOME"]
 meta = json.load(open(os.path.join(home, os.environ["T_UUID"] + ".json")))

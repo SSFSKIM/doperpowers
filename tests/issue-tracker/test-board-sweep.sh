@@ -63,11 +63,18 @@ STUB_DAEMONS="$TEST_ROOT/stub-daemons"; mkdir -p "$STUB_DAEMONS"
 export DAEMON_SCRIPTS="$STUB_DAEMONS"
 cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
 #!/usr/bin/env bash
+# Mimics REAL daemon-finalize semantics: a meta not in working/blocked is
+# already terminal → noop, regardless of what the test map says. The map
+# only supplies verdicts finalize could actually produce.
 echo "finalize:$1" >> "$ACTION_LOG"
 python3 -c "
 import json, os, sys
+uuid = sys.argv[1]
+meta = json.load(open(os.path.join(os.environ['DAEMON_HOME'], uuid + '.json')))
+if meta.get('status') not in ('working', 'blocked'):
+    print('noop'); raise SystemExit
 m = json.load(open(os.environ['FINALIZE_MAP']))
-print(m.get(sys.argv[1], 'noop'))" "$1"
+print(m.get(uuid, 'live'))" "$1"
 STUB
 cat > "$STUB_DAEMONS/daemon-resume.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -141,6 +148,7 @@ s = {"next": 30, "labels": ["status:needs-human", "status:in-progress"], "issues
     "17": issue(17, "parked, no new comment", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
     "18": issue(18, "healthy live worker", ["status:in-progress"]),
+    "19": issue(19, "resume-fork failed once", ["status:in-progress"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
@@ -152,31 +160,42 @@ def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z",
     json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], uuid + ".json"), "w"))
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
 meta(U("aaaa0010"), "10-dead", "10", "working")
+# ALREADY-finalized error meta (real finalize says noop for it) at the cap:
 meta(U("aaaa0011"), "11-hopeless", "11", "error", recov="3")
 meta(U("aaaa0012"), "12-stalled", "12", "working")
 meta(U("aaaa0013"), "13-cancelled", "13", "working")
 meta(U("aaaa0014"), "land-pr-7", "14", "working")
-meta(U("aaaa0015"), "15-parked", "15", "idle", updated="2026-07-18T01:00:00Z")
-meta(U("aaaa0016"), "16-parked", "16", "idle", updated="2026-07-18T01:00:00Z",
+# Parked workers in the PRODUCTION shape: nothing finalizes a --no-wait
+# worker's meta when it parks, so status lingers `working`.
+meta(U("aaaa0015"), "15-parked", "15", "working", updated="2026-07-18T01:00:00Z")
+meta(U("aaaa0016"), "16-parked", "16", "working", updated="2026-07-18T01:00:00Z",
      recov=None)
-meta(U("aaaa0017"), "17-parked", "17", "idle", updated="2026-07-18T01:00:00Z")
+meta(U("aaaa0017"), "17-parked", "17", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0018"), "18-healthy", "18", "working")
+# ALREADY-finalized error meta below the cap (a failed resume fork's shape):
+meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
 PY
 
-# finalize verdicts per uuid
+# finalize verdicts per uuid (only consulted for working/blocked metas —
+# the parked trio's turns ended, so real finalize would say idle)
 python3 - <<'PY'
 import json, os
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
-json.dump({U("aaaa0010"): "absent", U("aaaa0011"): "error", U("aaaa0012"): "live",
-           U("aaaa0013"): "live", U("aaaa0014"): "live", U("aaaa0018"): "live"},
+json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
+           U("aaaa0013"): "live", U("aaaa0014"): "live", U("aaaa0018"): "live",
+           U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
-# transcripts: 12's is old (stall), 18's is fresh (healthy)
-touch -t 202607170000 "$HOME/.claude/projects/proj/aaaa0012-0000-4000-8000-000000000000.jsonl" 2>/dev/null \
-  || { touch "$HOME/.claude/projects/proj/aaaa0012-0000-4000-8000-000000000000.jsonl"; \
-       touch -t 202607170000 "$HOME/.claude/projects/proj/aaaa0012-0000-4000-8000-000000000000.jsonl"; }
+# transcripts: mtime is the turn-end ordering signal. 12 old (stall), 18
+# fresh (healthy); 15/16 old (comments postdate the turn → relay-eligible),
+# 17 fresh (its comment predates the turn end → not an answer).
+for u in aaaa0012 aaaa0015 aaaa0016; do
+  f="$HOME/.claude/projects/proj/$u-0000-4000-8000-000000000000.jsonl"
+  touch "$f"; touch -t 202607170000 "$f"
+done
 touch "$HOME/.claude/projects/proj/aaaa0018-0000-4000-8000-000000000000.jsonl"
+touch "$HOME/.claude/projects/proj/aaaa0017-0000-4000-8000-000000000000.jsonl"
 
 # comments: 15 fresh human answer · 16 newest is [answers] · 17 stale comment
 cat > "$COMMENTS_DIR/15.json" <<'J'
@@ -213,6 +232,7 @@ log="$(cat "$ACTION_LOG")"
 # RECOVER
 assert_contains "$log" "resume:aaaa0010-0000-4000-8000-000000000000" "dead (absent) worker is resumed"
 assert_contains "$log" "resume:aaaa0012-0000-4000-8000-000000000000" "stalled live worker is resumed"
+assert_contains "$log" "resume:aaaa0019-0000-4000-8000-000000000000" "an already-finalized error meta (finalize noop) still recovers"
 assert_not_contains "$log" "resume:aaaa0018" "healthy live worker is left alone"
 assert_not_contains "$log" "resume:aaaa0011" "recovery cap exhausts — no fourth resume"
 st15="$(python3 -c "
@@ -277,6 +297,10 @@ mkdir -p "$DAEMON_HOME/board-sweep.lock"
 out="$(run_sweep)"
 assert_contains "$out" "another sweep holds the lock" "a held lock exits quietly"
 rmdir "$DAEMON_HOME/board-sweep.lock"
+
+out="$(DAEMON_HOME="$TEST_ROOT/fresh-registry" SWEEP_LOG="$TEST_ROOT/fresh-sweep.log" run_sweep)"
+assert_contains "$out" "tick complete" "a fresh machine (no registry dir yet) still ticks"
+assert_not_contains "$out" "another sweep holds the lock" "missing registry dir is not misread as a held lock"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
