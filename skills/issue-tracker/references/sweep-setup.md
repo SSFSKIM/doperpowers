@@ -12,6 +12,14 @@ the daemon registry.
 Arming the sweep IS the opt-in: nothing runs until you install a timer for
 it. One timer per consumer repo (the sweep is scoped by `LOCAL_REPO`).
 
+The sweep assumes a PRIVATE, trusted board — the same posture the runner
+templates state as "PRIVATE REPOS ONLY": RELAY treats any non-machine
+comment on a parked ticket as the human's answer, so anyone who can
+comment can steer a parked worker. RELAY also reads only the ticket's
+newest comment — if a machine comment lands after your answer (or a very
+long ticket outgrows one comments page), the answer is silently missed;
+the remedy is to comment again.
+
 ## macOS and TCC — read this first
 
 If the plugin checkout or the target repo lives under `~/Documents`,
@@ -37,7 +45,8 @@ read it — macOS folder protection denies with `Operation not permitted`
 
 A launchd **user agent** (not a system daemon) — save as
 `~/Library/LaunchAgents/com.user.doperpowers-board-sweep.plist`
-(adjust the three UPPERCASE placeholders):
+(set `LOCAL_REPO` — the one placeholder — to your repo clone's absolute
+path):
 
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

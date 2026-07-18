@@ -17,7 +17,10 @@
 #      same lane as catch-up — this trigger only lowers latency. Dispatch
 #      is idempotent: implement-dispatch.sh re-verifies eligibility and
 #      dedupes against the registry, so a label event racing a sweep tick
-#      spawns one worker, not two.
+#      normally spawns one worker. (The dedupe window is not airtight:
+#      between one dispatcher's registry check and its spawn materializing
+#      the meta, a racing dispatcher can double-spawn; board-bind then
+#      strips one owner, but both processes run out their turn.)
 name: Issue dispatch
 on:
   issues:
@@ -29,6 +32,8 @@ concurrency:
 jobs:
   dispatch:
     # org-owned repo: repository_owner is the ORG login — explicit allowlist instead
+    # EDIT ME when adopting: the actor allowlist and LOCAL_REPO below are one
+    # consumer repo's instance values, not part of the template.
     if: github.event.label.name == 'status:ready-for-agent' && github.actor == 'SSFSKIM'
     runs-on: [self-hosted, claude-review]
     timeout-minutes: 10

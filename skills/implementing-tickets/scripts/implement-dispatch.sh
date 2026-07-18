@@ -65,6 +65,10 @@ export BOARD_REPO
 # Board facts for ticket <1>, shell-quoted (state, eligibility, title, url,
 # category, engine label). _board.py is the single eligibility authority —
 # the same predicate board-list.sh tags ELIGIBLE.
+# Known cost: this and _slots_used each take a fresh full-board snapshot
+# (one GraphQL call), so a dispatching tick runs roughly three snapshots
+# per ticket. Harmless at a 5-minute cadence on a ~300-issue board; add
+# snapshot caching before the board grows ~10x.
 _ticket_exports() {
   T_ID="$1" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
 import os, shlex, sys

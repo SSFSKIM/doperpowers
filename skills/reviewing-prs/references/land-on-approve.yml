@@ -25,6 +25,8 @@ concurrency:
 jobs:
   dispatch:
     # org-owned repo: repository_owner is the ORG login — explicit allowlist instead
+    # EDIT ME when adopting: the actor allowlist and LOCAL_REPO below are one
+    # consumer repo's instance values, not part of the template.
     if: github.event.review.state == 'approved' && github.actor == 'SSFSKIM'
     runs-on: [self-hosted, claude-review]
     timeout-minutes: 10
