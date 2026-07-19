@@ -155,8 +155,35 @@ Behavior-phrased, run as fresh-context pressure sessions
 
 ## Outcomes & Retrospective
 
-Pending — written after the pressure sessions pass and the next real
-multi-unit slice exercises the ladder.
+**2026-07-20 — acceptance run (all three scenarios PASS, fresh sonnet
+subagents reading the modified repo files).**
+
+- **Scenario A (Task-8-shaped brief) PASS:** produced exactly three task
+  groups along state-ownership boundaries (atomic timetable RPC /
+  daily-plan cache consistency / /today client refresh coordination),
+  explicitly citing rung 1: "they earn separate task groups within one
+  plan (rung 1 of the expression ladder), each with its own
+  implement→review cycle" — and justified by differing state owners,
+  invariants, failure modes, and verification strategies, not file count.
+- **Scenario B (PR2-shaped brief) PASS:** decided ONE plan; named both
+  invalid intermediate states ("proposals that approve to nothing", "the
+  producer bypasses the approval boundary") and the single rollout gate;
+  "one invariant wearing three hats, not three invariants."
+- **Scenario C (repeated-findings transcript) PASS:** declined the third
+  patch ("Do not dispatch a fix subagent for the proposed pending-recovery
+  boolean ref. Continuing the patch loop is the exact anti-pattern the
+  skill names"), quoted the escalation signal, proposed a coherent state
+  machine for mutation/refresh/recovery, and named rung-3 mid-flight
+  promotion.
+- **Repo test suite:** `tests/claude-code/run-skill-tests.sh` — 2 pass,
+  1 pre-existing failure (`test-subagent-driven-development.sh`,
+  assertion "Mentions loading plan"). Verified pre-existing: the same
+  assertion fails at pre-change commit 35cdc64 in a clean worktree. It is
+  a case-sensitive string match against a headless model's free-text
+  description ("Reads the plan" fails on the capital R) — flagged as a
+  test-hygiene follow-up, not caused by this change.
+
+Real-world exercise (the next genuinely multi-unit slice) still pending.
 
 ## Revision Notes
 
