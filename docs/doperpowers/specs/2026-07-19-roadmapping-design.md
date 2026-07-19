@@ -245,13 +245,36 @@ three.)
 
 ## Outcomes & Retrospective
 
-Pending — written after the template dry-run, the pressure scenarios, and
-the first live roadmapping run. Retro watch items reserved by the
-2026-07-20 review: contract staleness across in-flight children (the
-dispatch-time resync rule's first real test); vocabulary drift between
-organizing-sprints epics and ladder Epics; the epic-sized-child ticket
-species at Milestone altitude; whether the template needs a Risks slot
-(dry-run friction will show).
+**2026-07-20 — acceptance run (dry-run PASS after one fix round; all
+three pressure scenarios PASS).**
+
+- **Template dry-run** (ida-solution M5.5 "domain catalog quality loop"
+  re-expressed at Milestone→Epics, 8 children): round 1 verdict "fits the
+  shape, not without contortion" — frictions applied as template fixes
+  (see Revision Notes). Round 2, revised template: **"fits-without-
+  contortion — YES. Nothing had to be shoved into a wrong home or dropped
+  this round."** Two ergonomic refinements from round 2 (multi-gate
+  children with per-gate required flags; `external:<condition>` edge
+  preconditions) applied as one-line template additions.
+- **P1 (epic-scale prompt) PASS:** flagged four purpose-units and
+  recommended the route with confirmation — "route this up one altitude
+  to doperpowers:roadmapping… Want me to hand this off to roadmapping?" —
+  without grilling slice details.
+- **P2 (slice-scale prompt) PASS:** "a single purpose-unit, not a
+  multi-feature epic, so no roadmapping detour — proceed straight into
+  the grill." No false-positive routing.
+- **P3 (child section as pre-landed input) PASS:** grilled residue only;
+  explicitly declined to re-litigate X1 (integer KRW), X2 (ledger-API
+  boundary), the C1 edge, the track hint, and purpose — each "fixed by
+  contract… not open for debate at this altitude." Bonus: caught a real
+  gap in the synthetic parent (X2 covers reads but not the payment
+  write-back path) and led with it — the flow-back instinct working.
+
+Retro watch items still open for the first live run: contract staleness
+across in-flight children (the dispatch-time resync rule's first real
+test); vocabulary drift between organizing-sprints epics and ladder
+Epics; the epic-sized-child ticket species at Milestone altitude
+(implementing-tickets gating). First live roadmapping run pending.
 
 ## Revision Notes
 
@@ -297,3 +320,11 @@ species at Milestone altitude; whether the template needs a Risks slot
   Cross-Child Contracts or Purpose). Also noted: adopting an
   already-executing milestone stretches the born-landed intake assumption
   — acceptable for dry-runs, not the design center.
+- **2026-07-20 (template dry-run round 2).** Verdict YES. Two refinements
+  applied from round-2 evidence: a child may declare multiple named gates
+  with per-gate required/conditional flags (ida's Phase 6 has a required
+  readiness gate + conditional score gate in one child); Edges admit
+  `external:<condition>` preconditions (Phase 6 is blocked by external
+  observation-data accrual, not a sibling). Declined as acceptable prose:
+  a structured "consumes but does-not-redefine" boundary on the Consumes
+  line.

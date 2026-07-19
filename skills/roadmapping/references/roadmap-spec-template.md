@@ -30,13 +30,14 @@ phase lands its numbers.]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line
-  or a short gate checklist]
+  or a short gate checklist; a child may declare multiple named gates,
+  each flagged required or conditional]
 - **Edges:** [blocked-by: — | C_n; conditional-on: C_n's gate outcome,
-  if the child only dispatches when a sibling's result demands it;
+  or external:<condition> when the precondition is not a sibling;
   blocks: C_m]
 - **Contracts:** [which Cross-Child Contracts it participates in, by id]
 - **Required:** [required for parent acceptance | conditional — state the
-  condition]
+  condition; per-gate flags when the child declares multiple gates]
 - **Status:** [not-dispatched | conditional | in-flight | landed | parked]
 
 ### C2: …
