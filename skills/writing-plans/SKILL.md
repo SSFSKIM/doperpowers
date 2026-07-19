@@ -22,6 +22,44 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
 
+## Conditional Sub-Slicing
+
+Default to the smallest cohesive plan that delivers the spec's end-to-end
+invariant. Never split merely because the work touches many files or
+crosses technical layers — file count is not a boundary.
+
+Consider sub-slicing when parts of the work have **different state owners,
+invariants, failure modes, or verification strategies** — e.g. a database
+transaction contract, a pure domain state machine, and async UI
+coordination are three units, not one. A good sub-slice has an explicit
+input/output contract, its own focused behavior test, and a review
+boundary a reviewer can approve without reading its neighbors.
+
+Keep parts together when splitting would create an invalid intermediate
+state, when they must land in the same transaction or cutover, or when
+neither part is meaningful or verifiable alone.
+
+Expression ladder — use the lightest rung that fits:
+
+1. **Task groups within this plan** (default) — one group per state
+   owner; each group gets its own implement→review cycle before the next
+   begins.
+2. **Multiple plans for one spec** — when the slice is genuinely
+   multi-unit and each group would need its own file-structure and
+   interface design.
+3. **Mid-flight promotion** — when implementation reveals a runaway area
+   (see the escalation signal in doperpowers:subagent-driven-development),
+   promote it to its own sub-spec/plan referenced from the parent, rather
+   than patching on.
+
+For concurrency-shaped work, the plan fixes the event list, states,
+transition table, and linearization points before implementation — a
+functional brief alone is how implicit distributed state machines get
+built one ref at a time.
+
+Sub-slicing is a judgment tool, not ceremony: the fewest boundaries that
+make each important invariant independently understandable and testable.
+
 ## File Structure
 
 Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
