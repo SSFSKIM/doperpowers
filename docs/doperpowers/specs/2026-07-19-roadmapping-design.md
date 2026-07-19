@@ -51,10 +51,13 @@ doperpowers:brainstorming; a pile of raw ungrounded observations →
 doperpowers:organizing-sprints.
 
 **Altitude recursion.** One run plans ONE parent unit at ONE altitude,
-decomposing into children one level down. An epic-sized child of a
-milestone roadmap gets its own roadmapping run at dispatch; a slice-sized
-child goes to brainstorming or execplan. The Milestone workflow is not a
-second skill — it is the same run one level up.
+decomposing into children one level down. A child gets its own
+roadmapping run at dispatch when it itself needs decomposition before any
+piece can be designed; size alone doesn't force nesting — an epic-sized
+child that is one coherent, delegable unit can run as a single execplan
+(dry-run evidence: ida-solution's Phase 1). A slice-sized child goes to
+brainstorming or execplan. The Milestone workflow is not a second skill —
+it is the same run one level up.
 
 **Pipeline** (task per phase, in order):
 
@@ -274,3 +277,23 @@ species at Milestone altitude; whether the template needs a Risks slot
   lesson adopted: brainstorming's Spec Self-Review gains a Traceability
   item (every load-bearing declaration has a counterpart slot) — it would
   have caught all three defects.
+- **2026-07-20 (template dry-run round 1, ida-solution M5.5 at
+  Milestone→Epics).** Verdict "fits the shape, not without contortion";
+  frictions applied as template fixes: `conditional` status +
+  per-child `Required:` field (conditional children had no
+  representation); `conditional-on:` edge kind (outcome-gated dispatch is
+  not `blocked-by`); optional Grounding Baseline section (the grounding
+  phase's numbers had no home); optional Risks & Mitigations section (the
+  reserved watch item — friction confirmed it); Deferred split into
+  may-return vs standing exclusions; child Acceptance may be a gate
+  checklist; Cross-Child Contracts admit shared definitions; header
+  Consumes line; Outcomes note for children that close early.
+  **Spec drift fixed:** "epic-sized child ⇒ nested roadmapping run" was
+  wrong as a size rule — ida's Phase 1 is epic-sized yet correctly ran as
+  ONE ExecPlan; nesting is for children that need decomposition, not
+  children that are large (Design and SKILL.md reworded). Declined:
+  milestone-wide verification-strategy slot (leans means; children own
+  verification) and a separate shared-vocabulary section (definitions ride
+  Cross-Child Contracts or Purpose). Also noted: adopting an
+  already-executing milestone stretches the born-landed intake assumption
+  — acceptable for dry-runs, not the design center.

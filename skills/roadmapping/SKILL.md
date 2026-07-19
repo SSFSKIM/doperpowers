@@ -12,8 +12,11 @@ it into children exactly one level down. The product is a **parent roadmap
 spec**: children with purpose, observable acceptance, and dependency
 edges; the contracts that cross them; and a living tail that tracks the
 unit to its retrospective. Children dispatch to their own tracks —
-doperpowers:brainstorming → spec → plans, doperpowers:execplan, or (for an
-epic-sized child of a milestone) another roadmapping run one level down.
+doperpowers:brainstorming → spec → plans, doperpowers:execplan, or another
+roadmapping run one level down when the child itself needs decomposition
+before any piece can be designed. Size alone doesn't force nesting: an
+epic-sized child that is still one coherent, delegable unit can run as a
+single execplan.
 
 This is the deliberate, top-down sibling of doperpowers:organizing-sprints.
 That skill turns raw *testimony* (an ideadump that may misread the code)
