@@ -60,6 +60,10 @@ built one ref at a time.
 Sub-slicing is a judgment tool, not ceremony: the fewest boundaries that
 make each important invariant independently understandable and testable.
 
+Above the Slice, the inverse question — decomposing an epic or milestone
+into slices — belongs to doperpowers:roadmapping; the two are the
+above-/below-Slice halves of the same doctrine.
+
 ## File Structure
 
 Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
