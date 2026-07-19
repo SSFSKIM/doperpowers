@@ -249,7 +249,11 @@ the opposite: the fix did not hold — that is a live blocker, never a
 dupe; re-wave it within the caps. The exit condition is no
 NEW blocker, not a clean report. At the cap with unresolved blockers
 there is no confidence to grant: set ticket #{{ISSUE_NUMBER}} to
-needs-human with an impasse summary and end your turn.
+needs-human with an impasse summary and end your turn. When those
+blockers cluster at one seam — each wave's fix spawning the next
+finding there — flag it in that summary as a likely decomposition
+defect, not N independent bugs, so the human (and whatever LLM
+resolves it) re-cuts the area instead of resuming the patch loop.
 
 ## ESCALATE
 

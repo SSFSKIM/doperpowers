@@ -24,33 +24,18 @@ If the spec covers multiple independent subsystems, it should have been broken i
 
 ## Conditional Sub-Slicing
 
-Default to the smallest cohesive plan that delivers the spec's end-to-end
-invariant. Never split merely because the work touches many files or
-crosses technical layers — file count is not a boundary.
-
 Consider sub-slicing when parts of the work have **different state owners,
-invariants, failure modes, or verification strategies** — e.g. a database
-transaction contract, a pure domain state machine, and async UI
-coordination are three units, not one. A good sub-slice has an explicit
-input/output contract, its own focused behavior test, and a review
-boundary a reviewer can approve without reading its neighbors.
+invariants, failure modes, or verification strategies**. A good sub-slice
+has an explicit input/output contract, its own focused behavior test, and
+a review boundary a reviewer can approve without reading its neighbors.
 
 Keep parts together when splitting would create an invalid intermediate
 state, when they must land in the same transaction or cutover, or when
 neither part is meaningful or verifiable alone.
 
-Expression ladder — use the lightest rung that fits:
-
-1. **Task groups within this plan** (default) — one group per state
-   owner; each group gets its own implement→review cycle before the next
-   begins.
-2. **Multiple plans for one spec** — when the slice is genuinely
-   multi-unit and each group would need its own file-structure and
-   interface design.
-3. **Mid-flight promotion** — when implementation reveals a runaway area
-   (see the escalation signal in doperpowers:subagent-driven-development),
-   promote it to its own sub-spec/plan referenced from the parent, rather
-   than patching on.
+When the slice is genuinely multi-unit — each part needing its own
+file-structure and interface design — write it as multiple plans for the
+one spec, rather than one plan straining to hold them all.
 
 For concurrency-shaped work, the plan fixes the event list, states,
 transition table, and linearization points before implementation — a

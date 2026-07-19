@@ -151,15 +151,6 @@ complete: you hold the plan and cross-task context the reviewer
 lacks. If you confirm an item is a real gap, treat it as a failed spec
 review — send it back to the implementer and re-review.
 
-## Escalation Signal: Repeated Findings at One Seam
-
-If review keeps surfacing new Important findings in the same area — and
-each fix adds another flag, ref, or condition — stop the patch loop. That
-is a structure signal, not an implementation-quality signal: reassess
-state ownership and decomposition per Conditional Sub-Slicing in
-doperpowers:writing-plans, and consider promoting the area to its own
-sub-spec/plan before dispatching the next task.
-
 ## Constructing Reviewer Prompts
 
 Per-task reviews are task-scoped gates. The broad review happens once, at the
