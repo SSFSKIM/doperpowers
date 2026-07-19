@@ -35,6 +35,10 @@ per-level machinery.
   (reserved, undesigned).
 - Projects drop levels freely by size; a small project may run
   Milestone → Slice directly. Altitude count is an output, never a target.
+- organizing-sprints' "epic" is an altitude-variable purpose-unit — often
+  Epic-sized, sometimes Slice-sized (it derives a single ExecPlan at
+  dispatch). The ladder's Epic is strictly above Slice; the two terms
+  overlap but are not identical.
 
 ## Design
 
@@ -61,7 +65,10 @@ second skill — it is the same run one level up.
 2. **Tentative child cut** — propose children as purpose-units with
    ordering; get the human's reaction BEFORE deep grilling (over-merge
    hides independent shippables; over-split loses coherence — ask when
-   unsure).
+   unsure). Check each tentative child against the code for already-built
+   or partially-built reality — deliberate initiatives assume greenfield
+   more often than the code is (organizing-sprints' [BUILT]/[PARTIAL]
+   classes exist because this failure is real).
 3. **Grill** — one question at a time, recommended answer each: boundaries,
    edges, cross-child contracts, deferrals/reservations for the next unit.
 4. **Author the roadmap spec** — per the template, born landed, execspec
@@ -73,9 +80,14 @@ second skill — it is the same run one level up.
    issue-tracker scripts, hard-gated on the human's spec approval. Used
    when the project runs the board pipeline; skipped for document-only
    projects. The tracking map is the handoff contract either way.
+   Reserved, undesigned: at the Milestone→Epic altitude, a materialized
+   epic-sized child is a new ticket species whose track hint is another
+   roadmapping run; how implementing-tickets' gate treats it (likely
+   interactive-preferred parking) is deferred until the Epic→Slice
+   altitude is proven.
 7. **Dispatch and keep alive** — children dispatch to their own tracks;
-   the parent's Progress/Decision Log/Surprises stay current as children
-   land; the retrospective closes the parent unit.
+   the parent's tracking map, Decision Log, and Surprises stay current as
+   children land; the retrospective closes the parent unit.
 
 **Derivation contract** (the load-bearing seam). Each child section fixes:
 
@@ -86,26 +98,39 @@ second skill — it is the same run one level up.
 - a track hint (controlled / autonomous / another roadmapping run).
 
 At dispatch, the child treats its section as pre-landed grill input: it
-grills only the residue and never re-litigates landed decisions. The parent
-never sketches the child's technical approach — means belong to the child
-(the case evidence: high-altitude briefs miss concurrency-level depth, and
-approach sketches go stale as early children land). Discoveries that
-contradict the parent flow back into its Revision Notes — never silent
-divergence. This is the execspec discipline one level up.
+grills only the residue and never re-litigates landed decisions. The
+child's own spec opens by citing the parent roadmap (path + child id) —
+organizing-sprints' ticket-body citation rule extended to the spec layer;
+without it, document-only mode has no carrier for the flow-back channel.
+Children read the parent document's *current* state at dispatch, never a
+frozen snapshot; when a Revision Note lands that touches an in-flight
+child's contract, that child is flagged. The parent never sketches the
+child's technical approach — means belong to the child (the case evidence:
+high-altitude briefs miss concurrency-level depth, and approach sketches
+go stale as early children land). Discoveries that contradict the parent
+flow back into its Revision Notes — never silent divergence. This is the
+execspec discipline one level up.
 
 ### Template: `references/roadmap-spec-template.md`
 
 Purpose-first opening + altitude declaration (which parent unit this
-roadmap itself belongs to, if any) → children (id, purpose, acceptance,
-edges, track hint, status) → cross-child contracts → ordering/dependency
-map → deferred reservations for the next unit → tracking map (child →
-spec path / ticket / status) → living tail (Decision Log, Surprises &
-Discoveries, Outcomes & Retrospective, Revision Notes).
+roadmap itself belongs to, if any) → parent-level acceptance (the
+observable state that closes this unit as a whole — not the sum of child
+acceptances) → children (id, purpose, acceptance, edges, track hint,
+status) → cross-child contracts → ordering/dependency map → deferred
+reservations for the next unit → tracking map (child → spec path /
+ticket / status; this map plus the children's status fields IS the
+parent's Progress record — there is no separate Progress section) →
+living tail (Decision Log, Surprises & Discoveries, Outcomes &
+Retrospective, Revision Notes).
 
 ### Brainstorming's third route
 
-Replace the scope-assessment bullet in `skills/brainstorming/SKILL.md`
-(near-final wording):
+Replace BOTH scope-assessment bullets in `skills/brainstorming/SKILL.md` —
+the flag-immediately bullet AND the decompose-into-sub-projects bullet that
+follows it — with the single bullet below. (If only the first were
+replaced, the old inline-decomposition path would survive alongside the
+new routing and contradict it.) Near-final wording:
 
 > Before asking detailed questions, assess scope: if the request describes
 > multiple independent purpose-units (e.g., "build a platform with chat,
@@ -120,6 +145,13 @@ Replace the scope-assessment bullet in `skills/brainstorming/SKILL.md`
 Plus one clarifying line near the terminal-state rule: the roadmapping
 exit happens at scope-assessment time, before design; the after-design
 exits remain writing-plans/execplan only.
+
+Brainstorming's Spec Self-Review also gains one item: **Traceability** —
+every load-bearing declaration in the Decision Log or design prose has a
+counterpart slot in the template, artifact schema, or edit instructions it
+governs. (Evidence: this spec's own pre-implementation human review found
+three defects, all of exactly this type; the check would have caught all
+three.)
 
 ### Cross-references
 
@@ -203,15 +235,42 @@ exits remain writing-plans/execplan only.
   Milestone→Phase in ida-solution) — surfaced by the grill and resolved as
   the alias rule (Decision 1) rather than picking a winner.
 - organizing-sprints already occupies the Milestone altitude *reactively*
-  (a sprint of epics IS a milestone roadmap grown from a dump), which is
-  what made the sibling seam obvious: the two skills differ at intake
-  (testimony vs intent), not at output shape.
+  (a sprint of epics IS a milestone roadmap grown from a dump — approximate:
+  its epics are altitude-variable, see Vocabulary), which is what made the
+  sibling seam obvious: the two skills differ at intake (testimony vs
+  intent), not at output shape.
 
 ## Outcomes & Retrospective
 
 Pending — written after the template dry-run, the pressure scenarios, and
-the first live roadmapping run.
+the first live roadmapping run. Retro watch items reserved by the
+2026-07-20 review: contract staleness across in-flight children (the
+dispatch-time resync rule's first real test); vocabulary drift between
+organizing-sprints epics and ladder Epics; the epic-sized-child ticket
+species at Milestone altitude; whether the template needs a Risks slot
+(dry-run friction will show).
 
 ## Revision Notes
 
-(none yet)
+- **2026-07-20 (pre-implementation human review).** Three defects found,
+  all one type — a load-bearing declaration without a counterpart in the
+  template or edit instructions: (1) the template lacked a parent-level
+  acceptance slot even though Decision 3 rejects the thin parent for
+  losing exactly that — slot added; (2) pipeline phase 7 promised a
+  "Progress" record the template never defined — the tracking map plus
+  child status fields are now declared to BE the Progress record, and
+  phase 7 names the tracking map; (3) the brainstorming edit said
+  "bullet" (singular) while the skill has two adjacent scope bullets —
+  literal execution would have left the old inline-decomposition path
+  alive against the new routing; both bullets are now named. Two
+  reinforcements: the child spec's opening must cite the parent roadmap
+  (path + child id), extending organizing-sprints' ticket-body citation
+  rule to the spec layer so document-only mode keeps a flow-back carrier;
+  children read the parent's current state at dispatch (never a frozen
+  snapshot) and a Revision Note touching an in-flight child's contract
+  flags that child. Grounding gained a built/partial check per tentative
+  child (organizing-sprints' [BUILT]/[PARTIAL] precedent). Reservations
+  recorded: the epic-child ticket species; four retro watch items. Meta-
+  lesson adopted: brainstorming's Spec Self-Review gains a Traceability
+  item (every load-bearing declaration has a counterpart slot) — it would
+  have caught all three defects.
