@@ -54,7 +54,7 @@ Full details, including how it coexists with other marketplaces: [`docs/INSTALL-
 
 ### Codex
 
-A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) and is distributed to the Codex plugins repository by [`scripts/sync-to-codex-plugin.sh`](scripts/sync-to-codex-plugin.sh). This is a maintainer sync, not a public marketplace search — run the script to publish a new version.
+A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local installs. (The external sync to the Codex plugins repository was retired in v7.23.0; the script lives in git history if ever needed again.)
 
 ---
 

@@ -685,7 +685,7 @@ it. Distribution differs per harness ecosystem — find yours:
 | Channel | Example | What you do |
 |---|---|---|
 | Native plugin marketplace | Claude Code | Register in `.claude-plugin/marketplace.json`; users `/plugin install`. The external `doperpowers-marketplace` repo is the source of truth users install from — see the release steps in `CLAUDE.md`. |
-| External marketplace fork, synced by script | Codex | `scripts/sync-to-codex-plugin.sh` rsyncs the tracked plugin files into a separate fork repo and opens a PR. Read its include/exclude list so you ship the right tree (it deliberately drops repo-internal dirs and other harnesses' dotdirs). |
+| External marketplace fork, synced by script | (historical: Codex, retired v7.23.0) | A sync script rsyncs the tracked plugin files into a separate fork repo and opens a PR, with an anchored include/exclude list so repo-internal dirs and other harnesses' dotdirs don't ship. Doperpowers no longer maintains one; recover `scripts/sync-to-codex-plugin.sh` from git history as a template if a harness needs this channel. |
 | Git-URL extension install | Gemini, Kimi Code, OpenCode | Users install from a git URL (`gemini extensions install …`; Kimi Code `/plugins install …`; an `opencode.json` `plugin` array entry). Document the exact command. |
 | Package-manifest fields | pi | Declared through fields in the repo-root `package.json`; users install via the harness's package command. |
 | Local installer (plugin install) | Antigravity (`agy`) | A small `install.sh` that runs the harness's own `agy plugin install` against a staging dir holding the manifest, the skills, and a generated `contextFileName` context file (the bootstrap). Everything arrives through the install mechanism — *not* by editing the user's config (see below). |
@@ -738,13 +738,12 @@ Then:
   stale version. If your harness instead rides an already-tracked file — pi
   declares itself in the repo-root `package.json`, which is already listed —
   there's nothing new to add.
-- **If no existing channel fits, you're standing up a new one.** None of the four
-  rows may match your harness. If it needs a Codex-style external fork sync,
-  `scripts/sync-to-codex-plugin.sh` is the template to clone (note its anchored
-  include/exclude list and its PR automation). And whenever you add a new
-  per-harness directory, add it to the *other* harnesses' sync excludes (e.g. the
-  EXCLUDES list in `sync-to-codex-plugin.sh`) so your dotdir doesn't leak into
-  their distributions.
+- **If no existing channel fits, you're standing up a new one.** None of the
+  rows may match your harness. If it needs an external fork sync, recover
+  `scripts/sync-to-codex-plugin.sh` from git history (removed v7.23.0) as the
+  template — note its anchored include/exclude list and its PR automation. And
+  whenever you add a new per-harness directory, keep any sync scripts' excludes
+  updated so your dotdir doesn't leak into other harnesses' distributions.
 
 ---
 
@@ -795,7 +794,7 @@ Use this as the live index; when in doubt, read the files, not this table.
 | Harness | Entry point | Bootstrap mechanism | Tool mapping | Tests | Distribution |
 |---|---|---|---|---|---|
 | Claude Code | `.claude-plugin/plugin.json` + `hooks/hooks.json` | shell hook → `hooks/session-start` (`hookSpecificOutput.additionalContext`) | native `Skill` tool; `references/claude-code-tools.md` | `tests/hooks/` | marketplace |
-| Codex | `.codex-plugin/plugin.json` + `hooks/hooks-codex.json` | shell hook → `hooks/session-start-codex` | `references/codex-tools.md` | `tests/codex-plugin-sync/`, `tests/hooks/` | fork sync (`scripts/sync-to-codex-plugin.sh`) |
+| Codex | `.codex-plugin/plugin.json` + `hooks/hooks-codex.json` | shell hook → `hooks/session-start-codex` | `references/codex-tools.md` | `tests/codex/`, `tests/hooks/` | — (fork sync retired v7.23.0) |
 | Cursor | `.cursor-plugin/plugin.json` + `hooks/hooks-cursor.json` | shell hook → `hooks/session-start` (`additional_context`) | `references/claude-code-tools.md` | `tests/hooks/` | hand-authored |
 | Copilot CLI | (shares Claude Code hook path; `COPILOT_CLI` env) | shell hook → `hooks/session-start` (`additionalContext`) | `references/copilot-tools.md` | `tests/hooks/` | — |
 | Gemini CLI | `gemini-extension.json` + `GEMINI.md` | instructions file `@`-includes bootstrap + mapping | `references/gemini-tools.md` | — | `gemini extensions install` |

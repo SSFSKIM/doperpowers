@@ -328,3 +328,9 @@ Epics; the epic-sized-child ticket species at Milestone altitude
   observation-data accrual, not a sibling). Declined as acceptable prose:
   a structured "consumes but does-not-redefine" boundary on the Consumes
   line.
+- **2026-07-20 (post-release).** The Acceptance line "Release rides the
+  normal fork process: `scripts/bump-version.sh`, codex-plugin sync" is
+  half-obsolete: the human retired the external codex-plugins sync from
+  the fork the same day (script + `tests/codex-plugin-sync/` deleted;
+  `.codex-plugin/` manifest kept for local Codex installs). Release is
+  now bump + push only.
