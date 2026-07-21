@@ -63,14 +63,14 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: an initiative bigger than one slice routes to doperpowers:roadmapping — see the scope bullet below.)
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing-goals; see the scope bullet below.)
 
 ## The Process
 
 **Understanding the idea:**
 
 - Check out the current project state first (files, docs, recent commits)
-- Before asking detailed questions, assess scope: if the request describes multiple independent purpose-units (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Work bigger than one slice belongs one altitude up: recommend doperpowers:roadmapping — it decomposes the initiative into children with acceptance and edges, and each child then returns through this skill (or execplan) with its parent section as pre-landed input. Confirm the route with your human partner before switching; don't drift into grilling slice details of an epic-scale request.
+- Before asking detailed questions, assess scope: brainstorming defines ONE goal at a time, whatever its size — but if the request describes a goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing-goals; e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Division belongs one skill over: recommend doperpowers:decomposing-goals — it cuts the goal into children with acceptance and edges, and each child then returns through this skill (or execplan) with its parent section as pre-landed input. Confirm the route with your human partner before switching; don't drift into grilling child-level details of a goal that needs dividing first.
 - For appropriately-scoped projects, run the grill below to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Focus on understanding: purpose, constraints, success criteria
@@ -89,7 +89,11 @@ Three moves to use throughout (kept from his `domain-modeling` skill; its artifa
 - **Stress-test with concrete scenarios** — invent scenarios that probe edge cases and force precision about the boundaries between concepts.
 - **Cross-reference with code** — when your human partner states how something works, check whether the code agrees; surface contradictions.
 
+One more move extends the grill's codebase rule outward — **situate at four radii**: a question the codebase can answer is answered by reading it; a question the world can answer (prior art, the literature, an external service's real behavior) is answered by research, not speculation; a question only an experiment can answer becomes a spike — run inline when small, registered as its own goal when not; and every idea is situated against the project's standing purpose (the top-level goal in CLAUDE.md, and the root spec it routes to when the project keeps one). Explore, research, and spike are not separate ceremonies — they are this one rule at different radii.
+
 Triage the grilling: grill what is fuzzy or important; don't grind an already-clear request to death.
+
+**The challenger duty.** Converging the idea is half the grill; the other half is judging whether the idea as conceived deserves to converge. Run this assessment always, on every idea: hold it against the project's standing purpose — and not only for internal fit. Make the outward move your human partner cannot: compare the idea against the other levers the purpose itself suggests, including levers absent from the codebase (an absent obvious lever is often the prerequisite frame, not background to assume) and what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find ONLY when it would change the decision — a materially better or prerequisite frame, a consideration that shifts scope or approach — and say it once, sharply, BEFORE convergence, grounded in this project's purpose, this codebase, or named sources; a generic checklist ("have you considered scalability?") is not a challenge. The human's override is absolute: this is recommend-then-confirm applied to the idea itself — offer, not veto; overridden, proceed wholeheartedly.
 
 **Choosing the Track (after the grill):**
 
