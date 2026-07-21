@@ -257,7 +257,10 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
     checklist steps 4 and 10 are leaf-shaped — a wrong-boundary smell
     the define/divide seam does not produce. Carried from spec A's
     lineage: the one-child misfire's second diagnosis (a cut that found
-    no independently-landable seam) and pressure scenarios P4/P6.
+    no independently-landable seam — an arm that routes to a
+    keep-together verdict, big-but-atomic staying one leaf, not back to
+    brainstorming; the ceremony arm was already v7.23.0's rule) and
+    pressure scenarios P4/P6.
     DECLINED from the parallel text: the explicit clarity-before-size
     ordering clause ("the checks run in order") — the parallel session's
     own P4 run scored 2/2 PASS against the SHIPPED clause-less v7.24.0
@@ -387,7 +390,11 @@ Retro watch items: challenger over-firing on borderline goal-tension
 counter-evidence of appropriate firing under a means-heavy prompt); the
 first live decomposing-goals run (carried over from v7.23.0's retro —
 still pending); contract staleness across in-flight children (carried;
-structurally mitigated by the lazy frontier, unproven until a live run).
+structurally mitigated by the lazy frontier, unproven until a live run);
+the declined ordering clause's contingency — if live use ever shows a
+fuzzy goal carved into children, the parallel lineage's one-sentence fix
+sits ready on `archive/decomposing-gate-synthesis` (Decision 13 flips on
+that observation, no new design needed).
 
 ## Revision Notes
 
