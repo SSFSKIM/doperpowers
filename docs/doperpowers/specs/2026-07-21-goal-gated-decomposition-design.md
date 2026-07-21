@@ -1,0 +1,256 @@
+# goal-gated decomposition — the gate replaces the ladder (2026-07-21)
+
+## Purpose
+
+v7.23.0 gave the fork an above-Slice altitude (`roadmapping`) built around a
+canonical ladder: Milestone → Epic → Slice → Task. Two days of contact with
+the doctrine eroded the ladder's load-bearing claims from inside its own
+spec: the dry-run corrected "epic-sized child ⇒ nested run" to "nesting is
+for children that NEED decomposition, not children that are large"; the
+retro's open watch items (vocabulary drift between organizing-sprints epics
+and ladder Epics; the epic-child ticket species; ladder fit itself) are all
+artifacts OF the ladder, not of the work. Meanwhile the decomposition
+criterion the fork actually trusts already exists, stated four ways in four
+homes: the board's ticket gate (WELL-DEFINED + WELL-SCOPED), brainstorming's
+scope bullet, roadmapping's entry condition, and writing-plans' sub-slicing
+signals.
+
+This spec re-founds the altitude on the principle itself — the fork's own
+constraint-minimization golden rule applied to decomposition. Every node of
+work is a GOAL (purpose + observable acceptance). A goal divides into child
+goals only when it fails the gate — too unclear or too big for one agent to
+reliably own as one unit — and the division recurses at need, producing a
+tree of asymmetric depth whose leaves dispatch to the existing tracks. The
+ladder is demoted to project-local vocabulary. `roadmapping` is re-founded
+as `decomposing-goals`; the validated organs (derivation contract, template,
+pipeline, HARD-GATE) survive near-verbatim.
+
+Secondary purpose, same doctrine one radius wider: doperpowers:brainstorming
+gains (a) SITUATING AT FOUR RADII — the grill's "a question the codebase can
+answer is answered by reading it" generalized to the world (research) and to
+experiments (spikes), so explore/research/spike stop being separate
+ceremonies; and (b) THE CHALLENGER DUTY — before converging an idea, the
+agent judges whether the idea as conceived serves the project's standing
+purpose as well as it could, speaking only when what it found would change
+the decision.
+
+## Design
+
+### The seam: brainstorming defines, decomposing-goals divides
+
+The boundary between the two skills stops being an altitude ("bigger than
+one slice") and becomes a function: brainstorming DEFINES one goal at a time
+— purpose, observable acceptance, the decisions that shape it — whatever its
+size; decomposing-goals DIVIDES a defined-enough goal that fails the gate's
+scope check; the tracks (spec→plans, execplan) EXECUTE gate-passing leaves.
+Recursion is the alternation define ↔ divide: a child returns through
+brainstorming (or execplan) with its parent section as pre-landed input,
+grilling residue only — exactly the behavior P3 validated in v7.23.0.
+
+### The gate, stated once
+
+One criterion at every altitude, identical to the board's ticket gate
+(doperpowers:issue-tracker `references/ticket-gate.md` is its board
+rendering — that file keeps board procedure; doctrine lives in
+decomposing-goals):
+
+- **WELL-DEFINED** — every fork the work will hit has an owner or an
+  answer. Fails ⇒ the missing thing is knowledge: grill it when a
+  conversation can close it; make it a child whose deliverable is findings
+  (spike/research) when it needs real work.
+- **WELL-SCOPED** — one agent can reliably own it as one unit. "One agent"
+  = one accountable context, which may marshal subagent workers (SDD task
+  workers, ExecPlan milestones) without that becoming decomposition —
+  execution mechanics live below the tree's resolution. Fails ⇒ divide
+  into work-children.
+
+A gate-passing goal is a LEAF whatever its size: reliably-ownable is a
+moving envelope (model capability, context, harness support), not a size
+class — the gate absorbs capability growth that a fixed ladder would bake
+in. Split signals and keep-together signals are calibration content carried
+by the skill (promoted from writing-plans' sub-slicing list, which remains
+the below-slice application of the same list).
+
+### The tree
+
+- Decomposition is a TREE: one parent per child — the parent is the child's
+  reason to exist and its flow-back address. A subgoal two parents need is
+  hoisted to the common ancestor; the need becomes dependency edges.
+- Dependencies are typed EDGES (`blocked-by`, `conditional-on`,
+  `external:<condition>`), cross-branch allowed, acyclic — a DAG overlaid
+  on the tree. The tree says what adds up to what; edges say what waits.
+- No OR-branches: the tree records the chosen division; alternatives live
+  in Decision Logs.
+- Levels have no canonical names. Milestone/Epic/Phase/Sprint are project
+  vocabulary, annotated on nodes, never load-bearing. Depth is an output of
+  the gate and is asymmetric by nature.
+- The ROOT is the project's standing purpose. Convention: CLAUDE.md states
+  the top-level goal as short prose; projects that keep a standing root
+  spec route to it from that line. New goals enter the tree by being
+  situated against the root or an existing node (brainstorming's job).
+- ZERO NEW SUBSTRATE: the tree is the citation chain (child spec cites
+  parent, path + child id) + the board's typed edges + parent specs'
+  tracking maps. No registry file exists or may be invented.
+
+### The frontier (lazy division) and recomposition
+
+Divide at need in TIME as well as size: one level per run, and a branch is
+divided only as it nears execution — distant branches stay coarse (track
+hint: "decomposing-goals run at dispatch"). The staleness evidence already
+recorded for approach sketches applies one level up to child cuts
+themselves; an undivided branch is cheap to re-cut when a landed sibling's
+discoveries move it.
+
+Closing a parent is RECOMPOSITION, not bookkeeping: the parent declares its
+own acceptance at cut time (already in the template: "not the sum of child
+acceptances"), and when all children have landed, closing the parent is a
+verification event against that acceptance — then the retrospective writes.
+
+### File-by-file
+
+- `skills/roadmapping/` → `skills/decomposing-goals/` (git mv; history
+  preserved). SKILL.md rewritten around Gate/Tree/Frontier/Recomposition;
+  Pipeline, Derivation Contract, HARD-GATE, Common Mistakes preserved
+  near-verbatim with ladder language removed. Template keeps its filename
+  (`roadmap-spec-template.md` — "roadmap" stays the artifact's colloquial
+  name); its altitude header slot becomes Parent citation + project-local
+  Level name annotation; Outcomes gains the recomposition clause; track
+  hint renames.
+- `skills/brainstorming/SKILL.md`: scope bullet + terminal-state
+  parenthetical rewritten to gate language and the new name; a fourth
+  situating move appended after the three grill moves (four radii:
+  codebase / external dependencies / world / project purpose); the
+  challenger duty added as its own paragraph (always assess; speak only
+  when it would change the decision; grounded, once, before convergence;
+  offer, not veto). The vendored grill quote is untouched.
+- `skills/writing-plans/SKILL.md`: Conditional Sub-Slicing keeps its
+  validated body; only the closing above-Slice paragraph is rewritten to
+  name decomposing-goals as the doctrine's home (this section = the gate's
+  below-slice application).
+- `skills/organizing-sprints/SKILL.md`: description's routing sentence
+  renames.
+- `skills/issue-tracker/references/ticket-gate.md`: one added line naming
+  itself the board rendering of the universal gate.
+- `skills/implementing-tickets/references/implement-decompose.md`: one
+  parenthetical in step 6 tying worker decomposition to the same doctrine.
+  (The `## Roadmap` JIT section name in ticket bodies is unchanged;
+  `tests/implementing-tickets/test-protocol-content.sh` asserts it.)
+- `docs/doperpowers/specs/2026-07-19-roadmapping-design.md`: supersession
+  Revision Note appended; history not rewritten.
+
+## Acceptance
+
+Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
+
+- **RED (challenger baseline, before editing brainstorming):** fresh-context
+  agents given the CURRENT brainstorming skill + a scenario whose repo
+  states a top-level goal and whose human proposes a plausible but
+  goal-dominated idea (loyalty points vs. an 18% no-show baseline and
+  clients who never open the app). Failure to challenge before converging =
+  the failing test that licenses the edit. If baseline agents already
+  challenge reliably, the challenger edit is NOT authored (control shows no
+  failure → nothing to fix).
+- **GREEN (challenger):** same scenario with the NEW text — agents raise a
+  grounded challenge before convergence (≥2/3 reps); a companion
+  aligned-idea scenario draws NO manufactured challenge (≥2/3 reps) — the
+  speak-condition binds both ways.
+- **Regression P1/P2/P3 (v7.23.0's pressure suite, new frame):** an
+  epic-scale prompt routes to decomposing-goals with confirmation and no
+  child-detail grilling; a slice-scale prompt does not route; a parent
+  child-section hands a fresh session pre-landed input and only residue is
+  grilled.
+- **P5 (gate calibration, new):** a big-but-coherent goal (epic-sized
+  mechanical migration) is judged a LEAF — no forced division; routes to a
+  single track.
+- **Template re-expression:** a synthetic milestone with feature parity to
+  the M5.5 stress set (8 children; a conditional child; a two-gate child
+  with required/conditional flags; an `external:<condition>` edge; shared
+  definitions in contracts; both Deferred kinds; grounding numbers; risks)
+  authored through the revised template by a fresh agent. Pass =
+  fits-without-contortion verdict; every friction becomes a template fix.
+  Honest label: synthetic feature-parity, not a second live milestone.
+- Release rides the fork process: `scripts/bump-version.sh` minor, push.
+
+## Decision Log
+
+1. **Figure-ground inversion: the gate is canonical; the ladder becomes
+   project-local annotation.** Overturns v7.23.0 Decision 1, whose recorded
+   rejection reason ("no shared vocabulary") is answered by keeping names
+   as annotations, not strata. Rejected: keep the canonical ladder — its
+   own dry-run eroded it and three of four retro watch items are artifacts
+   of it. Rejected: delete the skill outright — the derivation contract,
+   template, and pipeline are validated organs the new frame still needs.
+2. **Name: `decomposing-goals`.** Verb-object gerund per repo convention
+   (organizing-sprints, implementing-tickets); "decompose" is the verb the
+   board vocabulary already uses (DECOMPOSE outcome, decompose procedure).
+   Rejected: keeping `roadmapping` (human chose a rename; the old name
+   names the artifact, not the act). Rejected: `dividing-goals` /
+   `mapping-goals` (no existing vocabulary anchor).
+3. **Seam = define/divide (functional), not slice-altitude.** Brainstorming
+   defines one goal of any size; decomposing-goals divides. Rejected:
+   merging division into brainstorming — v7.23.0 Decision 4's reason
+   stands (highest-frequency skill carrying rarely-used weight).
+4. **Gate canonical in decomposing-goals; ticket-gate.md stays the board
+   rendering.** Rejected: moving/graduating ticket-gate.md — battle-tested
+   board schema isn't moved for structural reasons (echoes v7.23.0
+   Decision 6). Rejected: a third "verifiable" check — observable
+   acceptance is part of WELL-DEFINED.
+5. **Tree + typed-edge DAG overlay; single parent; hoist shared subgoals;
+   no persisted OR-branches.** Rejected: multi-parent decomposition — it
+   splits the flow-back address and ownership. Rejected: HTN-style
+   persisted alternatives — a roadmap is a commitment record, not a search
+   space; alternatives live in Decision Logs.
+6. **Lazy frontier: a branch divides only as it nears execution.**
+   Rejected: upfront full decomposition — the recorded staleness evidence
+   for approach sketches applies to child cuts one level up.
+7. **Recomposition: closing a parent is verification against its own
+   acceptance.** Rejected: leaf-only verification — all-children-green ≠
+   parent-achieved; composition risk would accumulate silently.
+8. **Zero new substrate.** Rejected: a tree registry file — the citation
+   chain + board edges + tracking maps already carry the tree; a registry
+   would violate the fork's simplicity doctrine and drift.
+9. **Challenger: always assess, speak only when it would change the
+   decision; grounded; once; before convergence; offer-not-veto; the
+   human's override is absolute.** Chosen by the human. Rejected:
+   always-voice (noise; generic-consultant checklists). Rejected:
+   challenge-as-approval-gate (substitutes agent taste for human taste).
+   Root-purpose referent: CLAUDE.md short-prose top goal, routing to a
+   standing root spec where the project keeps one (human's convention).
+10. **Situating at four radii added as a fourth move; the vendored grill
+    quote untouched.** Rejected: editing the vendored quote — it is marked
+    vendored verbatim and shared with execplan's reference to it.
+11. **Evidence = RED challenger baseline + GREEN suite + regression
+    P1/P2/P3 + P5 + synthetic template re-expression now**, rather than
+    waiting for a first live roadmapping run. The dry-run validated the
+    template and contract, not the ladder-vs-gate question; the rewrite
+    preserves the validated organs and re-runs their suite. Rejected: full
+    evals harness (v7.23.0 Decision 7 reason stands). Honest limitation
+    recorded: the re-expression is synthetic feature-parity, not live.
+12. **writing-plans keeps its sub-slicing body.** The v7.23.1-trimmed text
+    is validated; only ownership/pointer language changes. Rejected:
+    hollowing it to a bare cross-reference — plan-writers shouldn't open a
+    second skill for a four-item list they apply constantly.
+
+## Surprises & Discoveries
+
+- The ladder's own acceptance run had already begun converting it to the
+  gate: the round-1 dry-run fix ("nesting is for children that need
+  decomposition, not children that are large") IS the gate criterion,
+  discovered under contact and recorded as a wording fix.
+- Three of the four v7.23.0 retro watch items dissolve by construction in
+  the level-free model (vocabulary drift; the epic-child ticket species;
+  ladder fit). The fourth (contract staleness across in-flight children)
+  survives and is mitigated by the lazy frontier — fewer pre-cut in-flight
+  contracts exist at any moment.
+- KAOS goal-refinement terminates refinement at "assignable to an
+  individual agent" — the gate's WELL-SCOPED check with 1990s agents;
+  rolling-wave planning is the frontier principle under a PMI name. The
+  proposal has independent prior art on both new axes.
+
+## Outcomes & Retrospective
+
+Pending — written at finish.
+
+## Revision Notes
+
+(none yet)
