@@ -1,11 +1,13 @@
-# [Unit Name] Roadmap — [Milestone | Epic] (YYYY-MM-DD)
+# [Goal Name] Roadmap (YYYY-MM-DD)
 
-> **Altitude:** [Milestone → Epics | Epic → Slices]. **Parent:** [path +
-> unit id of the roadmap this unit belongs to, or "none — top of ladder
-> for this project"]. **Consumes:** [existing canon/upstream artifacts
-> this unit builds on, if any — delete if none]. Children dispatch per
-> their track hint; each child spec opens by citing this document (path +
-> child id).
+> **Parent:** [path + child id of the parent this goal descends from, or
+> "root — the project's standing purpose", citing the CLAUDE.md top-goal
+> line / root spec]. **Level name:** [the project's own word for this
+> node — "Milestone 5", "Phase 2", … — annotation only; delete if the
+> project doesn't use one]. **Consumes:** [existing canon/upstream
+> artifacts this unit builds on, if any — delete if none]. Children
+> dispatch per their track hint; each child spec opens by citing this
+> document (path + child id).
 
 ## Purpose
 
@@ -26,7 +28,7 @@ phase lands its numbers.]
 
 ## Children
 
-### C1: [Child name] — [track hint: controlled | autonomous | roadmapping]
+### C1: [Child name] — [track hint: controlled | autonomous | decomposing-goals]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line
@@ -83,9 +85,11 @@ Progress section. Keep it current as children land.]
 
 ## Outcomes & Retrospective
 
-Pending — written when the unit closes. [Children that close early keep
-their own retrospectives where they lived (child spec / ExecPlan); the
-Tracking Map points at them.]
+Pending — written when the unit closes. Closing is a RECOMPOSITION check:
+verify Parent-Level Acceptance as written — all children landed is not the
+same event — then retrospect. [Children that close early keep their own
+retrospectives where they lived (child spec / ExecPlan); the Tracking Map
+points at them.]
 
 ## Revision Notes
 

@@ -32,4 +32,5 @@ only the PROCEDURE and grants no authority beyond your prompt's.
    it).
 
 6. End your turn. The decomposing worker writes NO code — recursion is
-   emergent: each child's worker re-runs the same gate from fresh context.
+   emergent: each child's worker re-runs the same gate from fresh context
+   (this is doperpowers:decomposing-goals' division run at board altitude).

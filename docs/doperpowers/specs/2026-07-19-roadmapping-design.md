@@ -334,3 +334,10 @@ Epics; the epic-sized-child ticket species at Milestone altitude
   the fork the same day (script + `tests/codex-plugin-sync/` deleted;
   `.codex-plugin/` manifest kept for local Codex installs). Release is
   now bump + push only.
+- **2026-07-21 (superseded).** The canonical ladder (Decision 1) is
+  retired by `2026-07-21-goal-gated-decomposition-design.md`: the skill
+  is re-founded as `decomposing-goals` — level-free goal nodes gated by
+  the board gate's two checks, divided only at need. The derivation
+  contract, template, and pipeline survive near-verbatim; three of the
+  four retro watch items (vocabulary drift, the epic-child ticket
+  species, ladder fit) dissolve by construction in the level-free model.

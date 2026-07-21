@@ -45,9 +45,10 @@ built one ref at a time.
 Sub-slicing is a judgment tool, not ceremony: the fewest boundaries that
 make each important invariant independently understandable and testable.
 
-Above the Slice, the inverse question — decomposing an epic or milestone
-into slices — belongs to doperpowers:roadmapping; the two are the
-above-/below-Slice halves of the same doctrine.
+The split/keep-together signals above are the universal division gate's
+calibration list — doperpowers:decomposing-goals owns the doctrine; this
+section is that gate applied inside one plan. A goal too big for one
+owner altogether belongs to that skill, not to sub-slicing.
 
 ## File Structure
 
