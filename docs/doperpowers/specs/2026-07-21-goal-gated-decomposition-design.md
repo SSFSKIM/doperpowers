@@ -162,6 +162,18 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
 - **P5 (gate calibration, new):** a big-but-coherent goal (epic-sized
   mechanical migration) is judged a LEAF — no forced division; routes to a
   single track.
+- **P4 (clarity before size, adopted from the parallel spec):** a
+  big-and-fuzzy prompt ("rebuild the whole data layer — event-sourced,
+  real-time, multi-region; not sure exactly what we need yet — decompose
+  it into workstreams") — the session refuses to divide, names the two
+  remedies and pursues clarity, rather than cutting children of an
+  unclear goal.
+- **P6 (recursive gate at child dispatch, adopted from the parallel
+  spec):** a parent child-section whose residue reveals multiple
+  independent purpose-units — the fresh session re-runs the gate on the
+  child, fails it on scope, and divides again, citing the parent without
+  re-litigating landed contracts: asymmetric tree depth demonstrated
+  live.
 - **Template re-expression:** a synthetic milestone with feature parity to
   the M5.5 stress set (8 children; a conditional child; a two-gate child
   with required/conditional flags; an `external:<condition>` edge; shared
@@ -185,7 +197,11 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
    board vocabulary already uses (DECOMPOSE outcome, decompose procedure).
    Rejected: keeping `roadmapping` (human chose a rename; the old name
    names the artifact, not the act). Rejected: `dividing-goals` /
-   `mapping-goals` (no existing vocabulary anchor).
+   `mapping-goals` (no existing vocabulary anchor). Lineage across the
+   parallel sessions: `decomposition`, then bare `decomposing`, were
+   each chosen under spec A's pure-doctrine packaging (a noun, then a
+   bare gerund); when the skill regained its pipeline, the verb-object
+   workflow convention applied and both fell.
 3. **Seam = define/divide (functional), not slice-altitude.** Brainstorming
    defines one goal of any size; decomposing-goals divides. Rejected:
    merging division into brainstorming — v7.23.0 Decision 4's reason
@@ -220,7 +236,8 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
     quote untouched.** Rejected: editing the vendored quote — it is marked
     vendored verbatim and shared with execplan's reference to it.
 11. **Evidence = RED challenger baseline + GREEN suite + regression
-    P1/P2/P3 + P5 + synthetic template re-expression now**, rather than
+    P1/P2/P3 + P5 + synthetic template re-expression now** (P4/P6
+    joined at the cross-session synthesis — Decision 13), rather than
     waiting for a first live roadmapping run. The dry-run validated the
     template and contract, not the ladder-vs-gate question; the rewrite
     preserves the validated organs and re-runs their suite. Rejected: full
@@ -230,6 +247,27 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
     is validated; only ownership/pointer language changes. Rejected:
     hollowing it to a bare cross-reference — plan-writers shouldn't open a
     second skill for a four-item list they apply constantly.
+13. **Cross-session seam synthesis: spec A's in-session Topology Mode
+    rejected; define/divide stands; the ordering clause declined on
+    evidence.** A parallel spec of the same initiative ("spec A": the
+    skill dissolved to a one-page doctrine, the template to execspec,
+    session behavior folded into brainstorming as an in-session Topology
+    Mode) was refuted by its own implementation plan: its hostile read
+    had to patch brainstorming's checklist with a "bend note" because
+    checklist steps 4 and 10 are leaf-shaped — a wrong-boundary smell
+    the define/divide seam does not produce. Carried from spec A's
+    lineage: the one-child misfire's second diagnosis (a cut that found
+    no independently-landable seam) and pressure scenarios P4/P6.
+    DECLINED from the parallel text: the explicit clarity-before-size
+    ordering clause ("the checks run in order") — the parallel session's
+    own P4 run scored 2/2 PASS against the SHIPPED clause-less v7.24.0
+    text, so the control shows no failure and the guidance is not
+    authored (doperpowers:writing-skills' rule); the ordering is
+    emergent from the two checks' distinct remedies, corroborated by
+    P5's agent articulating it unprompted. Leaf-size anchor resolved for
+    consistency: doctrine keeps the moving-envelope language; the board
+    rendering's battle-tested "roughly 1–2 ExecPlans" stays the only
+    numeric anchor.
 
 ## Surprises & Discoveries
 
@@ -246,6 +284,18 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
   individual agent" — the gate's WELL-SCOPED check with 1990s agents;
   rolling-wave planning is the frontier principle under a PMI name. The
   proposal has independent prior art on both new axes.
+- Three parallel sessions independently converged on gate-replaces-
+  ladder; the divergences were one taste fork (the name — resolved
+  `decomposition` → `decomposing` → `decomposing-goals`) and one
+  structural fork (seam placement — settled by the checklist-bend
+  evidence, Decision 13). The gate's own fork taxonomy classified the
+  meta-process's forks correctly: the structural fork fell to evidence;
+  only taste needed the human.
+- The parallel spec legislated clarity-before-size as an explicit
+  ordering clause; the shipped clause-less text passed its P4 2/2 — the
+  ordering is EMERGENT from the two remedies being different. A live
+  demonstration of the constraint-minimization doctrine: the rule was
+  real, the hard wording was unnecessary.
 
 ## Outcomes & Retrospective
 
@@ -317,12 +367,39 @@ YES + four refinements).**
   without action: a conditional child restates its conditionality in
   four fields — redundancy with drift risk, no contradiction.
 
+- **P4 2/2 PASS and P6 2/2 PASS — run by the parallel session against
+  the SHIPPED v7.24.0 text** (post-release confirmation archived on the
+  `decomposing-gate` branch, commit dad1f4d; this session's duplicate
+  runs were stopped by the human as redundant). P4: both reps caught
+  the WELL-DEFINED failure under size pressure and drew the
+  grill-vs-spike line correctly — with no ordering clause in the text,
+  which is why Decision 13 declines to author one. The challenger also
+  fired appropriately (event-sourcing serves the auditability purpose;
+  real-time/multi-region flagged as unjustified means) — first
+  counter-evidence against the over-firing watch item. P6: both reps
+  re-ran the gate at child dispatch, failed it on WELL-SCOPED, divided
+  that branch one level deeper than its leaf sibling, kept the parent's
+  contracts landed, and held the parent-level reconciliation acceptance
+  as recomposition rather than inventing a fourth child.
+
 Retro watch items: challenger over-firing on borderline goal-tension
-(P2's CSV question — watch in live use); the first live decomposing-goals
-run (carried over from v7.23.0's retro — still pending); contract
-staleness across in-flight children (carried; structurally mitigated by
-the lazy frontier, unproven until a live run).
+(P2's CSV question — watch in live use; P4 later supplied first
+counter-evidence of appropriate firing under a means-heavy prompt); the
+first live decomposing-goals run (carried over from v7.23.0's retro —
+still pending); contract staleness across in-flight children (carried;
+structurally mitigated by the lazy frontier, unproven until a live run).
 
 ## Revision Notes
 
-(none yet)
+- **2026-07-21 (cross-session synthesis, post-7.24.0 — released as
+  7.24.1).** A parallel session's spec of the same initiative (~90%
+  identical architecture; lineage archived on
+  `archive/decomposing-gate-synthesis`, its post-release P4/P6
+  confirmation on `decomposing-gate` @ dad1f4d) was synthesized in
+  after release. Adopted: the one-child misfire second diagnosis
+  (SKILL.md Common Mistakes), scenarios P4/P6 with the parallel
+  session's 2/2 + 2/2 shipped-text evidence, the name lineage
+  (Decision 2), and the Topology Mode rejection record (Decision 13).
+  Declined with evidence: the explicit clarity-before-size ordering
+  clause (Decision 13). This document remains the initiative's design
+  of record.

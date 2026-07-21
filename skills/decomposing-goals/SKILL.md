@@ -183,7 +183,7 @@ doperpowers:execspec discipline one level up.
 |---|---|
 | Running on a goal that passes the gate | That's a leaf with ceremony. Define it in doperpowers:brainstorming and dispatch it to its track. |
 | Running on a raw ungrounded ideadump | Wrong skill — doperpowers:organizing-sprints grounds testimony first. |
-| A cut that yields one child | A no-op wearing structure. The goal was already its own unit — back to the gate. |
+| A cut that yields one child | A gate misfire: either the goal was already a leaf (ceremony), or the cut found no seam where children land independently. Back to the gate. |
 | Forcing division because a goal is big | The gate asks reliably-ownable, not small. Big-but-coherent is one leaf. |
 | Dividing branches far from the frontier | Distant cuts go stale. Coarse until near execution. |
 | Sketching child approaches in the parent | The parent fixes purpose/acceptance/edges; means belong to the child. |
