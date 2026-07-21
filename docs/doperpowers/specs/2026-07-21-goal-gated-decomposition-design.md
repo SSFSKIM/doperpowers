@@ -249,7 +249,79 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-07-21 — acceptance run (RED licensed the challenger edit; GREEN
+suite 10/10 PASS at first run; template round 1 NO → nine fixes → round 2
+YES + four refinements).**
+
+- **RED (challenger baseline, current brainstorming, 2 reps):** both reps
+  challenged the idea's internal fit against the stated top goal
+  (visibility problem, grounded in the root spec) but stayed inside the
+  proposed frame — 0/2 surfaced the dominant adjacent levers (SMS
+  reminders, deposits), and both ASSUMED an existing reminder channel
+  ("the confirmation and reminder messages you send") when the scenario's
+  repo has none. The failing test: the outward move is absent at
+  baseline; the challenger wording was aimed at exactly this gap.
+- **GREEN challenger-speak (3/3 PASS):** every rep challenged once,
+  before convergence, grounded three ways — the root-spec fact (clients
+  never open the app), the codebase absence (no reminder mechanism
+  exists: the exact fact baseline papered over), and world priors (the
+  appointment-reminder literature) — each ending in recommend-then-
+  confirm with the override explicit. Low variance: all three converged
+  on the same shape (reframe to SMS reminders; loyalty parked or
+  re-scoped phone-first).
+- **GREEN challenger-silent (3/3 PASS):** every rep declared the idea
+  on-goal in a sentence and went straight to the load-bearing residue
+  (the cancel/refund policy fork). No manufactured challenge.
+- **P1 (epic routes up) PASS:** flagged four purpose-units, recommended
+  decomposing-goals with confirmation, grilled no child details; bonus
+  grounding catch (the missing driver foundation as likely first child).
+- **P2 (slice stays) PASS:** no route-up; grill proceeded. Noted: the
+  challenger fired on the scenario's genuine goal-tension (CSV export vs
+  the anti-spreadsheet purpose) — grounded and decision-relevant, so
+  within contract, but recorded as the over-firing watch item below.
+- **P3 (pre-landed child) PASS:** listed the parent's landed decisions
+  as settled (purpose/acceptance, X1, X2, the C1 edge, track hint),
+  grilled residue only (partial refunds first; window and trigger-rights
+  queued).
+- **P5 (gate calibration) PASS:** refused to divide a 400-file
+  migration under "this feels huge" pressure; walked the split signals
+  and rejected each; located the real failure in WELL-DEFINED (assertion
+  and landing strategy forks) and routed it to the grill; classified
+  batch fan-out as execution mechanics below tree resolution; rejected
+  the tempting infra/specs cut on keep-together grounds and named the
+  one-child no-op.
+- **Template re-expression round 1** (synthetic feature-parity with the
+  M5.5 stress set — labeled synthetic, not a live milestone): verdict
+  "fits without contortion: NO" — ~90% fit, nine frictions, all applied
+  as template fixes: backward citation for pre-landed children; a spike
+  track hint; authority-vs-content contracts (delegated content names
+  its owner and delivering gate); disjunctive parent acceptance gets a
+  named home; contracts that outlive the unit declare it (promotion is
+  a closing-time action); the early-close rule moved into the Tracking
+  Map; not-dispatched status annotates dispatchable / blocked /
+  waiting-external; the Consumes-vs-child tiebreak (participates in
+  contracts or edges ⇒ child); decomposing-goals children may state
+  acceptance coarsely.
+- **Template re-expression round 2** (revised template, same brief):
+  **"fits without contortion — YES."** The reviewer noted the template
+  "explicitly anticipated the hard cases" (backward citation, the
+  conditional spike + parent-level disjunction, delegated contract
+  content, the external precondition, the coarse decomposing-goals
+  child, outliving contracts). Four vocabulary-level refinements
+  applied from its report, per the v7.23.0 round-2 precedent:
+  `blocked-by` admits `external:<condition>` as a start-time gate and
+  `C_n.G_k` for gate-level precision (the old grammar conflated WHETHER
+  a child runs with WHEN it may start); the not-dispatched status
+  admits "deliberately late — see Ordering"; a named CLAUSE of a
+  contract may outlive the unit, not only whole contracts. Noted
+  without action: a conditional child restates its conditionality in
+  four fields — redundancy with drift risk, no contradiction.
+
+Retro watch items: challenger over-firing on borderline goal-tension
+(P2's CSV question — watch in live use); the first live decomposing-goals
+run (carried over from v7.23.0's retro — still pending); contract
+staleness across in-flight children (carried; structurally mitigated by
+the lazy frontier, unproven until a live run).
 
 ## Revision Notes
 

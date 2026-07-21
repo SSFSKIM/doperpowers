@@ -158,8 +158,9 @@ Each child section of the roadmap fixes:
 - **Dependency edges** — what blocks it, what it blocks;
 - **Cross-child contracts** — the shared interfaces, invariants, and
   ordering rules it participates in;
-- **Track hint** — controlled, autonomous, or another decomposing-goals
-  run at dispatch.
+- **Track hint** — controlled, autonomous, spike (deliverable is
+  findings, never a merge), or another decomposing-goals run at
+  dispatch.
 
 At dispatch, the child treats its section as pre-landed grill input: it
 grills only the residue and never re-litigates landed decisions. The

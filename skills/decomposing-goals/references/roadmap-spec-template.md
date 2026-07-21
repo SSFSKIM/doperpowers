@@ -5,9 +5,13 @@
 > line / root spec]. **Level name:** [the project's own word for this
 > node — "Milestone 5", "Phase 2", … — annotation only; delete if the
 > project doesn't use one]. **Consumes:** [existing canon/upstream
-> artifacts this unit builds on, if any — delete if none]. Children
-> dispatch per their track hint; each child spec opens by citing this
-> document (path + child id).
+> artifacts this unit builds on, if any — delete if none; an artifact
+> that participates in this unit's contracts or edges is a CHILD
+> (possibly already landed), not a Consumes entry]. Children dispatch
+> per their track hint; each child spec opens by citing this document
+> (path + child id) — except a child that landed before this roadmap
+> was cut: it cannot cite forward, so the citation runs backward (its
+> child section and the Tracking Map point at its spec).
 
 ## Purpose
 
@@ -18,7 +22,10 @@ Purpose first; mechanics later.]
 
 [The observable state that closes this unit AS A WHOLE — not the sum of
 child acceptances. What can a user/operator do, see, or rely on when this
-unit is done? Behavior-phrased, checkable.]
+unit is done? Behavior-phrased, checkable. May include disjunctions over
+child gates ("gate G2 passes OR the conditional spike's findings are
+recorded") — state the disjunction here; the children's Required fields
+carry its sides.]
 
 ## Grounding Baseline *(optional — delete if not measured)*
 
@@ -28,19 +35,25 @@ phase lands its numbers.]
 
 ## Children
 
-### C1: [Child name] — [track hint: controlled | autonomous | decomposing-goals]
+### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing-goals]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line
   or a short gate checklist; a child may declare multiple named gates,
-  each flagged required or conditional]
-- **Edges:** [blocked-by: — | C_n; conditional-on: C_n's gate outcome,
-  or external:<condition> when the precondition is not a sibling;
-  blocks: C_m]
+  each flagged required or conditional — a conditional gate names when
+  it becomes evaluable and what its failure triggers. A
+  decomposing-goals child may stay coarse: its precise gates emerge
+  from its own cut]
+- **Edges:** [blocked-by: — | C_n | C_n.G_k (gate-level when a child's
+  gates diverge) | external:<condition> (a start-time gate — the child
+  still runs); conditional-on: C_n's gate outcome or
+  external:<condition> when WHETHER it runs is contingent; blocks: C_m]
 - **Contracts:** [which Cross-Child Contracts it participates in, by id]
 - **Required:** [required for parent acceptance | conditional — state the
   condition; per-gate flags when the child declares multiple gates]
-- **Status:** [not-dispatched | conditional | in-flight | landed | parked]
+- **Status:** [not-dispatched (annotate which: dispatchable now |
+  blocked-by C_n | waiting-external | deliberately late — see Ordering) |
+  conditional | in-flight | landed | parked]
 
 ### C2: …
 
@@ -48,7 +61,12 @@ phase lands its numbers.]
 
 [X1, X2, … — each a shared interface, invariant, ordering rule, or
 definition two or more children must agree on. Exact names and shapes
-where known; a contract here is landed — children do not re-litigate it.]
+where known. What is landed here is the AUTHORITY — who owns the
+contract and whom it binds; content may be delegated to the owner child
+(name the owner and the gate that delivers the content). Children
+re-litigate neither. A contract — or a named clause of one — written to
+outlive this unit says so; promoting it to the parent / root canon is a
+closing-time action recorded in Outcomes.]
 
 ## Ordering & Dependency Map
 
@@ -73,7 +91,9 @@ contract id.]
 
 [child id → spec path / ticket # / status. This map plus the children's
 Status fields IS this unit's progress record — there is no separate
-Progress section. Keep it current as children land.]
+Progress section. Keep it current as children land. Children that close
+early keep their retrospectives where they lived (child spec /
+ExecPlan); this map points at them.]
 
 ## Decision Log
 
@@ -87,9 +107,7 @@ Progress section. Keep it current as children land.]
 
 Pending — written when the unit closes. Closing is a RECOMPOSITION check:
 verify Parent-Level Acceptance as written — all children landed is not the
-same event — then retrospect. [Children that close early keep their own
-retrospectives where they lived (child spec / ExecPlan); the Tracking Map
-points at them.]
+same event — then retrospect.
 
 ## Revision Notes
 
