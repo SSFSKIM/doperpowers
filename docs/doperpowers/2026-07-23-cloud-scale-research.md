@@ -1,7 +1,8 @@
 # Cloud-scale research synthesis — the board pipeline at enterprise fleet scale
 
-> **Date:** 2026-07-23. **Status: round 1 synthesized; round 2 (four deep-research
-> tracks) in flight — §7 slots marked PENDING fill as they land.**
+> **Date:** 2026-07-23. **Status: research complete — round 1 (six-article
+> deep read) and round 2 (four deep-research tracks) both synthesized.
+> Next artifact: the design spec, working §8's decision agenda.**
 >
 > **Purpose.** Reference-architecture research for running the board pipeline
 > (implementer workers + adversarial review workers over a ticket board) at
@@ -19,8 +20,9 @@
 >   SSOT storage, dispatch, compute, credentials.
 >
 > **Sources — round 1** (six engineering articles, each deep-read by a
-> dedicated agent with in-content citations followed; full reports in the
-> session scratchpad, load-bearing content absorbed here):
+> dedicated agent with in-content citations followed; full reports archived
+> in `docs/doperpowers/research/2026-07-23-cloud-scale/`, load-bearing
+> content absorbed here):
 > - Cursor, *Agent swarms and the new model economics* (Jul 20, 2026) + its
 >   lineage posts *Scaling agents* and *Self-driving codebases*
 > - Cursor, *What we've learned building cloud agents* (Jun 2, 2026) + the
@@ -34,10 +36,17 @@
 > - Anthropic, *Scaling Managed Agents: Decoupling the brain from the hands*
 >   (Apr 8, 2026) + Managed Agents platform docs (self-hosted sandboxes)
 >
-> **Sources — round 2 (in flight):** ticket-store limits (Linear vs GitHub vs
-> thin service), dispatch-engine selection (Temporal vs alternatives), sandbox
-> substrate (isolation tech + numbers), review/merge at scale (submit-queue
-> prior art, agent-review data).
+> **Sources — round 2** (four deep-research tracks, each grounded in primary
+> sources with per-claim confidence notes; full reports with source lists in
+> `docs/doperpowers/research/2026-07-23-cloud-scale/` as `r2-*.md`, verdicts
+> absorbed into §7): ticket-store limits
+> (Linear/GitHub official rate-limit docs, Symphony spec, Kubernetes API
+> concepts), dispatch engines (Temporal docs/testimonies, Hatchet, River/Oban,
+> Kueue, SQS), sandbox substrate (Firecracker project docs, gVisor production
+> numbers, GKE Agent Sandbox, NVMe-vs-EBS benchmarks, E2B/Modal/Daytona
+> pricing), review/merge at scale (Google TAP paper + SWE book, Uber
+> SubmitQueue EuroSys 2019, Meta TestGen-LLM/Conveyor, Cursor Bugbot,
+> Anthropic Code Review, Kayenta).
 
 ---
 
@@ -373,6 +382,39 @@ and one honest conditional:
    the same question — is already our decomposition doctrine, but at swarm
    scale it wants a gate-check, not just doctrine prose.
 
+**Round-2 additions (review/merge track, §7.4):**
+
+7. **No public precedent for human-free merge of general agent code.**
+   Anthropic, Google, and OpenAI all keep a human approval per change even
+   at >90% agent authorship; every published auto-land policy is bounded by
+   a machine-verifiable *change class* (dependency bumps, pattern-conforming
+   LSC shards, guardrailed test additions), never by diff size. Our
+   auto-land tier goes beyond public practice — not a reason to retreat, but
+   its safety case rests on our own guardrail design (change-class whitelist
+   + verifier stage + canary/revert), not on industry precedent.
+8. **Batch verification vs per-change gating.** The only proven mechanisms
+   at hundreds of landings/hour are TAP-style batching + auto-bisection
+   (per-change verification abandoned) or SubmitQueue-style speculation +
+   build-target independence (per-change verification kept, at speculation
+   cost). If the frozen layer is read as "every change individually verified
+   pre-merge," batching pressures that reading. Options: accept
+   batch+bisect as satisfying the intent / pay for speculation / per-repo
+   choice by risk class. Human's call at spec time.
+9. **The verifier stage is load-bearing and must be named.** Cursor
+   (8-pass voting → one aggressive finder + validator) and Anthropic
+   (parallel hunters → verification filter → severity rank, <1% findings
+   marked incorrect) converged on the same shape; HackerOne's 2026
+   bug-bounty pause under AI-amplified volume shows an unfiltered finding
+   stream can DoS a human tier. The semantic layer implies but does not
+   name a false-escalation-rate SLO on what reaches humans; the spec
+   should name it (substrate component, not a semantic change).
+10. **Post-land canary is a de-facto authority tier in every org at this
+   scale** (Kayenta: score → auto-promote / route-to-human / auto-rollback;
+   Meta: 2% canary ladder, 97% of deploy pipelines human-free). This
+   sharpens flag 2's conditional: the "fourth tier" may be better framed as
+   **auto-land-under-watch** — landing conditional on canary verdict —
+   which every reference org has in substance. Presented as an option.
+
 ## 5. Cross-cutting design rules the spec must carry
 
 1. Board = SSOT of ticket state; engine = SSOT of run ownership; session
@@ -402,43 +444,223 @@ and one honest conditional:
   publish nothing about how that volume is reviewed: our costliest
   component has no public reference — hence round-2 track §7.4.
 
-## 7. Round-2 tracks (PENDING — filled as reports land)
+## 7. Round-2 tracks (landed 2026-07-23; full reports in `research/2026-07-23-cloud-scale/`)
 
-### 7.1 Ticket SSOT: Linear vs GitHub-sharded vs thin board service
-PENDING. Question: does 1,000 runs/hour × ~10 board ops/run fit each
-option's limits; where does the FD-2 transition graph get enforced
-server-side; board↔forge PR linkage.
+### 7.1 Ticket SSOT → thin self-owned board service; Linear as human mirror
 
-### 7.2 Dispatch engine: Temporal vs queue+controller vs lighter engines
-PENDING. Question: ops burden self-hosted, claim/lease semantics, fairness
-and admission control, idempotent side effects (the double-git-push
-problem), doctrine fit (engine must not become a ticket-state authority).
+**Verdict: neither SaaS tracker can be the SSOT at target load, and neither
+can enforce our state machine.** Working load: 1,000 runs/hr/project × ~10
+board ops = 10,000 ops/hr, ~6,000 writes/hr, bursty.
 
-### 7.3 Sandbox substrate: isolation tech, snapshot numbers, drift detection
-PENDING. Question: Firecracker/CRIU/gVisor/containers for hours-long
-runs under an internal (prompt-injection, not adversarial-tenant) threat
-model; warm-state distribution; the drift-detection answer; capacity math
-against the disk-I/O ceiling.
+- **GitHub breaks first on content creation, not primary limits**: the
+  documented secondary limit is **500 content-generating requests/hour and
+  80/minute per actor** — our write load is 12× over, and community
+  evidence shows secondary limits use hidden buckets that can span tokens
+  of one app or one IP, so app-per-project sharding is not guaranteed to
+  multiply them. Sharding your SSOT against your vendor's abuse system is
+  an adversarial posture.
+- **Linear**: 2,500 req/hr per API key (5,000 per OAuth actor) — direct
+  worker writes are ~2× over per actor with unpublished per-endpoint
+  mutation caps as an untestable unknown. Decisive independent of limits:
+  `issueUpdate` accepts any `stateId` — **no transition-restriction feature
+  and no compare-and-swap exist**, so the claim race is unclosable at
+  Linear; and the audit log retains 90 days, disqualifying for the durable
+  human-answer record. Webhooks: 3 retries (1 min/1 hr/6 hrs) then dropped,
+  no ordering guarantee — a sync channel, not a correctness channel.
+- **Prior art confirms the shape**: OpenAI Symphony (May 2026, Linear-based,
+  exactly our problem class) keeps enforcement client-side and solves
+  concurrency by mandating ONE serializing orchestrator — i.e. at
+  multi-writer scale their "one authority" must become a real service. The
+  Kubernetes API server (resourceVersion + 409 Conflict; legality enforced
+  synchronously at one server, reconciliation only for convergence) is the
+  working reference model.
+- **Recommendation**: a small Postgres board service (~6 endpoints: claim /
+  transition / comment / park / query / reconcile) where the legal-transition
+  graph is a conditional UPDATE — `... WHERE id=$id AND state='ready-for-agent'`
+  makes legality check + claim lock one atomic statement; rows-affected=0 IS
+  the lost race. Load is ~3 TPS/project — ≥100× headroom on one node.
+  Append-only history retained forever. Linear becomes the human-facing
+  mirror (one-way coalesced sync — humans care about 2–3 of the ~10
+  machine-tempo ops, shrinking tracker traffic 5–10×); human actions in
+  Linear flow back as *events into* the board service, never as truth.
+  FD-2's enforcement-location question is thereby answered: **server-side,
+  in our service** — the frozen semantic layer stops depending on every
+  client getting it right.
+- **Coupling flag**: Linear's own GitHub PR automations (merged → Done)
+  are a second uncoordinated writer that would fight tiered merge
+  authority — disable per team.
 
-### 7.4 Review & merge at scale: submit-queue prior art, agent-review data
-PENDING. Question: merge-queue throughput ceilings per repo; auto-land
-criteria prior art; post-merge detection + cheap revert vs deeper pre-merge
-review for low-blast-radius classes; evidence for/against a fourth
-authority tier (feeds flag §4.2).
+### 7.2 Dispatch engine → Postgres-owned dispatch plane + resident reconcile controller; runner-up Temporal Cloud
 
-## 8. Open questions that survive both rounds → spec's decision agenda
+**Scale framing that decides everything**: our envelope is ~0.3–6 run
+*starts*/second (≤~6M engine actions/day worst case) — ~10× below Cursor's
+50M actions/day and 3 orders below Postgres-queue ceilings (River-class
+~14k jobs/sec). Both "one Postgres owns it" and "Temporal Cloud is
+affordable" are true; the decision is discipline cost and doctrine fit.
 
-(To be finalized after §7 lands; seeded now from round 1:)
+- **Recommendation**: claims via `FOR UPDATE SKIP LOCKED` + fencing tokens;
+  **minutes-scale leases refreshed by session-log progress** (a JSONL
+  append is a natural heartbeat — Anthropic's progress-as-liveness
+  `reclaim_older_than_ms` pattern writ large); reclaim resumes from the
+  durable log, never restarts; per-tenant admission fairness in SQL
+  (Kueue's lowest-recent-usage-first semantics, trivial at 6 starts/sec);
+  driven by a **resident level-triggered reconcile controller whose desired
+  state is the board** (stateless, restart-cheap, HA-paired). Hatchet is
+  the adopt-instead-of-build embodiment (MIT, Postgres substrate,
+  SKIP LOCKED claims, fairness keys, community-reported 1B tasks/month).
+- **Doctrine resolution**: "no resident orchestrator" is formally retired —
+  but the *level-triggered reconcile* doctrine survives; only the batch
+  cadence dies. The Postgres claim table is the one candidate where the
+  engine *structurally cannot* become a second ticket-state authority:
+  board mirror row and claim row commit in the same transaction.
+- **Honest runner-up: Temporal Cloud, Cursor-shaped** (short task-scoped
+  workflows, conversation state outside the workflow, replay-CI, native
+  fairness keys — OpenAI Codex and Replit Agent 3 also run on Temporal).
+  Choose it if scale grows 10×+, or we refuse to own ~1–3k lines of
+  lease/fairness code. It loses today on the permanent determinism/
+  versioning tax and on doctrine risk (workflow state gravitationally
+  attracts ticket state). **Self-hosted Temporal is eliminated outright**:
+  4 services + Cassandra/ES, an irreversible day-one shard-count decision
+  (one enterprise testimony: six months + full cluster migration),
+  $2.5–4.5k/mo infra before labor — more than Temporal Cloud costs at our
+  scale (~$50/M actions ⇒ ~$1.5–9k/mo across the envelope).
+- **Engine-independent finding**: every engine is at-least-once for side
+  effects. The duplicate-git-push problem is solved in the **worker
+  protocol**: one stable run-attempt key (workflowRunId+activityId pattern)
+  stamped on branch names / PR bodies / board comments, check-then-act
+  guards before push and PR-create (git is friendly: push is idempotent by
+  SHA, PR-create dedupes by branch name).
+- **Behavioral finding**: Cursor's OCC-bred risk-aversion belongs to
+  agent-vs-agent shared state, not engine leases. Constraint on us: the
+  agent must experience **unconditional exclusive ticket ownership** (which
+  the semantic layer already guarantees); leases are infrastructure's
+  concern and must never surface as optimistic shared-state writes to the
+  agent.
 
-- Retry/idempotency for side-effect-heavy agent steps — what prevents the
-  duplicate push after a crash between "tool executed" and "event emitted."
-- Prompt-cache economics of harness-as-cattle (rebooted harness cold-starts
-  the cache; unquantified everywhere).
-- Re-certification cadence for environments (nothing published; likely
-  lockfile/manifest-hash keying + probe-failure-driven).
-- Claim-regime behavioral economics: what lease semantics keep agents bold
-  but safe (Cursor: OCC bred risk-aversion; nobody has published the right
-  regime).
-- Multi-repo atomic changes vs tiered merge authority at cross-repo scope
-  (silent in all sources).
-- Park-queue SLO design — entirely ours to invent; no prior art surfaced.
+### 7.3 Sandbox substrate → k8s + gVisor per-run pods on local NVMe; snapshots are disk artifacts, not memory images
+
+**Verdict: the millisecond snapshot-restore arms race is irrelevant at our
+run lengths, and disk I/O density is the real constraint.**
+
+- **Skip Firecracker memory snapshots**: 4–28 ms restores are real, but the
+  project's own docs list replicated RNG/entropy pools, wrong wall-clock,
+  and unpreserved TCP state on resume — Fly.io hit all three in production
+  (30 s+ resumes, JWT/cron breakage, snapshots discarded on every deploy).
+  Against minutes-to-hours runs, a 5-second fresh gVisor start is 0.3%
+  overhead with none of those bugs. CRIU: 30–60 s class at multi-GB —
+  rejected for fan-out.
+- **Recommended isolation**: gVisor `RuntimeClass` pods, one per run, warm
+  pools — the **GKE Agent Sandbox shape** (SandboxTemplate → SandboxWarmPool
+  → SandboxClaim, gVisor mandatory, sub-second warm claims; adopt the
+  product itself if the org lands on GCP). Threat model honesty (NVIDIA
+  guidance, Microsoft's prompt-injection RCE work, Anthropic's own
+  bubblewrap+egress-proxy sandbox-runtime): the mandatory controls for a
+  prompt-injected internal agent are **egress deny-by-default + scoped
+  per-run credentials + workspace-scoped writes** — blast-radius controls,
+  not hypervisors. gVisor buys kernel-surface reduction at <3% typical
+  overhead (10–30% worst-case on syscall-heavy builds); Kata/microVMs only
+  for repo classes with a hard separate-kernel compliance mandate.
+- **Warm state is a disk problem**: pinned toolchain image (SOCI-indexed if
+  large: 2.5 GB pulls in ~2.8 s) → **post-install workspace snapshot as a
+  content-addressed disk artifact on a node-local NVMe cache** (Blacksmith
+  pattern), backfilled from object storage → overlayfs clone per run.
+  Network storage fails the economics: 2 TB io2 EBS at 64k IOPS ≈
+  $3,850/month vs a 2 TB NVMe doing >1M IOPS for <$200 once.
+- **Capacity math**: ~100 runs/host RAM-packed (2 vCPU / 8 GB midpoint; CPU
+  oversubscribes 2–4× since agents idle on tokens), density held real only
+  by NVMe (build bursts ≈ 10–17 GB/s/host at ⅓ duty cycle — matches
+  Cursor's "many GB/s" ceiling). **1,000 concurrent runs ≈ 15–20 large
+  NVMe hosts.** A small, boring fleet. Validate density with a one-host
+  load test before committing fleet sizing.
+- **SaaS sandboxes rejected as substrate**: ~$73k/mo (E2B/Daytona rates) to
+  ~$207k/mo (Modal) at 1,000 sustained concurrent runs vs ~$5–15k/mo
+  self-hosted bare metal; the only self-hostable one (E2B) requires a
+  Nomad/Consul/KVM estate anyway.
+- **Drift (round-1's #1 open question) — solved by construction, not
+  detection**: snapshot key = hash(env-spec) ⊕ hash(lockfiles) ⊕
+  toolchain-image digest. Exact hit → restore + run the certification
+  commands as a smoke probe (the certification gate doubles as the drift
+  detector for free); any miss → rebuild through the certification gate;
+  TTL/GC 30–90 idle days as the backstop for non-hermetic inputs (mutable
+  registries). Nobody credible patches stale environments — DevPod keys
+  prebuilds by config hash; Fly invalidates on deploy.
+
+### 7.4 Review & merge at scale → change-class auto-land, TAP/SubmitQueue-style queue, verifier as named infrastructure
+
+- **Merge-queue capacity is a hard published hierarchy**: bors serial
+  ~10/day → GitLab trains 20 parallel → GitHub merge queue ≤100 concurrency
+  with drop-and-rebuild-behind-failure semantics (degrades sharply as
+  failure rate rises — and agent PRs fail CI more than human PRs) →
+  Shopify ~400/day with a predictive branch → **Google TAP >50,000/day
+  (~2,000/hr) — the only published system at our target rate — achieved
+  only by abandoning per-change verification for batching + automatic
+  bisection of failing batches (~11-min average submit wait)**. The proven
+  per-change-verifying alternative: Uber SubmitQueue (EuroSys 2019) —
+  speculation trees + a 97%-accurate pass-predictor + build-target
+  independence analysis; 1.2× oracle turnaround; mainline green 52%→100%.
+  Planning number: **at just 16 concurrent changes in flight, conflict
+  probability ≈ 40%** — neutral merge-resolver agents are steady-state,
+  not an edge case.
+- **Auto-land is precedented ONLY as a change-class whitelist, never a size
+  heuristic**: Google Rosie auto-approves pattern-conforming LSC shards;
+  Renovate automerges by dependency class + merge-confidence + 3-day age;
+  Meta TestGen-LLM lands only build + pass-repeatedly + coverage-up changes
+  (73% human acceptance of guardrail-passing output). Define our auto-land
+  tier as **a whitelist of machine-verifiable change classes with per-class
+  guardrail chains**; unclassifiable ⇒ not auto-landable. Never reduce
+  pre-merge depth for schema/data/security/config changes regardless of
+  size; reduce it only where failure is fast-detectable and cheaply
+  revertible behind canary.
+- **The verifier stage is what makes review scale**: Cursor Bugbot evolved
+  from 8-pass majority voting to ONE aggressive finder + a validator stage
+  (>2M PRs/month; resolution rate 52%→70–79%); Anthropic's internal Code
+  Review converged on the same shape (parallel hunters → verification
+  filter → severity ranking; <1% findings marked incorrect; explicitly
+  never auto-approves). Lens-stacking ROI is real but **conditional on the
+  downstream verifier**; budget it as a distinct component with its own
+  false-escalation SLO (HackerOne's 2026 pause = the DoS failure mode).
+- **Human tier survives dozens of escalations/day if all four hold**
+  (published practice): small units (PRs <200 lines approve ~3× faster),
+  pre-verified severity-ranked escalations, a dedicated approver rotation
+  (Google's global-approver analog) routed by ownership, and a
+  first-response SLO (Google: 1-business-day max, <1 h median).
+- **Semantic-layer flags raised to §4 (items 7–10)**: no public precedent
+  for human-free general auto-land; batch-vs-per-change verification
+  reading; verifier as named load-bearing component; post-land canary as
+  de-facto fourth tier (auto-land-under-watch option).
+
+## 8. Decision agenda for the design spec
+
+Questions the spec must settle (research done; these are now design
+choices, most with a research-backed default):
+
+1. **Board service shape** — the ~6-endpoint Postgres service + Linear
+   mirror (default per §7.1); or the Linear-as-SSOT fallback (2–3 OAuth
+   actors + support-negotiated limits + accepted claim races) if the org
+   refuses to run any service.
+2. **Build vs adopt the dispatch plane** — own ~1–3k lines
+   (SKIP LOCKED + leases + fairness) vs adopt Hatchet vs Temporal Cloud
+   (default: Postgres-owned per §7.2; revisit trigger: 10× scale growth).
+3. **Merge-queue mechanism per repo class** — batch+bisect (TAP) vs
+   speculation+independence (SubmitQueue) vs hosted GitHub queue for
+   low-rate repos; ties to semantic flag §4.8 (human decides the
+   verification reading).
+4. **Auto-land change-class whitelist v1** — which classes, which guardrail
+   chains, and whether auto-land-under-watch (canary-conditional landing,
+   flag §4.10) enters the authority model.
+5. **Isolation tier mapping** — gVisor default; which repo classes (if any)
+   mandate Kata/separate-kernel; egress allowlist policy per team.
+6. **Park-queue SLOs** — routing, batching, notification channels,
+   first-response targets (no prior art; ours to invent, informed by
+   Google's review-SLO numbers).
+7. **Worker idempotency protocol** — run-attempt key derivation, stamped
+   surfaces (branch/PR/board), check-then-act guard list (engine-independent,
+   must be in the worker contract).
+8. **Session-store technology** — object store + streaming tail (Cursor's
+   S3+Redis shape) vs simpler Postgres-backed event log at our volume;
+   plus prompt-cache economics of resume (unquantified anywhere — measure).
+9. **Multi-repo atomic changes** — cross-repo ticket scope vs per-repo PRs
+   with a coordinating parent ticket (silent in all sources; semantic-layer
+   adjacent, needs the human).
+10. **Field Guide / stigmergy adoption** — per-repo agent-curated index
+    with line budget: adopt now or defer to a later phase.
