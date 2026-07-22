@@ -60,8 +60,9 @@ top-level judgments:
    machine state / conversation state decoupling, at 100× our target scale)
    and Anthropic (session / harness / sandbox). Nothing in six articles
    contradicts it. What scale changes is *where each piece lives* (§1).
-2. **No scale-forced semantic-layer change was found.** All six readers
-   checked explicitly; all six returned "none forced." What they returned
+2. **No scale-forced semantic-layer change was found.** Five of six
+   readers returned "none forced" verbatim; the sixth (agent swarms)
+   implies it while raising the most pressure points. What they returned
    instead is a short list of pressure points where the substrate must do
    real work to keep the frozen semantics viable (§5) — plus one previously
    settled substrate decision that must be re-judged rather than inherited
@@ -71,7 +72,7 @@ The single most load-bearing external datum: **Cursor's v1 cloud-agent
 substrate — worker nodes picking up agents and looping them to completion,
 i.e. structurally our file-based daemon registry — ran at one nine of
 reliability; migrating the loop into Temporal took them past two nines at
->50M actions/day across >7M workflows/day.** Our current substrate is their
+>50M actions/day across >7M unique workflows.** Our current substrate is their
 measured failure case.
 
 ## 1. The doctrine sharpens: one SSOT becomes three
@@ -84,7 +85,7 @@ different authorities, and the articles cleanly split them:
 |---|---|---|---|
 | **Ticket state** | what work exists, its lifecycle state, the human-answer record | the board (store TBD — §7.1) | GitHub issues ✓ |
 | **Run ownership** | which execution owns a ticket *right now*; leases, retries, timeouts, heartbeats | durable-execution engine (§2.1) | file registry (host, pid) ✗ |
-| **Run history** | everything that happened inside a run; resume context | central append-only session store (§2.2) | JSONL on host volume ✗ |
+| **Run history** | everything that happened inside a run; resume context | central append-only session store (no dedicated research track — §8 item 8) | JSONL on host volume ✗ |
 
 The board never becomes fictional about in-flight work (its picture is
 derived from engine state), the engine never becomes a second ticket-state
@@ -110,10 +111,18 @@ Two corollary invariants, worth stating in the spec verbatim:
 ### 2.1 Dispatch and run ownership → durable-execution engine (re-judgment of "invoked, never resident")
 
 The 2026-07-12 resolution ("import the functions, refuse the form" — cron ×
-idempotent one-shot passes, no resident orchestrator) was argued half from
-principle and half from scale ("dispatch latency is noise against multi-hour
-turns"). The scale half is now void, and the principle half is answered
-better by an engine than by cron:
+idempotent one-shot passes, no resident orchestrator) was argued from
+principle in the symphony comparison's §9: in-RAM claims force
+single-instance, restart evaporates the retry queue, a resident service is
+a new failure domain needing its own watchdog. (The oft-quoted "dispatch
+latency is noise against multi-hour turns" belongs to the steals doc's
+*per-worker-compute* rejection, not to the residency call — and review
+capacity, not dispatch latency, remains the system bottleneck at any scale,
+per §4.2.) The re-judgment stands on different ground: a durable-execution
+engine answers all three principled objections directly — claims, retries,
+and timeouts live in durable storage under horizontally scaled workers —
+while fleet scale adds two needs a batch cron cadence cannot serve:
+seconds-to-minutes lease reclaim and admission ordering across tenants:
 
 - The principled objections to residency (in-RAM claims force
   single-instance; restart evaporates the retry queue; a resident service
@@ -134,7 +143,7 @@ better by an engine than by cron:
   primitive, and the three fleet metrics — queue `depth` (autoscaling
   signal), `pending` = claimed-not-acked (stall detection),
   `workers_polling` (liveness) — as the substrate's core gauges.
-- The §9 sweep-tick checklist (transient auto-resume with exponential
+- The symphony comparison's §9 sweep-tick checklist (transient auto-resume with exponential
   backoff, stall detection, board-driven cancel, dispatch-until-cap,
   startup recovery) transfers **as the engine's workflow logic**, not as
   cron scripts — same functions, industrial carrier. Board-driven
@@ -207,7 +216,10 @@ that by manual root-causing. The layer that prevents it:
   re-certification instead of burning the run. Placement matters: this is
   a **dispatcher precondition**, not a new clause in the pre-code gate —
   bolting it into the gate skill would be a semantic edit; keeping it in
-  the dispatcher is substrate.
+  the dispatcher is substrate. (Honestly: the boundary is porous — the
+  degrade path below routes "environment unverified" *into* the gate/park
+  machinery; the placement claim is about where the check runs, not where
+  its failures route.)
 - **Snapshot ladder for cold-start**: layer cache (70% faster on hit) →
   automatic post-install checkpoint → restore per run; idempotent
   `install` is the invariant that makes cache misses safe; GC by idle
@@ -295,7 +307,9 @@ mix; cost varied ~8×; worker fleets 23× apart in cost at similar quality):
   lenses stack; review is far cheaper than the work it audits. Within the
   frozen "independent adversarial review": one review *verdict*, N
   decorrelated lenses beneath it (different models, different evidence
-  diets: transcript-blind / transcript-aware / codebase-only).
+  diets: transcript-blind / transcript-aware / codebase-only) — an option
+  for the human, not an assumed enrichment; see flag §4.4 on the evidence
+  boundary a transcript-aware lens would cross.
 - **Per-model prompt profiles are a substrate config object** (their
   GPT-5.6 Sol wording-sensitivity spirals): worker/planner prompts
   versioned per model family.
@@ -340,16 +354,17 @@ mix; cost varied ~8×; worker fleets 23× apart in cost at similar quality):
 | MCP vault + proxy — rejected (steals §4) | multi-tenant scale | **FIRED — adopt scoped** (§2.4) |
 | FD-6 credential ladder (PAT-first) | unattended phase | **superseded** — skip the PAT rung (§2.4) |
 | FD-8 board-driven cancel | unattended phase | **FIRED** — engine cancellation, board as two-way control plane (§2.1) |
-| §9 sweep tick (cron, invoked-not-resident) | unattended phase | **functions transfer, carrier changes** — engine workflows, not cron (§2.1) |
+| symphony §9 sweep tick (cron, invoked-not-resident) | unattended phase | **functions transfer, carrier changes** — engine workflows, not cron (§2.1) |
 | getEvents() interrogation layer — rejected (steals §4) | no consumer | **half-fired** — adopt durable-store + ranged reads; defer model-driven rewind |
 | session-as-REPL — rejected (steals §4) | no consumer | stands rejected |
-| FD-2 hard transition schema | third friction case | schema stays; **enforcement location moves** — open, §7.1 |
+| FD-2 hard transition schema | third friction case | FD-2's actual question (schema-vs-config granularity) stays deferred on its original trigger; enforcement *location* moves server-side as a consequence of the NEW board-service decision (§7.1) — not FD-2's resolution |
 
 ## 4. Semantic-layer flags (for the human; no changes designed in)
 
-All six readers confirmed: **no scale-forced semantic change found.** Five
+Five of six readers state it verbatim (the agent-swarms reader implies it,
+with the most equivocation): **no scale-forced semantic change found.** Six
 pressure points where the substrate must carry load to keep it that way —
-and one honest conditional:
+one carrying an honest conditional:
 
 1. **Park states need queue infrastructure.** At thousands of runs/hour,
    even a few percent parking makes park queues a human-throughput
@@ -358,8 +373,13 @@ and one honest conditional:
    prompt agents to never stop — is worse than our named states.)
 2. **The human merge tier becomes the bottleneck by construction.** The
    substrate must (a) make auto-land carry the overwhelming majority,
-   (b) queue/budget the human tier explicitly, (c) use stacked lenses to
-   widen what safely auto-lands. **Conditional flag:** if human-tier volume
+   (b) queue/budget the human tier explicitly, (c) optionally use stacked
+   lenses to widen what safely auto-lands — (c) is itself a merge-authority
+   change and therefore the human's call, not a substrate must; note also
+   that today's shipped auto-land tier is *narrower* (size- and
+   scope-bounded) than the "small/safe" shorthand suggests, so the
+   beyond-precedent concern (flag 7) attaches to the proposed widening,
+   not the existing design. **Conditional flag:** if human-tier volume
    still exceeds human capacity after (a)–(c), that is the one place scale
    genuinely pressures the frozen layer — e.g. a fourth authority tier
    (multi-lens unanimous auto-land for medium changes). Option named for
@@ -369,10 +389,18 @@ and one honest conditional:
    neither implementer nor reviewer. Recommended absorption: auto-registered
    maintenance tickets (keeps the two-species semantic layer intact);
    the alternative (acknowledge a third species) is the human's call.
-4. **"One review worker" should read "one review verdict, N lenses".**
-   Their evidence says lens decorrelation is the review multiplier; the
-   frozen layer's *independence* guarantee is untouched — enrichment, not
-   change.
+   The absorption's weak seam is specifically the merge-resolver: at ~40%
+   conflict probability with just 16 in-flight changes (§7.4), it runs at
+   merge-queue tempo and cannot absorb a full gate+review cycle per
+   conflict — this is where the third-species question gets real.
+4. **"One review verdict, N lenses" — an option needing the human's yes,
+   not an assumed enrichment.** The evidence says lens decorrelation is
+   the review multiplier — but a transcript-aware lens crosses an evidence
+   boundary today's reviewer deliberately keeps closed (the review engine
+   receives no ticket/spec/transcript input at all), and an aggregation
+   stage restructures a deliberately single-engine design. The
+   independence argument (the other lenses stay blind) is an argument to
+   *make* to the human, not to assume under "untouched."
 5. **Hand-passing stops at the review boundary.** Anthropic's "brains pass
    hands to one another" is rejected across implement/review: a reviewer
    inheriting the implementer's sandbox erodes adversarial independence.
@@ -402,8 +430,8 @@ and one honest conditional:
    choice by risk class. Human's call at spec time.
 9. **The verifier stage is load-bearing and must be named.** Cursor
    (8-pass voting → one aggressive finder + validator) and Anthropic
-   (parallel hunters → verification filter → severity rank, <1% findings
-   marked incorrect) converged on the same shape; HackerOne's 2026
+   (parallel hunters → verification filter → severity rank; vendor-reported
+   <1% findings marked incorrect) converged on the same shape; HackerOne's 2026
    bug-bounty pause under AI-amplified volume shows an unfiltered finding
    stream can DoS a human tier. The semantic layer implies but does not
    name a false-escalation-rate SLO on what reaches humans; the spec
@@ -430,12 +458,16 @@ and one honest conditional:
    nothing loops silently and nothing discards work.
 9. Autonomy prompting: blocking is expensive in the cloud — bias to loud,
    routed escalation (park), never silent waiting.
-10. Reviewer sandboxes are read+execute; fresh, never inherited.
+10. Reviewer sandboxes are fresh, never inherited: read-only repo mount
+    with full build/test execution, and no push credentials.
 
 ## 6. Feasibility calibration
 
-- VM-per-run at our scale: proven with two orders of magnitude of headroom
-  (Cursor: hundreds of thousands concurrent sandboxes).
+- VM-per-run at our scale: proven with ample headroom — Cursor runs
+  hundreds of thousands of *concurrent* sandboxes vs our ~1,000–20,000
+  concurrent (concurrency = start rate × mean run duration; see §7.3) —
+  one to two orders of magnitude depending on where on the duration curve
+  we land.
 - Reliability delta of the engine migration: one nine → two-plus nines at
   50M actions/day (their measured numbers; our v1-shaped substrate is the
   failure case).
@@ -461,10 +493,13 @@ board ops = 10,000 ops/hr, ~6,000 writes/hr, bursty.
   an adversarial posture.
 - **Linear**: 2,500 req/hr per API key (5,000 per OAuth actor) — direct
   worker writes are ~2× over per actor with unpublished per-endpoint
-  mutation caps as an untestable unknown. Decisive independent of limits:
+  mutation caps as an untestable unknown (and the ~2× is on total ops —
+  writes alone are ~1.2× over). Decisive independent of limits:
   `issueUpdate` accepts any `stateId` — **no transition-restriction feature
-  and no compare-and-swap exist**, so the claim race is unclosable at
-  Linear; and the audit log retains 90 days, disqualifying for the durable
+  and no compare-and-swap were found** (an absence-of-evidence finding: no
+  docs, changelog, or schema surface for either, where competitors
+  advertise theirs; no official "unsupported" statement exists), so the
+  claim race is unclosable at Linear as far as can be established; and the audit log retains 90 days, disqualifying for the durable
   human-answer record. Webhooks: 3 retries (1 min/1 hr/6 hrs) then dropped,
   no ordering guarantee — a sync channel, not a correctness channel.
 - **Prior art confirms the shape**: OpenAI Symphony (May 2026, Linear-based,
@@ -483,9 +518,11 @@ board ops = 10,000 ops/hr, ~6,000 writes/hr, bursty.
   mirror (one-way coalesced sync — humans care about 2–3 of the ~10
   machine-tempo ops, shrinking tracker traffic 5–10×); human actions in
   Linear flow back as *events into* the board service, never as truth.
-  FD-2's enforcement-location question is thereby answered: **server-side,
-  in our service** — the frozen semantic layer stops depending on every
-  client getting it right.
+  Enforcement location thereby moves **server-side, into our service** —
+  the frozen semantic layer stops depending on every client getting it
+  right. (A new decision, not FD-2's resolution: FD-2's recorded open
+  question — which invariants are schema-worthy vs per-repo policy — stays
+  deferred on its original trigger.)
 - **Coupling flag**: Linear's own GitHub PR automations (merged → Done)
   are a second uncoordinated writer that would fight tiered merge
   authority — disable per team.
@@ -493,10 +530,12 @@ board ops = 10,000 ops/hr, ~6,000 writes/hr, bursty.
 ### 7.2 Dispatch engine → Postgres-owned dispatch plane + resident reconcile controller; runner-up Temporal Cloud
 
 **Scale framing that decides everything**: our envelope is ~0.3–6 run
-*starts*/second (≤~6M engine actions/day worst case) — ~10× below Cursor's
-50M actions/day and 3 orders below Postgres-queue ceilings (River-class
-~14k jobs/sec). Both "one Postgres owns it" and "Temporal Cloud is
-affordable" are true; the decision is discipline cost and doctrine fit.
+*starts*/second — ~6M engine actions/day at the mid-band (5k runs/hr ×
+~50 actions) and ~26M/day at the top (20k runs/hr) — below Cursor's 50M
+actions/day, and 2–3 orders below Postgres-queue ceilings (River-class
+~10k jobs/sec, per its author). Both "one Postgres owns it" and "Temporal
+Cloud is affordable at mid-band" are true; the decision is discipline cost
+and doctrine fit.
 
 - **Recommendation**: claims via `FOR UPDATE SKIP LOCKED` + fencing tokens;
   **minutes-scale leases refreshed by session-log progress** (a JSONL
@@ -515,15 +554,22 @@ affordable" are true; the decision is discipline cost and doctrine fit.
   board mirror row and claim row commit in the same transaction.
 - **Honest runner-up: Temporal Cloud, Cursor-shaped** (short task-scoped
   workflows, conversation state outside the workflow, replay-CI, native
-  fairness keys — OpenAI Codex and Replit Agent 3 also run on Temporal).
+  fairness keys — Temporal's own blog additionally claims OpenAI Codex and
+  Replit Agent 3 as Temporal-based; vendor-claimed, not independently
+  confirmed).
   Choose it if scale grows 10×+, or we refuse to own ~1–3k lines of
   lease/fairness code. It loses today on the permanent determinism/
   versioning tax and on doctrine risk (workflow state gravitationally
-  attracts ticket state). **Self-hosted Temporal is eliminated outright**:
-  4 services + Cassandra/ES, an irreversible day-one shard-count decision
-  (one enterprise testimony: six months + full cluster migration),
-  $2.5–4.5k/mo infra before labor — more than Temporal Cloud costs at our
-  scale (~$50/M actions ⇒ ~$1.5–9k/mo across the envelope).
+  attracts ticket state). **Self-hosted Temporal is eliminated on ops
+  grounds, not dollars**: 4 services + Cassandra/ES, an irreversible
+  day-one shard-count decision (one enterprise testimony: six months +
+  full cluster migration), $2.5–4.5k/mo infra before labor. On money alone
+  the comparison flips across the envelope: Temporal Cloud at ~$50/M
+  actions is ~$9k/mo at mid-band but ~$26–39k/mo at the top (before
+  volume discounts), where self-host infra-only is cheaper — the
+  elimination rests on the shard trap, the determinism tax, and the
+  headcount. Decision 2's revisit trigger must be recalibrated against
+  the top-of-envelope Cloud bill, not the old mid-band figure.
 - **Engine-independent finding**: every engine is at-least-once for side
   effects. The duplicate-git-push problem is solved in the **worker
   protocol**: one stable run-attempt key (workflowRunId+activityId pattern)
@@ -569,13 +615,21 @@ run lengths, and disk I/O density is the real constraint.**
 - **Capacity math**: ~100 runs/host RAM-packed (2 vCPU / 8 GB midpoint; CPU
   oversubscribes 2–4× since agents idle on tokens), density held real only
   by NVMe (build bursts ≈ 10–17 GB/s/host at ⅓ duty cycle — matches
-  Cursor's "many GB/s" ceiling). **1,000 concurrent runs ≈ 15–20 large
-  NVMe hosts.** A small, boring fleet. Validate density with a one-host
-  load test before committing fleet sizing.
-- **SaaS sandboxes rejected as substrate**: ~$73k/mo (E2B/Daytona rates) to
-  ~$207k/mo (Modal) at 1,000 sustained concurrent runs vs ~$5–15k/mo
-  self-hosted bare metal; the only self-hostable one (E2B) requires a
-  Nomad/Consul/KVM estate anyway.
+  Cursor's "many GB/s" ceiling). **~80–110 runs/host RAM-packed; with
+  ~30% headroom, 1,000 concurrent runs ≈ 15–20 large NVMe hosts.** A
+  small, boring fleet — but 1,000 concurrent is one named point on a
+  curve: **concurrency = start rate × mean run duration**, and at the
+  dispatch envelope's top (6 starts/sec) with hour-long runs concurrency
+  reaches ~20,000, scaling the fleet linearly. The spec must size fleet
+  and cost at named (start-rate, duration) points, never conflating
+  per-hour throughput with concurrency. Validate per-host density with a
+  one-host load test before committing fleet sizing.
+- **SaaS sandboxes rejected as substrate**: ~$73k/mo (E2B/Daytona rates)
+  to ~$104k/mo (Modal — billed per physical core ≈ 2 vCPU, so ~1.4× the
+  others, not 3×) at 1,000 sustained concurrent runs vs ~$5–15k/mo
+  self-hosted bare metal. Daytona and Northflank also offer
+  self-host/BYOC; E2B is the only one with an open self-host infra stack —
+  and it requires a Nomad/Consul/KVM estate anyway.
 - **Drift (round-1's #1 open question) — solved by construction, not
   detection**: snapshot key = hash(env-spec) ⊕ hash(lockfiles) ⊕
   toolchain-image digest. Exact hit → restore + run the certification
@@ -613,14 +667,19 @@ run lengths, and disk I/O density is the real constraint.**
   revertible behind canary.
 - **The verifier stage is what makes review scale**: Cursor Bugbot evolved
   from 8-pass majority voting to ONE aggressive finder + a validator stage
-  (>2M PRs/month; resolution rate 52%→70–79%); Anthropic's internal Code
-  Review converged on the same shape (parallel hunters → verification
-  filter → severity ranking; <1% findings marked incorrect; explicitly
-  never auto-approves). Lens-stacking ROI is real but **conditional on the
-  downstream verifier**; budget it as a distinct component with its own
-  false-escalation SLO (HackerOne's 2026 pause = the DoS failure mode).
+  (>2M PRs/month; published resolution rate 52% → "over 70%"); Anthropic's
+  internal Code Review converged on the same shape (parallel hunters →
+  verification filter → severity ranking; vendor-reported <1% findings
+  marked incorrect; explicitly never auto-approves). Lens-stacking ROI is
+  real but **conditional on the downstream verifier** (the causal reading —
+  the validator is what makes aggressive finding affordable — is our
+  inference from Cursor's published evolution, supported by Anthropic's
+  independently converged shape); budget it as a distinct component with
+  its own false-escalation SLO (HackerOne's 2026 pause = the DoS failure
+  mode).
 - **Human tier survives dozens of escalations/day if all four hold**
-  (published practice): small units (PRs <200 lines approve ~3× faster),
+  (published practice): small units (PRs <200 lines approve ~3× faster —
+  vendor marketing analysis of 1.5M PRs, methodology unpublished),
   pre-verified severity-ranked escalations, a dedicated approver rotation
   (Google's global-approver analog) routed by ownership, and a
   first-response SLO (Google: 1-business-day max, <1 h median).
@@ -637,10 +696,19 @@ choices, most with a research-backed default):
 1. **Board service shape** — the ~6-endpoint Postgres service + Linear
    mirror (default per §7.1); or the Linear-as-SSOT fallback (2–3 OAuth
    actors + support-negotiated limits + accepted claim races) if the org
-   refuses to run any service.
+   refuses to run any service. Must also settle the service's own HA/DR/
+   backup posture (it holds the permanent append-only history) and
+   fail-closed worker behavior when the board is unreachable.
 2. **Build vs adopt the dispatch plane** — own ~1–3k lines
    (SKIP LOCKED + leases + fairness) vs adopt Hatchet vs Temporal Cloud
-   (default: Postgres-owned per §7.2; revisit trigger: 10× scale growth).
+   (default: Postgres-owned per §7.2). **Coupled to decision 1**: §7.2's
+   strongest doctrinal guarantee — board mirror row and claim row commit
+   in one transaction, so the engine structurally cannot fork ticket
+   authority — exists ONLY if decisions 1 and 2 land on the same Postgres;
+   Hatchet's own schema, Temporal Cloud, and the Linear-as-SSOT fallback
+   each break it. That coupling is the real tiebreaker between the
+   options. Temporal Cloud revisit trigger: sustained growth toward the
+   envelope's top — where its bill also grows to ~$26–39k/mo (§7.2).
 3. **Merge-queue mechanism per repo class** — batch+bisect (TAP) vs
    speculation+independence (SubmitQueue) vs hosted GitHub queue for
    low-rate repos; ties to semantic flag §4.8 (human decides the
@@ -656,11 +724,38 @@ choices, most with a research-backed default):
 7. **Worker idempotency protocol** — run-attempt key derivation, stamped
    surfaces (branch/PR/board), check-then-act guard list (engine-independent,
    must be in the worker contract).
-8. **Session-store technology** — object store + streaming tail (Cursor's
-   S3+Redis shape) vs simpler Postgres-backed event log at our volume;
-   plus prompt-cache economics of resume (unquantified anywhere — measure).
+8. **Session-store technology** — the only one of the three SSOT planes
+   with NO research track behind it: design it in the spec from first
+   principles or run a small follow-up track. Options: object store +
+   streaming tail (Cursor's S3+Redis shape) vs a simpler Postgres-backed
+   event log at our volume. Coupled to decision 2: the lease heartbeat is
+   "session-log progress," so the dispatch plane needs visibility into
+   session-store appends. Plus prompt-cache economics of resume
+   (unquantified anywhere — measure).
 9. **Multi-repo atomic changes** — cross-repo ticket scope vs per-repo PRs
    with a coordinating parent ticket (silent in all sources; semantic-layer
    adjacent, needs the human).
 10. **Field Guide / stigmergy adoption** — per-repo agent-curated index
     with line budget: adopt now or defer to a later phase.
+11. **Code-host load plan (the PR plane)** — the arithmetic that
+    disqualified GitHub-as-board applies to the PR plane too: PR creation,
+    review comments, and verdict comments are content-generating requests
+    under the same 500/hr-per-actor secondary limit — plausibly ~8–14×
+    over at target rate per project. Decision 3 presumes GitHub-hosted
+    PRs; the spec must run the same load math for the code host and pick
+    mitigations explicitly (GHES with configurable limits,
+    per-installation actor sharding, verdict/comment traffic moved onto
+    the board service, batched review submission) rather than assume them.
+12. **Aggregate ops-burden budget** — each build-vs-adopt verdict is
+    individually reasonable, but together the platform team owns: board
+    service + Linear mirror sync, dispatch plane + reconcile controller,
+    k8s/gVisor NVMe fleet, environment registry + certification pipeline,
+    session store, vault/egress proxy, contention telemetry, merge queue.
+    One explicit ownership-budget line item, since it silently shapes
+    every build-vs-adopt call above.
+13. **Token-spend Fermi at envelope** — the research priced infra
+    (~$5–15k/mo self-hosted) but never the model bill; at thousands of
+    runs/hour token spend plausibly exceeds infra by 10–100×, which
+    reframes every cost-based substrate argument. Include provider
+    rate-limit/quota architecture at that token tempo as a first-class
+    design input.
