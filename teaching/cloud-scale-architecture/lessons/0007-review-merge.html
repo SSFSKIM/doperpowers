@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 7 — Review & Merge</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs">Cloud-Scale Architecture · Lesson 7 / ~8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 7 · 권한의 4층과 verifier</p>
+  <h1>Review &amp; Merge</h1>
+  <p class="lede">머지 큐는 스케일에서 어디까지 증명됐고, 누가 인간 없이
+  랜딩할 수 있으며, 발견의 홍수가 인간 티어를 DoS하지 않게 막는 부품은
+  무엇인가.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: 공개된 머지 큐 용량 계급을 순서대로
+말하고, TAP와 SubmitQueue가 각각 무엇을 포기·유지하는지, 머지 권한 4층이
+어디서 갈리는지, 그리고 "verifier stage 없이 aggressive 리뷰는 성립하지
+않는다"가 왜 산수의 문제인지 남에게 설명할 수 있다.</p>
+
+<h2>1. 용량 계급 — 어디까지 공개 증명이 있나</h2>
+
+<p>머지 큐 처리량은 취향이 아니라 <strong>공개된 하드 계급</strong>이다.
+같은 단일 리포에서 지속 가능한 랜딩 레이트를 낮은 것부터 세우면 이렇게
+된다:</p>
+
+<table>
+<tr><th>시스템</th><th>지속 레이트 (per repo)</th><th>메커니즘</th><th>실패 시 의미</th></tr>
+<tr><td>bors (Rust)</td><td>~10/day (serial)</td><td>완전 직렬 테스트; 인간이 rollup으로 묶음</td><td>—</td></tr>
+<tr><td>GitLab merge trains</td><td>20 parallel (hard cap)</td><td>train 당 20 파이프라인 병렬</td><td>drop + 뒤를 재생성</td></tr>
+<tr><td>GitHub merge queue</td><td>concurrency ≤100 (호스티드 상한)</td><td>FIFO, speculation·독립성 분석 없음</td><td>실패 PR 제거 → 후속 그룹 <em>전부 재구성</em></td></tr>
+<tr><td>Shopify</td><td>~400/day</td><td>predictive branch (speculation-lite), deploy 40/day</td><td>실패 PR auto-remove</td></tr>
+<tr><td><strong>Google TAP</strong></td><td><strong>&gt;50,000/day (~2,000/hr)</strong></td><td>batch + 실패 배치 auto-bisect</td><td>범인만 이분 격리; 개별 검증 포기</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">드롭-앤-리빌드가 왜 에이전트에게 더 아픈가</span>
+  GitHub·GitLab의 "실패 PR 제거 후 뒤 그룹 재생성" 비용은 대략
+  <strong>실패율 × 큐 깊이의 제곱</strong>에 가깝게 자란다. 이 큐들은
+  인간이 쓴 PR의 낮은 CI 실패율에 맞춰 튜닝됐는데, <strong>에이전트가 쓴
+  PR은 CI 실패율이 더 높다</strong> — 같은 호스티드 상한도 우리 부하에선
+  훨씬 빨리 무너진다. 그래서 호스티드 프리미티브는 <em>저레이트 리포</em>
+  에만 붙인다.
+  <span class="cite">— R2 §Q1; 연구 문서 §7.4; 스펙 §6</span>
+</div>
+
+<p>우리 목표("리포당 수백 runs/hour, 그중 일부가 랜딩")는 Chromium과
+Google 사이 구간이다. 이 구간에서 <strong>공개 증명이 있는 방식은 딱
+둘</strong> — TAP의 batch+bisect, 또는 SubmitQueue의 speculation+독립성.
+호스티드 큐는 이 레이트에 배치된 공개 사례가 없다.</p>
+
+<h2>2. TAP vs SubmitQueue — 무엇을 포기하고 무엇을 지키나</h2>
+
+<p>두 시스템은 같은 벽(직렬 큐는 이 스케일에서 구조적으로 죽는다)에
+부딪혀 정반대 대가를 치른다. TAP는 <strong>개별 검증을 포기</strong>하고,
+SubmitQueue는 <strong>개별 검증을 지키되 투기 비용</strong>을 낸다.</p>
+
+<table>
+<tr><th></th><th>Google TAP (batch + bisect)</th><th>Uber SubmitQueue (speculation + independence)</th></tr>
+<tr><td>핵심 거래</td><td>변경을 묶어 검증, 실패 배치는 <strong>자동 이분</strong>으로 범인 격리</td><td>통과 예측 위에 <strong>투기 빌드 트리</strong> + 빌드타깃 독립성 분석</td></tr>
+<tr><td>개별 검증</td><td>포기 — 나쁜 변경은 배치에 잠깐 들어왔다 bisect로 빠짐</td><td>유지 — 개별 변경이 각자 검증되고 랜딩</td></tr>
+<tr><td>지렛대 숫자</td><td>~11분 평균 submit 대기; &gt;50,000/day</td><td>~100개 피처 로지스틱 회귀, <strong>97% 정확</strong> 통과 예측기</td></tr>
+<tr><td>독립성 판정</td><td>—</td><td>두 변경이 공통 <strong>빌드타깃</strong>을 안 건드리면 독립 → 완전 병렬 랜딩</td></tr>
+<tr><td>성과</td><td>단일 리포 5만 변경/일 지속</td><td>oracle 대비 <strong>1.2×</strong> 턴어라운드; mainline green <strong>52%→100%</strong></td></tr>
+</table>
+
+<p><strong>인간의 결정(2026-07-23)</strong>: 머지 검증 의미는 <em>리포의
+RISK CLASS별로</em> 고른다. 저위험 클래스는 batch+bisect(throughput을
+위해 개별 검증을 맞바꿈), 고위험 클래스는 SubmitQueue식 speculation으로
+개별 검증을 유지. 큐는 자체 flake 정책(retry + quarantine + 무고한 PR을
+절대 탓하지 않기)을 소유한다.</p>
+
+<div class="callout">
+  <span class="label">merge-resolver가 steady-state인 이유</span>
+  SubmitQueue 논문의 위험 숫자: <strong>단 16개의 in-flight 변경에서 충돌
+  확률 ≈ 40%</strong>. 우리 목표 동시성은 그보다 훨씬 높다. 즉 중립 충돌
+  해소 에이전트는 엣지 케이스가 아니라 <strong>상시 워커 종(種)</strong>
+  으로 예산 잡아야 한다(→ §6).
+  <span class="cite">— R2 §Q1; 연구 문서 §7.4; 스펙 §6</span>
+</div>
+
+<h2>3. 머지 권한 4층</h2>
+
+<p>2층(auto-land / human)이 아니라 <strong>4층</strong>이다. ★가 인간
+승인 의미층 수정이다. 핵심 경계는 위쪽 두 층이 아니라 <em>맨 아래</em> —
+never-auto는 크기와 무관하다.</p>
+
+<table>
+<tr><th>티어</th><th>무엇이 판정하나</th><th>대상</th></tr>
+<tr><td><strong>1. auto-land</strong></td><td>기계검증 가능한 <em>변경 클래스 화이트리스트</em> + 클래스별 가드레일 체인</td><td>Rosie 패턴, Renovate 클래스, TestGen-LLM 가드레일이 커버하는 형태만</td></tr>
+<tr><td><strong>★ 2. auto-land-under-watch</strong></td><td>카나리아 판정 조건부: <em>score → promote / route-to-human / auto-revert</em> (Kayenta 모양)</td><td>중위험 클래스 — 실패가 빠르게 드러나고 값싸게 되돌릴 수 있는 것</td></tr>
+<tr><td><strong>3. human tier</strong></td><td>인간 승인</td><td>분류 불가하거나 판정이 인간을 요구하는 것</td></tr>
+<tr><td><strong>4. never-auto</strong></td><td>크기 무관 항상 풀 리뷰</td><td>schema / data / security / config 변경</td></tr>
+</table>
+
+<p><strong>분류 불가 ⇒ 오토랜드 불가</strong>가 정의다. auto-land-under-watch의
+근거는 Kayenta(0–100 점수를 success/marginal/failure로 분류)와 Meta의
+2% 카나리아 사다리 + Conveyor(배포 파이프라인의 97%가 인간 개입 0) — 이
+규모의 모든 조직이 <em>이름은 뭐라 부르든</em> 실질적으로 갖고 있는
+층이다.</p>
+
+<h2>4. 오토랜드 전례의 정직함</h2>
+
+<p>여기서 우리 설계가 전례를 넘어선다는 걸 정직하게 말해야 한다. 공개된
+모든 오토랜드 정책은 <strong>기계검증 가능한 change-class 화이트리스트</strong>
+이지, <strong>한 번도 size heuristic이 아니었다</strong>:</p>
+
+<table>
+<tr><th>정책</th><th>오토랜드 조건 = 클래스 + 가드레일</th></tr>
+<tr><td>Google Rosie / LSC</td><td>패턴 조합(pattern-conforming) LSC shard만 자동 승인; 나머지는 global approver로</td></tr>
+<tr><td>Renovate merge-confidence</td><td>의존성 <em>클래스</em> + confidence + <strong>≥3일 age</strong>(unpublish 창)</td></tr>
+<tr><td>Meta TestGen-LLM</td><td>build + <strong>반복 실행 pass</strong>(flake 필터) + <strong>커버리지 상승</strong> → 가드레일 통과분의 <strong>73%</strong> 인간 수용</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">전례를 넘어선다 — 그리고 그걸 숨기지 않는다</span>
+  <strong>일반 에이전트 코드를 인간 없이 머지하는 곳은 공개적으로
+  아무도 없다</strong>. Anthropic은 거의 모든 내부 PR에 멀티에이전트 Code
+  Review를 돌리지만 <em>PR을 자동 승인하지 않는다</em>. Google은 AI가 쓴
+  CL(마이그레이션 워크스트림의 80%)도 <em>엔지니어가 승인</em>한다.
+  OpenAI는 ~100만 줄을 수기 0줄로 냈지만 <em>사람이 머지</em>했다. 우리
+  auto-land 티어는 이 공개 관행을 넘어선다 — 물러설 이유는 아니지만, 그
+  안전 근거는 <strong>산업 전례가 아니라 우리 가드레일 설계</strong>
+  (change-class 화이트리스트 + verifier stage + canary/revert)에 걸려 있다.
+  <span class="cite">— R2 §Q2; 연구 문서 §4 flags 7·10, §7.4; 스펙 §6</span>
+</div>
+
+<h2>5. N-lens review (전부 블라인드)와 verifier stage</h2>
+
+<p><strong>★ 리뷰 = 하나의 verdict, N개 탈상관 렌즈, 전부 블라인드.</strong>
+렌즈는 모델과 증거 식단으로 다양화하지만 <em>모든 렌즈가 구현
+블라인드</em>(티켓/스펙/트랜스크립트 미수신)를 유지한다. 탈상관이 곧
+recall 배수다. 그러나 <strong>transcript-aware 렌즈는 기각됐다</strong> —
+그건 오늘의 리뷰어가 닫아 둔 증거 경계를 넘기 때문이다. 바뀌는 건 렌즈의
+복수성과 aggregation 단계뿐이다.</p>
+
+<p>그 aggregation이 바로 <strong>verifier stage</strong> — 발견 → 검증
+필터 → 심각도 랭킹. 이건 편의 부품이 아니라 <strong>자체 false-escalation
+SLO를 가진 명명된 load-bearing 컴포넌트</strong>다. 두 프론티어 랩과 한
+벤더가 <em>독립적으로 같은 모양</em>에 수렴했다:</p>
+
+<table>
+<tr><th>시스템</th><th>진화 / 모양</th><th>공개 숫자</th></tr>
+<tr><td>Cursor Bugbot</td><td>8-pass 다수결 투표 → <strong>공격적 finder 하나 + validator</strong>로 붕괴; "restrained"→"aggressive"로 전환 <em>(validator가 FP를 흡수하니까)</em></td><td>&gt;2M PRs/month; resolution 52% → "over 70%"</td></tr>
+<tr><td>Anthropic Code Review</td><td>병렬 hunter → 검증 필터 → 심각도 랭킹 → 하나의 고신호 코멘트; 자동 승인 안 함</td><td>vendor 보고 <strong>&lt;1%</strong> findings 오탐; substantive 리뷰 16%→54%</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">DoS 실패 모드 — verifier는 선택이 아니다</span>
+  <strong>HackerOne이 2026년 Internet Bug Bounty를 중단</strong>했다 —
+  AI로 증폭된 리포트 홍수 아래에서. 걸러지지 않은 LLM 발견 스트림은 인간
+  triage 티어를 <strong>DoS</strong>할 수 있다. "aggressive하게 찾기"가
+  성립하려면 그 뒤에 validator가 반드시 있어야 한다는 건 취향이 아니라
+  산수다: verifier가 FP를 흡수하기 때문에 loud한 recall이 감당 가능해진다.
+  (인과 읽기 — validator가 aggressive를 감당케 한다 — 는 Cursor의 공개
+  진화에서 끌어낸 우리 추론이며, Anthropic의 독립 수렴이 이를 뒷받침한다.)
+  <span class="cite">— R2 §Q3; 연구 문서 §4 flag 9, §7.4; 스펙 §6</span>
+</div>
+
+<h2>6. merge-resolver(제3종)와 인간 티어 생존 키트</h2>
+
+<p><strong>★ merge-resolver는 공식 인정된 제3종(하이브리드)이다.</strong>
+gate도 아니고 자율 워커도 아니다:</p>
+
+<table>
+<tr><th>속성</th><th>merge-resolver</th></tr>
+<tr><td>템포</td><td>머지 큐 tempo로 돈다</td></tr>
+<tr><td>pre-code gate</td><td>없음</td></tr>
+<tr><td>자체 권한</td><td>없음 — 산출물은 <strong>항상 기존 리뷰 경로로 재진입</strong></td></tr>
+<tr><td>다른 유지보수 작업</td><td>doc 정합·megafile 분해 등은 auto-registered 보드 티켓으로 흡수</td></tr>
+</table>
+
+<p>맨 아래 <strong>인간 티어</strong>는 하루 수십 건의 에스컬레이션에서도
+살아남는다 — 단 네 가지가 모두 성립할 때만(전부 공개 관행):</p>
+
+<table>
+<tr><th>생존 조건</th><th>근거 숫자</th></tr>
+<tr><td>작은 단위</td><td>&lt;200줄 PR은 승인 ~3× 빠름; 200–400줄은 결함 40%↓</td></tr>
+<tr><td>사전 검증 + 심각도 랭킹된 에스컬레이션</td><td>인간은 raw 출력이 아니라 하나의 고신호 요약을 읽음(Anthropic/Bugbot 모양)</td></tr>
+<tr><td>전담 approver 로테이션 (ownership 라우팅)</td><td>Google global-approver analog — 방송이 아니라 라우팅</td></tr>
+<tr><td>first-response SLO</td><td>Google: <strong>1 영업일 max</strong>, median <strong>&lt;1h</strong></td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">park queue도 같은 대우를 받는다</span>
+  needs-human / needs-info로 park된 것들도 라우팅·배치·통지·SLO를 똑같이
+  받는다. park 상태는 뒤에 큐 인프라가 있을 때만 스케일에서 살아남는다 —
+  park는 조용한 대기가 아니라 <em>시끄럽고 라우팅된</em> 에스컬레이션이다.
+  <span class="cite">— 연구 문서 §7.4, §4.1; 스펙 §6</span>
+</div>
+
+<h2>7. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>8. 다음 단계</h2>
+<ul>
+  <li><strong>Primary source</strong>: <a href="https://cursor.com/blog/building-bugbot">Cursor, "Building a better Bugbot"</a> — 8-pass 투표에서 aggressive finder + validator로의 진화 원문. verifier stage 인과의 근거.</li>
+  <li>스펙 원문 대조: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code> §6 (★ 마커 = 인간 승인 의미층 수정).</li>
+  <li>전례 정직함의 전체 증거: <code>docs/doperpowers/research/2026-07-23-cloud-scale/r2-review-merge-scale.md</code> §Q1–Q5 + §4 flags 7–10.</li>
+  <li>다음 레슨(예정): <strong>Observability &amp; circuit breakers</strong> — 왜 volume은 vanity고 conflict acceleration이 health인가.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 "왜 transcript-aware 렌즈는
+  기각됐나"류의 질문은 증거 경계 근거까지 파서 답할 수 있다.</p>
+  <p><a href="../reference/glossary.html">용어집</a> · 워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "단일 리포에서 공개 증명이 있는 가장 높은 지속 랜딩 레이트와 그 방식은?",
+    options: [
+      "Google TAP, >50,000/day — 개별 검증을 포기하고 batch + 실패 배치 auto-bisect",
+      "Shopify, ~400/day — predictive branch로 개별 검증을 전부 유지",
+      "GitHub merge queue, concurrency 100 — FIFO에 speculation을 더해서",
+      "Uber SubmitQueue, ~2,000/hr — 97% 예측기로 배치를 통째 건너뛰어서"
+    ],
+    answer: 0,
+    expl: "TAP가 우리 목표 레이트에 있는 유일한 공개 시스템이다(>50,000/day ≈ 2,000/hr). 대가는 개별 검증 포기 — 변경을 묶어 검증하고 실패 배치를 자동 이분해 범인만 격리한다(평균 ~11분 submit 대기). Shopify는 ~400/day, GitHub 큐는 이 레이트 배치 사례가 없다. R2 §Q1."
+  },
+  {
+    stem: "TAP와 SubmitQueue의 핵심 차이를 한 줄로 말하면?",
+    options: [
+      "TAP는 개별 검증을 포기하고, SubmitQueue는 speculation 비용을 내며 개별 검증을 지킨다",
+      "TAP는 병렬, SubmitQueue는 직렬 — 처리량이 정반대다",
+      "TAP는 인간 승인이 필요하고, SubmitQueue는 완전 자동이다",
+      "TAP는 파일 단위, SubmitQueue는 라인 단위로 충돌을 본다"
+    ],
+    answer: 0,
+    expl: "둘 다 직렬 큐가 죽는 같은 벽에 부딪혀 정반대 대가를 낸다. TAP=batch+bisect(개별 검증 포기), SubmitQueue=speculation tree + 97% 통과 예측기 + 빌드타깃 독립성(개별 검증 유지, oracle 1.2×). 우리는 리포 RISK CLASS별로 고른다. R2 §Q1, 스펙 §6."
+  },
+  {
+    stem: "머지 권한 never-auto 티어에 항상 들어가는 것은?",
+    options: [
+      "schema / data / security / config 변경 — 크기와 무관하게",
+      "200줄을 넘는 모든 변경 — size heuristic으로",
+      "카나리아 점수가 marginal로 나온 변경 — 판정 유보라서",
+      "에이전트가 authored한 모든 변경 — 인간 관행이라서"
+    ],
+    answer: 0,
+    expl: "never-auto는 크기가 아니라 클래스로 정의된다: schema/data/security/config는 diff 크기와 무관하게 항상 풀 리뷰. 오토랜드 depth를 줄여도 되는 건 실패가 빠르게 드러나고 값싸게 되돌릴 수 있는(카나리아 뒤) 것뿐이다. R2 §Q4, 스펙 §6."
+  },
+  {
+    stem: "공개된 오토랜드 정책들(Rosie·Renovate·TestGen-LLM)의 공통 형태는?",
+    options: [
+      "기계검증 가능한 change-class 화이트리스트 + 클래스별 가드레일 — size heuristic이 아님",
+      "diff 라인 수 임계값 — 작으면 자동, 크면 인간",
+      "일반 에이전트 코드를 인간 없이 머지하는 표준 파이프라인",
+      "카나리아 점수 하나로 promote를 결정하는 단일 게이트"
+    ],
+    answer: 0,
+    expl: "셋 다 클래스+가드레일이다: Rosie는 패턴 조합 shard, Renovate는 클래스+confidence+3일 age, TestGen-LLM은 build+반복pass+커버리지상승(73% 수용). 한 번도 size heuristic이 아니었고, 일반 에이전트 코드를 인간 없이 머지하는 곳은 공개적으로 없다(Anthropic·Google·OpenAI 모두 인간 머지). R2 §Q2, 연구 §4 flag 7."
+  },
+  {
+    stem: "verifier stage가 '선택이 아니라 필수'인 이유를 보여주는 실패 사례는?",
+    options: [
+      "HackerOne의 2026 Bug Bounty 중단 — AI로 증폭된 리포트가 인간 triage를 DoS",
+      "bors의 ~10/day 상한 — 직렬 큐가 처리량에서 죽음",
+      "GitHub 큐의 drop-and-rebuild — 실패율이 오르면 재구성 비용 폭발",
+      "Uber mainline이 52%만 green이던 시절 — 큐 없이 충돌 누적"
+    ],
+    answer: 0,
+    expl: "HackerOne이 2026년 AI 증폭 리포트 홍수로 Internet Bug Bounty를 중단한 것이 DoS 실패 모드다. 걸러지지 않은 발견 스트림은 인간 티어를 무너뜨린다 — 그래서 verifier stage(발견→검증 필터→심각도 랭킹)는 자체 false-escalation SLO를 가진 load-bearing 컴포넌트로 명명된다. Cursor·Anthropic이 이 모양에 독립 수렴. R2 §Q3, 연구 §4 flag 9."
+  }
+]);
+</script>
+</body>
+</html>
