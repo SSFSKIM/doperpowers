@@ -1,0 +1,107 @@
+/* course.css — shared stylesheet for all cloud-scale-architecture lessons */
+:root {
+  --bg: #fffef9;
+  --ink: #1a1a1a;
+  --muted: #6b6b6b;
+  --accent: #8b2500;
+  --accent-soft: #f3e6e0;
+  --ok: #1a6b3c;
+  --bad: #a02020;
+  --rule: #d8d3c8;
+  --code-bg: #f4f1ea;
+  --max: 46rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16150f;
+    --ink: #e8e4da;
+    --muted: #9a958a;
+    --accent: #e8926b;
+    --accent-soft: #2c1f18;
+    --ok: #6fce9a;
+    --bad: #e08080;
+    --rule: #3a372e;
+    --code-bg: #24221b;
+  }
+}
+* { box-sizing: border-box; }
+html { font-size: 17px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Charter", "Georgia", "Noto Serif KR", serif;
+  line-height: 1.65;
+}
+.page { max-width: var(--max); margin: 0 auto; padding: 3rem 1.4rem 6rem; }
+header.lesson-head { border-bottom: 3px double var(--rule); margin-bottom: 2.2rem; padding-bottom: 1.2rem; }
+.kicker {
+  font-family: "Avenir Next", "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
+  font-size: .78rem; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 .5rem;
+}
+h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 .4rem; font-weight: 700; }
+.lede { color: var(--muted); font-size: 1.05rem; margin: 0; font-style: italic; }
+h2 {
+  font-family: "Avenir Next", "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
+  font-size: 1.05rem; letter-spacing: .02em; margin: 2.6rem 0 .8rem;
+  padding-top: 1rem; border-top: 1px solid var(--rule);
+}
+h3 { font-size: 1rem; margin: 1.6rem 0 .5rem; }
+p, li { max-width: 42rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+code, pre {
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: .84em; background: var(--code-bg); border-radius: 4px;
+}
+code { padding: .1em .35em; }
+pre { padding: .9rem 1rem; overflow-x: auto; line-height: 1.5; }
+table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; font-size: .92rem; }
+th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: "Avenir Next", "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
+  font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: .8rem 1.1rem; margin: 1.4rem 0; border-radius: 0 6px 6px 0;
+}
+.callout .label {
+  font-family: "Avenir Next", "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
+  font-size: .74rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent); display: block; margin-bottom: .3rem;
+}
+.cite { font-size: .82rem; color: var(--muted); }
+figure { margin: 1.8rem 0; }
+figure pre.diagram { background: transparent; border: 1px solid var(--rule); }
+figcaption { font-size: .82rem; color: var(--muted); margin-top: .4rem; }
+/* quiz */
+.quiz { margin: 2rem 0; }
+.quiz .q {
+  border: 1px solid var(--rule); border-radius: 8px;
+  padding: 1rem 1.2rem; margin-bottom: 1.1rem;
+}
+.quiz .q p.stem { margin-top: 0; font-weight: 600; }
+.quiz button.opt {
+  display: block; width: 100%; text-align: left; margin: .4rem 0;
+  padding: .55rem .8rem; border: 1px solid var(--rule); border-radius: 6px;
+  background: transparent; color: var(--ink); font: inherit; font-size: .93rem;
+  cursor: pointer;
+}
+.quiz button.opt:hover { border-color: var(--accent); }
+.quiz button.opt.correct { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.quiz button.opt.wrong { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.quiz .expl { display: none; font-size: .88rem; color: var(--muted); margin: .5rem 0 0; }
+.quiz .q.answered .expl { display: block; }
+.quiz .score { font-weight: 700; margin-top: 1rem; }
+footer.lesson-foot {
+  margin-top: 3.5rem; padding-top: 1.2rem; border-top: 3px double var(--rule);
+  font-size: .88rem; color: var(--muted);
+}
+nav.crumbs { font-size: .82rem; margin-bottom: 2rem; color: var(--muted); }
+@media print {
+  body { background: #fff; color: #000; }
+  .quiz button.opt { border-color: #999; }
+  a { color: #000; }
+}

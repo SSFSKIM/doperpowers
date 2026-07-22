@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>용어집 — Cloud-Scale Architecture</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<header class="lesson-head">
+  <p class="kicker">Reference · Glossary</p>
+  <h1>용어집</h1>
+  <p class="lede">스펙의 terms of art. 모든 레슨은 이 정의를 따른다.</p>
+</header>
+
+<h2>단위와 산수</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>run</strong></td><td>하나의 티켓 phase(gate / implement / review / land)에 대한 워커 1회 실행.</td></tr>
+<tr><td><strong>start rate</strong></td><td>단위 시간당 시작되는 run 수. 예: 6 starts/sec ≈ 21.6k runs/hr.</td></tr>
+<tr><td><strong>concurrency</strong></td><td>start rate × 평균 run 길이. <em>처리량과 절대 혼용 금지</em> — 같은 5k runs/hr도 run이 12분이면 동시 1,000, 1시간이면 동시 5,000.</td></tr>
+<tr><td><strong>scale anchors A1/A2/A3</strong></td><td>스펙의 명명된 사이징 지점. A1: 1k runs/hr·동시 ~500. A2: 5k/hr·동시 ~1,000–1,700. A3: 21.6k/hr·동시 ~20,000·엔진 액션 ~26M/day.</td></tr>
+</table>
+
+<h2>세 SSOT 플레인</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>SSOT</strong></td><td>Single Source of Truth. 어떤 사실에 대해 "충돌 시 누가 이기는가"가 정해진 저장소.</td></tr>
+<tr><td><strong>board service</strong></td><td>티켓 상태의 SSOT. 작은 Postgres 서비스(~6 endpoints); 전이 그래프를 서버측 conditional UPDATE로 강제. 티켓 상태 충돌 시 항상 보드가 이긴다.</td></tr>
+<tr><td><strong>dispatch plane</strong></td><td>run 소유권(claim·lease·재시도·승인 순서)의 SSOT. 보드와 <em>같은 Postgres</em>를 공유(same-transaction property의 전제).</td></tr>
+<tr><td><strong>session store</strong></td><td>run 히스토리(append-only 이벤트 로그)의 SSOT. resume의 근거. compaction은 로그를 절대 다시 쓰지 않는다(요약은 파생 뷰).</td></tr>
+<tr><td><strong>same-transaction property</strong></td><td>보드 미러 행과 claim 행이 한 Postgres 트랜잭션에 커밋 → 디스패치 엔진이 구조적으로 제2의 티켓 권위가 될 수 없음. 번들 A가 Hatchet/Temporal을 이긴 타이브레이커.</td></tr>
+</table>
+
+<h2>디스패치 프리미티브</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>lease</strong></td><td>run에 대한 시간제한 claim. 분 단위, run 길이에 맞추지 않음. 만료 = 다른 프로세스가 회수 가능(작업 손실 아님 — 세션 로그에서 resume).</td></tr>
+<tr><td><strong>progress-as-heartbeat</strong></td><td>세션 스토어 append가 곧 lease 갱신. 별도 하트비트 채널 불필요.</td></tr>
+<tr><td><strong>fencing token</strong></td><td>같은 run의 claim마다 증가하는 단조 카운터. 옛 lease의 좀비 프로세스가 새 attempt를 완료하는 것을 차단.</td></tr>
+<tr><td><strong>FOR UPDATE SKIP LOCKED</strong></td><td>Postgres claim 관용구: 잠긴 행은 건너뛰고 다음 가용 작업을 원자적으로 집는다.</td></tr>
+<tr><td><strong>level-triggered reconcile</strong></td><td>"이벤트를 놓쳐도 상관없는" 제어 루프 — 매 패스마다 <em>원하는 상태</em>(보드)와 <em>관측 상태</em>(실행 중 run)를 비교해 수렴시킴. k8s 컨트롤러 독트린.</td></tr>
+<tr><td><strong>run-attempt key</strong></td><td>ticket-run-fence로 파생되는 안정 키. 브랜치명·PR 본문·보드 코멘트에 스탬프 → check-then-act로 중복 push/PR 방지.</td></tr>
+</table>
+
+<h2>컴퓨트·환경</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>gVisor (runsc)</strong></td><td>유저스페이스 커널로 syscall을 가로채는 컨테이너 런타임. 커널 공격면 축소를 VM 비용 없이. per-run pod의 기본 격리.</td></tr>
+<tr><td><strong>warm pool</strong></td><td>미리 초기화된 idle 샌드박스 풀. readyReplicas는 idle 수를 센다 — claim되면 컨트롤러가 백필. busy 워커는 절대 종료하지 않음.</td></tr>
+<tr><td><strong>certified environment</strong></td><td>인증된 워크스페이스 스냅샷 + command contract(검증 커맨드·기대 출력). specifier가 기준을 먼저 고정, 별도 executor가 통과시켜야 인증.</td></tr>
+<tr><td><strong>environment key</strong></td><td>hash(env-spec) ⊕ hash(lockfiles) ⊕ toolchain-image digest. 정확 일치만 restore — 드리프트는 탐지가 아니라 <em>구성으로 불가능</em>.</td></tr>
+<tr><td><strong>mock fence</strong></td><td>인증 에이전트의 mock은 매니페스트에 선언 필수 + 리뷰어에게 노출. 사이드카 mock은 허용, 시스템 본체 mock은 금지.</td></tr>
+</table>
+
+<h2>리뷰·머지 (★ = 인간 승인 의미층 수정)</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>★ N-lens review</strong></td><td>하나의 리뷰 verdict 아래 복수의 탈상관 렌즈(모델·증거식단 다양화). 단, 전 렌즈 구현 블라인드(티켓/스펙/트랜스크립트 미수신) 유지.</td></tr>
+<tr><td><strong>verifier stage</strong></td><td>발견→검증 필터→심각도 랭킹. false-escalation SLO를 가진 명명된 컴포넌트. 이것 없이는 발견 스트림이 인간 티어를 DoS.</td></tr>
+<tr><td><strong>★ auto-land-under-watch</strong></td><td>제4 머지 권한 티어: 중위험 클래스는 카나리아 판정 조건부 랜딩(promote / route-to-human / auto-revert).</td></tr>
+<tr><td><strong>change-class whitelist</strong></td><td>오토랜드의 유일한 전례 형태 — 기계검증 가능한 변경 클래스 + 클래스별 가드레일 체인. 분류 불가 = 오토랜드 불가.</td></tr>
+<tr><td><strong>batch + bisect (TAP)</strong></td><td>변경을 묶어 검증, 실패 배치는 자동 이분으로 범인 격리. 개별 검증 포기가 대가. Google 단일 리포 5만 변경/일의 방식.</td></tr>
+<tr><td><strong>speculation + independence (SubmitQueue)</strong></td><td>통과 예측 위에 투기 빌드 트리 + 빌드타깃 독립성 분석으로 개별 검증 유지. oracle 대비 1.2×.</td></tr>
+<tr><td><strong>★ merge-resolver</strong></td><td>공식 인정된 제3종: 큐 템포로 도는 중립 충돌 해소 에이전트. 게이트 없음, 자체 권한 없음 — 산출물은 항상 기존 리뷰 경로로 재진입.</td></tr>
+</table>
+
+<h2>크리덴셜</h2>
+<table>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td><strong>structural unreachability</strong></td><td>토큰을 좁게 스코프하는 게 아니라 생성 코드가 <em>도달 불가능한 곳</em>에 두는 것. 스코핑은 모델이 똑똑해질수록 삭는 가정.</td></tr>
+<tr><td><strong>auth-bundled-with-resource</strong></td><td>git 토큰을 샌드박스 init 때 remote 설정에 배선 — push/pull은 되지만 에이전트는 토큰을 만질 수 없음.</td></tr>
+</table>
+
+<footer class="lesson-foot">
+  <p>출처: 스펙 §Terms of art + 각 섹션. 전체 근거는
+  <code>docs/doperpowers/2026-07-23-cloud-scale-research.md</code>.</p>
+</footer>
+</div>
+</body>
+</html>
