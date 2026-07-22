@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 8 — Economics & Observability</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs"><a href="../index.html">Cloud-Scale Architecture</a> · Lesson 8 / 8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 8 · 토큰이 지배한다</p>
+  <h1>Economics &amp; Observability</h1>
+  <p class="lede">스케일 사이징의 규율(앵커), 자기 자신을 감시하는 기판(회로차단기),
+  그리고 인프라가 아니라 토큰이 청구서를 지배한다는 진실 — 그리고 이 코스 전체의 캡스톤.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: concurrency를 throughput과 절대 혼용하지
+않고 A1/A2/A3 앵커에서 플릿을 사이징하고, 왜 모델 티어가 워커가 아니라
+<em>phase</em>로 갈리는지 설명하고, 어떤 게이지가 vanity이고 어떤 신호가
+health인지 구분하고, 10개의 cross-cutting 규칙을 화이트보드에 복기할 수 있다.</p>
+
+<h2>1. Scale anchors — "1,000 concurrent"는 봉투가 아니라 한 점이다</h2>
+
+<p>모든 사이징 문장은 이름 붙은 (start rate × duration) 점에서만 말한다.
+스펙은 세 점을 못 박았다:</p>
+
+<table>
+<tr><th>앵커</th><th>start rate</th><th>mean run</th><th>concurrency</th><th>engine actions/day</th></tr>
+<tr><td><strong>A1</strong> (entry)</td><td>0.3/sec (~1k runs/hr)</td><td>30 min</td><td>~500</td><td>~1M</td></tr>
+<tr><td><strong>A2</strong> (mid)</td><td>1.4/sec (~5k runs/hr)</td><td>~20 min</td><td>~1,000–1,700</td><td>~6M</td></tr>
+<tr><td><strong>A3</strong> (top)</td><td>6/sec (≈21.6k runs/hr)</td><td>60 min</td><td>~20,000</td><td>~26M</td></tr>
+</table>
+
+<p>핵심 규율은 용어집의 한 줄이다: <strong>concurrency = start rate × 평균
+run 길이</strong>. 처리량과는 절대 같은 물건이 아니다. 같은 5k runs/hr라도
+run이 12분이면 동시 1,000, 1시간이면 동시 5,000이 된다. 플릿은
+concurrency에 <em>선형</em>으로 붙고 — A2의 1,000-concurrent 점은
+NVMe 호스트 ~12–16대, 밴드 상단 1,700에서는 최대 ~28대, A3는 ~230–330대 —
+board/dispatch 플레인은 비용이 고정·작기 때문에 <strong>첫날부터 A3로
+사이징</strong>한다.</p>
+
+<div class="callout">
+  <span class="label">War story — synthesis가 잡은 conflation</span>
+  초기 사이징은 throughput과 concurrency를 조용히 뒤섞고 있었다.
+  "1,000 concurrent"를 봉투 전체인 양 두고 플릿을 딱 그 한 점에서 잡았는데 —
+  리뷰 패스가 그것이 <em>(start-rate × duration) 곡선 위의 한 점</em>일 뿐임을
+  잡아냈다. 봉투의 상단(6 starts/sec × 1시간 run)은 사실 ~20,000 concurrent를
+  함의했고, 그건 플릿이 20배 틀렸다는 뜻이었다. 그래서 지금 Scale anchors
+  표가 세 점을 이름으로 못 박고 있다.
+  <span class="cite">— 스펙 "Scale anchors" + Surprises &amp; Discoveries; 연구 문서 §7.3</span>
+</div>
+
+<h2>2. 모델 경제학 — 품질은 mix-invariant, 비용은 8배로 벌어진다</h2>
+
+<p>Cursor의 swarm 통제 실험(SQLite를 Rust로, 835페이지 매뉴얼만으로)이 준
+경제학은 세 개의 숫자로 압축된다. 4시간 컷오프 품질은 모델 mix에 거의
+무관하게 73%~85%에 모였는데, <strong>비용은 ~8배로 벌어졌다</strong>:</p>
+
+<table>
+<tr><th>측정</th><th>숫자</th><th>함의</th></tr>
+<tr><td>전체 run 비용 범위</td><td>$1,339 (Opus 4.8 hybrid) ~ $10,565 (GPT-5.5 단독)</td><td>~7.9배 — 품질이 아니라 라우팅이 정한다</td></tr>
+<tr><td>워커 플릿 비교 (유사 품질)</td><td>Composer 2.5 워커 $411 vs GPT-5.5 워커 $9,373</td><td>~23배 — 토큰 벌크를 어디에 태우냐의 문제</td></tr>
+<tr><td>토큰 분포</td><td>워커가 최소 69%, 대부분 run에서 90%+</td><td>벌크는 워커에 있다 → 거기서 싼 티어가 값한다</td></tr>
+</table>
+
+<p>그래서 <strong>모델 티어는 워커가 아니라 phase 단위 라우팅 결정</strong>이다.
+frontier 모델은 결정 지점(pre-code gate, decomposition, park/escalate 판단,
+review verdict)에, 싼 모델은 게이트 통과한 well-scoped 티켓 안의 구현 벌크에.
+우리 semantic 레이어는 이 결정 지점들을 이미 격리해 두었으니, 기판은 티어를
+per-phase로 라우팅하고 계측하기만 하면 된다.</p>
+
+<div class="callout">
+  <span class="label">The Fable-planner lesson</span>
+  Fable 5 planner는 Opus 4.8 planner보다 per-token 가격이 ~2배인데도
+  <em>planner 청구서는 더 쌌다</em> — planning 토큰을 훨씬 적게 썼으니까.
+  그런데 그 run의 <strong>워커들이 몇 배 더 많은 토큰을 태웠고, run 전체는
+  실질적으로 더 비쌌다</strong>. 교훈: gate/planner 모델은 자기 청구서가
+  아니라 <strong>total downstream run cost</strong>로 평가한다. decomposition
+  스타일이 워커의 verbosity를 몰고, 가장 싼 planner가 가장 비싼 run을 낳을 수
+  있다. (per-model prompt profile은 그래서 versioned substrate config — GPT-5.6
+  Sol은 wording 민감성으로 runaway spiral을 내 실험에서 아예 빠졌다.)
+  <span class="cite">— agent-swarms 리포트 §3, §5; 연구 문서 §2.6</span>
+</div>
+
+<h2>3. 토큰 spend가 청구서를 지배한다</h2>
+
+<p>인프라 비용은 자기-호스팅 기준 A2에서 ~$5–15k/월이다 — 작고 지루한 숫자.
+문제는 <strong>fleet tempo의 토큰 spend가 그걸 10–100배 초과할 개연성</strong>이
+있다는 것이다. 이건 모든 비용 기반 substrate 논증을 다시 프레이밍한다:
+SaaS 샌드박스가 비싸다는 얘기도, self-host가 싸다는 얘기도, 토큰 청구서
+옆에서는 반올림 오차일 수 있다.</p>
+
+<p>그래서 두 가지가 따라온다. 첫째, 이 10–100배는 <strong>Fermi 추정이고,
+spike S3가 그걸 측정으로 대체</strong>한다 — phase 티어별로 100개 실제 run을
+end-to-end 계량. 둘째, provider rate-limit/quota 아키텍처는 사후 대응이 아니라
+<strong>first-class design input</strong>이다. 그 토큰 tempo에서 provider 쿼터를
+어떻게 샤딩·백오프·라우팅할지는 게이트웨이 하나의 세부가 아니라 설계 전제다.</p>
+
+<h2>4. Observability — 무엇이 vanity이고 무엇이 health인가</h2>
+
+<p>스케일에서 기판은 스스로를 감시해야 한다. Cursor의 swarm spiral —
+70,000개 넘는 <em>가속하는</em> 충돌 — 은 <strong>사람이 지켜보다가</strong>
+멈췄다. 그 실패를 자동화하는 게 이 절이다.</p>
+
+<h3>4.1 Session-end reason taxonomy</h3>
+<p>워커마다 종료 이유를 6종 카운터로 찍는다: <code>clean</code> /
+<code>stream-error</code> / <code>closed</code> / <code>error</code> /
+<code>timeout</code> / <code>aborted</code>. 이 분류가 <strong>infra 실패(→
+re-dispatch)와 agent 실패(→ park)를 기계적으로 가른다</strong>. 이유 없이는
+"실패했으니 다시"와 "실패했으니 사람에게"를 구분할 수 없다.</p>
+
+<h3>4.2 Fleet gauges</h3>
+<p>세 게이지가 플릿의 core: 큐 <strong>depth</strong>(오토스케일 신호),
+<strong>pending</strong> = claimed-not-acked(stall 탐지),
+<strong>workers_polling</strong>(liveness). Anthropic self-hosted 샌드박스
+프로토콜에서 그대로 가져온 것.</p>
+
+<h3>4.3 Contention circuit breakers</h3>
+<p>per-repo <strong>conflict rate, hottest-file contention, PR-rework rate,
+commit-churn ratio</strong>. 여기서 규율은 한 문장이다: <strong>volume 메트릭은
+vanity, conflict acceleration이 health</strong>. 스파이럴은 커밋 수가 많아서가
+아니라 충돌이 <em>가속</em>해서 위험하다 — 가속이 그 repo의 dispatch pause를
+자동으로 trip시킨다.</p>
+
+<table>
+<tr><th>Cursor swarm</th><th>old harness (thrash)</th><th>new harness</th></tr>
+<tr><td>첫 2시간 커밋</td><td>68,000 (≈70배 pace)</td><td>—</td></tr>
+<tr><td>총 충돌</td><td>70,000+ (가속 중 pause)</td><td>4시간 내내 &lt;1,000</td></tr>
+<tr><td>hottest file</td><td>7,771 충돌 · 1,173 agents</td><td>47</td></tr>
+</table>
+
+<p>68,000 커밋은 생산성처럼 읽히지만 thrash였다 — vanity 메트릭이 왜
+위험한지의 교과서. 같은 telemetry feed 위에 <strong>megafile 기계</strong>가
+얹힌다: 어느 워커든 hotspot 파일을 flag → merge-queue freeze → 자동 등록되는
+decomposition 티켓. 그리고 <strong>failure-boundary separation</strong>:
+harness/dispatch 로그는 data-bearing 샌드박스 <em>바깥</em>에 살아서,
+harness 버그 / transport drop / sandbox death를 user-data 환경에 들어가지 않고
+구분한다.</p>
+
+<h2>5. Code-host load plan — PR 플레인도 같은 한도에 걸린다</h2>
+
+<p>GitHub-as-board를 죽인 그 산수가 PR 플레인에도 그대로 적용된다.
+PR 생성, review comment, verdict comment는 전부 content-generating request이고,
+같은 <strong>500/hr-per-actor secondary limit</strong>(+ 80/min) 아래 있다 —
+프로젝트당 A2–A3에서 <strong>~8–14배 초과</strong>. mitigation은 순서대로:</p>
+
+<table>
+<tr><th>순서</th><th>mitigation</th><th>효과</th></tr>
+<tr><td>1</td><td><strong>verdict/finding 트래픽을 board service로</strong></td><td>PR은 transcript가 아니라 link만 나른다 — 대부분의 content request 제거</td></tr>
+<tr><td>2</td><td><strong>review submission 배칭</strong></td><td>N개 코멘트를 담은 review 1개 = content request 1개</td></tr>
+<tr><td>3</td><td><strong>per-installation actor 샤딩</strong></td><td>남은 트래픽을 actor 예산으로 분산</td></tr>
+<tr><td>4</td><td><strong>GHES escape hatch</strong></td><td>조직이 GHES를 돌리면 configurable limit로 탈출</td></tr>
+</table>
+
+<p class="cite">숫자 근거: 연구 문서 §8.11, 스펙 §9. Acceptance drill 9가 이
+플레인을 명시적으로 부하 시험한다 — A2-rate에서 actor당 content 요청률을
+기록하고 secondary-limit 아래 지속 동작을 보인다.</p>
+
+<h2>6. Adoption path &amp; the honest bill</h2>
+
+<p>Phase는 calendar가 아니라 <strong>관측된 압력</strong>에 게이트된다.
+각 phase는 독립적으로 가치 있고 되돌리기 싸다:</p>
+
+<table>
+<tr><th>phase</th><th>무엇을</th><th>증명하는 것</th></tr>
+<tr><td><strong>P0</strong> planes on one box</td><td>board+dispatch+session store를 한 Postgres에; controller가 cron sweep을 대체; 워커는 아직 로컬 프로세스</td><td>same-transaction core + worker idempotency at A1</td></tr>
+<tr><td><strong>P1</strong> compute plane</td><td>k8s+gVisor 풀을 2–3 NVMe 호스트에; outbound 워커; env registry + certification</td><td>density spike(S1) 후에야 플릿 사이징</td></tr>
+<tr><td><strong>P2</strong> review/merge at tempo</td><td>N-lens + verifier, auto-land whitelist v1, risk-class별 merge queue, merge-resolver, park-queue SLO</td><td>frozen semantic 레이어가 tempo에서 버팀</td></tr>
+<tr><td><strong>P3</strong> scale-out</td><td>A2/A3 앵커로 플릿 성장, canary 티어(auto-land-under-watch), contention breaker를 org-wide로 armed</td><td>A3에서의 운영</td></tr>
+</table>
+
+<p>연구가 닫지 못한 unknown은 <strong>spike</strong>로 남고, 각각 promote/discard
+기준을 스스로 선언한다:</p>
+
+<table>
+<tr><th>spike</th><th>측정</th><th>promote / discard</th></tr>
+<tr><td><strong>S1</strong> host density (P1 게이트)</td><td>NVMe 호스트 1대, target I/O duty의 synthetic run mix</td><td>측정 p95 build latency가 버티면 ~80–110 runs/host를 promote; 아니면 구매 전 플릿 산수 재도출</td></tr>
+<tr><td><strong>S2</strong> Linear mirror (P0 중)</td><td>coalescing mirror로 A2-rate synthetic transition 지속</td><td>Linear가 한 actor 예산 아래 + &lt;60s 가시 staleness면 promote; 아니면 dashboard-only로 discard</td></tr>
+<tr><td><strong>S3</strong> token Fermi → 측정 (P1 중)</td><td>phase 티어별 100 real run을 end-to-end 계량</td><td>§8의 10–100배 Fermi를 측정치로 대체 + provider-quota 아키텍처 확정</td></tr>
+<tr><td><strong>S4</strong> session-store 압력 (P1–P2)</td><td>session-write volume 대비 board/dispatch latency</td><td>§4의 promotion threshold 숫자를 정의</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">Aggregate ops budget — Bundle A의 정직한 청구서</span>
+  각 build-vs-adopt 판정은 개별로는 합리적이지만, 합치면 플랫폼 팀이 한꺼번에
+  <em>소유</em>하는 컴포넌트 목록이 된다: board service + mirror sync ·
+  dispatch controller · k8s/gVisor NVMe fleet · environment registry +
+  certification · session store · vault/egress proxy · contention telemetry ·
+  merge queue. 이 목록이 phased adoption path의 상시 논거다 —
+  <strong>그 phase가 필요로 하기 전엔 아무것도 짓지 않는다</strong>.
+  <span class="cite">— 스펙 §8, "Adoption path"; 연구 문서 §8 items 12–13</span>
+</div>
+
+<h2>7. Capstone — 10개 cross-cutting 규칙 (printable recap)</h2>
+
+<p>이 표가 코스 전체의 캡스톤 레퍼런스다. 스펙의 불변량이자 연구 §5의 결론 —
+어느 레슨의 세부를 잊어도 이 열 줄은 복기할 수 있어야 한다.</p>
+
+<table>
+<tr><th>#</th><th>규칙</th></tr>
+<tr><td>1</td><td>Board = ticket 상태의 SSOT, engine = run 소유권의 SSOT, session store = run 히스토리의 SSOT. ticket 상태 충돌 시 <strong>board가 이긴다</strong>.</td></tr>
+<tr><td>2</td><td>스냅샷(env든 VM이든)은 certificate를 가진 cache일 뿐, 절대 identity가 아니다.</td></tr>
+<tr><td>3</td><td>Compaction/summarization은 durable log를 절대 다시 쓰지 않는다 (요약은 파생 뷰).</td></tr>
+<tr><td>4</td><td>Environment readiness는 dispatcher precondition이지, gate clause가 아니다.</td></tr>
+<tr><td>5</td><td>Mock은 reviewer가 보는 manifest에 선언될 때만 존재한다.</td></tr>
+<tr><td>6</td><td>Credential: scoped보다 structurally unreachable. merge authority와 credential topology는 같은 모양.</td></tr>
+<tr><td>7</td><td>Worker: outbound-only, one-session, exit-and-replace, busy는 절대 kill 안 함.</td></tr>
+<tr><td>8</td><td>bounded한 모든 것(retry·pool·queue)은 bound에서 <strong>loud하게 park</strong> — 조용히 loop하지도, 작업을 버리지도 않는다.</td></tr>
+<tr><td>9</td><td>Autonomy prompting: 클라우드에서 blocking은 비싸다 — 조용한 대기 대신 loud·routed escalation(park)으로.</td></tr>
+<tr><td>10</td><td>Reviewer 샌드박스는 fresh, 절대 inherited 아님: read-only repo mount + 완전한 build/test 실행, push credential 없음.</td></tr>
+</table>
+
+<h2>8. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>9. 다음 단계 — 그리고 코스 완주</h2>
+<ul>
+  <li><strong>Primary source</strong>: 경제학 증거의 원천은
+  <code>docs/doperpowers/research/2026-07-23-cloud-scale/agent-swarms.md</code> §3 —
+  $1,339–$10,565, $411 vs $9,373, 워커 69–90%+ 토큰, Fable-planner 역전이 전부
+  거기 인용문으로 있다.</li>
+  <li>스펙 원문 대조: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code>의
+  "Scale anchors" · §7 Observability · §8 Economics · §9 Code-host load plan ·
+  "Adoption path" · "Acceptance".</li>
+  <li><strong>코스 완주</strong>: 여기까지가 8개 레슨의 끝이다.
+  <a href="../lessons/0001-three-planes-of-truth.html">Lesson 1 — Three Planes of Truth</a>로
+  돌아가 세 플레인의 타이브레이커(same-transaction property)를 다시 그려보고,
+  이 레슨의 10-규칙 표와 <a href="../reference/glossary.html">용어집</a>을 나란히
+  놓으면 아키텍처 전체가 한 화면에 들어온다.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 spike의 promote/discard 기준이나
+  "이 숫자는 어느 앵커에서 나온 것인가"류의 질문은 스펙·연구 문서의 근거까지
+  파서 답할 수 있다.</p>
+  <p><a href="../lessons/0001-three-planes-of-truth.html">Lesson 1</a> ·
+  <a href="../reference/glossary.html">용어집</a> ·
+  워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "같은 5,000 runs/hr인데 A라는 팀은 동시 1,000, B라는 팀은 동시 5,000이 나왔다. 무엇이 이 차이를 만드는가?",
+    options: [
+      "평균 run 길이 — concurrency는 start rate × 평균 run 길이이므로",
+      "start rate 자체 — 시간당 시작 수가 실제로는 달랐으므로",
+      "호스트 대수 — 플릿이 크면 concurrency도 비례해 커지므로",
+      "engine actions/day — 액션 밀도가 concurrency를 정하므로"
+    ],
+    answer: 0,
+    expl: "throughput(5k/hr)이 같아도 concurrency = start rate × 평균 run 길이다. run이 12분이면 동시 1,000, 1시간이면 동시 5,000. 이 conflation을 리뷰가 잡아 Scale anchors 표가 세 점을 못 박았다."
+  },
+  {
+    stem: "품질은 model mix에 거의 무관했는데(73~85%) 비용은 크게 벌어졌다. 유사 품질에서 ~23배 차이가 난 것은?",
+    options: [
+      "워커 플릿 비용 — Composer 2.5 $411 vs GPT-5.5 $9,373",
+      "전체 run 비용 — $1,339 vs $10,565의 범위",
+      "planner 청구서 — Fable vs Opus의 per-token 격차",
+      "인프라 비용 — self-host $5–15k/월 vs SaaS 샌드박스"
+    ],
+    answer: 0,
+    expl: "워커 플릿 비교가 ~23배(Composer 2.5 $411 vs GPT-5.5 $9,373)로 가장 크게 벌어졌다. 전체 run 범위는 ~8배($1,339–$10,565). 워커가 토큰의 69–90%+를 나르니 벌크를 싼 티어에 태우는 것이 청구서를 정한다."
+  },
+  {
+    stem: "Fable 5 planner는 per-token 가격이 Opus의 ~2배인데 planner 청구서는 더 쌌다. 그런데 이 run이 substantially 더 비쌌던 이유는?",
+    options: [
+      "그 planner의 decomposition이 워커에 훨씬 많은 토큰을 태워서",
+      "Fable planner가 결국 planning 토큰을 더 많이 써서",
+      "review 렌즈를 더 많이 쌓아 verdict 비용이 늘어서",
+      "인프라가 A3로 사이징되어 고정비가 커져서"
+    ],
+    answer: 0,
+    expl: "planner 청구서는 쌌지만(planning 토큰이 적었음) 그 decomposition 스타일이 워커의 verbosity를 몰아 run 전체가 더 비쌌다. 교훈: gate/planner 모델은 자기 청구서가 아니라 total downstream run cost로 평가한다."
+  },
+  {
+    stem: "per-repo contention 회로차단기가 그 repo의 dispatch pause를 자동으로 trip시키는 신호는?",
+    options: [
+      "conflict acceleration — 충돌이 가속하는 것",
+      "commit/PR volume — 커밋·PR 수가 많은 것",
+      "queue depth — 대기 중인 run이 쌓이는 것",
+      "workers_polling — 폴링 워커 수가 떨어지는 것"
+    ],
+    answer: 0,
+    expl: "volume은 vanity 메트릭이다(Cursor의 68,000 커밋/2h는 thrash였다). health 신호는 conflict acceleration — 충돌이 안정화가 아니라 가속할 때 dispatch를 자동 pause한다. depth/workers_polling은 오토스케일·liveness 게이지이지 contention breaker가 아니다."
+  },
+  {
+    stem: "PR 플레인이 GitHub의 500/hr-per-actor secondary limit에 ~8–14배 초과할 때, 가장 먼저 적용하는 mitigation은?",
+    options: [
+      "verdict/finding 트래픽을 board service로 옮겨 PR은 link만 나르게 한다",
+      "GHES로 옮겨 configurable limit로 탈출한다",
+      "per-installation actor 샤딩으로 트래픽을 분산한다",
+      "review submission을 배칭해 코멘트를 한 요청에 담는다"
+    ],
+    answer: 0,
+    expl: "mitigation 순서는 (1) verdict/finding을 board service로(PR은 transcript가 아닌 link) → (2) review 배칭 → (3) actor 샤딩 → (4) GHES escape hatch. 대부분의 content-generating 요청을 없애는 1번이 첫 수다."
+  }
+]);
+</script>
+</body>
+</html>

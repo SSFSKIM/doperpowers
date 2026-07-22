@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 2 — Board Service 해부</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs"><a href="../index.html">Cloud-Scale Architecture</a> · Lesson 2 / ~8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 2 · 전이를 서버가 쥔다</p>
+  <h1>Board Service 해부</h1>
+  <p class="lede">티켓 상태의 SSOT는 왜 SaaS 트래커가 될 수 없었나 — 그리고
+  한 문장짜리 conditional UPDATE가 어떻게 합법성 검사와 claim 락을 동시에
+  해내는가.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: GitHub도 Linear도 왜 SSOT가 못
+됐는지 각각의 <em>결정적</em> 실격 사유를 숫자로 말하고, conditional
+UPDATE가 Kubernetes API 서버 패턴과 같은 이유를 설명하며, Linear 미러가
+"진실이 아니라 이벤트"라는 규칙이 왜 있는지 남에게 설명할 수 있다.</p>
+
+<h2>1. 두 SaaS 트래커가 각각 다른 이유로 탈락한다</h2>
+
+<p>레슨 1에서 보드는 <em>무엇</em>의 진실이라고 했다. 그 진실을 어디에
+담느냐가 이 레슨의 문제다. 후보는 셋이었다: GitHub 이슈(오늘의 구현),
+Linear(명명된 후보), 그리고 우리가 직접 소유하는 얇은 Postgres 서비스.
+작업 부하는 프로젝트당 <strong>1,000 runs/hr × ~10 board ops = 10,000
+ops/hr</strong>, 그중 약 60%가 쓰기 → <strong>~6,000 writes/hr</strong>,
+디스패치 웨이브라 평균보다 훨씬 버스티하다 [R §7.1].</p>
+
+<p>핵심은, 두 트래커가 <strong>서로 다른 벽</strong>에 먼저 부딪힌다는
+것이다:</p>
+
+<table>
+<tr><th>후보</th><th>먼저 깨지는 한도</th><th>우리 부하 대비</th><th>판정</th></tr>
+<tr><td><strong>GitHub</strong> (앱 1개 설치)</td><td>콘텐츠 생성 2차 한도 500/hr · 80/min (per actor)</td><td>~6,000 writes/hr → <strong>12배 초과</strong></td><td>1차 한도(5,000/hr) 전에 콘텐츠 생성에서 붕괴</td></tr>
+<tr><td><strong>Linear</strong> (OAuth actor 1개)</td><td>5,000 req/hr per actor</td><td>10,000 ops/hr → <strong>~2배 초과</strong> (쓰기만 ~1.2배)</td><td>근소 초과 + 전이 강제·CAS 자체가 없음</td></tr>
+<tr><td><strong>얇은 Postgres 서비스</strong></td><td>~3 TPS/project vs 단일 노드 수천 TPS</td><td><strong>≥100배 여유</strong></td><td>처리량과 정확성이 <em>둘 다</em> 닫히는 유일한 옵션</td></tr>
+</table>
+
+<p>GitHub의 함정은 한도 자체보다 <strong>숨은 공유 버킷</strong>이다:
+2차 한도는 한 앱의 여러 토큰, 또는 같은 IP의 트래픽이 하나의 버킷을
+공유할 수 있고, GitHub은 이 버킷팅을 공개하지 않는다. 그래서
+"프로젝트당 앱 12개로 샤딩"은 <strong>2차 버킷을 곱해준다는 보장이
+없다</strong>. 자기 SSOT를 벤더의 abuse 시스템에 맞서 샤딩하는 것 자체가
+적대적 자세다 [R §7.1, r2 §1.2].</p>
+
+<div class="callout">
+  <span class="label">absence-of-evidence 라는 결정타</span>
+  Linear의 <code>issueUpdate(input: { stateId })</code>는 팀에 속한
+  <strong>어떤 stateId든 그대로 받는다</strong>. 서버측 전이 제한 기능도,
+  compare-and-swap(조건부 업데이트) 프리미티브도 <strong>문서·체인지로그·
+  스키마 어디에서도 발견되지 않았다</strong> — Jira·Azure DevOps·Plane이
+  자기 것을 광고하는 것과 대조된다. 이건 "부재의 증거"다: 공식 "지원하지
+  않음" 선언조차 없다. 그래서 수천 라이터 간의 claim race는
+  <strong>Linear에서는 닫을 수 없다</strong>. 게다가 감사 로그는 90일만
+  보존 — 영속적 human-answer 기록을 나를 SSOT로는 그것만으로도 실격이다.
+  <span class="cite">— <a href="https://linear.app/developers/rate-limiting">Linear rate-limiting</a>, <a href="https://linear.app/docs/audit-log">audit-log(90일)</a>; 연구 문서 §7.1 · <code>research/2026-07-23-cloud-scale/r2-ticket-store.md §1.1, §4</code></span>
+</div>
+
+<h2>2. conditional UPDATE — 두 일을 한 문장에</h2>
+
+<p>전이 그래프를 어디서 강제할 것인가에는 세 자리가 있었다: 클라이언트측
+(오늘 — 모든 워커가 검사), 서버측(API 서비스가 그래프를 소유),
+reconciliation(웹훅이 불법 쓰기를 되돌림). 클라이언트측은 <strong>TOCTOU
+claim race</strong>(읽고-검증하고-쓰는 사이의 창)와 <strong>플릿 드리프트</strong>
+(모든 하네스·버전이 동일한 그래프 사본을 지녀야 하고, 스테일 워커 하나가
+보드를 조용히 오염)로 스케일에서 무너진다 [r2 §1.4].</p>
+
+<p>서버측의 핵심은 한 문장이다:</p>
+
+<pre>UPDATE ticket SET state='in-progress', owner=$run
+  WHERE id=$id AND state='ready-for-agent';
+-- rows affected = 0  →  경쟁 패배 (409-style 에러, 클라이언트는 re-fetch)</pre>
+
+<p>이 <code>WHERE</code> 절이 <strong>합법성 검사와 claim 락을 하나의
+원자적 문장</strong>으로 합친다. 상태가 <code>ready-for-agent</code>가
+아니면 조건이 안 맞아 0행이 갱신되고, 그게 곧 "경쟁에서 졌다"는 신호다 —
+별도의 잠금도, 별도의 검사도 없다. 이 배치가 <strong>불법 상태를 어떤
+리더도 관측할 수 없는 유일한 자리</strong>다. 클라이언트측은 불법 상태가
+잠깐이라도 라이브가 되고(워커가 그걸 보고 유령 run을 디스패치),
+reconciliation은 창·순서 무보장·이벤트 손실을 안는다 — legality의 도구가
+아니라 <em>convergence</em>(미러 back-edge)의 도구다 [r2 §1.4].</p>
+
+<div class="callout">
+  <span class="label">The working reference model</span>
+  이건 우리가 발명한 패턴이 아니다 — <strong>Kubernetes API 서버</strong>가
+  정확히 이것이다: 쓰기는 <code>resourceVersion</code>을 실어 보내고,
+  스테일 쓰기는 <strong>HTTP 409 Conflict</strong>로 거부되며 클라이언트는
+  re-fetch 후 재시도한다. legality는 <strong>한 서버에서 동기적으로</strong>
+  강제되고, reconciliation은 오직 수렴만 담당한다(유효성이 아니라). 우리의
+  <code>WHERE ... AND state=...</code>는 그 409의 SQL 번역이다.
+  <span class="cite">— <a href="https://kubernetes.io/docs/reference/using-api/api-concepts/">Kubernetes API concepts (resourceVersion + 409)</a>; 연구 문서 §7.1 · <code>r2-ticket-store.md §1.4</code></span>
+</div>
+
+<h2>3. Symphony 전례 — 같은 필요, 내구성 없는 형태</h2>
+
+<p>우리와 정확히 같은 문제 클래스를 이미 푼 전례가 있다: OpenAI
+<strong>Symphony</strong>(2026년 5월, Linear 기반 코드 오케스트레이션).
+Symphony v1은 트래커(Linear)를 SSOT로 두고, <strong>전이 강제는
+클라이언트측(에이전트)</strong>에 맡긴다 — 오늘 우리 패턴 그대로다.
+그렇다면 동시성은 어떻게 풀까? <strong>하나의 직렬화 오케스트레이터를
+강제</strong>해서다: 모든 상태 변이를 한 권위를 통해 직렬화해 중복
+디스패치를 막는다. 분산 claiming 프로토콜은 명세되지 않았고, 복구는
+DB 없이 <strong>재폴링</strong>으로 한다 [r2 §1.3].</p>
+
+<p>여기서 정확한 교훈: Symphony는 <strong>모양은 검증하고 갭은 실증</strong>
+한다. "하나의 권위"라는 <em>필요</em>는 우리와 같다 — 하지만 그 필요를
+<strong>인메모리 단일 프로세스</strong>라는 내구성 없는 형태로 담았다.
+멀티 오케스트레이터·수천 라이터 스케일로 가면 그 "하나의 직렬화 권위"는
+<strong>실제 데이터베이스를 가진 실제 서비스</strong>가 되어야 한다 —
+그게 바로 얇은 board service다. 우리는 Symphony의 필요를 취하고, 그
+형태를 내구화한다.</p>
+
+<h2>4. Linear 미러 — 진실이 아니라 이벤트</h2>
+
+<p>SSOT를 우리 서비스로 옮긴다고 Linear를 버리는 게 아니다.
+<strong>Linear는 100% 인간 대면 surface로 남는다</strong> — 단, 진실이
+아니라 미러로. 이게 성립하는 이유는 산수에 있다:</p>
+
+<table>
+<tr><th>양</th><th>값</th><th>왜 중요한가</th></tr>
+<tr><td>워커가 만드는 board ops</td><td>run당 ~10</td><td>기계 템포 — 트래커 한도를 터뜨리는 원인</td></tr>
+<tr><td>인간이 신경 쓰는 전이</td><td>그중 ~2–3</td><td>coalescing의 대상</td></tr>
+<tr><td>coalescing 후 트래픽 축소</td><td><strong>~5–10배</strong></td><td>샤딩을 논하기 전에 이미 줄어듦</td></tr>
+<tr><td>미러의 실제 Linear 쓰기</td><td>수백/hr</td><td>OAuth actor 1개 예산 안에 들어감</td></tr>
+</table>
+
+<p>단방향 sync 워커가 <strong>기계 템포 쓰기를 인간 관련 업데이트로
+coalesce</strong>한다. 반대 방향(back-edge)은 규칙이 엄격하다: Linear에서
+인간이 한 행동(park 답변, 우선순위 편집)은 board service로 <strong>이벤트로
+흘러 들어올 뿐, 진실이 아니다</strong>. board service는 여전히 유일한
+기록 라이터다 [R §7.1, r2 §3].</p>
+
+<div class="callout">
+  <span class="label">PR automation 위험 — 제2의 라이터</span>
+  Linear의 자체 GitHub 통합은 팀별 상태 자동화를 돈다: <strong>PR
+  merged → Done</strong>. 이건 <em>조율되지 않은 제2의 티켓 상태
+  라이터</em>다. 우리 의미층은 in-review → landed를 <strong>리뷰 워커의
+  tiered merge authority</strong>로만 넘긴다 — Linear의 "merged → Done"이
+  그 권한과 정면으로 싸운다. 게다가 여러 PR이 한 이슈에 걸리면 자동화는
+  <em>마지막</em> PR에서만 발화 — 분해된 child-ticket 흐름에는 틀린 동작.
+  <strong>팀별로 이 자동화를 끈다.</strong>
+  <span class="cite">— <a href="https://linear.app/docs/github">Linear GitHub integration</a>; 연구 문서 §7.1 · <code>r2-ticket-store.md §1.5</code></span>
+</div>
+
+<h2>5. 보드가 닿지 않을 때 — fail closed, 그리고 영속 기록</h2>
+
+<p>board service가 SSOT라면, 보드가 unreachable일 때 워커가 뭘 하느냐가
+중요해진다. 규칙은 <strong>fail closed</strong>다: 전이를 쓸 수 없는
+워커는 <strong>자기 로컬 스텝을 끝내고, 산출물을 session store에 내구적으로
+park하고, 멈춘다</strong> — 상태 경계를 넘어 <em>가정으로</em> 전진하지
+않는다. 코드 호스트 상태를 경계 너머로 쓰지 않고, lease 만료가 그 run을
+park한다 (Acceptance 드릴 4: 보드를 파티션시키면 워커가 현재 스텝 완료 →
+session store에 저장 → 경계에서 정지). 이것이 "불법 전이는 어떤 리더도
+관측 불가"라는 §2의 보증을 <em>부분 장애 상황까지</em> 확장한다.</p>
+
+<p>그리고 board service의 history 테이블은 <strong>append-only이며
+영구 보존</strong>된다 — 이 테이블이 곧 <strong>내구적 human-answer
+기록</strong>이다. 이게 Linear를 SSOT에서 탈락시킨 이유 중 하나와
+직접 맞닿는다: Linear의 감사 로그는 90일만 보존한다. 영속 기록을 나를
+SSOT는 그보다 오래 살아야 한다 [R §7.1].</p>
+
+<div class="callout">
+  <span class="label">한 문장으로</span>
+  board service가 소유하는 것은 어떤 SaaS 트래커도 어떤 값에도 팔지 않는
+  딱 두 가지다 — <strong>우리 합법-전이 그래프의 서버측 강제</strong>와
+  <strong>수천 동시 기계 라이터를 위한 원자적 claim</strong>. 의미층이
+  frozen으로 남는 것은 <em>바로</em> 그 강제가 모든 클라이언트가 제대로
+  하기를 더는 의존하지 않게 됐기 때문이다.
+</div>
+
+<h2>6. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>7. 다음 단계</h2>
+<ul>
+  <li><strong>Primary source</strong>: <a href="https://kubernetes.io/docs/reference/using-api/api-concepts/">Kubernetes API concepts — resourceVersion &amp; 409 Conflict</a> — conditional UPDATE가 베낀 "한 서버에서 동기적으로 legality 강제" 패턴의 원문. 10분.</li>
+  <li>근거 대조: 연구 문서 <code>docs/doperpowers/2026-07-23-cloud-scale-research.md</code> §7.1, 그리고 전체 증거는 <code>docs/doperpowers/research/2026-07-23-cloud-scale/r2-ticket-store.md</code> (Linear/GitHub 공식 한도, Symphony 스펙, K8s 개념).</li>
+  <li>스펙 원문: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code>의 §1 Board service + Decision Log "Ticket SSOT is a thin self-owned board service".</li>
+  <li>다음 레슨(예정): <strong>Dispatch plane 해부</strong> — 같은 Postgres 위의 lease·fencing token, 그리고 same-transaction property가 왜 Hatchet/Temporal을 이겼는지.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 "왜 Linear-as-SSOT
+  폴백이었나"류의 질문은 r2 리포트의 confidence note(검증 못 한 것들)까지
+  파서 답할 수 있다.</p>
+  <p><a href="../reference/glossary.html">용어집</a> · 워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "GitHub 이슈를 보드 SSOT로 쓸 때 가장 먼저 부딪히는 벽은?",
+    options: [
+      "콘텐츠 생성 2차 한도 500/hr — 우리 쓰기 부하의 12배 초과",
+      "1차 한도 5,000 req/hr — 우리 전체 ops의 2배 초과",
+      "GraphQL 포인트 예산 5,000 pts/hr — 뮤테이션이 5점씩 소모",
+      "동시 요청 100개 상한 — 디스패치 웨이브가 즉시 초과"
+    ],
+    answer: 0,
+    expl: "먼저 깨지는 건 1차 한도가 아니라 콘텐츠 생성 2차 한도(500/hr·80/min per actor)다. ~6,000 writes/hr는 그 per-actor 캡의 12배이고, 5,000/hr 1차 한도에 닿기 한참 전에 붕괴한다 (연구 §7.1, r2 §1.2)."
+  },
+  {
+    stem: "한도 문제를 접어두더라도 Linear가 SSOT로 결정적으로 실격인 이유는?",
+    options: [
+      "서버측 전이 제한과 compare-and-swap이 존재하지 않아 claim race를 못 닫음",
+      "OAuth actor 예산이 5,000 req/hr뿐이라 트래픽을 감당 못 함",
+      "웹훅이 3회 재시도 뒤 드롭되어 미러 동기화가 끊김",
+      "감사 로그가 90일만 보존되어 버스트를 흡수 못 함"
+    ],
+    answer: 0,
+    expl: "issueUpdate는 어떤 stateId든 그대로 받고, 전이 제한 기능도 CAS도 문서·스키마 어디에도 없다(absence-of-evidence). 그래서 수천 라이터 간 claim race를 Linear에서는 닫을 수 없다. 90일 보존도 실격 사유이지만 그건 '영속 기록' 쪽 문제이고, 여기서 묻는 '동시성 정확성'의 결정타는 전이 강제·CAS 부재다 (r2 §1.1, §1.4)."
+  },
+  {
+    stem: "conditional UPDATE에서 rows-affected=0이 뜻하는 것은?",
+    options: [
+      "경쟁 패배 — 상태가 기대값이 아니라 claim을 못 잡음, 409로 re-fetch",
+      "네트워크 오류 — 트랜잭션이 커밋되지 못하고 롤백됨",
+      "권한 부족 — 워커 토큰이 해당 티켓 쓰기 권한이 없음",
+      "티켓 부재 — 주어진 id의 행이 테이블에 존재하지 않음"
+    ],
+    answer: 0,
+    expl: "WHERE 절이 합법성 검사와 claim 락을 한 문장에 합친다. 상태가 ready-for-agent가 아니면 조건 불일치로 0행이 갱신되고, 그게 곧 '경쟁에서 졌다' — 409-style 에러로 표면화되어 클라이언트가 re-fetch한다 (스펙 §1, r2 §1.4)."
+  },
+  {
+    stem: "OpenAI Symphony 전례가 우리 설계에 주는 정확한 교훈은?",
+    options: [
+      "'하나의 권위'라는 필요는 같지만 인메모리 단일 프로세스는 내구성이 없다",
+      "Linear를 SSOT로 두면 클라이언트측 강제로도 스케일이 충분하다",
+      "분산 claiming 프로토콜을 명세하면 단일 오케스트레이터가 불필요하다",
+      "재폴링 기반 복구가 데이터베이스보다 장애에 강한 방식이다"
+    ],
+    answer: 0,
+    expl: "Symphony는 트래커를 SSOT로 두고 하나의 직렬화 오케스트레이터로 동시성을 푼다 — 모양은 검증하고 갭은 실증한다. '하나의 권위'라는 필요는 우리와 같지만, 그걸 인메모리 단일 프로세스(재폴링 복구)라는 내구성 없는 형태로 담았다. 멀티 라이터 스케일에선 그 권위가 실제 DB를 가진 실제 서비스가 되어야 한다 (r2 §1.3)."
+  },
+  {
+    stem: "Linear가 미러일 때 팀별로 PR 자동화(merged → Done)를 끄는 이유는?",
+    options: [
+      "조율되지 않은 제2의 상태 라이터로서 tiered merge authority와 싸움",
+      "Done 전이가 감사 로그를 채워 90일 보존 한도를 앞당기기 때문",
+      "merged 이벤트가 웹훅 재시도 3회를 소진해 동기화를 끊기 때문",
+      "자동화가 OAuth actor 예산을 소모해 미러 쓰기와 충돌하기 때문"
+    ],
+    answer: 0,
+    expl: "Linear의 PR 자동화는 조율되지 않은 제2의 티켓 상태 라이터다. 우리 의미층은 in-review → landed를 리뷰 워커의 tiered merge authority로만 넘기는데, 'merged → Done'이 그 권한과 정면으로 싸운다(게다가 여러 PR이면 마지막 PR에서만 발화 — 분해 흐름에 틀림). 그래서 팀별로 끈다 (스펙 §1, r2 §1.5)."
+  }
+]);
+</script>
+</body>
+</html>

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 4 — Compute plane</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs"><a href="../index.html">Cloud-Scale Architecture</a> · Lesson 4 / ~8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 4 · warm state는 디스크 문제다</p>
+  <h1>Compute plane — gVisor per-run pods</h1>
+  <p class="lede">밀리초 스냅샷 경주는 우리 문제가 아니다. run 길이가 그렇게 만든다 —
+  그리고 격리를 사는 것은 hypervisor가 아니라 blast-radius 통제다.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: Firecracker 메모리 스냅샷이 4–28ms
+restore에도 왜 기각됐는지 "run 길이 상대성" 한 문장으로 말하고, 프롬프트
+주입된 에이전트에 대한 <em>필수</em> 통제 셋이 왜 hypervisor가 아닌지 대고,
+warm state를 디스크 사다리로 그리고, 1,000 concurrent가 왜 봉투가 아니라
+곡선 위의 한 점인지 설명할 수 있다.</p>
+
+<h2>1. 출발점: run 길이가 스냅샷 경주를 무의미하게 만든다</h2>
+
+<p>샌드박스 업계의 군비 경쟁은 restore latency다: Firecracker는 메모리
+스냅샷 restore를 <strong>4ms</strong>(연구)~<strong>28ms</strong>(실측
+writeup)까지 낮췄고, Morph는 VM 통째로 &lt;250ms에 branch한다. 이 숫자에
+끌려가면 답은 "microVM 메모리 스냅샷"이 된다. 하지만 그 답은 <em>초 단위
+인터랙티브 REPL 샌드박스</em>(E2B의 사업 전체)를 위한 것이지, 우리처럼
+<strong>분–시간 단위로 도는 build/test run</strong>을 위한 것이 아니다.</p>
+
+<p>결정적 재구성: 5초짜리 fresh gVisor start는 30분 run에 대해
+<strong>0.3% 오버헤드</strong>다. 밀리초를 아끼려고 지불하는 대가가
+그 아낌보다 크다면, 경주에 참가할 이유가 없다. 그 대가는 가설이 아니라
+Firecracker 프로젝트 자신의 문서에 적혀 있다:</p>
+
+<table>
+<tr><th>resume 결함</th><th>무슨 일이 벌어지나</th></tr>
+<tr><td><strong>Entropy/identity</strong></td><td>한 스냅샷을 N개 클론으로 restore하면 guest 엔트로피 풀·캐시된 난수·토큰·UUID가 복제된다. Linux 5.18+ VMGenID reseed 후에도 "unique identifiers, cached random numbers, cryptographic tokens는 여전히 복제된다."</td></tr>
+<tr><td><strong>Clock</strong></td><td>guest wall-clock이 스냅샷 <em>생성 시각</em>에서 재개 — 수동으로 고쳐야 하고, 고치면 시계가 "갑자기 점프"한다.</td></tr>
+<tr><td><strong>Network/TCP</strong></td><td>"guest network connectivity is not guaranteed to be preserved after resume"; 열린 vsock 연결은 닫힌다.</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">The production breakage story</span>
+  Fly.io는 이 셋을 <strong>프로덕션에서 전부</strong> 맞았다: resume된
+  머신이 JWT 검증·cron·cache TTL·TLS 검증을 한동안 깨뜨렸고, 256MB 머신
+  resume이 인시던트 중 <strong>30초 이상</strong> 걸렸으며, 스냅샷은 배포·호스트
+  마이그레이션 때마다 폐기되고 cold start로 폴백했다. fresh-boot-per-run
+  설계는 이 세금을 <em>구조적으로</em> 내지 않는다 — 매번 새 커널, 새 시계,
+  새 엔트로피.
+  <span class="cite">— Firecracker <code>snapshot-support.md</code>; Fly.io suspend/resume 인시던트; 연구 문서 §7.3, R2 §Q1</span>
+</div>
+
+<p>같은 논리로 CRIU(컨테이너 checkpoint/restore)도 탈락한다: 시간이
+할당 가상 메모리에 비례해 멀티-GB에서 <strong>30–60초 급</strong>이고,
+연구 문헌이 "too expensive for speculative agent execution"이라 못 박았다.
+결론은 한 줄이다 — <strong>메모리 스냅샷은 건너뛴다.</strong></p>
+
+<h2>2. 위협 모델의 정직함: 격리를 사는 것은 hypervisor가 아니다</h2>
+
+<p>"per-run VM"을 정당화하려면 위협을 정직하게 적어야 한다. 우리 테넌트는
+<em>적대적이지 않다</em>(팀은 격리하되 서로를 공격하지 않는다). 실제 공격자는
+<strong>repo 콘텐츠·PR·의존성에 올라탄 indirect prompt injection</strong>이,
+완전한 권한을 가진 에이전트를 조종하는 것이다. NVIDIA 샌드박싱 가이드와
+Microsoft "prompts become shells" 연구가 지목하는 <em>필수</em> 통제는
+hypervisor가 아니라 blast-radius 통제다:</p>
+
+<table>
+<tr><th>필수 통제 (mandatory)</th><th>무엇을 막나</th></tr>
+<tr><td><strong>egress deny-by-default</strong> + 도메인 allowlist proxy</td><td>탈취된 에이전트가 데이터를 밖으로 빼내거나 C2에 연결하는 것</td></tr>
+<tr><td><strong>workspace-scoped writes</strong></td><td>워크스페이스 밖 파일시스템 오염</td></tr>
+<tr><td><strong>per-run scoped credentials</strong></td><td>토큰 남용 — 자격증명을 애초에 run 범위로 좁혀 발급</td></tr>
+</table>
+
+<p>NVIDIA의 표현 그대로: "egress를 기본 차단하는 network policy + scoped IAM
+binding과 결합된 샌드박스는 <em>제 일을 하도록 설득당하지 않는다</em>." 이
+셋이 있으면 hypervisor는 격리의 <strong>주 통제가 아니다</strong>. 그럼 gVisor는
+왜 쓰나? 잔여 리스크 하나 — 커널 0-day를 통한 컨테이너 탈출 — 때문이다.
+gVisor(runsc)는 syscall을 유저스페이스 커널로 가로채 <strong>커널 공격면을
+VM 비용 없이</strong> 줄인다.</p>
+
+<div class="callout">
+  <span class="label">The calibration point</span>
+  Anthropic이 Claude Code용으로 오픈소스화한 <code>sandbox-runtime</code>은
+  <strong>bubblewrap + 도메인-allowlist egress proxy — 컨테이너도 VM도 전혀
+  없다</strong>. 가장 많이 배포된 코딩 에이전트의 벤더가, 정확히 우리 워크로드
+  클래스에 대해 OS-레벨 namespace + egress 필터링을 충분하다고 판정한 것이다.
+  우리가 gVisor를 쓰는 건 그보다 <em>한 칸 위</em>이지, 두려움 때문에 두 칸 위인
+  Kata/microVM으로 가는 게 아니다.
+  <span class="cite">— Anthropic <code>sandbox-runtime</code>; NVIDIA sandboxing guidance; 연구 문서 §7.3</span>
+</div>
+
+<p>비용 감각을 숫자로: gVisor 오버헤드는 Google이 Ant에서 실측한 프로덕션
+수치로 <strong>앱의 70%가 &lt;1%, 추가 25%가 &lt;3%</strong>. 최악은
+syscall/파일시스템 무거운 build 워크로드로 <strong>10–30%</strong>. 반면 Kata는
+2026 벤치마크에서 syscall-heavy 작업에 <strong>~47% median 오버헤드</strong>
+(gVisor 18% 대비)이고 bare-metal/nested-virt 노드를 요구한다. Kata/separate-kernel은
+<em>하드 컴플라이언스 경계</em>가 있는 repo 클래스에만 쓴다.</p>
+
+<h2>3. GKE Agent Sandbox shape: Template → WarmPool → Claim</h2>
+
+<p>격리 런타임을 정했으면 오케스트레이션 모양이 필요하다. GKE Agent Sandbox가
+정확히 우리 설계의 first-party 관리형 버전이고(GCP에 안착하면 제품 자체를
+채택), 우리는 그 <em>모양</em>을 self-host한다:</p>
+
+<figure>
+<pre class="diagram">
+  SandboxTemplate  ──▶  SandboxWarmPool  ──▶  SandboxClaim
+  (blueprint:            (미리 초기화된          (per-run 체크아웃,
+   gVisor mandatory)      idle pods)             warm claim <1s)
+                              │
+        readyReplicas = idle 수를 센다 ─── claim되면 컨트롤러가 backfill
+        /readyz 503-while-busy ─────────── busy 워커는 절대 종료 안 함
+        exit-0-and-replace ─────────────── 완료 워커는 죽고 fresh로 교체
+</pre>
+<figcaption>readiness가 곧 claim 신호. 격리는 정리(cleanup) 규율이 아니라
+구조로 보장된다.</figcaption>
+</figure>
+
+<p>핵심 semantics 세 가지, 전부 §2.2에서 settled된 축이다:</p>
+
+<ul>
+  <li><strong>readyz-as-claim.</strong> 원하는 상태(desired state)는 <em>idle</em>
+  워커 수(<code>readyReplicas</code>)를 센다. claim이 워커를 ready 집합에서
+  빼면 컨트롤러가 backfill. readiness가 claim 신호를 겸하므로(<code>/readyz</code>가
+  busy 동안 503), 아무 generic orchestrator나 scale-down·rolling update를 하면서도
+  <strong>busy 워커를 절대 죽이지 않는다</strong>.</li>
+  <li><strong>exit-0-and-replace.</strong> 끝난 워커는 종료하고 fresh로 교체 —
+  cross-ticket 오염이 정리 규율이 아니라 구조적으로 방지된다. review-bounce
+  창을 위한 짧은 idle-grace만 둔다(같은 워커에 fix-up이 돌아올 경우 대비).</li>
+  <li><strong>outbound-only.</strong> 워커는 dispatch plane으로 장수명 HTTPS를
+  <em>바깥으로만</em> 건다. 워커 호스트에 inbound 포트 없음. 호스트 추가 =
+  <strong>커맨드 하나 + pool 토큰 하나</strong>. 호스트가 클라우드·온프렘 간
+  fungible해진다.</li>
+</ul>
+
+<p>그리고 우리 고유의 twist — <strong>species-split pools</strong>. reserved
+non-spoofable 라벨(<code>repo=</code> 자동 파생, <code>pool=</code> 명명)로
+implementer와 reviewer 풀을 <em>분리</em>한다. 리뷰어 샌드박스는 implementer에서
+상속하지 않고 fresh하며, <strong>read-only repo mount + 전체 build/test 실행,
+push 자격증명 없음</strong>. read-only 워커 클래스는 돈을 아끼는 동시에 적대적
+독립성을 <em>강화</em>한다.</p>
+
+<h2>4. Warm state는 디스크 문제다 — 메모리가 아니라</h2>
+
+<p>메모리 스냅샷을 버렸으니 warm state(repo + deps + build cache, 멀티-GB)를
+호스트에 어떻게 빨리 올리나? 답은 <strong>디스크 사다리</strong>다:</p>
+
+<table>
+<tr><th>단</th><th>무엇</th><th>왜</th></tr>
+<tr><td>1</td><td>pinned <strong>toolchain image</strong> (크면 SOCI-indexed)</td><td>SOCI는 pull 시간이 이미지 크기에 <em>거의 무관</em> — 2.5GB를 ~2.8초에. startup이 이미지 크기가 아니라 working set에 비례.</td></tr>
+<tr><td>2</td><td>post-install <strong>workspace snapshot</strong> = content-addressed 디스크 artifact, node-local NVMe cache에 (Blacksmith 패턴), object storage에서 backfill</td><td>Firecracker의 clock/RNG/TCP 세금 없이 Cursor의 "70% faster" 경제성을 얻음.</td></tr>
+<tr><td>3</td><td>run마다 <strong>overlayfs clone</strong></td><td>cache hit이면 sub-second, backfill이어도 초 단위.</td></tr>
+</table>
+
+<p>왜 network storage가 아니라 node-local NVMe인가? 이것이 substrate 전체를
+가르는 결정적 숫자다:</p>
+
+<div class="callout">
+  <span class="label">The decisive number</span>
+  2TB io2 EBS를 64k IOPS로 프로비저닝 ≈ <strong>$3,850/월</strong>.
+  &gt;1M IOPS를 내는 2TB 소비자용 NVMe ≈ <strong>&lt;$200 한 번</strong>.
+  CI-급 워크로드는 IOPS-bound이고 network volume은 진다 —
+  RunsOn/Blacksmith/Depot 벤치마크가 전부 수렴한다. 이것이 Cursor의 "단일 호스트
+  천장은 CPU/RAM이 아니라 disk I/O"라는 발견을 독립적으로 뒷받침한다.
+  <span class="cite">— 연구 문서 §7.3, R2 §Q3</span>
+</div>
+
+<p>드리프트는 이 사다리 위에서 <em>탐지</em>가 아니라 <em>구성</em>으로
+불가능해진다: snapshot key = hash(env-spec) ⊕ hash(lockfiles) ⊕ toolchain-image
+digest. 정확 일치만 restore하고, hit이면 certification 커맨드를 smoke probe로
+돌린다(인증 게이트가 공짜 드리프트 탐지기를 겸함). 이 환경 계층은 Lesson 5의
+주제다 — 여기서는 warm state가 <em>디스크</em> artifact라는 것만 붙든다.</p>
+
+<h2>5. 용량 산수, 그리고 SaaS 기각</h2>
+
+<p>중간값 2 vCPU / 8GB / ~30GB NVMe scratch per run. 코딩 에이전트는 wall-clock
+대부분을 LLM 토큰 대기로 놀기 때문에 <strong>CPU를 2–4× oversubscribe</strong>해도
+안전하다(Cursor: CPU/RAM은 천장이 된 적 없다). 그래서:</p>
+
+<ul>
+  <li><strong>RAM이 packing 제약, disk I/O가 performance 제약.</strong>
+  8GB/run + 여유 → <strong>~80–110 runs/host RAM-packed</strong>.</li>
+  <li>I/O 검산: ~⅓의 run이 active build burst(300–500MB/s each)면 host당
+  <strong>~10–17GB/s</strong> — 딱 호스트 천장이고 Cursor의 "many GB/s"와 일치.
+  즉 ~100/host는 <em>NVMe scratch가 있어야만</em> 현실이고, network volume이면
+  ~10–20/host로 붕괴한다(약 20× 차이).</li>
+</ul>
+
+<p>여기서 가장 흔한 오독을 못 박아야 한다. <strong>1,000 concurrent는 봉투가
+아니라 곡선 위의 한 점(anchor)</strong>이다. 관계식은:</p>
+
+<pre>concurrency = start rate × mean run duration</pre>
+
+<table>
+<tr><th>anchor</th><th>start rate</th><th>mean run</th><th>concurrency</th><th>fleet</th></tr>
+<tr><td>A2 (mid)</td><td>1.4/sec (~5k/hr)</td><td>~20 min</td><td>~1,000–1,700</td><td><strong>~12–16 hosts</strong> (1,000점); band 상단 1,700이면 ~28</td></tr>
+<tr><td>A3 (top)</td><td>6/sec (≈21.6k/hr)</td><td>60 min</td><td><strong>~20,000</strong></td><td>선형 확장 (spec: ~230–330 hosts)</td></tr>
+</table>
+
+<p>같은 5k runs/hr도 run이 12분이면 동시 1,000, 1시간이면 동시 5,000이다 —
+<strong>per-hour throughput를 concurrency와 절대 혼용하지 않는다</strong>.
+A2의 1,000-concurrent 점은 <em>작고 지루한 fleet</em>(12–16 호스트)이지만,
+6 starts/sec에 hour-long run이면 같은 dispatch 봉투가 concurrency ~20,000에
+닿고 fleet은 선형으로 커진다. 그래서 per-host density는 fleet 구매 전에
+<strong>spike S1(1-host load test)</strong>로 먼저 검증한다 — 공개된 primary-source
+per-host 밀도 숫자가 어디에도 없기 때문이다.</p>
+
+<div class="callout">
+  <span class="label">Build vs buy, 숫자로</span>
+  1,000 sustained concurrent runs에서 usage-priced SaaS 샌드박스는
+  <strong>~$73k/월</strong>(E2B/Daytona rates)에서 <strong>~$104k/월</strong>
+  (Modal — physical core당 과금 ≈ 2 vCPU라 ~1.4×)다. self-hosted bare metal은
+  <strong>~$5–15k/월</strong>. 게다가 SaaS는 <em>다른 문제</em>(초 단위 인터랙티브
+  REPL)에 최적화돼 있지, 멀티-GB repo 상태로 시간 도는 build/test run이 아니다.
+  E2B만이 오픈 self-host 스택을 갖지만 그마저 Nomad/Consul/KVM estate를 요구한다 —
+  그 지점이면 k8s+gVisor가 덜 exotic하다. <strong>SaaS는 substrate로 기각.</strong>
+  <span class="cite">— 연구 문서 §7.3, R2 §Q2</span>
+</div>
+
+<h2>6. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>7. 다음 단계</h2>
+<ul>
+  <li><strong>Primary source</strong>: Firecracker <a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md"><code>snapshot-support.md</code></a> — clock/RNG/TCP resume 결함을 프로젝트 자신이 적은 원문. 그리고 <a href="https://github.com/anthropic-experimental/sandbox-runtime">Anthropic <code>sandbox-runtime</code></a> — VM 없는 캘리브레이션 점.</li>
+  <li>스펙 원문 대조: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code>의 <strong>§3 Compute plane</strong> + <strong>Scale anchors</strong> 표. 전체 증거는 <code>research/2026-07-23-cloud-scale/r2-sandbox-substrate.md</code>.</li>
+  <li>다음 레슨(예정): <strong>Environment layer</strong> — certification gate(autoinstall 패턴), environment registry, 드리프트를 탐지가 아니라 구성으로 불가능하게 만드는 content-hash key.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 "왜 이 대안은 안 됐나"류의
+  질문은 Decision Log 근거까지 파서 답할 수 있다.</p>
+  <p><a href="../reference/glossary.html">용어집</a> · 워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "Firecracker 메모리 스냅샷을 4–28ms restore에도 기각한 핵심 논거는?",
+    options: [
+      "run 길이 상대성 — 5초 fresh start가 30분 run의 0.3%라 밀리초를 아낄 이유가 없다",
+      "gVisor보다 restore가 느려서 — warm pool claim이 언제나 더 빠르다",
+      "k8s에서 아예 실행이 안 돼서 — RuntimeClass로 등록할 수 없다",
+      "라이선스가 상용이라 — 내부 대규모 배포에 비용이 맞지 않는다"
+    ],
+    answer: 0,
+    expl: "restore 속도 자체는 진짜다. 문제는 clock/RNG/TCP resume 결함(프로젝트 자신의 문서, Fly.io 프로덕션 breakage)이라는 correctness 세금을 지불하고 아끼는 것이 분–시간 run에 대해 0.3%뿐이라는 것 — 아낌보다 대가가 크다 (연구 문서 §7.3)."
+  },
+  {
+    stem: "프롬프트 주입된 내부 에이전트에 대한 '필수' 통제로 위협 모델이 지목하는 것은?",
+    options: [
+      "egress deny-by-default + workspace-scoped writes + per-run scoped credentials",
+      "per-team separate-kernel hypervisor + nested virtualization 노드",
+      "메모리 스냅샷 격리 + VMGenID reseed + clock 재동기화",
+      "read-only mount + push 자격증명 회수 + 90일 스냅샷 GC"
+    ],
+    answer: 0,
+    expl: "NVIDIA·Microsoft 연구가 지목하는 필수 통제는 blast-radius 통제(egress 기본 차단, 워크스페이스 범위 쓰기, run 범위 자격증명)이지 hypervisor가 아니다. Anthropic의 sandbox-runtime이 컨테이너·VM 없이 bubblewrap+egress proxy만으로 같은 워크로드를 다루는 것이 캘리브레이션 점이다 (연구 문서 §7.3)."
+  },
+  {
+    stem: "warm pool에서 busy 워커가 scale-down·rolling update에도 종료되지 않게 하는 메커니즘은?",
+    options: [
+      "readiness가 claim 신호를 겸함 — busy 동안 /readyz가 503을 반환해 idle 집합에서 빠진다",
+      "dispatch plane이 각 워커에 inbound로 접속해 상태를 직접 조회한다",
+      "lease를 run 길이에 맞춰 발급해 만료 전에는 회수를 막는다",
+      "fencing token이 증가해 오래된 lease의 좀비 프로세스를 차단한다"
+    ],
+    answer: 0,
+    expl: "readyReplicas는 idle 워커 수를 센다. claim되면 /readyz가 503(busy)을 반환해 ready 집합에서 빠지므로, generic orchestrator가 scale-down을 하면서도 busy 워커를 절대 죽이지 않는다. 끝난 워커는 exit-0-and-replace로 fresh 교체된다 (연구 문서 §2.2)."
+  },
+  {
+    stem: "warm state를 node-local NVMe에 두고 network storage를 피하는 결정적 숫자는?",
+    options: [
+      "2TB io2 EBS 64k IOPS ≈ $3,850/월 vs 2TB NVMe >1M IOPS <$200 한 번",
+      "SOCI가 2.5GB 이미지를 ~2.8초에 pull vs 일반 pull은 ~25초",
+      "gVisor 오버헤드가 typical <3% vs syscall-heavy 최악 10–30%",
+      "SaaS 샌드박스 ~$73k/월 vs self-hosted bare metal ~$5–15k/월"
+    ],
+    answer: 0,
+    expl: "CI-급 워크로드는 IOPS-bound다. 64k IOPS network volume(월 $3,850)은 >1M IOPS의 일회성 <$200 NVMe에 IOPS·비용 모두 진다. 이것이 disk I/O가 단일 호스트의 성능 천장이라는 Cursor의 발견을 뒷받침한다. 나머지 보기는 모두 이 레슨의 다른 진짜 숫자지만, NVMe vs network 결정의 근거는 아니다 (연구 문서 §7.3)."
+  },
+  {
+    stem: "'1,000 concurrent는 봉투가 아니라 곡선 위의 한 점'이라는 말의 근거 관계식은?",
+    options: [
+      "concurrency = start rate × mean run duration — A3(6/sec × 60분)면 ~20,000, fleet은 선형 확장",
+      "concurrency = runs/hour ÷ host 수 — 호스트를 늘리면 concurrency가 준다",
+      "concurrency = RAM 총량 ÷ run당 8GB — 8TB면 정확히 1,000이 상한",
+      "concurrency = start rate ÷ mean run duration — run이 길수록 동시성이 준다"
+    ],
+    answer: 0,
+    expl: "concurrency는 start rate와 평균 run 길이의 곱이다. 같은 5k runs/hr도 run이 20분이면 A2(~1,000–1,700, 12–16 호스트), 6 starts/sec에 hour-long이면 A3(~20,000)로 fleet이 선형으로 커진다. per-hour throughput를 concurrency와 혼용하지 않는 것이 핵심 — density는 spike S1로 먼저 검증한다 (연구 문서 §7.3, 스펙 Scale anchors)."
+  }
+]);
+</script>
+</body>
+</html>

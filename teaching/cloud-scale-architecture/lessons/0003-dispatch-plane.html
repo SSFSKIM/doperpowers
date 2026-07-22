@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 3 — Dispatch Plane</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs"><a href="../index.html">Cloud-Scale Architecture</a> · Lesson 3 / ~8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 3 · 상주 컨트롤러의 귀환</p>
+  <h1>Dispatch Plane — lease, fencing, 그리고 상주 컨트롤러의 귀환</h1>
+  <p class="lede">"누가 이 run을 소유하는가"를 파일이 아니라 한 트랜잭션이
+  답하게 만드는 프리미티브들 — 그리고 "no resident orchestrator"라는 옛
+  규칙이 왜 명예롭게 은퇴했는지.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: claim이 왜 <code>FOR UPDATE SKIP
+LOCKED</code> 한 줄이면 충분한지, lease를 run 길이에 맞추면 안 되는 이유,
+좀비 프로세스를 fencing token이 어떻게 막는지, 그리고 "상주
+오케스트레이터 금지" 규칙이 은퇴하면서도 level-triggered reconcile
+독트린은 왜 살아남았는지를 남에게 설명할 수 있다.</p>
+
+<h2>1. Claim: 경쟁을 한 줄로 이기기</h2>
+
+<p>수천 개의 run이 초당 최대 6개씩 시작되는데, 두 워커가 같은 작업을
+동시에 집으면 안 된다. Postgres의 관용구 하나가 이 경쟁을 원자적으로
+해결한다:</p>
+
+<pre>-- run-queue 테이블에서 잠기지 않은 다음 작업을 원자적으로 집는다
+SELECT * FROM run_queue
+  WHERE state='pending'
+  ORDER BY ...
+  FOR UPDATE SKIP LOCKED
+  LIMIT 1;</pre>
+
+<p><code>FOR UPDATE</code>는 집은 행을 트랜잭션 락으로 잠그고,
+<code>SKIP LOCKED</code>는 <em>다른 워커가 이미 잠근 행은 건너뛰고</em>
+다음 가용 작업으로 넘어간다. 두 워커가 동시에 폴링해도 서로 다른 행을
+집는다 — 락 경합으로 줄 서지 않고, 스핀도 없다. 이것이 Board 레슨에서
+본 same-transaction property의 디스패치 쪽 짝이다: 보드 미러 행과 claim
+행이 같은 트랜잭션에 커밋되므로 엔진은 제2의 티켓 권위가 구조적으로 될
+수 없다.</p>
+
+<div class="callout">
+  <span class="label">Fencing token — 좀비를 막는 단조 카운터</span>
+  claim이 성공할 때마다 그 run의 <strong>fence 값이 1 증가</strong>한다.
+  옛 lease를 들고 있던 좀비 프로세스(네트워크가 끊겼다 살아난 워커 등)가
+  뒤늦게 "작업 완료"를 커밋하려 해도, 이미 fence가 올라간 <em>새
+  attempt</em>를 그 좀비는 완료할 수 없다 — 오래된 fence는 거부된다.
+  락은 "지금 누가 집는가"를, fence는 "이 완료가 유효한 세대의 것인가"를
+  판정한다. 둘은 서로 다른 문제다.
+  <span class="cite">— hardbyte PG-queue 벤치마킹의 <code>run_lease</code> 패턴; 연구 문서 §7.2, r2-dispatch-engine.md §Q2·Q5</span>
+</div>
+
+<h2>2. Lease 독트린: run에 맞추지 말 것</h2>
+
+<p>가장 자주 저지르는 실수: "run이 2시간 걸리니 lease도 2시간"으로
+잡는 것. 이러면 워커가 5분 만에 죽어도 회수까지 <strong>두 시간</strong>을
+기다린다. 올바른 독트린은 정반대다.</p>
+
+<table>
+<tr><th>규칙</th><th>이유</th></tr>
+<tr><td>lease는 <strong>분 단위</strong>, run 길이에 절대 맞추지 않음</td><td>죽은 워커를 초–분 단위로 회수하려면 짧아야 한다</td></tr>
+<tr><td><strong>progress-as-heartbeat</strong>: 세션 스토어 append가 곧 lease 갱신</td><td>워커는 매 스텝마다 세션 로그에 append한다 — 그게 자연스러운 살아있음 신호. 별도 하트비트 채널이 필요 없다</td></tr>
+<tr><td>만료 = 회수 가능, 작업 손실 <strong>아님</strong></td><td>run은 큐로 돌아가고, 다른 프로세스가 <strong>내구 세션 로그에서 resume</strong>한다 — 절대 restart가 아니다</td></tr>
+</table>
+
+<p>이 패턴의 출처는 Anthropic의 self-hosted sandbox 워크큐다. 워커는
+<code>reclaim_older_than_ms</code>로 죽은 워커의 작업을 회수하는데, 예제는
+<strong><code>reclaim_older_than_ms=2000</code></strong> — 마지막 활동 후
+2초면 lease가 만료된다. 왜 그렇게 짧아도 안전한가? tool 결과를 계속
+post하는 것 자체가 liveness를 끊임없이 갱신하기 때문이다. 우리도 JSONL
+세션 로그가 매 스텝 progress를 emit하므로 같은 구조가 그대로 성립한다.</p>
+
+<div class="callout">
+  <span class="label">reclaim은 resume, restart가 아니다</span>
+  이 구별이 lease 독트린의 심장이다. run의 정체성은 컴퓨트가 아니라
+  <em>내구 세션 로그</em>다(Lesson 1). 그러므로 lease가 만료돼 다른
+  호스트가 run을 회수하면, 그 호스트는 세션 로그를 읽어 중단 지점부터
+  이어간다 — 처음부터 다시 하지 않는다. 짧은 lease가 "작업을 잃는" 것이
+  아니라 "컴퓨트만 갈아 끼우는" 이유가 여기 있다.
+</div>
+
+<h2>3. "No resident orchestrator"의 명예로운 은퇴</h2>
+
+<p>단일 호스트 시절의 강한 규칙 하나가 있었다: <em>"함수는 수입하되
+형태는 거부한다"</em> — cron × 멱등 one-shot 패스로 돌리고, <strong>상주
+오케스트레이터는 두지 않는다</strong>. 이 규칙은 symphony 비교 §9에서
+원칙으로 논증됐고, 반대 이유는 셋이었다:</p>
+
+<table>
+<tr><th>§9의 상주 서비스 반대 논거</th><th>내구 상태 + 스테이트리스 HA 컨트롤러가 답하는 방식</th></tr>
+<tr><td>in-RAM claim → 단일 인스턴스 강제</td><td>claim이 Postgres에 산다 → 워커를 수평 확장해도 진실은 하나</td></tr>
+<tr><td>재시작하면 재시도 큐가 증발</td><td>재시도·타임아웃도 내구 저장소에 → 재시작 비용이 0</td></tr>
+<tr><td>상주 서비스는 자기 워치독이 필요한 새 실패 도메인</td><td>스테이트리스 컨트롤러를 HA 쌍 + 리더 선출로 → 죽어도 짝이 이어받음</td></tr>
+</table>
+
+<p>즉 §9의 반대는 <em>손으로 짠 상주 오케스트레이터</em>에 대한
+반대였지, 상주성 자체에 대한 반대가 아니었다. 내구 상태를 깔면 세 반대는
+모두 직접 해소된다. 그렇다면 왜 batch cron으로는 부족한가? cron이
+<strong>정직하게 서빙할 수 없는</strong> 것이 딱 두 가지 있다:</p>
+
+<ul>
+  <li><strong>초–분 단위 lease reclaim</strong>: 죽은 워커를 몇 초 안에
+  회수하려면 batch 주기로는 늦다.</li>
+  <li><strong>연속적 admission ordering</strong>: 승인 순서 계산 자체는
+  batch 패스로도 된다(SQL <code>ORDER BY</code>일 뿐). 하지만 그걸
+  <em>연속적으로</em> 돌리면 그 패스는 이름만 다를 뿐 고빈도 상주
+  루프다.</li>
+</ul>
+
+<p>그래서 규칙은 이렇게 정정된다: <strong>"상주 오케스트레이터 금지"는
+공식 은퇴, 그러나 level-triggered reconcile 독트린은 살아남는다 — 죽는
+것은 batch 주기뿐.</strong> 컨트롤러는 상주하되 스테이트리스이고, 원하는
+상태(desired state)는 <em>보드</em>다: "run을 가져야 하는데 없는
+티켓들"을 매 패스 계산해 수렴시킨다. symphony §9의 sweep-tick 함수들
+(지수 백오프 자동 재개, stall 감지 → kill+park, 보드 기반 취소,
+dispatch-until-cap, 시작 시 복구)은 <em>같은 함수, 산업용 캐리어</em>로
+컨트롤러 로직이 된다.</p>
+
+<p class="cite">근거: 상주성 재심의 세 축(내구 저장소가 세 반대를 해소,
+batch가 못 하는 것은 reclaim + 연속 admission, level-triggered는 생존).
+연구 문서 §2.1, §7.2; r2-dispatch-engine.md §Q2·§3.</p>
+
+<h2>4. Admission fairness: 작은 테넌트를 굶기지 않기</h2>
+
+<p>한 팀이 5천 개 run을 쏟아부으면 다른 팀 티켓이 영영 시작 못 하는가?
+막는 장치가 admission fairness다. 두 개의 knob이면 충분하다:</p>
+
+<ul>
+  <li><strong>per-tenant concurrency cap</strong>: 팀/프로젝트당 동시
+  실행 수 상한 (quota는 동시성에서 건다).</li>
+  <li><strong>lowest-recent-usage-first</strong>: 다음에 시작할 run을
+  고를 때 <em>최근 사용량이 가장 적은 테넌트</em>를 먼저 집는다
+  (fairness는 admission에서 건다 — 어느 run이 다음에 시작하는가).</li>
+</ul>
+
+<p>이건 Kueue의 Admission Fair Sharing 의미론을 그대로 SQL로 옮긴
+것이다. Kueue는 "이미 소비한 리소스를 기준으로 대기 작업을 정렬해,
+역사적 사용량이 가장 낮은 큐를 항상 우대"한다 — 시간 기반·물량 기반
+starvation을 명시적으로 막도록 설계됐다. 우리에게 이건 어렵지 않다:
+부하가 <strong>≤6 starts/sec</strong>라, Kueue가 대규모 클러스터에서
+푸는 문제를 우리는 수백 줄 SQL로 사소하게 푼다.</p>
+
+<h2>5. Worker idempotency protocol: 중복 push를 막는 건 엔진이 아니다</h2>
+
+<p>냉정한 사실 하나: <strong>모든 durable-execution 엔진은 side effect에
+대해 at-least-once다.</strong> Temporal도 예외가 아니다. 정경적 실패는
+이렇다 — 워커가 <code>git push</code>를 성공시켰는데 "완료" 이벤트를
+기록하기 전에 죽는다. 그러면 엔진은 그 activity를 재시도하고, push가 두
+번 일어날 위험이 생긴다. 이 문제는 <em>엔진 선택으로 풀리지 않는다</em>.
+worker protocol이 푼다:</p>
+
+<table>
+<tr><th>단계</th><th>기법</th></tr>
+<tr><td>모든 attempt가 <strong>안정 run-attempt key</strong> 파생</td><td><code>ticket-run-fence</code> (Temporal의 <code>workflowRunId+activityId</code> 패턴과 동형)</td></tr>
+<tr><td>그 key를 <strong>스탬프</strong></td><td>브랜치명 · PR 본문 · 보드 코멘트에 찍는다</td></tr>
+<tr><td>모든 비멱등 side effect를 <strong>check-then-act</strong>로 감싼다</td><td>push 전: remote ref가 이미 이 SHA를 담고 있나? / PR 생성 전: 이 attempt key의 PR이 이미 있나?</td></tr>
+</table>
+
+<p>git이 다행히 친절한 side-effect 표면이라 이게 값싸게 된다:
+<strong>push는 SHA로 멱등</strong>이고, <strong>PR 생성은 브랜치명으로
+dedupe</strong>된다. 그러니 크래시 후 재시도가 중복 push를 만드는 것을
+막는 것은 엔진이 아니라 이 프로토콜이다 — 어떤 엔진을 골라도 똑같이 우리
+몫으로 남는다.</p>
+
+<h2>6. 두 개의 미묘한 진실</h2>
+
+<h3>6a. Cursor의 OCC 위험회피: lease를 에이전트에게 보이지 마라</h3>
+
+<p>Cursor는 100개 이상 동시 에이전트 실험에서 두 번 데였다. 먼저 락:
+"에이전트들이 락을 너무 오래 쥐거나 아예 놓는 걸 잊었다… 스무 에이전트가
+두셋의 실효 처리량으로 느려졌다." 그래서 optimistic concurrency(읽기는
+공짜, 쓰기는 상태가 바뀌었으면 실패)로 바꿨더니 이번엔 다른 병:
+"위계가 없어지자 에이전트가 <strong>위험회피적</strong>이 됐다. 어려운
+작업을 피하고 작고 안전한 변경만 했다." 교훈은 명확하다 —
+<strong>에이전트는 무조건적 배타적 티켓 소유를 경험해야 한다</strong>. 이
+발견은 <em>agent-vs-agent 공유 상태</em>에 관한 것이지 engine 리스에 관한
+것이 아니다. 그러니 우리 제약은: lease는 인프라의 관심사로 남기고,
+optimistic한 공유 상태 쓰기로 <strong>에이전트에게 절대 노출하지
+말라</strong>. 배타 소유는 이미 semantic layer가 보장한다.</p>
+
+<h3>6b. Temporal은 왜 차점자이고, self-hosted는 왜 탈락인가</h3>
+
+<p>Cursor·OpenAI Codex·Replit Agent 3가 모두 Temporal로 수렴했는데도
+우리는 Postgres-owned dispatch plane을 골랐다. <strong>Temporal
+Cloud</strong>는 정직한 차점자로 남는다 — scale이 10×+ 자라거나
+lease/fairness 코드 1–3k 줄을 소유하기 싫으면 그때 재심. 오늘 지는
+이유는 두 가지: 영구적인 determinism/versioning 세금(빠르게 진화하는
+에이전트 루프 코드에 새로 붙는 비용), 그리고 doctrine 리스크(workflow
+상태가 ticket 상태를 중력처럼 끌어당김).</p>
+
+<p><strong>Self-hosted Temporal은 달러가 아니라 ops로 탈락</strong>했다:
+4개 서비스 + Cassandra/ES, 그리고 클러스터 생성 시 고정되어 바꾸려면
+<em>전체 클러스터 마이그레이션</em>이 필요한 shard-count 함정(한
+엔터프라이즈 증언: 6개월 + 전체 클러스터 이관), 노동 전
+<strong>월 $2.5–4.5k</strong> 인프라. 돈만 봐도 우리 envelope에서 비교가
+뒤집힌다 — Temporal Cloud는 ~$50/M actions 기준
+<strong>mid-band 월 ~$9k, 최상단 discount 전 월 ~$39k</strong>이고, 그
+지점에선 self-host 인프라-only가 오히려 더 싸다. 그럼에도 탈락 근거는
+가격이 아니라 shard 함정 + determinism 세금 + 헤드카운트다.</p>
+
+<div class="callout">
+  <span class="label">한 문장으로</span>
+  claim은 <code>SKIP LOCKED</code> 한 줄로 경쟁을 이기고, fence는 좀비의
+  뒤늦은 완료를 거부하며, 짧은 lease는 progress로 갱신되어 만료 시
+  <em>세션 로그에서 resume</em>한다 — 그리고 "상주 금지"는 은퇴하되
+  level-triggered reconcile은 보드를 desired state로 삼아 살아남는다.
+</div>
+
+<h2>7. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>8. 다음 단계</h2>
+<ul>
+  <li><strong>Primary source</strong>: Anthropic, <a href="https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes">"Self-hosted sandboxes"</a> — <code>reclaim_older_than_ms=2000</code> 워크큐 패턴의 원문. progress-as-heartbeat가 왜 안전한지 여기서 확인.</li>
+  <li>보조: <a href="https://cursor.com/blog/scaling-agents">Cursor, "Scaling long-running autonomous coding"</a> — OCC 위험회피 이야기의 원문(락 → optimistic → planner/worker 배타 소유).</li>
+  <li>스펙 원문 대조: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code>의 §2 Dispatch plane, 그리고 근거 전문은 <code>docs/doperpowers/research/2026-07-23-cloud-scale/r2-dispatch-engine.md</code>.</li>
+  <li>다음 레슨(예정): <strong>Compute plane 해부</strong> — per-run gVisor pod, warm pool, 그리고 "warm state는 메모리 스냅샷이 아니라 디스크 문제"인 이유.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 "왜 이 대안은 안 됐나"류의
+  질문은 Decision Log 근거까지 파서 답할 수 있다.</p>
+  <p><a href="../reference/glossary.html">용어집</a> · 워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "두 워커가 같은 run-queue를 동시에 폴링한다. FOR UPDATE SKIP LOCKED가 하는 일은?",
+    options: [
+      "잠긴 행은 건너뛰고 각자 다음 가용 작업을 원자적으로 집는다",
+      "먼저 온 워커가 큐 전체를 잠그고 뒤 워커는 대기한다",
+      "두 워커가 같은 행을 집되 fence 값으로 나중에 중재한다",
+      "행을 복제해 두 워커에게 각각 사본을 넘긴다"
+    ],
+    answer: 0,
+    expl: "SKIP LOCKED는 다른 워커가 이미 잠근 행을 건너뛰고 다음 가용 작업으로 넘어간다. 락 경합으로 줄 서지 않고 스핀도 없이 두 워커가 서로 다른 행을 집는다 (스펙 §2 Claims; 연구 문서 §7.2)."
+  },
+  {
+    stem: "fencing token이 정확히 막는 것은?",
+    options: [
+      "옛 lease의 좀비 프로세스가 새 attempt를 완료하는 것",
+      "두 워커가 같은 행을 동시에 claim하는 것",
+      "죽은 워커의 run이 큐로 돌아오지 못하는 것",
+      "한 테넌트가 동시성 상한을 초과하는 것"
+    ],
+    answer: 0,
+    expl: "락은 '지금 누가 집는가'를, fence는 '이 완료가 유효한 세대의 것인가'를 판정한다. claim마다 증가하는 fence 덕분에 옛 lease를 든 좀비가 뒤늦게 커밋하려 해도 이미 fence가 올라간 새 attempt를 완료할 수 없다 (용어집 fencing token; r2 §Q5)."
+  },
+  {
+    stem: "lease가 만료되어 다른 호스트가 run을 회수(reclaim)했다. 그 호스트는 무엇을 하는가?",
+    options: [
+      "내구 세션 로그에서 중단 지점부터 resume한다 — restart가 아니다",
+      "run을 처음부터 다시 실행한다 — 상태를 신뢰할 수 없어서",
+      "작업을 손실 처리하고 티켓을 needs-human으로 park한다",
+      "원래 워커가 살아나기를 lease 두 배 시간만큼 기다린다"
+    ],
+    answer: 0,
+    expl: "run의 정체성은 컴퓨트가 아니라 내구 세션 로그다. 만료는 작업 손실이 아니라 컴퓨트 교체이며, 회수한 호스트는 로그를 읽어 이어간다 — 절대 restart하지 않는다 (스펙 §2 Leases; 용어집 lease)."
+  },
+  {
+    stem: "'no resident orchestrator' 규칙은 은퇴했다. 함께 은퇴한 것과 살아남은 것은?",
+    options: [
+      "batch cron 주기는 죽고, level-triggered reconcile 독트린은 산다",
+      "level-triggered reconcile이 죽고, batch cron이 상주로 승격한다",
+      "둘 다 죽고 in-RAM claim 방식으로 대체된다",
+      "둘 다 살아남고 상주성만 형식적으로 폐기된다"
+    ],
+    answer: 0,
+    expl: "§9의 반대는 손으로 짠 상주 오케스트레이터에 대한 것이었고, 내구 상태가 세 반대를 모두 해소한다. batch가 정직하게 못 하는 것은 초–분 reclaim과 연속 admission뿐 — 그래서 batch 주기만 죽고 level-triggered reconcile은 컨트롤러 로직으로 살아남는다 (연구 문서 §2.1, §7.2)."
+  },
+  {
+    stem: "크래시 후 재시도로 인한 중복 git push를 실제로 막는 것은?",
+    options: [
+      "worker protocol의 안정 run-attempt key + check-then-act 가드",
+      "durable-execution 엔진의 exactly-once side-effect 보증",
+      "Postgres 트랜잭션이 push를 롤백하는 능력",
+      "fencing token이 두 번째 push를 거부하는 것"
+    ],
+    answer: 0,
+    expl: "모든 엔진은 side effect에 대해 at-least-once다 — 엔진 선택으로 풀리지 않는다. ticket-run-fence 키를 브랜치·PR·코멘트에 스탬프하고 push 전 SHA 존재 확인, PR 생성 전 attempt-key 존재 확인을 하는 worker protocol이 막는다 (스펙 §2 Worker idempotency; r2 §Q4)."
+  }
+]);
+</script>
+</body>
+</html>
