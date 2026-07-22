@@ -121,8 +121,11 @@ capacity, not dispatch latency, remains the system bottleneck at any scale,
 per §4.2.) The re-judgment stands on different ground: a durable-execution
 engine answers all three principled objections directly — claims, retries,
 and timeouts live in durable storage under horizontally scaled workers —
-while fleet scale adds two needs a batch cron cadence cannot serve:
-seconds-to-minutes lease reclaim and admission ordering across tenants:
+while fleet scale adds what a batch cron cadence cannot honestly serve:
+continuous sub-cadence admission and seconds-to-minutes lease reclaim
+(admission *ordering* itself is computable in a batch pass — SQL ORDER BY —
+but running it continuously makes the pass a high-frequency resident loop
+in all but name):
 
 - The principled objections to residency (in-RAM claims force
   single-instance; restart evaporates the retry queue; a resident service
@@ -531,7 +534,8 @@ board ops = 10,000 ops/hr, ~6,000 writes/hr, bursty.
 
 **Scale framing that decides everything**: our envelope is ~0.3–6 run
 *starts*/second — ~6M engine actions/day at the mid-band (5k runs/hr ×
-~50 actions) and ~26M/day at the top (20k runs/hr) — below Cursor's 50M
+~50 actions) and ~26M/day at the top (6 starts/sec ≈ 21.6k runs/hr) —
+below Cursor's 50M
 actions/day, and 2–3 orders below Postgres-queue ceilings (River-class
 ~10k jobs/sec, per its author). Both "one Postgres owns it" and "Temporal
 Cloud is affordable at mid-band" are true; the decision is discipline cost
@@ -563,10 +567,11 @@ and doctrine fit.
   attracts ticket state). **Self-hosted Temporal is eliminated on ops
   grounds, not dollars**: 4 services + Cassandra/ES, an irreversible
   day-one shard-count decision (one enterprise testimony: six months +
-  full cluster migration), $2.5–4.5k/mo infra before labor. On money alone
-  the comparison flips across the envelope: Temporal Cloud at ~$50/M
-  actions is ~$9k/mo at mid-band but ~$26–39k/mo at the top (before
-  volume discounts), where self-host infra-only is cheaper — the
+  full cluster migration), $2.5–4.5k/mo infra before labor (single 2026
+  cost guide; medium confidence). On money alone the comparison flips
+  across the envelope: Temporal Cloud at ~$50/M actions is ~$9k/mo at
+  mid-band and ~$39k/mo pre-discount at the top (less with volume
+  discounts), where self-host infra-only is cheaper — the
   elimination rests on the shard trap, the determinism tax, and the
   headcount. Decision 2's revisit trigger must be recalibrated against
   the top-of-envelope Cloud bill, not the old mid-band figure.
@@ -616,7 +621,7 @@ run lengths, and disk I/O density is the real constraint.**
   oversubscribes 2–4× since agents idle on tokens), density held real only
   by NVMe (build bursts ≈ 10–17 GB/s/host at ⅓ duty cycle — matches
   Cursor's "many GB/s" ceiling). **~80–110 runs/host RAM-packed; with
-  ~30% headroom, 1,000 concurrent runs ≈ 15–20 large NVMe hosts.** A
+  ~30% headroom, 1,000 concurrent runs ≈ 12–16 large NVMe hosts.** A
   small, boring fleet — but 1,000 concurrent is one named point on a
   curve: **concurrency = start rate × mean run duration**, and at the
   dispatch envelope's top (6 starts/sec) with hour-long runs concurrency
@@ -708,7 +713,8 @@ choices, most with a research-backed default):
    Hatchet's own schema, Temporal Cloud, and the Linear-as-SSOT fallback
    each break it. That coupling is the real tiebreaker between the
    options. Temporal Cloud revisit trigger: sustained growth toward the
-   envelope's top — where its bill also grows to ~$26–39k/mo (§7.2).
+   envelope's top — where its bill also grows to ~$39k/mo pre-discount
+   (§7.2).
 3. **Merge-queue mechanism per repo class** — batch+bisect (TAP) vs
    speculation+independence (SubmitQueue) vs hosted GitHub queue for
    low-rate repos; ties to semantic flag §4.8 (human decides the
