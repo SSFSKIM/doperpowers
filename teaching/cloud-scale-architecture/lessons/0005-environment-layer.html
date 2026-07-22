@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 5 — Environment Layer</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="page">
+<nav class="crumbs">Cloud-Scale Architecture · Lesson 5 / ~8 · <a href="../reference/glossary.html">용어집</a></nav>
+
+<header class="lesson-head">
+  <p class="kicker">Lesson 5 · 침묵하는 저하</p>
+  <h1>Environment Layer</h1>
+  <p class="lede">불완전한 환경은 에러를 내지 않는다 — 조용히 출력 품질을 떨어뜨리고, 그 죄를 모델이 뒤집어쓴다. 이 레이어의 모든 부품은 그 한 가지 실패를 죽이기 위해 존재한다.</p>
+</header>
+
+<p><strong>이 레슨이 끝나면</strong>: 인증 게이트가 왜 adversarial review와
+같은 모양인지 설명하고, environment key 세 입력을 말하고, "드리프트를
+탐지한다"와 "드리프트를 구성으로 불가능하게 한다"의 차이를, 그리고 mock
+fence가 없으면 왜 tiered merge authority가 무의미해지는지 남에게 설명할 수
+있다.</p>
+
+<h2>1. 출발점: 에러를 안 내는 실패</h2>
+
+<p>이 레이어 전체의 설립 근거는 Cursor의 플래그십 운영 교훈 한 문장이다:
+<em>"불완전한 환경은 에러를 내지 않는다 — 함대 전체에 걸쳐 출력 품질을
+조용히 떨어뜨리고, 그 원인이 모델로 오귀속된다."</em> 테스트를 못 돌리는
+환경에서 에이전트는 문제를 푸는 대신 셋업을 디버깅하며 토큰을 태우고,
+최악의 경우 <strong>환경이 문제 자체를 풀 수 없게</strong> 만든다.</p>
+
+<div class="callout">
+  <span class="label">The founding failure story</span>
+  Cursor가 명시적으로 말한다: <strong>"클라우드 에이전트 출력 품질의 가장 큰
+  단일 요인은 완전한 개발 환경을 갖추는 것"</strong>이다. 함대 스케일에서
+  이 저하는 수동 root-cause로 발견할 수 없다 — 수백 run/시간이 조용히
+  나빠지는데 대시보드는 초록색이다. 그래서 이 레이어는 "환경이 사용
+  가능한가?"를 <em>vibe에서 검증 가능한 아티팩트로</em> 바꾼다.
+  <span class="cite">— <a href="https://cursor.com/blog/development-environments-for-cloud-agents">Cursor, "Development environments for your cloud agents"</a>; 연구 문서 §2.3</span>
+</div>
+
+<p>단일 호스트 시절 우리 워커는 한 머신의 손으로 관리한 mutable 상태를
+상속받았다. 멀티 호스트로 가면 이게 죽는다 — 어느 호스트의 어느 상태를
+상속받았는지가 곧 per-worker snowflake이고, snowflake는 재현 불가능성을
+함대에 흘려보내는 누수다.</p>
+
+<h2>2. Environment-as-code: 리포가 자기 환경을 안다</h2>
+
+<p>환경 정의는 리포 안에 코드로 산다. 세 필드, 그게 전부다:</p>
+
+<table>
+<tr><th>필드</th><th>계약</th></tr>
+<tr><td><strong>build</strong></td><td>Dockerfile — <em>toolchain만</em>. 프로젝트를 절대 COPY하지 않는다. 소스 체크아웃은 플랫폼의 일이다(플랫폼이 올바른 커밋을 체크아웃).</td></tr>
+<tr><td><strong>install</strong></td><td>의존성 셋업. <strong>반드시 idempotent</strong>(예: <code>pnpm install</code>) — 이게 캐시 미스를 안전하게 만드는 불변식이다.</td></tr>
+<tr><td><strong>start</strong></td><td>post-install 부팅 훅. 장기 실행 서비스/데몬을 띄운다 → 신선한 소비자가 서비스 기동을 재유도하지 않는다.</td></tr>
+</table>
+
+<p><strong>해소 순서</strong>: 리포 스펙 → 팀 기본값. 여기서 우리는
+Cursor에서 의도적으로 한 항목을 뺀다 — 그들의 순서는 (리포 → 개인 저장
+환경 → 팀)이지만, <strong>개인 override는 인터랙티브 IDE 기능</strong>이다.
+자율 함대에서 개인 snowflake는 재현성 누수이므로, 우리는 리포 스펙 → 팀
+기본값만 남긴다. per-worker 눈송이는 없다.</p>
+
+<h2>3. 인증 게이트: adversarial review를 인프라에</h2>
+
+<p>Cursor의 <em>autoinstall</em> 패턴을 그대로 훔친다. 두 에이전트로 된
+계약이고, 핵심은 <strong>성공을 정의하는 자와 성공을 달성하는 자가
+분리</strong>되어 있고 성공 기준이 시도 <em>전에</em> 고정된다는 것이다:</p>
+
+<figure>
+<pre class="diagram">
+  ┌── specifier ─────────┐     ┌── executor ──────────┐
+  │ 고정 checkout를 탐색  │     │ 미설정 환경 + 10 중   │
+  │ (README·Makefile·웹  │────▶│ 샘플링된 3 커맨드만   │
+  │  검색) → 커맨드 10개  │     │ 받음. 될 때까지 tool  │
+  │  + 기대 출력 제안     │     │ call. 그다음 검증:    │
+  └──────────────────────┘     │  3개 실행? 출력 일치? │
+       기준을 먼저 못박음        └──────────┬───────────┘
+                                            │ pass
+                                            ▼
+                              certified snapshot + command contract
+                                            │ fail, 재시도 소진 시
+                                            ▼
+                              PARK  (needs-human 인프라 티켓)
+</pre>
+<figcaption>propose-then-verify. 기준을 세우는 자와 통과시키는 자가 다른 종(種)이라는 점이 우리 adversarial review와 똑같은 종-분리 논리다.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Specifier</strong>는 고정 checkout에서 <strong>10개 커맨드 +
+  기대 출력의 자연어 서술</strong>을 제안한다(설치/테스트/실행 세 부류;
+  리포 문서가 빈약하면 프로젝트 문서 사이트를 웹 검색).</li>
+  <li><strong>Executor</strong>는 <em>별개</em> 에이전트로, 10개 중
+  <strong>샘플링된 3개</strong>를 통과시켜야 한다. 검증은 행위적이다 —
+  커맨드가 실제로 실행되고 출력이 stage-1의 기대 서술과 일치해야 한다.
+  3-of-10 샘플링은 검증을 싸게 유지하면서, 더 큰 제안 집합이 specifier가
+  실행 불가/flaky 커맨드를 고를 위험을 헤지한다.</li>
+  <li><strong>Bounded fresh retries</strong>: 실패 시 처음부터 재시작(resume
+  아님). Celo 사례가 신선한 재시도가 단일 패스가 놓친 케이스를 실제로
+  회복함을 보였다(1회차 인증 흐름 실패 → 2회차에 mock user 생성 → 성공).</li>
+</ul>
+
+<div class="callout">
+  <span class="label">Discard → Park: 하나의 각색</span>
+  Cursor는 <strong>5회 반복</strong> 후 실패하면 환경을 <em>폐기</em>한다 —
+  RL 학습에서 리포 공급은 탄력적이라 한 리포를 버리면 그만이다. 우리에겐
+  <strong>리포가 곧 작업</strong>이므로 폐기는 선택지가 아니다. bounded 시도
+  소진 시 <strong>needs-human 인프라 티켓으로 PARK</strong>한다 — 기존 park
+  머신러리가 새 semantics 없이 흡수한다. 절대 조용히 저하되지 않는다:
+  1번 섹션의 그 실패를 여기서 죽이는 것이다.
+  <span class="cite">— <a href="https://cursor.com/blog/bootstrapping-composer-with-autoinstall">Cursor, "Bootstrapping Composer with autoinstall"</a>; 연구 문서 §2.3, autoinstall 딥리드 §2.1·§5.4</span>
+</div>
+
+<h2>4. 레지스트리: 네 번째 내구 아티팩트 클래스</h2>
+
+<p>인증의 산출물 — <strong>certified snapshot + command contract</strong> —
+은 세 플레인(보드·디스패치·세션 스토어) 옆에 새로 서는 내구 아티팩트
+클래스다: <strong>environment registry</strong>, 키는 (repo, environment
+key), 값은 스냅샷 + 계약.</p>
+
+<div class="callout">
+  <span class="label">한 문장으로</span>
+  레지스트리는 <strong>certificate를 가진 cache이지, identity가 아니다</strong>.
+  잃어버려도 <em>재인증 run 한 번</em> 비용이 전부다 — 작업은 하나도 잃지
+  않는다. 이것이 "내구 로그가 작업의 정체성, 컴퓨트는 일회용" 독트린을
+  깨지 않는 이유다: 정체성은 여전히 보드·세션 로그에 있고, 환경은 그
+  아래의 warm-start 최적화일 뿐이다. 스냅샷 상태가 조용히 load-bearing이
+  되지 않도록, "스냅샷은 삭제돼도 작업이 아니라 warm-start 시간만 잃는다"는
+  명시적 invariant로 못박아 둔다.
+</div>
+
+<h2>5. 드리프트는 탐지가 아니라 구성으로 불가능</h2>
+
+<p>라운드 1에서 두 독립 리뷰어가 꼽은 #1 미해결 질문이 "리포가 움직일 때
+무엇이 certificate를 무효화하는가"였다. 답은 드리프트를 <em>탐지</em>하지
+않는 것이다 — 애초에 <strong>불가능</strong>하게 만든다. environment key가
+세 입력의 함수이기 때문이다:</p>
+
+<pre>environment key = hash(env-spec) ⊕ hash(lockfiles) ⊕ toolchain-image digest</pre>
+
+<table>
+<tr><th>상황</th><th>동작</th></tr>
+<tr><td><strong>정확 일치(exact hit)</strong></td><td>restore + <strong>계약 커맨드 하나를 smoke probe로</strong> 실행. 인증 게이트가 <em>공짜로</em> 드리프트 탐지기를 겸한다.</td></tr>
+<tr><td><strong>임의의 miss</strong></td><td>full 인증 게이트를 다시 통과(rebuild). 스테일 스냅샷을 패치하지 않는다.</td></tr>
+<tr><td><strong>backstop</strong></td><td>non-hermetic 입력(mutable 레지스트리 등)을 위한 TTL/GC <strong>30–90 idle days</strong>.</td></tr>
+</table>
+
+<p>스테일 환경을 패치하는 신뢰할 만한 곳은 없다: <strong>DevPod은
+prebuild를 config hash로 키잉</strong>하고, <strong>Fly는 deploy마다
+무효화</strong>한다. Cursor 자신도 스냅샷을 "best effort"로 부르며
+<strong>90일 무활동 만료</strong>(사용할 때마다 90일 연장)로 GC한다.</p>
+
+<h3>스냅샷 사다리의 경제학</h3>
+
+<p>수백 run/시간/리포에서 per-run <code>npm ci</code>는 지배적인 지연·비용
+항이다. 사다리가 그걸 죽인다:</p>
+
+<table>
+<tr><th>단계</th><th>숫자/불변식</th></tr>
+<tr><td>layer cache (Dockerfile 빌드)</td><td>캐시 히트 시 <strong>70% 빠름</strong>. 바뀐 레이어만 rebuild.</td></tr>
+<tr><td>post-install checkpoint</td><td><code>install</code>이 몇 초 이상이면 자동 checkpoint 스냅샷 → 이후 run은 여기서 시작.</td></tr>
+<tr><td>restore per run</td><td>certified 스냅샷에서 복원. 이게 함대와 <em><code>npm ci</code> 폭풍</em>의 차이다.</td></tr>
+</table>
+
+<p>사다리를 안전하게 만드는 불변식은 딱 하나 — <strong><code>install</code>의
+idempotency</strong>. cache된 상태 위에서 install이 증분 작업만 하기
+때문에, cache가 "contract가 아니라 best-effort"여도(스냅샷 만료·드문 리포는
+느린 부팅) 정확성이 깨지지 않는다.</p>
+
+<h2>6. Mock fence: green이 무엇을 증명하는가</h2>
+
+<p>환경을 완전히 runnable하게 만들려고 인증 에이전트는 <code>npm
+install</code> 훨씬 너머로 간다 — <strong>fake DB 테이블, S3를 대신하는
+MinIO, mock user, 누락된 사이드카 컨테이너</strong>를 만든다. RL 환경에선
+DB를 가짜로 두는 게 순수한 이득이다. 하지만 <em>실제 PR을 만드는 우리
+implementer</em>에겐, S3가 조용히 MinIO이고 auth가 mock user인 환경은
+통합 실패를 리뷰어에게 숨긴다 — 샌드박스에서 통과하고 스테이징에서
+깨진다.</p>
+
+<div class="callout">
+  <span class="label">Fence rule (얼어붙은 invariant를 보호)</span>
+  Mock은 허용된다. 단, <strong>모든 mock은 environment manifest에 선언되어야
+  하고, 그 manifest는 review worker에게 노출</strong>된다 — 리뷰어가 green이
+  실제로 무엇을 증명하는지 저울질할 수 있도록. <strong>dev-service 사이드카
+  mock: 예. 시스템 본체(system under test) mock: 아니오.</strong> 이 fence가
+  없으면 fake 서비스에 대한 green 테스트가 adversarial review의 증거 기반을
+  갉아먹고, tiered merge authority를 무의미하게 만든다.
+  <span class="cite">— autoinstall 딥리드 §2.2·§5.5, §6; 연구 문서 §2.3</span>
+</div>
+
+<h2>7. 배치: 디스패처 프리컨디션, 게이트 절이 아니다</h2>
+
+<p>"환경이 runnable한가"는 implementer가 run을 태우기 <em>전에</em>
+어딘가에서 검사돼야 한다. 깨끗한 해소는 semantic 레이어를 얼린 채로
+두는 것이다: <strong>환경 준비성은 디스패처 프리컨디션</strong>이다 —
+디스패처가 미인증/probe-실패 샌드박스로 워커를 launch하기를 거부한다.
+이걸 pre-code gate 스킬에 절로 박아 넣으면 그건 <em>semantic edit</em>이
+되지만, 디스패처에 두면 <em>substrate</em>다.</p>
+
+<p class="cite">정직한 경계: 이 경계는 설계상 porous하다. probe 실패의
+<em>배선(routing)</em>은 기존 gate/park 머신러리로 흘러든다 — "environment
+unverified"가 gate-relevant 입력이 되어, 테스트 루프가 실제로 도는지 확인
+후 안 돌면 needs-human으로 park한다. 배치 주장은 <em>검사가 어디서
+도는가</em>에 관한 것이지, 그 실패가 어디로 라우팅되는가가 아니다.
+연구 문서 §2.3, 스펙 §3b.</p>
+
+<div class="callout">
+  <span class="label">Provenance</span>
+  모든 PR은 자기 run이 쓴 <strong>environment key를 provenance에 기록</strong>한다.
+  스펙의 acceptance drill "Environment honesty"가 이걸 관측 가능한 행동으로
+  못박는다: lockfile 해시를 오염(드리프트 시뮬레이션)시키면 → 다음 디스패치가
+  스테일 스냅샷을 거부하고, 인증을 통해 rebuild하며, PR provenance에 <em>새</em>
+  environment key가 찍힌다. 인증 재시도를 소진시키면 needs-human 인프라 티켓이
+  뜨고, 어떤 워커도 미인증 샌드박스 위에서 시작하지 않는다.
+</div>
+
+<h2>8. Retrieval practice</h2>
+<p>보지 말고 기억에서 꺼내라. 즉시 채점된다.</p>
+<div class="quiz" id="quiz"></div>
+
+<h2>9. 다음 단계</h2>
+<ul>
+  <li><strong>Primary source</strong>: <a href="https://cursor.com/blog/bootstrapping-composer-with-autoinstall">Cursor, "Bootstrapping Composer with autoinstall"</a> — 두 에이전트 propose/verify 계약의 원문(10 커맨드·3 샘플·5회 후 폐기). 15분.</li>
+  <li>동반 원문: <a href="https://cursor.com/blog/development-environments-for-cloud-agents">Cursor, "Development environments for your cloud agents"</a> — build/install/start 스펙, layer cache 70%, 90일 만료, 드리프트를 "미해결 문제"로 명명한 문단.</li>
+  <li>스펙 원문 대조: <code>docs/doperpowers/specs/2026-07-23-cloud-scale-reference-architecture-design.md</code> §3b + acceptance drill 5("Environment honesty"). 연구 근거는 <code>docs/doperpowers/2026-07-23-cloud-scale-research.md</code> §2.3·§7.3.</li>
+  <li>용어집에서: <strong>certified environment · environment key · mock fence</strong> 항목.</li>
+</ul>
+
+<footer class="lesson-foot">
+  <p>막히는 것, 반박하고 싶은 것, 더 깊이 보고 싶은 것 — 무엇이든 세션의
+  에이전트(나)에게 후속 질문을 던질 것. 특히 "왜 탐지가 아니라 구성으로
+  드리프트를 죽였나"류의 질문은 Decision Log와 딥리드 근거까지 파서 답할 수
+  있다.</p>
+  <p><a href="../reference/glossary.html">용어집</a> · 워크스페이스: <code>teaching/cloud-scale-architecture/</code></p>
+</footer>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+renderQuiz(document.getElementById("quiz"), [
+  {
+    stem: "이 환경 레이어 전체가 죽이려는 '설립 실패 모드'는 무엇인가?",
+    options: [
+      "불완전한 환경이 에러 없이 품질을 조용히 떨어뜨리고 원인이 모델로 오귀속됨",
+      "샌드박스가 부팅 중 크래시하며 워커가 즉시 하드 실패함",
+      "환경 스냅샷이 너무 커서 restore 지연이 run 길이를 초과함",
+      "git 토큰이 환경 변수로 새어 트랜스크립트에 노출됨"
+    ],
+    answer: 0,
+    expl: "Cursor의 플래그십 교훈: 불완전한 환경은 에러를 내지 않고 함대 전체 출력 품질을 조용히 저하시키며, 그 죄를 모델이 뒤집어쓴다. 대시보드는 초록색인데 품질이 나빠진다 — 그래서 인증 게이트·mock fence·park가 전부 이 하나를 겨냥한다 (연구 문서 §2.3)."
+  },
+  {
+    stem: "인증 게이트(autoinstall)에서 executor 에이전트가 통과시켜야 하는 것은?",
+    options: [
+      "specifier가 시도 전에 고정한 10개 중 샘플링된 3개 커맨드 + 기대 출력",
+      "executor 자신이 즉석에서 고른 커맨드를 자체 채점으로 통과",
+      "리포의 모든 테스트 스위트를 100% green으로 통과",
+      "Dockerfile 레이어 전부를 캐시 히트로 재빌드 없이 통과"
+    ],
+    answer: 0,
+    expl: "핵심은 종-분리다: specifier가 성공 기준(10 커맨드+기대출력)을 시도 전에 못박고, 별개 executor가 샘플링된 3개를 행위적으로(실제 실행+출력 일치) 통과시켜야 한다. 자체 채점이 아닌 propose-then-verify — 우리 adversarial review와 같은 모양 (autoinstall 딥리드 §2.1)."
+  },
+  {
+    stem: "인증이 bounded retries를 소진하면 우리 시스템은 어떻게 하는가? (Cursor와의 차이)",
+    options: [
+      "needs-human 인프라 티켓으로 PARK — Cursor는 5회 후 환경을 폐기",
+      "환경을 폐기하고 리포를 파이프라인에서 영구 제외",
+      "fallback 베이스 이미지로 조용히 계속 진행",
+      "specifier를 더 강한 모델 티어로 교체해 무한 재시도"
+    ],
+    answer: 0,
+    expl: "Cursor는 RL에서 리포 공급이 탄력적이라 5회 후 폐기한다. 우리에겐 리포가 곧 작업이라 폐기가 불가 — needs-human 인프라 티켓으로 park하고 기존 park 머신러리가 새 semantics 없이 흡수한다. 절대 조용히 저하되지 않는 게 핵심 (연구 문서 §2.3)."
+  },
+  {
+    stem: "environment key는 어떤 세 입력의 함수인가?",
+    options: [
+      "hash(env-spec) ⊕ hash(lockfiles) ⊕ toolchain-image digest",
+      "hash(리포 커밋) ⊕ hash(브랜치명) ⊕ 워커 host id",
+      "hash(티켓 id) ⊕ hash(run-attempt) ⊕ fencing token",
+      "hash(Dockerfile) ⊕ 마지막 인증 타임스탬프 ⊕ 팀 id"
+    ],
+    answer: 0,
+    expl: "environment key = hash(env-spec) ⊕ hash(lockfiles) ⊕ toolchain-image digest. 정확 일치만 restore(+계약 커맨드 하나를 smoke probe로), 임의의 miss는 full 재인증. 드리프트를 탐지하는 게 아니라 구성으로 불가능하게 만든다 — DevPod은 config hash로 키잉, Fly는 deploy마다 무효화 (연구 문서 §7.3)."
+  },
+  {
+    stem: "mock fence 규칙에서 허용되는 것과 금지되는 것은?",
+    options: [
+      "dev-service 사이드카 mock은 허용(매니페스트 선언·리뷰어 노출 필수), 시스템 본체 mock은 금지",
+      "모든 mock 금지 — 인증은 항상 실제 서비스로만 통과해야 함",
+      "모든 mock 허용 — 어차피 green이면 리뷰어가 신뢰하면 됨",
+      "시스템 본체 mock은 허용, 사이드카 mock은 금지"
+    ],
+    answer: 0,
+    expl: "fake DB·MinIO-for-S3·mock user 같은 사이드카 mock은 허용하되 environment manifest에 선언하고 review worker에게 노출해야 한다 — 리뷰어가 green이 실제로 무엇을 증명하는지 저울질하도록. 시스템 본체(system under test) mock은 금지. 이 fence가 없으면 fake에 대한 green 테스트가 adversarial review와 tiered merge authority를 무의미하게 만든다 (autoinstall 딥리드 §5.5)."
+  }
+]);
+</script>
+</body>
+</html>
