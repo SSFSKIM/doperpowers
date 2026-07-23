@@ -485,8 +485,9 @@ git commit -m "feat(a0): server-side transition legality as conditional UPDATE"
 **Interfaces:**
 - Consumes: `withTx` (Task 2).
 - Produces: `claimNext(pool, {leaseMinutes=10})` →
-  `null` | `{runId, ticketId, fence, token}` (raw token returned once, only
-  hash stored); `mintToken()` → `{token, tokenHash}`;
+  `null` | `{runId, ticketId, fence, token, envKey}` (raw token returned
+  once, only hash stored; `envKey` = ticket `payload.envKey ?? null` — Plan
+  3's dispatcher maps it to the sandbox template); `mintToken()` → `{token, tokenHash}`;
   `verifyRunToken(pool, runId, token)` → boolean;
   `verifyAdmin(req)` → boolean (compares `Authorization: Bearer` against
   env `A0_ADMIN_KEY`, constant-time).
@@ -578,7 +579,7 @@ import { mintToken } from './auth.js';
 export async function claimNext(pool, { leaseMinutes = 10 } = {}) {
   return withTx(pool, async (client) => {
     const pick = await client.query(
-      `select id, fence from ticket where state = 'ready-for-agent'
+      `select id, fence, payload from ticket where state = 'ready-for-agent'
        order by updated_at for update skip locked limit 1`);
     if (pick.rowCount === 0) return null;
     const t = pick.rows[0];
@@ -593,7 +594,8 @@ export async function claimNext(pool, { leaseMinutes = 10 } = {}) {
       `insert into run (id, ticket_id, fence, token_hash, lease_expires_at)
        values ($1, $2, $3, $4, now() + make_interval(mins => $5))`,
       [runId, t.id, fence, tokenHash, leaseMinutes]);
-    return { runId, ticketId: t.id, fence, token };
+    return { runId, ticketId: t.id, fence, token,
+             envKey: t.payload?.envKey ?? null };
   });
 }
 ```
@@ -623,8 +625,13 @@ git commit -m "feat(a0): atomic claim — SKIP LOCKED pick + ticket update + run
 - Produces: `appendEvent(pool, {runId, kind, body, leaseMinutes=10})` →
   `{ok:true, seq}` | `{ok:false, error:'run-not-live'}` (single UPDATE+INSERT
   statement; refreshes `lease_expires_at`); `addComment(pool, {ticketId,
-  runId, body})` → `{ok:true, id}`. One writer per run is assumed (the run's
-  own worker) — seq is max+1 within that assumption; note this in code.
+  runId, body})` → `{ok:true, id}`; `endRun(pool, {runId, reason})` →
+  `{ok:true}` | `{ok:false, error:'run-not-live'}` — sets `ended_at`/
+  `end_reason` on a live run (Plan 3's dispatcher calls it with
+  `'completed'` or `'worker-failed'` at run end, AFTER posting usage — Plan
+  2's failure-ratio breaker reads these reasons). One writer per run is
+  assumed (the run's own worker) — seq is max+1 within that assumption;
+  note this in code.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -634,7 +641,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testPool } from './helpers.js';
 import { claimNext } from '../src/claims.js';
-import { appendEvent, addComment } from '../src/events.js';
+import { appendEvent, addComment, endRun } from '../src/events.js';
 
 test('append increments seq and refreshes the lease', async () => {
   const pool = await testPool();
@@ -658,6 +665,19 @@ test('append to ended run is refused', async () => {
   await pool.query(`update run set ended_at = now() where id = $1`, [c.runId]);
   const out = await appendEvent(pool, { runId: c.runId, kind: 'x', body: {} });
   assert.deepEqual(out, { ok: false, error: 'run-not-live' });
+  await pool.end();
+});
+
+test('endRun records reason once; second end refused', async () => {
+  const pool = await testPool();
+  await pool.query(`insert into ticket (id, state) values ('t1','ready-for-agent')`);
+  const c = await claimNext(pool, {});
+  const out = await endRun(pool, { runId: c.runId, reason: 'completed' });
+  assert.deepEqual(out, { ok: true });
+  const r = (await pool.query(`select end_reason from run where id=$1`, [c.runId])).rows[0];
+  assert.equal(r.end_reason, 'completed');
+  const again = await endRun(pool, { runId: c.runId, reason: 'worker-failed' });
+  assert.deepEqual(again, { ok: false, error: 'run-not-live' });
   await pool.end();
 });
 
@@ -705,6 +725,15 @@ export async function addComment(pool, { ticketId, runId, body }) {
      values ($1, $2, $3) returning id`,
     [ticketId, runId, body]);
   return { ok: true, id: Number(res.rows[0].id) };
+}
+
+export async function endRun(pool, { runId, reason }) {
+  const res = await pool.query(
+    `update run set ended_at = now(), end_reason = $2
+     where id = $1 and ended_at is null`,
+    [runId, reason]);
+  return res.rowCount === 1 ? { ok: true }
+                            : { ok: false, error: 'run-not-live' };
 }
 ```
 
@@ -848,6 +877,9 @@ git commit -m "feat(a0): stale-lease reclaim; fencing refuses superseded attempt
     `{error:'not-your-ticket'}` / 409 `{error}`
   - `POST /claims` (admin/dispatcher) → 200 claim JSON or 204
   - `POST /runs/:id/events` (run bearer) `{kind, body}` → 200 `{seq}` / 409
+  - `POST /runs/:id/end` (run bearer or admin) `{reason}` → 200 `{ok:true}`
+    / 409 `{error:'run-not-live'}` — dispatcher records `'completed'` /
+    `'worker-failed'` here at run end (after posting usage)
   - `POST /tickets/:id/comments` (admin or run bearer) `{body}` → 201
   - `GET /tickets?state=S` (admin) → 200 `[{id,state,owner_run,fence,...}]`
   - `POST /reconcile` (admin) → 200 `{reclaimed: n}`
@@ -972,7 +1004,7 @@ import http from 'node:http';
 import { makePool, withTx, applySchema } from './db.js';
 import { transition } from './transitions.js';
 import { claimNext } from './claims.js';
-import { appendEvent, addComment } from './events.js';
+import { appendEvent, addComment, endRun } from './events.js';
 import { reclaimStale } from './reconcile.js';
 import { verifyAdmin, verifyRunToken } from './auth.js';
 
@@ -1041,6 +1073,16 @@ export function makeServer(pool) {
           return send(res, 401, { error: 'unauthorized' });
         const b = await body(req);
         const out = await appendEvent(pool, { runId: p[1], kind: b.kind, body: b.body });
+        return send(res, out.ok ? 200 : 409, out);
+      }
+
+      // POST /runs/:id/end
+      if (req.method === 'POST' && p.length === 3 && p[0] === 'runs'
+          && p[2] === 'end') {
+        const okRun = await verifyRunToken(pool, p[1], bearer(req));
+        if (!isAdmin && !okRun) return send(res, 401, { error: 'unauthorized' });
+        const b = await body(req);
+        const out = await endRun(pool, { runId: p[1], reason: b.reason });
         return send(res, out.ok ? 200 : 409, out);
       }
 
