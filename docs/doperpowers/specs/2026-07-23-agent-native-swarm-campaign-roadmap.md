@@ -27,7 +27,7 @@ CC-Eng-Rev's deterministic evidence gates are the held-out grader. The
 experiment's second product is measurement: reproduce the article's
 economics analysis (tokens and cost per role, conflict concentration,
 quality curve) for our stack, and flow every methodology lesson back
-into the decomposing-goals design of record.
+into the decomposing design of record.
 
 ## Parent-Level Acceptance
 
@@ -41,7 +41,7 @@ The unit closes when all of the following are observable:
    stack: capability promotion curve over time, merge-conflict count and
    concentration, per-role token/cost split (planner vs worker vs
    review), and confirmed review findings per wave.
-3. The dogfood lessons are recorded: the decomposing-goals design of
+3. The dogfood lessons are recorded: the decomposing design of
    record carries a dated live-run note resolving (or renewing) its
    "first live run pending" watch item, and any observed skill failure
    has a written disposition.
@@ -112,9 +112,9 @@ Measured 2026-07-23 from CC-Eng-Rev:
 - **Required:** required.
 - **Status:** not-dispatched (waiting-external).
 
-### C3: Third-campaign roadmap + board materialization — decomposing-goals
+### C3: Third-campaign roadmap + board materialization — decomposing
 
-- **Purpose:** the core dogfood: a decomposing-goals run over the
+- **Purpose:** the core dogfood: a decomposing run over the
   87-capability frontier producing CC-Eng-Rev's third-campaign roadmap
   spec and, after human approval, the materialized board. The skill's
   new test is ADOPTION: the tree already exists in materialized form
@@ -316,7 +316,7 @@ C3.G1 ∥ C4 → C3.G2 → C5.
   the two-pictures-of-reality failure the article's design docs exist to
   prevent. Rejected: one merged spec; a third neutral location (no
   standing purpose to parent it).
-- **This spec is itself the first live decomposing-goals run** — the
+- **This spec is itself the first live decomposing run** — the
   gate was applied to the experiment goal (WELL-DEFINED after the
   three-question grill; not WELL-SCOPED: two repos, four distinct state
   owners — GH infra, CC-Eng-Rev governance, board, metrics — with

@@ -1,9 +1,9 @@
 ---
-name: decomposing-goals
+name: decomposing
 description: Use when a goal is too big for one agent to reliably own as one unit — a deliberate initiative, epic, or milestone whose pieces must become child goals (a roadmap) before any single piece is designed — or when tending a live goal tree: a landed child contradicts the plan, a coarse branch nears execution, a parent's children are all done. For defining or sharpening a single ownable idea use doperpowers:brainstorming; for a pile of raw ungrounded observations use doperpowers:organizing-sprints.
 ---
 
-# Decomposing Goals
+# Decomposing
 
 ## Overview
 
@@ -88,7 +88,7 @@ there.
 
 Divide at need in time as well as in size: one level per run, and a branch
 is divided only as it nears execution. Distant branches stay coarse — a
-child whose own division can wait carries the track hint "decomposing-goals
+child whose own division can wait carries the track hint "decomposing
 run at dispatch" and nothing more. The cut you would draw today for
 far-off work goes stale the same way approach sketches do; an undivided
 branch is cheap to re-cut when a landed sibling's discoveries move it. A
@@ -159,7 +159,7 @@ Each child section of the roadmap fixes:
 - **Cross-child contracts** — the shared interfaces, invariants, and
   ordering rules it participates in;
 - **Track hint** — controlled, autonomous, spike (deliverable is
-  findings, never a merge), or another decomposing-goals run at
+  findings, never a merge), or another decomposing run at
   dispatch.
 
 At dispatch, the child treats its section as pre-landed grill input: it

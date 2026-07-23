@@ -46,7 +46,7 @@ Sub-slicing is a judgment tool, not ceremony: the fewest boundaries that
 make each important invariant independently understandable and testable.
 
 The split/keep-together signals above are the universal division gate's
-calibration list — doperpowers:decomposing-goals owns the doctrine; this
+calibration list — doperpowers:decomposing owns the doctrine; this
 section is that gate applied inside one plan. A goal too big for one
 owner altogether belongs to that skill, not to sub-slicing.
 

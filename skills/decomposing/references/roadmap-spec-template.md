@@ -35,14 +35,14 @@ phase lands its numbers.]
 
 ## Children
 
-### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing-goals]
+### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line
   or a short gate checklist; a child may declare multiple named gates,
   each flagged required or conditional — a conditional gate names when
   it becomes evaluable and what its failure triggers. A
-  decomposing-goals child may stay coarse: its precise gates emerge
+  decomposing child may stay coarse: its precise gates emerge
   from its own cut]
 - **Edges:** [blocked-by: — | C_n | C_n.G_k (gate-level when a child's
   gates diverge) | external:<condition> (a start-time gate — the child

@@ -1,6 +1,6 @@
 ---
 name: organizing-sprints
-description: Use when a pile of raw observations, suggestions, or half-formed ideas — an ideadump from using the product, an end-to-end walkthrough, or a team meeting transcript — needs to become the next sprint or milestone of work. Especially when the notes are not context-grounded: they may misread the code, describe things already built, or hide real bugs. For a single idea use doperpowers:brainstorming; to register one already-understood ticket use doperpowers:issue-tracker. For a deliberate goal that needs dividing use doperpowers:decomposing-goals.
+description: Use when a pile of raw observations, suggestions, or half-formed ideas — an ideadump from using the product, an end-to-end walkthrough, or a team meeting transcript — needs to become the next sprint or milestone of work. Especially when the notes are not context-grounded: they may misread the code, describe things already built, or hide real bugs. For a single idea use doperpowers:brainstorming; to register one already-understood ticket use doperpowers:issue-tracker. For a deliberate goal that needs dividing use doperpowers:decomposing.
 ---
 
 # Organizing Sprints

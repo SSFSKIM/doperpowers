@@ -63,14 +63,14 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing-goals; see the scope bullet below.)
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
 
 ## The Process
 
 **Understanding the idea:**
 
 - Check out the current project state first (files, docs, recent commits)
-- Before asking detailed questions, assess scope: brainstorming defines ONE goal at a time, whatever its size — but if the request describes a goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing-goals; e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Division belongs one skill over: recommend doperpowers:decomposing-goals — it cuts the goal into children with acceptance and edges, and each child then returns through this skill (or execplan) with its parent section as pre-landed input. Confirm the route with your human partner before switching; don't drift into grilling child-level details of a goal that needs dividing first.
+- Before asking detailed questions, assess scope: brainstorming defines ONE goal at a time, whatever its size — but if the request describes a goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing; e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Division belongs one skill over: recommend doperpowers:decomposing — it cuts the goal into children with acceptance and edges, and each child then returns through this skill (or execplan) with its parent section as pre-landed input. Confirm the route with your human partner before switching; don't drift into grilling child-level details of a goal that needs dividing first.
 - For appropriately-scoped projects, run the grill below to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Focus on understanding: purpose, constraints, success criteria

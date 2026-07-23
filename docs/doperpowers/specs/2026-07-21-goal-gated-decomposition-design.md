@@ -271,6 +271,24 @@ Evidence per doperpowers:writing-skills, recorded in Outcomes when run:
     consistency: doctrine keeps the moving-envelope language; the board
     rendering's battle-tested "roughly 1–2 ExecPlans" stays the only
     numeric anchor.
+14. **Name resolved to the bare gerund: `decomposing-goals` →
+    `decomposing` (2026-07-24, v7.24.2).** The human re-opened the three
+    synthesis forks (seam, dissolution, name) for discussion against the
+    archived lineage originals; the first two stood, this one flipped.
+    Rationale: the repo's naming grammar — compound gerunds exist to
+    discriminate within a family (writing-plans vs writing-skills;
+    organizing-sprints; implementing-tickets), while a unique act takes
+    the bare gerund, and brainstorming, this skill's seam peer, is the
+    precedent (brainstorming DEFINES, decomposing DIVIDES — morphological
+    peers). No decomposing-* family exists, so "goals" was doing only
+    pedagogical work already carried by the description's first clause
+    and the body's first sentence ("Work is a tree of goals"). The
+    parallel lineage's human had resolved the same fork to `decomposing`
+    once before. Rejected: keeping `decomposing-goals` — thesis-in-name
+    pedagogy judged redundant; the misfire risk on code-decomposition
+    prompts ("decompose this monolith") is gated by the description,
+    which is what routing actually reads. Rejected in lineage:
+    `decomposition` (breaks the gerund convention).
 
 ## Surprises & Discoveries
 
@@ -410,3 +428,19 @@ that observation, no new design needed).
   Declined with evidence: the explicit clarity-before-size ordering
   clause (Decision 13). This document remains the initiative's design
   of record.
+- **2026-07-24 (synthesis re-litigation — released as 7.24.2).** The
+  human re-opened the three synthesis forks against the archived
+  originals (`archive/decomposing-gate-synthesis`). The seam verdict and
+  re-founding stood, with two record corrections: spec A never
+  pointer-ized writing-plans' sub-slicing (body preservation was a
+  shared decision, explicit even in its 8b214e5 original), and
+  dissolution preserved the artifact organs (template moved
+  near-verbatim to execspec, flow-back rules carried verbatim) — what it
+  lacked an address for was the PROCESS organs: full pipeline resolution
+  and the tend/recomposition lifecycle. The name fork flipped per
+  Decision 14: skill directory renamed to `skills/decomposing/`, all
+  call sites swept (brainstorming, organizing-sprints, writing-plans,
+  ticket-gate, implement-decompose, the template's track-hint enum, and
+  the live swarm-campaign roadmap spec + cloud-scale research docs).
+  Body text above retains the shipped-era name where it narrates
+  v7.24.0/7.24.1 history.

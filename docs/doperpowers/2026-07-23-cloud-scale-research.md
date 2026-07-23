@@ -339,7 +339,7 @@ mix; cost varied ~8×; worker fleets 23× apart in cost at similar quality):
   only if intra-ticket swarms ever show git lock contention in telemetry.
 - **Dynamic planner-tree topology replacing the board** — their tree fits
   one monolithic goal; our board fits a stream of independent tickets, and
-  tree-shaped work already has a semantic answer (decomposing-goals).
+  tree-shaped work already has a semantic answer (decomposing).
 - **Per-commit error budgeting with no human in loop** — their green-branch
   fixup works inside a run; our landed PRs are consumed continuously;
   tiered merge authority IS our error-budget mechanism.
