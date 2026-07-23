@@ -38,7 +38,7 @@ mean run 10–15 min, ~25–30k run-hours/month.
 
 | slot | named default | monthly (list) | runner-up / escape | report |
 |---|---|---|---|---|
-| Sandbox compute | **E2B Pro** (domain egress allowlist, template-per-env-hash, pause/resume) | ~$2.2–4.7k (runs/day-dependent; $3.3k if 1-vCPU suffices) | Daytona (if E2B balks or Daytona ships domain egress); Northflank ~$1.8k budget hatch (spike egress first) | sandbox |
+| Sandbox compute | **E2B Pro** (template-per-env-hash, pause/resume; egress ≈ tie with Daytona post-correction — E2B wins on 1,100 concurrency headroom + uptime) | ~$2.2–4.7k (runs/day-dependent; $3.3k if 1-vCPU suffices) | Daytona (nearer runner-up than first written — see correction §1.1); Northflank ~$1.8k budget hatch (spike egress first) | sandbox |
 | Worker runtime | **Claude Code, self-orchestrated** (our harness on rented sandboxes) | — | Managed Agents = port-not-swap, rejected now; nearest flip = Claude Code on the web gaining a fleet API | managed-agents |
 | Board + dispatch + session store | **One Supabase Pro Postgres** (Large/XL compute + PITR add-on) | ~$253–353 | Neon Launch ~$140–220 (bursty loads); RDS t4g if AWS-native | postgres |
 | Board tier | **Thin board service kept** (~6 endpoints, conditional-UPDATE transitions) on Fly/Render/Railway; **Linear as human-facing one-way mirror** | ~$10–45 + Linear seats | Linear-direct only under 7 strict conditions (low-A0, serialized dispatcher, verify-after-write…) | board |
@@ -55,7 +55,7 @@ management-plane outages), so **the reconciled infra line is $2.5–5k with
 E2B**. Token conclusion unchanged either way.
 
 **Token spend dominates everything: ≈$55k / $110–160k / $260–340k per month**
-(low/mid/top, Fermi ~$1.5–3/run blended) — a token:infra ratio of ~20–100×
+(low/mid/top, Fermi $0.8–3/run across the band) — a token:infra ratio of ~20–100×
 even at E2B rates. Every infra decision at A0 is a rounding error; every
 token decision is the budget.
 
@@ -68,13 +68,19 @@ token decision is the budget.
 The enterprise own-fleet answer (k8s+gVisor on NVMe) was carried by two
 premises that both fail at A0: SaaS cost at 1,000–20,000 concurrent
 (~$73k+/mo) and an ops team to absorb a fleet. At A0 the SaaS bill is
-$2–5k/mo and the ops team does not exist. **E2B** wins on the single
-non-negotiable: it is the only in-budget vendor whose egress control can
-express "allow github.com + api.anthropic.com + registries, deny rest" —
-the control that makes short-lived-token git isolation actually contain a
-prompt-injected worker. Daytona has the cleanest hash-keyed snapshot story
-(digest-pinned named snapshots; mutable tags refused) but caps egress at 5
-IPv4 CIDR blocks, which cannot express our allowlist. Keep the substrate
+$2–5k/mo and the ops team does not exist. **[Corrected post-review,
+verified live 2026-07-23]** The report's original tiebreaker — "only E2B
+can express the domain allowlist" — is wrong: Daytona's live docs show a
+`domainAllowList` (max 20 entries, wildcards) plus 10 CIDRs,
+runtime-changeable on Tier 3+ (erratum added to the archived report). Both
+finalists express "allow github.com + api.anthropic.com + registries, deny
+rest" — the control that makes short-lived-token git isolation actually
+contain a prompt-injected worker. **E2B still wins**, on concurrency
+headroom (purchasable to 1,100 vs Daytona Tier 4 ≈ 250 two-vCPU runs —
+bare A0 peak) and the better public uptime record; Daytona has arguably
+the cleanest hash-keyed snapshot story (digest-pinned named snapshots;
+mutable tags refused) and is a nearer runner-up than first written. Keep
+the substrate
 behind one thin create/exec/destroy adapter so a vendor swap is config, not
 rewrite. Own-fleet returns at ~$25–30k/mo sustained managed bill (~300–500
 sustained concurrent, 5–10× A0) or on a compliance/BYOC mandate.
@@ -103,7 +109,8 @@ the whole compute slot to viable-now.
 
 A0 load is trivial for any 2-vCPU Postgres (15–100 writes/s steady
 heartbeat appends; 0.07–0.28 claims/s — no contention regime). **Storage is
-the real driver**: 1–3 MB/run of session events → 150 GB–1 TB/month raw;
+the real driver**: 1–3 MB/run of session events → ~150–630 GB/month raw at
+A0 rates (the earlier 1 TB top assumed 10k runs/day, 2× A0-top);
 archival of closed runs >14 days to object storage is mandatory within the
 first quarter (this is the enterprise spec §4 promotion, run early and
 partially), holding the hot set to ~100–300 GB. **The pooling footgun is
@@ -132,9 +139,11 @@ deterministic top-of-queue picking make it catastrophic. And "no service"
 re-materializes as a serializing dispatcher + webhook guard bot + nightly
 audit export (Linear retains history 90 days) — three cron jobs that still
 never provide atomicity. **Verdict: keep the ~6-endpoint board service**
-($10–45/mo managed, 1–2 days to stand up from the already-written
-enterprise spec §1, ~2–4 hrs/month), Linear as one-way human mirror
-(coalesced transitions, <10% of one actor's budget). It is the first brick
+($10–45/mo managed, 1–2 days to stand up — schema plus endpoints from the
+enterprise spec §1 endpoint list — ~2–4 hrs/month), Linear as one-way
+human mirror (coalesced transitions; honest math: 500–3,000 req/hr across
+the band = 10–60% of one OAuth actor — debounce per ticket or add a second
+actor at the top end). It is the first brick
 of the enterprise architecture, not a migration liability.
 
 ### 1.5 Zero-ops operations and economics
@@ -170,14 +179,20 @@ superlinear in run length; 12→8 min ≈ −45% tokens).
    enterprise round. The semantic layer and the ten design rules survive
    contact with A0 without a single amendment.
 2. **The pressure order inverts infra instinct.** What a growing A0 system
-   hits first, in order: **Anthropic rate limits → sandbox bill → cron
-   cadence → Postgres**. A0-mid already sustains ~1.3M fresh-input
-   tokens/min, near reported Tier-4 Sonnet ITPM caps [3rd-party; the
-   load-bearing sub-claim that cache reads don't count toward ITPM must be
-   verified against the org's own limits]. The provider quota conversation
-   fires before any infra migration does. The board/dispatch Postgres —
-   where the enterprise spec spends most of its design — is the *last*
-   thing a startup outgrows.
+   hits first, in order: **Anthropic tier → sandbox bill → cron cadence →
+   Postgres**. **[Corrected post-review, verified live 2026-07-23 on the
+   official rate-limits page]** Tiers are named Start/Build/Scale/Custom
+   (no numbered tiers), and the binding meter is the **monthly spend cap**
+   — $500 / $1,000 / $200,000 / uncapped — so A0's token spend requires
+   Scale from day one and Custom at A0-top. ITPM is officially cache-aware
+   (cache reads don't count, except retired Haiku 3.5 — the must-verify
+   flag resolves in the design's favor): A0-mid's ~1.3M fresh-input
+   tokens/min is 65% of even Start-tier Sonnet (2M), with 2.5–5× headroom
+   at Build/Scale; only **Fable-class ITPM (0.5M/1.5M/4M) sits at or below
+   A0-mid tempo through Build**. The provider conversation still fires
+   before any infra migration — as commercial onboarding, not scarcity.
+   The board/dispatch Postgres — where the enterprise spec spends most of
+   its design — is the *last* thing a startup outgrows.
 3. **Growth path is swap-by-swap, not rearchitecture.** Because the thin
    board service, the same-transaction Postgres schema, the substrate
    adapter, and the session-log identity doctrine are all kept at A0, every
@@ -206,9 +221,13 @@ superlinear in run length; 12→8 min ≈ −45% tokens).
   unpublished) — the one number that could break even the low-A0
   Linear-direct fallback; its rate-limit page self-contradicts (2,500 vs
   5,000/hr API keys; OAuth actors unambiguously 5,000).
-- **Anthropic unknowns:** Managed Agents org concurrency cap; Claude Code
-  on the web per-plan daily run allowances; Tier-4 ITPM figures and the
-  cache-read exemption are 3rd-party-sourced.
+- **Anthropic unknowns:** Managed Agents org concurrency cap (would have
+  to be answered before committing A0 traffic, were that path taken; its
+  skill auto-trigger semantics are likewise unverified); Claude Code on
+  the web per-plan daily run allowances. ~~Tier ITPM figures and the
+  cache-read exemption~~ — resolved post-review against the live official
+  rate-limits page (named tiers Start/Build/Scale/Custom; cache-read
+  exemption confirmed, Haiku 3.5 excepted; see §2 item 2).
 - **1Password Service Accounts pricing/limits:** absent from vendor docs
   fetched — confirm before making it the pick.
 - **Fermi spans:** session-event size assumption (2–8 KB) spans 4× of all

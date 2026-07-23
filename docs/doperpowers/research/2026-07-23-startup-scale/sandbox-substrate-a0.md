@@ -1,5 +1,15 @@
 # A0 — Managed sandbox substrate for the worker/reviewer pipeline at startup scale
 
+> **ERRATUM (2026-07-23, post-review, verified live):** §2.2's Daytona
+> egress claim is wrong or stale. Daytona's current network-limits docs
+> show a `domainAllowList` of **up to 20 entries with `*.` wildcard
+> support** alongside a `networkAllowList` of **up to 10 CIDRs**, and
+> runtime firewall changes on running sandboxes for Tier 3+ orgs. Our
+> allowlist IS expressible on Daytona. Issue #3357 concerns runtime-mutable
+> rules, not domain egress. The E2B-over-Daytona verdict survives on
+> concurrency headroom (1,100 vs ~250 two-vCPU runs at Tier 4) and uptime
+> record — see the A0 spec's Decision Log 2 for the corrected basis.
+
 **Date:** 2026-07-23. **Scenario:** a 10–20 person AI-native startup runs the
 board pipeline (workers = Claude Code harness sessions with skills). Needs per
 run: git clone/push with token isolation, network egress control,

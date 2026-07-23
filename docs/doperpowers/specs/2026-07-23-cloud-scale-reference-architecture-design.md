@@ -407,7 +407,10 @@ implementation plans, but each line names its observation):
    process can read a git token (it lives only in the remote config as a
    short-lived credential), reach a non-allowlisted domain, or merge a
    PR; the landing path alone can merge. A red-team prompt-injection run
-   confirms the blast radius is board comments + its own branch.
+   confirms the honest blast radius: board comments + pushes to
+   unprotected branches under the contents-scoped token (protected
+   branches and merges unreachable; cross-branch writes bounded by
+   attempt-key provenance at review and fencing at landing).
 7. **Merge tempo with safety**: at A2-rate synthetic PR load on a
    batch-class repo, the queue sustains the landing rate with mainline
    staying green (failing batches bisect automatically; innocent PRs are
