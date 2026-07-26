@@ -15,6 +15,8 @@
 #
 # Env: CODEX_REVIEW_MODEL / CODEX_REVIEW_EFFORT pass through to review-engine.sh.
 #      ARGUS_TIMEOUT (default 2700s) bounds the argus run; codex is bounded the same.
+#      ARGUS_CLAUDE_BIN swaps the `claude` binary for the argus side (e.g. a
+#      wrapper adding gateway --settings/--model/--effort for engine-swap runs).
 #      BENCH_KEEP=1 keeps the scratch repo (printed) for postmortem.
 set -euo pipefail
 
@@ -85,7 +87,7 @@ case "$engine" in
     # plain) pins the effort level explicitly (X3: named level always wins).
     level="${ARGUS_LEVEL:-plain}"
     prompt="/argus-review:argus-review Review the code changes against the base branch 'main'. The merge base commit for this comparison is ${merge_base}. Run \`git diff ${merge_base}\` to inspect the changes relative to main. Provide prioritized, actionable findings. Use the ${level} effort level."
-    timeout "$timeout_s" claude -p "$prompt" --permission-mode auto > "$out"
+    timeout "$timeout_s" "${ARGUS_CLAUDE_BIN:-claude}" -p "$prompt" --permission-mode auto > "$out"
     ;;
 esac
 echo "engine=$engine case=$(basename "$case_dir") secs=$(( $(date +%s) - started )) out=$out" >&2
