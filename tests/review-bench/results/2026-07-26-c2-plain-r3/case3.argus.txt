@@ -1,0 +1,44 @@
+The review is complete. Worktree is clean, so the branch diff is exactly what was reviewed (commit `45e1e3a`).
+
+Full review comments:
+
+## Findings
+
+[P0] Guard `/exports/all` with `admin_only`, not `authenticated` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.VkL8c4/app.py:206-208
+  `handle_export_all` iterates `store.list_tenants()` and renders every document on the node, but it is decorated with `@authenticated`, so any valid session — e.g. the member token `tok-ana` (tenant `acme`) — can `GET /exports/all` and read every other tenant's documents. This contradicts the route table in `README.md:24` ("`GET /exports/all` | admin only") and the Tenancy rule that "any route that can see across tenants is an admin route". The `admin_only` decorator defined at `app.py:53` is the intended guard.
+```suggestion
+@admin_only
+def handle_export_all(request: Request, session: auth.Session) -> Response:
+    """GET /exports/all — every document on this node, for the warehouse loader."""
+```
+
+[P1] PUT response reports row count as the revision and ETag — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.VkL8c4/app.py:166-174
+  `store.save_document` now returns `len(rows)` (`store.py:122`) instead of the new revision, but `handle_put_document` still binds the result to `revision` and puts it in both the response body and the weak ETag. A `PUT` of three rows to a brand-new document now answers `{"revision": 3, "etag": "W/\"3\""}` while the file on disk is at revision 1, and a client that feeds that value back as `expected_revision` gets a spurious `409`. Either return `current + 1` from `save_document` or re-read the revision here with `store.load_document`.
+
+[P1] Pagination slice returns limit+1 names and overlaps pages — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.VkL8c4/app.py:97-103
+  `last = first + limit` is already the exclusive end of the page, so slicing `names[first : last + 1]` returns `limit + 1` entries and makes consecutive pages overlap: with the default limit of 50, page 1 returns names 0–50 and page 2 returns names 50–100, duplicating index 50 and reporting a page larger than the `limit` echoed in the same response. The slice should be `names[first:last]`.
+```suggestion
+    first = (page - 1) * limit
+    last = first + limit  # exclusive end of this page
+
+    return Response(
+        200,
+        {
+            "documents": names[first:last],
+```
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The bulk export route is authenticated but not admin-gated, letting any member read every tenant's documents, which breaks the documented tenancy invariant; additionally the `PUT` response now reports the row count as the revision/ETag, and the pagination slice returns one extra, overlapping entry per page. Each is a discrete, mechanically fixable defect introduced by this commit.
+Confidence: 0.93
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Converting auth checks from inline code to decorators (as this commit does) is a good refactor, but it moves the security decision to a single token at the top of a function — which means a wrong token is now a silent, one-word bug rather than a visibly missing check. Cross-tenant routes are exactly where that costs the most.
+- The `save_document` return-value change is a classic "caller contract drift": the function's return type stayed `int`, so nothing — not the type checker, not the interpreter — flagged that its *meaning* changed from a revision number to a row count. Returning a distinct type or a named tuple would have made this a hard error instead of wrong data.
+- The off-by-one in pagination is worth noting because it's self-inconsistent within a single response: the payload returns 51 items while the adjacent `limit` field says 50, which is the kind of internal contradiction that makes a good test assertion.
+`─────────────────────────────────────────────────`
+
+All three findings are small, localized fixes. Say the word and I'll apply them and commit.

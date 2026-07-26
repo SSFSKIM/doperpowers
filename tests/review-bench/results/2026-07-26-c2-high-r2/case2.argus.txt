@@ -1,0 +1,37 @@
+All 7 candidate groups were verified; every worker completed, so coverage is full. Two candidates were refuted (the promo-code allocation concern and the `resolvePromos` signature narrowing), within-group duplicates collapsed, and the two separately-anchored reports of the removed weight guard merged into one finding by the same-root-cause rule.
+
+Full review comments:
+
+## Findings
+
+**[P0] Convert cents to dollars in `quickEstimate`; it now reports 100x the price — rates.ts:50-51**
+
+  `quickEstimate` (GET /estimate, the marketing widget) was not updated for the cents migration, so every legacy estimate is inflated 100x. `baseRateFor` now returns whole cents, but `api.ts:75` still does `roundDollars(baseRateFor(zone, weightKg)).toFixed(2)` — `roundDollars` is a no-op on an integer cent value, so `quickEstimate("domestic", 2)` returns `"590.00"` for a parcel that costs $5.90, and per the function's own doc comment the widget "renders the string as-is next to a dollar sign". This affects every request to the public estimate endpoint; `centsToDollars(baseRateFor(zone, weightKg)).toFixed(2)` restores the intended value.
+
+**[P0] Restore the positive-finite weight guard dropped from the quote path — quote.ts:52-54**
+
+  The commit deletes the positive-finite weight guard from `quoteShipment` along with the `RangeError` → 400 translation in `handleQuote`, and nothing re-establishes it: `parseQuoteRequest` only checks `typeof raw.weightKg !== "number"`, so `0`, negative, `NaN` and `Infinity` weights now reach pricing. `weightKg: 0` returns 200 with `total: 2.5`; `weightKg: -100` returns 200 with `subtotal: -117.5` but `total: 0`, because `discountCents` returns `Math.min(0, subtotalCents)` = the negative subtotal while the `if (discount > 0)` check suppresses the discount line — free shipping plus an itemization whose lines do not sum to the total. `NaN`/`Infinity` weights propagate to a non-serializable total. This contradicts README.md:28-30 ("`handleQuote` answers `400` — never a price — for ... a weight that is not a positive finite number"); the check belongs either in `parseQuoteRequest` or back at the top of `buildBreakdown`.
+
+**[P1] Keep `maxKg` inclusive in `tierFor`; `<` moved boundary weights up a tier — rates.ts:42**
+
+  `tierFor` now uses a strict `<` comparison (`TIERS.find((tier) => weightKg < tier.maxKg)`), where the previous loop used `weightKg <= tier.maxKg`. This moves every exact-boundary weight one tier up: `baseRateFor("domestic", 5)` returns `1150` cents instead of `875`, 1 kg goes from `370` to `495`, and 20 kg from `2350` to `2500`. It contradicts the unchanged contract in the same file (`maxKg` is documented as the inclusive upper bound, `rates.ts:6-9`) and in `README.md:34-36`, and since this commit was a dollars-to-cents conversion the change looks unintentional. Any parcel at a round 1 kg, 5 kg or 20 kg weight is affected, on both `handleQuote` and `quickEstimate`; restoring `weightKg <= tier.maxKg` fixes it.
+
+## Verdict
+
+Overall correctness: **patch is incorrect**
+
+Explanation: Three confirmed defects, all customer-visible pricing or validation regressions. The `quickEstimate` endpoint was left out of the dollars-to-cents migration and now quotes 100x the real price; the positive-finite weight guard and its 400 mapping were deleted with no replacement, so zero, negative and non-finite weights are priced instead of rejected; and `tierFor`'s boundary comparison flipped from inclusive to exclusive, overcharging every parcel at an exact tier bound.
+
+Confidence: 0.88
+
+---
+
+`★ Insight ─────────────────────────────────────`
+All three defects share one root shape: **a unit or contract encoded in prose rather than in types.** The cents migration changed what the integer returned by `baseRateFor` *means*, but `number` → `number` is invisible to the compiler, so `quickEstimate` kept compiling while silently becoming wrong. A branded type (`type Cents = number & { readonly __brand: unique symbol }`) would have turned both the `quickEstimate` bug and any future mixed-unit arithmetic into compile errors — the classic remedy for the "money as bare number" hazard.
+
+The second pattern is that removing validation and removing its error translation in the same commit hides the loss. Deleting the `Number.isFinite` guard alone would have been caught by any test asserting a 400; deleting the `try`/`catch` in `handleQuote` at the same time removed the only place the missing guard would have shown up. That is why the review protocol's L3 lens asks specifically what each *deleted* line used to guarantee.
+
+Third, the tier-boundary flip is what a loop-to-`find` rewrite invites: `for (…) if (weightKg <= tier.maxKg) return tier` and `TIERS.find(t => weightKg < t.maxKg)` look equivalent at a glance, and the `?? TIERS[TIERS.length - 1]` fallback makes the off-by-one silent rather than throwing — it returns a plausible number one tier up.
+`─────────────────────────────────────────────────`
+
+I can fix these if you'd like — the smallest correct patch is `centsToDollars` at `api.ts:75`, `<=` in `tierFor`, and restoring the weight guard together with the `RangeError` → 400 branch in `handleQuote`.

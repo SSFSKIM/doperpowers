@@ -1,0 +1,33 @@
+Full review comments:
+
+## Findings
+
+[P0] Fix `quickEstimate` returning cents formatted as dollars — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.yqgkkP/api.ts:74-76
+  `baseRateFor` now returns integer cents, but `quickEstimate` was not updated: `roundDollars(370)` is a no-op and `.toFixed(2)` yields `"370.00"` for a 1 kg regional parcel that used to quote `"3.70"`. The marketing widget renders this string directly after a dollar sign, so every legacy estimate is inflated 100x. It needs `centsToDollars` before formatting:
+```suggestion
+export function quickEstimate(zone: Zone, weightKg: number): string {
+  return centsToDollars(baseRateFor(zone, weightKg)).toFixed(2);
+}
+```
+
+[P1] Restore inclusive `maxKg` boundary in `tierFor` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.yqgkkP/rates.ts:41-43
+  The rewrite changed the comparison from `weightKg <= tier.maxKg` to `weightKg < tier.maxKg`, which contradicts the `WeightTier.maxKg` doc comment ("a parcel weighing exactly `maxKg` is priced in this tier, not in the next one up") and the README's "Weight tiers" section. Parcels at exactly 1, 5, or 20 kg now fall into the next tier up and are overcharged (e.g. 1 kg domestic goes from 370 to 495 cents). Use `weightKg <= tier.maxKg` in the `find` predicate.
+
+[P1] Reinstate the weight validation dropped from the quote path — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.yqgkkP/quote.ts:52-55
+  `quoteShipment` previously threw `RangeError` for a weight that is not positive and finite, and `handleQuote` translated it into a 400; both the throw and the `try`/`catch` in `api.ts` were removed and nothing replaced them. `parseQuoteRequest` only checks `typeof raw.weightKg === "number"`, so a body with `weightKg: -5`, `0`, `NaN`, or `Infinity` now returns HTTP 200 with a garbage price (negative total, or `NaN`/`Infinity` that serializes to `null`). This also invalidates the README's "Validation" section, which still promises a 400 for a weight that is not a positive finite number.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The cents migration missed the `quickEstimate` call site, producing prices 100x too high on the legacy endpoint; the `tierFor` rewrite silently flipped the documented inclusive tier boundary; and the removed weight validation lets invalid weights return a 200 with a nonsense total. Each is a behavior regression against documented invariants in the same repository.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- **Unit migrations are call-site problems, not type problems.** Switching money from dollars to integer cents is the right call (floating-point dollars accumulate rounding error), but because both representations are plain `number`, the compiler cannot flag a missed conversion. The `quickEstimate` bug is exactly what a branded type (`type Cents = number & { readonly __brand: "Cents" }`) exists to prevent — it costs one line and turns a silent 100x pricing bug into a compile error.
+- **Boundary conditions belong in tests, not only in doc comments.** The `<=` → `<` flip in `tierFor` is a one-character change that no type system catches and no runtime error surfaces; the invariant was written down in a comment and the README, but nothing executable enforced it. Tier lookups are a textbook case for table-driven tests over exact boundary weights (1, 5, 20 kg).
+- **Deleting a `throw` and its `catch` together looks tidy in a diff.** Removing the `RangeError` from `quoteShipment` and the `try`/`catch` in `handleQuote` is self-consistent, so the change reads as clean refactoring — but validation at the system boundary is the one place where checks are not speculative, because the input comes from outside your trust boundary.
+`─────────────────────────────────────────────────`
+
+Want me to apply the three fixes? They're small and independent: add the `centsToDollars` call, revert the tier comparison to `<=`, and reinstate the weight validation with its 400 translation.

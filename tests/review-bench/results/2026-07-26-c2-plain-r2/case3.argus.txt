@@ -1,0 +1,56 @@
+Reviewed the branch against `main` (merge base `fd5469f`) with an isolated argus reviewer at the plain effort level. The working tree was clean, so the comparison covered exactly the committed branch work.
+
+Full review comments:
+
+## Findings
+
+[P0] Bulk export is authenticated-only, exposing every tenant's documents — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.pytrVi/app.py:206-208
+
+  `handle_export_all` iterates `store.list_tenants()` and renders every document on the node, but it is guarded by `@authenticated` rather than `@admin_only`. Any caller with a valid non-admin token (e.g. `tok-ana`, tenant `acme`) can `GET /exports/all` and read `globex`'s documents, contradicting both the README route table ("`GET /exports/all` | admin only") and the Tenancy rule that "any route that can see across tenants is an admin route".
+
+```suggestion
+@admin_only
+def handle_export_all(request: Request, session: auth.Session) -> Response:
+    """GET /exports/all — every document on this node, for the warehouse loader."""
+```
+
+[P0] `save_document` returns row count but the caller reports it as the revision — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.pytrVi/store.py:118-122
+
+  The return value changed from `revision` to `len(rows)`, but the only caller, `handle_put_document` in `app.py:166-174`, still binds it to `revision` and emits it as `{"revision": ..., "etag": 'W/"%d"'}`. A `PUT` of 3 rows to a brand-new document now responds with `revision: 3` while the file on disk holds revision 1, so any client that feeds that value back as `expected_revision` gets a spurious 409, and ETags become meaningless. Either return the new revision here or update the handler to re-read it via `load_document` (the docstring at lines 98 and 107-108 also needs to match whichever is chosen).
+
+```suggestion
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"revision": current + 1, "rows": rows}, handle)
+    return current + 1
+```
+
+[P1] Page slice returns `limit + 1` names and repeats one per page — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.pytrVi/app.py:97-103
+
+  `last = first + limit` is already the exclusive end of the page, so slicing `names[first : last + 1]` yields `limit + 1` entries. With `limit=2` and names `[a, b, c, d]`, page 1 returns `[a, b, c]` and page 2 returns `[c, d]`, so the returned page size disagrees with the reported `limit` and every page duplicates its successor's first entry.
+
+```suggestion
+    first = (page - 1) * limit
+    last = first + limit  # exclusive end of this page
+
+    return Response(
+        200,
+        {
+            "documents": names[first:last],
+```
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The bulk export route is missing its admin guard, allowing any authenticated member to read every tenant's documents, and `save_document`'s changed return value makes every `PUT` report a row count as the document revision and ETag. The pagination slice additionally returns one extra, duplicated name per page.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Two of these three findings are the classic failure mode of **decorator-based authorization**: the security policy becomes a single token on a line above the function, so the difference between "any logged-in user" and "admin" is one word that no type checker and no local test will catch. The README route table is the only place the intended policy is written down, which is why the reviewer cross-checked against it — a good argument for driving the guard from the route table rather than restating it per handler.
+- The `save_document` bug shows why **changing a return value's meaning is more dangerous than changing its type**. Both the old `revision` and the new `len(rows)` are plain integers, so the caller keeps compiling, keeps running, and keeps emitting a number that looks like a revision. Bugs that preserve the shape of data while corrupting its meaning slip past every automated boundary and only surface later as spurious 409 conflicts.
+- The pagination slice is an off-by-one born from mixing conventions: `first + limit` is an *exclusive* end, but `[first : last + 1]` is the idiom for an *inclusive* one. Naming the variable `last` invited the inclusive reading — `end` would have made the mismatch visible at the point of use.
+`─────────────────────────────────────────────────`
+
+Want me to apply the three fixes? The export-route guard and the pagination slice are mechanical. The `save_document` one needs a call: return the new revision from the store (keeps the handler and its ETag semantics untouched, which I'd recommend), or leave the row count and have the handler re-read the revision.

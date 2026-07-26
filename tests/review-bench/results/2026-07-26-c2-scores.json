@@ -1,0 +1,42 @@
+{
+  "campaign": "C2 (doperpowers#29) — argus uplift + economy repricing, scored on post-#36 fixtures",
+  "fixtures": "post-#36 maintenance (commit 5d793ea): truth denominator 20 = 17 seeded (unchanged) + 3 promoted (case4-u1, case4-u2, case5-u1); case3 single-threaded statement and case5 retention bound added as bait tightening",
+  "run_ids": {
+    "codex_r3": "2026-07-26-c2-codex-r3",
+    "argus_plain_r2_v040": "2026-07-26-c2-plain-r2",
+    "argus_plain_r3_v041": "2026-07-26-c2-plain-r3",
+    "argus_high_r2_v041": "2026-07-26-c2-high-r2"
+  },
+  "engines": {
+    "codex": {"model": "gpt-5.6-sol", "effort": "xhigh", "invocation": "review-engine.sh (production path)"},
+    "argus": {"model": "claude-opus-5 (inherited default)", "effort": "high (settings default)", "invocation": "headless claude -p slash (C1.G3 path)"}
+  },
+  "seeded_17": {
+    "codex_r3":        {"recall": 17, "fp": 0, "time_s": [102, 493]},
+    "plain_r2_v040":   {"recall": 16, "fp": 0, "miss": ["case4-b3 remote-shell injection (same as r1)"], "time_s": [110, 205]},
+    "plain_r3_v041":   {"recall": 17, "fp": 0, "time_s": [95, 148]},
+    "high_r2_v041":    {"recall": 17, "fp": 0, "time_s": [322, 581]}
+  },
+  "promoted_3": {
+    "codex_r3": 3, "plain_r3_v041": 0, "high_r2_v041": 2,
+    "note": "u2 (remote umask) actively refuted by an argus verifier while codex finds it — carry to next fixture pass"
+  },
+  "subagent_economy_high": {
+    "baseline_r1": {"finders_per_case": 5, "verifiers": "one per candidate group", "announced_scale": "6-12", "time_s": [579, 1133]},
+    "high_r2_v041": {"finders_per_case": 2, "verifiers_per_case": [3, 5], "total_per_case": "5-7", "time_s": [322, 581]},
+    "mechanism": "ceil(lines/150) finder budget clamped [2, lens count] with round-robin lens bundling; verifiers packed whole-group up to 4 candidates"
+  },
+  "bar_verdicts": {
+    "G1_plain_vs_codex": "MET at v0.4.1 — recall 17/17 = codex 17/17, FP 0 vs 0 (v0.4.0 still missed case4-b3; v0.4.1's injection-sink boundary codification closed it)",
+    "G2_high_economy": "MET — recall 17/17 = baseline high 17/17, FP 2->0, finder wave 5->2, wall time ~halved",
+    "informational_delta_for_C4": "full-denominator: codex r3 20/20 vs plain r3 17/20, high r2 19/20 — the promoted u-entries are where the remaining engine gap lives; C3's escalation dial is the intended answer"
+  },
+  "new_unseeded_candidates_excluded": [
+    "case4: source-dir symlink probe (cross-engine convergent: codex r3, plain r2, high r2 [P1]) — genuine",
+    "case4: staging-filesystem free-space gap (high r2 [P2] PLAUSIBLE)",
+    "case4: find -type f drops symlinked archive files (plain r2 [P3], high r2 [P3])",
+    "case3: expected_revision null skips validation (codex r3 [P2])",
+    "case1: null config entry crashes load_tenant_limits (high r2 [P3] PLAUSIBLE)",
+    "case1: explicit-null tenant stringified to 'None' (high r2 [P3] PLAUSIBLE)"
+  ]
+}

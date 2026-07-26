@@ -1,0 +1,48 @@
+Full review comments:
+
+## Findings
+
+[P0] Guard lock is now held across the caller's block, serializing all keys — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.aVAVQT/keylock.py:46-61
+
+  `lock.acquire()` and the `yield` were moved inside `async with self._guard`, so the single global `_guard` is now held for the entire duration of every caller's critical section — including `await factory()` in `TTLCache.get_or_compute` (cache.py:130). Every `hold()` on *any* key now queues behind that one guard, which removes the per-key concurrency this module exists to provide (and contradicts README's "that guard is only ever held for the few statements that mutate the map -- never across an `await` that belongs to the caller"). It also makes the new `timeout` largely inert: a waiter blocks untimed on `self._guard`, and by the time it gets the guard the key lock has already been released by the previous holder, so `wait_for` rarely fires. A factory that recursively calls `hold()`/`get_or_compute()` for another key deadlocks outright, since `asyncio.Lock` is not reentrant. The reference is claimed under the guard before the acquire, so keeping the acquire/yield outside the guard (as before) is still safe.
+
+[P0] Deadline is slid before the expiry check, so hot entries never expire — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.aVAVQT/cache.py:77-82
+
+  `_lookup` sets `entry.expires_at = now + self._ttl` *before* testing `entry.expires_at <= now`. Because `hits` is monotonic, any key read `refresh_after_hits` times (3 by default) while fresh satisfies the refresh condition on every subsequent read, so its deadline is pushed forward at read time and the expiry branch can never be reached — the entry is served indefinitely no matter how long the process sat idle. That directly contradicts this change's own docstring ("A key whose deadline has already passed is a miss like any other and is recomputed") and the README ("once a deadline has passed the entry is gone"). The expiry check needs to run first against the pre-existing `expires_at`, and only a still-fresh entry should slide.
+
+[P0] In-flight event is leaked and never set when the factory raises — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.aVAVQT/cache.py:127-134
+
+  If `await factory()` raises (or the task is cancelled), `del self._inflight[key]` and `done.set()` are skipped, leaving an un-set `Event` registered for that key forever. Every later `get_or_compute` for the key takes the join branch at cache.py:105-111 and awaits an event that will never fire, hanging permanently. This fires on the very first failing handler: `_run_job` retries after a failed attempt (jobqueue.py:172-187), so attempt 2 blocks forever, the worker is wedged, and `drain()` never returns. Cleanup belongs in a `finally`.
+
+```suggestion
+            done = asyncio.Event()
+            self._inflight[key] = done
+            self._counters.incr("cache.get.miss")
+            try:
+                value = await factory()
+                self._store(key, value)
+            finally:
+                del self._inflight[key]
+                done.set()
+            return value
+```
+
+[P1] Renamed cache counters break `cache_hit_rate()` and disable warm-up — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.aVAVQT/cache.py:102-103
+
+  The counters were renamed to the `cache.get.*` namespace (`cache.get.hit` here, `cache.get.hit_after_wait` at :114/:124, `cache.get.miss` at :129), but `JobQueue.cache_hit_rate()` (jobqueue.py:202-204) still reads `cache.hit`, `cache.hit_after_wait`, and `cache.miss`. Those keys are never written now, so `total == 0` always and the method permanently returns the "nothing observed yet" value of 1.0. Consequently `warm_stale_keys()` always short-circuits at `self.cache_hit_rate() >= PREFETCH_HIT_RATE` (jobqueue.py:226) and never warms anything, and `stats()["cache_hit_rate"]` always reports 1.0. Either keep the old names or update the three reads in `cache_hit_rate()`.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The keylock refactor holds the global guard across the caller's awaited block (destroying per-key concurrency and neutering the new timeout), `_lookup` slides the deadline before the expiry check so hot entries never expire, a failing factory permanently leaks an unset in-flight event that hangs all later readers of that key, and the cache counter rename silently pins `cache_hit_rate()` at 1.0 and disables warm-up.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- All three P0s share a shape worth internalizing: **what a lock or a flag protects is defined by where the `await` boundaries fall.** Widening a mutex to cover a `yield`, sliding a deadline before rather than after the comparison that reads it, and setting an `Event` outside a `finally` are each a one-line placement choice whose blast radius is the whole concurrency model.
+- The `asyncio.Event` leak is the classic single-flight (thundering-herd) trap: the pattern is only correct if the "I'm computing this" marker is retired on *every* exit path, success or failure. Without `try/finally`, one exception converts a cache into a permanent deadlock for that key — and here it composes badly with the retry loop in `jobqueue.py`, which guarantees the second call hits the poisoned event.
+- The counter rename is a reminder that string-keyed metrics are an untyped API. Renaming `cache.hit` to `cache.get.hit` compiles, runs, and passes any test that doesn't assert on the derived rate — the failure is silent and shows up as a plausible-looking 1.0 hit rate that also quietly disables prefetch.
+`─────────────────────────────────────────────────`
+
+I can fix these if you'd like — the three P0s are each small, localized edits.

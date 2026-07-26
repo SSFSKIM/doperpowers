@@ -1,0 +1,41 @@
+All 11 candidates across 8 groups were verified; every dispatch completed. Three candidates were refuted (per-tenant watermark map, tenant allowlist validation, and strict `value` typing — all judged documented intent rather than defects), two duplicate formulations collapsed into their primaries, and one PLAUSIBLE finding merged into the CONFIRMED finding naming the same root cause from the other end.
+
+Full review comments:
+
+## Findings
+
+[P1] Fix inverted lateness cutoff dropping in-order readings — windows.py:70-73
+
+  The lateness check drops readings that are *not* late whenever `allowed_lateness > 0`. `cutoff = watermark + self.allowed_lateness` combined with `if reading.ts < cutoff` rejects anything that is not at least `allowed_lateness` seconds *ahead* of the tenant's watermark, which is the opposite of the documented rule in the class docstring ("further behind its tenant's watermark than `allowed_lateness` seconds") and of the base implementation (`reading.ts < self.watermark - self.allowed_lateness`). With the README's own example, `allowed_lateness=30` on a normal in-order 1 Hz stream, the watermark never advances for a dropped reading, so only about one reading per 30 seconds survives and the rest land in `dropped_late`; the larger the grace period, the more data is lost. The two forms coincide only at the default `allowed_lateness=0`, so a default-args test would not surface it. The fix is `cutoff = watermark - self.allowed_lateness`.
+
+[P1] Restore retirement of accumulated windows in flush() — aggregate.py:85-87
+
+  `flush()` no longer clears `_pending`, so it is now identical to `snapshot()` despite still being documented as "Emit and retire every accumulated window". Since `pipeline.summarize_files` flushes once per input file, any run with more than one path re-emits all earlier batches' windows in every later batch: with `paths=["a.ndjson", "b.ndjson"]`, `batches[1]["windows"]` repeats file A's windows (with counts now cumulative over A and B) alongside B's, so a consumer that concatenates or sums `report["batches"][*]["windows"]` double-counts. It also removes the memory bound the function's docstring promises — `open_window_count()` grows monotonically and each `flush()` re-sorts and rebuilds dicts for every window ever seen, making a B-file backfill O(B*W). `summarize_file` is unaffected because it only reads `batches[0]`. Restoring `self._pending.clear()` in `flush()` (keeping `snapshot()` non-destructive) fixes it.
+
+[P2] Hoist per-tenant config load out of the per-reading loop — pipeline.py:39-43
+
+  `load_tenant_limits` is called once per reading, and it re-opens and re-parses `tenants.json` on every call (`tenants.py` has no caching), so a batch of N readings performs N `open()`/`json.load()` cycles on the same small file — for multi-million-line NDJSON batches this turns a CPU-light streaming loop into a syscall-bound one, dominating the actual parse cost. It also makes results depend on when the config is read: if `tenants.json` is edited while a batch is in flight, some readings are clipped under the old limits and later ones under the new, so the same input file can yield different `clipped` counts. Loading limits once before the loop (e.g. a dict of tenant → `TenantLimits` built lazily, or an `lru_cache` on `load_tenant_limits`) fixes both.
+
+[P3] Handle non-dict / null config entries in load_tenant_limits — tenants.py:41-45
+
+  `load_tenant_limits` assumes every config value is a dict: `entry = config.get(tenant)` falling back to `config.get(DEFAULT_TENANT, {})` still yields `None` when the file literally contains `"default": null` (the `{}` default only covers an absent key), and `entry.get("max_value")` then raises `AttributeError` and aborts the whole ingest run. This only bites on a hand-edited `tenants.json` that deviates from the shipped `{"max_value": null}` shape — writing `"default": null` or a bare scalar to mean "no limits" is an easy mistake given the function's own docstring equates a missing config with an empty entry. Coercing a non-dict entry to `{}` before the `.get` (or raising a message that names the offending entry) would keep the failure mode aligned with the documented behavior. Verification: plausible — mechanism real, trigger not constructed.
+
+[P3] Reject or normalize a null/non-string `tenant` field instead of stringifying it — records.py:66
+
+  If a producer emits `{"tenant": null}` (a natural encoding of "no tenant" for a producer that always writes the key), `str(payload.get("tenant", DEFAULT_TENANT))` returns the literal string `"None"` rather than falling back to `DEFAULT_TENANT`, because `dict.get` only applies its default when the key is absent. That phantom tenant gets its own watermark bucket in `WindowAssigner`, its own `(tenant, window.start)` aggregation key, and rows labeled `"tenant": "None"`, splitting data the README says "belongs to the `default` tenant" away from it; it inherits the default limits only incidentally via the unknown-tenant fallback. Impact is limited to producers that write an explicit null (or a non-string tenant id, which is silently stringified); `payload.get("tenant") or DEFAULT_TENANT`, or rejecting a non-string `tenant` the way `value` is now rejected, would make the behavior match the documented contract. Verification: plausible — mechanism real, trigger not constructed.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+
+Explanation: Two confirmed P1 defects independently break the change's own stated contracts — the lateness cutoff's sign is inverted, so any `allowed_lateness > 0` discards nearly all in-order data instead of admitting late data, and `flush()` no longer retires accumulated windows, so multi-file batches double-count every earlier batch's rows and the promised memory bound is gone. A confirmed P2 performance defect re-reads and re-parses `tenants.json` once per reading.
+
+Confidence: 0.88
+
+`★ Insight ─────────────────────────────────────`
+- Both P1 bugs share a signature worth internalizing: **they are invisible under default arguments.** The lateness inversion collapses to identical behavior at `allowed_lateness=0`, and the `flush()` regression is unobservable through `summarize_file` because that path only ever reads `batches[0]`. A test suite exercising only the single-file convenience wrapper with default parameters passes cleanly against both. When a change adds a parameter or a batching dimension, the tests that matter are the ones that exercise the *non-default* value.
+- The `flush()`/`snapshot()` pair is a textbook example of why destructive and non-destructive reads should not have near-identical bodies. Once `flush()` was rewritten as `return self.snapshot()`, the only remaining evidence of its intended contract was a docstring — and docstrings do not fail builds.
+- Note what the verifiers *rejected*: the "untrusted tenant string" and "unbounded watermark map" candidates were refuted not because the mechanisms are imaginary but because this module has no trust boundary to defend and the per-tenant keying is the change's documented purpose. Recall-biased finders are supposed to raise these; the precision filter is what keeps them out of the report.
+`─────────────────────────────────────────────────`
+
+Say the word and I'll fix the three confirmed findings — the two P1s are one-line changes each (`watermark - self.allowed_lateness`, and restoring `self._pending.clear()`), and the P2 is hoisting the config load above the reading loop.

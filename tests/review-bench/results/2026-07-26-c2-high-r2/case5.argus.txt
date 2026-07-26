@@ -1,0 +1,44 @@
+All four verifiers completed; every group returned a verdict. Five findings survived, three candidates were refuted.
+
+`★ Insight ─────────────────────────────────────`
+Notice what the refuter-style discipline bought you here: the two P3 memory/security candidates and the clock candidate were all rejected on the same principle — a finding must name a *provably affected site*, not an assumed deployment. The traceback-retention candidate was refuted because the code's own comment says the cost is "knowingly paid," and the multi-tenant `result()` concern was refuted because nothing in the repo models tenants. Recall-biased finders are supposed to over-produce; the verifier is where that gets paid back.
+The three P0/P1 findings that survived all share a shape: the commit's own docstrings and README state invariants that the code no longer upholds. That's the highest-signal defect class in a refactor — the documentation was written from intent, the code drifted from it.
+`─────────────────────────────────────────────────`
+
+Full review comments:
+
+## Findings
+
+[P0] Clear `_inflight[key]` when the factory raises — failed key hangs every later caller forever — cache.py:127-133
+
+  `get_or_compute` registers `self._inflight[key] = done` before `await factory()` but only removes it and calls `done.set()` on the success path (`cache.py:127-133`), so any handler exception — or cancellation — leaves an unset `asyncio.Event` in `_inflight` permanently. This is reached on the ordinary retry path: after `_run_job` catches the failure it calls `get_or_compute` for the same key again, which now takes the join branch and blocks on `await pending.wait()` (`cache.py:111`) with no timeout and nobody left to fire the event. The worker never reaches `self._queue.task_done()`, so it is permanently lost, `drain()` never returns and `aclose()` hangs on `gather(*self._workers)`; with `DEFAULT_WORKERS = 4`, four failing keys stall the whole pool, and every later caller of that key hangs too. Wrapping the compute in `try/finally` that pops the key from `_inflight` and sets the event (so waiters wake, re-`_lookup`, miss, and recompute) fixes both the hang and the unbounded `_inflight` growth.
+
+[P0] Restore the key lock's guard release before `yield` — the guard is now held across the caller's whole computation — keylock.py:56-61
+
+  `hold()` now yields to the caller from inside `async with self._guard:` (`keylock.py:34` encloses the `yield` at :57 and the `lock.release()` at :59), so the single process-wide guard is held for the entire duration of the caller's block rather than just the map mutations. Because `TTLCache.get_or_compute` runs `await factory()` inside `async with self._locks.hold(...)` (`cache.py:120-130`), per-key locking is effectively gone: with `JobQueue(workers=4)` and four jobs on four different keys, workers 2-4 block at `keylock.py:34` until worker 1's handler finishes, turning concurrent recomputation into serial execution and letting one slow key stall every unrelated key. Two further consequences: the new `timeout` is inoperative, since no other task can hold a key lock while the guard is held, `await asyncio.wait_for(lock.acquire(), timeout)` is always uncontended and the `except asyncio.TimeoutError` branch at :51 is unreachable — a waiter for a different key instead blocks on the untimed guard; and `_guard` is not reentrant, so any factory that itself calls `get_or_compute` for another key deadlocks that task permanently (that worker never reaches `task_done()`, so `drain()` never returns). Dedenting lines 46-61 back out of the guard block, keeping only the map mutations and the refcount increment under it, restores both behaviors.
+
+[P1] Check expiry before sliding the deadline in `_lookup` — expired entries are resurrected and served forever — cache.py:74-80
+
+  `_lookup` slides the deadline before checking it, so any key that has been read at least `refresh_after_hits` times (default 3) never expires again. At cache.py:75-80, `entry.hits += 1` and `entry.expires_at = now + self._ttl` run ahead of `if entry.expires_at <= now`, which then can never be true for a positive TTL. A key read three times while fresh and then read again an arbitrarily long time after its deadline is served the old value as a hit, the slide repeats on that read, and the entry is never dropped from `_entries` — it is served stale indefinitely and `cache.get.expired` becomes unreachable for it. This contradicts the invariant stated in the same commit (class docstring: "A key whose deadline has already passed is a miss like any other and is recomputed", plus the README's "once a deadline has passed the entry is gone"). Moving the expiry check ahead of the hit accounting, and sliding only on the surviving path, restores the documented behavior.
+
+[P1] Renaming cache counters to `cache.get.*` silently breaks `cache_hit_rate()` and warm-up — cache.py:102-102
+
+  The counter names emitted by `TTLCache` moved into a `cache.get.*` namespace (cache.py:102, 114, 124, 129), but `JobQueue.cache_hit_rate()` (jobqueue.py:203-204) still reads `cache.hit`, `cache.hit_after_wait` and `cache.miss`. `Counters.get` returns 0 for unknown names, so the breakage is silent: `total` is always 0 and the function permanently returns the "nothing observed yet" value `1.0`. Two consequences follow for any queue using the default shared counters — `warm_stale_keys()` returns 0 at the `cache_hit_rate() >= PREFETCH_HIT_RATE` gate on every call, making prefetching dead code however badly the cache is missing, and `stats()["cache_hit_rate"]` reports a fabricated 1.0 to whatever consumes it. Updating the three lookups in `cache_hit_rate()` to the new names (or keeping the old emitted names) resolves it.
+
+[P2] Apply the timeout to the join wait — `pending.wait()` is unbounded — cache.py:110-111
+
+  The join fast-path added at cache.py:105-115 ignores the new timeout: `await pending.wait()` runs before `timeout` is even resolved (lines 117-118), and `timeout` is only ever forwarded to `hold()`. A caller that constructs `TTLCache(lock_timeout=...)` or passes `timeout=` — the only situation where this matters — gets an unbounded wait instead of the documented `asyncio.TimeoutError` whenever another coroutine is already computing the key and is stuck upstream, which is precisely the case the timeout was added for. The wait is not just long but potentially permanent: because `del self._inflight[key]` and `done.set()` (lines 132-133) follow `await factory()` with no `try/finally`, a factory that raises leaves a never-set event in `_inflight`, so every later caller for that key parks forever on line 111 (including the job queue's own retry attempts). Resolving `timeout` before the join and wrapping the wait in `asyncio.wait_for`, plus setting the event from a `finally`, would close both halves.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+
+Explanation: Two confirmed P0 defects make the change unsafe to land as written — `get_or_compute` leaves a never-set `asyncio.Event` in `_inflight` when a handler raises, which permanently hangs the retry and every later caller of that key, and `KeyLock.hold` now holds its global guard across the caller's `yield`, which serializes all keys, renders the new timeout unreachable, and deadlocks on any reentrant use. Two further confirmed P1 defects break invariants the same commit documents: `_lookup` slides an entry's deadline before testing it, so hot keys never expire, and the renamed cache counters silently pin `cache_hit_rate()` at 1.0, disabling warm-up entirely.
+
+Confidence: 0.88
+
+---
+
+All five findings are CONFIRMED (triggers reconstructed by an independent verifier), so none rest on speculation. Three candidates were refuted and are not shown: retained exception tracebacks (the code's own comment declares that cost knowingly paid), the warm-up throttle using the real clock rather than an injectable one (no affected site — `JobQueue` never took a clock and the repo has no tests), and sequential job ids in `result()` (no tenancy model exists in the codebase).
+
+Want me to fix these? The two P0s are small, contained edits — a `try/finally` in `get_or_compute` and a dedent in `hold()` — and the two P1s are a statement reorder and three string renames.

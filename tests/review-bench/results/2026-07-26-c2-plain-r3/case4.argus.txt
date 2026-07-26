@@ -1,0 +1,37 @@
+Full review comments:
+
+## Findings
+
+[P0] Manifest v2 adds a label column but prune.sh still parses v1 — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.1c4tNR/snapshot.sh:101-101
+  `snapshot.sh` now emits four tab-separated fields (`label`, `epoch`, `bytes`, `path`), but `prune.sh` was not updated: its reader at `prune.sh:62` is still `while IFS=$'\t' read -r epoch bytes path`, so with four fields `path` receives the concatenation `"<bytes>\t<archive-path>"`. The `[ ! -f "$path" ]` test then always fails, and every run logs "manifest points at a missing archive, skipping" and rotates nothing — retention silently stops working on every run (`run-backup.sh` pipes the manifest straight into `prune.sh`). `prune.sh` also still derives the label with `label="${base%%-*}"` (line 71), which the README now says v2 exists to replace, and its header comment still documents the v1 format.
+
+[P1] Free-space check never enforces because "0" is a truthy string — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.1c4tNR/lib/common.sh:81-84
+  `snapshot.sh` sets `FORCE="${BACKUP_FORCE:-0}"`, so the default value passed into `check_free_space` is the string `0`, and `[ "$force" ]` is a non-empty-string test that is true for `0`. The shortfall branch is therefore always taken and the check degrades to a log line even without `--force`, defeating the "refuse to run out of disk" behavior in all default configurations.
+```suggestion
+  if [ "${force:-0}" != 0 ]; then
+    log "only ${avail_kb}KB free in $dir, wanted ${need_kb}KB -- continuing anyway"
+    return 0
+  fi
+```
+
+[P1] Staging directory cleanup trap was dropped, leaking full-size archives in /tmp — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.1c4tNR/snapshot.sh:77-77
+  The old code paired `mktemp -d` with `trap 'rm -rf "$STAGE"' EXIT INT TERM`; the new `STAGE="$(make_stage)"` has no trap and relies solely on `rmdir "$STAGE"` at line 98 on the success path. Any failure after staging — `tar` erroring under `set -e`, `replicate` calling `die` on a dropped SSH connection, or a SIGINT/SIGTERM from cron — leaves the staging directory and the complete uncompressed-source-sized `.tar.gz` inside it behind in `TMPDIR` forever, which on a repeatedly failing replication target will fill `/tmp`.
+
+[P2] Archive name and remote dir are interpolated into a remote shell command — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.1c4tNR/lib/common.sh:97-99
+  `$BACKUP_REMOTE_DIR` and `$name` (derived from `--label`, an unvalidated CLI argument) are pasted into a single-quoted string that `ssh` hands to a remote shell. A label or configured remote directory containing a single quote breaks out of the quoting and executes arbitrary commands on the replica host — e.g. `--label "a'; rm -rf ~; '"`. Passing the name via the remote shell's positional parameters (`ssh host 'sh -s "$0" "$1"' ... `) or rejecting labels outside `[A-Za-z0-9_.]` would close this.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The new manifest v2 format is written by `snapshot.sh` but never taught to `prune.sh`, so archive rotation stops entirely, and the new free-space guard is inert because its default `0` value passes a non-empty-string test. The lost staging cleanup trap and the remote-shell interpolation are additional real defects.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- **Format changes need both ends in one commit.** The manifest is an implicit contract between `snapshot.sh` (writer) and `prune.sh` (reader). Shell's `read -r a b c` silently absorbs all extra fields into the last variable rather than erroring, so a widened record produces no crash — just a reader that quietly stops matching reality. That silence is exactly why the retention failure would only surface as disks filling weeks later.
+- **`[ "$x" ]` in POSIX shell tests string emptiness, not truthiness.** `"0"` is a one-character string, so the test passes. Numeric-flag comparisons need an explicit `[ "$x" -ne 0 ]` or `[ "$x" != 0 ]`.
+- **`trap ... EXIT` is the only reliable cleanup under `set -e`.** A cleanup line placed on the success path runs only when nothing goes wrong, which is precisely the case where cleanup matters least.
+`─────────────────────────────────────────────────`
+
+The P0 (prune reading the old manifest layout) and the first P1 (free-space guard never firing) both defeat the stated goals of the commit itself, so they're the two worth fixing before this lands. Say the word and I'll apply fixes for all four.

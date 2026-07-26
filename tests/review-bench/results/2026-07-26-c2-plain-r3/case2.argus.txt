@@ -1,0 +1,35 @@
+Review complete — three findings, all regressions from the cents refactor.
+
+Full review comments:
+
+## Findings
+
+[P0] `quickEstimate` now returns cents formatted as dollars (100x too high) — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.uk2Ck4/api.ts:74-76
+  `baseRateFor` now returns integer cents, but `quickEstimate` still wraps it in `roundDollars(...).toFixed(2)`, so a 3.2 kg regional parcel that used to render as `$9.50` now renders as `$950.00`. Per the docstring the marketing widget prints this string verbatim next to a dollar sign, so every legacy estimate is inflated 100x. It should convert at the edge like `handleQuote` does (`roundDollars` then becomes an unused import under `noUnusedLocals`).
+  ```suggestion
+export function quickEstimate(zone: Zone, weightKg: number): string {
+  return centsToDollars(baseRateFor(zone, weightKg)).toFixed(2);
+}
+  ```
+
+[P0] Restore the positive-finite weight guard; `handleQuote` now prices bad weights — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.uk2Ck4/quote.ts:52-55
+  The `RangeError` for a non-positive or non-finite `weightKg` was dropped from `quoteShipment` along with the `try`/`catch` in `handleQuote`, and `parseQuoteRequest` only checks `typeof raw.weightKg === "number"`. A body with `weightKg: -5` now returns `200` with a negative/nonsense price, and `weightKg: NaN` yields `totalCents: NaN` which serializes as `"total": null`. This contradicts the unchanged README contract ("`handleQuote` answers `400` — never a price — for … a weight that is not a positive finite number"); the check belongs back in `buildBreakdown`/`quoteShipment` or in `parseQuoteRequest`.
+
+[P1] `tierFor` boundary flipped to exclusive, repricing parcels at exactly `maxKg` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.uk2Ck4/rates.ts:41-43
+  The rewrite changed the predicate from `weightKg <= tier.maxKg` to `weightKg < tier.maxKg`, so a parcel weighing exactly a tier bound falls into the next tier up — a 1.0 kg domestic parcel goes from 370 cents (tier `maxKg: 1`) to 495 cents (tier `maxKg: 5`), and 5.0 kg and 20.0 kg shift similarly. This contradicts the `WeightTier.maxKg` doc comment right above ("Inclusive upper bound … a parcel weighing exactly `maxKg` is priced in this tier, not in the next one up") and the README "Weight tiers" section, neither of which changed, so it reads as an accidental regression rather than an intended repricing.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The cent conversion was not applied at the `quickEstimate` edge, so that endpoint reports amounts 100x too large; the weight validation that the README still documents as returning `400` was deleted, letting negative and `NaN` weights produce `200` responses; and `tierFor` silently switched to an exclusive upper bound, contradicting its own documented inclusive semantics.
+Confidence: 0.9
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- All three findings share one root cause pattern: a **unit-of-measure refactor** (dollars → integer cents) that changed a function's return contract but not every caller. `handleQuote` was updated to convert at the boundary; `quickEstimate` was missed. This is exactly why unit changes benefit from a nominal type (e.g. `type Cents = number & { __brand: "cents" }`) — the compiler then catches the missed call site instead of shipping a 100x pricing bug.
+- The second and third findings are both cases where **prose documentation stayed put while code moved**. The README and the `maxKg` doc comment are unchanged in the diff, so they act as an oracle: any behavior that now contradicts them is either a bug or an undocumented intentional change. Reading unchanged docs alongside a diff is a cheap, high-yield review technique.
+- `NaN` deserves special note: it defeats naive validation twice over. `typeof NaN === "number"` passes a type check, and `JSON.stringify({ total: NaN })` silently produces `"total": null` rather than throwing — so the bad input surfaces to the client as a missing field rather than an error.
+`─────────────────────────────────────────────────`
+
+Want me to apply the fixes? They're small: convert at the `quickEstimate` edge, restore the positive-finite weight guard, and revert `tierFor` to `<=`.

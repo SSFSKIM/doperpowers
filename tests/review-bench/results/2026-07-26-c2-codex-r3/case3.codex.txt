@@ -1,0 +1,15 @@
+The patch introduces a cross-tenant authorization vulnerability and reports incorrect revisions for successful writes. It also has validation and pagination defects that can cause unconditional overwrites and duplicate page entries.
+
+Full review comments:
+
+- [P1] Enforce admin-only access on the bulk export — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2tQOgu/app.py:206-206
+  With any valid member token, this decorator admits the request and the loop below reads every tenant's files, so `GET /exports/all` exposes cross-tenant document contents despite the route and tenancy contract being admin-only. Use the admin authorization decorator here.
+
+- [P1] Return the persisted revision from save_document — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2tQOgu/store.py:122-122
+  When the row count differs from the new revision, this returns the wrong value to `handle_put_document`, which publishes it as the revision and ETag. For example, creating a ten-row document stores revision 1 but reports 10, causing a subsequent `expected_revision: 10` write to conflict.
+
+- [P2] Reject null when expected_revision is present — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2tQOgu/app.py:161-162
+  When the payload explicitly includes `expected_revision: null`, `body.get` returns `None` and this guard skips validation; `save_document` then interprets it as an unconditional write, so a malformed conditional request can overwrite the current revision instead of receiving a 400. Distinguish an absent key from a present non-integer value.
+
+- [P2] Use an exclusive end index for pagination — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2tQOgu/app.py:103-103
+  For any page with at least `limit + 1` remaining documents, `last` is already `first + limit`, but adding one in the slice returns `limit + 1` items. The next page starts at `first + limit`, so the boundary document is also repeated across pages.

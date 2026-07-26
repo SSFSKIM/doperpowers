@@ -1,0 +1,44 @@
+The plain-level review of this branch against `main` is complete. It found two correctness bugs that would break the new multi-tenant batching behavior, plus one performance issue.
+
+Full review comments:
+
+## Findings
+
+[P1] Fix inverted sign in lateness cutoff — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.wzQM0Y/windows.py:70-71
+
+  The cutoff adds `allowed_lateness` to the watermark instead of subtracting it, so the grace period now *rejects* readings instead of admitting them. With any `allowed_lateness > 0` (e.g. the README's `allowed_lateness=30`), a tenant whose watermark is 100 has every subsequent reading with `ts < 130` dropped as late — including perfectly in-order readings at ts 110 or 120 — and `dropped_late` inflates accordingly. The class docstring still states a reading is late only when it "has fallen further behind its tenant's watermark than `allowed_lateness` seconds", which matches the old `watermark - allowed_lateness` form.
+```suggestion
+            cutoff = watermark - self.allowed_lateness
+            if reading.ts < cutoff:
+```
+
+[P1] Restore retirement of windows in `flush()` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.wzQM0Y/aggregate.py:85-87
+
+  `flush()` now delegates to `snapshot()` and never clears `_pending`, despite the docstring saying "Emit and retire every accumulated window". In `summarize_files` (pipeline.py:50) the aggregator is flushed once per batch, so every batch's `windows` list re-emits all windows from all previous batches (duplicated rows, with counts that keep growing), and the aggregator holds every window ever seen — exactly the unbounded growth the `summarize_files` docstring says the per-batch flush is there to avoid. `summarize_file` is unaffected since it only ever passes one path.
+```suggestion
+    def flush(self) -> List[Dict[str, object]]:
+        """Emit and retire every accumulated window."""
+        rows = self.snapshot()
+        self._pending.clear()
+        return rows
+```
+
+[P2] Hoist tenant limit lookup out of the per-reading loop — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.wzQM0Y/pipeline.py:39-41
+
+  `load_tenant_limits` opens and JSON-parses `tenants.json` on every call, and it is called once per reading, so ingesting a file of N readings performs N file opens plus N full config parses. For the backfill workload this change is built for (large NDJSON batches), that dominates the loop cost. Loading the config once before the loop, or memoizing limits per tenant in a dict, keeps behavior identical while making it O(number of distinct tenants).
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The lateness cutoff sign is inverted, which drops in-order readings whenever `allowed_lateness > 0`, and `flush()` no longer clears accumulated state, causing duplicated rows and unbounded memory growth across batches in `summarize_files`. Both contradict the docstrings in the same change.
+Confidence: 0.9
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Both P1 findings share a diagnostic signature worth internalizing: **the docstring and the code disagree**. When a diff changes behavior but leaves the surrounding prose describing the old contract, one of the two is a mistake — and in a refactor it is almost always the code. Docstrings act as a cheap, in-repo oracle for intent.
+- The `flush()` bug is a classic hazard of deduplicating two similar methods. `snapshot()` (read-only) and `flush()` (read-and-clear) look nearly identical, so collapsing one into the other is tempting — but the *side effect* was the whole point of the distinction. When unifying methods, ask what each one does beyond returning a value.
+- The severity split here is instructive: the two P1s produce silently wrong output (dropped data, duplicated rows) rather than crashing, which is why a batch pipeline can run "successfully" for a long time before anyone notices. The P2 only costs time. Wrong-but-quiet outranks slow-but-correct.
+`─────────────────────────────────────────────────`
+
+I have not changed any code. Say the word and I'll apply the two P1 fixes and the P2 hoist, then re-run the review to confirm.

@@ -1,0 +1,43 @@
+The reviewer ran on a clean worktree against the merge base `ede2974`, covering all seven changed files (227 insertions, 61 deletions).
+
+Full review comments:
+
+## Findings
+
+[P0] Fix inverted lateness cutoff — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.QWknEE/windows.py:70-73
+  The cutoff sign is flipped relative to the previous logic (`reading.ts < self.watermark - self.allowed_lateness`). With `cutoff = watermark + allowed_lateness`, any reading whose timestamp is below the watermark *plus* the grace period is dropped — including strictly newer, perfectly in-order readings (e.g. watermark 100, `allowed_lateness=30`, a reading at ts 110 is discarded and counted in `dropped_late`), while readings that are genuinely late by up to the grace period are also dropped instead of being admitted. The two forms only coincide when `allowed_lateness == 0`, so any caller using the documented `allowed_lateness=30` example in the README loses most of its data.
+```suggestion
+            cutoff = watermark - self.allowed_lateness
+            if reading.ts < cutoff:
+                self.dropped_late += 1
+                return None
+```
+
+[P0] Restore retiring of pending windows in `flush()` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.QWknEE/aggregate.py:85-87
+  `flush()` now delegates to `snapshot()`, which deliberately does not clear `_pending`, but the docstring still says "emit and retire" and `summarize_files` (pipeline.py:50) relies on the old retiring behavior. As written, every batch's `windows` list re-emits all windows accumulated since the start of the run, so batch N contains batch 1..N-1's rows (with counts that keep growing), and the stated goal that "a long backfill does not have to hold every window it has ever seen" is not achieved since memory grows monotonically. `flush()` should snapshot and then clear:
+```suggestion
+    def flush(self) -> List[Dict[str, object]]:
+        """Emit and retire every accumulated window."""
+        rows = self.snapshot()
+        self._pending.clear()
+        return rows
+```
+
+[P1] Hoist tenant limit lookup out of the per-reading loop — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.QWknEE/pipeline.py:39-41
+  `load_tenant_limits` opens and JSON-parses `tenants.json` on every call (tenants.py:36-38), and it is now invoked once per reading, so a file with a million readings performs a million file opens and JSON parses in the hot path — the dominant cost of the pipeline. Load the config once per run (or cache per tenant in a dict before the loop) and reuse it; a side benefit is that limits then stay consistent for the whole run instead of changing mid-file if the config is edited.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The lateness cutoff sign inversion drops valid in-order readings whenever `allowed_lateness > 0`, and `flush()` no longer clears accumulated state, so `summarize_files` emits duplicated, ever-growing window rows per batch. Both are behavioral regressions against the documented contract in the README and the pipeline's own docstring.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Both P0 findings share a signature worth internalizing: a refactor that changes *where* logic lives (extracting a `cutoff` variable, delegating `flush()` to a new `snapshot()`) silently changes *what* it does. The docstrings stayed truthful to the old behavior in both cases — a stale docstring adjacent to a refactored body is one of the cheapest bug smells to grep for.
+- The `flush()`/`snapshot()` split is a classic command-query separation attempt: `snapshot()` is the pure query, `flush()` should be query-plus-mutation. Delegating the command to the query without re-adding the mutation is the standard failure mode of that split.
+- The P1 finding is about a hidden cost boundary: `load_tenant_limits` looks like a pure lookup at the call site, but performs file I/O. Functions that touch the filesystem are worth naming or typing so that a caller can see the cost before moving the call into a loop.
+`─────────────────────────────────────────────────`
+
+I can apply the two P0 fixes and hoist the tenant config load if you want them.

@@ -1,0 +1,31 @@
+Running a high-effort argus review (259 changed lines → 2 finders covering 5 lenses + 3 packed verifiers) of the changes against `main`. All finders and verifiers completed; every candidate group was verified.
+
+Full review comments:
+
+## Findings
+
+[P0] Restore admin check on bulk export — /exports/all leaks every tenant's data — app.py:206-208
+
+  `handle_export_all` is decorated with `@authenticated` rather than `@admin_only`, so any valid session — including a plain member token such as `tok-ana` (tenant `acme`, role `member`) — can call `GET /exports/all?format=csv` and receive the rendered contents of every document of every tenant on the node. The handler never consults `session.tenant`; it iterates `store.list_tenants()` directly. This contradicts the route table added in this same change (`GET /exports/all` | admin only) and the Tenancy rule that "any route that can see across tenants is an admin route". Swapping the decorator to `@admin_only`, as `handle_list_tenants` already does, closes the cross-tenant disclosure.
+
+[P1] Return the new revision from save_document, not the row count — store.py:120-122
+
+  `save_document` now ends with `return len(rows)` instead of the new revision, but its only caller was not updated: `handle_put_document` still binds that value to `revision` and echoes it as both the `revision` field and the `W/"%d"` ETag. Every `PUT /documents/<name>` therefore reports the row count where the revision belongs — e.g. `{"rows": []}` on a new document writes revision 1 but responds `{"revision": 0, "etag": 'W/"0"'}`, and a document at revision 7 rewritten with three rows reports `revision: 3`. This breaks the conditional-write protocol documented in the README: a client that feeds the returned value back as `expected_revision` gets a 409 it cannot satisfy without a separate re-read (and `0` in particular means "must not exist yet"), and the ETag no longer distinguishes document states, since two different revisions with the same row count share `W/"n"`. Either return `current + 1` from `save_document`, or have the handler read the revision back via `load_document` as the new docstring suggests.
+
+[P1] Pagination slice returns limit+1 names and overlaps adjacent pages — app.py:98-103
+
+  `handle_list_documents` returns one more name than the requested `limit` and repeats an entry across page boundaries. Since Python slice ends are exclusive, `last = first + limit` is already the correct exclusive end, so `names[first : last + 1]` adds an extra element: with `?page=1&limit=3` over 10 documents the response contains 4 names while the body reports `"limit": 3`, and `?page=2&limit=3` starts at `names[3]`, the same document already returned as the last entry of page 1. Any client that concatenates pages duplicates one document per boundary, and `limit=200` can return 201 entries despite the cap documented in the README. The fix is `names[first:last]` (and the comment on the `last` line, which calls it "index of the final entry on this page", should read as the start of the next page).
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Three defects were confirmed against the code: the node-wide export route is guarded by `@authenticated` instead of `@admin_only`, which discloses every tenant's documents to any authenticated member; `save_document` returns the row count where its caller still treats the value as the revision, breaking the conditional-write and ETag protocol; and the new pagination slice returns one extra name per page and overlaps page boundaries. Two further candidates (an unguarded `BadDocumentName` in the export loop, and the unbounded size of the bulk export) were refuted as unreachable or intentional.
+Confidence: 0.88
+
+`★ Insight ─────────────────────────────────────`
+- **Decorators make authorization a one-token decision — which cuts both ways.** Moving the auth check into `@authenticated` / `@admin_only` is a genuine improvement over inline checks, but it also means the entire security posture of a route is a single identifier that can be wrong without looking wrong. There is no local code inside `handle_export_all` that contradicts its decorator; the mismatch is only visible against the route's *semantics* (it iterates `list_tenants()`). A useful invariant to enforce mechanically: any handler that reads `store.list_tenants()` must be `@admin_only` — that is testable in a single unit test that walks the route table.
+- **Changing a return value is a cross-file edit even when only one file changes.** The `save_document` docstring was updated to say the revision is no longer returned, which documents the new contract honestly — but the caller kept the old variable name `revision`, so the code still reads correctly at the call site while being wrong. Renaming the bound variable (`written = store.save_document(...)`) would have made the bug visible at the point of use, which is the general lesson: when a return value's *meaning* changes but its *type* does not, the type checker cannot help you and only naming can.
+- **Off-by-one in slices usually comes from a comment, not the code.** The `# index of the final entry on this page` comment describes an inclusive-bound mental model, and the `+ 1` faithfully implements that model — inside a language whose slices are exclusive. The bug is the model mismatch, so fixing the slice without fixing the comment leaves the next editor to reintroduce it.
+`─────────────────────────────────────────────────`
+
+I can apply all three fixes if you'd like — they are small and independent, and the pagination and revision fixes both have observable behavior worth a test.

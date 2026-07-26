@@ -1,0 +1,18 @@
+The patch introduces multiple cache liveness and correctness regressions: failed computations poison keys, keyed operations become globally serialized, and expired values can be revived. Timeout and warm-up behavior are also broken.
+
+Full review comments:
+
+- [P1] Clear failed computations from the in-flight map — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.tjwZ5D/cache.py:132-133
+  When `factory()` raises or is cancelled, execution skips these cleanup lines, leaving the key mapped to an event that is never set. The next `JobQueue` retry—and every later caller for that key—then blocks forever at `pending.wait()`, so `drain()` cannot complete; clear and signal the in-flight record in exception-safe cleanup.
+
+- [P1] Release the registry guard before acquiring a keyed lock — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.tjwZ5D/keylock.py:46-50
+  Because these acquisitions and the subsequent `yield` remain inside `async with self._guard`, a caller holds the global registry guard for the entire protected operation. While any key is being computed, misses for every other key cannot progress, a factory requesting another key deadlocks, and timeouts cannot start while blocked on the guard; restrict the guard to refcount/map mutations.
+
+- [P1] Check expiry before extending the deadline — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.tjwZ5D/cache.py:77-80
+  For a value with `refresh_after_hits - 1` prior fresh reads, the first read after its deadline increments the hit count and rewrites `expires_at` before the expiration check, so the expired value is served instead of recomputed. Check the old deadline first and update hit/refresh metadata only when the entry is still fresh.
+
+- [P1] Apply timeouts while joining in-flight computations — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.tjwZ5D/cache.py:110-111
+  When the key already has an in-flight computation, this unconditional wait occurs before either the explicit `timeout` or configured `lock_timeout` is applied. A caller therefore waits indefinitely behind a stuck factory instead of receiving `asyncio.TimeoutError`; apply the same timeout policy to this join path.
+
+- [P2] Keep the hit-rate reader aligned with renamed counters — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.tjwZ5D/cache.py:102-102
+  `TTLCache` now emits `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, but `JobQueue.cache_hit_rate()` still reads the old names. With the default shared counters, the total remains zero and the rate is always reported as 1.0, so low-hit warm-up never runs and reported statistics are incorrect; update the reader or retain the old names.

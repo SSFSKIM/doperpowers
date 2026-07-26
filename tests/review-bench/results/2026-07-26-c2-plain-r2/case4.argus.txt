@@ -1,0 +1,39 @@
+The review is complete. The reviewer's verdict is that the patch is incorrect — the manifest format changed in `snapshot.sh` but `prune.sh` was never updated to match, which silently disables rotation entirely.
+
+Full review comments:
+
+## Findings
+
+[P0] Update prune.sh to parse v2 manifest records — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.t8eVcg/prune.sh:62-67
+  `snapshot.sh` now emits four tab-separated fields (`label\tepoch\tbytes\tpath`), but `prune.sh`'s reader was left at the v1 three-field layout, so `read -r epoch bytes path` assigns `epoch=<label>`, `bytes=<epoch>` and `path="<bytes>\t<archive-path>"`. The `[ ! -f "$path" ]` test then always fails, every run logs "manifest points at a missing archive, skipping", and no rotation ever happens — archives accumulate without bound, which is the opposite of what the change intends. It also means `label="${base%%-*}"` (line 71) never runs, so the new label column that was added specifically to fix labels containing `-` is unused; the loop should read the label field directly and drop the basename-derived label.
+
+[P1] Compare force flag by value, not emptiness, in check_free_space — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.t8eVcg/lib/common.sh:81-84
+  `snapshot.sh` passes `FORCE="${BACKUP_FORCE:-0}"`, i.e. the literal string `0` when force is off, but `[ "$force" ]` is a one-argument string test that is true for any non-empty value. The shortfall branch therefore always wins and the check is only ever a warning, so `snapshot.sh` never actually refuses a run for lack of space.
+  ```suggestion
+  if [ "$force" = 1 ]; then
+  ```
+
+[P1] Restore staging-directory cleanup on failure paths — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.t8eVcg/snapshot.sh:77-98
+  The old `trap 'rm -rf "$STAGE"' EXIT INT TERM` was dropped when staging moved into `make_stage`, and the only cleanup left is `rmdir "$STAGE"` on the success path. Any failure after line 77 — a `tar` error under `set -e`, a `replicate` failure calling `die`, or a signal — leaves the scratch directory plus a full-size (possibly complete) archive in `$TMPDIR`, and repeated failures accumulate copies until `/tmp` fills. Re-adding the trap right after `STAGE="$(make_stage)"` restores the previous guarantee and makes the explicit `rmdir` unnecessary.
+
+[P1] Probe the source tree through a trailing slash so symlinked sources work — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.t8eVcg/snapshot.sh:63-69
+  `find` defaults to `-P` and does not descend a symlinked start point without a trailing slash — the same pitfall the new `prune.sh` comment calls out for the archive directory. If `BACKUP_SOURCE_DIR` is a symlink to a mounted volume, `find "$BACKUP_SOURCE_DIR" -mindepth 1 -print -quit` prints nothing and exits 0, so a perfectly populated tree is reported as empty, `snapshot.sh` exits 3, and `run-backup.sh` logs "nothing to archive" and skips the backup silently on every run. `du -sk "$BACKUP_SOURCE_DIR"` on line 74 has the same issue (it would size the symlink, not the tree, making `need_kb` meaninglessly small); using `"$BACKUP_SOURCE_DIR/"` in both places matches how `tar -C` already resolves the path.
+
+[P3] Match symlinked archives in list_archives as the old glob did — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.t8eVcg/prune.sh:44-44
+  The replaced glob paired with `[ -f "$file" ]`, which follows symlinks, so a `<label>-<stamp>.tar.gz` symlink pointing at a real archive counted toward retention and was pruned. `find ... -type f` tests the link itself and skips such entries, so the set is not identical to the glob's as the comment above claims; `-xtype f` (or `-type f,l`) preserves the old behaviour.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: `prune.sh` was never updated for the v2 manifest layout, so rotation stops working entirely on every run, and the new free-space guard is inert because the force flag is tested for emptiness rather than value. The dropped staging trap and the symlink-unaware source probe are additional concrete regressions.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+Two of these findings share a root cause worth naming: **shell tests that look like booleans but aren't.** `[ "$force" ]` is a one-argument test that asks "is this string non-empty?", not "is this true?" — so the string `"0"` passes it. This is one of the most common POSIX shell bugs, and it's invisible in review unless you trace what the caller actually passes. The same class of trap appears in `[ "$flag" = "false" ]` style checks where the caller sends an empty string.
+
+The P0 is a different and more structural class: **a serialization format changed on the writer side without a corresponding reader change.** Because `read -r` in shell silently absorbs extra leading fields (the last variable soaks up the remainder of the line), the mismatch produces no error — just wrong values that flow into a plausible-looking "missing archive, skipping" log line. Formats crossing a process boundary benefit from a version marker or a field-count assertion so the reader fails loudly rather than degrading quietly.
+`─────────────────────────────────────────────────`
+
+Want me to fix these? The P0 manifest parsing and the P1 force-flag comparison are both small, mechanical changes; the staging trap and symlink handling are slightly more judgment-dependent but still straightforward.

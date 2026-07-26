@@ -1,0 +1,12 @@
+The patch introduces incorrect pricing at tier boundaries, inflates all legacy estimates by 100×, and removes documented weight validation. These regressions affect externally visible quote behavior.
+
+Full review comments:
+
+- [P1] Convert cents before formatting the estimate — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.GhcCY2/api.ts:75-75
+  `baseRateFor` now returns cents, but `roundDollars` still treats its argument as dollars. For example, a 0.5 kg domestic shipment returns 310 cents and this emits `"310.00"` instead of `"3.10"`, so every marketing-widget estimate is inflated by 100×; convert with `centsToDollars` before formatting.
+
+- [P1] Keep tier upper bounds inclusive — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.GhcCY2/rates.ts:42-42
+  For weights exactly equal to 1, 5, or 20 kg, the strict comparison selects the next tier despite `maxKg` being documented as inclusive. For example, a 1 kg domestic shipment changes from 370 cents to 495 cents, incorrectly increasing the customer price; use an inclusive comparison.
+
+- [P2] Reject invalid weights before building the quote — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.GhcCY2/quote.ts:82-83
+  When `handleQuote` receives valid JSON with `weightKg` equal to zero or a negative number, this function now builds a quote instead of throwing the prior `RangeError`, so the endpoint returns 200 rather than the documented 400. Restore the positive, finite weight validation before calculating the breakdown.

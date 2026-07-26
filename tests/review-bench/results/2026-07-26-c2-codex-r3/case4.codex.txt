@@ -1,0 +1,24 @@
+The patch disables rotation for the new manifest format and unintentionally forces the free-space override by default. It also introduces several reliability and confidentiality regressions in staging and remote replication.
+
+Full review comments:
+
+- [P1] Update prune to parse manifest v2 — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/snapshot.sh:101-101
+  Every successful snapshot now emits four fields, but `prune.sh` still reads only `epoch bytes path`. Its `path` therefore contains the byte count plus the archive path, fails the `-f` check, and skips rotation, so archives accumulate beyond `BACKUP_KEEP`.
+
+- [P1] Treat the default force value as disabled — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/lib/common.sh:81-81
+  Without `--force` or `BACKUP_FORCE`, `snapshot.sh` passes the string `0`, which is nonempty and therefore makes this condition true. Every free-space shortfall is consequently downgraded to a warning by default, defeating the new disk-protection check.
+
+- [P1] Follow symlinked source directories during the emptiness check — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/snapshot.sh:63-63
+  When `BACKUP_SOURCE_DIR` is a symlink to a directory, it passes `-d` and previously worked with `tar -C`, but this `find` examines only the symlink at depth zero and emits nothing because of `-mindepth 1`. The run then exits 3 as a successful empty backup indefinitely; both this check and the later `du` calculation need to follow the directory target.
+
+- [P1] Clean staging directories on every exit — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/snapshot.sh:77-77
+  After staging is allocated, there is no longer an `EXIT`/signal cleanup trap. A failed `tar`, `mv`, or replication attempt therefore leaves a partial or complete archive in `TMPDIR`, and repeated scheduled failures can fill that filesystem.
+
+- [P1] Publish replicas only after transfer completion — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/lib/common.sh:98-99
+  If SSH disconnects after transmitting some bytes, the redirection has already created the archive under its final remote name and leaves it truncated. Because the local run then fails before publishing its manifest, nothing removes that remote artifact; write to a temporary remote path and rename it only after `cat` succeeds.
+
+- [P1] Enforce private permissions on remote replicas — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/lib/common.sh:98-98
+  On replicas whose noninteractive SSH shell uses the common `022` umask, `mkdir` creates a traversable directory and this redirection creates a `0644` archive, exposing potentially sensitive backup contents to other remote users despite the local `077` policy. Set a private umask or explicit permissions in the remote command.
+
+- [P2] Quote remote paths before building the shell command — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZCROs3/lib/common.sh:98-98
+  When `BACKUP_REMOTE_DIR` or the label-derived archive name contains a single quote, interpolation terminates these shell quotes, causing replication to fail and potentially interpreting the remainder as remote shell syntax. Labels are otherwise unrestricted, so pass these values as safely quoted arguments rather than embedding them directly.

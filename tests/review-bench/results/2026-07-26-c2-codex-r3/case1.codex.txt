@@ -1,0 +1,12 @@
+The positive-lateness calculation rejects valid readings, and batching does not actually retire aggregated windows, producing cumulative and duplicated batch output. The per-reading configuration reload also introduces substantial avoidable I/O.
+
+Full review comments:
+
+- [P1] Subtract the lateness allowance from the watermark — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.nbLzRa/windows.py:70-71
+  When `allowed_lateness` is positive, adding it to the watermark drops valid readings, including newer ones within the allowance; for example, timestamp 105 is dropped after watermark 100 with an allowance of 10. The cutoff must be `watermark - allowed_lateness` to reject only readings that are too far behind.
+
+- [P1] Clear pending windows during flush — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.nbLzRa/aggregate.py:85-87
+  When `summarize_files` processes multiple batches, `flush()` leaves every window in `_pending`, so later batches re-emit earlier windows and may combine new values with prior-batch statistics. This also makes memory grow across the entire stream despite the stated reason for flushing; snapshot the rows and clear `_pending` before returning.
+
+- [P2] Avoid reopening the tenant config for every reading — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.nbLzRa/pipeline.py:40-40
+  For sizable telemetry files, this invokes `load_tenant_limits` once per record, and that function opens and parses `tenants.json` on every call. This turns ingestion into N filesystem reads and JSON parses; load the configuration once per `summarize_files` invocation or cache it and perform tenant lookups in memory.

@@ -1,0 +1,57 @@
+All 5 verifiers returned complete verdicts. Synthesis: 8 findings survive (5 confirmed, 3 plausible); 3 candidates were refuted (the `du -sk` traversal cost, the `BACKUP_REMOTE` leading-dash injection, and the `umask` relocation).
+
+Full review comments:
+
+## Findings
+
+**[P0] Fix prune.sh reader for manifest v2 — 4-field record breaks all rotation — snapshot.sh:101-101**
+
+  `prune.sh` was not updated for the v2 manifest record and rotation now stops entirely on every run. `snapshot.sh` emits four tab-separated fields (`label`, `epoch`, `bytes`, `path`) and `run-backup.sh:55` reads four, but `prune.sh:62` still does `while IFS=$'\t' read -r epoch bytes path`; with four fields and three variables bash puts the remainder in the last one, so `path` becomes `"<bytes><TAB><archive-path>"`. The `[ ! -f "$path" ]` check on line 65 is then true for every record, each one logs "manifest points at a missing archive, skipping" and `continue`s, and `prune_label` is never called — archives accumulate without bound while the run still exits 0. The reader needs the `rec_label` field (and `prune.sh`'s header comment on lines 4-5 still documents the v1 format); while fixing it, note that line 71 still recovers the label with `label="${base%%-*}"` instead of using the new column, so a label containing `-` such as `web-nightly` would rotate as pool `web` and delete other labels' archives.
+
+**[P1] Make the free-space check actually fatal: `[ "$force" ]` is true for the "0" default — lib/common.sh:81-84**
+
+  `check_free_space` never refuses a run: `snapshot.sh:22` defaults `FORCE="${BACKUP_FORCE:-0}"` to the string `0`, and `if [ "$force" ]` at `lib/common.sh:81` is a one-argument `test` that is true for any non-empty string, `0` included. Since `--force` sets `FORCE=1`, both the on and off states are non-empty and indistinguishable to that test, so the `die` on the last line is unreachable from the only caller and the new pre-flight guard degrades to a log line on every short-space run (e.g. `./run-backup.sh --label nightly` with no `--force`, 2GB free and a 50GB source tree). Explicitly setting `BACKUP_FORCE=0` to disable forcing also enables it. Comparing the value, e.g. `[ "$force" = 1 ]`, restores the intended behavior.
+
+**[P1] Restore the staging-directory cleanup trap removed from snapshot.sh — snapshot.sh:77-77**
+
+  The `trap 'rm -rf "$STAGE"' EXIT INT TERM` that immediately followed the old inline `mktemp -d` was dropped when staging moved into `make_stage`, and nothing replaced it — the only cleanup is now `rmdir "$STAGE"` on the success path (line 98). Every non-success path after `tar` leaks the staging directory with a full-size archive inside it under `${TMPDIR:-/tmp}`: a replica that is unreachable makes `replicate` call `die` (lib/common.sh:99) after the archive has already been written, and `tar` failing under `set -e`, a failing `mv`, or cron sending SIGTERM behave the same way. With a nightly cron and a replica down for a week, that is seven full copies of the source tree accumulating on the temp filesystem, which on many hosts is the root filesystem or a tmpfs. Re-adding `trap 'rm -rf "$STAGE"' EXIT INT TERM` right after `STAGE="$(make_stage)"` (or registering it inside `make_stage`'s caller contract) restores the old behavior.
+
+**[P1] Add the trailing slash to snapshot's emptiness probe: a symlinked source reports "empty" — snapshot.sh:63-65**
+
+  When `BACKUP_SOURCE_DIR` is a symlink to a directory (e.g. `/srv/data -> /mnt/vol1/data`), the new emptiness probe on `snapshot.sh:63` reports the tree as empty and the host silently stops backing up. `test -d` on line 52 follows the symlink, but `find "$BACKUP_SOURCE_DIR" -mindepth 1` without a trailing slash (or `-H`/`-L`) does not descend a symlinked start point and `-mindepth 1` excludes the start point itself, so find prints nothing and exits 0; the script logs "source tree is empty" and exits 3, which `run-backup.sh` treats as success and exits 0. Before this change `tar -C "$BACKUP_SOURCE_DIR" .` followed the symlink and the host archived fine, so this is a silent regression that cron reports as a successful run. The fix is the same one this commit already documents and applies in `prune.sh:32-35`: use `find "$BACKUP_SOURCE_DIR/"`. `du -sk "$BACKUP_SOURCE_DIR"` on line 74 has the same defect and would size the symlink rather than the tree, making the free-space check meaningless in that layout.
+
+**[P2] Write the remote copy to a temp name and rename: `cat >` leaves truncated archives under the final name — lib/common.sh:98-99**
+
+  `replicate()` streams into the archive's final remote name (`cat > '$BACKUP_REMOTE_DIR/$name'`), so an interrupted transfer — dropped ssh connection, killed local process, or a full filesystem on the replica — leaves a truncated file under a canonical `<label>-<stamp>.tar.gz` name on the replica. `replicate` then `die`s and the local archive is never published, so the replica holds the only copy for that timestamp and it is corrupt; nothing later removes or overwrites it because subsequent runs use a new timestamp, and a restore from the replica would pick an archive that fails to decompress. This contradicts the function's own comment ("a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name") and the stage-then-`mv` pattern used locally in `snapshot.sh`. Streaming into a temp name (e.g. `$name.part`) and appending `&& mv` to the remote command after `cat` exits cleanly would restore the stated invariant.
+
+**[P2] Check free space on the staging filesystem, not only the archive directory — snapshot.sh:74-77**
+
+  The new pre-flight check measures free space on `BACKUP_ARCHIVE_DIR`, but `tar` writes the whole archive into the staging directory under `${TMPDIR:-/tmp}` first (lib/common.sh:62) and only `mv`s it to the archive directory afterwards. On the common layout where the archive directory is a large dedicated volume and `TMPDIR` is unset so staging lands on the root filesystem or a tmpfs, the check passes and the run then fails with ENOSPC on the temp filesystem, which is exactly the outcome the check was added to prevent. The archive-directory check is still needed (the `mv` is a cross-filesystem copy), so the fix is to also call `check_free_space "${TMPDIR:-/tmp}" "$need_kb" "$FORCE"` before staging. Priority lowered to P2 because the temp-filesystem exposure predates this commit — the commit adds an incomplete guard rather than a new failure mode. Verification: plausible — mechanism real, trigger not constructed.
+
+**[P3] Quote-escape the remote path: label and BACKUP_REMOTE_DIR are interpolated into a remote shell command — lib/common.sh:97-99**
+
+  The remote command interpolates `$BACKUP_REMOTE_DIR` and `$name` (which carries the `--label` value) into a string that the remote login shell parses, protected only by literal single quotes. A label or `BACKUP_REMOTE_DIR` containing a `'` breaks the quoting — e.g. `--label "o'brien"` produces an unterminated quote on the far side, so replication fails with an opaque remote-shell error, and a crafted value could append arbitrary commands to the remote invocation. This only bites when those values contain shell metacharacters, which normal labels (`daily`, `nightly`) do not, so it is a robustness/hardening issue rather than an active break; passing the name through a quoting step such as `printf '%q'` before embedding it would remove the class of failure. Verification: plausible — mechanism real, trigger not constructed.
+
+**[P3] find -type f drops symlinked archives that the old `[ -f "$file" ]` glob counted — prune.sh:44-44**
+
+  `find "$dir/" -maxdepth 1 -type f` does not dereference symlinks, whereas the `[ -f "$file" ]` test it replaces did, so this only matters for archive directories where individual archives are symlinks to regular files on another volume (e.g. older archives relocated off a full disk). In that layout those entries vanish from `list_archives`: they are never pruned and never counted toward `idx`, so retention keeps `BACKUP_KEEP` real archives *in addition* to them and the `kept up to $keep of $idx` log understates the true count. The comment above the function asserts the set is identical to the glob's, which holds for every other case; adding `-L` to `find` (or `\( -type f -o -type l \)`) would restore the old behavior. Low severity since a plain directory of regular archive files is unaffected. Verification: plausible — mechanism real, trigger not constructed.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+
+Explanation: The manifest format was widened to four fields in `snapshot.sh` and updated in `run-backup.sh`, but `prune.sh`'s reader still binds three variables, so every record fails the `[ ! -f "$path" ]` existence test and rotation silently stops on every host — the exact failure the change set out to prevent. Independently, the new free-space guard can never fire because `[ "$force" ]` treats the string `0` (the no-force default) as true, and the staging cleanup trap was dropped in the `make_stage` refactor, leaking full-size archives into `/tmp` on every failed run.
+
+Confidence: 0.88
+
+---
+
+`★ Insight ─────────────────────────────────────`
+Two of these findings share a root pattern worth naming: **a producer/consumer contract widened on one side only**. When `snapshot.sh` grew a fourth manifest column, `run-backup.sh` was updated but `prune.sh` was not — and shell's `read` makes this maximally silent, because with fewer variables than fields it stuffs the remainder (tabs included) into the last variable instead of erroring. A stricter reader (`read -r a b c d rest` with a check that `rest` is empty, or a version marker in the record) turns a silent data corruption into a loud failure.
+
+The second pattern is **`test` arity**. `[ "$x" ]` is the one-argument form, which asks only "is this string non-empty?" — so the conventional shell idiom of defaulting a flag to `0` is actively dangerous with it, since `"0"` is non-empty and therefore true. In shell, a boolean must be compared (`[ "$x" = 1 ]`) or represented by emptiness (`FORCE=""` for off), never both.
+
+Third, notice that `find` and `test -d`/`test -f` disagree about symlinks by default: `test` dereferences, `find` does not (without `-L`/`-H` or a trailing slash on the start path). The diff's own comment in `prune.sh` shows the author knew this for the *start point* but applied the lesson in only one of the three places it mattered.
+`─────────────────────────────────────────────────`
+
+The top three findings — the manifest reader, the force check, and the missing trap — are each a few lines to fix. Want me to apply them?

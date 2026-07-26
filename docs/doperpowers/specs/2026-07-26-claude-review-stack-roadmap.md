@@ -109,7 +109,12 @@ overrides:
 - **Edges:** blocked-by: C1; blocks: C3.
 - **Contracts:** consumes X1.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C1).
+- **Status:** LANDED 2026-07-26 (in-session, human-directed). argus-review
+  v0.4.0 (G1 uplift + G2 repricing) + v0.4.1 (injection-sink boundary).
+  Both bars met on the post-#36 fixtures: G1 — plain r3 17/17 seeded,
+  FP 0, vs codex r3 17/17 FP 0; G2 — high r2 17/17 (= baseline high),
+  FP 2→0, finder wave 5→2, wall time ~halved. Scoring:
+  `tests/review-bench/results/2026-07-26-c2-scores.json`.
 
 ### C3: Effort auto-routing — autonomous expected; confirm at dispatch
 
@@ -253,8 +258,8 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 | Child | Spec / ticket | Status |
 |---|---|---|
 | C1 | doperpowers#28 | landed (closed done 2026-07-26). Findings doc: `2026-07-26-c1-review-methodology-findings.md`; follow-ups #36 (fixtures), human direction → C2 |
-| C2 | doperpowers#29 | eligible (unblocked by C1 close; direction comment on ticket; confirm track at dispatch) |
-| C3 | doperpowers#30 | not-dispatched (blocked-by C2) |
+| C2 | doperpowers#29 | landed (closed done 2026-07-26, in-session). argus-review v0.4.0+v0.4.1; both bars met; scoring `2026-07-26-c2-scores.json`; fixture follow-up ticket registered at close |
+| C3 | doperpowers#30 | eligible (unblocked by C2 close) |
 | C4 | doperpowers#31 | not-dispatched (blocked-by C2, C3) |
 | C5 | doperpowers#32 | not-dispatched (blocked-by C4) |
 | C6 | doperpowers#33 | in-flight (daemon worker, claude route) |
@@ -322,6 +327,31 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   where codex's is verdict-flipping. Consequence for C3/C4: the engine
   context deploys argus at high (or C3 auto-escalates to it); plain
   stays the interactive fast path.
+- **Prompt content alone did not close plain's security gap — the
+  boundary definition did** (C2, 2026-07-26). v0.4.0 gave plain the full
+  seven-family investigation sweep, including a security family with the
+  same wording whose L4 lens catches the case4 injection at high — and
+  plain STILL missed it (16/17), a correlated-censorship effect: under
+  the rubric's precision stance the reviewer resolves the ambiguity of
+  "external input" conservatively (an operator-supplied `--label` didn't
+  count). v0.4.1 codified the boundary the native standard actually
+  applies — unconstrained value interpolated into a (remote-)shell
+  command line is a sink regardless of provenance — and plain r3 went
+  17/17 with FP still 0, tagging the injection the same P2 codex does.
+  Lesson for skill text: hunting pressure fails at the margin unless the
+  *qualifying boundary* is stated; the families say where to look, the
+  boundary says what counts.
+- **The economy repricing cost nothing measurable** (C2, 2026-07-26):
+  bundling 5 lenses onto 2 finders on ~100–300-line diffs and packing
+  verifiers (whole groups, ≤4 candidates) kept high at 17/17 while
+  halving wall time (322–581 s vs 579–1133 s) and cutting the fleet to
+  5–7 subagents/case. The r1 "high needs 2 FPs" datum also dissolved:
+  both r1 FPs were fixture-bait artifacts (#36 defused them); high r2
+  runs FP 0.
+- **Cross-engine disagreement on a promoted truth**: case4-u2 (remote
+  umask exposure) — codex finds it in every run; an argus high verifier
+  actively REFUTED it in r2. Carried to the next fixture pass rather
+  than adjudicated unilaterally.
 - **Built-in `/review`/`/code-review` prompt sources are on disk** (the
   codex_somersault checkout carries Claude Code source at
   `Claude Code Src/src/commands/`) — C1 needs no extraction work. (An
@@ -336,6 +366,23 @@ same event — then retrospect.
 
 ## Revision Notes
 
+- **2026-07-26 (v1.3, C2 close):** C2 landed as argus-review v0.4.0
+  (INVESTIGATION SWEEP into plain — five lens families + language-pitfall
+  and wrapper/delegation families from the built-in's angles D/E; AC1 FP
+  exclusions mirrored into the verifier; AC3 conventions check with the
+  correctness-only engine skip; the no-execute conduct sentence; G2
+  diff-proportional finder fleet `ceil(lines/150)` clamped [2, lens
+  count] with round-robin lens bundling, packed verifiers, AC9 sweep
+  footguns) and v0.4.1 (the injection-sink boundary — see Surprises).
+  Both C2 bars verified on post-#36 fixtures; scoring consolidated in
+  `tests/review-bench/results/2026-07-26-c2-scores.json`. The v1.2
+  interim consequence RESOLVES to: **the engine can deploy uplifted
+  plain** (C4), with C3's dial escalating large/high-stakes diffs to the
+  repriced high. Informational delta for C4 as required by C2's ticket:
+  on the full 20-defect denominator codex r3 is 20/20 vs plain r3 17/20
+  and high r2 19/20 — the remaining gap lives entirely in the promoted
+  second-tier u-entries, which is C3-escalation territory, not further
+  plain prompt growth. C3 is now eligible.
 - **2026-07-26 (v1.2, C1 close — human direction reshapes C2):** The X1
   result "argus passes at high" carries a weight-class caveat the human
   named at spike close: codex is a single INLINE reviewer, argus high is
