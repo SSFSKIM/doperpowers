@@ -49,6 +49,13 @@ export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
 export BOARD_REPO="test/repo"
 export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
+# Ambient gateway route, as a gateway-routed daemon (or an operator shell that
+# sourced one) exports it. Present for the WHOLE suite on purpose: it makes every
+# "no gateway env" assertion below a regression test — the claude route must hand
+# daemon-spawn.sh nothing, since daemon-spawn.sh persists what it inherits into
+# the registry meta and every later resume would silently ride the gateway.
+export DAEMON_CLAUDE_SETTINGS="$TEST_ROOT/ambient-gateway.json"
+export DAEMON_CLAUDE_EFFORT="high"
 
 # real git: bare origin + clone whose main carries a repo-facts manifest
 ORIGIN="$TEST_ROOT/origin.git"

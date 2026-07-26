@@ -218,7 +218,13 @@ PY
       "${IMPLEMENT_MODEL:-fable}")" \
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   else
-    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
+    # Cleared, not merely unset by us: this dispatcher can itself run inside a
+    # gateway-routed daemon whose environment exports these, and daemon-spawn.sh
+    # would inherit them, apply the flags AND persist them into the registry
+    # meta — so every later resume would keep riding the gateway while the log
+    # said engine=claude.
+    spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
       "${IMPLEMENT_MODEL:-}")" \
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   fi
