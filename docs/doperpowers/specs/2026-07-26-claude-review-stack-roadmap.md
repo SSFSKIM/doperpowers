@@ -56,9 +56,9 @@ overrides:
   tool restriction, upstream-unfinished).
 - Comparison sources on disk: official `code-review` plugin
   (`~/.claude/plugins/marketplaces/claude-plugins-official/plugins/code-review/`),
-  Claude Code built-in `/review` and `/code-review` prompt sources
-  (`~/Developer/GitHub/codex_somersault/Claude Code Src`,
-  `~/.claude/jobs/*/src/commands/review`).
+  Claude Code built-in `/review` and `/code-review` prompt sources in the
+  stable checkout `~/Developer/GitHub/codex_somersault/Claude Code Src/src/commands/`
+  (`review.ts`, `review/` incl. ultrareview, `security-review.ts`).
 
 ## Children
 
@@ -79,8 +79,16 @@ overrides:
   reasons. G2 (required): the X1 benchmark exists and has been run once
   against both the current codex engine and current argus (v0.3.0),
   producing the baseline numbers later children measure against.
+  G3 (required): the headless-invocation probe — a daemon-style
+  non-interactive invocation of current argus (an explicitly pinned
+  level; no C2/C3 work needed) produces the standard Findings/Verdict
+  contract captured to a file within a bounded wait. This proves X2
+  feasibility before any downstream child spends effort, and the probe
+  harness becomes the invocation context the X1 bench uses for its argus
+  runs. If the probe fails, the failure flows back here before C2
+  dispatches.
 - **Edges:** blocked-by: —; blocks: C2.
-- **Contracts:** owns X1.
+- **Contracts:** owns X1; proves X2 feasibility (G3).
 - **Required:** required.
 - **Status:** not-dispatched (dispatchable now).
 
@@ -91,7 +99,10 @@ overrides:
   and agent-text changes follow the writing-skills discipline.
 - **Acceptance:** an argus-review release whose changes trace one-to-one
   to C1 adoption decisions, with the X1 benchmark re-run showing the new
-  argus at least matching baseline argus.
+  argus at least matching baseline argus — and reporting the delta
+  against the codex-engine baseline (informational, the early warning
+  for the C4 bench gate: a C2 that still trails codex badly is a flag to
+  raise here, not a surprise to discover at C4).
 - **Edges:** blocked-by: C1; blocks: C3.
 - **Contracts:** consumes X1.
 - **Required:** required.
@@ -134,7 +145,12 @@ overrides:
   workers (`review-dispatch.sh`, `land-dispatch.sh`) from the clodex
   gateway to plain Claude, and remove the nested-codex plumbing
   (TLS/CODEX_HOME/seatbelt workarounds in the engine path) that only the
-  codex engine needed.
+  codex engine needed. To resolve the apparent tension with
+  Parent-Level Acceptance 2: after C5 the loop's review engine is argus
+  on EVERY worker route — `engine:codex` changes only the worker's model
+  route (X4), never the engine — and the "codex as fallback" the parent
+  acceptance permits lives in interactive/execplan contexts only, so the
+  nested-codex plumbing has no remaining loop caller and is deleted.
 - **Acceptance:** a label-less review dispatch spawns a plain-Claude
   worker end to end; `engine:codex` still opts back into the gateway
   route (X4); the removed plumbing has no remaining caller.
@@ -164,13 +180,18 @@ overrides:
   false-positive count. The non-regression bar, binding C2 and C4: recall
   at least equal to the codex-engine baseline, no meaningful
   false-positive growth. C1 fixes the set, the metrics, and what
-  "meaningful" is; later children re-litigate none of it.
-- **X2 — headless invocability** (binds C3, C4). argus-review must be
-  invocable non-interactively by a worker daemon (plugin installed in the
-  worker harness, e.g. a `claude -p` slash invocation), producing the
-  standard Findings/Verdict contract with no human present — which is why
-  effort auto-routing (C3) precedes the engine swap (C4). C4 names the
-  minimum argus version it requires.
+  "meaningful" is; later children re-litigate none of it. The argus side
+  of every bench run is invoked through the headless path the C1.G3
+  probe establishes — the same context C4 deploys — so baseline and
+  deployment measure the same thing.
+- **X2 — headless invocability** (binds C3, C4; feasibility proven by
+  C1.G3). argus-review must be invocable non-interactively by a worker
+  daemon (plugin installed in the worker harness, e.g. a `claude -p`
+  slash invocation), producing the standard Findings/Verdict contract
+  with no human present — which is why effort auto-routing (C3) precedes
+  the engine swap (C4). The cheap feasibility probe runs at C1 (G3),
+  before any downstream spend; C4 consumes the proven mechanism and
+  names the minimum argus version it requires.
 - **X3 — effort override semantics** (owner: C3). Auto-routing is the
   default only when no level is named; an explicitly named level always
   wins. Written to outlive this unit as part of argus's public contract.
@@ -194,10 +215,19 @@ immediately. C1 and C6 can start today.
   baseline is stable across two runs; the bar includes the FP axis so a
   recall win by spraying findings can't pass.
 - **Headless skill invocation friction** (X2): a daemon driving a slash
-  skill is less proven than driving a CLI binary. Mitigation: C4 is
-  execplan-expected with a feasibility milestone first; if invocation
-  can't meet the engine contract (compact findings file, bounded wait),
-  the discovery flows back here before C5 dispatches.
+  skill is less proven than driving a CLI binary. Mitigation: the C1.G3
+  probe front-loads this — it runs today, with a pinned level, before
+  C2/C3 spend anything; a failure flows back here while the whole chain
+  is still undispatched.
+- **argus loses the bench at C4** — the unit's central risk: even after
+  C2, argus recall may trail the codex baseline. Early warning: C2's
+  acceptance reports the argus-vs-codex delta, so a large gap surfaces
+  two children before the gate. Decision rule at C4 (so a dispatched
+  worker is never stuck): one retry with the auto-routed default effort
+  raised; if the bench still fails the X1 bar, C4 parks needs-human with
+  the numbers and the discovery flows back here — whether to iterate C2
+  again, ship despite the gap, or abandon the swap is the human's call,
+  not the worker's.
 - **argus release vs doperpowers pin skew**: the loop consumes argus via
   marketplace install. Mitigation: X2 makes C4 name its minimum argus
   version; C4's acceptance runs on the live loop, which catches skew.
@@ -270,8 +300,10 @@ immediately. C1 and C6 can start today.
   initial framing assumed it unexamined; the record (with rejection
   rationale) was already in the argus repo.
 - **Built-in `/review`/`/code-review` prompt sources are on disk** (the
-  codex_somersault checkout carries Claude Code source; `~/.claude/jobs/`
-  carries command sources) — C1 needs no extraction work.
+  codex_somersault checkout carries Claude Code source at
+  `Claude Code Src/src/commands/`) — C1 needs no extraction work. (An
+  earlier draft also cited `~/.claude/jobs/*/src/commands/` — wrong: that
+  directory is per-session-volatile and carries no command sources.)
 
 ## Outcomes & Retrospective
 
@@ -281,4 +313,14 @@ same event — then retrospect.
 
 ## Revision Notes
 
-—
+- **2026-07-26 (v1.1, pre-approval external review):** F1 — corrected the
+  built-in command-source path (the volatile `~/.claude/jobs/` citation
+  was wrong; the stable source is the codex_somersault checkout). F2 —
+  added C1.G3, the headless-invocation probe, front-loading X2
+  feasibility from C4 to C1. F3 — added the bench-loss risk with a
+  decision rule for C4 (retry at raised effort, then park needs-human)
+  and made C2 report the argus-vs-codex delta. F4 — C5 now states
+  explicitly that post-C5 the loop engine is argus on every route and
+  the parent's "codex fallback" is interactive/execplan-only. F5 — X1
+  now pins the bench's argus invocation context to the C1.G3 headless
+  path. No child was in flight; no flags needed.
