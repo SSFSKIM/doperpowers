@@ -1,0 +1,30 @@
+The manifest format change universally disables pruning, and the default force handling disables the principal disk-safety feature. Replication also has atomicity, cleanup, command-injection, and permission problems that can leave corrupt backups, leak data, or exhaust storage.
+
+Full review comments:
+
+- [P1] Teach prune.sh to consume the v2 manifest — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/snapshot.sh:94-94
+  `run-backup.sh` forwards this four-column record unchanged, but `prune.sh` still reads `epoch bytes path` and derives the label from the filename. Consequently `path` becomes the bytes field plus a tab and the real path, `[ -f "$path" ]` always fails, and every successful backup skips rotation.
+
+- [P1] Honor force mode only when explicitly enabled — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/lib/common.sh:81-81
+  When free space is insufficient, `snapshot.sh` passes the default literal `0`, which is nonempty and therefore always enters this branch; the new preflight never rejects a run unless `FORCE` becomes empty. Also, `FORCE` is copied before `load_config`, so `BACKUP_FORCE` from the selected config never controls it; derive the value after loading configuration and test explicitly for `1`.
+
+- [P1] Treat label text literally in find — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/prune.sh:32-32
+  When a label contains a glob metacharacter, which current validation permits, `find -name` interprets it as a pattern rather than part of the label. For example, pruning label `*` enumerates archives from every label and can delete unrelated backups beyond `BACKUP_KEEP`; escape pattern metacharacters or compare the filename prefix literally.
+
+- [P1] Avoid evaluating replica paths as shell source — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/lib/common.sh:98-98
+  When replication is enabled, a single quote in `LABEL` or `BACKUP_REMOTE_DIR` terminates this quoting and lets the remaining text alter or append remote shell commands. These values are accepted without validation, so even a benign apostrophe breaks replication and crafted label text can execute arbitrary commands as the replica account; pass them as arguments to a fixed remote script or shell-escape them robustly.
+
+- [P1] Publish replicated archives atomically — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/lib/common.sh:97-99
+  If the SSH connection drops or the remote disk fills during transfer, the redirection has already created or truncated the final archive name and leaves a partial file there. The local run fails, but the replica retains a corrupt archive that looks complete; stream to a temporary remote name and rename it only after `cat` succeeds.
+
+- [P1] Fail closed when the emptiness probe errors — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/snapshot.sh:59-59
+  When the source directory exists but cannot be traversed, `find` emits no stdout and returns nonzero, but its status is ignored inside this conditional. The directory is therefore classified as empty and `run-backup.sh` exits successfully after skipping the backup and rotation instead of reporting the permission or I/O failure.
+
+- [P1] Restore cleanup for failed staging runs — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/snapshot.sh:70-70
+  If `tar`, replication, `mv`, or the process itself fails after this point, there is no longer an exit trap to remove the staging directory. A replica outage can therefore leave one complete archive in `/tmp` per cron run and eventually exhaust the local filesystem; retain the previous cleanup trap and disable it only after successful publication.
+
+- [P2] Apply the private umask on the replica — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/lib/common.sh:97-98
+  On a replica whose SSH session uses the common `022` umask, this command creates new directories as `0755` and archives as `0644`; the local `umask 077` is not transmitted over SSH. If the destination parent is traversable by other remote users, the source snapshot becomes readable to them, so the remote command should establish private permissions.
+
+- [P2] Check free space where the archive is staged — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.mpDF4t/snapshot.sh:68-68
+  When `TMPDIR` and `BACKUP_ARCHIVE_DIR` are on different filesystems, this check can pass even though the archive is first written entirely under `TMPDIR`. A large run can still fill the root or temporary filesystem before `mv`, defeating the new preflight guarantee; check the staging filesystem as well or stage directly on the archive filesystem.

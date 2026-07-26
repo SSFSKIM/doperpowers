@@ -1,0 +1,12 @@
+The new routing can suppress findings whose severity increases and has no valid default logging path when the optional tech-debt issue is absent. It also leaves the documented self-merge policy inconsistent with the worker protocol.
+
+Full review comments:
+
+- [P1] Re-evaluate logged findings that become blockers — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.dskCts/repo/skills/reviewing-prs/references/review-worker-protocol.md:75-80
+  When a P2/P3 finding logged in one round is emitted as P1 in a later stateless round, matching only by file and substance marks it already routed and explicitly prevents fixing it. Because model-assigned severity can vary between rounds, this can leave a current critical/high finding unresolved; deduplication should apply only while the finding remains non-blocking, with severity promotions handled as blockers.
+
+- [P2] Provide a fallback when the tech-debt sink is absent — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.dskCts/repo/skills/reviewing-prs/references/review-worker-protocol.md:65-68
+  When no open `tech-debt` issue exists, the dispatcher deliberately renders `TECH_DEBT_ISSUE=none`, so the newly default `gh issue comment none` command fails for every P2/P3 finding. The worker then cannot persist the finding or satisfy the one-bin rule; dispatch should require/create the sink or the protocol should define a valid fallback destination.
+
+- [P2] Align the published self-merge gate with the protocol — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.dskCts/repo/skills/reviewing-prs/references/review-worker-protocol.md:84-86
+  This broadens self-merge eligibility to any routed non-blocker, including normal/P2 findings, while `skills/reviewing-prs/SKILL.md:60` still documents eligibility only when the remaining findings are low severity. These are materially different safety gates, so the canonical summary and worker protocol should state the same policy.

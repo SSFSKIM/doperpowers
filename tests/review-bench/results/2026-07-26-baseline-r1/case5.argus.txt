@@ -1,0 +1,60 @@
+The isolated reviewer flagged the branch as incorrect. Relaying its output verbatim.
+
+Full review comments:
+
+## Findings
+
+[P0] Release the guard before acquiring the key lock — keylock.py:46-57
+  The `yield` (and the `lock.acquire()`) now happen inside `async with self._guard`, so the global guard is held for the entire duration of the caller's block instead of only across the map mutations. This turns `KeyedLock` into a single global mutex: two `hold()` calls on *different* keys can no longer run concurrently (measured: two 0.3s holds on keys `"a"` and `"b"` take 0.7s instead of ~0.3s), which defeats the per-key design and serializes every `TTLCache.get_or_compute()` factory call in the process. It also makes the new `timeout` unreachable — because the key lock can only be held by someone who holds the guard, the lock is always free by the time `lock.acquire()` runs, so `hold(key, timeout=0.1)` behind a 0.5s holder acquires successfully and never raises `asyncio.TimeoutError`. Any factory that reentrantly calls into the cache will also self-deadlock on the guard. The fix is to bump `_refs` under the guard, then exit the guard before `lock.acquire()`/`yield`, and re-take the guard in the timeout and `finally` paths to decrement and drop.
+
+[P0] Check the deadline before sliding it in `_lookup` — cache.py:74-84
+  `entry.hits`/`expires_at` are updated before the expiry test, so once a key has accumulated `refresh_after_hits` reads, every subsequent read unconditionally sets `expires_at = now + ttl` and the following `entry.expires_at <= now` check can never fail. An entry that went cold for far longer than the TTL is resurrected and served: with `ttl=10` and four reads, advancing the injected clock by 9900 seconds still returns the old value as a hit. That contradicts both the class docstring ("A key whose deadline has already passed is a miss like any other") and the README, and it means hot keys are never recomputed.
+```suggestion
+        now = self._clock()
+        if entry.expires_at <= now:
+            del self._entries[key]
+            self._counters.incr("cache.get.expired")
+            return None
+
+        entry.hits += 1
+        entry.last_used = now
+        if entry.hits >= self._refresh_after_hits:
+            entry.expires_at = now + self._ttl
+        return entry
+```
+
+[P0] Clear `_inflight` when the factory raises — cache.py:129-134
+  `del self._inflight[key]` and `done.set()` only run on the success path. If `factory()` raises, the entry stays in `_inflight` with an event that will never fire, so every later `get_or_compute()` for that key takes the join branch and awaits `pending.wait()` forever. This is hit immediately by `JobQueue._run_job`, whose retry loop calls `get_or_compute()` again for the same key after a failed attempt — the worker hangs permanently and `drain()` never returns. Verified: a failing handler followed by a retry on the same key hangs.
+```suggestion
+            self._counters.incr("cache.get.miss")
+            try:
+                value = await factory()
+                self._store(key, value)
+            finally:
+                del self._inflight[key]
+                done.set()
+            return value
+```
+
+[P1] Update `cache_hit_rate()` to the renamed cache counters — jobqueue.py:194-195
+  The cache counters were renamed to the `cache.get.*` namespace, but `cache_hit_rate()` still reads `cache.hit`, `cache.hit_after_wait`, and `cache.miss`, which are now always 0. `total == 0` makes the method permanently return the 1.0 "nothing observed yet" fallback, so `warm_stale_keys()` always short-circuits at the `>= PREFETCH_HIT_RATE` check and never warms anything, and `stats()["cache_hit_rate"]` always reports 1.0. Confirmed by running five distinct jobs: hit rate 1.0, counters show only `cache.get.miss`.
+```suggestion
+        hits = self._counters.get("cache.get.hit") + self._counters.get("cache.get.hit_after_wait")
+        misses = self._counters.get("cache.get.miss")
+```
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Three of the findings are reproducible runtime defects — the key lock degenerates into a global mutex with an inert timeout, expired entries are resurrected instead of recomputed, and a failed factory permanently wedges its key so workers hang — and the counter rename silently disables warm-up and hit-rate reporting. Each was verified by executing the modified modules.
+Confidence: 0.93
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- The keylock finding is a classic **lock-scope inversion**: a coarse guard that exists only to protect a map mutation gets accidentally extended over the critical section it was meant to hand off to. The tell is that a `yield` sits inside a `with` block whose lock protects a data structure, not the work.
+- The two `get_or_compute` bugs are both **failure-path asymmetry** — state entered on one path (the `_inflight` registration) but exited only on the success path. `try/finally` around the awaited work is the structural fix, not a `try/except` that re-raises.
+- The counter rename is a **string-coupled refactor**: metric names are effectively an untyped API between modules, so renaming them fails silently rather than at import. A shared constant or an enum would have made this a `NameError` at load time.
+`─────────────────────────────────────────────────`
+
+Three of these are P0 correctness defects and one is a silently disabled feature. I have not made any changes — fixing them is a separate task. Say the word and I'll apply the fixes (the reviewer's three suggestion blocks are directly applicable; the keylock one needs the guard re-acquired on the timeout and `finally` paths, which I'd write out).

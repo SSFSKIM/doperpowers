@@ -1,0 +1,24 @@
+The patch introduces deadlocks and indefinite waits in the locking and single-flight paths, and it can serve entries after their TTL has expired. It also breaks cache hit-rate accounting, disabling the documented warm-up behavior.
+
+Full review comments:
+
+- [P1] Clear in-flight state after failed factories — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/cache.py:130-133
+  When `factory()` raises or its task is cancelled, the cleanup below this await is skipped, leaving an unset event in `_inflight`. Every retry or concurrent request for that key then waits forever on that event; in `JobQueue`, one transient failure prevents subsequent attempts and can make `drain()` hang. Remove the marker and notify joiners on every exit path.
+
+- [P1] Release the map guard before waiting or yielding — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/keylock.py:46-50
+  Because `async with self._guard` now encloses both `lock.acquire()` and the yielded caller block, holding any key blocks acquisition of every other key. Independent cache misses are serialized, nested cache calls deadlock, and a waiter cannot reach its timeout logic until the current holder releases the guard. Reserve the reference under the guard, then acquire and hold the per-key lock outside it.
+
+- [P1] Check expiry before refreshing an entry — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/cache.py:77-80
+  Once an entry's hit count reaches the refresh threshold, a read after its deadline first replaces `expires_at` with a future value and only then performs the expiry check. This revives and serves stale data indefinitely; with `refresh_after_hits=1`, every expired entry is revived. Test the existing deadline before updating hit metadata or sliding it.
+
+- [P1] Apply timeouts to in-flight joins — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/cache.py:110-111
+  When another coroutine is already computing the key, this unbounded wait occurs before the per-call timeout or configured `_lock_timeout` is applied. A stuck factory therefore blocks joiners forever even when they requested a timeout, defeating the protection intended for computations stuck upstream.
+
+- [P2] Keep hit-rate metric names aligned — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/cache.py:102-102
+  Normal cache operations now increment `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, while `JobQueue.cache_hit_rate()` still reads the old `cache.hit*` and `cache.miss` names. Its total consequently remains zero, so stats report a 1.0 hit rate and `warm_stale_keys()` always exits without warming anything.
+
+- [P2] Allow the first warm-up pass immediately — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/jobqueue.py:83-83
+  If `time.monotonic()` is below `WARM_INTERVAL_SECONDS`, such as shortly after system boot or with a test clock, `_last_warm = 0.0` makes the first eligible warm-up look recently executed and throttles it even though no pass has run. Represent the uninitialized state separately or initialize it to a value that permits the first call.
+
+- [P2] Cap the initial retry delay too — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.WK9HfS/jobqueue.py:177-178
+  When callers configure `base_delay` above `MAX_BACKOFF_SECONDS`, the first retry sleeps using the uncapped value and only caps subsequent delays. This violates the documented backoff ceiling and can park a worker substantially longer than five seconds; cap the value before passing it to `random.uniform()`.

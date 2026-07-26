@@ -1,0 +1,1 @@
+The specified merge base is identical to HEAD, and the requested git diff contains no changes to review.

@@ -1,0 +1,21 @@
+The patch can serve expired values indefinitely, hang all retries after a factory failure, and serialize unrelated keyed operations. Its timeout, hit-rate, warm-up, and backoff-cap behavior also does not match the newly documented contracts.
+
+Full review comments:
+
+- [P1] Clear and signal in-flight entries when factories fail — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/cache.py:132-133
+  When `factory()` raises or is cancelled, these cleanup statements never run, leaving an unset event in `_inflight`. Every retry or subsequent lookup for that key then waits forever on `pending.wait()`; notably, a job's first transient failure prevents its configured retries from completing. Remove the entry and wake joiners in exception-safe cleanup.
+
+- [P1] Check expiration before sliding the deadline — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/cache.py:77-80
+  If an entry has already accumulated `refresh_after_hits` hits, a lookup after its deadline first replaces `expires_at` with `now + ttl`, so the subsequent expiration check can never reject it. For example, an entry with two fresh hits under the default threshold is served indefinitely when its third read occurs after expiry, contrary to the documented no-stale guarantee.
+
+- [P1] Release the guard before awaiting a keyed lock — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/keylock.py:56-57
+  The yielded caller block remains inside `async with self._guard`, so holding any key prevents callers from acquiring every other key. This serializes unrelated cache computations, makes nested keyed acquisitions deadlock, and prevents same-key timeout accounting from starting until the current holder exits. The guard should protect only the maps and reference counts, not lock acquisition or the caller's block.
+
+- [P2] Apply the cache timeout while joining in-flight work — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/cache.py:110-111
+  When another computation already exists for the key, this branch waits on its event before resolving or applying either the per-call timeout or `_lock_timeout`. A stuck factory therefore makes callers block indefinitely even when they explicitly configured a timeout for exactly this contention scenario.
+
+- [P2] Keep hit-rate metric names synchronized — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/cache.py:129-129
+  The cache now records `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, while `JobQueue.cache_hit_rate()` still reads the old names. Under normal workloads its total remains zero, so it always reports `1.0` and `warm_stale_keys()` never runs even for an all-miss cache.
+
+- [P2] Cap the initial retry delay too — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.ZfS6Y6/jobqueue.py:177-178
+  When callers configure `base_delay` above `MAX_BACKOFF_SECONDS`, the first retry still samples from the uncapped base delay because the cap is applied only afterward. Such jobs can park a worker longer than the documented maximum; initialize or clamp `delay` before sleeping.

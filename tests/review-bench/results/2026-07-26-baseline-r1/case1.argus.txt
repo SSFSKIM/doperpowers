@@ -1,0 +1,30 @@
+The worktree is clean, so the branch diff is exactly the committed work (7 files, +221/−61).
+
+Full review comments:
+
+## Findings
+
+[P0] Fix inverted lateness cutoff in `WindowAssigner.assign` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TRwBMZ/windows.py:70-73
+  The cutoff sign was flipped during the per-tenant refactor: the base code dropped readings when `reading.ts < watermark - allowed_lateness`, but this now computes `cutoff = watermark + self.allowed_lateness` and drops when `reading.ts < cutoff`. With any non-zero `allowed_lateness` this discards perfectly in-order readings and keeps only readings that jump the watermark forward by more than the grace period — e.g. with `allowed_lateness=30`, after a reading at `ts=100` a subsequent `ts=110` is counted in `dropped_late` and returns `None` (verified by running the class directly). It also makes the grace period suppress rather than admit slightly-late data, inverting the documented contract in the class docstring. The fix is `cutoff = watermark - self.allowed_lateness`.
+
+[P1] Make `flush()` actually retire pending windows — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TRwBMZ/aggregate.py:85-87
+  `flush()` now delegates to `snapshot()`, which explicitly does not clear `_pending`, so nothing is retired despite the docstring ("Emit and retire every accumulated window") and `pipeline.summarize_files`'s promise that "the aggregator is flushed at the end of each batch so that a long backfill does not have to hold every window it has ever seen." Every batch's `windows` list therefore re-emits all windows from all prior batches (confirmed: a two-file run reports the first file's window again in the second batch) and memory grows monotonically. `flush()` should snapshot, then `self._pending.clear()`.
+
+[P2] Load tenant limits once instead of per reading — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TRwBMZ/pipeline.py:44-46
+  `load_tenant_limits(reading.tenant)` is called inside the per-reading loop, and each call opens and re-parses `tenants.json` (`tenants.py:27-46` has no caching). That turns ingest into one file open plus one JSON parse per reading, which dominates runtime for large batches. Caching the result per tenant in a dict outside the loop (or memoizing in `tenants.py`) keeps the same semantics at negligible cost.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The lateness comparison is inverted, so with a non-zero `allowed_lateness` the assigner drops in-order readings instead of admitting slightly-late ones, and `flush()` no longer clears state, causing every batch to duplicate all previously emitted windows. Both were reproduced by running the code in this repository.
+Confidence: 0.92
+
+---
+
+★ Insight ─────────────────────────────────────
+Both blocking findings share a signature worth naming: they are *refactor-induced sign and delegation errors*, not new logic bugs. A comparison boundary (`watermark - lateness` becoming `watermark + lateness`) and a state-mutating method quietly redefined in terms of a deliberately non-mutating one (`flush` → `snapshot`) are exactly the mistakes that survive review-by-reading, because each line looks locally plausible; only the original contract reveals them.
+
+The deeper lesson is about where invariants live. Both bugs would have been caught by a test asserting a *relationship* rather than a value — "a reading at the watermark is never dropped when lateness > 0" and "flushing twice yields nothing the second time." Windowed streaming code is unusually dependent on that style of property, since its correctness is defined by ordering and retirement rather than by any single output.
+─────────────────────────────────────────────────
+
+I have not changed any code — the review is the deliverable here. The first two findings are small, well-localized fixes (one sign flip, one added `clear()`); say the word and I'll apply them plus the tenant-limits caching, with tests that pin the two invariants above.

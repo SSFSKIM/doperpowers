@@ -1,0 +1,38 @@
+Full review comments:
+
+## Findings
+
+[P0] Convert cents to dollars in `quickEstimate` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3uS33F/api.ts:74-76
+  `baseRateFor` now returns integer cents, but `quickEstimate` still feeds it straight into `roundDollars(...).toFixed(2)`, so the legacy marketing endpoint returns a number 100x too large — `quickEstimate("regional", 3.2)` yields `"950.00"` instead of `"9.50"`, and the widget renders that verbatim next to a dollar sign. It needs `centsToDollars` at this boundary like `handleQuote` uses.
+  ```suggestion
+  export function quickEstimate(zone: Zone, weightKg: number): string {
+    return centsToDollars(baseRateFor(zone, weightKg)).toFixed(2);
+  }
+  ```
+
+[P0] Restore the positive-finite weight check dropped from the quote path — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3uS33F/api.ts:53-53
+  The `RangeError` guard on `weightKg` was removed from `quoteShipment` (it is not reproduced in `buildBreakdown`) and the `try`/`catch` that turned it into a 400 was removed here, while `parseQuoteRequest` only checks `typeof raw.weightKg === "number"`. As a result `handleQuote({zone:"regional", weightKg:-5})` now returns `200` with `total: 0` and `subtotal: -4.73`, and `weightKg: NaN` returns `200` with `total: null`, contradicting the README's Validation section ("never a price — for … a weight that is not a positive finite number"). The check should be reinstated in `buildBreakdown`/`quoteShipment` or added to `parseQuoteRequest`.
+
+[P1] Keep `maxKg` an inclusive tier bound in `tierFor` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3uS33F/rates.ts:41-43
+  The rewrite changed the comparison from `weightKg <= tier.maxKg` to `weightKg < tier.maxKg`, which silently flips the documented boundary semantics: `WeightTier.maxKg`'s own doc comment and the README's "Weight tiers" section both state that a parcel weighing exactly `maxKg` is priced in that tier. A 1 kg parcel now prices in the 5 kg tier (`tierFor(1).maxKg === 5`), raising handling from 250 to 400 cents at every exact tier boundary.
+  ```suggestion
+  export function tierFor(weightKg: number): WeightTier {
+    return TIERS.find((tier) => weightKg <= tier.maxKg) ?? TIERS[TIERS.length - 1];
+  }
+  ```
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The cents migration missed the `quickEstimate` conversion, producing prices 100x too high on a live legacy endpoint, the weight validation guaranteed by the README was dropped so invalid weights now return `200` with nonsense or `null` totals, and `tierFor` was rewritten with an exclusive upper bound that contradicts its own documented inclusive semantics. All three were reproduced by executing the changed code.
+Confidence: 0.92
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Two of the three findings share a root cause pattern worth naming: a **unit migration** (dollars → integer cents) is a change to a function's *contract*, not just its body. TypeScript can't catch it because both the old and new return types are `number` — the compiler sees no difference between 950 cents and 9.50 dollars. A branded type (`type Cents = number & { readonly __brand: "Cents" }`) would have turned the `quickEstimate` bug into a compile error at zero runtime cost.
+- The dropped validation is a classic **refactor-by-extraction** hazard: when logic moves from `quoteShipment` into a new `buildBreakdown`, guards that lived in the old function's preamble are easy to leave behind, and the surrounding `try`/`catch` gets deleted as "dead" once nothing throws — which is exactly the symptom, not the proof.
+- The `<=` → `<` change in `tierFor` is the kind of edit that looks like a normalization cleanup but is a pricing change. Boundary semantics documented in prose (README, doc comments) and not pinned by a test at the exact boundary value are effectively unenforced.
+`─────────────────────────────────────────────────`
+
+I have not changed any code. Say the word and I'll apply the three fixes, and I'd suggest adding boundary tests at exactly 1 kg, 5 kg, and 20 kg plus negative/NaN weight cases so these can't regress silently again.

@@ -1,0 +1,15 @@
+The patch introduces a cross-tenant authorization leak, reports incorrect revisions, does not make conditional writes atomic, and returns overlapping oversized pages. These issues break security and core API correctness.
+
+Full review comments:
+
+- [P1] Restrict the bulk export to admins — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TxIfdH/app.py:206-206
+  When any authenticated member calls `GET /exports/all`, this decorator permits the request and the handler returns documents from every tenant. This violates the documented admin-only route and leaks cross-tenant data; use the admin authorization decorator here.
+
+- [P1] Return the stored revision from saves — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TxIfdH/store.py:112-112
+  When the row count differs from the new revision, `save_document` writes revision `current + 1` but returns `len(rows)`, which `handle_put_document` exposes as the revision and ETag. Clients using that reported value as `expected_revision` then receive a false conflict, so return the actual new revision or read it back before responding.
+
+- [P1] Make the revision check and write atomic — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TxIfdH/store.py:101-104
+  When two requests concurrently write the same document with the same `expected_revision`, both can load the old revision and pass this check before either writes. Both then report success while one update overwrites the other, defeating the conditional-write guarantee; serialize the read/check/write operation per document across request workers.
+
+- [P2] Limit each page to the requested number of documents — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.TxIfdH/app.py:103-103
+  When at least `limit + 1` names remain, `last` is already the exclusive slice bound, but adding one returns `limit + 1` entries. The final entry is also repeated as the first entry of the next page because that page starts at `page * limit`; slice through `last` rather than `last + 1`.

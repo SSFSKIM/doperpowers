@@ -1,0 +1,30 @@
+The review is complete — it found two issues, one blocking. Relaying both sections verbatim.
+
+Full review comments:
+
+## Findings
+
+[P1] Reconcile the dependency-wait rule with the transition legality table — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.zBNzcd/repo/skills/implementing-tickets/SKILL.md:72-73
+  The new rule tells the worker that a dependency wait sends the ticket back to `ready-for-agent`, but `board-transition.sh` will reject that move from both states a worker can be in when it discovers the dependency: `LEGAL["in-progress"]` in `skills/issue-tracker/scripts/_board.py:40` has no `ready-for-agent` entry (the "Mid-build Forks and Parks" section at `SKILL.md:95-105` routes post-gate discoveries through this same discriminant), and `LEGAL["ready-for-agent"]` has no self-transition, so a gate-time worker that literally runs `board-transition.sh N ready-for-agent` dies with `illegal transition`. A worker that hits that error has no legal way to comply and will most likely fall back to a park state — the exact stranding this commit set out to fix. Either add `ready-for-agent` to the `in-progress` (and self) transitions, or state in the rule that at gate time the ticket simply stays `ready-for-agent` and name the legal path for the in-progress case.
+
+[P2] Say "add the `blocked-by` edge"; "cut" reads as remove in this file — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.zBNzcd/repo/skills/issue-tracker/SKILL.md:78-80
+  The intent (per the commit message) is that the worker *creates* the dependency edges, but "cut `blocked-by`" collides with this file's own vocabulary for the same operation: the toolkit row at line 107 describes `board-edge.sh --block N | --unblock N` as "add/cut a dependency", and `board-relate.sh ... [--cut]` at line 108 uses `--cut` to remove. A worker resolving the ambiguity toward `--unblock` either errors out ("#N is not blocked by #M") or drops a real edge. Since this paragraph is now the single authoritative copy that workers classify against, it is worth naming the operation unambiguously.
+```suggestion
+park: dependencies are edges — add the `blocked-by` edge and return it to
+```
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The single-sourcing refactor itself is clean and the prose-invariant tests pass, but the newly added dependency-wait rule prescribes a `ready-for-agent` transition that `board-transition.sh` rejects from both `in-progress` and `ready-for-agent`, leaving a worker that follows the new doctrine with no legal move. The "cut `blocked-by`" wording additionally inverts against the same file's established meaning of "cut".
+Confidence: 0.72
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Both findings are the same class of bug, which is characteristic of this repo: the skills are prose that agents execute, so a sentence can be "wrong" the way code is wrong. Here the prose prescribes a state transition that the Python state machine in `_board.py` refuses, and a verb (`cut`) that the surrounding file already binds to the opposite operation.
+- This is exactly the failure mode that single-sourcing a discriminant is meant to prevent — one authoritative copy means one place to be right, but also one place where a mistake reaches every consumer. The refactor raised the stakes on the wording it centralized.
+- The reviewer's confidence of 0.72 reflects that it verified the legality table directly but had to infer worker behavior on an illegal-transition error; that inference is the soft part of the argument, not the table lookup.
+`─────────────────────────────────────────────────`
+
+The P1 has two possible resolutions and they differ in intent — either widen the legality table in `_board.py` to permit `in-progress → ready-for-agent`, or rewrite the rule so it never asks for that move. That's a design call about whether a ticket may legitimately walk backwards on the board, so I've left it to you rather than picking one. Say which way you want it and I'll make both fixes.

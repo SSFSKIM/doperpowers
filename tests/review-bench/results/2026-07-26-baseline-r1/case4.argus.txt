@@ -1,0 +1,39 @@
+Full review comments:
+
+## Findings
+
+[P0] Fix prune.sh manifest parsing for the new 4-column v2 record — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.gJR7DG/snapshot.sh:94-94
+  `snapshot.sh` now emits `<label>\t<epoch>\t<bytes>\t<archive-path>`, but `prune.sh:50` still reads three fields (`while IFS=$'\t' read -r epoch bytes path`). Bash assigns the leftover fields to the last variable, so `path` becomes `"<bytes>\t<archive-path>"`, the `[ ! -f "$path" ]` test fires, and every record is logged as "manifest points at a missing archive, skipping". The result is that rotation silently stops entirely for every run — archives accumulate forever with no error. `prune.sh` needs to read the label column (and its header comment updated), and since the label is now carried explicitly it should use it instead of `label="${base%%-*}"`, which is the `-`-in-label bug the README claims v2 fixed.
+
+[P0] Compare `$force` against a value; `[ "0" ]` is always true — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.gJR7DG/lib/common.sh:81-84
+  `snapshot.sh` defaults `FORCE="${BACKUP_FORCE:-0}"` and passes that string through, but `[ "$force" ]` is a non-empty-string test, so `"0"` is truthy. The shortfall branch is therefore taken on every run and `check_free_space` can never be fatal — the "refuse to run out of disk" behaviour degrades to a log line even without `--force`.
+```suggestion
+  if [ "$force" = 1 ]; then
+    log "only ${avail_kb}KB free in $dir, wanted ${need_kb}KB -- continuing anyway"
+    return 0
+  fi
+```
+
+[P1] Restore cleanup of the staging directory on failure — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.gJR7DG/snapshot.sh:70-70
+  The old `trap 'rm -rf "$STAGE"' EXIT INT TERM` was dropped and replaced with a bare `rmdir "$STAGE"` on the success path (line 91). If `tar` fails, `replicate` calls `die`, or the run is interrupted, the staging directory and the full-size archive inside it are left behind under `$TMPDIR`. Repeated failures (a flaky replica link is the likely case) accumulate whole archives in `/tmp`, which is precisely the disk-exhaustion this change is meant to prevent. Re-adding the trap right after `STAGE="$(make_stage)"` restores the previous guarantee and makes the trailing `rmdir` unnecessary.
+
+[P2] Replication writes directly to the final remote name — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.gJR7DG/lib/common.sh:97-99
+  The comment above `replicate` states that `cat` is used "so that a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name", but `cat > '$BACKUP_REMOTE_DIR/$name'` does exactly that: a dropped ssh session leaves a truncated file at the final path, indistinguishable from a good archive on the replica. Streaming into a temporary name and renaming on success (e.g. `cat > "$name.part" && mv "$name.part" "$name"`) would deliver the stated property.
+
+[P2] Read BACKUP_FORCE after load_config, not before — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.gJR7DG/snapshot.sh:22-22
+  `FORCE="${BACKUP_FORCE:-0}"` is evaluated at line 22, while `load_config "$CONFIG"` does not run until line 45. `BACKUP_FORCE=1` set in the config file is therefore exported too late to affect `FORCE`, contradicting the README, which lists `BACKUP_FORCE` as a recognised config key that pre-sets `--force`. Only an inherited environment variable works today; the default needs to be resolved after the config is loaded (while still letting an explicit `--force` win).
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The manifest gained a label column in `snapshot.sh` without updating `prune.sh`'s three-field parse, which silently disables all rotation, and the `[ "$force" ]` test makes the new free-space guard non-fatal in every configuration. Both are unconditional failures of the two features this commit adds.
+Confidence: 0.9
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Both P0s are classic shell footguns that no linter-free test run would catch: `read` with fewer variables than fields silently stuffs the remainder into the last variable, and `[ "$x" ]` tests emptiness, not truth — so the string `"0"` passes. Whenever a shell script uses a string flag for a boolean, compare it explicitly (`[ "$x" = 1 ]`).
+- The manifest-format change is a cross-file contract break: `snapshot.sh` is the writer and `prune.sh` is the reader, and nothing in the codebase enforces that they agree on the column count. A one-line format version marker in the manifest header, checked by the reader, would turn this class of failure from silent to loud.
+`─────────────────────────────────────────────────`
+
+Two of these are unconditional breakages of the features the commit adds, so I'd treat P0/P1 as blocking. Say the word and I'll fix all five.

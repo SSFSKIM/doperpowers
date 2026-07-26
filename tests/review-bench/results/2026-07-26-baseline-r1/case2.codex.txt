@@ -1,0 +1,12 @@
+The cents migration introduces incorrect legacy estimates, removes required input validation, and changes documented tier-boundary pricing. These regressions affect externally visible quote amounts and API behavior.
+
+Full review comments:
+
+- [P1] Convert cents before formatting quick estimates — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jCUScl/rates.ts:50-51
+  After `baseRateFor` changes from dollars to cents, `quickEstimate` still formats its return value directly as dollars. Every legacy estimate is therefore inflated by 100×; for example, a 0.5 kg domestic parcel is rendered as `$310.00` instead of `$3.10`. Convert the result with `centsToDollars` before formatting.
+
+- [P1] Restore positive finite weight validation — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jCUScl/quote.ts:52-54
+  When `handleQuote` receives zero or a negative weight, parsing accepts it because it checks only the value's type, while the validation formerly in `quoteShipment` has been removed. The handler now returns 200 with an invalid price—e.g. `weightKg: -3` produces a negative domestic total—instead of the documented 400 response. Validate before calling `baseRateFor`, preferably in `buildBreakdown` so direct callers are also protected.
+
+- [P1] Keep weight-tier upper bounds inclusive — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jCUScl/rates.ts:41-42
+  For weights exactly equal to 1, 5, or 20 kg, using `<` selects the next tier even though `maxKg` remains documented as inclusive. For example, a 1 kg domestic parcel increases from 370 cents to 495 cents. Use an inclusive comparison to preserve the existing pricing contract.

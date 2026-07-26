@@ -1,0 +1,44 @@
+The review is complete. Three findings, one of them a cross-tenant data exposure.
+
+Full review comments:
+
+## Findings
+
+[P0] Guard `/exports/all` with `admin_only`, not `authenticated` — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.woIagz/app.py:206-208
+  `handle_export_all` iterates `store.list_tenants()` and renders every document on the node, but it is decorated with `@authenticated`, so any member session (e.g. `tok-ana` on tenant `acme`) can read every other tenant's documents. This contradicts the README route table (`GET /exports/all` — admin only) and the Tenancy rule that "any route that can see across tenants is an admin route". The decorator should be `@admin_only`.
+  ```suggestion
+@admin_only
+def handle_export_all(request: Request, session: auth.Session) -> Response:
+    """GET /exports/all — every document on this node, for the warehouse loader."""
+  ```
+
+[P1] Fix off-by-one in page slice — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.woIagz/app.py:97-103
+  `last = first + limit` is already the exclusive end of the page, so slicing `names[first : last + 1]` returns `limit + 1` names and the last entry of each page is repeated as the first entry of the next page (e.g. with `limit=2` over `[a,b,c,d]`, page 1 yields `[a,b,c]` and page 2 yields `[c,d]`). The slice should end at `last`.
+  ```suggestion
+    first = (page - 1) * limit
+    last = first + limit  # one past the final entry on this page
+
+    return Response(
+        200,
+        {
+            "documents": names[first:last],
+  ```
+
+[P2] Read the new revision back instead of using `save_document`'s return value — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.woIagz/app.py:166-174
+  `store.save_document` now returns `len(rows)` rather than the new revision (store.py:112 and its docstring), but `handle_put_document` still binds it to `revision` and emits it as both `revision` and the `etag` in the response. A `PUT` with three rows on a brand-new document now reports `revision: 3` / `W/"3"` instead of `1`, which also breaks the `expected_revision` round-trip since clients feed that value back into the next conditional write. Either restore the revision as the return value or re-read it with `store.load_document`.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The bulk export route is authorization-gated only by session presence, letting any member read all tenants' documents, which directly violates the stated tenancy invariant. Additionally, the pagination slice returns an extra overlapping item per page, and `PUT` responses now report the row count as the document revision and ETag.
+Confidence: 0.9
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- The P0 and P2 findings share a root cause worth naming: **the change moved a contract but not every consumer of it.** Converting authorization to decorators means the security property now lives in one line above each handler, so a wrong decorator is silently valid Python — the type checker has nothing to object to. Same with `save_document` changing its return meaning from "revision" to "row count": both are `int`, so the caller kept compiling while quietly emitting the wrong ETag.
+- That suggests a structural defense rather than just three patches: make the decorator choice checkable (a test that asserts every handler touching `list_tenants()` is admin-gated) and make the store's return type distinguishable (a `Revision` NewType, or returning the saved record rather than a bare integer). Bugs that survive review are usually the ones where two different concepts share a representation.
+- The pagination bug is a different species — a classic inclusive/exclusive boundary slip. Note that the variable was *named* `last`, which invites `+ 1` thinking; naming it `end` or `stop` matches Python's half-open slice convention and makes the correct code look correct.
+`─────────────────────────────────────────────────`
+
+Want me to apply these three fixes? The P0 is a one-word decorator swap, the P1 is a one-character slice change, and the P2 needs a small decision from you: either revert `save_document` to return the revision (simpler, restores the old contract) or have the handler re-read it via `load_document` (keeps the new row-count return, costs an extra read).

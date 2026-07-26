@@ -1,0 +1,12 @@
+The cents migration makes the legacy estimate endpoint return prices 100 times too large, removes required weight validation, and changes pricing at documented tier boundaries. These are user-visible pricing and API-contract regressions.
+
+Full review comments:
+
+- [P1] Convert base-rate cents before formatting estimates — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.lVDJwe/rates.ts:51-51
+  For every call to the legacy `quickEstimate`, `baseRateFor` now returns whole cents, but the endpoint still treats that value as dollars before calling `toFixed(2)`. A $3.10 estimate is therefore returned as `"310.00"`, causing the marketing widget to display a price 100 times too large; convert the cents to dollars before formatting.
+
+- [P1] Reject invalid weights before constructing a quote — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.lVDJwe/api.ts:53-53
+  For bodies with `weightKg <= 0`, `parseQuoteRequest` accepts the value because it only checks its type, while `quoteShipment` no longer performs the former positive-finite validation. The endpoint consequently returns a 200 quote (for example, zero kilograms costs $2.50) instead of the documented 400; non-finite numbers also produce invalid 200 responses when the handler is invoked directly.
+
+- [P1] Keep tier upper bounds inclusive — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.lVDJwe/rates.ts:42-42
+  For weights exactly equal to 1, 5, or 20 kilograms, the strict comparison skips the tier whose documented inclusive upper bound matches and selects the next, more expensive tier. For example, a domestic 1 kg shipment is now priced at 495 cents instead of 370 cents; use an inclusive comparison.

@@ -59,8 +59,12 @@ elif [ -f "$case_dir/case.json" ]; then
   git clone -q "$src" "$scratch/repo"
   scratch_repo="$scratch/repo"
   git -C "$scratch_repo" fetch -q origin "$head_sha" "$base_sha" 2>/dev/null || true
-  git -C "$scratch_repo" checkout -q -b main "$base_sha"
-  git -C "$scratch_repo" checkout -q -b bench-change "$head_sha"
+  git -C "$scratch_repo" checkout -q -B main "$base_sha"
+  git -C "$scratch_repo" checkout -q -B bench-change "$head_sha"
+  # Kill the origin remote: both engines prefer a branch's upstream when it
+  # is ahead, and origin/main (which already contains a merged PR's head)
+  # would resolve the merge base to the head itself — an empty diff.
+  git -C "$scratch_repo" remote remove origin
   scratch="$scratch_repo"
 else
   echo "run-case: $case_dir has neither patch.diff nor case.json" >&2; exit 2
@@ -76,9 +80,11 @@ case "$engine" in
       --base main --out "$out"
     ;;
   argus)
-    # Headless path (C1.G3): plain-level, base-branch target with precomputed
-    # merge base — the same seed the skill's Step 3A prescribes.
-    prompt="/argus-review:argus-review Review the code changes against the base branch 'main'. The merge base commit for this comparison is ${merge_base}. Run \`git diff ${merge_base}\` to inspect the changes relative to main. Provide prioritized, actionable findings. Use the plain effort level."
+    # Headless path (C1.G3): base-branch target with precomputed merge base —
+    # the same seed the skill's Step 3A prescribes. ARGUS_LEVEL (default
+    # plain) pins the effort level explicitly (X3: named level always wins).
+    level="${ARGUS_LEVEL:-plain}"
+    prompt="/argus-review:argus-review Review the code changes against the base branch 'main'. The merge base commit for this comparison is ${merge_base}. Run \`git diff ${merge_base}\` to inspect the changes relative to main. Provide prioritized, actionable findings. Use the ${level} effort level."
     timeout "$timeout_s" claude -p "$prompt" --permission-mode auto > "$out"
     ;;
 esac

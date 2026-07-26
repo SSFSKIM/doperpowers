@@ -1,0 +1,27 @@
+The isolated reviewer found no defects in the branch's changes against `main`.
+
+## Findings
+
+No findings.
+
+## Verdict
+
+Overall correctness: patch is correct
+Explanation: This is a documentation/prose single-sourcing refactor; the new `skills/issue-tracker/references/ticket-gate.md` preserves every load-bearing clause it absorbed, all four routing pointers resolve to real paths under the actual `BOARD_SCRIPTS` binding, and the updated test suite passes with no stale references left behind.
+Confidence: 0.82
+
+---
+
+Supporting detail from the reviewer's verification, since a "no findings" result is only as good as what was actually checked:
+
+- **Placeholder resolution was traced, not assumed.** The new pointers use `{{BOARD_SCRIPTS}}/../references/ticket-gate.md`, and `{{BOARD_SCRIPTS}}` is bound in the issue-tracker dispatch ritual (`skills/issue-tracker/SKILL.md:163`) to `skills/issue-tracker/scripts`. That makes the relative path resolve to the real new file, on both the implement lane and the spike lane.
+- **The two placeholder syntaxes in this repo don't collide.** `implement-decompose.md` uses the angle-bracket `<BOARD_SCRIPTS>` form, matching its own existing convention, which is why the "no unresolved `{{...}}` placeholders" assertion at `tests/implementing-tickets/test-protocol-content.sh:137` still passes.
+- **Deleted clauses were matched against the new file one by one** — the fork taxonomy, the minor-taste rule, `big-but-ATOMIC`, the landability criterion, and the human-as-asynchronous-answer-source clause all survive verbatim in `ticket-gate.md`.
+- **One clause did get dropped from the operation manual**: "trivial lookups are orient work, never a park." The reviewer confirmed the worker protocol still carries it at `skills/implementing-tickets/SKILL.md:30-31`, so no worker behavior changes. Worth knowing it now lives in exactly one place rather than two.
+- **`tests/implementing-tickets/test-protocol-content.sh` passes end to end**, and no other skill or test still points at the old vendored gate location.
+
+`★ Insight ─────────────────────────────────────`
+Single-sourcing prose in a skills repo carries a failure mode that single-sourcing code does not: there is no compiler or import resolver to catch a pointer that no longer resolves. The safety net here is entirely the test suite's placeholder assertions plus the runtime binding of `{{BOARD_SCRIPTS}}` — which is why the reviewer's most valuable work was resolving that binding by hand rather than eyeballing the path.
+
+The one genuine residual risk the reviewer surfaced isn't a bug: `triaging-feedback/references/triage-worker-protocol.md` still keeps its own separate Korean copy of gate content. That duplication is deliberate and necessary, because `src/prompt.ts:8` embeds that file verbatim into a sandboxed worker that cannot open plugin paths at runtime. It's a copy that can silently drift from `ticket-gate.md` with nothing to detect it — a good candidate for a future consistency check if the gate wording keeps evolving.
+`─────────────────────────────────────────────────`

@@ -1,0 +1,15 @@
+The positive-lateness calculation rejects valid readings, and flushing no longer retires windows, making the new multi-batch output cumulative and unbounded. The per-record configuration loading and incomplete numeric validation introduce additional performance and correctness problems.
+
+Full review comments:
+
+- [P1] Subtract allowed lateness from the watermark — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.rKZzhM/windows.py:70-70
+  When `allowed_lateness` is positive, adding it to the watermark drops valid and even newer readings. For example, after timestamp 100 with a 30-second allowance, timestamps 90 and 110 are both incorrectly dropped because they are below 130; the cutoff must be `watermark - allowed_lateness`.
+
+- [P1] Clear pending windows after taking the flush snapshot — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.rKZzhM/aggregate.py:85-87
+  Whenever `summarize_files` processes multiple batches, this leaves every prior window in `_pending`, so later batch reports repeat earlier windows or contain cumulative statistics for reused keys. It also defeats the stated bounded-memory purpose of flushing; the pending map must be cleared after capturing the rows.
+
+- [P2] Cache tenant limits outside the per-reading loop — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.rKZzhM/pipeline.py:39-40
+  For any substantial input, this call opens and parses `tenants.json` once per reading, turning a telemetry batch into potentially thousands or millions of redundant filesystem reads. Load the configuration once per run or cache each tenant's limits for the duration of `summarize_files`.
+
+- [P2] Reject non-finite JSON constants as malformed — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.rKZzhM/records.py:51-53
+  When an input contains CPython's accepted `NaN` or `Infinity` JSON extensions, `json.loads` produces a float and this type check accepts it despite the documented JSON-number restriction. `NaN` also bypasses `max_value` comparisons and produces invalid statistics such as `min=inf` and `max=-inf`, so non-finite values should be rejected here or via `parse_constant`.

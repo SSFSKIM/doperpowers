@@ -1,0 +1,15 @@
+The lateness calculation drops valid readings, and flushing no longer retires state, which breaks the new multi-batch behavior and its memory guarantees. The patch also introduces significant per-record configuration I/O and incomplete numeric validation.
+
+Full review comments:
+
+- [P1] Subtract allowed lateness from the watermark — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jwRaED/windows.py:70-71
+  When `allowed_lateness` is positive, adding it makes the cutoff stricter rather than more permissive. With watermark 100 and lateness 10, both an in-order reading at 105 and an allowed late reading at 95 satisfy `< 110` and are dropped, so dense streams lose most readings; the cutoff should use `watermark - allowed_lateness`.
+
+- [P1] Clear pending windows after taking the flush snapshot — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jwRaED/aggregate.py:85-87
+  When `summarize_files` processes multiple batches, this leaves every flushed window in `_pending`. Later batches therefore repeat prior windows, same-window statistics become cumulative across batches, and memory grows with the entire backfill, contradicting both the per-batch output and the stated retirement behavior.
+
+- [P2] Load tenant configuration outside the record loop — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jwRaED/pipeline.py:39-40
+  For every reading, this call opens and parses `tenants.json` again. A million-record input consequently performs a million file opens and JSON decodes despite using one static configuration, making ingest throughput dominated by configuration loading; load it once per run or cache limits by tenant.
+
+- [P2] Reject non-finite constants in numeric validation — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.jwRaED/records.py:52-54
+  When input contains `NaN` or `Infinity`, Python's `json.loads` accepts these non-standard constants and this type check treats them as JSON numbers. They therefore bypass the new malformed-value contract; in particular, a first `NaN` observation leaves the aggregator's extrema at `inf` and `-inf`. Reject non-finite values or disallow these constants during decoding.

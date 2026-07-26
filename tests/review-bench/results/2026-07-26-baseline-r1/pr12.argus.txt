@@ -1,0 +1,31 @@
+The review came back with two findings, both in the skill prose that governs the pull-request review loop. Relaying them verbatim.
+
+Full review comments:
+
+## Findings
+
+[P2] Align SKILL.md self-merge clause with the new non-blocker wording — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.DjCJlk/repo/skills/reviewing-prs/SKILL.md:59-61
+  The spec revision note for this change states that SELF-MERGE wording was aligned to "non-blocker findings, each explicitly routed", and `references/review-worker-protocol.md:88-89` was updated accordingly, but the SKILL.md summary of that same ESCALATE clause still reads "only low findings". Under the new routing, non-blocker means everything below the engine's critical/high class (so medium findings qualify), which makes the SKILL.md text a narrower, contradicting statement of the tier the protocol actually encodes — and this section is explicitly billed as "Encoded in the protocol's ESCALATE block".
+  ```suggestion
+  Encoded in the protocol's ESCALATE block — ALL clauses must hold for
+  self-merge: final verdict approve (or only non-blocker findings, each
+  explicitly routed); post-fix diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
+  ```
+
+[P2] Extend the statelessness match to ticketed and rebutted findings — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.DjCJlk/repo/skills/reviewing-prs/references/review-worker-protocol.md:75-79
+  The new clause only exempts findings "you already logged" (the LOG bin) from re-routing. TOO BIG findings are by definition never fixed in the PR and INVALID findings are never changed, so a stateless re-review round will re-flag them too, and the surrounding rule ("ROUTE each finding to exactly one bin") then tells the worker to register a second board ticket via `board-register.sh` or post a duplicate rebuttal comment for the same finding — up to 3 rounds. Matching against any already-routed finding (logged, ticketed, or rebutted) rather than only tech-debt comments closes the gap.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The change is prose-only, but in this repo skill prose is behavior: SKILL.md still states the old "only low findings" self-merge clause that the commit's own spec note claims was aligned, leaving two contradicting statements of the same gate, and the new statelessness clause leaves duplicate ticket/rebuttal registration possible across re-review rounds. Both are small, self-contained edits rather than design problems.
+Confidence: 0.7
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- Both findings are the same failure class: a rule stated in two places (the skill summary and the protocol reference) drifting apart. This repo's own guidance calls skills "code that shapes agent behavior," so a stale summary is a real bug, not a doc nit — the agent reading SKILL.md will gate on "only low findings" while the protocol permits any non-blocker.
+- The second finding is about idempotency under a stateless re-run. Any loop that re-derives its full finding set each round needs its side effects (ticket registration, comment posting) keyed on *all* prior routing decisions, not just one bin — otherwise re-runs multiply the effects.
+`─────────────────────────────────────────────────`
+
+Neither finding is a design problem; both are small, contained edits. I have not applied them — say the word and I'll fix both and commit.

@@ -1,0 +1,15 @@
+The patch exposes cross-tenant data to non-admin users, reports incorrect revisions after writes, does not enforce conditional writes atomically, and returns oversized overlapping pages.
+
+Full review comments:
+
+- [P1] Require admin authorization for the bulk export — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.x5Sloh/app.py:206-206
+  With any valid member token, `GET /exports/all` reaches this handler and returns documents from every tenant. This violates the documented tenancy boundary that cross-tenant routes are admin-only; use the `admin_only` guard here.
+
+- [P1] Make the revision check and write atomic — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.x5Sloh/store.py:101-104
+  When two PUTs use the same `expected_revision` concurrently, both can load the old revision before either writes, both pass this comparison, and both overwrite the document without a 409. This defeats the conditional-write guarantee and can silently lose an update, so the read/check/write sequence needs per-document synchronization or an atomic compare-and-swap mechanism.
+
+- [P1] Return the newly stored revision from save_document — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.x5Sloh/store.py:112-112
+  Whenever the row count differs from the new revision—for example, writing three rows to a new document—this stores revision 1 but returns 3, which `handle_put_document` publishes as the revision and ETag. Clients that reuse that value as `expected_revision` then receive a false conflict on their next write; preserve the previous revision-returning contract or have the handler read back the actual revision.
+
+- [P2] Limit each page to the requested number of documents — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.x5Sloh/app.py:103-103
+  When at least `limit + 1` names remain, this slice returns `limit + 1` entries because Python's upper bound is exclusive but the code adds one again. Adjacent pages consequently overlap by one document and the response violates its reported limit.

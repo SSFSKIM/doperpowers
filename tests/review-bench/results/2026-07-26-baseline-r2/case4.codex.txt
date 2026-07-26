@@ -1,0 +1,27 @@
+The new manifest format disables rotation, and the default force handling defeats the disk-space guard. Failure cleanup and remote publication also introduce data-integrity, disk-exhaustion, and permissions risks.
+
+Full review comments:
+
+- [P1] Update prune.sh for the v2 manifest — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/snapshot.sh:94-94
+  Every successful snapshot now emits four fields, but `prune.sh` still reads only `epoch bytes path`; Bash assigns `bytes<TAB>archive` to `path`, so its file check fails and every run silently skips rotation. Parse the label field in `prune.sh` and use it instead of deriving the label up to the first `-`.
+
+- [P1] Treat the default force value as disabled — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/lib/common.sh:81-83
+  When free space is insufficient on an ordinary invocation, `snapshot.sh` passes the literal `0`, but `[ "$force" ]` is true for every nonempty string. The preflight therefore always downgrades a shortage to a warning and proceeds toward filling the filesystem; compare explicitly with `1` or use an empty false value.
+
+- [P1] Propagate errors from the emptiness probe — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/snapshot.sh:59-61
+  When the source exists but the cron user cannot read it, `find` fails and produces no stdout; because the substitution is inside `[ ... ]`, its failure status is ignored and the source is classified as empty. `run-backup.sh` then converts exit 3 into success, masking a failed backup, so capture and validate the `find` status separately.
+
+- [P1] Restore EXIT cleanup for staged archives — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/snapshot.sh:70-70
+  If `tar`, replication, `mv`, or a signal fails after stage creation, the previous cleanup trap is gone and `rmdir` is reached only on success. In particular, every cron retry during a replica outage leaves a full compressed archive in `TMPDIR`, potentially exhausting the host filesystem.
+
+- [P1] Publish remote replicas only after complete transfer — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/lib/common.sh:97-99
+  If the remote disk fills or the transfer terminates after writing some bytes, this redirection has already created the archive under its final name, and the failure path never removes it. The replica is consequently left with a plausible-looking truncated backup; write to a temporary name, validate completion, and rename atomically.
+
+- [P1] Set a private umask on the remote side — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/lib/common.sh:97-99
+  When the remote account has a typical `022` umask, `cat > ...` creates the replicated archive as mode 0644 and `mkdir -p` may create a world-traversable directory. The local `umask 077` does not cross the SSH boundary, so backup contents can become readable by other remote users unless the remote command sets a private umask or permissions explicitly.
+
+- [P2] Derive FORCE after loading the config — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/snapshot.sh:22-22
+  When `BACKUP_FORCE=1` is present only in `backup.conf`, this expansion runs before `load_config` exports that key, so `FORCE` retains its pre-config value. The documented config option is disconnected from the space check; derive it after loading the config while preserving explicit `--force` precedence.
+
+- [P2] Escape remote paths before interpolation — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.bPHO3C/lib/common.sh:97-99
+  When `BACKUP_REMOTE_DIR` or the label-derived archive name contains an apostrophe, interpolating it inside raw single quotes terminates the remote shell string, causing replication failure; crafted values can also append additional shell commands. Quote these values for the remote shell or pass them without constructing command text.
