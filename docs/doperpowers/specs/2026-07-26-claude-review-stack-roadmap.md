@@ -252,8 +252,8 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 
 | Child | Spec / ticket | Status |
 |---|---|---|
-| C1 | doperpowers#28 | findings ready — G1+G2+G3 all met; parked for human close (spike handoff). Findings doc: `2026-07-26-c1-review-methodology-findings.md`; follow-up #36 (fixture maintenance) |
-| C2 | doperpowers#29 | not-dispatched (blocked-by C1) |
+| C1 | doperpowers#28 | landed (closed done 2026-07-26). Findings doc: `2026-07-26-c1-review-methodology-findings.md`; follow-ups #36 (fixtures), human direction → C2 |
+| C2 | doperpowers#29 | eligible (unblocked by C1 close; direction comment on ticket; confirm track at dispatch) |
 | C3 | doperpowers#30 | not-dispatched (blocked-by C2) |
 | C4 | doperpowers#31 | not-dispatched (blocked-by C2, C3) |
 | C5 | doperpowers#32 | not-dispatched (blocked-by C4) |
