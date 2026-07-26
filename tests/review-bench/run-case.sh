@@ -7,7 +7,13 @@
 # (the C1.G3 probe mechanism) so baseline and deployment measure the same thing.
 #
 # Usage:
-#   run-case.sh --case <case-dir> --engine codex|argus --out <findings-file>
+#   run-case.sh --case <case-dir> --engine codex|argus|review|code-review --out <findings-file>
+#
+#   review / code-review run Claude Code's BUILT-IN slash commands in a fresh
+#   `claude --bg` background session started from the scratch repo (not the
+#   headless -p path): launch, poll ~/.claude/jobs/<id>/state.json until done,
+#   then extract the ReportFindings tool call (from the transcript that
+#   state.json's linkScanPath names) plus the final message.
 #
 # Case dir layouts:
 #   seeded:  base/ + patch.diff (+ truth.json, case.md, intent.md)
@@ -15,8 +21,8 @@
 #
 # Env: CODEX_REVIEW_MODEL / CODEX_REVIEW_EFFORT pass through to review-engine.sh.
 #      ARGUS_TIMEOUT (default 2700s) bounds the argus run; codex is bounded the same.
-#      ARGUS_CLAUDE_BIN swaps the `claude` binary for the argus side (e.g. a
-#      wrapper adding gateway --settings/--model/--effort for engine-swap runs).
+#      ARGUS_LEVEL (default plain) pins the argus effort level.
+#      CR_LEVEL (default medium) pins the code-review effort level.
 #      BENCH_KEEP=1 keeps the scratch repo (printed) for postmortem.
 set -euo pipefail
 
@@ -31,7 +37,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$case_dir" ] && [ -n "$engine" ] && [ -n "$out" ] || usage
-case "$engine" in codex|argus) ;; *) usage ;; esac
+case "$engine" in codex|argus|review|code-review) ;; *) usage ;; esac
 case_dir="$(cd "$case_dir" && pwd)"
 out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
 bench_root="$(cd "$(dirname "$0")" && pwd)"
@@ -87,7 +93,37 @@ case "$engine" in
     # plain) pins the effort level explicitly (X3: named level always wins).
     level="${ARGUS_LEVEL:-plain}"
     prompt="/argus-review:argus-review Review the code changes against the base branch 'main'. The merge base commit for this comparison is ${merge_base}. Run \`git diff ${merge_base}\` to inspect the changes relative to main. Provide prioritized, actionable findings. Use the ${level} effort level."
-    timeout "$timeout_s" "${ARGUS_CLAUDE_BIN:-claude}" -p "$prompt" --permission-mode auto > "$out"
+    timeout "$timeout_s" claude -p "$prompt" --permission-mode auto > "$out"
+    ;;
+  review|code-review)
+    # Built-in slash commands, run as a real background session (`claude --bg`)
+    # from the scratch repo — same target seeding as the argus prompt so the
+    # engines measure the same comparison.
+    # Both commands take STRUCTURED args (freeform prose after the command is
+    # misparsed as a target) — /review is documented PR-only, so it runs bare
+    # as a behavioral probe; /code-review gets the explicit merge-base range.
+    if [ "$engine" = "review" ]; then
+      prompt="/review"
+    else
+      prompt="/code-review ${CR_LEVEL:-medium} main...bench-change"
+    fi
+    launch="$(claude --bg --permission-mode auto "$prompt" 2>&1)" || { printf '%s\n' "$launch" >&2; exit 1; }
+    job_id="$(printf '%s\n' "$launch" | sed $'s/\x1b\\[[0-9;]*m//g' | sed -n 's/^backgrounded · \([0-9a-f]*\).*/\1/p')"
+    [ -n "$job_id" ] || { echo "run-case: could not parse bg job id from launch output:" >&2; printf '%s\n' "$launch" >&2; exit 1; }
+    state_file="$HOME/.claude/jobs/$job_id/state.json"
+    echo "run-case: bg job $job_id ($prompt) — polling $state_file" >&2
+    waited=0
+    while :; do
+      st="$(python3 -c "import json;print(json.load(open('$state_file')).get('state',''))" 2>/dev/null || echo "")"
+      case "$st" in done|failed|error) break ;; esac
+      if [ "$waited" -ge "$timeout_s" ]; then
+        echo "run-case: bg job $job_id timed out after ${timeout_s}s (state=$st)" >&2
+        claude stop "$job_id" >/dev/null 2>&1 || true
+        exit 1
+      fi
+      sleep 15; waited=$((waited+15))
+    done
+    python3 "$bench_root/extract-bg-findings.py" "$state_file" "$st" > "$out"
     ;;
 esac
 echo "engine=$engine case=$(basename "$case_dir") secs=$(( $(date +%s) - started )) out=$out" >&2

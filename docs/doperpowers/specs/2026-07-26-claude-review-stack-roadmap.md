@@ -116,17 +116,25 @@ overrides:
   FP 2→0, finder wave 5→2, wall time ~halved. Scoring:
   `tests/review-bench/results/2026-07-26-c2-scores.json`.
 
-### C3: Effort auto-routing — autonomous expected; confirm at dispatch
+### C3: Effort auto-routing over a multi-lens reviewer ladder — autonomous expected; confirm at dispatch
 
-- **Purpose:** Make argus choose its own effort level from the diff's
-  size and stakes instead of demanding a named level, so headless callers
-  (and casual interactive ones) get the right machinery without knowing
-  the ladder exists.
+- **Purpose:** Two coupled moves, the second added by human direction
+  2026-07-27. (a) Auto-routing: make argus choose its own effort from
+  the diff's size and stakes instead of demanding a named level, so
+  headless callers (and casual interactive ones) get the right machinery
+  without knowing the ladder exists. (b) Ladder rearchitecture: retire
+  the finder/verifier species entirely — every level dispatches only
+  full reviewers (the plain rubric), higher levels adding reviewers with
+  lens-scoped mandates partitioned to minimize diff overlap. Effort IS
+  the reviewer count; there is no other machinery to route.
 - **Acceptance:** with no level named, the skill selects and announces a
   level derived from the change under review; an explicitly named level
   still wins (X3); the selection logic is observable (the announcement
-  states what drove the choice).
-- **Edges:** blocked-by: C2 (routes over the post-C2 ladder); blocks: C4.
+  states what drove the choice); no finder/verifier dispatch remains at
+  any level; a scored X1 re-run at the rearchitected top level shows no
+  recall loss against C2's high r2 (19/20 full denominator, FP 0).
+- **Edges:** blocked-by: C2 (routes over the post-C2 reviewer prompt);
+  blocks: C4.
 - **Contracts:** owns X3; participates in X2.
 - **Required:** required.
 - **Status:** not-dispatched (blocked-by C2).
@@ -293,6 +301,20 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 - **Non-regression bar = side-by-side bench (option a).** A qualitative
   spot-check (option b) was rejected as too weak to claim the "without
   losing performance" requirement verified.
+- **Finder/verifier retired; effort = reviewer count** (human direction,
+  2026-07-27). Codex is always a single agent; the only genuine lever
+  higher effort adds is multiple full reviewers with lens-scoped
+  mandates partitioned to minimize diff overlap, each investigating its
+  lenses more thoroughly — no recall-biased finder feeding a separate
+  verifier. Evidence: the native `/code-review medium` runs ZERO
+  subagents and verifies inline by executing the code
+  (transcript-checked during the builtin bench probe, 2026-07-27);
+  the human's operational experience is that codex exec review findings
+  are essentially never refuted, so a dedicated verification stage buys
+  nothing; and in high r2 the verification layer actively cost a true
+  positive (the case4-u2 refutation). v1.2 had already named this the
+  "likely shape"; C2 repriced within the old machinery instead — that
+  interim is superseded, and the rearchitecture lands in C3.
 - **C6 split out of C5 with no edges.** The implement-worker flip is an
   independent shippable blocked by nothing; folding it into C5 would
   park it behind C4 for no reason. The human ruled a bench unnecessary
@@ -366,6 +388,15 @@ same event — then retrospect.
 
 ## Revision Notes
 
+- **2026-07-27 (v1.4, C3 rescope by human direction):** C3 now carries
+  the ladder rearchitecture alongside auto-routing: finder/verifier
+  retired at every level, multi-lens full reviewers only, effort =
+  reviewer count (see the Decision Log entry of the same date for the
+  evidence). C3's acceptance gains the no-finder/verifier check and an
+  X1 non-regression bar against C2 high r2. C3 was not in flight; no
+  worker flag needed. A builtin-engine bench round (`/review`,
+  `/code-review medium` — background-session invocation, not headless)
+  is in flight the same day as C4 comparison data.
 - **2026-07-26 (v1.3, C2 close):** C2 landed as argus-review v0.4.0
   (INVESTIGATION SWEEP into plain — five lens families + language-pitfall
   and wrapper/delegation families from the built-in's angles D/E; AC1 FP
