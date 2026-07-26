@@ -97,12 +97,15 @@ overrides:
 - **Purpose:** Land C1's adopted candidates in the argus-review repo —
   the methodology upgrade that justifies making argus the default. Skill
   and agent-text changes follow the writing-skills discipline.
-- **Acceptance:** an argus-review release whose changes trace one-to-one
-  to C1 adoption decisions, with the X1 benchmark re-run showing the new
-  argus at least matching baseline argus — and reporting the delta
-  against the codex-engine baseline (informational, the early warning
-  for the C4 bench gate: a C2 that still trails codex badly is a flag to
-  raise here, not a surprise to discover at C4).
+- **Acceptance:** an argus-review release whose changes trace to C1
+  adoption decisions and the human's close-of-C1 direction, with the X1
+  benchmark re-run showing: G1 (required) — **single-agent plain reaches
+  the codex bar** (recall ≥ codex baseline on the seeded set, no
+  meaningful FP growth) — the fair weight-class target, since codex is
+  itself a single inline reviewer; G2 (required) — the multi-agent
+  ladder's **subagent economy is repriced**: levels spend subagents
+  proportionally to the diff (no fixed large fleet), and the re-run
+  shows no recall loss at high versus baseline high.
 - **Edges:** blocked-by: C1; blocks: C3.
 - **Contracts:** consumes X1.
 - **Required:** required.
@@ -333,6 +336,23 @@ same event — then retrospect.
 
 ## Revision Notes
 
+- **2026-07-26 (v1.2, C1 close — human direction reshapes C2):** The X1
+  result "argus passes at high" carries a weight-class caveat the human
+  named at spike close: codex is a single INLINE reviewer, argus high is
+  a multi-agent panel — not a like-for-like win. C2's acceptance is
+  restated accordingly: (G1) raise SINGLE-agent plain to the codex bar
+  (fold security-hunting pressure into plain, referencing the native
+  codex review mechanism in the codex_somersault source and the C1 adopt
+  list; the built-in's o48 inline cells — 8 angles in one context, no
+  subagents — are prior art for multi-angle single-pass); (G2) reprice
+  the multi-agent ladder's subagent economy (argus high+ and built-in
+  /code-review alike overspend agents; the likely shape is the same
+  single-reviewer mechanism scoped to different seams rather than
+  separate finder/verifier machinery, with fleet size scaled to the
+  diff). The earlier "engine deploys high" consequence is downgraded to
+  interim: if C2.G1 lands, the engine can deploy uplifted plain, with
+  escalation reserved for large/high-stakes diffs (C3's dial). C2 was
+  not in flight; no worker flag needed.
 - **2026-07-26 (v1.1, pre-approval external review):** F1 — corrected the
   built-in command-source path (the volatile `~/.claude/jobs/` citation
   was wrong; the stable source is the codex_somersault checkout). F2 —
