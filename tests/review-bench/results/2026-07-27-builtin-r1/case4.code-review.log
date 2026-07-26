@@ -1,0 +1,2 @@
+run-case: bg job 9eb33625 (/code-review medium main...bench-change) — polling /Users/new/.claude/jobs/9eb33625/state.json
+engine=code-review case=case4 secs=289 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-07-27-builtin-r1/case4.code-review.txt

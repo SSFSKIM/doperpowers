@@ -1,0 +1,45 @@
+## ReportFindings (level=medium, 3 findings)
+
+- **/exports/all is @authenticated, not @admin_only** — app.py:206
+  `handle_export_all` returns every tenant's documents but is guarded by `@authenticated` instead of `@admin_only`, so any logged-in member can read other tenants' data.
+  Failure: A plain (non-admin) member of tenant `acme` calls `GET /exports/all?format=csv`. The handler iterates `store.list_tenants()` and renders every document of every tenant, so the response body contains the full contents of tenant `globex`'s documents. The README's route table lists `GET /exports/all` as "admin only", and `admin_only` already exists and is applied to `/admin/tenants` — this handler just uses the wrong decorator.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **save_document returns row count; caller uses it as revision** — store.py:122
+  `save_document` was changed to `return len(rows)` while its only caller, `handle_put_document`, still binds the result to `revision` and reports it as the document revision and ETag.
+  Failure: A client PUTs 3 rows to a brand-new document. The real stored revision is 1, but the response is `{"revision": 3, "etag": "W/\"3\""}`. The client then issues a conditional write with `expected_revision: 3`, which raises RevisionConflict against the real revision 1 and returns 409 — the conditional-write feature this change adds cannot be used end to end. Worse, a PUT with `rows: []` returns `revision: 0`, and 0 means "must not exist yet", so a client echoing that value back can never succeed again. Either return `current + 1` from the store, or have the handler re-read via `load_document`.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **Page slice returns limit + 1 names (off-by-one)** — app.py:103
+  `last = first + limit` is already an exclusive end index, but the slice is `names[first : last + 1]`, so every page returns one extra name and consecutive pages overlap.
+  Failure: With 10 documents and `?limit=5`: page 1 returns indices 0–5 (six names, contradicting the `limit: 5` echoed in the same response) and page 2 returns indices 5–9, so the name at index 5 is served on both pages and a client paging through processes it twice. Fix: `names[first:last]`.
+  Verdict: CONFIRMED
+  Category: correctness
+
+## Review body
+
+Three confirmed bugs in `main...bench-change`, all verified against the diff — two of them ship-blocking.
+
+**1. Cross-tenant data leak in the bulk export** (`app.py:206`)
+
+`handle_export_all` loops over `store.list_tenants()` and renders every document on the node, but it is decorated `@authenticated` rather than `@admin_only`. Your own README route table says this endpoint is admin-only, and the `admin_only` decorator already exists and is correctly applied to `/admin/tenants` one function below. Any ordinary member of any tenant can call `GET /exports/all?format=csv` and read every other tenant's documents.
+
+**2. The new conditional-write feature cannot actually be used** (`store.py:122` with `app.py:166`)
+
+The refactor changed `save_document` to `return len(rows)` and documented that "the new revision is not returned". The caller was not updated: `handle_put_document` still writes `revision = store.save_document(...)` and puts that value in both the `revision` field and the `etag`. So a client that PUTs three rows to a new document is told its revision is 3 when the stored revision is 1. When that client then does the conditional write this change was built for, it sends `expected_revision: 3`, gets a 409, and is stuck. The empty-rows case is worse: the response says `revision: 0`, and 0 is the sentinel meaning "this document must not exist yet", so a client echoing it back can never write successfully again. Fix either side — return `current + 1` from the store, or have the handler re-read with `load_document`.
+
+**3. Pagination returns one item too many and overlaps pages** (`app.py:103`)
+
+`last = first + limit` is already the exclusive end of the page, but the slice adds one more: `names[first : last + 1]`. With ten documents and `limit=5`, page one returns six names and page two starts at the name page one already ended on. The response also contradicts itself, reporting `limit: 5` alongside six entries. The one-character fix is `names[first:last]`.
+
+`★ Insight ─────────────────────────────────────`
+- Findings 2 and 3 are both **comment-blessed bugs**: `store.py` has a docstring stating the new return contract, and `app.py:98` has the inline comment "index of the final entry on this page". Both comments are internally coherent and both are wrong relative to the code that consumes them. Prose that agrees with the line it sits on is not evidence — the check that matters is against the *caller* and the *slice semantics*.
+- The decorator refactor is a good change that introduced finding 1 precisely because it worked: moving the auth check from an inline `if session.role != auth.ADMIN` (visible in the body you're reading) up to a one-word decorator makes the authorization level easy to skim past when writing a new handler. Extracting a policy into a decorator moves the risk from "forgot to write the check" to "wrote the wrong decorator name", which reviewers scan for less reliably.
+- Finding 2 illustrates why a function whose return type is bare `int` is fragile: `-> int` covered both "a revision" and "a row count", so the meaning changed without a single type error. A `NewType` or a small return dataclass would have made this a compile-time-visible break.
+`─────────────────────────────────────────────────`
+
+Two things I looked at and did not count as findings: `_int_param` clamps `page` to 10000 rather than returning an empty page, so a request for page 20000 silently serves page 10000's contents; and `GET /documents/all?format=` with an empty value returns 400, which sits oddly with the README describing that URL as the escape hatch for a document literally named `all` (it does work with `?format=csv`).
+
+I have not changed any code — say the word and I'll fix all three.

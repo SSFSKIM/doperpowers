@@ -1,0 +1,32 @@
+All 5 candidate groups have been verified. Three defects survived with a constructed trigger; three were refuted (a stray-filename crash that only the service itself could cause, an unbounded-export critique that is actually the endpoint's documented purpose, and a response-shape mismatch with no real consumer).
+
+## Findings
+
+**[P0] Guard `GET /exports/all` with `admin_only`, not `authenticated` — app.py:206-208**
+
+  `handle_export_all` is decorated `@authenticated` rather than `@admin_only`, so any valid session — including a plain member — gets every document of every tenant on the node. With the stock tokens, `GET /exports/all?format=csv` as `tok-ana` (tenant `acme`, role `member`) returns the `globex` document body plus the tenant names, which contradicts README line 24 ("`GET /exports/all` | admin only") and the Tenancy invariant that any cross-tenant route is an admin route; the handler never consults `session.tenant`, and `session` is unused in the body. The neighbouring `handle_list_tenants` uses `@admin_only`, which looks like the intended decorator here.
+
+**[P1] Return the new revision from `save_document`, not `len(rows)` — store.py:121-122**
+
+  `save_document` now returns `len(rows)` instead of the revision it wrote, but its only caller was not updated: app.py:166-174 still binds the result to `revision` and serves it as both the `revision` field and the ETag. So a `PUT` of a 3-row new document answers `{"revision": 3, "etag": 'W/"3"'}` while the file is at revision 1, and any client that follows the newly documented conditional-write protocol by echoing that value back gets a permanent `409 document is at revision 1, not 3`. Empty-row writes are worse, reporting `revision: 0` — the sentinel for "must not exist yet" — and the served ETags are neither correct nor monotonic since row counts can shrink, so `W/"3"` can be reused for different content. Either return `current + 1` from `save_document`, or have the handler re-read via `load_document` as the new docstring suggests.
+
+**[P1] Fix the page slice: `names[first:last]`, not `names[first : last + 1]` — app.py:98-103**
+
+  The page slice is off by one: `last` is already the exclusive end (`first + limit`), so `names[first : last + 1]` returns `limit + 1` names and each page repeats the first name of the next page (page boundaries overlap because the next page's `first` equals this page's `last`). Any request to `GET /documents` with pagination is affected — e.g. `?page=1&limit=50` over 120 documents returns 51 names ending at `doc050` and `?page=2&limit=50` starts again at `doc050`, and with `limit=1` every response carries 2 names, so the documented cap of 200 (README) is effectively 201. Clients that page until exhaustion process one duplicate per boundary or overrun `total`. The fix is `names[first:last]`, and the comment on `last` should say it is the exclusive end.
+
+## Verdict
+
+**Overall correctness:** patch is incorrect
+**Explanation:** Three defects were confirmed with reproduced triggers: the new bulk-export route leaks every tenant's documents to any authenticated member (P0), `save_document` returns a row count where its caller publishes a revision and ETag, which makes the new conditional-write protocol unusable (P1), and the new pagination returns one extra name per page and duplicates it onto the next page (P1).
+**Confidence:** 0.88
+
+`★ Insight ─────────────────────────────────────`
+- All three confirmed defects share one root pattern: a change altered a value's *meaning* without updating the code that consumes it. The decorator swap changed who may reach the loop body; `return len(rows)` changed what the return value means; `last = first + limit` changed whether the bound is inclusive. In each case the surrounding code still reads the old meaning, and in each case a stale comment or docstring documents the intent that the code no longer implements — the docstring even says "the new revision is not returned," which is true of the function and false of the caller.
+- Note how the verifier stage earned its cost by *rejecting* three plausible-sounding candidates. The refutations all turned on repository-stated facts rather than taste: the README's "Nothing else on the node writes `data/`" kills the stray-filename crash, and the endpoint's own docstring ("every document on this node, for the warehouse loader") makes the whole-node dump the feature rather than the bug. A recall-biased finder cannot make that call; it does not know which invariants the project has committed to.
+`─────────────────────────────────────────────────`
+
+I have not changed any code — this was a review only, and no worktree or commit was involved. If you want the fixes, the P0 and both P1s are each a one-to-three-line change, and I can apply them and open a branch on request.
+
+## Final message
+
+patch incorrect: bulk-export auth leak (P0), save_document return semantics (P1), pagination off-by-one (P1); fixes available on request

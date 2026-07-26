@@ -1,0 +1,89 @@
+## No open PRs — I reviewed the local branch instead
+
+This repository has no git remotes and no GitHub pull requests, so `/review` had nothing to fetch. There was one unreviewed commit on the current branch (`ba8ce8d`, "Itemized quotes, and money in integer cents") that hasn't been merged into `main`, so I reviewed that.
+
+I compiled both the old and new versions side by side and ran them against each other to confirm every finding below with real output rather than reading alone. The repository typechecks cleanly under its own `tsconfig.json` — all three problems are runtime behavior changes that the type system cannot see, which is exactly why a units migration like this is risky.
+
+---
+
+## Finding 1 — Critical: the legacy estimate endpoint now quotes 100× the real price
+
+**`api.ts:75`**
+
+`quickEstimate` was left untouched by the migration, but the function it calls changed underneath it. `baseRateFor` used to return dollars and now returns cents, so the value is formatted as dollars without ever being converted:
+
+```
+zone=domestic     0.5kg   before: "$3.10"    now: "$310.00"
+zone=regional     3.2kg   before: "$9.50"    now: "$950.00"
+zone=international 12kg   before: "$41.04"   now: "$4104.00"
+```
+
+The README notes that the marketing widget renders this string as-is next to a dollar sign, so this is a customer-visible hundredfold overstatement on a live page. It is also a direct violation of the invariant this same commit added to the README: cents are converted to dollars "only at the edge, when a handler builds its reply." `handleQuote` was updated to do that; `quickEstimate` was not.
+
+The fix is to route it through the new converter: `centsToDollars(baseRateFor(zone, weightKg)).toFixed(2)`.
+
+`★ Insight ─────────────────────────────────────`
+This is the classic failure mode of a units migration in a language whose numeric type carries no unit. `baseRateFor` changed meaning while keeping the type `number`, so every existing call site silently kept compiling. The codebase already had the right instinct — the `Cents` suffix naming convention on fields like `handlingCents` and `amountCents` — but `baseRateFor`'s *return* has no name to carry that suffix. A branded type (`type Cents = number & { readonly __brand: unique symbol }`) would have turned this into a compile error at the one place it matters.
+`─────────────────────────────────────────────────`
+
+---
+
+## Finding 2 — High: invalid weights now return a price instead of a 400
+
+**`quote.ts` (the `RangeError` guard was deleted), `api.ts:53` (the `try`/`catch` was deleted)**
+
+`quoteShipment` used to reject weights that were not positive and finite, and `handleQuote` translated that into a 400 response. Both halves were removed in this commit, and nothing replaced them — `parseQuoteRequest` only checks `typeof raw.weightKg !== "number"`, and `NaN`, `Infinity`, and `-5` are all of type number.
+
+Observed responses for zone `domestic`:
+
+| `weightKg` | Before | Now |
+|---|---|---|
+| `-5` | 400, "weightKg must be a positive, finite number" | **200**, `total: 0` |
+| `0` | 400, same message | **200**, `total: 2.5` |
+| `NaN` | 400, same message | **200**, `total: null` |
+| `Infinity` | 400, same message | **200**, `total: null` |
+
+The README's Validation section still promises the old behavior: "`handleQuote` answers `400` — never a price — for ... a weight that is not a positive finite number."
+
+The negative-weight case is worse than it first appears. A weight of `-5` produces a subtotal of −350 cents, and the discount cap in `discountCents` is `Math.min(total, subtotalCents)`, which with no promos at all returns −350 rather than 0. Subtracting that negative discount cancels the negative subtotal exactly, so the response is a clean, plausible-looking `total: 0` — a free shipment that no log or alert would flag as malformed.
+
+The `NaN` and `Infinity` cases serialize to JSON `null` for `total`, `subtotal`, and every line amount, so a downstream consumer receives a structurally valid 200 with no price in it.
+
+The fix is to restore the guard. Since `parseQuoteRequest` is already the validation boundary and the README describes validation as that handler's job, checking `Number.isFinite(raw.weightKg) && raw.weightKg > 0` there is cleaner than reinstating a throw-and-catch across the module boundary.
+
+`★ Insight ─────────────────────────────────────`
+Removing the `try`/`catch` was a reasonable-looking cleanup on its own: once `quoteShipment` no longer throws, catching is dead code. The trap is that the two edits were correct only as a pair with a *third* edit that never happened — moving the check into the parser. This is why "remove the now-unreachable error handling" is worth pausing on: unreachable handling and *deleted* validation look identical in a diff.
+`─────────────────────────────────────────────────`
+
+---
+
+## Finding 3 — High: the tier boundary silently flipped from inclusive to exclusive
+
+**`rates.ts:41`**
+
+The loop was rewritten as a `.find`, and the comparison changed from `weightKg <= tier.maxKg` to `weightKg < tier.maxKg`. This reprices every parcel sitting exactly on a tier boundary:
+
+| Weight | Before (tier) | Now (tier) | Domestic base rate |
+|---|---|---|---|
+| 0.999 kg | maxKg 1 | maxKg 1 | $3.70 → $3.70 |
+| **1 kg** | maxKg 1 | maxKg 5 | **$3.70 → $4.95** |
+| **5 kg** | maxKg 5 | maxKg 20 | **$8.75 → $11.50** |
+| **20 kg** | maxKg 20 | maxKg ∞ | **$23.50 → $25.00** |
+
+Nothing else in the commit suggests a pricing change was intended, and two pieces of documentation still assert the old rule. The doc comment sitting two lines above the changed table calls `maxKg` the "Inclusive upper bound ... a parcel weighing exactly `maxKg` is priced in this tier, not in the next one up" (`rates.ts:6-9`), and the README's Weight tiers section says the same in bold. Both were left untouched by this diff.
+
+The affected weights are the round numbers customers actually ship at — 1 kg, 5 kg, 20 kg — so this is not an edge case in practice. The fix is `TIERS.find((tier) => weightKg <= tier.maxKg)`.
+
+---
+
+## Smaller note
+
+`resolvePromos` in `discounts.ts` narrowed its parameter from `string[] | undefined` to `string[]`. Inside the repository this is safe, because the only caller now defaults a missing list before calling. But it is an exported function, so any caller outside this repository that relies on the documented old behavior of passing `undefined` will now hit a `TypeError` on the `for...of` rather than getting an empty array back. Worth confirming there are no such callers before this ships.
+
+## What is working correctly
+
+The itemization, the deduplication of repeated promo codes, and the round-up-for-percentages rule all behave as their comments describe. One detail worth calling out so it is not mistaken for a regression: a regional 3.2 kg residential parcel with `WELCOME10` now totals $11.47 rather than $11.48. That one-cent move is a genuine improvement, not a bug — the old `roundDollars(1.275)` returned 1.27 because `1.275 * 100` is `127.49999999999999` in floating point, whereas the new integer-cent `Math.ceil(127.5)` correctly gives 128. Doing the arithmetic in integers is precisely what removes that class of error, which is the strongest argument for the migration overall.
+
+---
+
+I have not changed any code — this was a review. Say the word and I will fix all three findings and update the two documentation sections that now contradict the code.

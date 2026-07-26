@@ -1,0 +1,2 @@
+run-case: bg job 709d9ae6 (/code-review medium main...bench-change) — polling /Users/new/.claude/jobs/709d9ae6/state.json
+run-case: bg job 709d9ae6 timed out after 2700s (state=stopped)

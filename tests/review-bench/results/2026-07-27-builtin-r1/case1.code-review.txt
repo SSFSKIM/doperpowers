@@ -1,0 +1,43 @@
+## ReportFindings (level=medium, 4 findings)
+
+- **Lateness cutoff sign inverted; drops in-order readings** — windows.py:70
+  The lateness cutoff adds allowed_lateness to the watermark instead of subtracting it, turning the grace period into a mandatory forward gap that discards perfectly in-order readings.
+  Failure: With width_seconds=60 and allowed_lateness=30, a file containing ts=100 then ts=110 (strictly increasing) reports dropped_late: 1 and loses the second reading. Verified by running summarize_file. With a 30s lateness setting and readings arriving every second, essentially the entire stream is dropped. The bug is invisible at allowed_lateness=0, where both forms reduce to ts < watermark.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **flush() never clears _pending; batches duplicate rows** — aggregate.py:85
+  flush() now delegates to snapshot() and never clears self._pending, so each batch re-emits every window from all preceding batches and memory grows without bound.
+  Failure: Two files, the first with ts=100 and the second with ts=200, produce a second batch containing both the [60,120) window from batch one (count 2) and the [180,240) window from batch two. Verified by running summarize_files. Downstream consumers summing per-batch counts double-count, and the documented guarantee that a long backfill need not hold every window it has ever seen is gone. open_window_count() likewise never decreases.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **tenants.json opened and parsed once per reading** — pipeline.py:40
+  load_tenant_limits(reading.tenant) sits inside the per-reading loop and performs a fresh open() plus json.load() on every call with no caching.
+  Failure: A million-line backfill performs a million reads and JSON parses of the same small config file. It also makes a run non-deterministic: if tenants.json is edited mid-run, readings before and after the edit are clipped against different limits.
+  Verdict: CONFIRMED
+  Category: efficiency
+
+- **watermark silently became a read-only property** — windows.py:47
+  watermark changed from a writable instance attribute to a @property with no setter, so any external caller assigning to it now raises AttributeError at runtime.
+  Failure: An external user resuming a stream at a known offset with assigner.watermark = 12345 gets AttributeError: property 'watermark' has no setter. No in-repo caller does this, so the hazard is limited to consumers of the public class.
+  Verdict: CONFIRMED
+  Category: api-compatibility
+
+## Review body
+
+The review of `main...bench-change` is done. Four findings reported above, two of which are release-blocking and both reproduced by actually running the code.
+
+The short version: the multi-tenant refactor is sound in shape — per-tenant watermarks, `(tenant, window)` aggregation keys, stricter value parsing all hold up — but two mechanical edits made during the refactor silently break the core semantics. The lateness check in `windows.py` flipped a minus to a plus, which converts the grace period into a requirement that readings arrive *ahead* of the watermark, so an ordinary in-order stream gets thrown away. And `flush()` in `aggregate.py` was rewritten to call the new `snapshot()` helper but lost the `_pending.clear()` that made it a *flush*, so every batch in `summarize_files` re-emits all prior batches' windows.
+
+`★ Insight ─────────────────────────────────────`
+Both bugs share a signature worth internalizing: **they are invisible under the default configuration**. The inverted cutoff is a no-op at `allowed_lateness=0` (both `ts < watermark - 0` and `ts < watermark + 0` are the same expression), and the missing `clear()` is a no-op when there is exactly one batch — which is exactly what the preserved `summarize_file` wrapper does. A test suite written around the old single-file API would pass clean on both. The new parameters are where the risk moved, and that is where tests are absent.
+
+The `snapshot()`/`flush()` split is also a small lesson in naming as a load-bearing contract. `snapshot()` legitimately means "read without mutating"; `flush()` means "read and retire." Implementing the second as a bare call to the first drops the only behavior that distinguished them, and the docstring left behind ("Emit and retire every accumulated window") now actively lies about what the function does.
+`─────────────────────────────────────────────────`
+
+The fixes are one line each — restore `watermark - self.allowed_lateness` in the cutoff, and make `flush()` do `rows = self.snapshot(); self._pending.clear(); return rows`. I have not applied them, since you asked for a review rather than a change. Say the word and I'll make both edits plus add regression tests covering non-zero lateness and the multi-batch path.
+
+## Final message
+
+lateness check sign-flip + missing _pending.clear() in flush(); both invisible at default config; fixes ready pending approval

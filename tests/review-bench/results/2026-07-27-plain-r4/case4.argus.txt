@@ -1,0 +1,45 @@
+The isolated reviewer came back with a verdict of **incorrect** — two of the changes break core behavior.
+
+Full review comments:
+
+## Findings
+
+[P0] Update prune.sh to read the v2 manifest (4 fields) — prune.sh:62-63
+  `snapshot.sh` now emits `<label>\t<epoch>\t<bytes>\t<path>`, but this reader still splits into three variables, so `path` ends up holding `"<bytes>\t<archive-path>"`, the `[ ! -f "$path" ]` guard always fires, and rotation silently stops for every run. I reproduced it end-to-end with `BACKUP_KEEP=2` and four consecutive `run-backup.sh` runs: all four archives remained and each run logged `manifest points at a missing archive, skipping`. Archives now accumulate without bound. The loop should read the label column (which also removes the need for `label="${base%%-*}"` on line 71, the exact fragility the v2 format was added to fix), and the v1 record shown in the file header comment (lines 4-5) needs updating too.
+```suggestion
+while IFS=$'\t' read -r label epoch bytes path; do
+  [ -n "${path:-}" ] || continue
+```
+
+[P0] Fix force test: `[ "$force" ]` is true for the default "0" — lib/common.sh:81-83
+  `snapshot.sh` defaults `FORCE="${BACKUP_FORCE:-0}"` and passes it straight through, so `force` is the non-empty string `"0"` on every non-forced run and `[ "$force" ]` (a one-argument string test) is true. The shortfall is therefore always downgraded to a warning and `check_free_space` can never abort a run — the entire "refuse to run out of disk" guarantee is inert. Verified by stubbing `du` to report a need larger than the filesystem: the run logged `continuing anyway` and exited 0 without `--force`. Compare against the enabled values explicitly, e.g. `[ "$force" = 1 ]`.
+```suggestion
+  if [ "$force" = 1 ] || [ "$force" = "--force" ]; then
+    log "only ${avail_kb}KB free in $dir, wanted ${need_kb}KB -- continuing anyway"
+    return 0
+```
+
+[P1] Restore the staging-directory cleanup trap — snapshot.sh:77-77
+  The old code paired `mktemp -d` with `trap 'rm -rf "$STAGE"' EXIT INT TERM`; the refactor into `make_stage` dropped the trap and replaced it with a bare `rmdir "$STAGE"` on the success path only (line 98). Any failure after staging — `tar` erroring under `set -e`, `replicate` calling `die`, or a SIGTERM from cron's timeout — now leaves the scratch directory and the partial archive inside it in `TMPDIR` forever, and that partial archive is on the order of the source tree's size, so repeated failures fill `/tmp`. Confirmed by stubbing `tar` to exit 2: the script exited 2 and the `snapshot.XXXXXX` directory survived. Add `trap 'rm -rf "$STAGE"' EXIT INT TERM` right after the `make_stage` call.
+
+[P2] Escape values interpolated into the remote ssh command — lib/common.sh:97-99
+  `$BACKUP_REMOTE_DIR` and `$name` (which contains the `--label` value verbatim) are pasted into a single-quoted remote shell string with no escaping, so a value containing `'` both breaks the command and executes arbitrary commands on the replica host. With a fake `ssh` I confirmed that `--label "x'; id; echo '"` produces the remote command `mkdir -p '/srv/backups' && cat > '/srv/backups/x'; id; echo '-...tar.gz'`. Both inputs are operator-supplied (CLI flag and config file) rather than network-facing, which bounds the severity, but a label with an apostrophe is enough to break replication. Passing the values as `ssh` arguments and referencing them as `"$1"`/`"$2"` inside the remote script, or running them through `printf %q`, removes the sink.
+
+[P2] Remote `cat` writes directly to the final name, so drops do leave partials — lib/common.sh:89-92
+  The comment states that using `cat` instead of `scp` means "a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name", but `cat > '$BACKUP_REMOTE_DIR/$name'` truncates and writes at exactly the final path. If the stream dies mid-transfer, the replica keeps a truncated `.tar.gz` under the real archive name, indistinguishable from a good one — the local run aborts and never publishes, so the replica is the only copy of that timestamp. Writing to a temporary name and renaming on success (`cat > "$tmp" && mv "$tmp" "$final"`) would deliver the guarantee the comment describes.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Two independently reproduced defects break core behavior: `prune.sh` was not migrated to the new four-field manifest so rotation never deletes anything, and `check_free_space`'s force test is true for the default `"0"` so the new space guard never blocks a run. The dropped staging trap additionally leaks full-size partial archives in `TMPDIR` on every failed run.
+Confidence: 0.93
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- The two P0s share a shape worth naming: **a producer changed, a consumer didn't**. The manifest gained a column in `snapshot.sh` and `prune.sh` kept reading three fields; the force flag became the string `"0"` and the test kept asking only "is it non-empty?". In both cases the code stays syntactically valid and exits 0, which is why they survived to review — shell has no type checker to catch a widened record or a truthiness mismatch.
+- `[ "$x" ]` in POSIX shell is a one-argument test that asks *is this string non-empty*, not *is this value true*. Any sentinel that spells "off" as a printable character — `"0"`, `"false"`, `"no"` — passes it. This is the single most common bash boolean bug, and the fix is always to compare explicitly against the enabled value.
+- The dropped `trap` illustrates a hazard specific to refactoring: moving `mktemp -d` into a helper function moved the *allocation* but left the *deallocation* behind. Cleanup registered via `trap` has to live in the scope that owns the exit, so extracting a resource-acquiring helper means the trap either goes with it or gets re-established at the call site.
+`─────────────────────────────────────────────────`
+
+I haven't changed any code. Want me to fix these — the two P0s and the trap are mechanical, and the two P2s in `replicate` are a slightly larger change to how the remote command is constructed?

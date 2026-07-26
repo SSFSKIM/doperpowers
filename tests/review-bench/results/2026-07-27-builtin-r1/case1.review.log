@@ -1,0 +1,2 @@
+run-case: bg job ea56330f (/review) — polling /Users/new/.claude/jobs/ea56330f/state.json
+engine=review case=case1 secs=138 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-07-27-builtin-r1/case1.review.txt

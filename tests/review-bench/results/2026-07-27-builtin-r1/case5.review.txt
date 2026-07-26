@@ -1,0 +1,160 @@
+## Review of `bench-change` — no pull request exists
+
+`gh pr list` failed because this repository has no git remotes at all, so there is nothing on GitHub to review. I reviewed the only change on the branch instead: commit `7876948`, *"feat(queue): retrievable job results, joinable computations, sliding TTL"*, which touches `cache.py`, `jobqueue.py`, `keylock.py`, and `README.md`.
+
+**Verdict: request changes.** I found four defects, and I confirmed every one of them by running the code rather than by reading alone. Two of them cause the job queue to hang permanently under ordinary conditions. Nothing in the repository has been modified — this is assessment only.
+
+---
+
+## 1. A failing handler wedges its key forever, and its own retry is the first victim — `cache.py:127`
+
+In `get_or_compute`, the in-flight marker is registered before the factory runs and removed on the line after it:
+
+```python
+done = asyncio.Event()
+self._inflight[key] = done
+self._counters.incr("cache.get.miss")
+value = await factory()      # if this raises...
+self._store(key, value)
+del self._inflight[key]      # ...neither of these ever runs
+done.set()
+```
+
+There is no `try`/`finally`. When the factory raises, the exception propagates out of the `async with` block and the entry stays in `_inflight` with an `asyncio.Event` that nobody will ever set. Every later caller for that key takes the join branch at `cache.py:105`, awaits that event, and blocks forever.
+
+The cruelest part is that the retry logic in `_run_job` is the very first caller to hit this. Attempt one fails, the worker sleeps its backoff, attempt two calls `get_or_compute` on the same key, finds the orphaned event, and parks the worker permanently. Retries do not merely fail — they never complete.
+
+Running it:
+
+```
+=== T1b: JobQueue retry after a failed attempt ===
+  drain() HUNG at 1.5s; handler invocations: 1
+  cache inflight: 1
+```
+
+The handler was invoked once. The second attempt never happened, `drain()` never returned, and one of the two workers is gone for the lifetime of the process. With `DEFAULT_WORKERS = 4`, four transient upstream failures on distinct keys retire the entire pool.
+
+`★ Insight ─────────────────────────────────────`
+This is the classic hazard of promise-sharing caches, sometimes called a *poisoned in-flight entry*. The moment you let waiters observe "someone else is computing this," you have created a promise, and every promise needs exactly one settlement path for success **and** failure. The `async with self._locks.hold(...)` block reads as if it protects the whole region, but a lock guarantees mutual exclusion, not cleanup — only `try`/`finally` does that. The fix is to wrap from `self._inflight[key] = done` through the store in a `try`, and put `self._inflight.pop(key, None)` and `done.set()` in the `finally`. Waiters then wake, re-look-up, find nothing, and recompute honestly.
+`─────────────────────────────────────────────────`
+
+---
+
+## 2. The keyed lock has been turned into one global mutex — `keylock.py:34`
+
+The rewritten `hold()` moved the `yield` *inside* the `async with self._guard:` block. The guard is now held for the entire duration of the caller's critical section, not just the few statements that mutate the two maps.
+
+This inverts the module's whole reason for existing. The docstring at the top of `keylock.py` still says locks are per key; the README still says the guard "is only ever held for the few statements that mutate the map — never across an `await` that belongs to the caller." That sentence is now false, and notably the commit deleted the source comment making the same promise while leaving the README assertion in place.
+
+Two computations on completely unrelated keys now run strictly one after another:
+
+```
+=== T2: do two DIFFERENT keys compute concurrently? ===
+  two 0.3s computations on distinct keys took 0.60s (~0.3 = concurrent, ~0.6 = serialized)
+
+=== T6: is the guard held across the caller's block? ===
+  interleaving across distinct keys: ['enter x', 'exit x', 'enter y', 'exit y']
+```
+
+There is no interleaving whatsoever. A four-worker pool has the throughput of one worker, and any handler that is slow for one key stalls every other key behind it.
+
+The new `timeout` parameter is also dead code as written. Because no task can hold a per-key lock without also holding the guard, `await lock.acquire()` at `keylock.py:47` is never contended, so the `asyncio.wait_for` branch never fires. Callers do not queue on the key lock — they queue on the guard, which has no timeout at all:
+
+```
+=== T5: does lock_timeout bound the wait? ===
+  waiter on a different key returned 'fast' after 0.95s (timeout was 0.1s)
+```
+
+A cache configured with `lock_timeout=0.1` waited 0.95 seconds. The feature the commit advertises does not engage.
+
+Finally, the comment justifying the change is incorrect on its own terms:
+
+> Splitting them left a window in which a waiter had claimed a slot but not yet acquired, and a holder on its way out could observe a refcount it had no business acting on.
+
+The original code incremented `self._refs[key]` *before* releasing the guard, and `_drop_if_idle` only tears a slot down when the refcount is exactly zero. A waiter that has claimed its reference is therefore already protected from teardown — which is precisely what the deleted comment ("Claim a reference before releasing the guard so that a holder on its way out cannot tear the slot down underneath us") was explaining. The window being closed did not exist, and closing it cost the module its concurrency.
+
+`★ Insight ─────────────────────────────────────`
+A useful rule for this shape of code: a mutex that protects a *data structure* must never span an `await` on *caller-supplied work*. The guard here protects two dictionaries — a few microseconds of mutation. The per-key lock protects a computation of unbounded duration. Collapsing the two into one acquisition silently promotes the short lock to the long one. If the timeout genuinely needs to cover the whole wait, the shape is to bound the guard acquisition and the key acquisition separately, not to merge them.
+`─────────────────────────────────────────────────`
+
+---
+
+## 3. A hot key never expires, and serves arbitrarily stale data — `cache.py:75`
+
+`_lookup` slides the deadline before it checks the deadline:
+
+```python
+entry.hits += 1
+entry.last_used = now
+if entry.hits >= self._refresh_after_hits:
+    entry.expires_at = now + self._ttl   # slid forward first...
+
+if entry.expires_at <= now:               # ...so this can never be true
+    del self._entries[key]
+```
+
+Once a key's cumulative hit count crosses the threshold, every subsequent read pushes the deadline out to `now + ttl` *before* the expiry test, so the test always passes and the entry is returned. The read that should have evicted a long-dead entry resurrects it instead.
+
+This directly contradicts both the class docstring the commit added ("A key whose deadline has already passed is a miss like any other and is recomputed") and the README paragraph ("once a deadline has passed the entry is gone and the next read recomputes it, however hot the key was").
+
+```
+=== T3: is an expired-but-hot key still served? ===
+  after 10000s with a 10s ttl, read returned: v1
+```
+
+Ten thousand seconds after it was written, with a ten-second TTL, the original value came back. A key that is read even once per hour is served forever without recomputation.
+
+A second problem compounds this: `entry.hits` is monotonic and never reset, so `refresh_after_hits` is a one-time gate rather than a measure of current load. "Hot enough three times, ever" is not the same property as "hot right now," which is what the README describes. Even after the ordering is corrected, a key that was busy at startup and idle since will still slide its deadline on a lone read.
+
+The ordering fix is to test expiry first, and only then count the hit and slide the deadline for entries that were genuinely still fresh.
+
+---
+
+## 4. Renamed counters silently disabled the warm-up path — `jobqueue.py:202`
+
+The commit renamed the cache's counters from `cache.hit` / `cache.miss` / `cache.hit_after_wait` to the `cache.get.*` namespace throughout `cache.py`, but `cache_hit_rate()` in `jobqueue.py` still reads the old names:
+
+```python
+hits = self._counters.get("cache.hit") + self._counters.get("cache.hit_after_wait")
+misses = self._counters.get("cache.miss")
+```
+
+Those three keys are now never written by anything. `total` is therefore always zero, and the "nothing observed yet, report a healthy rate" branch returns `1.0` unconditionally. Because `warm_stale_keys` bails when the rate is at or above `PREFETCH_HIT_RATE` (0.6), it can never do work again:
+
+```
+=== T4: does cache_hit_rate() see the cache's counters? ===
+  counters: {'cache.get.miss': 1, 'cache.get.hit': 4}
+  cache_hit_rate() reports: 1.0
+  warm_stale_keys() refreshed: 0
+```
+
+The real hit rate there is 80 percent, but the reported rate is a hardcoded-in-effect 1.0, and warm-up refreshed nothing. The same stale figure is published through `stats()["cache_hit_rate"]`, so any dashboard or alert reading it will show a perfect cache forever.
+
+This is the failure mode where the new `WARM_INTERVAL_SECONDS` throttle looks like it is working correctly in testing, because the thing it throttles was already dead.
+
+---
+
+## Smaller points, not blocking
+
+**Retained exceptions can pin far more memory than the comment claims.** The nine-line comment at `jobqueue.py:123` argues the retention cost is bounded at "512 outcomes." For successes that is true. For errors, `JobResult.error` holds the exception object, which holds its traceback, which holds every frame in the failing call stack, which holds those frames' local variables — including the handler closure and anything it had loaded. Five hundred and twelve retained failures can transitively pin an unbounded object graph. If that is acceptable, the comment should say so honestly; if it is not, storing a formatted string or the exception with `__traceback__` cleared would make the stated bound real.
+
+**A rejected submission still burns a job id.** `jobqueue.py:102` increments `_seq` before the `put_nowait`, so a `QueueFull` rejection leaves a gap in the id sequence. Harmless, but it means ids are not a count of accepted jobs, which is mildly surprising for anything that tries to reason about them.
+
+**`_lookup` mutates on paths that are only probing.** A single miss calls `_lookup` up to three times — once at entry, once after the join, once inside the lock — and each call increments `hits` and touches `last_used` on any entry that happens to exist. This inflates the hit counter that finding 3's deadline-sliding depends on, so the two interact.
+
+---
+
+## Summary
+
+The three headline features in this commit each have a defect that prevents them from working as documented, and two of those defects hang the process rather than degrade it. Ordered by what I would fix first:
+
+1. Wrap the in-flight registration in `try`/`finally` (`cache.py:127`) — this one deadlocks the worker pool on the first transient handler failure.
+2. Move the `yield` back outside the guard in `keylock.py:34` and restore the deleted comment; the rationale given for the change describes a race the original code had already prevented.
+3. Check expiry before sliding the deadline in `cache.py:75`, and reconsider whether monotonic `hits` expresses the "currently hot" property the README promises.
+4. Update `cache_hit_rate()` at `jobqueue.py:202` to the `cache.get.*` names.
+
+There is no test suite in the repository, which is why all four of these got through. The reproductions I wrote are in `/Users/new/.claude/jobs/569cbfb0/tmp/repro.py` and `repro2.py` if they are useful as a starting point — each of the four findings is a self-contained function that fails against the current code.
+
+## Final message
+
+Found 4 defects: try/finally missing in cache.py:127 (deadlock), yield guard regression in keylock.py:34 (race), expiry check missing in cache.py:75 (race), stale API call in jobqueue.py:202. Reproductions at /Users/new/.claude/jobs/569cbfb0/tmp/repro.py and repro2.py

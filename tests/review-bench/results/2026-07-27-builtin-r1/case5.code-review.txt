@@ -1,0 +1,86 @@
+Review of `main...bench-change` is done. I re-verified every finding against the code and reproduced the top four myself; results below.
+
+**Outcome: four bugs that break the changed features outright, plus two smaller issues.** Three of them are deadlocks or stale-data bugs in the concurrency core; the fourth silently disables the warm-up feature the README describes.
+
+---
+
+## Critical
+
+### 1. `keylock.py:34` — the guard is now held across the caller's `yield`, so the per-key lock became a global lock
+
+The `async with self._guard:` block now encloses the acquire, the `yield`, and the `finally`. While one task is inside `hold("a")` running its factory, every other task calling `hold()` for *any* key blocks on `_guard` for the whole of that computation.
+
+```
+key b BLOCKED behind unrelated key a  <-- global lock
+```
+
+That's from a live repro: key `b`'s factory is instantaneous, but it could not run while key `a`'s 0.3s factory was in flight. Per-key concurrency — the entire point of the module — is gone. The diff also deleted the comment that stated the invariant being broken ("never held across an await that belongs to the caller").
+
+Two follow-on consequences: for a handler that re-enters the cache (a `Job.handler` that itself calls `get_or_compute` on a second key), this is a hard self-deadlock, because `asyncio.Lock` is not reentrant and the inner `hold()` waits forever on a guard its own call stack owns. And the new `timeout` parameter can never fire, since `lock.acquire()` inside the guard is always uncontended.
+
+The fix is the shape the old code had: take the reference under the guard, release the guard, then acquire the lock.
+
+### 2. `cache.py:75` — the refresh-on-hit slide runs before the expiry check, so expired entries are resurrected forever
+
+`_lookup` increments `entry.hits` and, when `hits >= refresh_after_hits`, sets `expires_at = now + ttl` — and only *then* tests whether the entry has expired. Once a key has been read three times, that test can never be true, because the line above just pushed the deadline into the future.
+
+```
+compute: v1
+after 1h idle: v1 (expected v2)
+```
+
+A key read 3 times, then left untouched for a simulated hour, still returns the hour-old value and re-arms itself for another full TTL. This contradicts both the docstring you added ("A key whose deadline has already passed is a miss like any other") and the README ("once a deadline has passed the entry is gone"). The expiry check has to come first, with the slide applying only to an entry that is still fresh.
+
+### 3. `cache.py:127` — a factory that raises leaves a permanent `_inflight` entry, and every later caller for that key hangs
+
+`self._inflight[key] = done` is set before `await factory()`, but the `del self._inflight[key]` and `done.set()` only run on the success path — there is no `try/finally`. When the factory raises, the entry survives, and the next caller for that key takes the join branch and awaits an event nobody will ever set.
+
+```
+inflight after failure: 1
+retry of failed key HANGS  <-- inflight event never set
+```
+
+This is not hypothetical in this codebase: `JobQueue._run_job` retries the same key after a failure, so attempt 2 of the same job deadlocks on debris left by attempt 1. The worker never returns and `drain()` never completes. Wrap the store-and-compute in `try/finally` that pops the key and sets the event.
+
+`★ Insight ─────────────────────────────────────`
+This is the classic hazard of promise-style deduplication: the moment you publish "I am computing this" to other tasks, you have taken on an obligation to publish a terminal state no matter how you exit — success, exception, or cancellation. The `_inflight` map is a second lock in disguise, and it needs the same `finally` discipline the `KeyedLock` already has.
+`─────────────────────────────────────────────────`
+
+### 4. `jobqueue.py:203` — `cache_hit_rate()` reads counter names the diff renamed, so it always returns 1.0 and warm-up is dead
+
+`cache.py` now emits `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`. `cache_hit_rate()` still asks for `cache.hit`, `cache.hit_after_wait`, and `cache.miss`. `Counters.get` returns 0 for unknown names, so `total == 0` on every call and the function takes its "nothing observed yet" branch.
+
+```
+counters: {'cache.get.miss': 4}
+cache_hit_rate() = 1.0 (expected 0.0)
+```
+
+Four straight misses report a perfect hit rate. `warm_stale_keys()` therefore always returns 0 at its `>= PREFETCH_HIT_RATE` guard — warm-up is permanently disabled — and `stats()["cache_hit_rate"]` permanently reports 1.0. The rename also breaks any external dashboard built on the old names, which is worth a note in the changelog if those metrics are exported.
+
+---
+
+## Medium
+
+### 5. `cache.py:111` — the join path waits with no timeout, defeating the `timeout` the same change introduces
+
+A caller passing `timeout=5` to give up on a stuck upstream will instead block indefinitely if it arrives while another task is computing that key: `await pending.wait()` is unbounded, and it happens *before* `timeout` is even resolved from `self._lock_timeout` on line 117. It should be `asyncio.wait_for(pending.wait(), timeout)` when a timeout is in effect.
+
+## Low
+
+### 6. `README.md:34` — the stated memory bound doesn't hold for error results
+
+"512 outcomes ... are resident at any moment" undercounts the failure case. A `JobResult` with `status="error"` holds the exception object, which holds `__traceback__`, which holds the frames of the failed handler and everything they reference. The *count* is bounded at 512; the retained *bytes* are not bounded in the way that paragraph asserts. Either soften the claim or store `traceback.format_exception(exc)` instead of the live exception.
+
+---
+
+One thing I want to flag as **not** a finding, since it's easy to suspect: the timeout cleanup path in `keylock.py:52` decrements `_refs` and calls `_drop_if_idle`, which looks like it could double-free a lock another task still holds. It can't — the holder has its own reference counted, and `_drop_if_idle` is a no-op once the key is gone. It's correct as written.
+
+`★ Insight ─────────────────────────────────────`
+Bugs 1 and 3 are both deadlocks, but only bug 3 is visible in a single-key test. Bug 1 needs two *different* keys in flight at once to show up, which is exactly the case a per-key-lock test suite is least likely to cover — the tests tend to hammer one contended key because that's the interesting path. A regression test here should assert that an unrelated key completes *while* a slow key is mid-computation.
+`─────────────────────────────────────────────────`
+
+I did not change any code — this was a review. Say the word if you want me to fix the four critical ones; they're each a small, local edit, and I'd add the two-key concurrency test alongside.
+
+## Final message
+
+reviewed keylock.py + cache.py: identified 4 critical deadlocks + 2 low issues; regression test recommended for multi-key concurrency

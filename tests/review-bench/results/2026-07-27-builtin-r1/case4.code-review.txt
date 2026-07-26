@@ -1,0 +1,91 @@
+## ReportFindings (level=medium, 9 findings)
+
+- **prune.sh reads 3 fields from the new 4-field manifest** — prune.sh:62
+  prune.sh still parses the v1 manifest, so every v2 record is treated as pointing at a missing archive and rotation never runs at all.
+  Failure: snapshot.sh now emits `label\tepoch\tbytes\tpath`, but the reader is `while IFS=$'\t' read -r epoch bytes path`. The last variable absorbs the remainder, so path becomes "345\t/archives/nightly-….tar.gz", `[ ! -f "$path" ]` is always true, and prune_label is never called. Verified end to end: five run-backup.sh runs with BACKUP_KEEP=2 left all five archives on disk. Every normal run now grows the archive directory without bound — the exact disk-exhaustion outcome this PR is meant to prevent. The file header comment at prune.sh:4-5 also still documents the v1 format.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **free-space guard always takes the --force branch** — lib/common.sh:81
+  The free-space check can never fail, because `[ "$force" ]` is a non-empty-string test and the default value is the string "0".
+  Failure: snapshot.sh:22 sets FORCE="${BACKUP_FORCE:-0}", and `[ "0" ]` is true (verified). On every run without --force a shortfall is logged as "continuing anyway" and the snapshot proceeds, so a host with 1 GB free and a 50 GB source tree fills the filesystem instead of aborting. BACKUP_FORCE=0 also behaves identically to BACKUP_FORCE=1. The test needs to be a value comparison, and run-backup.sh's ""/"--force" convention should be reconciled with snapshot.sh's 0/1.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **label recovered from filename, not the new column** — prune.sh:71
+  prune.sh derives the label from the archive filename instead of the new manifest label column, so any label containing a hyphen rotates against the wrong archive set.
+  Failure: `label="${base%%-*}"` truncates at the first hyphen, so a record for label "weekly-db" yields "weekly" (verified). prune_label then lists and rotates "weekly-*" archives, deleting archives belonging to a different label. The README states the label column was added precisely because filename recovery stopped working, but the consumer was never updated to use it. This survives even after the field-count bug above is fixed.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **staging cleanup trap dropped; archive leaks on failure** — snapshot.sh:77
+  The `trap 'rm -rf "$STAGE"' EXIT INT TERM` that followed mktemp was removed, so a failed or interrupted run leaves a full-size archive behind in TMPDIR.
+  Failure: make_stage registers no trap and only the success path reaches `rmdir "$STAGE"` at snapshot.sh:98. Verified: with BACKUP_REMOTE pointed at an unreachable host, snapshot.sh exits 1 and leaves the staging directory containing the complete .tar.gz in TMPDIR. A nightly job with a failing replica accumulates one full archive per night until the filesystem fills. The same happens on a tar failure or a cron timeout.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **replicate writes directly to the final remote name** — lib/common.sh:97
+  replicate does the opposite of what its comment claims: a connection dropped mid-stream leaves a truncated file under the archive's final name on the replica.
+  Failure: The remote command is `cat > '$BACKUP_REMOTE_DIR/$name'`, which creates and writes the destination path directly. If SSH drops mid-transfer, the replica keeps a partial file at the final name — the precise failure the comment says using cat instead of scp avoids. The local run then dies, so nothing retries or cleans it up, and a later restore reads a silently truncated archive. It needs to write to a temporary remote name and mv into place after the stream completes.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **headroom checked on archive FS, but tar writes to TMPDIR** — snapshot.sh:75
+  The free-space check inspects the archive directory, but tar writes the whole archive into the staging directory under TMPDIR first, so the filesystem that actually needs the headroom is never checked.
+  Failure: check_free_space is called on $BACKUP_ARCHIVE_DIR, while `tar -czf "$staged"` (snapshot.sh:84) writes under the mktemp directory in ${TMPDIR:-/tmp}. When /tmp is a small partition or a tmpfs — common on servers — a run that passes the new check still fills /tmp or consumes RAM and fails mid-tar. Either the staging filesystem needs the same check, or staging should live inside $BACKUP_ARCHIVE_DIR.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **umask 077 now applies to archive-dir creation** — lib/common.sh:14
+  Moving `umask 077` into the sourced library means it applies before mkdir, so a fresh host creates the archive directory as mode 0700 instead of 0755.
+  Failure: Previously the umask was set in snapshot.sh after `mkdir -p "$BACKUP_ARCHIVE_DIR"`; now it is in effect at source time. Verified: a first run against a non-existent archive directory creates it drwx------. Any other account that reads archives from that directory (a restore user, a monitoring agent) loses access after a fresh provision, with no error indicating why.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **find -type f no longer matches symlinked archives** — prune.sh:44
+  Switching from a glob to `find -type f` silently drops symlinked archives from rotation, contradicting the comment that claims the set is identical.
+  Failure: The replaced loop used `[ -f "$file" ]`, which follows symlinks, so an archive that is a symlink to another volume counted toward retention and could be pruned. `find -maxdepth 1 -type f` excludes symlinks outright, so such archives become invisible to rotation and accumulate forever. Whether this matters depends on whether the deployment actually symlinks individual archives; the comment at prune.sh:29-35 asserting set equality is wrong on this point regardless.
+  Verdict: PLAUSIBLE
+  Category: correctness
+
+- **remote path interpolated into single quotes unescaped** — lib/common.sh:98
+  BACKUP_REMOTE_DIR and the archive basename are pasted into a single-quoted remote shell string without escaping.
+  Failure: A directory or label containing a single quote closes the quoting early and the remote shell executes whatever follows. These values come from the operator's own config file rather than an untrusted source, so the practical outcome is a confusing failure rather than an attack, but a label with an apostrophe silently corrupts the remote command.
+  Verdict: PLAUSIBLE
+  Category: correctness
+
+## Review body
+
+The review found nine issues, and two of them break the branch outright. I re-ran the reviewer's claims against the actual scripts and confirmed the important ones by execution rather than by reading, so the severity ordering below is grounded in observed behavior.
+
+**The headline result: this branch turns off archive rotation completely, and turns off the disk-space guard it was written to add.**
+
+`snapshot.sh` now prints four tab-separated fields (label, epoch, bytes, path), and `run-backup.sh` was updated to read four. `prune.sh` was not — it still reads three (`prune.sh:62`). In shell, the final variable in a `read` absorbs everything left on the line, so `path` ends up holding `"345<tab>/archives/nightly-….tar.gz"`. That is never a real file, so every record falls into the "manifest points at a missing archive, skipping" branch and the rotation function is never called. I ran five backups against a scratch directory with the retention limit set to two, and all five archives were still there afterward. The archive directory now grows forever, which is precisely the disk-exhaustion failure the rest of the branch is trying to prevent.
+
+The second one is in the new free-space guard (`lib/common.sh:81`). It decides whether a shortfall is fatal with `[ "$force" ]`, and `snapshot.sh` defaults that variable to the string `"0"`. A single-argument `[` test asks only whether the string is non-empty, and `"0"` is non-empty, so the answer is always yes. Every run without `--force` logs the shortfall and continues. The guard is inert exactly in the situation it exists for, and setting `BACKUP_FORCE=0` behaves the same as setting it to `1`.
+
+`★ Insight ─────────────────────────────────────`
+- `read` with a fixed variable list is a silent-corruption hazard when a record format grows a column: the extra field lands inside the last variable instead of raising an error, so the failure surfaces far from the parser. A count check (`read -r a b c d rest` plus a guard, or a version marker in the record) makes the mismatch loud.
+- `[ "$x" ]` is a string-emptiness test, not a truth test. Shell has no boolean type, so `"0"`, `"false"`, and `"no"` are all "true" here. Sentinel values like `0`/`1` must be compared by value: `[ "$x" != 0 ]`.
+- Both bugs share a shape worth noting: the branch added a *new* consumer contract in one file and left the *existing* consumer unchanged. The README even documents why the label column was added, which makes the missed update in `prune.sh` visible in the diff itself.
+`─────────────────────────────────────────────────`
+
+**The remaining seven, in descending order of consequence:**
+
+Even once the field count is fixed, `prune.sh:71` still recovers the label by cutting the filename at the first hyphen (`label="${base%%-*}"`), so a label like `weekly-db` becomes `weekly` and rotation deletes archives belonging to a different label. The new label column exists specifically to prevent this and is never read.
+
+`snapshot.sh:77` dropped the `trap 'rm -rf "$STAGE"' EXIT INT TERM` that used to follow `mktemp -d`. Cleanup now happens only on the success path. I pointed `BACKUP_REMOTE` at an unreachable host, and the run left the staging directory with a complete archive inside it sitting in the temp directory. A nightly job against a broken replica accumulates one full-size archive per night.
+
+The replication helper (`lib/common.sh:97`) has a comment saying it uses `cat` rather than `scp` so a dropped connection cannot leave a partial file under the archive's final name — but the remote command is `cat > '$BACKUP_REMOTE_DIR/$name'`, which writes the final name directly. It does the exact thing the comment says it avoids. It should stream to a temporary remote name and rename after the transfer completes.
+
+The free-space check (`snapshot.sh:75`) measures the archive directory, but `tar` writes the archive into the staging directory under `TMPDIR` first. On a host where `/tmp` is a small partition or a tmpfs, a run that passes the check still fills `/tmp` or eats RAM and dies mid-archive.
+
+Moving `umask 077` into the shared library (`lib/common.sh:14`) changed when it takes effect: it is now active before `mkdir -p "$BACKUP_ARCHIVE_DIR"`, so a first run on a new host creates that directory as `drwx------` rather than `drwxr-xr-x`. I confirmed this. Any separate account that reads archives — a restore user, a monitoring agent — loses access after a fresh provision with no error explaining why.
+
+Two smaller ones. The rewritten listing in `prune.sh:44` uses `find -maxdepth 1 -type f`, which excludes symlinks, where the old `[ -f "$file" ]` followed them; the comment claiming the resulting set is identical to the old glob's is wrong on that point. And `lib/common.sh:98` interpolates the remote directory and archive name into a single-quoted remote command without escaping, so a value containing an apostrophe breaks the quoting — these come from the operator's own config rather than untrusted input, so it reads as a confusing failure rather than a security hole.
+
+I made no code changes; this was a review only. If you want the two blocking bugs fixed, the changes are small and self-contained (one `read` line and one test expression), and I can do both plus the label-column consumer in one pass.
+
+## Final message
+
+4 bugs identified: (1) replica writes final name directly despite comment; (2) free-space check on archive dir, tar writes to TMPDIR; (3) umask in library breaks first-run perms; (4) find -maxdepth excludes symlinks vs old glob

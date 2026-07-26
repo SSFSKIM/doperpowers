@@ -379,6 +379,21 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   `Claude Code Src/src/commands/`) — C1 needs no extraction work. (An
   earlier draft also cited `~/.claude/jobs/*/src/commands/` — wrong: that
   directory is per-session-volatile and carries no command sources.)
+- **The C4 gap decomposed into named parts** (builtin control cells +
+  v0.4.2 execution experiment, 2026-07-27 — full data in
+  `tests/review-bench/results/2026-07-27-c4-attribution-scores.json`).
+  Same-model native engines: `/code-review medium` 19/20, `/review`
+  18/20, both FP 0, both ZERO subagents, both verifying by EXECUTING the
+  code. Lifting argus's self-imposed execution ban (v0.4.2, provenance
+  deviation 10) moved plain 17→18 and landed it EXACTLY on `/review`
+  parity — same score, same miss set — so the codex margin over argus
+  decomposes as: +1 execution access (now recovered), +1 single-pass
+  sweep coverage (case5-u1 — the join-path timeout `/code-review` reports
+  distinctly while plain closes the "timeout broken" thread after its
+  first hit; C3 rearchitecture input), +1 cross-model (case4-u2, missed
+  or refuted by every Claude engine, found by codex every run; both
+  builtins caught only the local face of it). Model-superiority as an
+  explanation is weakened to that single u2 residual.
 
 ## Outcomes & Retrospective
 

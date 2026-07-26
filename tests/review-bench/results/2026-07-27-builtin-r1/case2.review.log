@@ -1,0 +1,2 @@
+run-case: bg job d4c34852 (/review) — polling /Users/new/.claude/jobs/d4c34852/state.json
+/Users/new/Developer/GitHub/doperpowers/tests/review-bench/run-case.sh: line 47: 43351 Terminated: 15          sleep 15

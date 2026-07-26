@@ -1,0 +1,141 @@
+No pull requests exist — the repository has no git remote configured, so `gh pr list` has nothing to talk to. Since the branch `bench-change` carries one unmerged commit against `main`, I reviewed that instead and verified each finding by actually running the scripts.
+
+## Outcome
+
+**This branch should not merge.** The commit's two headline promises — "replicate archives off-host" and "refuse to run out of disk" — are both undermined by defects I reproduced, and a third defect can silently disable backups entirely on a common directory layout. Three of these are silent: the scripts log success and exit 0 while doing nothing useful.
+
+---
+
+## Blockers
+
+### 1. Rotation is completely dead — `prune.sh` was never updated for manifest v2
+
+`snapshot.sh` now emits four tab-separated fields (`label`, `epoch`, `bytes`, `path`). `run-backup.sh:56` was updated to read four. `prune.sh:62` still reads three:
+
+```bash
+while IFS=$'\t' read -r epoch bytes path; do
+```
+
+With `IFS` set to tab, the last variable absorbs all remaining fields, so `path` becomes the literal string `431<TAB>/…/nightly-….tar.gz`. The `[ ! -f "$path" ]` test at line 65 then fails, and every record is discarded through the "manifest points at a missing archive" branch. Five runs with `BACKUP_KEEP=2`:
+
+```
+[…] manifest points at a missing archive, skipping: 431	/…/arch/nightly-20260726T233053Z.tar.gz
+[…] backup complete label=nightly
+=== archives present after 5 runs with BACKUP_KEEP=2 ===
+nightly-20260726T233049Z.tar.gz  … through …  nightly-20260726T233053Z.tar.gz
+```
+
+Five archives retained, exit status 0, no warning an operator would read as an error. On the file servers the commit message mentions, this fills the archive filesystem instead of rotating it — the precise outcome the commit claims to prevent.
+
+Related: `prune.sh:5` still documents the v1 record layout, and `prune.sh:71` still derives the label with `label="${base%%-*}"`. That line is the *reason* the README gives for adding the label column ("stopped working the moment a label contained a `-`"), so even after the field count is fixed, the stated motivation for v2 remains unaddressed.
+
+`★ Insight ─────────────────────────────────────`
+Adding a field to the *front* of a delimited record is the most dangerous place to add one. Appending would have left `epoch bytes path` reading correctly in any stale consumer; prepending shifts every field and, because `read`'s final variable swallows the remainder, produces a plausible-looking string rather than a parse error. A version tag the consumer asserts on (`v2<TAB>…`) turns this class of drift into a loud failure.
+`─────────────────────────────────────────────────`
+
+### 2. The free-space guard never fires
+
+`snapshot.sh:22` defaults the flag to the *string* `"0"`:
+
+```bash
+FORCE="${BACKUP_FORCE:-0}"
+```
+
+`check_free_space` at `lib/common.sh:81` tests it for truth by emptiness:
+
+```bash
+if [ "$force" ]; then
+```
+
+`[ "0" ]` is true — `test` with one argument asks "is this string non-empty", not "is this zero". So the force branch is taken on every run and the check downgrades itself to a warning unconditionally. Verified directly:
+
+```
+simulating snapshot.sh default: FORCE=${BACKUP_FORCE:-0}
+  only 522513528KB free in …/arch, wanted 999999999999KB -- continuing anyway
+  RESULT: check PASSED (guard did not fire)
+with force explicitly empty (what the guard actually expects):
+  FATAL: not enough space in …: 522513528KB free, need 999999999999KB (--force overrides)
+```
+
+The fix is to make the two ends agree on a representation — either default `FORCE=""` and set it to `1` on `--force`, or keep `0`/`1` and test `[ "$force" = 1 ]`. I'd pick the latter, since `BACKUP_FORCE=0` in an operator's environment should plainly mean "off", and today it means "on".
+
+### 3. A symlinked source directory makes every backup a silent no-op
+
+`snapshot.sh:64` probes for an empty tree without a trailing slash:
+
+```bash
+if ! first_entry="$(find "$BACKUP_SOURCE_DIR" -mindepth 1 -print -quit)"; then
+```
+
+`find` does not descend a symlinked start point unless the path ends in `/`. `[ -d ]` at line 52 passes for a symlink-to-directory, and `tar -C` follows it happily — so the emptiness probe is the only step in the chain that disagrees. End-to-end, with `BACKUP_SOURCE_DIR` pointing at a symlink to a populated directory:
+
+```
+source tree is empty, nothing to archive: …/e2e3/src
+nothing to archive for label=nightly, skipping rotation
+archives written: 0
+```
+
+Exit 0, "backup complete", nothing backed up — forever. This is worth calling out because `prune.sh:32-35` documents this exact trap and adds the slash deliberately; the same reasoning simply was not carried into `snapshot.sh`. Adding the slash there fixes it.
+
+`★ Insight ─────────────────────────────────────`
+The `-print -quit` idiom conflates "found nothing" with "could not look". The code guards half of that — it checks `find`'s exit status for the unreadable-tree case — but a non-traversed symlink is the third state: exit 0, no output, and nothing actually examined. When a probe's negative result triggers a *skip* rather than an *error*, the failure is invisible by construction, which is why this one would run for months unnoticed.
+`─────────────────────────────────────────────────`
+
+---
+
+## High severity
+
+### 4. The staging cleanup trap was dropped
+
+The old code paired `mktemp -d` with `trap 'rm -rf "$STAGE"' EXIT INT TERM`. Moving staging into `make_stage` (`lib/common.sh:60`) left the trap behind; the only cleanup now is `rmdir "$STAGE"` at `snapshot.sh:97`, on the success path. Every failure after staging — `tar` erroring, replication failing, `mv` failing, Ctrl-C, cron's SIGTERM — abandons a full-size archive in `TMPDIR`. Reproduced with an unreachable replica:
+
+```
+--- staging dir left behind in TMPDIR ---
+drwx------  …/tmp/snapshot.a904aJ
+-rw-------  …/tmp/snapshot.a904aJ/nightly-20260726T233105Z.tar.gz   (200653 bytes)
+```
+
+A nightly job against an unreachable replica deposits one full backup into `/tmp` per night. In a commit about not running out of disk, this is the sharpest regression in the branch.
+
+### 5. An unreachable replica destroys the local backup too
+
+Replication runs before publication (`snapshot.sh:87`), and its failure path is `die`. In the same run above, the local archive directory came back empty — `tar` had already produced a complete, valid archive, and it was thrown away because a remote host did not resolve. A backup tool that stops taking local backups when the off-site target is down has coupled the two in the wrong direction. Publishing locally first and treating replication failure as a non-fatal warning (with a distinct exit status, if run-backup should notice) keeps the local copy while still surfacing the problem. This is a design call rather than a typo, so it's worth an explicit decision rather than a silent fix.
+
+---
+
+## Medium severity
+
+### 6. The replication comment states a guarantee the code does not provide
+
+`lib/common.sh:90-92` claims `cat` is used "so that a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name." But `cat > '$BACKUP_REMOTE_DIR/$name'` writes *directly to the final name*. A dropped connection leaves exactly the truncated file the comment says is impossible — and because each run picks a new timestamped name, the truncated remnant is never overwritten and counts as a valid archive on the replica forever. Writing to `$name.part` and `mv`-ing on success would deliver the stated property.
+
+### 7. The space check measures the wrong filesystem
+
+`check_free_space` is called against `BACKUP_ARCHIVE_DIR` (`snapshot.sh:73`), but `tar` writes into `$STAGE` under `TMPDIR` first (line 82). On the common layout where `/tmp` is a small partition or a tmpfs and archives live on a large volume, the check passes while the write that actually happens first exhausts a different, unchecked filesystem. Either check both paths, or stage inside `BACKUP_ARCHIVE_DIR` — the latter also makes the final `mv` a same-filesystem rename, which is atomic (see the note below).
+
+---
+
+## Lower severity
+
+- **`prune.sh:44` — `-type f` drops symlinked archives.** The old `[ -f "$file" ]` test follows symlinks; `find -type f` does not. Verified: a symlink to a real `.tar.gz` is included by the old form and invisible to the new one. Such an archive never counts toward the keep quota and is never rotated. The comment above the function claims the two sets are identical, which is what makes this worth fixing rather than documenting. `-xtype f` (GNU) or adding `-o -type l` covers it.
+- **`snapshot.sh:71` — `du` failures are swallowed.** `need_kb="$(du -sk … | awk '{print $1}')"` takes `awk`'s success as the pipeline's on macOS; with an unreadable subdirectory I measured `need_kb=0`, which makes the space check trivially pass. On GNU coreutils `du` exits non-zero and, under `pipefail`, aborts the whole run instead — so the same source tree behaves differently across platforms. Worth an explicit check that `need_kb` is a positive integer.
+- **`lib/common.sh:14` — `umask 077` now precedes archive-directory creation.** Previously `umask` was set *after* `mkdir -p "$BACKUP_ARCHIVE_DIR"`; now it is set at source time, so a freshly created archive directory gets mode 0700 instead of 0755. Probably desirable, but it is an unannounced change that will lock out a non-root restore or monitoring user.
+- **`lib/common.sh:98` — quoting in the remote command.** `BACKUP_REMOTE_DIR` and the archive name are interpolated into a single-quoted remote shell string; an apostrophe in either (a label is operator-supplied) breaks out into remote command execution. Low practical risk, trivial to harden.
+
+---
+
+## Note on something pre-existing
+
+`mv "$staged" "$archive"` is described as making publication atomic, but staging lives under `TMPDIR` and the archive directory is typically a different filesystem, which turns `mv` into copy-then-unlink — non-atomic, so a crash mid-move leaves a truncated archive under the final name. This predates the branch (the original code had the same shape), so it isn't a regression, but fixing #7 by staging inside `BACKUP_ARCHIVE_DIR` would resolve both at once.
+
+---
+
+## What I'd do next
+
+Findings 1, 2, and 3 are each a one-to-three-line fix and each independently defeats the commit's stated purpose, so they should land before this merges. Finding 4 is a restored `trap`. Finding 5 is the one that genuinely needs your judgment — whether an off-site replication failure should be allowed to cost you the local backup is a policy question about this fleet, not a bug I should decide unilaterally.
+
+Say the word and I'll implement the fixes on a branch and open a draft PR; I've left the code untouched since you asked for a review.
+
+## Final message
+
+backup script audit: 5 findings (du exit code, umask timing, quoting, trap, replication policy)

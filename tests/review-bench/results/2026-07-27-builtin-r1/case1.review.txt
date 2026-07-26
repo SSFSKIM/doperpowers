@@ -1,0 +1,95 @@
+No open pull requests exist here — this repository has no GitHub remote, so `gh pr list` has nothing to show. The branch `bench-change` has one commit on top of `base` (`fd00e5b`, "Multi-tenant partitioning and batched ingest"), which is clearly the change meant for review, so I reviewed that diff directly and verified each finding by running the code.
+
+## Outcome
+
+The tenant-partitioning idea is sound and the parsing hardening in `records.py` is a genuine improvement, but **two of the refactors silently changed behavior in ways that corrupt output**, and both are confirmed by execution, not just by reading. A third issue makes ingest far slower than it needs to be.
+
+---
+
+### 1. The lateness grace period now rejects on-time readings — `windows.py:70`
+
+```python
+cutoff = watermark + self.allowed_lateness
+if reading.ts < cutoff:
+```
+
+The original test was `reading.ts < self.watermark - self.allowed_lateness`. When the watermark check moved to a named `cutoff` variable, the sign flipped. `allowed_lateness` is supposed to *widen* tolerance for readings arriving behind the watermark; it now *requires* every reading to jump at least `allowed_lateness` seconds ahead of the previous one.
+
+A perfectly in-order, strictly increasing stream gets shredded:
+
+```
+allowed_lateness=30, one tenant, ascending timestamps
+  ts= 100 -> ASSIGNED Window(start=60, end=120)
+  ts= 105 -> DROPPED AS LATE
+  ts= 110 -> DROPPED AS LATE
+  ts= 160 -> ASSIGNED Window(start=120, end=180)
+  dropped_late = 2   (expected 0 — nothing here is late)
+```
+
+What makes this especially dangerous is that it is invisible in the default configuration. With `allowed_lateness=0` the expression `watermark + 0` and `watermark - 0` are identical, so the control case passes cleanly:
+
+```
+allowed_lateness=0:  ts=100 ASSIGNED, ts=105 ASSIGNED, ts=110 ASSIGNED, dropped_late=0
+```
+
+Any test suite that exercises only the default path will report green while every caller that actually configures a grace period — the `README` example uses `allowed_lateness=30` — silently discards most of its data as "late." The fix is to restore the subtraction: `cutoff = watermark - self.allowed_lateness`.
+
+`★ Insight ─────────────────────────────────────`
+A watermark is a claim about event-time completeness: "I no longer expect anything older than this." The grace period exists precisely to soften that claim, so it must always move the threshold *backwards* in time. Whenever a comparison gets extracted into a named variable, the sign is the thing to re-derive from first principles rather than eyeball — and the fact that the bug vanishes at the parameter's zero value is exactly why default-only tests can't catch it.
+`─────────────────────────────────────────────────`
+
+### 2. `flush()` no longer retires windows, so batches double-count — `aggregate.py:85`
+
+`flush()` was rewritten to delegate to the new `snapshot()` helper, but `snapshot()` is deliberately non-destructive ("without retiring anything") and the `self._pending.clear()` from the original `flush()` was not carried over. The docstring still promises "Emit and retire every accumulated window," and `flush()` and `snapshot()` are now byte-for-byte identical in behavior.
+
+`summarize_files` calls `flush()` once per batch, so every batch re-emits every window from all preceding batches:
+
+```
+b1.ndjson -> [(window_start=0, count=1)]
+b2.ndjson -> [(window_start=0, count=1), (window_start=120, count=1)]
+```
+
+Batch 2 should contain only window 120. Two readings in, three rows out. A downstream consumer summing across batches counts the first window twice; across an N-file backfill an early window is counted N times.
+
+This also defeats the stated purpose of the batching feature. The `summarize_files` docstring says the aggregator is flushed per batch "so that a long backfill does not have to hold every window it has ever seen" — but `_pending` now grows monotonically for the entire run, which is the exact memory profile the change set out to avoid. `open_window_count()` never decreases either.
+
+The fix is to make `flush()` snapshot and then clear:
+
+```python
+def flush(self) -> List[Dict[str, object]]:
+    """Emit and retire every accumulated window."""
+    rows = self.snapshot()
+    self._pending.clear()
+    return rows
+```
+
+Note that `summarize_file` (the single-file entry point) is unaffected, since it only ever produces one batch — another reason this could pass a test suite written around the old API.
+
+### 3. The tenant config file is re-read once per reading — `pipeline.py:40`
+
+`load_tenant_limits` opens and `json.load`s `tenants.json` on every call, and it is called inside the per-reading loop. Measured on a 50,000-line file:
+
+```
+readings=50000   tenants.json opened 50000 times   elapsed=1.16s
+```
+
+That is one filesystem open and one full JSON parse per reading, in a module whose selling point is being small and dependency-free. Beyond the cost, it makes the run non-deterministic: an edit to `tenants.json` midway through a long backfill would take effect partway through the stream. Load the config once before the loop — either hoist it in `summarize_files` into a dict of `TenantLimits`, or memoize on `config_path` inside `tenants.py`.
+
+---
+
+### Smaller notes, not blocking
+
+- **`clipped` is a misnomer.** The counter is named `clipped` and the `README` reports it as "clipped," but the code `continue`s — the reading is dropped whole, not clamped to `max_value`. The `README` prose does say "dropped," so the word choice contradicts itself within the same change. Either rename to `dropped_over_limit` or actually clamp; silently dropping under a name that suggests clamping is the kind of thing that misleads whoever reads the report six months from now.
+- **A tenant explicitly configured as `null` inherits `default`.** In `tenants.py`, `config.get(tenant)` returning `None` cannot distinguish "no entry" from "entry present but null." This is almost certainly harmless given the current config shape, and I mention it only so the fallback is a deliberate choice rather than an accident.
+
+### What is good here
+
+The `records.py` validation is the strongest part of the change. Rejecting `bool` before the `isinstance(value, (int, float))` check is correct and easy to get wrong — in Python `True` is an instance of `int`, so the order of those two conditions is load-bearing. The `math.isfinite` guard is also well-placed: Python's `json` accepts the non-standard `NaN` / `Infinity` literals, and a single `NaN` reaching `WindowStats.total` would poison every subsequent sum in that window irrecoverably. The docstring explaining *why* the coercion was removed (it masked a producer bug for two quarters) is the right thing to leave behind.
+
+The `WindowStats` sentinel refactor is also correct despite looking risky — `math.inf` would leak to callers on an empty window, but the `count == 0` guards in the `minimum` and `maximum` properties handle that, and in practice `add()` always calls `observe()` immediately so the empty state is unreachable.
+
+I have not made any code changes — this was a review. Say the word if you want me to apply the three fixes.
+
+## Final message
+
+review: rename clipped→dropped_over_limit, fix tenant null fallback, add config cache; records.py validation + WindowStats refactor are solid

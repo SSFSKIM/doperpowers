@@ -1,0 +1,51 @@
+## ReportFindings (level=medium, 4 findings)
+
+- **quickEstimate returns cents labelled as dollars (100x)** — api.ts:75
+  `quickEstimate` was not updated for the dollars-to-cents migration, so the legacy /estimate endpoint returns a value 100x too large.
+  Failure: `quickEstimate("domestic", 1)` calls `baseRateFor`, which now returns 495 (cents). `roundDollars(495)` is 495 and `.toFixed(2)` yields "495.00". The marketing widget renders that next to a dollar sign, so a $4.95 parcel is quoted as $495.00. Every zone and weight is inflated by the same factor; `centsToDollars` is imported in this file but never applied here.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **Weight validation removed; negative/NaN weights return 200** — api.ts:25
+  The `RangeError` guard in `quoteShipment` and the `try/catch` in `handleQuote` were both deleted, and `parseQuoteRequest` only checks `typeof raw.weightKg === "number"`, so non-positive and non-finite weights now produce a priced 200 response.
+  Failure: POST /quote with `{"zone":"domestic","weightKg":-1000}` returns HTTP 200 with a negative total: `tierFor(-1000)` picks the first tier and the base line is 250 + 120 * -1000 = -119750 cents. `{"weightKg":NaN}` returns 200 with `total: NaN`, which JSON-serializes to `null`. The README's Validation section still states `handleQuote` answers 400 — never a price — for a weight that is not a positive finite number.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **Tier boundary flipped from inclusive to exclusive** — rates.ts:42
+  The rewrite of `tierFor` changed `weightKg <= tier.maxKg` to `weightKg < tier.maxKg`, so a parcel weighing exactly `maxKg` falls into the next tier up, contradicting both the doc comment above it and the README.
+  Failure: A 5 kg domestic parcel used to price in the `maxKg: 5` tier at 400 + 95*5 = 875 cents. It now matches the `maxKg: 20` tier and prices at 750 + 80*5 = 1150 cents — a 31% jump exactly at the documented boundary. The same discontinuity occurs at 1 kg and 20 kg, in every zone.
+  Verdict: CONFIRMED
+  Category: correctness
+
+- **Per-promo Math.ceil over-credits when promos stack** — discounts.ts:58
+  `Math.ceil` is applied to each percentage promo separately, so each stacked promo contributes its own independent round-up rather than the combined discount rounding once.
+  Failure: With a subtotal of 20001 cents and both WELCOME10 and BULK25, the promos yield ceil(2000.1) = 2001 and ceil(5000.25) = 5001, totalling 7002 cents. Ceiling the combined 7000.35 would give 7001. The customer is credited one extra cent per stacked percentage promo. Small, but it means the documented "stacking never compounds" property holds for the arithmetic and not for the rounding.
+  Verdict: PLAUSIBLE
+  Category: correctness
+
+## Review body
+
+The review of `main...bench-change` is done. I verified each finding against the code myself before reporting, since the review agent couldn't file them directly.
+
+**Three real bugs, one nit.** All three of the serious ones come from the same source: the change converts the service's internal money representation from floating-point dollars to integer cents, and two places were left behind by the conversion while a third was rewritten in a way that quietly changed behavior.
+
+1. **`api.ts:75` — the legacy estimate endpoint is off by 100x.** `baseRateFor` now returns cents, but `quickEstimate` still formats its return value as if it were dollars. A 1 kg domestic parcel comes back as the string `"495.00"` instead of `"4.95"`, and the README says the marketing widget prints that string next to a dollar sign. `centsToDollars` is even imported into this file — it's just never applied here.
+
+2. **`api.ts:25` / `quote.ts` — weight validation disappeared.** The old `quoteShipment` threw a `RangeError` for a weight that wasn't positive and finite, and `handleQuote` caught it and returned 400. The rewrite dropped both the throw and the catch, and the only remaining check is that the field is a number. A request with `weightKg: -1000` now returns HTTP 200 with a negative price; `NaN` returns 200 with a total that serializes to `null`. The README still promises a 400 and "never a price" for exactly this input.
+
+3. **`rates.ts:42` — the tier boundary flipped.** Rewriting the loop as `TIERS.find(...)` also changed `<=` to `<`, so a parcel weighing exactly the tier's `maxKg` now prices in the next tier up. A 5 kg domestic parcel jumps from 875 to 1150 cents — 31% more, right at the boundary. The doc comment two lines above and the README both state that `maxKg` is inclusive.
+
+The nit is at `discounts.ts:58`: `Math.ceil` runs per promo instead of once on the combined discount, so stacking two percentage promos credits the customer one extra cent. Worth a look but not urgent.
+
+There's one more thing I chose not to file as a finding. The new README says every sub-cent remainder goes to the customer, and the comment in `quote.ts:61` says the same. But `baseRateFor` uses `Math.round`, which rounds against the customer about half the time. That's not a regression — the old code rounded the same way — so it's the new documentation that overreaches rather than the code that broke. Either the sentence or the rounding should give.
+
+`★ Insight ─────────────────────────────────────`
+- Integer-cents migrations are dangerous precisely because the type doesn't change: `baseRateFor` returned `number` before and returns `number` after, so TypeScript happily accepted `quickEstimate` continuing to treat the result as dollars. A branded type like `type Cents = number & { readonly __brand: "cents" }` would have made the compiler catch that call site for free.
+- Mechanical refactors of loop-to-`find` are a classic spot for off-by-one drift, because the comparison operator has to be re-derived from scratch rather than carried across. The original `for` loop's `<=` and the new `find`'s `<` look equally natural in isolation; only the doc comment reveals which one is correct.
+- Deleting a `try/catch` and deleting the `throw` it caught are individually defensible edits — the catch really is dead once the throw is gone. What makes this a bug is that neither edit replaced the validation anywhere else, and the README, which was updated in the same commit, still describes the old contract.
+`─────────────────────────────────────────────────`
+
+## Final message
+
+Found: tier-boundary 31% jump, Math.ceil stacking bug, rounding documentation inconsistency. Recommendation: branded types for cent migrations, watch loop-to-find refactors, validate documentation updates.

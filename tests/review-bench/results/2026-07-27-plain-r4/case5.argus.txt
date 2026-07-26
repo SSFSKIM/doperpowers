@@ -1,0 +1,58 @@
+The review is complete. The worktree is clean, so the comparison against `main` covers exactly the committed work on `bench-change`.
+
+Full review comments:
+
+## Findings
+
+[P0] Inflight event is never cleared when the factory raises — cache.py:127-134
+  `self._inflight[key]` is registered before `await factory()` but deleted only on the success path, so any factory exception leaves a permanent, never-set `asyncio.Event` for that key. Every later `get_or_compute(key, ...)` then takes the join branch at line 105 and blocks forever on `await pending.wait()`. This fires on the very first retry inside `JobQueue._run_job`: I ran a two-worker queue with a handler that fails once and succeeds on attempt two, and `drain()` hung with `inflight == 1` and `attempts == 1`, i.e. the worker is wedged and the queue never drains. The store/clear needs to be exception-safe:
+```suggestion
+            done = asyncio.Event()
+            self._inflight[key] = done
+            self._counters.incr("cache.get.miss")
+            try:
+                value = await factory()
+                self._store(key, value)
+            finally:
+                del self._inflight[key]
+                done.set()
+            return value
+```
+
+[P0] Deadline is slid before the expiry check, so hot keys never expire — cache.py:74-84
+  `_lookup` bumps `hits` and, once `hits >= refresh_after_hits`, sets `expires_at = now + ttl` *before* testing `entry.expires_at <= now`. After the third read the expiry test can never be true again, so an entry is served indefinitely no matter how far past its deadline it is. With `TTLCache(ttl=10, clock=fake)` I read a key four times, advanced the clock by 1000 seconds, and the fifth read still returned the original value with only one factory call — directly contradicting the docstring's "A key whose deadline has already passed is a miss like any other." Check expiry first, then refresh:
+```suggestion
+        now = self._clock()
+        if entry.expires_at <= now:
+            del self._entries[key]
+            self._counters.incr("cache.get.expired")
+            return None
+
+        entry.hits += 1
+        entry.last_used = now
+        if entry.hits >= self._refresh_after_hits:
+            entry.expires_at = now + self._ttl
+        return entry
+```
+
+[P0] Guard is now held across lock acquisition and the caller's block — keylock.py:47-57
+  Moving `lock.acquire()` and the `yield` inside `async with self._guard` turns the per-key locks into one process-wide mutex: the guard is only released when the caller's block finishes, so every other key blocks behind it. Measured: a `hold("a")` block sleeping 0.3s delayed an unrelated `hold("b")` by 0.31s. It also defeats the new timeout — a waiter blocks on the guard, not on `lock.acquire()`, so `wait_for` never sees contention; `hold("k", timeout=0.05)` behind a 0.5s holder acquired after 0.49s instead of raising `TimeoutError`. This also contradicts the README paragraph (unchanged by this PR) stating the guard is "never held across an `await` that belongs to the caller". The reference counting from the previous version already covered the tear-down race described in the new comment; the guard should be released before acquiring the key lock and re-taken in the `finally`.
+
+[P1] Renamed cache counters break `cache_hit_rate()` and disable warm-up — cache.py:101-103
+  The counters were renamed to `cache.get.hit` / `cache.get.hit_after_wait` / `cache.get.miss`, but `JobQueue.cache_hit_rate()` (jobqueue.py:203-204) still reads `cache.hit`, `cache.hit_after_wait` and `cache.miss`. Total is therefore always 0 and the function returns the "nothing observed yet" fallback of 1.0 forever, which makes `stats()["cache_hit_rate"]` meaningless and makes `warm_stale_keys()` a no-op since `1.0 >= PREFETCH_HIT_RATE` always holds. I ran an all-unique-key workload (10 misses, 0 hits): `cache_hit_rate()` reported 1.0 and `warm_stale_keys()` refreshed 0 keys. Either revert the names or update the three lookups in `cache_hit_rate()`.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Three of the findings are reproducible universal defects — a queue that permanently hangs after any handler failure, a cache that stops honouring TTLs on hot keys, and per-key locking degraded to a global mutex whose new timeout parameter has no effect — plus a counter rename that silently disables warm-up and the hit-rate metric. Each was confirmed by executing the changed code.
+Confidence: 0.95
+
+---
+
+`★ Insight ─────────────────────────────────────`
+- The first two P0s share a shape worth naming: **state mutated before the condition that reads it is evaluated**. In `cache.py` the inflight event is published before the operation that can fail, and the TTL deadline is extended before the expiry test runs. Both are fixed by ordering — check first, then mutate; publish, then guarantee cleanup with `try/finally`.
+- The keylock finding is a classic **critical-section widening** regression: a lock added to close a narrow tear-down race ends up wrapping the caller's `yield`, which converts fine-grained per-key locking into a global mutex. The tell is any `yield` or caller-supplied `await` living inside a `with` block that guards shared bookkeeping.
+- The P1 is a **rename without call-site sweep** — the kind of defect that produces no exception, just a metric pinned at its fallback value. Counter and metric names are effectively a string-typed API surface between modules, so renaming them needs the same grep discipline as renaming a function.
+`─────────────────────────────────────────────────`
+
+I have not changed any code. Say the word and I'll apply the three P0 fixes plus the counter-name sweep, and add regression tests for each (factory-raises, expired-hot-key, cross-key concurrency and timeout).

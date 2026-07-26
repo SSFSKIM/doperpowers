@@ -1,0 +1,2 @@
+run-case: bg job 8b329225 (/review) — polling /Users/new/.claude/jobs/8b329225/state.json
+run-case: bg job 8b329225 timed out after 2700s (state=blocked)
