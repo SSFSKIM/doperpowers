@@ -1,0 +1,6 @@
+The centralized production gate is declared universal even though spike tickets intentionally have a different readiness contract. This can prevent valid spike tickets from becoming dispatchable.
+
+Review comment:
+
+- [P2] Keep spike readiness on the spike gate — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.e9TDBo/repo/skills/issue-tracker/references/ticket-gate.md:7-10
+  When decomposition registers a child with category `spike` (allowed by `implement-decompose.md:9-12`), this universal rule now says it can be `ready-for-agent` only after passing the production checks below. However, `spike-worker-protocol.md:13-31` deliberately uses a different gate: vague briefs can pass, taste forks are findings, and scope is one exploration session rather than 1–2 ExecPlans. Registrars may therefore park valid spike work or apply the wrong sizing rule; make this gate production-only and route spike tickets to the spike gate.

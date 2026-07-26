@@ -1,0 +1,12 @@
+The new routing policy leaves worker-generated findings unclassified and can suppress a finding that becomes a blocker on re-review. It also makes the worker protocol disagree with the skill's documented self-merge gate.
+
+Full review comments:
+
+- [P1] Define severity for worker-generated findings — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.zGQIhM/repo/skills/reviewing-prs/references/review-worker-protocol.md:50-54
+  Findings produced by `CROSS-CHECK`, such as unverifiable Validation Evidence or a missing evidence add-on, do not come from the engine and therefore have no native P0–P3 severity. This rule nevertheless requires engine severity to choose FIX NOW versus LOG while forbidding re-derivation, leaving those findings without a deterministic route and potentially allowing them through self-merge. Define how worker-generated findings receive a blocker classification or include them in engine scoring.
+
+- [P1] Re-route logged findings when severity increases — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.zGQIhM/repo/skills/reviewing-prs/references/review-worker-protocol.md:76-80
+  If round one logs a P2/P3 finding and a later stateless engine round emits the same file/substance as P0/P1, these instructions mark it already routed and allow exit based on having no “NEW” blocker. This can ignore the engine's current blocker classification and permit confidence or self-merge. Require severity class to remain unchanged for deduplication, and always re-route a current critical/high result.
+
+- [P2] Align the top-level self-merge threshold — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.zGQIhM/repo/skills/reviewing-prs/references/review-worker-protocol.md:85-86
+  This clause now permits self-merge with any routed non-blocker, including P2 findings, while `skills/reviewing-prs/SKILL.md:59-61` still says only low findings qualify. Operators loading the skill and dispatched workers will therefore apply different safety gates to the same PR; update the summary and rendered protocol to use one threshold.

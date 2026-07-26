@@ -1,1 +1,9 @@
-The specified merge base is identical to HEAD, and the requested git diff contains no changes to review.
+The new dependency-wait rule is not supported by the existing state machine or worker authority model. Workers therefore still cannot reliably move a dependency-blocked ticket into the computed waiting lane.
+
+Full review comments:
+
+- [P1] Support returning an active ticket to ready — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.wSGaFd/repo/skills/issue-tracker/SKILL.md:79-80
+  When a dependency is discovered after the gate passes, the ticket is already `in-progress`, and the mid-build section applies the same classification rules. However, `_board.py` does not allow `in-progress → ready-for-agent`, so `board-transition.sh` rejects the prescribed return as illegal and leaves the worker stranded. Add the legal transition and a script-level regression test, or prescribe a supported sequence.
+
+- [P1] Grant workers the dependency-edge write — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.wSGaFd/repo/skills/implementing-tickets/SKILL.md:72-73
+  In the gate-time dependency case, the worker must add its own `blocked-by` edge before leaving the ticket ready. The worker Authority section only permits state changes and new-ticket registration, while issue-tracker explicitly reserves edge re-cuts for the human; consequently a protocol-compliant worker cannot perform `board-edge.sh <ticket> --block <blocker>`. If it merely leaves the ticket ready, it remains `ELIGIBLE` and is redispatched before the blocker lands, so this path needs an explicit worker authority grant and operation.

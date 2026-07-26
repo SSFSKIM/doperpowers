@@ -206,9 +206,28 @@ Smoke datum (not baseline; gathered during the outage): on the 11-line
 probe fixture, argus plain found 2/2 seeded bugs, codex (gpt-5.5 xhigh,
 94 s) found 1/2 — both 0 FP.
 
-Baseline numbers: recorded in `tests/review-bench/results/` and on ticket
-#28 when the runs complete (codex ×2 for stability + argus ×1 minimum per
-the X1 bar).
+**Baseline results (final, 17 seeded bugs across 5 cases):**
+
+| Engine | Seeded recall | FP | FP severity | Time/case |
+|---|---|---|---|---|
+| codex `gpt-5.6-sol` xhigh (production default) | **17/17** — identical across two runs (stability met) | 1 | [P1] | 4–13 min |
+| argus **plain** (Opus 5, effort high, headless) | 16/17 | **0** | — | 2–4.5 min |
+| argus **high** (same model/effort, multi-lens ladder) | **17/17** | 2 | both [P3] | 10–19 min |
+
+- argus plain's sole miss (the case4 L4 ssh injection) is **found at
+  high** — the ladder's security lens working as designed.
+- Every FP on both engines' side involved the same unreachable-TOCTOU
+  fixture finding; codex tagged it [P1] (verdict-flipping in the loop's
+  approve/needs-attention derivation), argus [P3] (verdict-neutral).
+  Severity-weighted FP cost favors argus.
+- **X1 bar verdict**: argus at HIGH passes (recall 17 = codex 17; FP +1,
+  within the bar). argus at PLAIN fails on recall (16<17). → the C4
+  engine must deploy argus at high (or C3 must auto-escalate to high for
+  the engine context); plain remains the fast, zero-FP interactive
+  default.
+- Real-PR side (comparative): both engines converge on the same core
+  defect on pr19; pr12/pr21 show argus more doc-consistency-oriented,
+  codex slightly broader. Full mapping in `results/*/scores.json`.
 
 ## 6. Flow-back to the roadmap
 

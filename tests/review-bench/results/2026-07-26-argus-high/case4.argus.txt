@@ -1,0 +1,65 @@
+All 11 verifiers returned complete verdicts. Assembling per the protocol's synthesis rules — within-group duplicates collapsed by the verifiers, same-root-cause findings merged across groups, refuted candidates dropped, cap of 10 enforced on plausible/low-priority entries.
+
+`★ Insight ─────────────────────────────────────`
+Two of the three confirmed P1s share a shape worth naming: **a guard that reads as protective but evaluates to a no-op.** `if [ "$force" ]` in a shell script is a one-argument `test`, which is true for *any* non-empty string — including the literal `"0"` that the default `FORCE="${BACKUP_FORCE:-0}"` supplies. Shell has no boolean type, so a variable holding `0` is truthy in string context and falsy only in arithmetic context (`(( force ))`) or under explicit comparison (`[ "$force" = 1 ]`). This is why the "refuse to run out of disk" guard never refuses anything.
+
+The other recurring shape is **producer/consumer drift in an ad-hoc record format.** `read -r a b c` on a four-field tab-separated line does not error — the last variable silently absorbs the remainder. A format change that adds a leading column therefore fails *quietly* at every reader that was not updated, which is exactly why the retention loop now skips every record while still exiting 0.
+`─────────────────────────────────────────────────`
+
+Two low-severity plausible candidates (the `BACKUP_FORCE`-before-`load_config` ordering, and `-type f` excluding symlinked archives) were verified as real-but-latent and fell outside the 10-finding cap for this level.
+
+Full review comments:
+
+## Findings
+
+[P1] Manifest gained a 4th column but prune.sh still parses 3 — rotation never runs — snapshot.sh:94
+
+  `snapshot.sh:94` now emits four tab-separated manifest fields (`label epoch bytes path`) and `run-backup.sh:55` was updated to match, but `prune.sh:50` still reads three (`while IFS=$'\t' read -r epoch bytes path`). Since `read` puts the remainder of the line into the last variable, `path` becomes `"<bytes><TAB><archive-path>"` for every record, so the `[ ! -f "$path" ]` check at prune.sh:53 always fires, prune.sh logs "manifest points at a missing archive, skipping" and `continue`s, and `prune_label` is never called. This affects every normal run (`run-backup.sh` pipes this manifest into `prune.sh` at line 59), so retention stops entirely while both scripts still exit 0 — archives accumulate until the archive filesystem fills. Fixing the read to `read -r rec_label epoch bytes path` also lets prune.sh use the new label column instead of `label="${base%%-*}"` at prune.sh:59, which is what the README says the column exists for (a `--label my-nightly` run currently prunes under label `my`), and prune.sh:4-5 still documents the v1 format.
+
+[P1] Re-establish staging cleanup: the `trap 'rm -rf "$STAGE"'` was deleted with no replacement — snapshot.sh:70
+
+  The staging cleanup trap (`trap 'rm -rf "$STAGE"' EXIT INT TERM` in the base) was dropped when staging moved into `make_stage`, and `make_stage` cannot reinstall it because it runs inside a command substitution subshell. The only cleanup left is `rmdir "$STAGE"` on the success path after `mv`, so any exit after `STAGE="$(make_stage)"` leaves the staging directory plus the archive-sized file inside it under `${TMPDIR:-/tmp}`: `tar` failing under `set -e`, the newly added `replicate` calling `die` on an ssh/BatchMode failure, `mv` failing, or a SIGINT/SIGTERM from cron or a systemd timeout. This matters most for a nightly run against an unreachable replica, which accumulates one full-size archive per run in /tmp (the base cleaned these up automatically), and on hosts where /tmp is a small tmpfs it fills quickly. Re-adding `trap 'rm -rf "$STAGE"' EXIT INT TERM` immediately after line 70 restores the previous behavior. Raised to P1 relative to some formulations because the commit also introduces a new, routinely-hit failure path (replication) between `tar` and the only remaining cleanup.
+
+[P1] Free-space guard is always bypassed because `[ "$force" ]` is true for the default "0" — lib/common.sh:81-84
+
+  `check_free_space` never refuses a run: `if [ "$force" ]` at `lib/common.sh:81` is a one-argument string test, and the only caller passes either `0` (the default from `FORCE="${BACKUP_FORCE:-0}"` in `snapshot.sh:22`) or `1`, both non-empty. So on any host where free space is below the `du -sk` estimate the shortfall is logged as "continuing anyway" and the run proceeds, and the fatal branch at `lib/common.sh:86` is unreachable — the pre-flight check is effectively a warning in all configurations, including when the operator sets `BACKUP_FORCE=0` to explicitly opt out. Comparing explicitly, e.g. `if [ "$force" = 1 ]`, restores the documented behavior where `--force`/`BACKUP_FORCE=1` downgrades the check and the default is fatal.
+
+[P2] Treat find failure on the source dir as "empty tree", turning backup loss into exit 0 — snapshot.sh:59-62
+
+  The emptiness probe cannot distinguish "source tree has no entries" from "`find` failed". Because the substitution's exit status is discarded inside `[ -z "$(...)" ]` (and an `if` condition is exempt from `set -e`), a source directory that is stat-able but unreadable by the backup account — mode 0700 owned by another uid, an NFS export with `root_squash`, a stale handle, or an SELinux denial — makes `find` print nothing to stdout and take the empty branch, so snapshot.sh exits 3 and `run-backup.sh` maps that to `exit 0`. Cron then reports success nightly while no archive is written, whereas before this change `tar -C` on the same tree failed and propagated a non-zero exit. Capturing the output and status separately (e.g. `if entry="$(find ... -print -quit)"; then` and `die`-ing when `find` itself fails, versus exiting 3 only when it succeeded with empty output) restores the distinction.
+
+[P2] Replication failure throws away a successfully created local archive — snapshot.sh:83-86
+
+  When `BACKUP_REMOTE` is configured and the replica is unreachable (host down, SSH key/BatchMode failure), a successfully built archive is never published locally: `replicate "$staged"` runs before `mv "$staged" "$archive"`, and its failure path calls `die`, which exits 1 before the publish. For the duration of a remote outage the host produces no local archives at all and `run-backup.sh` fails every run, even though tar and local disk were fine — an optional off-host replica becomes a hard dependency for local backups. Moving `mv "$staged" "$archive"` (and, if desired, the manifest `printf`) before the replication block preserves the stated goal of aborting before `prune.sh` rotates anything, while keeping the local archive.
+
+[P2] find does not follow a symlinked archive directory, so pruning silently lists nothing — prune.sh:32-33
+
+  If `BACKUP_ARCHIVE_DIR`'s final path component is a symlink (a common layout once archives move to a mounted volume), rotation silently becomes a no-op. `dirname` strips any trailing slash, so `dir` is always the bare symlink path, and `find "$dir" -maxdepth 1 -type f ...` runs in find's default `-P` mode, which neither descends a symlink given as a start point nor matches it with `-type f` — the listing is empty, `prune_label` logs "kept up to N of 0 archives", and archives accumulate without bound. The previous glob `"$dir/$label"-*.tar.gz` expanded through the symlink. Passing `find "$dir/"` (or `find -H "$dir"`) restores the old reachability.
+
+[P3] Remote `cat > final-name` does leave a truncated file under the final name — lib/common.sh:89-92
+
+  `replicate()` redirects the stream straight into the archive's final remote path (`cat > '$BACKUP_REMOTE_DIR/$name'`), so the invariant stated in the comment above it does not hold: if the transfer is interrupted (SSH drop, replica out of disk), the replica keeps a truncated file under the exact name a complete archive would have. The local side is fail-safe here — `die` runs before `mv "$staged" "$archive"`, so nothing is published locally — which means the truncated remote copy is the only artifact of the failed run, and since the next run picks a new timestamp it is never overwritten or retried. Impact depends on the replica being used for restores or having its own retention job, where a partial archive is indistinguishable from a good one. Using a staging name and promoting it remotely would deliver the documented behavior, e.g. `cat > 'DIR/name.part' && mv 'DIR/name.part' 'DIR/name'` — the same stage-then-`mv` discipline the local publish path already uses.
+
+[P3] Quote label and remote dir before embedding them in the ssh remote command — lib/common.sh:97-99
+
+  `replicate` interpolates `$BACKUP_REMOTE_DIR` and the archive name into a remote command string wrapped in literal single quotes, which gives no protection once a value itself contains `'`. A label such as `--label "week'end"` (or a remote directory with an apostrophe) sends `cat > '/srv/replica/week'end-<stamp>.tar.gz'` to the remote shell, which fails to parse; `die` then aborts the whole run before `mv "$staged" "$archive"`, so that run produces neither a replica nor a local archive. The same interpolation means a label or remote dir containing `'; ...; '` executes arbitrary commands on the replica — worth noting, though both values are operator-controlled, so this is mainly a robustness fix rather than a privilege boundary. Escaping each value before embedding it (replace `'` with `'\''`, or build the command with `printf '%q'`) resolves both.
+
+[P3] Escape the label before using it as a find -name pattern; wildcards now match other labels — prune.sh:32
+
+  Only relevant when a label contains a shell/find metacharacter (`*`, `?`, `[`) or when prune.sh is fed an untrusted manifest, but the outcome is destructive: `find ... -name "$label-*.tar.gz"` lets find interpret the label as part of the pattern, whereas the previous quoted glob treated those characters literally. With `--label 'db*'`, the listing picks up every `db…` archive in the directory and `prune_label` deletes all but the newest `BACKUP_KEEP`, destroying unrelated labels' backups while the intended label is never rotated. Escaping the metacharacters (or listing `*.tar.gz` and filtering with a quoted `case` match, as the old glob effectively did) fixes it. For the same reason, consider `find "./$dir"` or `find -f "$dir"` so a `dir` beginning with `-` cannot be parsed as an expression. Verification: plausible — mechanism real, trigger not constructed (no code path in this repo produces a metacharacter label).
+
+[P3] prune.sh ignores the new label column and still splits on the first hyphen — README.md:41-44
+
+  prune.sh was not updated for the v2 manifest it now receives: the stdin reader is still `read -r epoch bytes path` and the label is still recomputed as `label="${base%%-*}"` (prune.sh:50, prune.sh:59), so the new label column that snapshot.sh emits is never read by its only consumer. Today this is masked by the field-count mismatch (the mangled `path` makes every record fail the `[ ! -f "$path" ]` check), but when that reader is fixed the label should be taken from the record rather than the filename — otherwise a hyphenated label such as `--label db-main` still collapses to `db` and `find ... -name "db-*.tar.gz"` rotates the union of all `db-`-prefixed labels, which is exactly the failure the README now claims v2 fixed. The hyphen-splitting behavior itself predates this commit; the actionable part is wiring the reader to the new column in the same change that adds it. Verification: plausible — mechanism real, trigger not constructed (masked by the field-count defect in the code as committed).
+
+## Verdict
+
+Overall correctness: patch is incorrect
+
+Explanation: Three confirmed P1 defects each disable a headline behavior of the commit: the manifest gained a leading `label` column that `prune.sh` was never updated to read, so retention silently stops on every run while both scripts exit 0 (snapshot.sh:94 versus prune.sh:50); `check_free_space` tests `[ "$force" ]`, which is true for the default string `"0"`, so the new "refuse to run out of disk" guard can never abort a run and its `die` branch is unreachable (lib/common.sh:81); and the staging cleanup trap was deleted when staging moved into `make_stage`, so the newly added replication failure path leaves a full-size archive in `${TMPDIR:-/tmp}` on every failed run (snapshot.sh:70). Three further confirmed P2s compound this — an unreadable source tree is now reported as "empty" and exits 0, a replication failure discards an otherwise good local archive, and `find` in the rewritten `list_archives` does not follow a symlinked archive directory.
+
+Confidence: 0.88
+
+---
+
+The three P1s are the ones to fix before this lands; each is a one- to two-line change (`read -r rec_label epoch bytes path`, `[ "$force" = 1 ]`, and re-adding `trap 'rm -rf "$STAGE"' EXIT INT TERM` after line 70). I can apply the fixes if you want — that would be a fresh task, not something the reviewers do.

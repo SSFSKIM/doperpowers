@@ -1,0 +1,41 @@
+All nine verifier groups returned complete verdicts — no failed dispatches, so coverage is whole.
+
+Full review comments:
+
+## Findings
+
+[P0] Restore retirement of pending windows in flush(); rows now accumulate across batches — aggregate.py:85-87
+  `flush()` no longer retires anything — the `self._pending.clear()` that existed on `main` was dropped when the row-building moved into `snapshot()`, so `flush()` is now an alias for `snapshot()` ("Rows for every window currently held, without retiring anything"), and nothing else in the module clears `_pending`. This only affects the new multi-file path: `summarize_files` calls `flush()` once per path at `pipeline.py:50`, so every batch re-emits every `(tenant, window)` seen so far with cumulative counts/totals rather than that batch's delta. For two files each contributing one reading to window start 0 for tenant `default`, batch 0 reports count 1 and batch 1 reports count 2 for the same row, so a consumer summing per-batch counts sees 3 events for 2 readings, and rows belonging only to the first file reappear attributed to the second file's `path`. It also breaks the memory bound the `summarize_files` docstring promises ("a long backfill does not have to hold every window it has ever seen") and makes total output size grow with batches × windows. `summarize_file` is unaffected since it reads only `batches[0]`. Restoring `self._pending.clear()` in `flush()` (after building the rows) fixes both; `flush()`'s own docstring still claims it retires windows, so the intent is clear.
+
+[P0] Fix inverted lateness cutoff that drops in-order readings — windows.py:70-71
+  The lateness cutoff sign is inverted: `cutoff = watermark + self.allowed_lateness` should be `watermark - self.allowed_lateness`. As written, any reading whose timestamp is *ahead* of its tenant's watermark by less than the grace period is counted in `dropped_late` and discarded. With the README's own example (`allowed_lateness=30`) and a normal in-order stream at 1-10 second cadence, nearly every reading after the first is dropped, `report["windows"]` is near-empty, and `report["dropped_late"]` is inflated with readings that were never late; raising `allowed_lateness` makes the loss worse rather than more permissive. Readings sharing a timestamp also lose all but the first. The defect is invisible at the default `allowed_lateness=0`, where both forms reduce to `ts < watermark`, so only callers passing a non-zero grace period are affected. The adjacent comment and the class docstring ("further behind its tenant's watermark than `allowed_lateness` seconds") both describe the subtraction, confirming the `+` is a slip during the per-tenant refactor.
+
+[P2] Stop reopening and reparsing tenants.json for every single reading — pipeline.py:39-43
+  `load_tenant_limits` opens and fully JSON-parses `tenants.json` on every call (`tenants.py:35-38`, no caching), and `pipeline.py:40` calls it once per reading inside the ingest loop, so a run over N readings performs N file opens and N JSON parses. Results are unaffected — this is a throughput issue, not a correctness one — but it scales linearly with input size and dominates the per-reading cost for large batches; a 1M-reading backfill issues 1M `open()` + `json.load()` cycles for a handful of static values. Since limits are constant for the duration of a run, caching per tenant (e.g. an `lru_cache` on `load_tenant_limits`, or a dict built once before the loop) removes the cost with identical behaviour.
+
+[P3] Treat an explicit JSON null tenant as the default tenant, not the string "None" — records.py:60
+  `tenant=str(payload.get("tenant", DEFAULT_TENANT))` only falls back to the default when the `tenant` key is *absent*. If a producer emits the key with an explicit JSON `null` (a common shape for "unset" in many serializers), `.get` returns `None` and `str(None)` produces the tenant string `"None"`, which contradicts the README's "A reading with no `tenant` belongs to the `default` tenant". That reading then gets its own watermark bucket in `WindowAssigner._watermarks`, its own `(tenant, window_start)` accumulator key, and emits rows labelled `"tenant": "None"`, so one producer's traffic silently splits across two partitions in the report. Per-tenant limits are not affected, since `load_tenant_limits("None")` falls back to the `default` entry, which is why the split shows up only in watermarks and in the emitted label. Reading the raw value first and defaulting on `None` — e.g. `raw = payload.get("tenant"); tenant = DEFAULT_TENANT if raw is None else str(raw)` — covers both the absent and null forms. Verification: plausible — mechanism real, trigger not constructed.
+
+[P3] Guard min/max sentinels against NaN-only windows reporting inf/-inf — aggregate.py:30-31
+  If a producer emits bare `NaN` literals (Python's `json.loads` accepts them by default, and the new type check at `records.py:53` lets them through since `isinstance(nan, float)` is true), a window whose readings are all NaN now emits `"min": inf, "max": -inf` — sentinel values that were never observed, with min greater than max. `min(math.inf, nan)` and `max(-math.inf, nan)` both keep the sentinel because every NaN comparison is false, and the `minimum`/`maximum` properties only substitute `None` when `count == 0`. Scope is narrow: the affected row already reports NaN for `total` and `mean`, and the sentinel approach is otherwise an improvement over the base (which let a leading NaN poison min/max for the whole window). Rejecting non-finite values in `parse_line` alongside the existing bool/string rejection would close it in one place. Verification: plausible — mechanism real, trigger not constructed.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Two confirmed P0 defects each break the feature the commit adds — `WindowedAggregator.flush()` lost its `self._pending.clear()`, so every batch in `summarize_files` re-emits all prior windows with cumulative counts, and `windows.py:70` inverted the lateness grace period from `watermark - allowed_lateness` to `watermark + allowed_lateness`, discarding in-order readings as late whenever `allowed_lateness` is non-zero. A third confirmed finding (a per-reading `tenants.json` open and parse) is a throughput regression rather than a correctness one.
+Confidence: 0.88
+
+---
+
+Eight further candidates were refuted by the verifiers and are not reported: the unvalidated `tenant` field, the fail-open behavior in `tenants.py` for unknown tenants and for a missing config file, the unbounded per-tenant watermark dictionary, the read-only `watermark` property (both the assignability and the scan-cost framings), the `min`/`max` call overhead, and NaN bypassing the `max_value` check.
+
+Two things worth noting separately from the review itself:
+
+`★ Insight ─────────────────────────────────────`
+- The lateness bug is a textbook example of why default-value smoke tests give false confidence: at `allowed_lateness=0`, `watermark + 0` and `watermark - 0` are identical, so the sign inversion is completely invisible unless a test passes a non-zero grace period. A regression test with `allowed_lateness=30` and an in-order stream would have caught it instantly.
+- The `flush()` bug shows the risk of the "extract a helper, no behavior change" refactor. Pulling row-building into `snapshot()` was correct; what got lost was the one line of *state mutation* that distinguished the two methods. When you split a method into "read" and "read-and-mutate" halves, the mutation is the entire difference — and it's the easiest line to leave behind.
+`─────────────────────────────────────────────────`
+
+Separately, the Supabase MCP server in this session needs authorization before its tools can be used, and this session can't run the OAuth flow. If you want it available, authorize it from an interactive session via `/mcp` or the `claude mcp` command. It had no bearing on this review.
+
+I have not changed any code — fixing these is a separate task. Say the word and I'll apply the two P0 fixes (restore `self._pending.clear()` in `flush()`, and flip the cutoff back to subtraction) along with a regression test for each.

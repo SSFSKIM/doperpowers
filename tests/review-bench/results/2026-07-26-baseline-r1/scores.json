@@ -1,0 +1,63 @@
+{
+  "run_ids": {
+    "codex_r1": "2026-07-26-baseline-r1",
+    "codex_r2": "2026-07-26-baseline-r2",
+    "argus_plain": "2026-07-26-baseline-r1 (case5 + real PRs from post-529 retry, fixed harness)"
+  },
+  "engines": {
+    "codex": {"model": "gpt-5.6-sol", "effort": "xhigh", "invocation": "review-engine.sh (production path)"},
+    "argus_plain": {"model": "claude-opus-5 (inherited default)", "effort": "high (settings default)", "invocation": "headless claude -p slash (C1.G3 path)", "level": "plain"}
+  },
+  "seeded": {
+    "total_bugs": 17,
+    "codex_r1": {"recall": 17, "fp": 1, "fp_detail": ["case3 TOCTOU race — fixture has no concurrency; rubric criteria 6/7"]},
+    "codex_r2": {"recall": 17, "fp": 1, "fp_detail": ["case3 TOCTOU race (same finding)"]},
+    "codex_stability": "r1 == r2 on recall and FP; X1 stability requirement met",
+    "argus_plain": {"recall": 16, "fp": 0, "miss_detail": ["case4-b3 L4 ssh command injection — plain level has no security lens"]}
+  },
+  "per_case": {
+    "case1": {"bugs": 3, "codex_r1": 3, "codex_r2": 3, "argus_plain": 3},
+    "case2": {"bugs": 3, "codex_r1": 3, "codex_r2": 3, "argus_plain": 3},
+    "case3": {"bugs": 3, "codex_r1": 3, "codex_r2": 3, "argus_plain": 3},
+    "case4": {"bugs": 4, "codex_r1": 4, "codex_r2": 4, "argus_plain": 3},
+    "case5": {"bugs": 4, "codex_r1": 4, "codex_r2": 4, "argus_plain": 4}
+  },
+  "genuine_unseeded_excluded": [
+    "case1: NaN/Infinity pass the new 'JSON number' validation (both engines; claim/behavior mismatch)",
+    "case4: find -name interprets glob metachars in unvalidated labels (codex)",
+    "case4: non-atomic replica publish contradicts its own comment (both engines)",
+    "case4: emptiness probe fails open on find errors (codex)",
+    "case4: replica umask not established remotely (codex)",
+    "case4: BACKUP_FORCE read before load_config (argus separate finding; folded into codex b1)",
+    "case5: in-flight join ignores configured timeout (codex)",
+    "case5: initial retry delay uncapped when base_delay > cap (codex)",
+    "case5: first warm-up pass gated (codex r2; unverified candidate)"
+  ],
+  "real_prs": {
+    "note": "comparative only, no recall denominator; harness upstream-collapse bug invalidated codex r1 pr19/pr21 and codex r2 pr19 (rerun post-fix)",
+    "pr12": {"argus": "2 P2 doc-consistency findings", "codex": "3 findings (1 P1 severity-suppression, 2 P2)"},
+    "pr19": {"argus": "1 P1 + 1 P2 (rule vs legality table)", "codex": "2 P1 (state-machine/authority gaps for the same dependency-wait rule) — both engines converge on the same core defect"},
+    "pr21": {"argus": "no findings / correct", "codex": "1 finding (spike-gate universality)"}
+  },
+  "argus_high": {
+    "run_id": "2026-07-26-argus-high",
+    "model": "claude-opus-5 (inherited), effortLevel high",
+    "seeded": {"recall": 17, "fp": 2, "fp_detail": [
+      "case3 TOCTOU race [P3] — same unreachable-concurrency finding as codex's FP (codex tagged it P1)",
+      "case5 retained-results 'pin indefinitely' [P3] — flags the bounded-retention bait"
+    ]},
+    "per_case": {"case1": 3, "case2": 3, "case3": 3, "case4": 4, "case5": 4},
+    "notes": [
+      "The L4 ssh injection plain missed is FOUND at high (multi-lens ladder working as designed), tagged [P3].",
+      "Both FPs are [P3]; the loop's verdict derivation blocks only on critical/high, so neither would flip a verdict — codex's sole FP was [P1], which would.",
+      "Timing 579-1133 s/case (~10-19 min) vs codex xhigh 255-758 s, argus plain 140-270 s.",
+      "Cross-engine convergences upgrade three unseeded candidates to real: warm-up throttle seed (case5), find-symlink behavior + replication-failure archive loss (case4, argus-only, judged real)."
+    ]
+  },
+  "x1_bar_verdict": {
+    "rule": "recall >= codex baseline AND FP growth <= +1 across the seeded set",
+    "argus_plain_vs_codex": "FAILS on recall (16 < 17); FP -1",
+    "argus_high_vs_codex": "PASSES: recall 17 = 17, FP 2 vs 1 = +1 (allowed); severity-weighted FP cost favors argus (P3 vs P1)",
+    "implication": "C3 must route the ENGINE context to high (or auto-escalate); plain remains the fast interactive default"
+  }
+}

@@ -1,5 +1,13 @@
 # baseline-r1 adjudication notes (in progress)
 
+Models: argus side ran `claude -p` with no model flag → user default
+`model: "opus"` → **Claude Opus 5 at effortLevel "high"** (settings
+default; no per-run override), inherited by the argus-reviewer agent
+(`model: inherit`). This matches the C5 deployment condition (claude-route
+daemon workers inherit the same defaults unless pinned). codex side:
+**gpt-5.6-sol, effort xhigh** (the loop's production default) — one
+reasoning-budget notch above the argus side.
+
 ## argus (plain, headless path, inherit model) — seeded cases
 
 - **case1**: 3/3 (b1 L1 lateness [P0], b2 L3 flush [P1], b3 L5 reload [P2]). FP 0. Baits untouched.

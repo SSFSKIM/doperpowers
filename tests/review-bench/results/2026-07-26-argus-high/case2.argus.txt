@@ -1,0 +1,37 @@
+All six verifiers completed — no dispatch failures, so coverage is complete. Four groups confirmed, two refuted. Applying the protocol's cross-group dedup: the deleted weight guard in `quote.ts` and the deleted `RangeError`→400 mapping in `api.ts` were verified as two ends of one root cause (each verifier's body names the other's anchor), so they merge into a single finding carrying the fuller body.
+
+Full review comments:
+
+## Findings
+
+[P0] Fix quickEstimate: baseRateFor now returns cents but is printed as dollars — rates.ts:50-51
+
+  `quickEstimate` (`api.ts:75`) was not migrated to the new cents convention, so the legacy `GET /estimate` endpoint returns prices 100x too high on every call. `baseRateFor` now returns integer cents, but `quickEstimate` still does `roundDollars(baseRateFor(zone, weightKg)).toFixed(2)`, and `roundDollars` (`Math.round(v*100)/100`) is a no-op on an integer, so `quickEstimate("domestic", 0.5)` yields `"310.00"` rather than `"3.10"`. Since the widget renders the string as-is next to a dollar sign (per the doc comment at `api.ts:68-73`), every marketing estimate is displayed at 100x, and `POST /quote` — which goes through `centsToDollars` — now disagrees with `GET /estimate` by that factor for the same parcel. The fix is `centsToDollars(baseRateFor(zone, weightKg)).toFixed(2)`, after which the `roundDollars` import in `api.ts:3` becomes unused.
+
+[P1] Restore inclusive tier upper bound in tierFor; `<` bumps boundary weights up a tier — rates.ts:42
+
+  `tierFor` changed from `weightKg <= tier.maxKg` to `TIERS.find((tier) => weightKg < tier.maxKg)`, which makes `maxKg` an exclusive bound and prices any parcel landing exactly on a tier boundary in the next tier up. Concretely, a domestic 1.0 kg parcel now costs `400 + 95 = 495` cents instead of `250 + 120 = 370` (a 34% increase), 5 kg goes 875 → 1150 cents and 20 kg goes 2350 → 2500 cents, with the gap multiplied by the zone factor (2.4x for international). Only exact-boundary weights are affected, but those are common round values, and the change is silent — the response is still a 200 with a plausible price. This looks unintended for a commit described as a units refactor: the surviving doc comment at rates.ts:6-9 and the README "Weight tiers" section both still state that `maxKg` is inclusive. Restoring `weightKg <= tier.maxKg` in the predicate fixes it; both `buildBreakdown` (quote.ts:54) and `quickEstimate` (api.ts:75) read through `baseRateFor`.
+
+[P1] Reinstate the 400 error path in handleQuote; non-finite weight now returns 200 with a null price — api.ts:53-58
+
+  This commit drops the `weightKg` range check along with the `try`/`catch` that turned it into a `400`, so `handleQuote` no longer rejects any numeric weight. A body of `{"zone":"domestic","weightKg":-5}` now returns `200` with `total: 0` and a negative subtotal (`baseRateFor` computes `250 + 120 * -5 = -350` cents, and `discountCents` caps the zero discount at the negative subtotal, cancelling it out) — a free shipment rather than a rejection. A body of `{"zone":"domestic","weightKg":1e400}` parses to `Infinity`, falls through `tierFor` to the last tier, and returns `200` with `total`/`subtotal`/`amount` all serializing as `null`, which a consumer will either coerce to 0 or crash on. This contradicts README.md:28-30, which this commit left in place ("`handleQuote` answers `400` — never a price — for ... a weight that is not a positive finite number"). Raising priority from P2 to P1 because the endpoint takes untrusted input and the failure yields a chargeable quote of zero rather than an error. Restoring the `!Number.isFinite(req.weightKg) || req.weightKg <= 0` guard (in `buildBreakdown` or `parseQuoteRequest`) and the `RangeError` → `400` mapping in `handleQuote` would restore the documented behaviour.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+
+Explanation: Three confirmed defects, each of which changes money or the validation contract. The cents migration was applied to `handleQuote` but not to `quickEstimate`, so the legacy estimate endpoint reports every price at 100x. Independently, the loop-to-`find` rewrite in `tierFor` flipped the documented inclusive tier bound to exclusive, overcharging every parcel at an exact tier boundary, and the deleted weight guard plus its `400` mapping means non-positive and non-finite weights now return a priced `200` instead of a rejection.
+
+Confidence: 0.88
+
+---
+
+Two candidates were refuted and are not reported above: the narrowed `resolvePromos(codes: string[])` signature (a deliberate, documented contract change with no reachable caller that passes `undefined`, enforced by `strict: true`), and the memory cost of the new `distinctCodes` Set (the unbounded `promoCodes` array was already fully retained pre-change at `api.ts:37-41`, so the diff adds only a bounded constant factor).
+
+`★ Insight ─────────────────────────────────────`
+All three confirmed defects share a signature worth naming: they hid inside a change *described* as a pure refactor. The commit message says "money in integer cents," which primes a reader to check unit conversions and skim everything else — but two of the three bugs are the `<=` → `<` flip in a loop-to-`find` rewrite and a deleted validation guard, neither of which is about units at all.
+
+The mechanical tell in each case was a surviving doc comment or README line that the diff contradicted but did not update (`maxKg` is "the **inclusive** upper bound"; `handleQuote` answers "400 — never a price"). Prose that outlives the code it describes is the cheapest available oracle for unintended behavior change, which is why the finder lenses are pointed at removed lines and unchanged contracts rather than only at new ones.
+`─────────────────────────────────────────────────`
+
+I have not changed any code — this was a review only. Say the word and I'll fix all three (the `centsToDollars` swap in `quickEstimate`, the `<=` restoration in `tierFor`, and re-adding the weight guard with its `400` mapping).

@@ -249,7 +249,7 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 
 | Child | Spec / ticket | Status |
 |---|---|---|
-| C1 | doperpowers#28 | in-flight (worked in the roadmap session) |
+| C1 | doperpowers#28 | findings ready — G1+G2+G3 all met; parked for human close (spike handoff). Findings doc: `2026-07-26-c1-review-methodology-findings.md`; follow-up #36 (fixture maintenance) |
 | C2 | doperpowers#29 | not-dispatched (blocked-by C1) |
 | C3 | doperpowers#30 | not-dispatched (blocked-by C2) |
 | C4 | doperpowers#31 | not-dispatched (blocked-by C2, C3) |
@@ -310,6 +310,15 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   codex baseline runs on the production default (`gpt-5.6-sol` xhigh).
   The fragility datum stands: the codex route sits on an external
   account tier that can silently revoke the engine's model.
+- **X1 baseline outcome (C1 flow-back, 2026-07-26): argus passes the bar
+  at HIGH, not at plain.** codex (gpt-5.6-sol xhigh): 17/17 seeded
+  recall, 1 [P1] FP, stable across two runs. argus plain (Opus 5,
+  effort high, headless): 16/17, 0 FP — misses only the L4 injection
+  (plain has no security lens). argus high: 17/17, 2 [P3] FPs — recall
+  tied, FP growth +1 (within the bar), and both FPs verdict-neutral
+  where codex's is verdict-flipping. Consequence for C3/C4: the engine
+  context deploys argus at high (or C3 auto-escalates to it); plain
+  stays the interactive fast path.
 - **Built-in `/review`/`/code-review` prompt sources are on disk** (the
   codex_somersault checkout carries Claude Code source at
   `Claude Code Src/src/commands/`) — C1 needs no extraction work. (An
