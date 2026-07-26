@@ -1,0 +1,462 @@
+diff --git a/README.md b/README.md
+index 23f6067..ef25674 100644
+--- a/README.md
++++ b/README.md
+@@ -1,19 +1,22 @@
+ # windowed-telemetry
+ 
+ A small, dependency-free module that turns a stream of raw device readings into
+-per-window summary rows.
++per-window summary rows, partitioned by tenant.
+ 
+ ## What it does
+ 
+ 1. `records.py` parses newline-delimited JSON readings (`device_id`, `ts`,
+-   `value`) into `Reading` objects. Malformed lines raise `MalformedReading`
+-   with the offending line number.
+-2. `windows.py` assigns each reading to a fixed-width tumbling window. It keeps
+-   a watermark (the largest timestamp seen so far) and drops readings that fall
+-   further behind the watermark than `allowed_lateness` seconds.
+-3. `aggregate.py` accumulates count / total / min / max per window and can emit
+-   the accumulated windows as plain dictionaries.
+-4. `pipeline.py` glues the three together into `summarize_file`.
++   `value`, optional `tenant`) into `Reading` objects. Malformed lines raise
++   `MalformedReading` with the offending line number.
++2. `tenants.py` loads per-tenant ingest limits from `tenants.json`. Readings
++   above a tenant's `max_value` are dropped before windowing.
++3. `windows.py` assigns each reading to a fixed-width tumbling window. It keeps
++   a watermark per tenant and drops readings that fall further behind their
++   tenant's watermark than `allowed_lateness` seconds.
++4. `aggregate.py` accumulates count / total / min / max per (tenant, window)
++   and can emit the accumulated windows as plain dictionaries.
++5. `pipeline.py` glues the four together into `summarize_file` (one file) and
++   `summarize_files` (a series of batches from the same stream).
+ 
+ ## Usage
+ 
+@@ -22,12 +25,17 @@ from pipeline import summarize_file
+ 
+ report = summarize_file("readings.ndjson", width_seconds=60, allowed_lateness=30)
+ for row in report["windows"]:
+-    print(row["window_start"], row["count"], row["mean"])
+-print("dropped as late:", report["dropped_late"])
++    print(row["tenant"], row["window_start"], row["count"], row["mean"])
++print("dropped as late:", report["dropped_late"], "clipped:", report["clipped"])
+ ```
+ 
+ ## Conventions
+ 
+ * Timestamps are integer epoch seconds.
+ * Window bounds are half-open: `[start, end)`.
+-* Emitted rows are sorted by window start.
++* Emitted rows are sorted by tenant, then by window start.
++* `value` must be a JSON number. Numeric-looking strings and booleans are
++  rejected as malformed rather than coerced — coercion used to swallow
++  producer-side bugs.
++* A reading with no `tenant` belongs to the `default` tenant, which is also the
++  fallback entry in `tenants.json`.
+diff --git a/aggregate.py b/aggregate.py
+index e154ec1..9601e5c 100644
+--- a/aggregate.py
++++ b/aggregate.py
+@@ -2,29 +2,41 @@
+ 
+ from __future__ import annotations
+ 
+-from typing import Dict, List, Optional
++import math
++from typing import Dict, List, Optional, Tuple
+ 
+ from records import Reading
+ from windows import Window
+ 
++WindowKey = Tuple[str, int]
++
+ 
+ class WindowStats:
+-    """Running count / total / min / max for a single window."""
++    """Running count / total / min / max for a single tenant's window."""
+ 
+-    def __init__(self, window: Window):
++    def __init__(self, tenant: str, window: Window):
++        self.tenant = tenant
+         self.window = window
+         self.count = 0
+         self.total = 0.0
+-        self.minimum: Optional[float] = None
+-        self.maximum: Optional[float] = None
++        # Sentinels keep observe() branch-free; the properties below hide them
++        # from callers, so an untouched WindowStats still reports None.
++        self._minimum = math.inf
++        self._maximum = -math.inf
+ 
+     def observe(self, value: float) -> None:
+         self.count += 1
+         self.total += value
+-        if self.minimum is None or value < self.minimum:
+-            self.minimum = value
+-        if self.maximum is None or value > self.maximum:
+-            self.maximum = value
++        self._minimum = min(self._minimum, value)
++        self._maximum = max(self._maximum, value)
++
++    @property
++    def minimum(self) -> Optional[float]:
++        return None if self.count == 0 else self._minimum
++
++    @property
++    def maximum(self) -> Optional[float]:
++        return None if self.count == 0 else self._maximum
+ 
+     @property
+     def mean(self) -> Optional[float]:
+@@ -34,6 +46,7 @@ class WindowStats:
+ 
+     def as_dict(self) -> Dict[str, object]:
+         return {
++            "tenant": self.tenant,
+             "window_start": self.window.start,
+             "window_end": self.window.end,
+             "count": self.count,
+@@ -45,23 +58,30 @@ class WindowStats:
+ 
+ 
+ class WindowedAggregator:
+-    """Accumulate readings into the window they were assigned to."""
++    """Accumulate readings into the (tenant, window) they were assigned to."""
+ 
+     def __init__(self) -> None:
+-        self._pending: Dict[int, WindowStats] = {}
++        self._pending: Dict[WindowKey, WindowStats] = {}
+ 
+-    def add(self, window: Window, reading: Reading) -> None:
+-        stats = self._pending.get(window.start)
++    def add(self, tenant: str, window: Window, reading: Reading) -> None:
++        key = (tenant, window.start)
++        stats = self._pending.get(key)
+         if stats is None:
+-            stats = WindowStats(window)
+-            self._pending[window.start] = stats
++            stats = WindowStats(tenant, window)
++            self._pending[key] = stats
+         stats.observe(reading.value)
+ 
+     def open_window_count(self) -> int:
+         return len(self._pending)
+ 
++    def snapshot(self) -> List[Dict[str, object]]:
++        """Rows for every window currently held, without retiring anything.
++
++        Rows are ordered by tenant and then by window start, so a report stays
++        stable across runs regardless of the order readings arrived in.
++        """
++        return [self._pending[key].as_dict() for key in sorted(self._pending)]
++
+     def flush(self) -> List[Dict[str, object]]:
+-        """Emit and retire every accumulated window, oldest first."""
+-        rows = [self._pending[start].as_dict() for start in sorted(self._pending)]
+-        self._pending.clear()
+-        return rows
++        """Emit and retire every accumulated window."""
++        return self.snapshot()
+diff --git a/pipeline.py b/pipeline.py
+index d6a3664..099356a 100644
+--- a/pipeline.py
++++ b/pipeline.py
+@@ -1,37 +1,76 @@
+-"""Glue: raw NDJSON file in, window summary rows out."""
++"""Glue: raw NDJSON files in, per-batch window summary rows out."""
+ 
+ from __future__ import annotations
+ 
+-from typing import Dict, List
++from typing import Dict, Iterable, List
+ 
+ from aggregate import WindowedAggregator
+ from records import load_readings
++from tenants import load_tenant_limits
+ from windows import WindowAssigner
+ 
+ 
+-def summarize_file(
+-    path: str,
++def summarize_files(
++    paths: Iterable[str],
+     width_seconds: int,
+     allowed_lateness: int = 0,
+ ) -> Dict[str, object]:
+-    """Summarize one NDJSON file into window rows.
++    """Summarize a series of NDJSON files as one continuous stream.
+ 
+-    Readings are processed in file order so that the watermark reflects the
+-    order the producer actually emitted them in.
++    Every file is one batch. Watermarks carry across batches, because the files
++    are consecutive slices of the same stream, but the aggregator is flushed at
++    the end of each batch so that a long backfill does not have to hold every
++    window it has ever seen.
++
++    Readings above their tenant's configured ``max_value`` are counted in
++    ``clipped`` and dropped before windowing.
+     """
+-    readings = load_readings(path)
+     assigner = WindowAssigner(width_seconds, allowed_lateness=allowed_lateness)
+     aggregator = WindowedAggregator()
+ 
+-    for reading in readings:
+-        window = assigner.assign(reading)
+-        if window is None:
+-            continue
+-        aggregator.add(window, reading)
++    batches: List[Dict[str, object]] = []
++    total_read = 0
++    total_clipped = 0
++
++    for path in paths:
++        readings = load_readings(path)
++        total_read += len(readings)
++
++        for reading in readings:
++            limits = load_tenant_limits(reading.tenant)
++            if limits.max_value is not None and reading.value > limits.max_value:
++                total_clipped += 1
++                continue
++
++            window = assigner.assign(reading)
++            if window is None:
++                continue
++            aggregator.add(reading.tenant, window, reading)
++
++        batches.append({"path": path, "windows": aggregator.flush()})
+ 
+-    rows: List[Dict[str, object]] = aggregator.flush()
+     return {
+-        "windows": rows,
+-        "read": len(readings),
++        "batches": batches,
++        "read": total_read,
++        "clipped": total_clipped,
+         "dropped_late": assigner.dropped_late,
+     }
++
++
++def summarize_file(
++    path: str,
++    width_seconds: int,
++    allowed_lateness: int = 0,
++) -> Dict[str, object]:
++    """Summarize one NDJSON file into window rows.
++
++    Readings are processed in file order so that the watermark reflects the
++    order the producer actually emitted them in.
++    """
++    report = summarize_files([path], width_seconds, allowed_lateness=allowed_lateness)
++    return {
++        "windows": report["batches"][0]["windows"],
++        "read": report["read"],
++        "clipped": report["clipped"],
++        "dropped_late": report["dropped_late"],
++    }
+diff --git a/records.py b/records.py
+index ac9adab..615073a 100644
+--- a/records.py
++++ b/records.py
+@@ -6,6 +6,8 @@ import json
+ from dataclasses import dataclass
+ from typing import List
+ 
++from tenants import DEFAULT_TENANT
++
+ 
+ class MalformedReading(ValueError):
+     """Raised when a raw line cannot be turned into a Reading."""
+@@ -16,6 +18,7 @@ class Reading:
+     device_id: str
+     ts: int
+     value: float
++    tenant: str = DEFAULT_TENANT
+ 
+ 
+ REQUIRED_FIELDS = ("device_id", "ts", "value")
+@@ -25,8 +28,14 @@ def parse_line(line: str) -> Reading:
+     """Turn one NDJSON line into a Reading.
+ 
+     The line must be a JSON object carrying at least ``device_id``, ``ts`` and
+-    ``value``. Unknown keys are ignored so that producers can add fields
+-    without breaking older consumers.
++    ``value``. ``tenant`` is optional and defaults to the shared default
++    tenant. Unknown keys are ignored so that producers can add fields without
++    breaking older consumers.
++
++    Behaviour change: ``value`` must now already be a JSON number. Strings that
++    happen to look numeric ("12.5") and booleans used to be coerced silently,
++    which hid a producer bug for two quarters; they are now rejected as
++    malformed so the producer surfaces the problem instead of us.
+     """
+     try:
+         payload = json.loads(line)
+@@ -40,10 +49,15 @@ def parse_line(line: str) -> Reading:
+     if missing:
+         raise MalformedReading("missing fields: %s" % ", ".join(missing))
+ 
++    value = payload["value"]
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise MalformedReading("value must be a JSON number")
++
+     return Reading(
+         device_id=str(payload["device_id"]),
+         ts=int(payload["ts"]),
+-        value=float(payload["value"]),
++        value=float(value),
++        tenant=str(payload.get("tenant", DEFAULT_TENANT)),
+     )
+ 
+ 
+diff --git a/tenants.json b/tenants.json
+new file mode 100644
+index 0000000..5121d7f
+--- /dev/null
++++ b/tenants.json
+@@ -0,0 +1,11 @@
++{
++  "default": {
++    "max_value": null
++  },
++  "acme": {
++    "max_value": 1000.0
++  },
++  "globex": {
++    "max_value": 250.0
++  }
++}
+diff --git a/tenants.py b/tenants.py
+new file mode 100644
+index 0000000..ff8de39
+--- /dev/null
++++ b/tenants.py
+@@ -0,0 +1,49 @@
++"""Per-tenant ingest limits, sourced from a JSON config file."""
++
++from __future__ import annotations
++
++import json
++import os
++from dataclasses import dataclass
++from typing import Optional
++
++DEFAULT_CONFIG_PATH = os.path.join(
++    os.path.dirname(os.path.abspath(__file__)), "tenants.json"
++)
++
++DEFAULT_TENANT = "default"
++
++
++@dataclass(frozen=True)
++class TenantLimits:
++    """Ingest limits that apply to a single tenant."""
++
++    tenant: str
++    max_value: Optional[float] = None
++
++
++def load_tenant_limits(
++    tenant: str,
++    config_path: str = DEFAULT_CONFIG_PATH,
++) -> TenantLimits:
++    """Return the configured limits for ``tenant``.
++
++    A tenant with no entry of its own inherits the ``default`` entry. A missing
++    config file means "no limits configured", which is the same as an empty
++    entry: nothing gets clipped.
++    """
++    try:
++        with open(config_path, "r", encoding="utf-8") as handle:
++            config = json.load(handle)
++    except FileNotFoundError:
++        return TenantLimits(tenant=tenant)
++
++    entry = config.get(tenant)
++    if entry is None:
++        entry = config.get(DEFAULT_TENANT, {})
++
++    raw_max = entry.get("max_value")
++    return TenantLimits(
++        tenant=tenant,
++        max_value=None if raw_max is None else float(raw_max),
++    )
+diff --git a/windows.py b/windows.py
+index 7067961..0d03929 100644
+--- a/windows.py
++++ b/windows.py
+@@ -3,7 +3,7 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+-from typing import Optional
++from typing import Dict, Optional
+ 
+ from records import Reading
+ 
+@@ -22,11 +22,14 @@ class Window:
+ class WindowAssigner:
+     """Assign readings to fixed-width tumbling windows.
+ 
+-    The assigner tracks a watermark: the largest timestamp it has seen. A
+-    reading is *late* when its timestamp has fallen further behind the
+-    watermark than ``allowed_lateness`` seconds. Late readings are counted in
+-    ``dropped_late`` and discarded; everything else is assigned to the window
+-    its timestamp falls into.
++    The assigner tracks a watermark per tenant: the largest timestamp it has
++    seen for that tenant. A reading is *late* when its timestamp has fallen
++    further behind its tenant's watermark than ``allowed_lateness`` seconds.
++    Late readings are counted in ``dropped_late`` and discarded; everything
++    else is assigned to the window its timestamp falls into.
++
++    Watermarks are per tenant so that one tenant replaying a busy day cannot
++    push another tenant's in-order readings out of their windows.
+     """
+ 
+     def __init__(self, width_seconds: int, allowed_lateness: int = 0, origin: int = 0):
+@@ -37,9 +40,20 @@ class WindowAssigner:
+         self.width_seconds = width_seconds
+         self.allowed_lateness = allowed_lateness
+         self.origin = origin
+-        self.watermark: Optional[int] = None
++        self._watermarks: Dict[str, int] = {}
+         self.dropped_late = 0
+ 
++    @property
++    def watermark(self) -> Optional[int]:
++        """Highest timestamp seen for any tenant, or None before the first reading."""
++        if not self._watermarks:
++            return None
++        return max(self._watermarks.values())
++
++    def watermark_for(self, tenant: str) -> Optional[int]:
++        """Highest timestamp seen for one tenant, or None if it has sent nothing."""
++        return self._watermarks.get(tenant)
++
+     def window_for(self, ts: int) -> Window:
+         """Return the window a timestamp belongs to."""
+         index = (ts - self.origin) // self.width_seconds
+@@ -48,12 +62,17 @@ class WindowAssigner:
+ 
+     def assign(self, reading: Reading) -> Optional[Window]:
+         """Return the window for ``reading``, or None when it arrived too late."""
+-        if self.watermark is not None:
+-            if reading.ts < self.watermark - self.allowed_lateness:
++        watermark = self._watermarks.get(reading.tenant)
++
++        if watermark is not None:
++            # Anything behind the tenant's watermark by more than the grace
++            # period is too late to still land in an open window.
++            cutoff = watermark + self.allowed_lateness
++            if reading.ts < cutoff:
+                 self.dropped_late += 1
+                 return None
+ 
+-        if self.watermark is None or reading.ts > self.watermark:
+-            self.watermark = reading.ts
++        if watermark is None or reading.ts > watermark:
++            self._watermarks[reading.tenant] = reading.ts
+ 
+         return self.window_for(reading.ts)

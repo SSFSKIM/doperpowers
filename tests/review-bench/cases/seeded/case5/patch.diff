@@ -1,0 +1,489 @@
+diff --git a/README.md b/README.md
+index 027f3f4..21c0366 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,7 @@ Four modules, no dependencies outside the standard library. Import them as
+ top-level modules (run from this directory).
+ 
+     metrics.py    counter registry, loop-thread only
+-    keylock.py    per-key asyncio locks with reference counting
++    keylock.py    per-key asyncio locks with reference counting and timeouts
+     cache.py      TTL cache that computes each miss exactly once
+     jobqueue.py   bounded worker pool with retries, backed by that cache
+ 
+@@ -12,14 +12,27 @@ top-level modules (run from this directory).
+ 
+     queue = JobQueue(workers=4, capacity=128)
+     await queue.start()
+-    await queue.submit(Job(key="user:42", handler=fetch_user_42))
++    job_id = await queue.submit(Job(key="user:42", handler=fetch_user_42))
+     await queue.drain()
++    print(queue.result(job_id).status)
+     await queue.aclose()
+ 
+ A job is a key plus a zero-argument coroutine function. The key is what the
+ cache is keyed on, so two jobs with the same key that run close together
+-share one call to the handler: the second one waits on that key's lock and
+-then finds the value the first one stored.
++share one call to the handler: the second one joins the first one's
++computation and takes the value it stored.
++
++`submit()` raises `asyncio.QueueFull` when the queue is at capacity instead
++of waiting for room. A saturated pool is a signal the caller needs, not a
++delay it should absorb.
++
++## Results
++
++Every finished job files a `JobResult` under the id `submit()` returned.
++`result(job_id)` returns it and raises `KeyError` once it has aged out.
++Retention is a bounded buffer of `MAX_RETAINED_RESULTS` entries, oldest
++dropped first -- a caller that never collects its results cannot make the
++queue grow.
+ 
+ ## Why keys are locked instead of the whole cache
+ 
+@@ -31,20 +44,31 @@ key it has ever seen. The map of locks is itself guarded, but that guard is
+ only ever held for the few statements that mutate the map -- never across an
+ `await` that belongs to the caller.
+ 
++`hold(key, timeout=...)` gives up after `timeout` seconds and raises
++`asyncio.TimeoutError` rather than queueing indefinitely behind a
++computation that is itself stuck upstream.
++
+ ## Expiry
+ 
+ Entries carry a monotonic deadline. Reads past the deadline drop the entry
+ and recompute; the clock is injectable so tests do not have to sleep.
+ 
++A key read at least `refresh_after_hits` times *while it is still fresh*
++slides its deadline forward, so a key under constant read load is not thrown
++away on a fixed schedule. This is a liveness optimisation, not a licence to
++serve stale data: once a deadline has passed the entry is gone and the next
++read recomputes it, however hot the key was.
++
+ ## Retries
+ 
+ `Job.max_attempts` (default 3) applies to the whole cached computation. A
+-failed attempt sleeps for an exponentially growing delay and tries again;
+-the last failure propagates to the worker, which counts it and moves on.
++failed attempt sleeps for a jittered, exponentially growing delay (capped at
++`MAX_BACKOFF_SECONDS`) and tries again; the last failure propagates to the
++worker, which counts it, files an error result, and moves on.
+ 
+ ## Warm-up
+ 
+ `JobQueue.warm_stale_keys()` recomputes recently-run keys ahead of their
+ expiry, but only when the observed cache hit rate has fallen below
+-`PREFETCH_HIT_RATE`. The set of candidate keys is bounded at
+-`MAX_WARM_KEYS`; the oldest is dropped first.
++`PREFETCH_HIT_RATE`, and at most once every `WARM_INTERVAL_SECONDS`. The set
++of candidate keys is bounded at `MAX_WARM_KEYS`; the oldest is dropped first.
+diff --git a/cache.py b/cache.py
+index 0a37146..5264eaf 100644
+--- a/cache.py
++++ b/cache.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import time
+ from dataclasses import dataclass
+ from typing import Any, Awaitable, Callable, Dict, Optional
+@@ -12,6 +13,9 @@ from metrics import Counters
+ DEFAULT_TTL_SECONDS = 30.0
+ DEFAULT_MAX_ENTRIES = 1024
+ 
++# Reads after which a key counts as hot enough to slide its deadline.
++DEFAULT_REFRESH_AFTER_HITS = 3
++
+ Factory = Callable[[], Awaitable[Any]]
+ 
+ 
+@@ -27,8 +31,13 @@ class TTLCache:
+     """Cache values for `ttl` seconds, computing each miss once.
+ 
+     Two coroutines that miss on the same key at the same moment do not both
+-    call the factory: the second waits on that key's lock and then finds the
+-    value the first one stored.
++    call the factory: the second joins the first one's computation and takes
++    the value it stored.
++
++    A key that is read at least `refresh_after_hits` times while it is still
++    fresh gets its deadline slid forward, so a key under constant read load
++    is not thrown away on a fixed schedule. A key whose deadline has already
++    passed is a miss like any other and is recomputed.
+     """
+ 
+     def __init__(
+@@ -37,29 +46,41 @@ class TTLCache:
+         max_entries: int = DEFAULT_MAX_ENTRIES,
+         counters: Optional[Counters] = None,
+         clock: Callable[[], float] = time.monotonic,
++        refresh_after_hits: int = DEFAULT_REFRESH_AFTER_HITS,
++        lock_timeout: Optional[float] = None,
+     ) -> None:
+         if ttl <= 0:
+             raise ValueError("ttl must be positive")
+         if max_entries < 1:
+             raise ValueError("max_entries must be at least 1")
++        if refresh_after_hits < 1:
++            raise ValueError("refresh_after_hits must be at least 1")
+         self._ttl = ttl
+         self._max_entries = max_entries
+         self._entries: Dict[str, Entry] = {}
+         self._locks = KeyedLock()
+         self._counters = counters if counters is not None else Counters()
+         self._clock = clock
++        self._refresh_after_hits = refresh_after_hits
++        self._lock_timeout = lock_timeout
++        # key -> event that fires when the in-progress computation stores it
++        self._inflight: Dict[str, asyncio.Event] = {}
+ 
+     def _lookup(self, key: str) -> Optional[Entry]:
+         entry = self._entries.get(key)
+         if entry is None:
+             return None
++
+         now = self._clock()
++        entry.hits += 1
++        entry.last_used = now
++        if entry.hits >= self._refresh_after_hits:
++            entry.expires_at = now + self._ttl
++
+         if entry.expires_at <= now:
+             del self._entries[key]
+-            self._counters.incr("cache.expired")
++            self._counters.incr("cache.get.expired")
+             return None
+-        entry.hits += 1
+-        entry.last_used = now
+         return entry
+ 
+     def _store(self, key: str, value: Any) -> None:
+@@ -73,22 +94,43 @@ class TTLCache:
+             del self._entries[coldest]
+             self._counters.incr("cache.evicted")
+ 
+-    async def get_or_compute(self, key: str, factory: Factory) -> Any:
++    async def get_or_compute(
++        self, key: str, factory: Factory, timeout: Optional[float] = None
++    ) -> Any:
+         entry = self._lookup(key)
+         if entry is not None:
+-            self._counters.incr("cache.hit")
++            self._counters.incr("cache.get.hit")
+             return entry.value
+ 
+-        async with self._locks.hold(key):
++        pending = self._inflight.get(key)
++        if pending is not None:
++            # Someone is already computing this key. Join them instead of
++            # queueing on the key lock: a waiter that holds a lock slot keeps
++            # the slot alive for the whole of somebody else's computation.
++            self._counters.incr("cache.get.joined")
++            await pending.wait()
++            entry = self._lookup(key)
++            if entry is not None:
++                self._counters.incr("cache.get.hit_after_wait")
++                return entry.value
++
++        if timeout is None:
++            timeout = self._lock_timeout
++
++        async with self._locks.hold(key, timeout=timeout):
+             # Whoever held the lock before us may have filled the key in.
+             entry = self._lookup(key)
+             if entry is not None:
+-                self._counters.incr("cache.hit_after_wait")
++                self._counters.incr("cache.get.hit_after_wait")
+                 return entry.value
+ 
+-            self._counters.incr("cache.miss")
++            done = asyncio.Event()
++            self._inflight[key] = done
++            self._counters.incr("cache.get.miss")
+             value = await factory()
+             self._store(key, value)
++            del self._inflight[key]
++            done.set()
+             return value
+ 
+     def invalidate(self, key: str) -> bool:
+@@ -100,3 +142,6 @@ class TTLCache:
+ 
+     def tracked_locks(self) -> int:
+         return self._locks.tracked_keys()
++
++    def inflight(self) -> int:
++        return len(self._inflight)
+diff --git a/jobqueue.py b/jobqueue.py
+index a090dfc..255db0c 100644
+--- a/jobqueue.py
++++ b/jobqueue.py
+@@ -3,9 +3,11 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import random
++import time
+ from collections import OrderedDict
+ from dataclasses import dataclass
+-from typing import Any, Awaitable, Callable, List, Optional
++from typing import Any, Awaitable, Callable, List, Optional, Tuple
+ 
+ from cache import TTLCache
+ from metrics import Counters
+@@ -14,12 +16,26 @@ DEFAULT_WORKERS = 4
+ DEFAULT_CAPACITY = 128
+ DEFAULT_BASE_DELAY = 0.05
+ 
++# Ceiling on the retry backoff, so a job with a generous max_attempts cannot
++# park a worker for minutes.
++MAX_BACKOFF_SECONDS = 5.0
++
+ # Hit rate below which warm_stale_keys() is willing to do work.
+ PREFETCH_HIT_RATE = 0.6
+ 
+ # How many recently-run keys stay eligible for warm-up.
+ MAX_WARM_KEYS = 256
+ 
++# How many finished jobs keep their result available to result().
++MAX_RETAINED_RESULTS = 512
++
++# Deliberately not cache.DEFAULT_TTL_SECONDS, even though the number is the
++# same today. This is how often a warm-up pass is allowed to run, which is a
++# property of how much load we are willing to put on the upstream; the TTL is
++# a property of how stale a served value may be. Importing the cache's
++# constant here would silently retune this whenever the TTL is retuned.
++WARM_INTERVAL_SECONDS = 30.0
++
+ Handler = Callable[[], Awaitable[Any]]
+ 
+ 
+@@ -36,6 +52,15 @@ class Job:
+             raise ValueError("max_attempts must be at least 1")
+ 
+ 
++@dataclass
++class JobResult:
++    job_id: str
++    key: str
++    status: str  # "ok" or "error"
++    value: Any = None
++    error: Optional[BaseException] = None
++
++
+ class JobQueue:
+     def __init__(
+         self,
+@@ -53,6 +78,9 @@ class JobQueue:
+         self._base_delay = base_delay
+         # Insertion-ordered so the oldest key is the one that ages out.
+         self._warm_keys: "OrderedDict[str, None]" = OrderedDict()
++        self._results: "OrderedDict[str, JobResult]" = OrderedDict()
++        self._seq = 0
++        self._last_warm = 0.0
+ 
+     async def start(self) -> None:
+         if self._workers:
+@@ -61,10 +89,43 @@ class JobQueue:
+             asyncio.create_task(self._worker(i)) for i in range(self._worker_count)
+         ]
+ 
+-    async def submit(self, job: Job) -> None:
+-        """Enqueue a job, waiting for room if the queue is at capacity."""
+-        await self._queue.put(job)
++    async def submit(self, job: Job) -> str:
++        """Enqueue a job and return the id its result is filed under.
++
++        This no longer waits for room. A full queue means the pool is already
++        saturated, and the callers that matter -- the request handlers -- would
++        rather fail now than hold a connection open until a worker frees up, so
++        a full queue raises `asyncio.QueueFull`. It stays a coroutine because
++        every caller already awaits it.
++        """
++        self._seq += 1
++        job_id = "j%d" % self._seq
++        try:
++            self._queue.put_nowait((job_id, job))
++        except asyncio.QueueFull:
++            self._counters.incr("job.rejected")
++            raise
+         self._counters.incr("job.submitted")
++        return job_id
++
++    def result(self, job_id: str) -> JobResult:
++        """The retained result for `job_id`.
++
++        Raises KeyError for an id that never existed and for one whose result
++        has aged out of the retention buffer.
++        """
++        try:
++            return self._results[job_id]
++        except KeyError:
++            raise KeyError("no retained result for %r" % job_id) from None
++
++    def _record_result(self, result: JobResult) -> None:
++        # A bounded buffer, not a registry: a fire-and-forget caller never
++        # collects anything, so nothing here may depend on collection to be
++        # freed. Oldest result out first once the buffer is full.
++        self._results[result.job_id] = result
++        while len(self._results) > MAX_RETAINED_RESULTS:
++            self._results.popitem(last=False)
+ 
+     async def drain(self) -> None:
+         """Wait until every submitted job has been handled."""
+@@ -76,33 +137,51 @@ class JobQueue:
+         await asyncio.gather(*self._workers)
+         self._workers = []
+ 
++    async def _next_job(self) -> Optional[Tuple[str, Job]]:
++        """The next (job_id, job) pair, or None when the pool is closing."""
++        item = await self._queue.get()
++        self._counters.incr("queue.dequeued")
++        return item
++
+     async def _worker(self, index: int) -> None:
+         while True:
+-            job = await self._queue.get()
++            item = await self._next_job()
+             try:
+-                if job is None:
++                if item is None:
+                     return
+-                await self._run_job(job)
++                job_id, job = item
++                await self._run_job(job_id, job)
+             except Exception:
+                 self._counters.incr("job.abandoned")
+             finally:
++                # One task_done() per get(), sentinels included, or drain()
++                # would never return.
+                 self._queue.task_done()
+ 
+-    async def _run_job(self, job: Job) -> Any:
++    async def _run_job(self, job_id: str, job: Job) -> Any:
+         delay = self._base_delay
+         for attempt in range(1, job.max_attempts + 1):
+             try:
+                 value = await self._cache.get_or_compute(job.key, job.handler)
+-            except Exception:
++            except Exception as exc:
+                 self._counters.incr("job.attempt_failed")
+                 if attempt >= job.max_attempts:
+                     self._counters.incr("job.failed")
++                    self._record_result(
++                        JobResult(job_id=job_id, key=job.key, status="error", error=exc)
++                    )
+                     raise
+-                await asyncio.sleep(delay)
+-                delay *= 2
++                # Full jitter: sleep somewhere in [0, delay). Four workers that
++                # failed against the same upstream in the same instant must not
++                # come back at the same instant too.
++                await asyncio.sleep(random.uniform(0.0, delay))
++                delay = min(delay * 2, MAX_BACKOFF_SECONDS)
+             else:
+                 self._counters.incr("job.succeeded")
+                 self._remember_warm(job.key)
++                self._record_result(
++                    JobResult(job_id=job_id, key=job.key, status="ok", value=value)
++                )
+                 return value
+ 
+     def _remember_warm(self, key: str) -> None:
+@@ -125,10 +204,16 @@ class JobQueue:
+         """Recompute recently-run keys before they expire.
+ 
+         Only does anything when the observed hit rate has fallen below
+-        PREFETCH_HIT_RATE. Returns how many keys were refreshed.
++        PREFETCH_HIT_RATE, and at most once every WARM_INTERVAL_SECONDS.
++        Returns how many keys were refreshed.
+         """
++        now = time.monotonic()
++        if now - self._last_warm < WARM_INTERVAL_SECONDS:
++            self._counters.incr("cache.warm_throttled")
++            return 0
+         if self.cache_hit_rate() >= PREFETCH_HIT_RATE:
+             return 0
++        self._last_warm = now
+ 
+         refreshed = 0
+         # Snapshot: workers keep running and mutating _warm_keys while the
+@@ -149,5 +234,6 @@ class JobQueue:
+             "queue_depth": self._queue.qsize(),
+             "cache_entries": self._cache.size(),
+             "cache_hit_rate": self.cache_hit_rate(),
++            "retained_results": len(self._results),
+             "counters": self._counters.snapshot(),
+         }
+diff --git a/keylock.py b/keylock.py
+index 37efbad..65262d6 100644
+--- a/keylock.py
++++ b/keylock.py
+@@ -9,15 +9,13 @@ from __future__ import annotations
+ 
+ import asyncio
+ from contextlib import asynccontextmanager
+-from typing import AsyncIterator, Dict
++from typing import AsyncIterator, Dict, Optional
+ 
+ 
+ class KeyedLock:
+     def __init__(self) -> None:
+         self._locks: Dict[str, asyncio.Lock] = {}
+         self._refs: Dict[str, int] = {}
+-        # Guards the two maps above, and nothing else: it is never held
+-        # across an await that belongs to the caller.
+         self._guard = asyncio.Lock()
+ 
+     def _drop_if_idle(self, key: str) -> None:
+@@ -26,23 +24,39 @@ class KeyedLock:
+             del self._locks[key]
+ 
+     @asynccontextmanager
+-    async def hold(self, key: str) -> AsyncIterator[None]:
+-        """Hold the lock for `key` for the duration of the block."""
++    async def hold(self, key: str, timeout: Optional[float] = None) -> AsyncIterator[None]:
++        """Hold the lock for `key` for the duration of the block.
++
++        With `timeout`, give up waiting after that many seconds and raise
++        `asyncio.TimeoutError` instead of queueing indefinitely behind a
++        computation that may itself be stuck on something upstream.
++        """
+         async with self._guard:
+             lock = self._locks.get(key)
+             if lock is None:
+                 lock = asyncio.Lock()
+                 self._locks[key] = lock
+                 self._refs[key] = 0
+-            # Claim a reference before releasing the guard so that a holder
+-            # on its way out cannot tear the slot down underneath us.
+             self._refs[key] += 1
+ 
+-        try:
+-            async with lock:
++            # Taking the reference and taking the lock now happen under the
++            # same guard. Splitting them left a window in which a waiter had
++            # claimed a slot but not yet acquired, and a holder on its way out
++            # could observe a refcount it had no business acting on.
++            if timeout is None:
++                await lock.acquire()
++            else:
++                try:
++                    await asyncio.wait_for(lock.acquire(), timeout)
++                except asyncio.TimeoutError:
++                    self._refs[key] -= 1
++                    self._drop_if_idle(key)
++                    raise
++
++            try:
+                 yield
+-        finally:
+-            async with self._guard:
++            finally:
++                lock.release()
+                 self._refs[key] -= 1
+                 self._drop_if_idle(key)
+ 

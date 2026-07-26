@@ -1,0 +1,34 @@
+[
+  {
+    "id": "case4-b1",
+    "file": "lib/common.sh",
+    "approx_lines": [78, 84],
+    "class": "L1",
+    "summary": "The pre-flight free-space guard never fires: check_free_space treats its <force> argument as a boolean with `[ \"$force\" ]`, but callers pass the string \"0\" when force is off (snapshot.sh line 22: FORCE=\"${BACKUP_FORCE:-0}\"), and `[ \"0\" ]` is true, so a shortfall is always downgraded to a log line.",
+    "trigger": "Run ./snapshot.sh (or run-backup.sh) with --force absent and BACKUP_FORCE unset onto an archive filesystem with less free space than `du -sk` of the source: the run logs \"continuing anyway\" and proceeds to fill the filesystem instead of dying with \"not enough space\"."
+  },
+  {
+    "id": "case4-b2",
+    "file": "snapshot.sh",
+    "approx_lines": [68, 72],
+    "class": "L3",
+    "summary": "Staging cleanup was dropped: the base script paired `mktemp -d` with `trap 'rm -rf \"$STAGE\"' EXIT INT TERM`, but after the move to make_stage the only cleanup left is the `rmdir \"$STAGE\"` on the success path, so any failure or signal leaves the staging directory behind — and it now holds a full-size finished archive, because replication happens before the archive is published.",
+    "trigger": "Any failing or interrupted run after tar completes — e.g. BACKUP_REMOTE set to a host that refuses the connection, or Ctrl-C / a cron timeout during replication — leaves $TMPDIR/snapshot.XXXXXX/<label>-<stamp>.tar.gz on disk. A nightly job against an unreachable replica fills /tmp with one full backup per night."
+  },
+  {
+    "id": "case4-b3",
+    "file": "lib/common.sh",
+    "approx_lines": [95, 100],
+    "class": "L4",
+    "summary": "Command injection into the replica: replicate() interpolates the archive name (derived from the operator-supplied --label) and BACKUP_REMOTE_DIR into a single string that ssh hands to a remote shell; the single quotes only look protective, because the value itself may contain a quote and close them.",
+    "trigger": "./run-backup.sh --label \"nightly'; rm -rf ~; :'\" with BACKUP_REMOTE set makes the remote shell run: mkdir -p '/srv/replica' && cat > '/srv/replica/nightly'; rm -rf ~; :'-<stamp>.tar.gz — i.e. `rm -rf ~` executes on the replica. The same works through a label in a config file or a cron entry."
+  },
+  {
+    "id": "case4-b4",
+    "file": "prune.sh",
+    "approx_lines": [50, 59],
+    "class": "L2",
+    "summary": "Manifest v2 added a leading label column and snapshot.sh, run-backup.sh and the README were all updated, but prune.sh still reads three fields, so `path` receives \"<bytes>\\t<archive-path>\", fails the `[ -f \"$path\" ]` test, and every record is skipped — rotation silently stops happening.",
+    "trigger": "./run-backup.sh --label nightly with more than BACKUP_KEEP archives already present: prune logs \"manifest points at a missing archive\" and deletes nothing, so archives accumulate forever and the retention policy is never enforced."
+  }
+]

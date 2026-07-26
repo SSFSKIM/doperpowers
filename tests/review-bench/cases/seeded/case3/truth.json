@@ -1,0 +1,26 @@
+[
+  {
+    "id": "case3-b1",
+    "file": "app.py",
+    "approx_lines": [206, 227],
+    "class": "L4",
+    "summary": "The new bulk-export route GET /exports/all reads every document of every tenant on the node but is decorated @authenticated instead of @admin_only, so any authenticated member of any tenant can dump every other tenant's documents.",
+    "trigger": "GET /exports/all with the globex member token 'tok-ines' returns 200 with acme's documents and their contents in the body. The README states the route is admin only and that any route which can see across tenants is an admin route; the sibling /admin/tenants route in the same diff is correctly @admin_only."
+  },
+  {
+    "id": "case3-b2",
+    "file": "app.py",
+    "approx_lines": [166, 174],
+    "class": "L2",
+    "summary": "store.save_document was changed to return the number of rows written rather than the new revision, and handle_put_document — edited in the same change to pass expected_revision — still binds the result to `revision` and puts it in both the response body and the weak ETag.",
+    "trigger": "PUT /documents/alpha with 3 rows against a document at revision 1 replies {\"revision\": 3, \"etag\": \"W/\\\"3\\\"\"} while the stored revision is 2; a PUT with an empty rows list replies revision 0 for a document that exists. A client that echoes that number back as expected_revision on its next write gets a permanent 409, and two unrelated documents with the same row count share an ETag."
+  },
+  {
+    "id": "case3-b3",
+    "file": "app.py",
+    "approx_lines": [96, 104],
+    "class": "L1",
+    "summary": "The new pagination treats `last = first + limit` as the index of the final entry on the page and slices names[first : last + 1], so every page returns limit + 1 names and the last entry of one page reappears as the first entry of the next.",
+    "trigger": "Five documents (alpha, beta, delta, epsilon, gamma) with limit=2: page 1 returns [alpha, beta, delta] and page 2 returns [delta, epsilon, gamma]. A client walking the pages sees 'delta' twice, and any per-item side effect it performs runs twice."
+  }
+]

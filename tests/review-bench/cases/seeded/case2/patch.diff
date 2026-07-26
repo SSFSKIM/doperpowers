@@ -1,0 +1,314 @@
+diff --git a/README.md b/README.md
+index efa3efe..5b948c8 100644
+--- a/README.md
++++ b/README.md
+@@ -16,7 +16,12 @@ A tiny, dependency-free shipping quote service.
+ 
+ ## Money
+ 
+-Amounts are dollars, rounded to the cent with `roundDollars`.
++Amounts are integer cents everywhere inside the service — `baseRateFor`,
++`discountCents` and every `QuoteLine` are cents — and are converted to dollars
++with `centsToDollars` only at the edge, when a handler builds its reply.
++
++Sub-cent remainders go to the customer: surcharges round down, percentage
++discounts round up.
+ 
+ ## Validation
+ 
+diff --git a/api.ts b/api.ts
+index cb667e9..c488671 100644
+--- a/api.ts
++++ b/api.ts
+@@ -1,6 +1,6 @@
+ /** Request handlers. No framework: a handler takes a body and returns a reply. */
+ 
+-import { Zone, ZONE_MULTIPLIER, baseRateFor, roundDollars } from "./rates";
++import { Zone, ZONE_MULTIPLIER, baseRateFor, centsToDollars, roundDollars } from "./rates";
+ import { QuoteRequest, quoteShipment } from "./quote";
+ 
+ export interface Reply {
+@@ -50,18 +50,19 @@ export function handleQuote(body: unknown): Reply {
+     return { status: 400, body: { error: parsed } };
+   }
+ 
+-  try {
+-    const quote = quoteShipment(parsed);
+-    return {
+-      status: 200,
+-      body: { total: quote.totalDollars, currency: quote.currency },
+-    };
+-  } catch (err) {
+-    if (err instanceof RangeError) {
+-      return { status: 400, body: { error: err.message } };
+-    }
+-    throw err;
+-  }
++  const quote = quoteShipment(parsed);
++  return {
++    status: 200,
++    body: {
++      total: quote.totalDollars,
++      currency: quote.currency,
++      subtotal: centsToDollars(quote.breakdown.subtotalCents),
++      lines: quote.breakdown.lines.map((line) => ({
++        label: line.label,
++        amount: centsToDollars(line.amountCents),
++      })),
++    },
++  };
+ }
+ 
+ /**
+diff --git a/discounts.ts b/discounts.ts
+index 867ffe0..43855b1 100644
+--- a/discounts.ts
++++ b/discounts.ts
+@@ -1,23 +1,21 @@
+ /** Promo codes and what they are worth. */
+ 
+-import { roundDollars } from "./rates";
+-
+ export type PromoKind = "percent" | "fixed";
+ 
+ export interface Promo {
+   code: string;
+   kind: PromoKind;
+-  /** For `percent`, a percentage 0-100. For `fixed`, an amount in dollars. */
++  /** For `percent`, a percentage 0-100. For `fixed`, an amount in cents. */
+   value: number;
+-  /** Smallest pre-discount subtotal the promo may be used against, in dollars. */
+-  minSubtotalDollars: number;
++  /** Smallest pre-discount subtotal the promo may be used against, in cents. */
++  minSubtotalCents: number;
+ }
+ 
+ export const PROMOS: Promo[] = [
+-  { code: "WELCOME10", kind: "percent", value: 10, minSubtotalDollars: 0 },
+-  { code: "BULK25", kind: "percent", value: 25, minSubtotalDollars: 200 },
+-  { code: "FLAT5", kind: "fixed", value: 5, minSubtotalDollars: 20 },
+-  { code: "SHIPFREE", kind: "percent", value: 100, minSubtotalDollars: 500 },
++  { code: "WELCOME10", kind: "percent", value: 10, minSubtotalCents: 0 },
++  { code: "BULK25", kind: "percent", value: 25, minSubtotalCents: 20000 },
++  { code: "FLAT5", kind: "fixed", value: 500, minSubtotalCents: 2000 },
++  { code: "SHIPFREE", kind: "percent", value: 100, minSubtotalCents: 50000 },
+ ];
+ 
+ /** Promo codes are case- and whitespace-insensitive. */
+@@ -25,11 +23,13 @@ export function normalizeCode(raw: string): string {
+   return raw.trim().toUpperCase();
+ }
+ 
+-/** Look up the promos named by `codes`; unknown codes are ignored. */
+-export function resolvePromos(codes: string[] | undefined): Promo[] {
+-  if (!codes) {
+-    return [];
+-  }
++/**
++ * Look up the promos named by `codes`; unknown codes are ignored.
++ *
++ * Callers pass an already-materialized list — see `buildBreakdown`, which
++ * defaults a missing `promoCodes` to `[]` and drops repeats before calling.
++ */
++export function resolvePromos(codes: string[]): Promo[] {
+   const resolved: Promo[] = [];
+   for (const raw of codes) {
+     const promo = PROMOS.find((candidate) => candidate.code === normalizeCode(raw));
+@@ -41,22 +41,24 @@ export function resolvePromos(codes: string[] | undefined): Promo[] {
+ }
+ 
+ /**
+- * What `promos` are worth against `subtotalDollars`.
++ * What `promos` are worth against `subtotalCents`.
+  *
+  * Every promo is computed against the same pre-discount subtotal, so stacking
+- * two promos never compounds. The result is capped at the subtotal.
++ * two promos never compounds and the order they are applied in cannot matter.
++ * Percentages round up: a sub-cent remainder goes to the customer, matching the
++ * way surcharges round down. The result is capped at the subtotal.
+  */
+-export function discountDollars(promos: Promo[], subtotalDollars: number): number {
++export function discountCents(promos: Promo[], subtotalCents: number): number {
+   let total = 0;
+   for (const promo of promos) {
+-    if (subtotalDollars < promo.minSubtotalDollars) {
++    if (subtotalCents < promo.minSubtotalCents) {
+       continue;
+     }
+     if (promo.kind === "percent") {
+-      total += roundDollars((subtotalDollars * promo.value) / 100);
++      total += Math.ceil((subtotalCents * promo.value) / 100);
+     } else {
+       total += promo.value;
+     }
+   }
+-  return roundDollars(Math.min(total, subtotalDollars));
++  return Math.min(total, subtotalCents);
+ }
+diff --git a/quote.ts b/quote.ts
+index 034ff74..53e8609 100644
+--- a/quote.ts
++++ b/quote.ts
+@@ -1,7 +1,7 @@
+-/** Turning a request into the amount we charge. */
++/** Turning a request into the amount we charge, itemized. */
+ 
+-import { Zone, baseRateFor, roundDollars } from "./rates";
+-import { discountDollars, resolvePromos } from "./discounts";
++import { Zone, baseRateFor, centsToDollars } from "./rates";
++import { discountCents, normalizeCode, resolvePromos } from "./discounts";
+ 
+ export interface QuoteRequest {
+   zone: Zone;
+@@ -11,34 +11,79 @@ export interface QuoteRequest {
+   promoCodes?: string[];
+ }
+ 
++/** One line of the itemization. Charges are positive, credits negative. */
++export interface QuoteLine {
++  label: string;
++  amountCents: number;
++}
++
++export interface QuoteBreakdown {
++  lines: QuoteLine[];
++  subtotalCents: number;
++  discountCents: number;
++  totalCents: number;
++}
++
+ export interface Quote {
+   totalDollars: number;
+   currency: "USD";
++  breakdown: QuoteBreakdown;
+ }
+ 
+-export const RESIDENTIAL_SURCHARGE_DOLLARS = 3.25;
++export const RESIDENTIAL_SURCHARGE_CENTS = 325;
+ export const INSURANCE_RATE = 0.01;
+ 
+-export function quoteShipment(req: QuoteRequest): Quote {
+-  if (!Number.isFinite(req.weightKg) || req.weightKg <= 0) {
+-    throw new RangeError("weightKg must be a positive, finite number");
++/** Drop repeats: two spellings of one code are still one code. */
++function distinctCodes(codes: string[]): string[] {
++  const seen = new Set<string>();
++  const unique: string[] = [];
++  for (const code of codes) {
++    const key = normalizeCode(code);
++    if (seen.has(key)) {
++      continue;
++    }
++    seen.add(key);
++    unique.push(code);
+   }
++  return unique;
++}
+ 
+-  const base = baseRateFor(req.zone, req.weightKg);
++/** Every charge and credit that makes up a quote, in cents. */
++export function buildBreakdown(req: QuoteRequest): QuoteBreakdown {
++  const lines: QuoteLine[] = [
++    { label: "base", amountCents: baseRateFor(req.zone, req.weightKg) },
++  ];
+ 
+-  let surcharges = 0;
+   if (req.residential === true) {
+-    surcharges += RESIDENTIAL_SURCHARGE_DOLLARS;
++    lines.push({ label: "residential", amountCents: RESIDENTIAL_SURCHARGE_CENTS });
+   }
+   if (req.insuredValueDollars !== undefined && req.insuredValueDollars > 0) {
+-    surcharges += roundDollars(req.insuredValueDollars * INSURANCE_RATE);
++    // Surcharges round down, discounts round up: every sub-cent remainder
++    // lands in the customer's favour and the ledger absorbs the difference.
++    const insurance = Math.floor(req.insuredValueDollars * 100 * INSURANCE_RATE);
++    lines.push({ label: "insurance", amountCents: insurance });
+   }
+ 
+-  const subtotal = roundDollars(base + surcharges);
+-  const discount = discountDollars(resolvePromos(req.promoCodes), subtotal);
++  const subtotalCents = lines.reduce((sum, line) => sum + line.amountCents, 0);
++  const promos = resolvePromos(distinctCodes(req.promoCodes ?? []));
++  const discount = discountCents(promos, subtotalCents);
++  if (discount > 0) {
++    lines.push({ label: "discount", amountCents: -discount });
++  }
++
++  return {
++    lines,
++    subtotalCents,
++    discountCents: discount,
++    totalCents: subtotalCents - discount,
++  };
++}
+ 
++export function quoteShipment(req: QuoteRequest): Quote {
++  const breakdown = buildBreakdown(req);
+   return {
+-    totalDollars: roundDollars(subtotal - discount),
++    totalDollars: centsToDollars(breakdown.totalCents),
+     currency: "USD",
++    breakdown,
+   };
+ }
+diff --git a/rates.ts b/rates.ts
+index 0a2ce11..2b18b22 100644
+--- a/rates.ts
++++ b/rates.ts
+@@ -8,17 +8,17 @@ export interface WeightTier {
+    * `maxKg` is priced in this tier, not in the next one up.
+    */
+   maxKg: number;
+-  /** Flat handling charge for anything in this tier, in dollars. */
+-  handlingDollars: number;
+-  /** Charge per kilogram inside this tier, in dollars. */
+-  perKgDollars: number;
++  /** Flat handling charge for anything in this tier, in cents. */
++  handlingCents: number;
++  /** Charge per kilogram inside this tier, in cents. */
++  perKgCents: number;
+ }
+ 
+ export const TIERS: WeightTier[] = [
+-  { maxKg: 1, handlingDollars: 2.5, perKgDollars: 1.2 },
+-  { maxKg: 5, handlingDollars: 4.0, perKgDollars: 0.95 },
+-  { maxKg: 20, handlingDollars: 7.5, perKgDollars: 0.8 },
+-  { maxKg: Infinity, handlingDollars: 12.0, perKgDollars: 0.65 },
++  { maxKg: 1, handlingCents: 250, perKgCents: 120 },
++  { maxKg: 5, handlingCents: 400, perKgCents: 95 },
++  { maxKg: 20, handlingCents: 750, perKgCents: 80 },
++  { maxKg: Infinity, handlingCents: 1200, perKgCents: 65 },
+ ];
+ 
+ export const ZONE_MULTIPLIER: Record<Zone, number> = {
+@@ -32,21 +32,21 @@ export function roundDollars(value: number): number {
+   return Math.round(value * 100) / 100;
+ }
+ 
++/** Present an internal cent amount as dollars. */
++export function centsToDollars(cents: number): number {
++  return cents / 100;
++}
++
+ /** The tier a parcel of `weightKg` is priced in. */
+ export function tierFor(weightKg: number): WeightTier {
+-  for (const tier of TIERS) {
+-    if (weightKg <= tier.maxKg) {
+-      return tier;
+-    }
+-  }
+-  return TIERS[TIERS.length - 1];
++  return TIERS.find((tier) => weightKg < tier.maxKg) ?? TIERS[TIERS.length - 1];
+ }
+ 
+ /**
+- * The base rate for a parcel, in dollars, before surcharges and discounts.
++ * The base rate for a parcel, in whole cents, before surcharges and discounts.
+  */
+ export function baseRateFor(zone: Zone, weightKg: number): number {
+   const tier = tierFor(weightKg);
+-  const beforeZone = tier.handlingDollars + tier.perKgDollars * weightKg;
+-  return roundDollars(beforeZone * ZONE_MULTIPLIER[zone]);
++  const beforeZone = tier.handlingCents + tier.perKgCents * weightKg;
++  return Math.round(beforeZone * ZONE_MULTIPLIER[zone]);
+ }

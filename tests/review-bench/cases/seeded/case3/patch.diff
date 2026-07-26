@@ -1,0 +1,362 @@
+diff --git a/README.md b/README.md
+index 0a35e73..7ae8825 100644
+--- a/README.md
++++ b/README.md
+@@ -17,11 +17,26 @@ A framework-free document service. A `Request` goes in, a `Response` comes out;
+ 
+ | Route | Who | What |
+ |-------|-----|------|
+-| `GET /documents` | any session | names of the caller's own documents |
++| `GET /documents` | any session | one page of the caller's own document names |
+ | `GET /documents/<name>` | any session | one document; `?format=csv\|text` renders it |
+ | `PUT /documents/<name>` | any session | replace the rows, bump the revision |
++| `GET /exports/<name>` | any session | one of the caller's documents, rendered |
++| `GET /exports/all` | admin only | every document on the node, rendered |
+ | `GET /admin/tenants` | admin only | every tenant on this node |
+ 
++`GET /documents` takes `page` (1-based) and `limit` (capped at 200). Both fall
++back to their defaults when missing or unreadable.
++
++`all` is reserved as an export name: the bulk export owns `/exports/all`, and a
++document that really is called `all` is served by `GET /documents/all?format=`.
++
++A document with no rows renders as an empty body with a `200`. It used to be a
++`409`, which clients treated as retryable and retried in a loop.
++
++A conditional write sends `expected_revision` in the `PUT` body — the revision
++it believes it is replacing, or `0` to require that the document is new. A
++mismatch is a `409` and nothing is written.
++
+ ## Tenancy
+ 
+ A session may only ever touch its own tenant's documents. The tenant is taken
+diff --git a/app.py b/app.py
+index 8a40ce3..dfac7b8 100644
+--- a/app.py
++++ b/app.py
+@@ -2,8 +2,9 @@
+ 
+ from __future__ import annotations
+ 
++import functools
+ from dataclasses import dataclass, field
+-from typing import Dict, List, Optional
++from typing import Callable, Dict, Optional, Tuple
+ 
+ import auth
+ import render
+@@ -28,25 +29,92 @@ class Response:
+ UNAUTHORIZED = Response(401, {"error": "unauthorized"})
+ FORBIDDEN = Response(403, {"error": "admin only"})
+ 
++DEFAULT_PAGE_SIZE = 50
++MAX_PAGE_SIZE = 200
++
+ 
+ def session_of(request: Request) -> Optional[auth.Session]:
+     return auth.session_for(auth.bearer_token(request.headers))
+ 
+ 
+-def handle_list_documents(request: Request) -> Response:
+-    """GET /documents — the caller's own documents."""
+-    session = session_of(request)
+-    if session is None:
+-        return UNAUTHORIZED
+-    return Response(200, {"documents": store.list_documents(session.tenant)})
++def authenticated(handler):
++    """Turn away callers with no session; hand the session to the handler."""
++
++    @functools.wraps(handler)
++    def wrapper(request: Request, *args) -> Response:
++        session = session_of(request)
++        if session is None:
++            return UNAUTHORIZED
++        return handler(request, session, *args)
++
++    return wrapper
++
++
++def admin_only(handler):
++    """Turn away callers with no session and callers who are not admins."""
++
++    @functools.wraps(handler)
++    def wrapper(request: Request, *args) -> Response:
++        session = session_of(request)
++        if session is None:
++            return UNAUTHORIZED
++        if session.role != auth.ADMIN:
++            return FORBIDDEN
++        return handler(request, session, *args)
++
++    return wrapper
++
++
++def _int_param(query: Dict[str, str], key: str, default: int, low: int, high: int) -> int:
++    """Read a bounded integer query parameter, falling back on anything odd."""
++    raw = query.get(key)
++    if raw is None:
++        return default
++    try:
++        value = int(raw)
++    except (TypeError, ValueError):
++        return default
++    return max(low, min(value, high))
++
++
++def _requested_format(request: Request) -> Optional[str]:
++    """The format asked for, or None when it is one we do not render."""
++    fmt = request.query.get("format", "csv")
++    return fmt if fmt in render.FORMATS else None
++
++
++@authenticated
++def handle_list_documents(request: Request, session: auth.Session) -> Response:
++    """GET /documents — one page of the caller's own documents.
+ 
++    ``page`` is 1-based and ``limit`` is capped at MAX_PAGE_SIZE; both fall back
++    to their defaults when they are missing or unreadable.
++    """
++    names = store.list_documents(session.tenant)
++    page = _int_param(request.query, "page", 1, 1, 10000)
++    limit = _int_param(request.query, "limit", DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE)
+ 
+-def handle_get_document(request: Request, name: str) -> Response:
+-    """GET /documents/<name> — one document, optionally rendered."""
+-    session = session_of(request)
+-    if session is None:
+-        return UNAUTHORIZED
++    first = (page - 1) * limit
++    last = first + limit  # index of the final entry on this page
+ 
++    return Response(
++        200,
++        {
++            "documents": names[first : last + 1],
++            "page": page,
++            "limit": limit,
++            "total": len(names),
++        },
++    )
++
++
++@authenticated
++def handle_get_document(request: Request, session: auth.Session, name: str) -> Response:
++    """GET /documents/<name> — one document, optionally rendered.
++
++    A document with no rows renders as an empty body with a 200. It used to be
++    a 409, which clients read as retryable and hammered us with.
++    """
+     try:
+         document = store.load_document(session.tenant, name)
+     except store.BadDocumentName as exc:
+@@ -54,8 +122,7 @@ def handle_get_document(request: Request, name: str) -> Response:
+     if document is None:
+         return Response(404, {"error": "no such document"})
+ 
+-    fmt = request.query.get("format")
+-    if fmt is None:
++    if "format" not in request.query:
+         return Response(
+             200,
+             {
+@@ -65,10 +132,9 @@ def handle_get_document(request: Request, name: str) -> Response:
+             },
+         )
+ 
+-    if fmt not in render.FORMATS:
++    fmt = _requested_format(request)
++    if fmt is None:
+         return Response(400, {"error": "format must be one of: %s" % ", ".join(render.FORMATS)})
+-    if not document.rows:
+-        return Response(409, {"error": "document has no rows to render"})
+     return Response(
+         200,
+         {
+@@ -79,47 +145,118 @@ def handle_get_document(request: Request, name: str) -> Response:
+     )
+ 
+ 
+-def handle_put_document(request: Request, name: str) -> Response:
+-    """PUT /documents/<name> — replace the rows and bump the revision."""
+-    session = session_of(request)
+-    if session is None:
+-        return UNAUTHORIZED
++@authenticated
++def handle_put_document(request: Request, session: auth.Session, name: str) -> Response:
++    """PUT /documents/<name> — replace the rows and bump the revision.
+ 
++    An ``expected_revision`` in the body makes the write conditional: it lands
++    only if the document is still at that revision (0 meaning "must not exist
++    yet"), otherwise the caller gets a 409 and can re-read.
++    """
+     body = request.body or {}
+     rows = body.get("rows")
+     if not isinstance(rows, list):
+         return Response(400, {"error": "rows must be a list"})
+ 
++    expected = body.get("expected_revision")
++    if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
++        return Response(400, {"error": "expected_revision must be an integer"})
++
+     try:
+-        revision = store.save_document(session.tenant, name, rows)
++        revision = store.save_document(
++            session.tenant, name, rows, expected_revision=expected
++        )
+     except store.BadDocumentName as exc:
+         return Response(400, {"error": str(exc)})
++    except store.RevisionConflict as exc:
++        return Response(409, {"error": str(exc)})
+ 
+     return Response(200, {"name": name, "revision": revision, "etag": 'W/"%d"' % revision})
+ 
+ 
+-def handle_list_tenants(request: Request) -> Response:
++@authenticated
++def handle_export_document(request: Request, session: auth.Session, name: str) -> Response:
++    """GET /exports/<name> — one of the caller's documents, rendered.
++
++    ``all`` is reserved for the bulk export below; a document that really is
++    named ``all`` is served by ``GET /documents/all?format=...``.
++    """
++    fmt = _requested_format(request)
++    if fmt is None:
++        return Response(400, {"error": "format must be one of: %s" % ", ".join(render.FORMATS)})
++
++    try:
++        document = store.load_document(session.tenant, name)
++    except store.BadDocumentName as exc:
++        return Response(400, {"error": str(exc)})
++    if document is None:
++        return Response(404, {"error": "no such document"})
++
++    return Response(
++        200,
++        {
++            "name": document.name,
++            "revision": document.revision,
++            "format": fmt,
++            "content": render.render(document.rows, fmt),
++        },
++    )
++
++
++@authenticated
++def handle_export_all(request: Request, session: auth.Session) -> Response:
++    """GET /exports/all — every document on this node, for the warehouse loader."""
++    fmt = _requested_format(request)
++    if fmt is None:
++        return Response(400, {"error": "format must be one of: %s" % ", ".join(render.FORMATS)})
++
++    exports = []
++    for tenant in store.list_tenants():
++        for name in store.list_documents(tenant):
++            document = store.load_document(tenant, name)
++            if document is None:
++                continue
++            exports.append(
++                {
++                    "tenant": tenant,
++                    "name": name,
++                    "revision": document.revision,
++                    "content": render.render(document.rows, fmt),
++                }
++            )
++    return Response(200, {"exports": exports, "format": fmt})
++
++
++@admin_only
++def handle_list_tenants(request: Request, session: auth.Session) -> Response:
+     """GET /admin/tenants — every tenant on this node."""
+-    session = session_of(request)
+-    if session is None:
+-        return UNAUTHORIZED
+-    if session.role != auth.ADMIN:
+-        return FORBIDDEN
+     return Response(200, {"tenants": store.list_tenants()})
+ 
+ 
++# Fixed routes, matched before any route with a variable segment, so a static
++# path can never be swallowed by a pattern that would also match it.
++STATIC_ROUTES: Tuple[Tuple[str, Tuple[str, ...], Callable[..., Response]], ...] = (
++    ("GET", ("documents",), handle_list_documents),
++    ("GET", ("exports", "all"), handle_export_all),
++    ("GET", ("admin", "tenants"), handle_list_tenants),
++)
++
++
+ def handle(request: Request) -> Response:
+     """Route a request to its handler."""
+-    parts: List[str] = [part for part in request.path.split("/") if part]
++    parts: Tuple[str, ...] = tuple(part for part in request.path.split("/") if part)
++
++    for method, pattern, handler in STATIC_ROUTES:
++        if request.method == method and parts == pattern:
++            return handler(request)
+ 
+-    if request.method == "GET" and parts == ["documents"]:
+-        return handle_list_documents(request)
+-    if request.method == "GET" and parts == ["admin", "tenants"]:
+-        return handle_list_tenants(request)
+     if len(parts) == 2 and parts[0] == "documents":
+         if request.method == "GET":
+             return handle_get_document(request, parts[1])
+         if request.method == "PUT":
+             return handle_put_document(request, parts[1])
+ 
++    if len(parts) == 2 and parts[0] == "exports" and request.method == "GET":
++        return handle_export_document(request, parts[1])
++
+     return Response(404, {"error": "no such route"})
+diff --git a/store.py b/store.py
+index f2f959f..1fe66ea 100644
+--- a/store.py
++++ b/store.py
+@@ -20,6 +20,10 @@ class BadDocumentName(ValueError):
+     """Raised when a caller supplies a name we refuse to put on disk."""
+ 
+ 
++class RevisionConflict(RuntimeError):
++    """Raised when a write is based on a revision that is no longer current."""
++
++
+ @dataclass(frozen=True)
+ class Document:
+     name: str
+@@ -78,13 +82,31 @@ def load_document(tenant: str, name: str) -> Optional[Document]:
+     )
+ 
+ 
+-def save_document(tenant: str, name: str, rows: List[Row]) -> int:
+-    """Replace a document's rows and return its new revision number."""
++def save_document(
++    tenant: str,
++    name: str,
++    rows: List[Row],
++    expected_revision: Optional[int] = None,
++) -> int:
++    """Replace a document's rows and return how many rows were written.
++
++    ``expected_revision`` is the revision the caller believes it is replacing.
++    Pass 0 to require that the document does not exist yet, or None to write
++    unconditionally. A mismatch raises RevisionConflict and nothing is written.
++
++    The new revision is not returned; a caller that needs it reads it back with
++    ``load_document``.
++    """
+     path = _document_path(tenant, name)
+     previous = load_document(tenant, name)
+-    revision = 1 if previous is None else previous.revision + 1
++    current = 0 if previous is None else previous.revision
++
++    if expected_revision is not None and expected_revision != current:
++        raise RevisionConflict(
++            "document is at revision %d, not %d" % (current, expected_revision)
++        )
+ 
+     os.makedirs(os.path.dirname(path), exist_ok=True)
+     with open(path, "w", encoding="utf-8") as handle:
+-        json.dump({"revision": revision, "rows": rows}, handle)
+-    return revision
++        json.dump({"revision": current + 1, "rows": rows}, handle)
++    return len(rows)

@@ -1,0 +1,34 @@
+[
+  {
+    "id": "case5-b1",
+    "file": "cache.py",
+    "approx_lines": [74, 83],
+    "class": "L1",
+    "summary": "The sliding TTL is applied before the expiry test instead of after it, so `_lookup` resurrects entries that are already past their deadline: once a key has been read `refresh_after_hits` times it can never expire again, however long it sits idle.",
+    "trigger": "Read a key 3 times (the default refresh_after_hits) within its TTL, let it sit idle for longer than the TTL, then read it again: the original value is returned instead of being recomputed, and its deadline is pushed forward again on every subsequent read. The value is served forever no matter how far the upstream has moved on."
+  },
+  {
+    "id": "case5-b2",
+    "file": "cache.py",
+    "approx_lines": [126, 134],
+    "class": "L3",
+    "summary": "The in-flight marker added for computation-joining is cleared on the success path only -- `del self._inflight[key]` and `done.set()` sit after `await factory()` with no try/finally -- so a factory that raises (or a cancelled task) leaves an Event behind that is never set, and every later caller for that key blocks on `await pending.wait()` forever.",
+    "trigger": "Any handler that raises. JobQueue._run_job retries the same key, so the retry itself joins the stale event and never returns: with a handler that raises once, the worker is lost permanently, `drain()` never returns, and each subsequent failing job takes another worker with it. Verified: attempts stop at 1 and drain() times out."
+  },
+  {
+    "id": "case5-b3",
+    "file": "keylock.py",
+    "approx_lines": [34, 61],
+    "class": "L5",
+    "summary": "The whole of `hold()` -- the acquire, the `yield`, and the caller's entire critical section -- moved inside `async with self._guard`, so the process-wide guard is now held across the caller's awaits; per-key locks are dead code and every cache computation serialises behind one global lock (the lock-timeout path can also never fire, since the per-key lock is always uncontended by then).",
+    "trigger": "Concurrent misses on distinct keys, i.e. the queue's normal workload: with N workers computing N different keys, the factories run strictly one after another rather than in parallel, so p99 latency for an unrelated key equals the sum of every in-flight computation. A single slow upstream call blocks every other key in the process. Verified: key B's factory does not start until key A's has finished, where in the base tree both run concurrently."
+  },
+  {
+    "id": "case5-b4",
+    "file": "jobqueue.py",
+    "approx_lines": [193, 200],
+    "class": "L2",
+    "summary": "cache.py renamed its counters to the `cache.get.*` namespace but jobqueue.cache_hit_rate() still reads `cache.hit`, `cache.hit_after_wait` and `cache.miss`, so hits and misses are always 0, the `total == 0` guard returns the placeholder 1.0, and warm-up is silently disabled forever.",
+    "trigger": "Run any workload and call `warm_stale_keys()`: `cache_hit_rate()` reports 1.00 regardless of the real hit rate, the `>= PREFETCH_HIT_RATE` early return fires, and 0 keys are refreshed -- where the same workload on the base tree reports 0.00 and refreshes every eligible key. `stats()['cache_hit_rate']` reports 1.0 to dashboards for the same reason."
+  }
+]

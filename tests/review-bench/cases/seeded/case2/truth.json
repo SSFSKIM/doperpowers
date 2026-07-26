@@ -1,0 +1,26 @@
+[
+  {
+    "id": "case2-b1",
+    "file": "rates.ts",
+    "approx_lines": [41, 43],
+    "class": "L1",
+    "summary": "tierFor was rewritten from a `weightKg <= tier.maxKg` loop to `TIERS.find((tier) => weightKg < tier.maxKg)`, which contradicts the documented inclusive upper bound: a parcel weighing exactly maxKg now falls into the next tier up.",
+    "trigger": "A 1.00 kg domestic parcel: tierFor(1) returns the 5 kg tier, so baseRateFor is 400 + 95 = 495 cents instead of 250 + 120 = 370 cents — a 34% overcharge. Same at the 5 kg and 20 kg boundaries, which are the two most common declared weights."
+  },
+  {
+    "id": "case2-b2",
+    "file": "api.ts",
+    "approx_lines": [74, 76],
+    "class": "L2",
+    "summary": "baseRateFor changed its unit from dollars to integer cents as part of the money-in-cents move, and quote.ts was updated, but the legacy quickEstimate handler still treats the return value as dollars and formats it with toFixed(2), so it reports prices 100x too high.",
+    "trigger": "quickEstimate(\"domestic\", 0.5) returns \"310.00\" where the correct answer is \"3.10\"; the marketing widget renders it as $310.00."
+  },
+  {
+    "id": "case2-b3",
+    "file": "quote.ts",
+    "approx_lines": [52, 56],
+    "class": "L3",
+    "summary": "The old quoteShipment opened with a `!Number.isFinite(weightKg) || weightKg <= 0` RangeError guard; moving the body into buildBreakdown dropped that guard and nothing re-establishes it (parseQuoteRequest only checks typeof number, and handleQuote's RangeError catch was deleted along with it), so non-positive and NaN weights are now priced instead of rejected.",
+    "trigger": "handleQuote({zone:\"domestic\", weightKg: 0}) returns 200 with total 2.5 instead of 400; weightKg: -3 returns 200 with total 0; weightKg: NaN returns 200 with total serialized as null. The README's Validation section still promises a 400 for a weight that is not positive and finite."
+  }
+]

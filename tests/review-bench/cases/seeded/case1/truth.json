@@ -1,0 +1,26 @@
+[
+  {
+    "id": "case1-b1",
+    "file": "windows.py",
+    "approx_lines": [67, 73],
+    "class": "L1",
+    "summary": "The lateness cutoff is computed as watermark + allowed_lateness instead of watermark - allowed_lateness, so the grace period is applied with the wrong sign and every reading that arrives inside the grace window is discarded as late.",
+    "trigger": "summarize_file(path, 60, allowed_lateness=30) over readings [ts=100, ts=90] for the same tenant: the ts=90 reading is only 10s behind the watermark and must be kept, but the report comes back with dropped_late=1 and the reading missing from its window. With allowed_lateness=0 (the default) behaviour is unchanged, so only tenants configured with a grace period silently lose data."
+  },
+  {
+    "id": "case1-b2",
+    "file": "aggregate.py",
+    "approx_lines": [85, 87],
+    "class": "L3",
+    "summary": "The refactor split flush() into snapshot() + flush() and dropped the self._pending.clear() that flush() previously performed, so 'retiring' a window no longer releases it: every accumulated window is re-emitted in each subsequent batch and memory grows for the life of the process.",
+    "trigger": "summarize_files([\"a.ndjson\", \"b.ndjson\"], 60) where a.ndjson has one reading at ts=10 and b.ndjson one at ts=70: batch 2 reports both the [0,60) window from batch 1 and the [60,120) window, so the [0,60) row is emitted twice and any downstream sink double-counts it."
+  },
+  {
+    "id": "case1-b3",
+    "file": "pipeline.py",
+    "approx_lines": [39, 43],
+    "class": "L5",
+    "summary": "load_tenant_limits() is called once per reading and re-opens and re-parses tenants.json on every call (tenants.py has no cache), turning a per-record loop over unbounded input into one filesystem open plus JSON parse per record.",
+    "trigger": "A 500-reading NDJSON file causes tenants.json to be opened and json.load()-ed 500 times (measured by wrapping builtins.open); a production batch of millions of readings does millions of syscalls and parses for a config that changes at most daily."
+  }
+]
