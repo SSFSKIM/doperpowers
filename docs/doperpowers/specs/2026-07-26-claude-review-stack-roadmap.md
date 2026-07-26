@@ -301,6 +301,14 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 - **provenance.md already covered the codex-app path.** The initiative's
   initial framing assumed it unexamined; the record (with rejection
   rationale) was already in the argus repo.
+- **The codex engine's default model is dead in production** (found
+  2026-07-26 during C1 baseline work): the backend now 400-rejects
+  `gpt-5.6-sol` (and 5.6/5.6-codex/5.3-codex) for ChatGPT-account codex;
+  only `gpt-5.5` verified working. The live loop would park every review
+  ENGINE-UNAVAILABLE. Stopgap bug ticket registered (spawned-by #28);
+  X1's codex baseline is measured on `gpt-5.5` xhigh — the engine as it
+  can actually run — and the fragility itself is evidence for this
+  unit's purpose.
 - **Built-in `/review`/`/code-review` prompt sources are on disk** (the
   codex_somersault checkout carries Claude Code source at
   `Claude Code Src/src/commands/`) — C1 needs no extraction work. (An
