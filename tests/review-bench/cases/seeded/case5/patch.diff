@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 027f3f4..21c0366 100644
+index 027f3f4..e400ca1 100644
 --- a/README.md
 +++ b/README.md
 @@ -4,7 +4,7 @@ Four modules, no dependencies outside the standard library. Import them as
@@ -11,7 +11,7 @@ index 027f3f4..21c0366 100644
      cache.py      TTL cache that computes each miss exactly once
      jobqueue.py   bounded worker pool with retries, backed by that cache
  
-@@ -12,14 +12,27 @@ top-level modules (run from this directory).
+@@ -12,14 +12,29 @@ top-level modules (run from this directory).
  
      queue = JobQueue(workers=4, capacity=128)
      await queue.start()
@@ -36,13 +36,15 @@ index 027f3f4..21c0366 100644
 +
 +Every finished job files a `JobResult` under the id `submit()` returned.
 +`result(job_id)` returns it and raises `KeyError` once it has aged out.
-+Retention is a bounded buffer of `MAX_RETAINED_RESULTS` entries, oldest
-+dropped first -- a caller that never collects its results cannot make the
++Retention is a bounded buffer of `MAX_RETAINED_RESULTS` (512) entries, oldest
++dropped first. That count is the whole bound and it holds regardless of how
++callers behave: 512 outcomes -- a value or an exception apiece -- are resident
++at any moment, and a caller that never collects its results cannot make the
 +queue grow.
  
  ## Why keys are locked instead of the whole cache
  
-@@ -31,20 +44,31 @@ key it has ever seen. The map of locks is itself guarded, but that guard is
+@@ -31,20 +46,31 @@ key it has ever seen. The map of locks is itself guarded, but that guard is
  only ever held for the few statements that mutate the map -- never across an
  `await` that belongs to the caller.
  
@@ -218,7 +220,7 @@ index 0a37146..5264eaf 100644
 +    def inflight(self) -> int:
 +        return len(self._inflight)
 diff --git a/jobqueue.py b/jobqueue.py
-index a090dfc..255db0c 100644
+index a090dfc..76b3eb7 100644
 --- a/jobqueue.py
 +++ b/jobqueue.py
 @@ -3,9 +3,11 @@
@@ -277,17 +279,18 @@ index a090dfc..255db0c 100644
  class JobQueue:
      def __init__(
          self,
-@@ -53,6 +78,9 @@ class JobQueue:
+@@ -53,6 +78,10 @@ class JobQueue:
          self._base_delay = base_delay
          # Insertion-ordered so the oldest key is the one that ages out.
          self._warm_keys: "OrderedDict[str, None]" = OrderedDict()
 +        self._results: "OrderedDict[str, JobResult]" = OrderedDict()
 +        self._seq = 0
-+        self._last_warm = 0.0
++        # None until the first warm-up pass has actually run.
++        self._last_warm: Optional[float] = None
  
      async def start(self) -> None:
          if self._workers:
-@@ -61,10 +89,43 @@ class JobQueue:
+@@ -61,10 +90,48 @@ class JobQueue:
              asyncio.create_task(self._worker(i)) for i in range(self._worker_count)
          ]
  
@@ -325,16 +328,21 @@ index a090dfc..255db0c 100644
 +            raise KeyError("no retained result for %r" % job_id) from None
 +
 +    def _record_result(self, result: JobResult) -> None:
-+        # A bounded buffer, not a registry: a fire-and-forget caller never
-+        # collects anything, so nothing here may depend on collection to be
-+        # freed. Oldest result out first once the buffer is full.
++        # Retention is bounded at MAX_RETAINED_RESULTS (512) entries, oldest
++        # evicted first, and that eviction is the only bound there is or needs
++        # to be: this is a buffer, not a registry, so a fire-and-forget caller
++        # that never collects anything cannot make the queue grow. One entry
++        # holds one handler outcome -- its value, or the exception it raised
++        # with whatever that exception drags along -- so the resident cost is
++        # 512 outcomes at any moment, knowingly paid for being able to answer
++        # "what happened to job j17?" after the worker has moved on.
 +        self._results[result.job_id] = result
 +        while len(self._results) > MAX_RETAINED_RESULTS:
 +            self._results.popitem(last=False)
  
      async def drain(self) -> None:
          """Wait until every submitted job has been handled."""
-@@ -76,33 +137,51 @@ class JobQueue:
+@@ -76,33 +143,54 @@ class JobQueue:
          await asyncio.gather(*self._workers)
          self._workers = []
  
@@ -363,8 +371,12 @@ index a090dfc..255db0c 100644
                  self._queue.task_done()
  
 -    async def _run_job(self, job: Job) -> Any:
+-        delay = self._base_delay
 +    async def _run_job(self, job_id: str, job: Job) -> Any:
-         delay = self._base_delay
++        # The ceiling applies to the first delay too, not only to the doubled
++        # ones: a queue constructed with a base_delay above it would otherwise
++        # sleep past the cap on the attempt that matters most.
++        delay = min(self._base_delay, MAX_BACKOFF_SECONDS)
          for attempt in range(1, job.max_attempts + 1):
              try:
                  value = await self._cache.get_or_compute(job.key, job.handler)
@@ -393,7 +405,7 @@ index a090dfc..255db0c 100644
                  return value
  
      def _remember_warm(self, key: str) -> None:
-@@ -125,10 +204,16 @@ class JobQueue:
+@@ -125,10 +213,19 @@ class JobQueue:
          """Recompute recently-run keys before they expire.
  
          Only does anything when the observed hit rate has fallen below
@@ -402,7 +414,10 @@ index a090dfc..255db0c 100644
 +        Returns how many keys were refreshed.
          """
 +        now = time.monotonic()
-+        if now - self._last_warm < WARM_INTERVAL_SECONDS:
++        # None, not 0.0: time.monotonic()'s zero point is arbitrary (uptime on
++        # Linux and macOS), so comparing against 0.0 would throttle the first
++        # ever pass on a process that starts soon after boot.
++        if self._last_warm is not None and now - self._last_warm < WARM_INTERVAL_SECONDS:
 +            self._counters.incr("cache.warm_throttled")
 +            return 0
          if self.cache_hit_rate() >= PREFETCH_HIT_RATE:
@@ -411,7 +426,7 @@ index a090dfc..255db0c 100644
  
          refreshed = 0
          # Snapshot: workers keep running and mutating _warm_keys while the
-@@ -149,5 +234,6 @@ class JobQueue:
+@@ -149,5 +246,6 @@ class JobQueue:
              "queue_depth": self._queue.qsize(),
              "cache_entries": self._cache.size(),
              "cache_hit_rate": self.cache_hit_rate(),

@@ -24,9 +24,12 @@ plus a `json.load()` of `tenants.json` (verified: 500 readings → 500 opens).
 
 **Baits (all three are correct and intentional).** (1) `parse_line` now rejects
 non-numeric `value` — numeric strings and booleans that used to be coerced by
-`float()` are `MalformedReading` — which looks like a breaking behaviour
-regression but is deliberate and is documented in the function docstring, the
-README conventions and `intent.md`. (2) `WindowStats` swaps its `None`-guarded
+`float()` are `MalformedReading`, and so are the `NaN`/`Infinity` literals
+Python's `json` accepts — which looks like a breaking behaviour regression but is
+deliberate and is documented in the function docstring, the README conventions
+and `intent.md`. (The finite check was added in fixture maintenance: without it
+the "must be a JSON number" claim was false for NaN, and both engines correctly
+flagged the gap. See `results/2026-07-26-fixture-maintenance.md`.) (2) `WindowStats` swaps its `None`-guarded
 min/max tracking for `math.inf` / `-math.inf` sentinels updated with plain
 `min`/`max`; the sentinels look like they could leak into the emitted rows, but
 `minimum`/`maximum` are properties that return `None` while `count == 0`, so

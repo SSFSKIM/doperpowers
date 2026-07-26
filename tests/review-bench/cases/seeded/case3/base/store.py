@@ -1,4 +1,11 @@
-"""Documents on disk: one JSON file per document under ``data/<tenant>/``."""
+"""Documents on disk: one JSON file per document under ``data/<tenant>/``.
+
+Single-threaded by construction. The service handles one request at a time in
+one process and nothing else writes ``data/`` (see the README's Concurrency
+section), so the read-then-write sequences in this module have no concurrent
+writer to interleave with and deliberately carry no locking, no ``O_EXCL`` and
+no temp-file-plus-rename.
+"""
 
 from __future__ import annotations
 

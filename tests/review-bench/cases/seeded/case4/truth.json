@@ -30,5 +30,21 @@
     "class": "L2",
     "summary": "Manifest v2 added a leading label column and snapshot.sh, run-backup.sh and the README were all updated, but prune.sh still reads three fields, so `path` receives \"<bytes>\\t<archive-path>\", fails the `[ -f \"$path\" ]` test, and every record is skipped — rotation silently stops happening.",
     "trigger": "./run-backup.sh --label nightly with more than BACKUP_KEEP archives already present: prune logs \"manifest points at a missing archive\" and deletes nothing, so archives accumulate forever and the retention policy is never enforced."
+  },
+  {
+    "id": "case4-u1",
+    "file": "lib/common.sh",
+    "approx_lines": [89, 99],
+    "class": "L1",
+    "summary": "replicate()'s own comment claims that writing with `cat` rather than `scp` means \"a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name\", but the remote command redirects straight into the final name — there is no temporary name and no rename on the far side — so an interrupted transfer leaves exactly the truncated archive the comment says it prevents.",
+    "trigger": "Interrupt a run with BACKUP_REMOTE set part-way through the transfer (kill the local process, drop the link): $BACKUP_REMOTE_DIR/<label>-<stamp>.tar.gz exists on the replica at partial length and nothing distinguishes it from a complete archive. The origin is protected — the local publish is still a mv from staging — so the damage is confined to the copy that exists precisely for the case where the origin is gone."
+  },
+  {
+    "id": "case4-u2",
+    "file": "lib/common.sh",
+    "approx_lines": [93, 100],
+    "class": "L4",
+    "summary": "The `umask 077` the change moves into the library governs only files this toolchain creates locally. The replica copy is created by the remote shell in `cat > '$BACKUP_REMOTE_DIR/$name'`, which runs under the replica account's own umask, so an archive that is 0600 on the origin lands world-readable on the replica — and it holds a complete copy of the source tree.",
+    "trigger": "Set BACKUP_REMOTE and BACKUP_REMOTE_DIR and run ./run-backup.sh --label nightly against a replica whose shell has the common default umask 022: `ls -l` on the origin shows -rw------- for the archive, `ls -l` on the replica shows -rw-r--r--. Any other account on the replica host can read the whole backed-up tree out of it."
   }
 ]

@@ -29,7 +29,11 @@ never runs again.
 grows on every job and is never cleaned up on collection — it looks like the
 textbook fire-and-forget leak, but `_record_result` trims it to
 `MAX_RETAINED_RESULTS` oldest-first, `result()` documents the ageing-out, and
-it is the same bounded pattern `_warm_keys` already used. (2) `submit()` now
+it is the same bounded pattern `_warm_keys` already used. The bound is now
+spelled out in both `_record_result`'s comment and the README — 512 entries,
+each holding one outcome (a value, or the exception it raised) — because the
+r1/argus-high baseline flagged the *bytes* the buffer can hold as unbounded
+while only the entry count was stated. (2) `submit()` now
 raises `asyncio.QueueFull` instead of waiting for room — a real behavior
 change that looks like a regression, documented in the docstring, the README
 and intent.md, and deliberately left as a coroutine so callers do not change.
@@ -43,3 +47,10 @@ deliberate, commented, and bounded by `max_attempts` and
 value of `cache.DEFAULT_TTL_SECONDS` rather than importing it, with a comment
 explaining that the two numbers answer different questions and must be free
 to diverge.
+
+**Promoted unseeded defect (real, counts for recall).** `case5-u1` (L1) is the
+join branch running before `timeout` is resolved, so `await pending.wait()` is
+unbounded and neither `lock_timeout` nor the per-call `timeout` reaches a
+joining caller. It was promoted rather than fixed because `await
+pending.wait()` is the line `case5-b2`'s trigger is written against. See
+`results/2026-07-26-fixture-maintenance.md`.

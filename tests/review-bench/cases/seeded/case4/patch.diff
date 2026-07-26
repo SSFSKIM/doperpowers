@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 83f8e87..f560338 100644
+index 83f8e87..6486269 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,21 +1,26 @@
+@@ -1,21 +1,27 @@
  # snapshot toolchain
  
  Three small scripts plus a shared library that take periodic compressed
@@ -25,21 +25,21 @@ index 83f8e87..f560338 100644
  `prune.sh` are usable on their own, which is why each one loads its own
  config and validates its own inputs instead of trusting the caller.
  
-+`--force` (or `BACKUP_FORCE=1`) downgrades the pre-flight free-space check
-+from fatal to a warning. Use it when you know the archive filesystem has
-+room that `df` cannot see, e.g. because a large archive is about to rotate
-+out on the same run.
++`--force` (or the `BACKUP_FORCE=1` environment variable — it is read at
++startup, before the config file, so it is an env-only switch and not a config
++key) downgrades the pre-flight free-space check from fatal to a warning. Use
++it when you know the archive filesystem has room that `df` cannot see, e.g.
++because a large archive is about to rotate out on the same run.
 +
  ## Config file
  
  `load_config` reads `KEY=VALUE` lines and exports only keys beginning with
-@@ -25,21 +30,31 @@ cannot clobber `PATH`. Recognised keys:
+@@ -25,21 +31,30 @@ cannot clobber `PATH`. Recognised keys:
      BACKUP_SOURCE_DIR    directory to snapshot            (required)
      BACKUP_ARCHIVE_DIR   where archives are written       (required)
      BACKUP_KEEP          archives kept per label          (default 5)
 +    BACKUP_REMOTE        user@host of the replica         (optional)
 +    BACKUP_REMOTE_DIR    directory on the replica         (required with the above)
-+    BACKUP_FORCE         1 to pre-set --force             (optional)
  
 -## Manifest format
 +## Manifest format (v2)
@@ -144,10 +144,10 @@ index 743590c..caa7ec3 100644
 +  log "replicated $name to $BACKUP_REMOTE:$BACKUP_REMOTE_DIR"
 +}
 diff --git a/prune.sh b/prune.sh
-index 6f64a0e..ca941db 100755
+index 6f64a0e..c5d4656 100755
 --- a/prune.sh
 +++ b/prune.sh
-@@ -19,12 +19,18 @@ esac
+@@ -19,12 +19,30 @@ esac
  [ "$KEEP" -ge 1 ] || die "BACKUP_KEEP must be at least 1"
  
  # list_archives <dir> <label> -- archive paths for one label, newest first.
@@ -157,14 +157,26 @@ index 6f64a0e..ca941db 100755
 +# expanded glob was overrunning the command line, so the same set is collected
 +# with find instead: -maxdepth 1 keeps it as non-recursive as the glob was, and
 +# -print0 keeps names with spaces intact. Ordering is unchanged.
++#
++# Two details keep the set identical to the glob's. The label is matched by the
++# `case` below rather than by `find -name`, because -name takes a pattern and a
++# label carrying *, ? or [ would have matched archives belonging to other
++# labels, where the quoted glob matched the label literally. And the start point
++# is "$dir/", with the slash: find does not descend a symlinked start point
++# without it, and an archive directory that is a symlink to a mounted volume is
++# a normal layout the glob expanded through.
  list_archives() {
    local dir="$1" label="$2" file
 -  for file in "$dir/$label"-*.tar.gz; do
 -    [ -f "$file" ] || continue
 +  while IFS= read -r -d '' file; do
++    case "${file##*/}" in
++      "$label"-*.tar.gz) ;;
++      *) continue ;;
++    esac
      printf '%s\t%s\n' "$(epoch_of "$file")" "$file"
 -  done | sort -rn | cut -f2-
-+  done < <(find "$dir" -maxdepth 1 -type f -name "$label-*.tar.gz" -print0) |
++  done < <(find "$dir/" -maxdepth 1 -type f -name '*.tar.gz' -print0) |
 +    sort -rn | cut -f2-
  }
  
@@ -226,7 +238,7 @@ index 37873c3..7a96d2b 100755
  
  "$HERE/prune.sh" <"$manifest"
 diff --git a/snapshot.sh b/snapshot.sh
-index 01cfcd4..645b51f 100755
+index 01cfcd4..aede4cf 100755
 --- a/snapshot.sh
 +++ b/snapshot.sh
 @@ -1,10 +1,15 @@
@@ -272,18 +284,28 @@ index 01cfcd4..645b51f 100755
      -h|--help) usage; exit 0 ;;
      *)         usage; die "unknown argument: $1" ;;
    esac
-@@ -44,23 +52,44 @@ require_cmd tar gzip
+@@ -44,23 +52,51 @@ require_cmd tar gzip
  [ -d "$BACKUP_SOURCE_DIR" ] || die "source directory missing: $BACKUP_SOURCE_DIR"
  mkdir -p "$BACKUP_ARCHIVE_DIR"
  
 -# Archives can contain anything the source directory contained, so keep
 -# both the staging area and the finished archive private to this user.
 -umask 077
+-
+-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/snapshot.XXXXXX")"
+-trap 'rm -rf "$STAGE"' EXIT INT TERM
 +# An empty source tree is a routine state on a freshly provisioned host, not a
 +# failure -- but archiving it is not harmless: a week of empty archives rotates
 +# the last archive that actually had something in it straight out of the
 +# retention window. Exit 3, which run-backup.sh reads as "stop before prune".
-+if [ -z "$(find "$BACKUP_SOURCE_DIR" -mindepth 1 -print -quit)" ]; then
++#
++# find's own exit status is checked: an unreadable source tree prints nothing
++# either, and reporting "nothing to archive" for a tree we simply could not
++# read would tell run-backup.sh that a failed run had succeeded.
++if ! first_entry="$(find "$BACKUP_SOURCE_DIR" -mindepth 1 -print -quit)"; then
++  die "could not read source tree: $BACKUP_SOURCE_DIR"
++fi
++if [ -z "$first_entry" ]; then
 +  log "source tree is empty, nothing to archive: $BACKUP_SOURCE_DIR"
 +  exit 3
 +fi
@@ -293,9 +315,7 @@ index 01cfcd4..645b51f 100755
 +# over-reserving errs in the direction that leaves the host bootable.
 +need_kb="$(du -sk "$BACKUP_SOURCE_DIR" | awk '{ print $1 }')"
 +check_free_space "$BACKUP_ARCHIVE_DIR" "$need_kb" "$FORCE"
- 
--STAGE="$(mktemp -d "${TMPDIR:-/tmp}/snapshot.XXXXXX")"
--trap 'rm -rf "$STAGE"' EXIT INT TERM
++
 +STAGE="$(make_stage)"
  
  stamp="$(date -u +%Y%m%dT%H%M%SZ)"

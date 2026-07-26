@@ -30,5 +30,13 @@
     "class": "L2",
     "summary": "cache.py renamed its counters to the `cache.get.*` namespace but jobqueue.cache_hit_rate() still reads `cache.hit`, `cache.hit_after_wait` and `cache.miss`, so hits and misses are always 0, the `total == 0` guard returns the placeholder 1.0, and warm-up is silently disabled forever.",
     "trigger": "Run any workload and call `warm_stale_keys()`: `cache_hit_rate()` reports 1.00 regardless of the real hit rate, the `>= PREFETCH_HIT_RATE` early return fires, and 0 keys are refreshed -- where the same workload on the base tree reports 0.00 and refreshes every eligible key. `stats()['cache_hit_rate']` reports 1.0 to dashboards for the same reason."
+  },
+  {
+    "id": "case5-u1",
+    "file": "cache.py",
+    "approx_lines": [105, 118],
+    "class": "L1",
+    "summary": "The new join branch runs before the timeout is resolved, so `await pending.wait()` is unbounded: neither the `lock_timeout` constructor argument nor the per-call `timeout` reaches a joining caller, because both are only applied to `self._locks.hold(...)` on the branch taken when nobody is computing. The caller the timeout was added for -- one waiting behind a computation stuck upstream -- is exactly the caller that does not get it.",
+    "trigger": "TTLCache(lock_timeout=0.1): task A calls get_or_compute('k', factory) where the factory sleeps 10s; task B then calls get_or_compute('k', ...) and takes the join branch. B returns after ~10s instead of raising asyncio.TimeoutError after 0.1s, where a B that reached the lock branch instead would have raised on schedule."
   }
 ]

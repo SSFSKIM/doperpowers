@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 0a35e73..7ae8825 100644
+index dd03244..e2c681e 100644
 --- a/README.md
 +++ b/README.md
-@@ -17,11 +17,26 @@ A framework-free document service. A `Request` goes in, a `Response` comes out;
+@@ -17,11 +17,28 @@ A framework-free document service. A `Request` goes in, a `Response` comes out;
  
  | Route | Who | What |
  |-------|-----|------|
@@ -25,7 +25,9 @@ index 0a35e73..7ae8825 100644
 +
 +A conditional write sends `expected_revision` in the `PUT` body — the revision
 +it believes it is replacing, or `0` to require that the document is new. A
-+mismatch is a `409` and nothing is written.
++mismatch is a `409` and nothing is written. The revision check and the write
++that follows it are plain sequential statements, which is sufficient here and
++is not an oversight: see Concurrency below.
 +
  ## Tenancy
  
@@ -309,10 +311,10 @@ index 8a40ce3..dfac7b8 100644
 +
      return Response(404, {"error": "no such route"})
 diff --git a/store.py b/store.py
-index f2f959f..1fe66ea 100644
+index b55f823..efeeaaa 100644
 --- a/store.py
 +++ b/store.py
-@@ -20,6 +20,10 @@ class BadDocumentName(ValueError):
+@@ -27,6 +27,10 @@ class BadDocumentName(ValueError):
      """Raised when a caller supplies a name we refuse to put on disk."""
  
  
@@ -323,7 +325,7 @@ index f2f959f..1fe66ea 100644
  @dataclass(frozen=True)
  class Document:
      name: str
-@@ -78,13 +82,31 @@ def load_document(tenant: str, name: str) -> Optional[Document]:
+@@ -85,13 +89,34 @@ def load_document(tenant: str, name: str) -> Optional[Document]:
      )
  
  
@@ -340,6 +342,9 @@ index f2f959f..1fe66ea 100644
 +    ``expected_revision`` is the revision the caller believes it is replacing.
 +    Pass 0 to require that the document does not exist yet, or None to write
 +    unconditionally. A mismatch raises RevisionConflict and nothing is written.
++    The check and the write below it are sequential statements rather than an
++    atomic compare-and-set, which is all this single-threaded service needs
++    (see the module docstring).
 +
 +    The new revision is not returned; a caller that needs it reads it back with
 +    ``load_document``.

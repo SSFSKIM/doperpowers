@@ -20,11 +20,12 @@ Also in this change:
 * `tenants.json` + `tenants.py` hold per-tenant ingest limits. Readings above a
   tenant's `max_value` are counted in `clipped` and dropped before windowing;
   unknown tenants inherit the `default` entry.
-* `value` must now be a JSON number. We used to `float()` whatever showed up,
-  which silently accepted `"12.5"` and `true` from a broken producer for two
-  quarters. Those lines are now rejected as malformed so the producer's own
-  alerting fires. This is a deliberate tightening — expect a spike in
-  `MalformedReading` from any producer that was relying on coercion.
+* `value` must now be a finite JSON number. We used to `float()` whatever showed
+  up, which silently accepted `"12.5"` and `true` from a broken producer for two
+  quarters — and `NaN`, which Python's `json` accepts as a literal and which
+  poisons every sum it reaches. Those lines are now rejected as malformed so the
+  producer's own alerting fires. This is a deliberate tightening — expect a spike
+  in `MalformedReading` from any producer that was relying on coercion.
 * `WindowStats` keeps `+inf`/`-inf` sentinels internally instead of `None`
   checks in the hot path; `minimum`/`maximum` are now properties that still
   report `None` for an empty window, so the emitted rows are unchanged.

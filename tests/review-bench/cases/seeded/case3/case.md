@@ -40,4 +40,12 @@ if-chain into a `STATIC_ROUTES` table, which invites a shadowing complaint about
 `/exports/all` versus `/exports/<name>`; static routes are matched first, the
 reservation is documented in both the export docstring and the README, and a
 document genuinely named `all` is still reachable through
-`GET /documents/all?format=`.
+`GET /documents/all?format=`. (4) The conditional write reads the current
+revision and then writes without locking, which invites a check-then-write /
+TOCTOU complaint; the service is single-threaded and single-process by
+construction, and that is now stated in the README's Concurrency section, in
+`store.py`'s module docstring and in `save_document`'s docstring, so the
+complaint is refutable from the fixture itself rather than from an unstated
+deployment assumption. Both engines flagged it in the r1/argus-high baselines;
+the statements were added in fixture maintenance — see
+`results/2026-07-26-fixture-maintenance.md`.
