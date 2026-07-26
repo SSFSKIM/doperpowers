@@ -245,14 +245,16 @@ immediately. C1 and C6 can start today.
 
 ## Tracking Map
 
+Epic: doperpowers#27. Materialized 2026-07-26 after approval.
+
 | Child | Spec / ticket | Status |
 |---|---|---|
-| C1 | — | not-dispatched (dispatchable now) |
-| C2 | — | not-dispatched (blocked-by C1) |
-| C3 | — | not-dispatched (blocked-by C2) |
-| C4 | — | not-dispatched (blocked-by C2, C3) |
-| C5 | — | not-dispatched (blocked-by C4) |
-| C6 | — | not-dispatched (dispatchable now) |
+| C1 | doperpowers#28 | in-flight (worked in the roadmap session) |
+| C2 | doperpowers#29 | not-dispatched (blocked-by C1) |
+| C3 | doperpowers#30 | not-dispatched (blocked-by C2) |
+| C4 | doperpowers#31 | not-dispatched (blocked-by C2, C3) |
+| C5 | doperpowers#32 | not-dispatched (blocked-by C4) |
+| C6 | doperpowers#33 | in-flight (daemon worker, claude route) |
 
 ## Decision Log
 
