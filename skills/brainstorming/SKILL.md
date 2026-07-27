@@ -29,8 +29,8 @@ You MUST create a task for each of these items and complete them in order:
 6. **Present design** — in sections scaled to their complexity, get user approval after each section
 7. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 5's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-9. **User reviews written spec** — ask user to review the spec file before proceeding
-10. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+9. **Independent spec review** — dispatch a fresh reviewer subagent on the strongest model, fix what it finds (see below)
+10. **Transition to implementation** — report the review outcome and invoke writing-plans skill to create implementation plan
 
 ## Process Flow
 
@@ -45,7 +45,9 @@ digraph brainstorming {
     "User approves design?" [shape=diamond];
     "Write design doc" [shape=box];
     "Spec self-review\n(fix inline)" [shape=box];
-    "User reviews spec?" [shape=diamond];
+    "Dispatch spec reviewer subagent\n(strongest model)" [shape=box];
+    "Reviewer approves?" [shape=diamond];
+    "Fix issues in spec" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
 
     "Explore project context" -> "Grill (clarifying questions)";
@@ -57,9 +59,12 @@ digraph brainstorming {
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc" [label="yes"];
     "Write design doc" -> "Spec self-review\n(fix inline)";
-    "Spec self-review\n(fix inline)" -> "User reviews spec?";
-    "User reviews spec?" -> "Write design doc" [label="changes requested"];
-    "User reviews spec?" -> "Invoke writing-plans skill" [label="approved"];
+    "Spec self-review\n(fix inline)" -> "Dispatch spec reviewer subagent\n(strongest model)";
+    "Dispatch spec reviewer subagent\n(strongest model)" -> "Reviewer approves?";
+    "Reviewer approves?" -> "Fix issues in spec" [label="issues found"];
+    "Fix issues in spec" -> "Invoke writing-plans skill" [label="fixes were gap-filling"];
+    "Fix issues in spec" -> "Dispatch spec reviewer subagent\n(strongest model)" [label="design changed substantively"];
+    "Reviewer approves?" -> "Invoke writing-plans skill" [label="approved"];
 }
 ```
 
@@ -158,12 +163,18 @@ After writing the spec document, look at it with fresh eyes:
 
 Fix any issues inline. No need to re-review — just fix and move on.
 
-**User Review Gate:**
-After the spec review loop passes, ask the user to review the written spec before proceeding:
+**Independent Spec Review:**
+Self-review can't catch what you can't see. You wrote the spec holding the whole conversation in your head, so the gaps it papers over are invisible from the inside — and the reader the spec is actually written for is a fresh session with none of that context (doperpowers:execspec's bar). So hand it to one.
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+Dispatch a single reviewer subagent per `skills/brainstorming/spec-document-reviewer-prompt.md`:
 
-Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
+- **Strongest model, explicitly specified** — Claude: Fable, effort xhigh. This is a cheap read of one document standing between the design and everything built from it; an omitted model silently inherits the session's.
+- **Thin context on purpose** — the spec path, one line on what the project is, one line on the stage. Do not brief the reviewer on the conversation: its inability to answer a question from the document alone is the signal you want.
+- The reviewer reports, it does not edit. Fix every Issue and every question it could not resolve; take or drop Advisory items yourself; add a Revision Note if a fix changed anything load-bearing. Re-dispatch only if a fix changed the design substantively.
+
+The design was already approved section by section, so this replaces the old "please read the spec file" gate rather than adding to it. Don't block on your human partner here — tell them what the reviewer flagged and what you changed in one message, then continue:
+
+> "Spec written and committed to `<path>`. The reviewer flagged <N issues — one line each> and I fixed them. Moving on to the implementation plan — say the word if you want to read the spec first."
 
 **Implementation:**
 

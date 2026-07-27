@@ -26,7 +26,7 @@ The norms come from Codex's ExecPlan doctrine, vendored char-for-char at [refere
 
 | PLANS.md directive | Superseded by |
 |---|---|
-| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | Human gates: design approval and spec review in doperpowers:brainstorming |
+| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | The gates in doperpowers:brainstorming: design approval by your human partner, then an independent spec review by a fresh subagent |
 | Single fenced code block, prose-first, no tables or checklists | Specs are files, not chat payloads; use tables/JSON/diagrams wherever they beat prose for precision |
 | Mandatory `Progress` section with timestamped checkboxes | The SDD ledger + git + plan checkboxes — externally verifiable, not self-report |
 | Milestones narrative, Concrete Steps, Interfaces and Dependencies | doperpowers:writing-plans, with complete code and exact commands |
@@ -60,7 +60,7 @@ For anything that changed design understanding: an assumption that proved false,
 
 ## Update triggers
 
-- **Brainstorm end** (doperpowers:brainstorming): spec written in this shape, Decision Log seeded, committed.
+- **Brainstorm end** (doperpowers:brainstorming): spec written in this shape, Decision Log seeded, committed — then handed to a fresh reviewer subagent on the strongest model (`skills/brainstorming/spec-document-reviewer-prompt.md`), which is the fresh-session bar above made executable: a reader with no conversation history either can build from the document or names what it would have had to ask. Whichever path writes a spec, run this before planning from it.
 - **Plan-writing** (doperpowers:writing-plans Self-Review): planning is the first hostile read of the spec. If a spec statement proved wrong, fix the spec now and add a Revision Note — never let the plan silently diverge.
 - **Execution** (doperpowers:subagent-driven-development bookkeeping): task reports that change design understanding get routed into Surprises & Discoveries or the Decision Log in the same message as the ledger append.
 - **Finish** (doperpowers:finishing-a-development-branch): write Outcomes & Retrospective and commit it before presenting merge options.
