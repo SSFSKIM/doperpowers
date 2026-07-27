@@ -422,6 +422,31 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   defect, now an unseeded candidate); argus Step 4's verbatim-relay rule
   is the stronger contract.
 
+- **X1 parity does not transfer to large real diffs — the recall gap is
+  a function of diff size** (real-PR round, 2026-07-27,
+  `tests/review-bench/results/2026-07-27-realpr-r1/`). argus plain
+  v0.4.3 vs codex on three live ida-solution PRs, all 13 distinct
+  findings adjudicated against code by independent subagents: on the two
+  ≤600-line PRs the engines converged (0-vs-0 agree-clean; 1-vs-1
+  disjoint, all four findings CONFIRMED); on the 22-file +2,101-line
+  promotion PR codex found 10 real issues (9 CONFIRMED, 1 PLAUSIBLE,
+  0 REFUTED — the never-refuted experience survived its first
+  adversarial audit) to argus's 2 (both CONFIRMED, one codex-missed).
+  Both engines FP 0 everywhere; codex's failure mode is severity
+  inflation (3 of 10 overstated, incl. flagging the PR's own disclosed
+  limitation), argus's is breadth collapse. Two C3 inputs: (a) the
+  strongest evidence yet for lens-partitioned reviewers — single-context
+  breadth saturates with diff size while precision holds; (b) argus's
+  Verdict Explanation asserted global correctness of unexamined areas
+  and two such assertions were factually false ("type was previously
+  immutable"; "cross-system suppression well tested") — the verdict
+  contract must forbid positive claims beyond what was verified. Bonus
+  live datapoint for v0.4.3: the PR756 reviewer spontaneously ran
+  `npm ci` + the full 1,883-test suite + tsc + eslint with no
+  encouragement text (claim empirically reproduced, exact 223/1883
+  match); the PR754 reviewer declined to install deps — initiative
+  varies per run, honesty held in both.
+
 ## Outcomes & Retrospective
 
 Pending — written when the unit closes. Closing is a RECOMPOSITION check:
