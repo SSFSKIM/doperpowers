@@ -4,7 +4,8 @@
   "run_ids": {
     "builtin_review": "2026-07-27-builtin-r1 (*.review.txt)",
     "builtin_code_review_medium": "2026-07-27-builtin-r1 (*.code-review.txt)",
-    "argus_plain_r4_v042": "2026-07-27-plain-r4 (case4+case5; case1-3 carried from plain r3)"
+    "argus_plain_r4_v042": "2026-07-27-plain-r4 (case4+case5; case1-3 carried from plain r3)",
+    "argus_plain_r5_v043": "2026-07-27-plain-r5 (case4+case5; case1-3 carried from plain r3)"
   },
   "invocation_note": "builtins run as fresh `claude --bg` sessions from the scratch repo (human direction: not headless -p); argus keeps the X1 headless path. CORRECTED: /review runs inline (0 subagents); /code-review medium spawns ONE harness-level reviewer subagent per run (5/5 cases) whose prompt is MINIMAL (~1610 chars, 'single careful diff pass, <=15 findings', symmetric stance: 'everything you genuinely believe / nothing you don't' — no codex-style precision mantra); the parent verifies/relays (lossily: case5 dropped the subagent's keylock.py:52 finding). Both engines verify by executing code.",
   "scoreboard_full_denominator_20": {
@@ -20,6 +21,15 @@
       "fp": 0,
       "subagents": "1 reviewer (harness-spawned)",
       "exec": true,
+      "misses": [
+        "case4-u2"
+      ]
+    },
+    "argus_plain_r5_v043": {
+      "score": 19,
+      "fp": 0,
+      "subagents": 0,
+      "exec": "not claimed in output (r4 claimed explicit repros)",
       "misses": [
         "case4-u2"
       ]
@@ -70,7 +80,8 @@
     "execution_hypothesis": "CONFIRMED PARTIAL — v0.4.2 unban moved plain 17->18 (case4-u1 demonstrated instead of suppressed) and landed plain exactly on /review parity (same score, same miss set)",
     "cross_model_residual": "case4-u2 (remote umask gap): missed by every Claude engine, found by codex every run; both builtins caught only the LOCAL side (archive dir 0700). Carried on doperpowers#40",
     "stance_attention_residual": "case5-u1: /code-review medium reports the join-path timeout as its own finding in one pass; plain r4 found the keylock timeout defeat and closed the 'timeout broken' thread without probing the cache join path — sweep-coverage input for the C3 rearchitecture",
-    "stance_counterfactual": "same model+architecture+exec WITHOUT the rubric's 'prefer outputting no findings' stance reports the borderline candidates argus censors — the codex rubric's precision calibration is GPT-tuned and over-suppresses on Claude; C3 should recalibrate stance, not add structure"
+    "stance_counterfactual": "same model+architecture+exec WITHOUT the rubric's 'prefer outputting no findings' stance reports the borderline candidates argus censors — the codex rubric's precision calibration is GPT-tuned and over-suppresses on Claude; C3 should recalibrate stance, not add structure",
+    "deletion_vs_encouragement": "v0.4.3 deleted v0.4.2's permission/encouragement language (pure boundary statements remain) and plain rose 18->19, catching case5-u1 that the encouragement version missed (n=1 per config) — consistent with the native minimal-prompt prior art; the granting text plausibly pulled attention into repro work at the expense of coverage breadth"
   },
   "new_unseeded_candidates": [
     "case1: watermark became read-only property (code-review [CONFIRMED])",

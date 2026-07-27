@@ -1,0 +1,28 @@
+Full review comments:
+
+## Findings
+
+[P0] Inflight event leaks when factory raises, hanging all later readers — cache.py:127-133
+  `self._inflight[key] = done` and `del self._inflight[key]` / `done.set()` have no `try/finally`, so when `await factory()` raises (or is cancelled), the stale, never-set `asyncio.Event` stays in `_inflight` forever. Every subsequent `get_or_compute` for that key finds the stale event at line 105 and blocks on `await pending.wait()` — with no timeout — permanently. This fires on the very first handler failure: `_run_job` in `jobqueue.py:172-186` retries the same key immediately, so the retry attempt hangs the worker forever, and `Job.max_attempts` retries effectively stop working. The store/cleanup needs a `try/finally` that removes the event and sets it on all exit paths.
+
+[P0] KeyedLock guard now held across lock acquisition and the caller's block — keylock.py:34-61
+  The re-indentation puts `lock.acquire()`, the `yield`, and the release all inside `async with self._guard:`, so `_guard` is held for the entire duration of every caller's critical section — including `TTLCache.get_or_compute`'s `await factory()`. This collapses all per-key locks into one global lock: workers computing distinct keys serialize their factories one at a time, defeating the module's whole purpose (and contradicting README.md's unchanged claim that the guard is "never held for an `await` that belongs to the caller"). It also makes the new `timeout` feature dead code: a second caller for a busy key blocks indefinitely on `_guard` itself, so `asyncio.wait_for(lock.acquire(), timeout)` never even starts, and `hold(key, timeout=...)` cannot time out behind a stuck computation — the exact scenario the feature was added for. The acquire, yield, and release must move back outside the guard (guard held only for the map mutations).
+
+[P1] Expired hot entries are resurrected and served stale — cache.py:74-83
+  `_lookup` increments `entry.hits` and slides `expires_at = now + self._ttl` *before* the `entry.expires_at <= now` expiry check. An entry whose hit count reaches `refresh_after_hits` on a read that happens arbitrarily long after its deadline gets its deadline pushed forward first, passes the freshness check, and its stale value is returned instead of being recomputed — e.g. with the default threshold of 3, two fresh reads followed by a read hours after expiry serves the hours-old value. This directly contradicts the class docstring ("A key whose deadline has already passed is a miss like any other and is recomputed"). The slide should happen only after the entry has been confirmed unexpired.
+
+[P1] Counter rename breaks cache_hit_rate(), permanently disabling warm-up — cache.py:100-102
+  The counters were renamed to `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss` (lines 102, 110, 114, 124, 129), but `JobQueue.cache_hit_rate()` at `jobqueue.py:203-204` still reads `cache.hit`, `cache.hit_after_wait`, and `cache.miss`. Those names are never incremented now, so `total` is always 0 and the hit rate is always reported as 1.0 — `stats()["cache_hit_rate"]` is meaninglessly perfect, and since 1.0 >= `PREFETCH_HIT_RATE`, `warm_stale_keys()` is now unconditionally a no-op. Either the reader in `jobqueue.py` or the emitters in `cache.py` need to agree on one set of names.
+
+[P2] Join path ignores the timeout that hold() enforces — cache.py:110-111
+  `await pending.wait()` on the inflight event has no timeout, and neither the per-call `timeout` argument nor `self._lock_timeout` is consulted before it. Since a caller arriving while a computation is in progress now takes this join path instead of queueing on the key lock, the advertised guarantee (README: give up rather than "queueing indefinitely behind a computation that is itself stuck upstream") does not apply on the most common waiting path — a joiner behind a stuck factory waits forever even when a timeout was configured. Wrapping the wait in `asyncio.wait_for(pending.wait(), timeout)` would close the gap.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: The change contains two release-blocking defects — an inflight-event leak that permanently hangs any key whose factory ever raises (breaking the retry path outright), and a guard mis-scoping in KeyedLock that serializes all keys and makes the new timeout feature inoperative — plus a stale-data resurrection bug and a counter rename that silently disables the warm-up feature.
+Confidence: 0.95
+
+---
+
+If you'd like, I can fix these findings — the two P0s (the `try/finally` around the inflight event and re-scoping the KeyedLock guard) are the release blockers, and the P1s/P2 are straightforward follow-ons.

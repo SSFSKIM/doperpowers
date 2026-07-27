@@ -1,0 +1,34 @@
+The review is complete — the verdict is that the patch is incorrect, with two P0 findings confirmed by execution. Full review comments:
+
+## Findings
+
+[P0] prune.sh still parses manifest v1, so rotation silently never happens — snapshot.sh:101
+  `snapshot.sh` now emits the v2 record `<label>\t<epoch>\t<bytes>\t<path>`, and `run-backup.sh:55` was updated to read four fields, but `prune.sh:62` still reads `IFS=$'\t' read -r epoch bytes path`. With a v2 record, `epoch` receives the label, `bytes` the epoch, and `path` receives `"<bytes>\t<archive-path>"` (verified: `path=[12345\t/tmp/x.tar.gz]`), so the `[ ! -f "$path" ]` check at `prune.sh:65` fails for every record and each one is skipped as "manifest points at a missing archive". Every `run-backup.sh` invocation therefore completes "successfully" while pruning nothing, and archives accumulate without bound; the label column that the README says fixes labels containing `-` is also never used, since `prune.sh:71` still derives the label from the filename. `prune.sh` needs its read loop (and its header comment at lines 4–5) updated to the v2 format.
+
+[P0] Free-space check can never fail: FORCE default "0" is truthy — lib/common.sh:81-84
+  `snapshot.sh:22` sets `FORCE="${BACKUP_FORCE:-0}"`, and `check_free_space` tests the flag with `if [ "$force" ]`, which is a non-empty-string test — the string `"0"` passes it (verified). So on every invocation, forced or not, a shortfall takes the "continuing anyway" warning branch and the `die` at line 86 is unreachable through `snapshot.sh`. The commit's headline behavior ("refuse to run out of disk") is a no-op in all configurations. Fix by testing the value, e.g. `if [ "$force" = 1 ]`, or by defaulting `FORCE` to the empty string in `snapshot.sh` (note `--force` sets it to `1` while `run-backup.sh` treats empty/non-empty, so the two conventions should be reconciled).
+
+[P1] Staging directory cleanup trap was removed; failures leak archives in /tmp — snapshot.sh:77
+  The old code registered `trap 'rm -rf "$STAGE"' EXIT INT TERM` immediately after `mktemp -d`; the new code only runs `rmdir "$STAGE"` on the success path at line 98. If `tar` fails, `replicate` dies (which `set -e` turns into an exit), or the run is interrupted, the full staged tarball — potentially the size of the compressed source tree — is left permanently under `${TMPDIR:-/tmp}`. On a cron-driven host that is repeatedly failing (e.g. the replica is unreachable), this accumulates one archive-sized file per run and can itself fill the disk the change is trying to protect. Restore the trap after `make_stage`.
+
+[P2] Remote command injection via BACKUP_REMOTE_DIR and label in ssh command — lib/common.sh:97-99
+  `replicate` interpolates `$BACKUP_REMOTE_DIR` and the archive `$name` (which embeds the unvalidated `--label` CLI argument) directly into the remote shell command string, relying on hand-placed single quotes. A single quote in either value breaks out of the quoting and the remainder executes as shell on the replica — e.g. `--label "x'; rm -rf ~ #"` or a config line `BACKUP_REMOTE_DIR=/backups'; <cmd> #`. Severity depends on who controls the config and labels, but since `load_config` and the arg parser constrain neither, safer construction (e.g. validating the label/dir against a safe character set, or passing values out-of-band) is warranted.
+
+[P2] Dropped connection leaves a partial file under the final name on the replica — lib/common.sh:93-99
+  The comment states cat is used "so that a connection dropped mid-stream cannot leave a partially transferred file sitting under the archive's final name", but the code does the opposite: `cat > '$BACKUP_REMOTE_DIR/$name'` writes directly to the final name, so an interrupted transfer leaves a truncated archive there. The local `die` fires, but the partial file remains on the replica and is indistinguishable by name from a good archive — exactly the failure mode the local staging/`mv` dance exists to prevent. Writing to a temporary remote name and appending `&& mv` into the remote command would provide the guarantee the comment claims.
+
+[P3] find -type f drops symlinked archives the old glob matched — prune.sh:44
+  The comment asserts the `find` result set is identical to the old glob's, but the glob's `[ -f "$file" ]` test follows symlinks while `find -type f` excludes them. An archive that is a symlink to a file (e.g. pointing into another volume) was previously counted and prunable and is now invisible to rotation — it never counts toward `BACKUP_KEEP` and is never removed. Only relevant to layouts that symlink individual archives, hence low priority; `-maxdepth 1 \( -type f -o -type l \)` with an `-f` recheck, or `find -H`-style handling, would restore parity.
+
+## Verdict
+
+Overall correctness: patch is incorrect
+Explanation: Two headline behaviors of the commit are broken: `prune.sh` cannot parse the new v2 manifest records, so rotation silently never runs, and the free-space check can never be fatal because the default `FORCE="0"` is a truthy non-empty string. Both were confirmed by execution.
+Confidence: 0.97
+
+`★ Insight ─────────────────────────────────────`
+- The two P0s share a root cause pattern: a format/convention change (manifest v1→v2, force-flag semantics) was applied in one consumer but not all of them. Shell scripts have no type system to catch this, so grep-ing for every reader of a changed format is the manual substitute.
+- `[ "$var" ]` in POSIX shell tests *non-emptiness*, not truthiness — `"0"` is truthy. This is one of the most common shell-flag bugs; the fix is always an explicit comparison like `[ "$var" = 1 ]`.
+`─────────────────────────────────────────────────`
+
+The most severe issues are the two P0s, which both make the commit's headline features silent no-ops. Want me to fix the findings on this branch?
