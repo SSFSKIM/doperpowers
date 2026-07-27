@@ -1,0 +1,2 @@
+[33m⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors[39m
+engine=argus case=pr752 secs=825 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-07-27-pr752-modelcells/pr752.argus-sol-xhigh.md

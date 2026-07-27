@@ -1,0 +1,2 @@
+run-case: bg job e0038722 (/code-review medium main...bench-change) — polling /Users/new/.claude/jobs/e0038722/state.json
+engine=code-review case=pr752 secs=684 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-07-27-pr752-modelcells/pr752.cr-medium-opus-xhigh.md

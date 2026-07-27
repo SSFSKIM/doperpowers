@@ -447,6 +447,27 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   match); the PR754 reviewer declined to install deps — initiative
   varies per run, honesty held in both.
 
+- **The real-PR recall gap decomposed: ~80% model, thin scaffold residual**
+  (PR752 model cells, 2026-07-27,
+  `tests/review-bench/results/2026-07-27-pr752-modelcells/`). Same argus
+  v0.4.3 skill, same Claude Code harness, model×effort varied (upstreams
+  verified — the gateway's `claude-fable-5` alias is gpt-5.6-sol,
+  force-mapped): Opus default 2 → Opus xhigh 4 → Fable high 4 → Sol xhigh
+  8 of the (now 13-item) adjudicated union, all FP 0. At the same
+  model·effort, codex CLI 10 vs argus 8 with a symmetric difference of 4
+  (codex-only C1+C7, argus-Sol-only N1+F3) — the r1 spectacle of 10-vs-2
+  was mostly the model, not the harness. Two NEW confirmed exclusives
+  emerged: argus-Sol's N1 (backdated grade entry after promotion stamps
+  provenance from CURRENT type — contradictory provenance + out-of-range
+  grades; codex missed it) and `/code-review medium` on Opus xhigh's N2
+  (mock rows are always g9 while 고1·2 are g5, so the PR's crossSystem
+  suppression nulls the goal gap for the whole g5 cohort's default view;
+  every other engine missed it). No single engine exceeded 10/13 — the
+  six-cell union is 13, so ensemble coverage beats any engine alone: C3
+  multi-lens evidence, and a C4 engine-mix datapoint (a Claude lens adds
+  exclusives even beside Sol — Claude cells consistently catch the
+  authz-shape/UI-contract/dead-wiring family codex misses).
+
 ## Outcomes & Retrospective
 
 Pending — written when the unit closes. Closing is a RECOMPOSITION check:

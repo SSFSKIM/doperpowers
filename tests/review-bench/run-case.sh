@@ -93,7 +93,12 @@ case "$engine" in
     # plain) pins the effort level explicitly (X3: named level always wins).
     level="${ARGUS_LEVEL:-plain}"
     prompt="/argus-review:argus-review Review the code changes against the base branch 'main'. The merge base commit for this comparison is ${merge_base}. Run \`git diff ${merge_base}\` to inspect the changes relative to main. Provide prioritized, actionable findings. Use the ${level} effort level."
-    timeout "$timeout_s" claude -p "$prompt" --permission-mode auto > "$out"
+    # ARGUS_CLAUDE_ARGS: extra claude flags (model/effort/settings) for
+    # engine-cell experiments, e.g. "--settings ~/.claude/clodex-settings.json
+    # --model fable --effort xhigh" for the clodex gateway route. Unquoted on
+    # purpose (word-split flags).
+    # shellcheck disable=SC2086
+    timeout "$timeout_s" claude -p "$prompt" --permission-mode auto ${ARGUS_CLAUDE_ARGS:-} > "$out"
     ;;
   review|code-review)
     # Built-in slash commands, run as a real background session (`claude --bg`)
@@ -107,7 +112,9 @@ case "$engine" in
     else
       prompt="/code-review ${CR_LEVEL:-medium} main...bench-change"
     fi
-    launch="$(claude --bg --permission-mode auto "$prompt" 2>&1)" || { printf '%s\n' "$launch" >&2; exit 1; }
+    # ARGUS_CLAUDE_ARGS applies here too (model/effort/settings cell pinning).
+    # shellcheck disable=SC2086
+    launch="$(claude --bg --permission-mode auto ${ARGUS_CLAUDE_ARGS:-} "$prompt" 2>&1)" || { printf '%s\n' "$launch" >&2; exit 1; }
     job_id="$(printf '%s\n' "$launch" | sed $'s/\x1b\\[[0-9;]*m//g' | sed -n 's/^backgrounded · \([0-9a-f]*\).*/\1/p')"
     [ -n "$job_id" ] || { echo "run-case: could not parse bg job id from launch output:" >&2; printf '%s\n' "$launch" >&2; exit 1; }
     state_file="$HOME/.claude/jobs/$job_id/state.json"
