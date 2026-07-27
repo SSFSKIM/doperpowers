@@ -411,7 +411,13 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   GPT-tuned; on Claude it over-suppresses — and the correlated-censorship
   lesson (v1.3 Surprises) generalizes from one boundary to the stance
   itself. C3 input: recalibrate the reporting stance for Claude instead
-  of stacking more hunting structure. Corollary: native relay is lossy
+  of stacking more hunting structure. Addendum (same day): v0.4.3 tested
+  the pure-deletion form — conduct reduced to boundary statements only,
+  no "you may execute" granting language (the human's call: Bash in the
+  tool list suffices; granting text is residual framing) — and plain
+  rose 18→19, catching case5-u1 that the encouragement version missed
+  (n=1 per config). Deletion beat both the ban and the permission.
+  Corollary: native relay is lossy
   (case5's parent dropped the subagent's keylock.py:52 finding — a real
   defect, now an unseeded candidate); argus Step 4's verbatim-relay rule
   is the stronger contract.
