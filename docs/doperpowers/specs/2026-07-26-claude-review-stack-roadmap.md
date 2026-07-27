@@ -306,9 +306,10 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   higher effort adds is multiple full reviewers with lens-scoped
   mandates partitioned to minimize diff overlap, each investigating its
   lenses more thoroughly — no recall-biased finder feeding a separate
-  verifier. Evidence: the native `/code-review medium` runs ZERO
-  subagents and verifies inline by executing the code
-  (transcript-checked during the builtin bench probe, 2026-07-27);
+  verifier. Evidence: the native `/code-review medium` runs ONE
+  harness-spawned isolated reviewer subagent — no finder/verifier split;
+  the parent verifies/relays — and verifies by executing the code
+  (transcript-checked during the builtin bench, corrected same day);
   the human's operational experience is that codex exec review findings
   are essentially never refuted, so a dedicated verification stage buys
   nothing; and in high r2 the verification layer actively cost a true
@@ -383,8 +384,10 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   v0.4.2 execution experiment, 2026-07-27 — full data in
   `tests/review-bench/results/2026-07-27-c4-attribution-scores.json`).
   Same-model native engines: `/code-review medium` 19/20, `/review`
-  18/20, both FP 0, both ZERO subagents, both verifying by EXECUTING the
-  code. Lifting argus's self-imposed execution ban (v0.4.2, provenance
+  18/20, both FP 0, both verifying by EXECUTING the code (`/review`
+  inline; medium via ONE harness-spawned reviewer subagent — argus
+  plain's exact architecture). Lifting argus's self-imposed execution
+  ban (v0.4.2, provenance
   deviation 10) moved plain 17→18 and landed it EXACTLY on `/review`
   parity — same score, same miss set — so the codex margin over argus
   decomposes as: +1 execution access (now recovered), +1 single-pass
@@ -394,6 +397,24 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   or refuted by every Claude engine, found by codex every run; both
   builtins caught only the local face of it). Model-superiority as an
   explanation is weakened to that single u2 residual.
+- **The native medium reviewer's prompt is MINIMAL — the stance variable
+  got its counterfactual** (recovered verbatim from the subagent
+  transcript, 2026-07-27). ~1,610 chars, self-described "minimal prompt →
+  single careful diff pass → ≤15 findings": "careful senior engineer",
+  one hunt-list sentence, "every finding needs a concrete scenario", and
+  a SYMMETRIC stance — "include everything you genuinely believe is a
+  real issue, and nothing you don't" — where the codex rubric says
+  "prefer outputting no findings". Same model, same single-reviewer
+  architecture, same execution access: the symmetric-stance engine
+  reports the borderline second-tier candidates that rubric-carrying
+  argus censors (19 vs 18). The rubric's precision calibration is
+  GPT-tuned; on Claude it over-suppresses — and the correlated-censorship
+  lesson (v1.3 Surprises) generalizes from one boundary to the stance
+  itself. C3 input: recalibrate the reporting stance for Claude instead
+  of stacking more hunting structure. Corollary: native relay is lossy
+  (case5's parent dropped the subagent's keylock.py:52 finding — a real
+  defect, now an unseeded candidate); argus Step 4's verbatim-relay rule
+  is the stronger contract.
 
 ## Outcomes & Retrospective
 
