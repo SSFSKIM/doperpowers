@@ -17,9 +17,9 @@ This work supersedes the argus-review direction of the roadmap spec `docs/doperp
 - [x] (2026-07-28) ExecPlan authored after brainstorming grill; decisions settled with the human (see Decision Log).
 - [x] (2026-07-28) Milestone 1: lens validation cell on PR752 — **PASS**: the authz lens recovered exactly F3 (route.ts:204-207, request-shape-vs-actor mechanism) which plain native review missed in 2/2 runs; 390s, one finding total. Results committed under `tests/review-bench/results/2026-07-28-pr752-lenscell/`.
 - [x] (2026-07-28) Milestone 2: `CODEX_REVIEW_LENS` passthrough in `review-engine.sh` — lint clean; stub-verified: unset = byte-identical argv, set = exactly one added `-c developer_instructions=<lens>`.
-- [ ] Milestone 3: minimal edit to `skills/reviewing-prs/SKILL.md` (START ENGINE, JOIN, RE-REVIEW, ENGINE FALLBACK) — only if Milestone 1 passes.
-- [ ] Milestone 4: reconciliation — roadmap spec revision note, board ticket parks, references check.
-- [ ] Exit gate: whole-branch external review, version bump, finish/merge, retrospective.
+- [x] (2026-07-28) Milestone 3: SKILL.md amended (START ENGINE run-count judgment + lens clause, JOIN union + partial-failure tolerance, RE-REVIEW same-judgment) and operation-manual engine rows updated; diff stayed a small amendment.
+- [x] (2026-07-28) Milestone 4: roadmap spec Revision Note v1.5 (argus discarded, C3/C4-argus rescinded); tickets #30/#31 commented with evidence and parked needs-human recommending wontfix (close is the human's).
+- [x] (2026-07-28) Exit gate: version bumped 7.25.0; skill tests run — single FAIL is pre-existing on clean main (subagent-driven-development Test 2 answer-format brittleness, logged to tech-debt #26; untouched by this branch, all other tests pass). Whole-branch codex review ran THREE rounds: r1 two findings (sweep-failure hole in partial-failure tolerance; stale singular JOIN section) — fixed; r2 four findings (P1 shell-interpolation injection surface in the lens command → file-based `CODEX_REVIEW_LENS_FILE` transport, stub-verified literal; P1 broken focused-test contract phrases → re-wrapped, suite green; P2 inherited-lens leak onto the plain sweep → explicit empty assignments in the command template; P3 stale engine header) — fixed; r3 one P2 (per-run provenance lost after temp cleanup → review trail records every run's lens verbatim + contributed findings before cleanup) — fixed. No re-flags, no unresolved blockers. Merged to main and pushed.
 
 ## Surprises & Discoveries
 
@@ -53,7 +53,30 @@ This work supersedes the argus-review direction of the roadmap spec `docs/doperp
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped as doperpowers 7.25.0, same day as authored. Against the purpose:
+the review worker can now fan out — `review-engine.sh` accepts a lens
+through `CODEX_REVIEW_LENS_FILE` (file-based, injection-safe, stub-verified
+literal) or `CODEX_REVIEW_LENS` (inline, trusted callers), and the
+reviewing-prs protocol instructs a judged 1–4-run round with a mandatory
+lens-free sweep, union at JOIN, per-run provenance in the review trail, and
+sweep-failure = round-failure semantics. The gating premise was proven
+before any prose shipped: on PR752 an authz lens recovered F3 — missed by
+2/2 identical plain runs — in a single 390-second run.
+
+What the exit gate taught: the engine reviewing its own protocol change
+earned its keep — seven findings across three rounds, of which two were
+serious design holes I had written minutes earlier (approving a round whose
+broad sweep died; shell-interpolating generated prose into a command in a
+protocol that reviews untrusted PRs). The lens-as-scalpel discovery
+(1 finding vs 10 for the sweep) reshaped the prose from "partition lenses"
+to "sweep + scalpels", which round 1 then hardened into a requirement.
+
+Remaining, tracked elsewhere: #30/#31 parked needs-human for the human's
+wontfix close; pre-existing subagent-driven-development test brittleness on
+tech-debt #26; the installed plugin cache updates to 7.25.0 on the next
+marketplace pull. Not done here: no live fan-out has yet run inside a real
+dispatched review worker — the first big-diff PR through the loop is the
+true end-to-end validation.
 
 ## Context and Orientation
 
