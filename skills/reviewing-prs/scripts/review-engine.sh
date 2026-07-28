@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # review-engine.sh — the ONE review-engine invocation for the reviewing-prs
 # loop. PURE correctness review: the native `codex exec review --base` runs
-# unmodified — no criteria file, no developer_instructions, no ticket/spec
-# input of any kind. Ticket/spec compliance is the REVIEW WORKER's own audit,
-# performed outside this engine (skills/reviewing-prs/SKILL.md). The script
-# stays synchronous; the caller chooses foreground or background. The verdict
-# lands in --out as a compact findings file; the PR diff never enters the
-# caller's context.
+# with no ticket/spec input of any kind; the single optional modification is
+# a diff-derived structural LENS (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS,
+# see the lens block below) delivered as developer_instructions. Ticket/spec
+# compliance is the REVIEW WORKER's own audit, performed outside this engine
+# (skills/reviewing-prs/SKILL.md). The script stays synchronous; the caller
+# chooses foreground or background. The verdict lands in --out as a compact
+# findings file; the PR diff never enters the caller's context.
 #
 # Usage: review-engine.sh --base <ref> --out <file>
 #   --base  diff base (e.g. origin/main); the engine reviews <ref>...HEAD
 #   --out   findings file the engine writes (event stream: <out>.events.jsonl)
 # Env: CODEX_REVIEW_MODEL (default gpt-5.6-sol), CODEX_REVIEW_EFFORT
-# (default xhigh). Run from the worktree root — the engine reviews $PWD.
+# (default xhigh), CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS (optional
+# diff-derived structural focus mandate — see the lens block below; both
+# empty keeps the plain review).
+# Run from the worktree root — the engine reviews $PWD.
 # Exits with codex's rc (127 codex missing, 2 usage error).
 set -euo pipefail
 
@@ -65,10 +69,31 @@ if [ -n "${CODEX_SANDBOX:-}" ]; then
   sandbox_flags=( -c 'sandbox_mode="danger-full-access"' )
 fi
 
+# Optional lens: a diff-derived structural focus mandate delivered into the
+# review thread as a developer message (the rubric's own override channel).
+# Never ticket/spec content. CODEX_REVIEW_LENS_FILE (a path; read verbatim,
+# so generated prose never passes through shell interpolation — the review
+# worker MUST use this form) takes precedence over CODEX_REVIEW_LENS (inline,
+# for trusted/manual invocations). Passed as a raw literal — codex falls back
+# to the raw string when the value is not valid TOML, so plain prose needs no
+# extra quoting. Both empty/unset = today's exact invocation.
+lens=""
+if [ -n "${CODEX_REVIEW_LENS_FILE:-}" ]; then
+  [ -f "$CODEX_REVIEW_LENS_FILE" ] || { echo "review-engine: CODEX_REVIEW_LENS_FILE not found: $CODEX_REVIEW_LENS_FILE" >&2; exit 2; }
+  lens="$(cat "$CODEX_REVIEW_LENS_FILE")"
+elif [ -n "${CODEX_REVIEW_LENS:-}" ]; then
+  lens="$CODEX_REVIEW_LENS"
+fi
+lens_flags=()
+if [ -n "$lens" ]; then
+  lens_flags=( -c "developer_instructions=$lens" )
+fi
+
 rc=0
 codex exec review --base "$base" \
   -m "$model" -c "model_reasoning_effort=\"$effort\"" \
   -c 'features.hooks=false' \
+  ${lens_flags[@]+"${lens_flags[@]}"} \
   ${sandbox_flags[@]+"${sandbox_flags[@]}"} \
   --json -o "$out" > "$out.events.jsonl" || rc=$?
 exit "$rc"
