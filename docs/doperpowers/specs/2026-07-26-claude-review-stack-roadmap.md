@@ -468,6 +468,30 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
   exclusives even beside Sol — Claude cells consistently catch the
   authz-shape/UI-contract/dead-wiring family codex misses).
 
+- **Rubric position ablation (cell E) + the native prompt stack read from
+  source** (2026-07-28, same results dir, `pr752.codex-exec-rubric.md`).
+  Source facts (codex_somersault/codex-rs): native review's ENTIRE system
+  prompt is rubric.md (`base_instructions = REVIEW_PROMPT`), developer
+  instructions are stripped from the review turn, AGENTS.md still flows in
+  as user_instructions, and the user turn is the one BASE_BRANCH_PROMPT
+  sentence argus already replicates verbatim. Three sanctioned criteria
+  channels exist: `-c developer_instructions=` rides with `--base` (proven
+  live 2026-07-12), repo AGENTS.md, and the Custom target prompt — the
+  rubric itself names developer/user messages as override channels.
+  Cell E ran the same Sol xhigh on the same PR752 through plain
+  `codex exec` with rubric as a USER TURN atop the default coding-agent
+  prompt: 8/13 + F3 + a new PLAUSIBLE N3, vs native's 10/13 — prompt
+  position moves the profile ~2 items, not the spectacle. The striking
+  cross-cell pattern: F3 (rate-limit actor bypass) is missed exactly by
+  the two bare-rubric-as-system-prompt runs and found by all five
+  scaffolded runs regardless of model — so the "Claude attention
+  signature" claim weakens for F3 (scaffold effect), while N1/N2 stand.
+  Seven-cell union now 13 CONFIRMED + 2 PLAUSIBLE; three Sol-xhigh cells
+  alone union to 12/13, still no single cell above 10 — the ensemble
+  argument for C3 multi-lens is now three-way replicated, and the lens
+  mechanism for a codex-side ensemble is `codex exec review --base X -c
+  developer_instructions="<lens>"`.
+
 ## Outcomes & Retrospective
 
 Pending — written when the unit closes. Closing is a RECOMPOSITION check:

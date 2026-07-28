@@ -70,3 +70,49 @@ New candidates adjudicated this round (fable adjudicator, quoted evidence):
 Follow-ups: N1/N2 belong in any report to ida-solution (both P2+, both
 merge-relevant). X1 fixture round 2 (#40) gains two real-PR-sourced
 candidate patterns (backdated-write provenance; suppression-vs-lookup).
+
+## Cell E addendum (2026-07-28) — rubric position ablation on the codex side
+
+Human direction: run plain `codex exec "<rubric.md + base-branch sentence>"`
+— same model (gpt-5.6-sol, xhigh pinned via -m/-c, rc=0), same codex CLI,
+but the rubric rides as a USER TURN atop the default coding-agent system
+prompt instead of REPLACING it (source: native review sets
+`base_instructions = REVIEW_PROMPT` and strips developer_instructions;
+prompts/src/review_request.rs, core/src/tasks/review.rs,
+core/src/session/review.rs:132).
+
+| cell | rubric position | secs | findings | union hits | exclusives |
+|---|---|---|---|---|---|
+| r1 codex | system prompt (native review) | 668 | 10 | 10/13 | C1... (see r1) |
+| E | user turn (plain exec) | 652 | 9 | **8/13** | **F3**, N3 (PLAUSIBLE) |
+
+Cell E hits: C1 C2 C3 C4 C5 C7 F1 **F3**; misses C6 F2 C10 N1 N2. New
+candidate **N3** (legacy null-`_input_fp` plans served stale and stamped
+v2 without regeneration, generate-plan.ts:1070-1082): adjudicated
+PLAUSIBLE — mechanism confirmed in code, but the branch is pre-existing
+and untouched by the PR (zero hunks in the cache/backfill lines); the PR's
+fpv=2 bump makes it newly inconsistent with the PR's own "regenerate all
+old plans" comment, dormant-cohort-only impact; cell E's P1 tag
+overstated (P2). First severity-inflation instance on the codex side too.
+
+Observations:
+1. **Prompt position moves the profile, not the level.** Same model+CLI:
+   10/13 (system) vs 8/13+N3 (user turn). The review-mode plumbing is
+   worth ~2 items, not the spectacle.
+2. **F3 is NOT a Claude-model signature after all.** F3 was previously
+   found by every Claude cell and argus-Sol, missed by native codex twice.
+   Cell E (Sol, codex CLI, rubric-as-user-turn) FOUND it. Pattern across
+   all 7 cells: F3 is missed exactly when rubric.md IS the whole system
+   prompt, and found whenever the rubric rides atop a general agent
+   scaffold (Claude harness or codex exec). The bare-rubric system prompt
+   appears to narrow attention away from the authz/actor-shape family.
+3. **JSON schema compliance is in the rubric text, not the parser.** With
+   no --output-schema and no review-mode parsing, the final message was
+   byte-valid schema JSON.
+4. **Ensemble evidence hardens.** Three Sol-xhigh cells (native review,
+   clodex-argus, exec-rubric) produced three non-identical profiles;
+   their union alone is 12/13 (all but N2) + N3. No single cell of the
+   seven beat 10/13.
+5. Exec path consumed repo CLAUDE.md/AGENTS.md as its first command
+   (coding-agent scaffold behavior); native review inherits AGENTS.md as
+   user_instructions but doesn't re-read it.
