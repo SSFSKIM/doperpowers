@@ -26,7 +26,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
-| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind |
+| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate delivered as a developer message |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
@@ -170,11 +170,16 @@ Review responsibility is split between two concurrent tracks with one owner
 each. The ENGINE — the native `codex exec review --base origin/<base>` run
 by `scripts/review-engine.sh` — receives no ticket, spec, or policy input of
 any kind: coupling spec policy into the native reviewer measurably weakened
-its correctness review, so the interface is now `--base` + `--out`, full
-stop. The worker starts it in the background, and the engine returns a
-compact structured verdict file; the PR diff never enters the worker's own
+its correctness review, so the interface is `--base` + `--out` plus the
+optional `CODEX_REVIEW_LENS` env — a structural focus mandate the worker
+derives from the diff itself (never from the ticket/spec) when it fans out
+to 2–4 parallel runs on a large diff; a bench-validated lens recovered a
+confirmed authz defect two plain runs had missed
+(`tests/review-bench/results/2026-07-28-pr752-lenscell/`). The worker
+starts the round's runs in the background, and each returns a compact
+structured verdict file; the PR diff never enters the worker's own
 context. A hung engine (no result within 45 minutes) is killed and treated
-as a failure.
+as a failure; a round fails only when every run fails.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue

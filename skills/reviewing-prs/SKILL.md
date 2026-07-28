@@ -71,41 +71,55 @@ its own.
 ## START ENGINE
 
 REVIEW ENGINE — the native `codex exec review` engine, run as a PURE
-correctness review: it receives no criteria, no developer instructions,
-no ticket or spec input of any kind. Ticket/spec compliance is YOUR
-audit, not the engine's. The engine call is a TOOL invocation, not a
-nested agent. Never add --dangerously-bypass-approvals-and-sandbox /
---yolo to anything.
+correctness review: it receives no ticket or spec input of any kind.
+Ticket/spec compliance is YOUR audit, not the engine's. The engine call
+is a TOOL invocation, not a nested agent. Never add
+--dangerously-bypass-approvals-and-sandbox / --yolo to anything.
 
 1. Run `mktemp -d "${TMPDIR:-/tmp}/review-pr-{{PR_NUMBER}}.XXXXXX"`
    once. Treat the returned path as `<review-tmp>` for this invocation and
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
    turn reads them.
-2. From the worktree root, start the engine IN THE BACKGROUND (round N
-   uses findings-rN.txt):
+2. Judge the diff shape and choose this round's engine-run count — most
+   PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
+   runs, whole-branch scale up to 4. From the worktree root, start each
+   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt):
 
    CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
    CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
      {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --out <review-tmp>/findings-r1.txt
+     --out <review-tmp>/findings-r1-1.txt
 
-   Use your harness's background execution for this command and keep the
-   task handle. Leave it running and the findings unread — the
-   protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
-   JOIN step is the only place engine output is read.
-3. At JOIN: wait for the background task. Bound the wait — an engine
-   task that has neither completed nor failed 45 minutes after start is
-   hung: kill it and treat the round as an engine failure (the fallback
-   below owns retries and the outage path).
-4. Read the findings file — that compact verdict IS the engine's output.
+   A single run takes no lens. When fanning out, keep one run lens-free
+   as the broad sweep and give each other run a LENS via
+   `CODEX_REVIEW_LENS="<mandate>"` prefixed to the same command: a
+   structural focus mandate you derive from the diff itself (e.g.
+   actor/authz assumptions in the changed routes; ordering/atomicity of
+   the new writes; consumers of a changed field) — never ticket/spec
+   content. A lensed run narrows hard — a scalpel beside the sweep, not
+   a second sweep. Use your harness's background execution for these
+   commands and keep the task handles. Leave them running and the
+   findings unread — the protocol's COMPLIANCE AUDIT runs while the
+   engine reviews, and its JOIN step is the only place engine output is
+   read.
+3. At JOIN: wait for all of the round's background tasks. Bound the
+   wait — an engine task that has neither completed nor failed 45
+   minutes after start is hung: kill it. A round where EVERY run failed
+   is an engine failure (the fallback below owns retries and the outage
+   path); when at least one run succeeded, proceed on the successful
+   outputs and record the failed runs in the review trail.
+4. Read the findings file(s) — the round's findings are their union;
+   overlapping findings collapse into one triaged item (keep the
+   highest-priority duplicate as the anchor).
    Correctness review of the whole range is the engine's job; your own
    reading serves the audit and the triage, not a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
 critical/high finding remains unresolved; needs-attention otherwise. On
-RE-REVIEW rounds re-run the same command with a fresh --out file, again
-in the background.
+RE-REVIEW rounds the same run-count judgment applies — after a small fix
+wave a single plain run is the norm — with fresh --out files, again in
+the background.
 
 ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
 If the engine script fails (codex missing — rc 127, auth failure, or
@@ -238,8 +252,9 @@ Maximum 2 waves per review.
 
 ## RE-REVIEW
 
-After a wave that fixed anything, rerun the engine — same command, fresh
---out file, in the background again; max 3 engine rounds total. The
+After a wave that fixed anything, rerun the engine — same run-count
+judgment (a single plain run is the norm after a small wave), fresh
+--out files, in the background again; max 3 engine rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
