@@ -12,7 +12,9 @@
 #   --base  diff base (e.g. origin/main); the engine reviews <ref>...HEAD
 #   --out   findings file the engine writes (event stream: <out>.events.jsonl)
 # Env: CODEX_REVIEW_MODEL (default gpt-5.6-sol), CODEX_REVIEW_EFFORT
-# (default xhigh). Run from the worktree root — the engine reviews $PWD.
+# (default xhigh), CODEX_REVIEW_LENS (optional diff-derived structural focus
+# mandate — see the lens block below; empty keeps the plain review).
+# Run from the worktree root — the engine reviews $PWD.
 # Exits with codex's rc (127 codex missing, 2 usage error).
 set -euo pipefail
 
@@ -65,10 +67,21 @@ if [ -n "${CODEX_SANDBOX:-}" ]; then
   sandbox_flags=( -c 'sandbox_mode="danger-full-access"' )
 fi
 
+# Optional lens: CODEX_REVIEW_LENS carries a diff-derived structural focus
+# mandate into the review thread as a developer message (the rubric's own
+# override channel). Never ticket/spec content. Passed as a raw literal —
+# codex falls back to the raw string when the value is not valid TOML, so
+# plain prose needs no extra quoting. Empty/unset = today's exact invocation.
+lens_flags=()
+if [ -n "${CODEX_REVIEW_LENS:-}" ]; then
+  lens_flags=( -c "developer_instructions=$CODEX_REVIEW_LENS" )
+fi
+
 rc=0
 codex exec review --base "$base" \
   -m "$model" -c "model_reasoning_effort=\"$effort\"" \
   -c 'features.hooks=false' \
+  ${lens_flags[@]+"${lens_flags[@]}"} \
   ${sandbox_flags[@]+"${sandbox_flags[@]}"} \
   --json -o "$out" > "$out.events.jsonl" || rc=$?
 exit "$rc"
