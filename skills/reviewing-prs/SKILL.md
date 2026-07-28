@@ -341,7 +341,9 @@ what the contract permits separately from what the evidence shows actually ran.
 
 ## REVIEW TRAIL
 
-The review-trail comment on the PR records: engine and rounds run; the
+The review-trail comment on the PR records: engine and rounds run — for
+a fan-out round, every run (its lens mandate verbatim, or lens-free) with
+the findings it contributed, written BEFORE `<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board
 outcomes; deferred findings inline when the tech-debt issue is "none";
