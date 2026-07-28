@@ -105,10 +105,12 @@ is a TOOL invocation, not a nested agent. Never add
    read.
 3. At JOIN: wait for all of the round's background tasks. Bound the
    wait — an engine task that has neither completed nor failed 45
-   minutes after start is hung: kill it. A round where EVERY run failed
-   is an engine failure (the fallback below owns retries and the outage
-   path); when at least one run succeeded, proceed on the successful
-   outputs and record the failed runs in the review trail.
+   minutes after start is hung: kill it. The lens-free sweep is the
+   round's required whole-range review: if IT failed, the round failed
+   (the fallback below owns retries and the outage path) — only lensed
+   runs' failures are tolerable. When the sweep succeeded, proceed on
+   the successful outputs and record any failed lensed runs in the
+   review trail.
 4. Read the findings file(s) — the round's findings are their union;
    overlapping findings collapse into one triaged item (keep the
    highest-priority duplicate as the anchor).
@@ -202,11 +204,14 @@ itself a finding.
 
 ## JOIN
 
-Wait for the background engine task per the engine block's bound; on
-failure the fallback block owns retries and the outage path. Read the
-compact findings file and your already-written audit together. From here
-on, command-backed evidence checks may run whenever nothing else holds
-the worktree — never while an engine round or a fixer wave is live.
+Wait for ALL of the round's background engine tasks per the engine
+block's bound; a failed lens-free sweep fails the round (the fallback
+block owns retries and the outage path — lensed-run failures alone do
+not). Read every successful run's compact findings file — the round's
+findings are their union — and your already-written audit together.
+From here on, command-backed evidence checks may run whenever nothing
+else holds the worktree — never while an engine round or a fixer wave
+is live.
 
 ## TRIAGE
 

@@ -179,7 +179,8 @@ confirmed authz defect two plain runs had missed
 starts the round's runs in the background, and each returns a compact
 structured verdict file; the PR diff never enters the worker's own
 context. A hung engine (no result within 45 minutes) is killed and treated
-as a failure; a round fails only when every run fails.
+as a failure; a failed lens-free sweep fails the round (it is the required
+whole-range review), while failed lensed runs are merely recorded.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
