@@ -500,6 +500,24 @@ same event — then retrospect.
 
 ## Revision Notes
 
+- **2026-07-28 (v1.5, argus discarded — multi-lens lands in reviewing-prs
+  instead):** By human direction after the PR752 evidence chain (model
+  cells → cell E → lens validation): the argus-review engine is
+  DISCARDED — native codex review won on the real-PR bench, and the
+  Claude-side skill will not be developed further. C2's landed work
+  stays as history; **C3 and the argus side of C4 are rescinded.** Their
+  replacement is the multi-lens review engine in doperpowers itself,
+  executed as
+  `docs/doperpowers/execplans/2026-07-28-multilens-review-engine.md`
+  (autonomous track): the reviewing-prs worker judges diff scale and
+  fans out 1–4 parallel `codex exec review` runs, extra runs carrying
+  diff-derived structural lenses via `CODEX_REVIEW_LENS` →
+  `-c developer_instructions=` (validated: an authz lens recovered F3,
+  which plain native review missed in 2/2 runs —
+  `tests/review-bench/results/2026-07-28-pr752-lenscell/`). C5/C6
+  (worker default flips) are unaffected. Board: C3-lineage tickets
+  parked needs-human with wontfix recommendations — the close is the
+  human's.
 - **2026-07-27 (v1.4, C3 rescope by human direction):** C3 now carries
   the ladder rearchitecture alongside auto-routing: finder/verifier
   retired at every level, multi-lens full reviewers only, effort =
