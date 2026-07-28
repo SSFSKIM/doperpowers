@@ -7,7 +7,8 @@ run_claude() {
     local prompt="$1"
     local timeout="${2:-60}"
     local allowed_tools="${3:-}"
-    local output_file=$(mktemp)
+    local output_file
+    output_file=$(mktemp)
 
     # Build command as an argv array so timeout wraps claude directly.
     local cmd=(claude -p "$prompt")
@@ -30,12 +31,16 @@ run_claude() {
 
 # Check if output contains a pattern
 # Usage: assert_contains "output" "pattern" "test name"
+# Case-insensitive: these assertions test semantic keyword presence in a live
+# model's prose, and answer capitalization drifts across model versions.
+# (assert_not_contains stays case-sensitive: -i there would only make tests
+# fail on more variants, changing semantics.)
 assert_contains() {
     local output="$1"
     local pattern="$2"
     local test_name="${3:-test}"
 
-    if echo "$output" | grep -q "$pattern"; then
+    if echo "$output" | grep -qi "$pattern"; then
         echo "  [PASS] $test_name"
         return 0
     else
@@ -74,7 +79,8 @@ assert_count() {
     local expected="$3"
     local test_name="${4:-test}"
 
-    local actual=$(echo "$output" | grep -c "$pattern" || echo "0")
+    local actual
+    actual=$(echo "$output" | grep -c "$pattern" || echo "0")
 
     if [ "$actual" -eq "$expected" ]; then
         echo "  [PASS] $test_name (found $actual instances)"
@@ -91,6 +97,9 @@ assert_count() {
 
 # Check if pattern A appears before pattern B
 # Usage: assert_order "output" "pattern_a" "pattern_b" "test name"
+# Case-insensitive: the assertion tests ordering semantics of a live model's
+# prose, and answer capitalization drifts across model versions ("spec
+# compliance" vs "Spec compliance" broke this in 2026-07).
 assert_order() {
     local output="$1"
     local pattern_a="$2"
@@ -98,8 +107,10 @@ assert_order() {
     local test_name="${4:-test}"
 
     # Get line numbers where patterns appear
-    local line_a=$(echo "$output" | grep -n "$pattern_a" | head -1 | cut -d: -f1)
-    local line_b=$(echo "$output" | grep -n "$pattern_b" | head -1 | cut -d: -f1)
+    local line_a
+    line_a=$(echo "$output" | grep -in "$pattern_a" | head -1 | cut -d: -f1)
+    local line_b
+    line_b=$(echo "$output" | grep -in "$pattern_b" | head -1 | cut -d: -f1)
 
     if [ -z "$line_a" ]; then
         echo "  [FAIL] $test_name: pattern A not found: $pattern_a"
@@ -125,7 +136,8 @@ assert_order() {
 # Create a temporary test project directory
 # Usage: test_project=$(create_test_project)
 create_test_project() {
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
     echo "$test_dir"
 }
 
