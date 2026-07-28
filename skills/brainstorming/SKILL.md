@@ -163,7 +163,7 @@ After the spec review loop passes, ask the user to review the written spec befor
 
 > "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
-While waiting for the user's reponse, dispatch general-purpose subagent, model=fable, and ask it for spec review. The prompt should be brief: provide 1-2 setence of brief context with spec document path so that it can read and evaluate. Once you got the review from subagent, evaluate the findings instead of naively accepting all reviews and make changes as needed, and re-run the spec review loop.
+While waiting for the user's response, dispatch general-purpose subagent, model=fable, and ask it for spec review. The prompt should be brief: provide 1-2 sentences of brief context with spec document path so that it can read and evaluate. Once you got the review from subagent, evaluate the findings instead of naively accepting all reviews and make changes as needed, and re-run the spec review loop.
 If user request changes, do the same (make them and re-run the spec review loop). Then, proceed once the user approves.
 
 
