@@ -84,28 +84,33 @@ is a TOOL invocation, not a nested agent. Never add
 2. Judge the diff shape and choose this round's engine-run count — most
    PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
    runs, whole-branch scale up to 4. From the worktree root, start each
-   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt):
+   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
+   empty lens assignments are deliberate — they shield the plain run
+   from any inherited host value):
 
    CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
    CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
+   CODEX_REVIEW_LENS= CODEX_REVIEW_LENS_FILE= \
      {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
      --out <review-tmp>/findings-r1-1.txt
 
    A single run takes no lens. When fanning out, keep one run lens-free
-   as the broad sweep and give each other run a LENS via
-   `CODEX_REVIEW_LENS="<mandate>"` prefixed to the same command: a
-   structural focus mandate you derive from the diff itself (e.g.
-   actor/authz assumptions in the changed routes; ordering/atomicity of
-   the new writes; consumers of a changed field) — never ticket/spec
-   content. A lensed run narrows hard — a scalpel beside the sweep, not
-   a second sweep. Use your harness's background execution for these
-   commands and keep the task handles. Leave them running and the
-   findings unread — the protocol's COMPLIANCE AUDIT runs while the
-   engine reviews, and its JOIN step is the only place engine output is
-   read.
+   as the broad sweep and give each other run a LENS: a structural focus
+   mandate you derive from the diff itself (e.g. actor/authz assumptions
+   in the changed routes; ordering/atomicity of the new writes;
+   consumers of a changed field) — never ticket/spec content. Write each
+   mandate to `<review-tmp>/lens-<k>.txt` with your file-writing tool
+   and set `CODEX_REVIEW_LENS_FILE=<review-tmp>/lens-<k>.txt` on that
+   run's command — never inline the mandate text into a shell command
+   (it is generated prose; interpolation is an injection surface). A
+   lensed run narrows hard — a scalpel beside the sweep, not a second
+   sweep. Use your harness's background execution for these commands and
+   keep the task handles. Leave them running and the findings unread —
+   the protocol's COMPLIANCE AUDIT runs while the engine reviews, and
+   its JOIN step is the only place engine output is read.
 3. At JOIN: wait for all of the round's background tasks. Bound the
-   wait — an engine task that has neither completed nor failed 45
-   minutes after start is hung: kill it. The lens-free sweep is the
+   wait — an engine task that has neither completed nor failed
+   45 minutes after start is hung: kill it. The lens-free sweep is the
    round's required whole-range review: if IT failed, the round failed
    (the fallback below owns retries and the outage path) — only lensed
    runs' failures are tolerable. When the sweep succeeded, proceed on
