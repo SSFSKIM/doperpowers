@@ -15,8 +15,8 @@ This work supersedes the argus-review direction of the roadmap spec `docs/doperp
 ## Progress
 
 - [x] (2026-07-28) ExecPlan authored after brainstorming grill; decisions settled with the human (see Decision Log).
-- [ ] Milestone 1: lens validation cell on PR752 (front-loaded; its outcome gates everything after it).
-- [ ] Milestone 2: `CODEX_REVIEW_LENS` passthrough in `skills/reviewing-prs/scripts/review-engine.sh` (needed by Milestone 1, so implemented first in execution order — see Plan of Work).
+- [x] (2026-07-28) Milestone 1: lens validation cell on PR752 — **PASS**: the authz lens recovered exactly F3 (route.ts:204-207, request-shape-vs-actor mechanism) which plain native review missed in 2/2 runs; 390s, one finding total. Results committed under `tests/review-bench/results/2026-07-28-pr752-lenscell/`.
+- [x] (2026-07-28) Milestone 2: `CODEX_REVIEW_LENS` passthrough in `review-engine.sh` — lint clean; stub-verified: unset = byte-identical argv, set = exactly one added `-c developer_instructions=<lens>`.
 - [ ] Milestone 3: minimal edit to `skills/reviewing-prs/SKILL.md` (START ENGINE, JOIN, RE-REVIEW, ENGINE FALLBACK) — only if Milestone 1 passes.
 - [ ] Milestone 4: reconciliation — roadmap spec revision note, board ticket parks, references check.
 - [ ] Exit gate: whole-branch external review, version bump, finish/merge, retrospective.
@@ -24,6 +24,8 @@ This work supersedes the argus-review direction of the roadmap spec `docs/doperp
 ## Surprises & Discoveries
 
 - (seeded from the benchmark, 2026-07-28) F3 — the actor/rate-limit bypass on PR752 — was missed by both runs whose *entire* system prompt was the review rubric, and found by all five runs where review guidance rode atop a general agent scaffold, on either model family. The bare-rubric system prompt appears to narrow attention away from the authorization/actor-shape family. This is the specific blind spot the lens mechanism must be shown to recover (Milestone 1).
+- Observation: a lensed run is a scalpel, not a sweep. The passing validation run returned exactly ONE finding (F3) in 390 s, versus the plain run's 10 findings in ~670 s — the lens redirected essentially the whole attention budget.
+  Evidence: `tests/review-bench/results/2026-07-28-pr752-lenscell/pr752.codex-lens-authz.md` (single [P1] finding at the recorded F3 location). Consequence folded into the skill prose: when fanning out, keep one run lens-free as the broad sweep.
 
 ## Decision Log
 
