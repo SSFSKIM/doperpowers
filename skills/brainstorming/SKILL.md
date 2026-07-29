@@ -24,7 +24,7 @@ You MUST create a task for each of these items and complete them in order:
 1. **Explore project context** — check files, docs, recent commits
 2. **Offer the visual companion just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.
 3. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
-4. **Recommend the track, then get confirmation** — assess the work and recommend controlled (continue below) or autonomous (hand off to doperpowers:execplan), then get your human partner's explicit yes; see Choosing the Track below
+4. **Recommend the track, then get confirmation** — assess the work and recommend controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope: brief design, approval, then implement right away — steps 7–10 don't apply), then get your human partner's explicit yes; see Choosing the Track below
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation
 6. **Present design** — in sections scaled to their complexity, get user approval after each section
 7. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 5's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
@@ -50,12 +50,16 @@ digraph brainstorming {
 
     "Explore project context" -> "Grill (clarifying questions)";
     "Grill (clarifying questions)" -> "Recommend track,\nhuman confirms";
+    "Implement right away" [shape=doublecircle];
+
     "Recommend track,\nhuman confirms" -> "Invoke execplan skill" [label="autonomous (confirmed)"];
     "Recommend track,\nhuman confirms" -> "Propose 2-3 approaches" [label="controlled (confirmed)"];
+    "Recommend track,\nhuman confirms" -> "Present design sections" [label="direct (confirmed)"];
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Write design doc" [label="yes"];
+    "User approves design?" -> "Write design doc" [label="yes (controlled)"];
+    "User approves design?" -> "Implement right away" [label="yes (direct)"];
     "Write design doc" -> "Spec self-review\n(fix inline)";
     "Spec self-review\n(fix inline)" -> "User reviews spec?";
     "User reviews spec?" -> "Write design doc" [label="changes requested"];
@@ -63,7 +67,7 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track. Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track, or implementing right away in this session when they confirmed the direct track (no spec, no plan; the approved design is the contract, and test-driven-development still applies). Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
 
 ## The Process
 
@@ -97,13 +101,14 @@ Triage the grilling: grill what is fuzzy or important; don't grind an already-cl
 
 **Choosing the Track (after the grill):**
 
-Two tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — keeps human gates throughout. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates.
+Three tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — keeps human gates throughout. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design (a few sentences), get approval, then implement right away in this session — no spec, no plan.
 
 **You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
 
 - Read the shape of the work off the grill and recommend accordingly:
   - **Well-scoped and delegable** — the grill exhausted the open questions and the only remaining unknowns are feasibility ("we won't know until we try," which become prototyping milestones), not taste → **recommend autonomous**.
   - **Large, novel, taste-heavy, or high-stakes** — taste questions keep arising that can't be settled up front, or the work needs human judgment mid-flight → **recommend controlled**.
+  - **Narrow and small** — a focused change an engineer would just do (a config tweak, a small bugfix, one thin feature slice), where a spec or ExecPlan would outweigh the work itself → **recommend direct**.
 - State the recommendation and its reason in one message, then wait — e.g. *"This is well-scoped and the open questions are closed, so I'd take the autonomous track (execplan) and run it end to end. Good with that, or would you rather stay controlled?"*
 - Routing still requires your human partner's explicit confirmation — never route silently, and never treat "just handle it" as the choice. Their explicit yes to autonomous is the approval the HARD-GATE requires; doperpowers:execplan's contract governs from there.
 - If they override your recommendation, follow their choice. On a confirmed controlled track (whether you recommended it or they chose it), continue this skill.

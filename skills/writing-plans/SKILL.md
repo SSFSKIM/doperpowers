@@ -203,6 +203,13 @@ After saving the plan, offer execution choice:
 
 **Which approach?"**
 
+While waiting for the response, dispatch the `doperpowers:plan-reviewer` agent. The prompt is two lines:
+
+> **Plan to review:** [PLAN_FILE_PATH]
+> **Spec for reference:** [SPEC_FILE_PATH]
+
+Evaluate its findings rather than accepting them wholesale; fix what survives and move on.
+
 **If Subagent-Driven chosen:**
 - **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-development
 - Fresh subagent per task + two-stage review
