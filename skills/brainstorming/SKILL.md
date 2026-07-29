@@ -26,7 +26,7 @@ You MUST create a task for each of these items and complete them in order:
 3. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
 4. **Recommend the track, then get confirmation** — assess the work and recommend controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition, briefly design, then implement right away — steps 7–10 don't apply), then get your human partner's explicit yes; see Choosing the Track below
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation
-6. **Present diesign** — in sections scaled to their complexity, get user approval after each section
+6. **Present design** — in sections scaled to their complexity, get user approval after each section
 7. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 5's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 9. **User reviews written spec** — ask user to review the spec file before proceeding
@@ -67,7 +67,7 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track, or implementing right away in this session when they confirmed the direct track (no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logics). Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track, or implementing right away in this session when they confirmed the direct track (no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logic). Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
 
 ## The Process
 
