@@ -53,8 +53,9 @@ with recorded doctrine (resolved in the epics); [NOT-BUILT] real work.
   → `in-progress` → review loop. Plan authorship exclusive to Fable;
   no intake gate; convergence tie-breakers; three-address park
   discriminant; skill split `architecting` + `implementing`; QAgent =
-  ONE Opus high + fix-wave agent (Opus medium). **Note the X4
-  narrowing flag** (architect dispatch exempt from `engine:*`).
+  ONE Opus high + fix-wave agent (Opus medium). X4 narrowing
+  (architect dispatch exempt from `engine:*`) human-confirmed
+  2026-07-30.
 - **E2 — Ticket ledger & observability** →
   `docs/doperpowers/specs/2026-07-30-ticket-ledger-observability-design.md`.
   Hybrid ledger; append-only events + mutable current-state; write

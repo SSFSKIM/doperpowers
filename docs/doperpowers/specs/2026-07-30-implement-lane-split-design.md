@@ -416,8 +416,9 @@ their own follow-ups. The reviewing-prs loop structure and exit gates.
   Rationale: Check-1 verbatim fails the lane's entire population.
   Date/Author: 2026-07-30, session, from fable review F3.
 - Decision (v1.1): Architect dispatch exempt from `engine:*` labels; X4
-  narrowed to implementer/QAgent routes. **Flagged to the human** (X4 is
-  a recorded review-stack contract).
+  narrowed to implementer/QAgent routes. Human-confirmed 2026-07-30
+  ("X4는 맞다") — the review-stack roadmap's X4 contract is amended
+  accordingly when this lands.
   Rationale: a per-ticket gateway opt-in must not silently falsify the
   design's core observable (Fable-authored plans). Rejected: label
   overrides plan authorship.
@@ -460,6 +461,8 @@ Pending — written at finish.
 - 2026-07-30: v1, authored from the E1 grill of the ideadump roadmapping
   session (handoff → states → intake → classification → authorship →
   topology, in that order; all decisions human-confirmed in-session).
+- 2026-07-30: v1.2, X4 narrowing human-confirmed — the engine-label
+  exemption's flag is cleared; no design change.
 - 2026-07-30: v1.1, post-review amendment (independent fable subagent
   review; all 8 findings + 3 notes adopted as gap-fills, no recorded
   decision re-opened): `in-design` state + pre-park return rule (F1);
