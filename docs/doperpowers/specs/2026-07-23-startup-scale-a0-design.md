@@ -237,6 +237,12 @@ else Infisical free tier (published cap: up to 5 identities total; we need
 ~3). Platform
 secrets (Fly/Render/E2B env) are delivery only, never the source of truth.
 
+The Anthropic-key row's accepted risk has a recorded retirement
+candidate: per-run virtual keys via an LLM gateway (credential
+brokering, Decision Log 15) — the real key would leave the sandbox
+entirely, making every row of this table "no — structurally" except the
+by-shape git token.
+
 ## §7 Review & merge plane — inherited frozen, scale machinery deferred
 
 The semantic tiers are the enterprise spec's §6 unchanged, including the
@@ -369,7 +375,11 @@ enterprise spec spends most of its design — is the last thing outgrown.
 
 **Spikes** (named T1–T4 to avoid collision with the enterprise spec's
 S1–S4): **T1** instrumentation (precedes contracts); **T2** E2B unpublished
-pricing + discount (blocking the contract); **T3** Linear per-endpoint
+pricing + discount (blocking the contract) plus four capability probes
+recorded 2026-07-29 (DL11–15): multi-container/shared-volume support,
+bubblewrap/user-namespace support in the guest (srt inner layer),
+proxy/remote-CDP support for a browser split, and egress credential
+attachment; **T3** Linear per-endpoint
 mutation caps (support email + one load test; blocking the mirror's final
 shape only); **T4** Northflank egress verification (fires only if E2B
 negotiation fails or the budget hatch is needed).
@@ -482,6 +492,85 @@ The A0 deployment conforms when:
     Custom at A0-top); ITPM binds mainly for Fable-class-heavy mixes.
     The conversation is scheduled (adoption week 1–2, alongside
     contracts), not awaited.
+11. **Execution sidecar — inexpressible at A0; srt recorded as the
+    in-sandbox approximation.** The enterprise spec (2026-07-29 entry)
+    adopts a two-container pod splitting the agent loop (holds the
+    Anthropic key, egress = api.anthropic.com) from an execution
+    sidecar (runs all generated code, disjoint egress). The A0
+    substrate adapter is a single-`sandboxId` create/exec/destroy
+    contract with no volume-sharing or multi-container vocabulary, so
+    the design cannot be expressed here — rejected explicitly, not
+    deferred silently. Consequences: (a) T2 gains the probe "does E2B
+    support multi-container sandboxes or shared volumes?"; (b) the
+    candidate approximation is Anthropic's `sandbox-runtime` (srt)
+    *inside* the one sandbox — Claude Code's sandboxed Bash already
+    integrates it, so generated-code processes can get a narrower
+    egress/filesystem than the harness process with zero adapter
+    change. srt is an inner defense layer only (same kernel as the
+    adversary; its own docs flag nested-container weakening and domain
+    fronting) — the load-bearing boundary stays the E2B VM egress
+    allowlist. Gate: T2 must verify bubblewrap/user namespaces work in
+    the E2B guest. Interim approximation for the sidecar's secondary
+    (durability) benefit: register background jobs as session events —
+    replay, not attach; zero infra change.
+12. **Network policy binds to run class; research rides server-side
+    web tools.** §3's allowlist was profiled for implement workers —
+    research-heavy runs were a gap. Resolution: (a) the primary
+    research path is the provider's server-side web_search/web_fetch
+    (the fetch executes on provider infrastructure; the sandbox
+    allowlist is unchanged); (b) permission-layer auto-approval is
+    rejected as a security boundary — it sees the model's tool calls,
+    never generated code's sockets; the judging classifier shares the
+    injection surface; sandbox containment is what makes auto-approval
+    safe, not the reverse; (c) residual raw fetches are spike-lane
+    only, via a classifier-gated egress proxy treated as an attenuator
+    (secretless container, read-constrained, fully logged), never as
+    the boundary. Spike runs pair maximum injection exposure with
+    minimum action authority: no push credentials, findings-only.
+13. **Playwright/browser split.** E2E testing already conforms:
+    traffic is localhost and browsers are baked into the E2B template
+    (toolchain ⊂ environment key; no runtime download — non-hermetic
+    tests are a certification-gate failure, not an egress exception).
+    Live-web browsing is spike-profile only, and the browser becomes
+    its own egress domain: a remote browser over CDP in a second
+    sandbox or a hosted browser vendor, or (fallback) same-sandbox
+    behind a proxy with the whole run downgraded to the spike profile.
+    Rationale: page fan-out defeats allowlists and page JS defeats
+    method restrictions, so the browser must be ephemeral and
+    secretless. T2 probe added: E2B proxy / remote-CDP support.
+14. **Cloud Run Jobs recorded as a conditional compute swap (GCP-native
+    orgs) — a research gap, not a considered rejection.** The A0 round
+    never evaluated it. Verified 2026-07-29: Jobs are run-to-completion
+    with task timeouts to 168 h (the request-scoped objection applies
+    to Cloud Run *services*, not Jobs); gen2 isolation is acceptable;
+    image digest maps cleanly onto the environment key. E2B stays the
+    default on posture, not capability: the load-bearing egress control
+    is a product field on E2B vs an owned assembly on GCP (Direct VPC
+    egress + NAT + DNS + Secure Web Proxy policy tiers), and
+    hyperscaler compute adds an ambient credential (the metadata-server
+    service-account token — which Secret Manager bindings *broaden*,
+    since the SA needs secretAccessor). Secret Manager itself is a
+    legitimate §6 source-of-truth swap for control-plane services only;
+    it delivers secrets into the worker blast radius and is not a
+    runtime-placement mechanism. Adopt only if all three verify: SWP
+    hostname filtering without TLS inspection; measured unit cost incl.
+    SWP+NAT; per-worker-class minimal service accounts. Symmetric to
+    DL6's "AWS-native team → RDS" row.
+15. **Credential brokering — the candidate that retires §6's last
+    accepted risk.** An LLM gateway with per-run virtual keys
+    (LiteLLM-class: per-key budgets, instant revocation, real key held
+    only at the gateway) turns the Anthropic-key row from "yes —
+    accepted" to "no — structurally" without waiting for any sidecar:
+    one small always-on process beside the board service, virtual keys
+    minted at dispatch alongside the per-run board tokens (same
+    lifecycle hook). Cost: one more SPOF — workers fail closed on it,
+    same as the board rule. The wider per-class landscape (remote MCP
+    servers holding SaaS creds; StrongDM/Boundary-class for infra
+    access; git token still self-assembled) is recorded in the
+    enterprise spec's 2026-07-29 §5 entry. T2 probe added: does E2B
+    offer egress credential attachment (Cloudflare-Sandboxes-style)?
+    Gate before adoption: verify gateway candidates' maintenance
+    status and operational cost.
 
 ## Surprises & Discoveries
 
@@ -512,6 +601,25 @@ The A0 deployment conforms when:
 - **Token:infra at A0 is wider than the enterprise heuristic** (20–100×
   with E2B, up to 170× on cheaper substrates) — infra frugality is
   measurably the wrong place to spend attention at this scale.
+- **Cloud Run Jobs was a genuine research gap, not a considered
+  rejection** — the substrate round named Fly, Vercel, Northflank and
+  Hetzner but never the hyperscaler job runners, and the class
+  objection ("request-scoped") does not even apply to Jobs
+  (run-to-completion, task timeout to 168 h; doc-verified 2026-07-29).
+- **Hyperscaler compute carries an ambient credential class E2B does
+  not have:** the metadata-server service-account token is reachable by
+  any code in the container, and binding Secret Manager secrets to the
+  runtime SA widens what that ambient token can fetch. On E2B the
+  worker holds exactly the four injected env vars and nothing ambient.
+- **GCP Secure Web Proxy ties hostname/URL filtering to "TLS inspection
+  enabled or unencrypted HTTP"** (docs, 2026-07-29) — whether SNI-level
+  domain allowlisting works without breaking TLS integrity for the
+  agent's tools is the load-bearing open question for any GCP egress
+  assembly.
+- **Server-side web tools dissolve most of the research-vs-egress
+  tension** — the model's web_search/web_fetch execute their fetches on
+  provider infrastructure with operator-side domain controls; only
+  harness-local WebFetch and raw curl/pip touch the sandbox allowlist.
 
 ## Outcomes & Retrospective
 
@@ -534,3 +642,14 @@ Pending — written at finish.
   relabeled $0.8–3/run; mirror budget restated as 10–60% of one actor;
   run-hour band 13–27.5k; storage bound tightened to ~150–630 GB/mo;
   assorted hedges restored.
+- 2026-07-29: security-architecture refinement round from a live design
+  discussion (paired with the enterprise spec's same-day entries).
+  DL11–15 added: execution sidecar inexpressible at A0 with srt as the
+  in-sandbox approximation candidate; run-class-bound egress with
+  server-side web tools as the research path; Playwright split (E2E
+  in-template vs spike-profile live browsing); Cloud Run Jobs recorded
+  as a GCP-native conditional swap (research gap acknowledged); LLM
+  gateway virtual keys as the §6 Anthropic-key retirement candidate
+  (pointer added in §6). T2 spike gains four capability probes. Four
+  Surprises recorded (Cloud Run research gap, hyperscaler ambient
+  credential, SWP TLS-inspection question, server-side web tools).

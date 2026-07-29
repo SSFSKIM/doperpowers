@@ -523,6 +523,84 @@ implementation plans, but each line names its observation):
   Rationale: recorded with reopen triggers in [R §2.7]; not duplicated
   here.
   Date/Author: 2026-07-23 / research synthesis.
+- Decision: Execution sidecar adopted for §3 — one pod, two containers
+  on a shared workspace volume: the agent-loop container (holds the
+  Anthropic key; egress = api.anthropic.com only) and an execution
+  sidecar where every Bash/generated-code process runs (egress = code
+  host + package registries only). Only Bash is remoted, implemented
+  below the harness by swapping the shell binary for a forwarding
+  wrapper over a unix socket on the shared volume — no inbound port,
+  no harness fork.
+  Rationale: re-justified on credential placement, not durability — it
+  converts the last credential reachable by generated code (the
+  Anthropic key) to structurally unreachable, and splits today's union
+  egress policy into two disjoint ones. Durability against
+  agent-process-local crashes is a narrow side benefit (same pod =
+  same failure domain). Two hard conditions: (1) the sidecar checks
+  the run's fencing token on every exec — a workspace that survives
+  the agent process reintroduces the two-writers-under-partition
+  hazard that fresh-sandbox-per-attempt structurally excluded; (2)
+  reviewer pods must be mechanically unable to mount implementer
+  workspace volumes (the reviewer-freshness invariant stays mechanism,
+  not documentation).
+  Date/Author: 2026-07-29 / design discussion (human directed
+  recording).
+- Decision: Network egress policy binds to the run class, not the
+  fleet — and permission-layer automation is rejected as a security
+  boundary. Research-heavy runs route their traffic primarily through
+  the model provider's server-side web_search/web_fetch tools (the
+  fetch executes on provider infrastructure, so the sandbox allowlist
+  is unchanged); residual raw fetches go through a classifier-gated
+  egress proxy that is an attenuator, never a boundary: secretless
+  requesting container, read-constrained (no request bodies, auth
+  headers stripped, URL length capped), fully logged, fetched content
+  treated as untrusted input. Research/spike runs carry the maximum
+  injection exposure and therefore the minimum action authority (no
+  push credentials; the deliverable is findings, per the spike lane).
+  Rationale: the permission system sees the model's tool calls, never
+  the transitive effects of generated code — an approved script's
+  sockets bypass it entirely; the permission classifier shares the
+  injection surface it is meant to judge; and §5's doctrine already
+  holds that scoping-style judgment controls decay as models improve.
+  Sandbox containment is what makes intra-sandbox auto-approval safe —
+  not the reverse.
+  Date/Author: 2026-07-29 / design discussion.
+- Decision: Browser automation splits into two cases. E2E testing of
+  the product under development is already conformant: traffic is
+  localhost, and browser binaries ship inside the certified
+  environment image (they are toolchain, part of the environment key —
+  never a runtime download). Live-web browsing runs only under the
+  research/spike profile, with the browser as its own egress domain: a
+  separate browser container or pod reached over CDP (Playwright's
+  native client/server split — `connectOverCDP` — so no harness
+  change), domain-level control at the proxy CONNECT layer without TLS
+  interception, and an ephemeral, secretless browser (no logged-in
+  sessions, no tokens, discarded per run).
+  Rationale: a rendered page fans out to non-enumerable domains and
+  its scripts issue their own POSTs and WebSockets, so both allowlists
+  and method-level read-constraints are unenforceable at the browser —
+  the secretless condition becomes load-bearing instead of optional.
+  Date/Author: 2026-07-29 / design discussion.
+- Decision: §5's "vault + egress proxy" endgame is a now-named market
+  category — credential brokering (the sandbox holds an opaque token;
+  the broker attaches the real secret after the request leaves) — and
+  is adopted per credential class rather than as one product:
+  LLM-gateway virtual keys for the model key (LiteLLM-class — per-run
+  keys, per-key budgets, instant revocation; the most mature class);
+  credential-holding remote MCP servers or agent-auth platforms for
+  SaaS/OAuth calls; StrongDM/Boundary-class brokers for infrastructure
+  access; a self-assembled injection rule or per-run GitHub App
+  installation tokens for the git push token (no turnkey vendor covers
+  that class). Brokers are explicit endpoints, not transparent MITM,
+  so no CA distribution into sandboxes; the endgame allowlist is
+  {broker endpoints} with zero real secrets inside the sandbox.
+  Rationale: fills the §5 slot with verifiable products; the same
+  mechanism Anthropic's Managed Agents vaults use (egress
+  substitution) now exists outside that platform (e.g. Cloudflare
+  Sandboxes' outbound credential attachment). Each candidate is
+  re-verified at adoption, not trusted from the 2026-07-29 scan.
+  Date/Author: 2026-07-29 / design discussion (market scan
+  2026-07-29).
 
 ## Surprises & Discoveries
 
@@ -548,6 +626,33 @@ implementation plans, but each line names its observation):
   the command contract that certifies an environment is the same artifact
   that smoke-tests a restored snapshot.
   Evidence: [R §7.3] synthesis; no additional component needed.
+- Observation: The session log captures the narrative of work, not its
+  artifacts — "reclaim resumes, never restarts" is epistemically true
+  and materially false for uncommitted worktree state and in-flight
+  background processes (async Bash, running subagents), which die with
+  the process and are re-derived from the log, not preserved.
+  Evidence: §2's "resumes from the durable session log — it never
+  restarts the run" coexists with §3's "scratch is ephemeral and dies
+  with the pod" and the acceptance drill's "resumes from its session
+  log on another host"; the design tolerates the gap via commit
+  discipline + SHA-idempotent push + cheap environment rebuild, not
+  artifact preservation.
+- Observation: The research-vs-egress conflict largely dissolves at the
+  provider layer — the model's web_search and web_fetch tools execute
+  their fetches on provider infrastructure, so open-web research needs
+  no sandbox egress change at all.
+  Evidence: provider API docs (verified 2026-07-29): server-side tool
+  variants with allowed_domains/blocked_domains/max_uses operator
+  controls and fetch-only-URLs-already-in-conversation semantics. Only
+  harness-local WebFetch and raw curl/pip touch the sandbox allowlist.
+- Observation: Egress credential substitution ("sandbox holds a
+  placeholder; the real secret is attached after the request leaves")
+  is no longer platform-exclusive — it is an emerging named category,
+  credential brokering.
+  Evidence: 2026-07-29 market scan — Infisical's credential-brokering
+  positioning, TRM Labs' in-house broker writeup, Nous Hermes
+  iron-proxy, Cloudflare Sandboxes outbound-worker credential
+  attachment.
 
 ## Outcomes & Retrospective
 
@@ -560,3 +665,13 @@ Pending — written at finish.
   correction pass; Bundle A and four human decisions (merge semantics per
   risk class, auto-land whitelist + under-watch tier, N blind lenses +
   verifier, hybrid third species) fixed at brainstorm.
+- 2026-07-29: Security-architecture refinement round from a live design
+  discussion (paired with the A0 spec's same-day DL11–15). Four Decision
+  Log entries: execution sidecar adopted into §3 (credential-placement
+  rationale, fence-checked exec, mechanical reviewer-volume ban);
+  run-class-bound egress profiles + rejection of permission automation
+  as a boundary; browser-automation split (E2E in-image vs
+  spike-profile live browsing over remote CDP); §5 endgame concretized
+  as credential brokering with per-class vendors. Three Surprises added
+  (narrative-vs-artifact gap in the session store, server-side web
+  tools dissolving research egress, brokering as a named category).
