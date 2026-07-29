@@ -722,8 +722,7 @@ Then:
     and raise it, rather than hand-editing the user's config.
 
 - **Write install docs.** A `docs/README.<harness>.md` and/or a
-  `.<harness>/INSTALL.md` (see `docs/README.opencode.md` and
-  `.opencode/INSTALL.md`), plus an install section in the top-level `README.md`.
+  `.<harness>/INSTALL.md`, plus an install section in the top-level `README.md`.
   The only supported install action is **running the harness's own install
   command** (`agy plugin install`, `gemini extensions install`, `/plugin
   install`, etc.). Hand-copying skill files and editing the user's global/personal
