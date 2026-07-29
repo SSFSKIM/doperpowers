@@ -80,7 +80,8 @@ assert_count() {
     local test_name="${4:-test}"
 
     local actual
-    actual=$(echo "$output" | grep -c "$pattern" || echo "0")
+    # Case-insensitive for the same reason assert_contains is.
+    actual=$(echo "$output" | grep -ci "$pattern" || echo "0")
 
     if [ "$actual" -eq "$expected" ]; then
         echo "  [PASS] $test_name (found $actual instances)"
@@ -114,11 +115,15 @@ assert_order() {
 
     if [ -z "$line_a" ]; then
         echo "  [FAIL] $test_name: pattern A not found: $pattern_a"
+        echo "  In output:"
+        echo "$output" | sed 's/^/    /'
         return 1
     fi
 
     if [ -z "$line_b" ]; then
         echo "  [FAIL] $test_name: pattern B not found: $pattern_b"
+        echo "  In output:"
+        echo "$output" | sed 's/^/    /'
         return 1
     fi
 
