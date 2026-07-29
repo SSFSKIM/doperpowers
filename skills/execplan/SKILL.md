@@ -1,6 +1,6 @@
 ---
 name: execplan
-description: Use when taking a well-scoped, delegable piece of work through the autonomous track — a relentless grill that exhausts ambiguity up front, then one self-contained ExecPlan authored and executed to the letter of PLANS.md with no mid-flight human gates. Alternative to the brainstorming→spec→plan pipeline.
+description: Use when your human partner explicitly chose the autonomous track for well-scoped, delegable work — the alternative to the controlled brainstorming→spec→plan pipeline.
 ---
 
 # ExecPlan Track

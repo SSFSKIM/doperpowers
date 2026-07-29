@@ -1,6 +1,6 @@
 ---
 name: orchestrating-daemons
-description: Use when spawning, resuming, tracking, or debugging durable background `claude` sessions (daemons) — the process substrate the board pipeline's dispatchers call, or the rare ad-hoc task that must survive this session ending and has no board to hold it. NOT the default for fanning out work: ticket-shaped work goes to the board (doperpowers:implementing-tickets), in-session fan-out is native subagents.
+description: Use when spawning, resuming, tracking, or debugging durable background `claude` sessions (daemons). NOT the default for fanning out work — ticket-shaped work goes to the board; in-session fan-out is native subagents.
 ---
 
 # Daemons — the durable-session substrate

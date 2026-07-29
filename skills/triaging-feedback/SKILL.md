@@ -1,6 +1,6 @@
 ---
 name: triaging-feedback
-description: Use when operating or adopting the feedback→triage loop — a poller that reads pending rows from the product's in-app feedback table, drives a read-only Codex-SDK worker per row through diagnose→author, and registers a worker-authored board ticket (ready-for-agent when grounded and gate-worthy, needs-human/needs-info otherwise) — or when you were invoked as the triage worker itself for one feedback item (e.g. a cloud routine fired with the row as payload; see Worker mode). Covers the triage worker protocol, the registration gate, the state routing, the config/kill switch, and repo setup.
+description: Use when operating or adopting the feedback→triage loop, or when invoked as the triage worker for one feedback item (see Worker mode).
 ---
 
 # Triaging feedback — the feedback→triage loop

@@ -1,6 +1,6 @@
 ---
 name: execspec
-description: Use when writing, revising, or closing out a design spec (docs/doperpowers/specs/) — the living-spec doctrine, vendored from Codex ExecPlans: Decision Log with rejected alternatives, Surprises & Discoveries with evidence, retrospective at finish, revision notes, behavior-phrased acceptance
+description: Use when writing, revising, or closing out a design spec (docs/doperpowers/specs/) — the living-spec doctrine.
 ---
 
 # Execspec — Living Specs

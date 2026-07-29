@@ -1,6 +1,6 @@
 ---
 name: issue-tracker
-description: Use when managing the issue board — registering tickets, running the mechanical dispatch ritual, working the wake queue (needs-human / needs-info / interactive-preferred), reconciling the board after time away, or asking what is in progress / parked / dispatchable. The board IS the repo's GitHub issues; the toolkit lives in this skill's scripts/.
+description: Use when managing the issue board — registering tickets, dispatching, working the wake queue, reconciling after time away, or asking what is in progress or parked. The board IS the repo's GitHub issues.
 ---
 
 # Issue Tracker

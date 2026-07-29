@@ -1,6 +1,6 @@
 ---
 name: decomposing
-description: Use when a goal is too big for one agent to reliably own as one unit — a deliberate initiative, epic, or milestone whose pieces must become child goals (a roadmap) before any single piece is designed — or when tending a live goal tree: a landed child contradicts the plan, a coarse branch nears execution, a parent's children are all done. For defining or sharpening a single ownable idea use doperpowers:brainstorming; for a pile of raw ungrounded observations use doperpowers:organizing-sprints.
+description: Use when a goal is too big for one agent to reliably own as one unit and its pieces must become child goals (a roadmap), or when tending a live goal tree as children land. A single ownable idea is doperpowers:brainstorming; a pile of raw observations is doperpowers:organizing-sprints.
 ---
 
 # Decomposing

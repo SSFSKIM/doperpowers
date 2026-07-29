@@ -1,6 +1,6 @@
 ---
 name: implementing-tickets
-description: Use when dispatched as an implement worker onto a board ticket in the autonomous implement loop, or when operating that loop — gating a ticket before building (well-defined + well-scoped), parking tickets (needs-human / needs-info / interactive-preferred), decomposing an oversized ticket into child tickets, choosing direct-vs-execplan execution, or running the spike lane (category `spike` — exploration tickets whose deliverable is findings, never a merge) — the implement-side autonomous loop; the inverse of doperpowers:reviewing-prs.
+description: Use when dispatched as an implement worker onto a board ticket (including the spike lane), or when operating or setting up the autonomous implement loop — the inverse of doperpowers:reviewing-prs.
 ---
 # Implement Worker Protocol
 

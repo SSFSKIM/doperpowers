@@ -1,6 +1,6 @@
 ---
 name: reviewing-prs
-description: Use when assigned to review a specific opened pull request in the autonomous review loop, or when operating or setting up that loop and needing its dispatch, sweep, escalation, landing, or runner guidance.
+description: Use when assigned to review a specific opened pull request in the autonomous review loop, or when operating or setting up that loop.
 ---
 
 # Review Worker Protocol
