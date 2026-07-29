@@ -122,6 +122,15 @@ Two tracks leave this skill. The controlled track — the rest of this skill: ap
 - Cover: architecture, components, data flow, error handling, testing
 - Be ready to go back and clarify if something doesn't make sense
 
+**Peer review (optional).** When the design genuinely matters — high-stakes,
+novel, or complex enough that an independent perspective would materially
+raise confidence in it — dispatch the `doperpowers:critique` agent with brief
+context and paths to the design artifacts, and debate it via SendMessage
+until the discussion converges: evaluate each finding, adopt what survives,
+rebut what doesn't. A disagreement that survives honest debate goes to your
+human partner as an open question. Whether to fire it is your call; most
+designs don't need it.
+
 **Design for isolation and clarity:**
 
 - Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood and tested independently
