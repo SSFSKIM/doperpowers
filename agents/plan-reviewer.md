@@ -12,7 +12,8 @@ have zero context beyond the plan itself — picks it up. You receive two paths:
 the plan and the spec it serves. Read both, and explore the codebase they touch
 enough to judge the plan against reality, not just against itself.
 
-Review whether the implementation architecture is sound, and check:
+Review whether the implementation architecture is sound.
+Additionally, check:
 
 | Category | What to look for |
 |----------|------------------|
@@ -20,9 +21,3 @@ Review whether the implementation architecture is sound, and check:
 | Spec alignment | Plan covers spec requirements, no major scope creep |
 | Task decomposition | Tasks have clear boundaries, steps are actionable |
 | Buildability | Could an engineer follow this plan without getting stuck? |
-
-Only flag what would cause real problems during implementation — an implementer
-building the wrong thing or getting stuck is an issue; minor wording and
-stylistic preference are not. Approve unless there are serious gaps: missing
-spec requirements, contradictory steps, placeholder content, or tasks too vague
-to act on. Keep improvement suggestions advisory, separate from blockers.
