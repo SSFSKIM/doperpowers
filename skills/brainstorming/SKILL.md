@@ -24,9 +24,9 @@ You MUST create a task for each of these items and complete them in order:
 1. **Explore project context** — check files, docs, recent commits
 2. **Offer the visual companion just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.
 3. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
-4. **Recommend the track, then get confirmation** — assess the work and recommend controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope: brief design, approval, then implement right away — steps 7–10 don't apply), then get your human partner's explicit yes; see Choosing the Track below
+4. **Recommend the track, then get confirmation** — assess the work and recommend controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition, briefly design, then implement right away — steps 7–10 don't apply), then get your human partner's explicit yes; see Choosing the Track below
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation
-6. **Present design** — in sections scaled to their complexity, get user approval after each section
+6. **Present diesign** — in sections scaled to their complexity, get user approval after each section
 7. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 5's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 9. **User reviews written spec** — ask user to review the spec file before proceeding
@@ -67,7 +67,7 @@ digraph brainstorming {
 }
 ```
 
-**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track, or implementing right away in this session when they confirmed the direct track (no spec, no plan; the approved design is the contract, and test-driven-development still applies). Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
+**The terminal state is invoking writing-plans** — or doperpowers:execplan when your human partner explicitly chose the autonomous track, or implementing right away in this session when they confirmed the direct track (no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logics). Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skills you invoke after brainstorming are writing-plans (controlled track) and execplan (autonomous track, on your human partner's explicit choice). (One earlier exit exists at scope-assessment time, before any design: a goal that fails the gate's scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.)
 
 ## The Process
 
@@ -101,7 +101,7 @@ Triage the grilling: grill what is fuzzy or important; don't grind an already-cl
 
 **Choosing the Track (after the grill):**
 
-Three tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — keeps human gates throughout. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design (a few sentences), get approval, then implement right away in this session — no spec, no plan.
+Three tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — keeps human gates throughout. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan.
 
 **You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
 
