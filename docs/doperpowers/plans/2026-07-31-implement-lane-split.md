@@ -1666,7 +1666,9 @@ edge on one ticket converts to `needs-human` mechanically.
 7. Worker protocols section (lines 239–248): name three protocols
    (architecting SKILL.md added; implementing paths renamed).
 8. Consumer-automation edge case (line 315–319): "must track the v9
-   vocabulary (the lane states replace `status:ready-for-agent`)".
+   vocabulary (the two lane-queue labels replace the single pre-v9
+   agent-queue label)" — phrased WITHOUT the retired literal, so the
+   repo-wide grep in Task 16 needs no carve-out for live skill prose.
 
 - [ ] **Step 3: The three implementing references** — apply the rename
 decision rule: `implement-decompose.md` step 3's `ready-for-agent` →

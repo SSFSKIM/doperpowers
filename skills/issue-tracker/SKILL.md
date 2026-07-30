@@ -342,4 +342,4 @@ follow-up not registered does not exist.
 - Consumer label automation that already speaks `status:*` (e.g. assign →
   `status:in-progress`) is a legitimate board writer — same store, same
   vocabulary, no sync. Its managed-label set must track the v9 vocabulary
-  (the lane states replace `status:ready-for-agent`).
+  (the two lane-queue labels replace the single pre-v9 agent-queue label).
