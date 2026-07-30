@@ -262,7 +262,7 @@ assert_contains "$recov10" "1" "recovery attempt is counted durably in the meta"
 # RECOVER — lane-state split (E1): in-flight design work resumes; a dead
 # pre-verdict worker is retired so the dispatch pass re-runs it fresh
 assert_contains "$log" "resume:aaaa0020-0000-4000-8000-000000000000" "dead in-design worker gets the resume ladder (mid-design WIP is preserved)"
-assert_contains "$out" "resume attempt 1/" "in-design recovery goes through _recover's counted ladder"
+assert_contains "$out" "RECOVER: #20 worker aaaa0020-0000-4000-8000-000000000000 died mid-turn (session gone) — resume attempt 1/3" "in-design recovery goes through _recover's counted ladder"
 assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready-for-architect worker is retired, not resumed"
 assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
 assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
