@@ -160,8 +160,9 @@ JOIN, with command-backed checks deferred until the worktree is free.
 Evidence claimed but not verifiable is a SPEC FINDING. A MISSING section
 is a SPEC FINDING only when the ticket carries a `[gate] pass` comment
 (the gate proves an implement worker under the current contract produced
-the PR); otherwise it is an AUDIT NOTE — no retroactive policy on legacy
-or non-loop PRs. This closes the evidence loop: the implement side must
+the PR) or an Architect handoff comment (a real `plan:` pin authorizes
+the work in the gate's place); otherwise it is an AUDIT NOTE — no
+retroactive policy on legacy or non-loop PRs. This closes the evidence loop: the implement side must
 produce evidence, the review side verifies the claims were real.
 
 ## Review engine (pure correctness) + worker audit (compliance)
@@ -184,8 +185,11 @@ whole-range review), while failed lensed runs are merely recorded.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
-body is the canonical primary spec; drift since the `[gate] pass` comment
-is resolved through GitHub edit-history timestamps; the verdict classes are
+body is the canonical primary spec, joined on an architect-lane ticket by
+the plan its `plan:` pin names at that immutable revision; drift since the
+authorization comment — the `[gate] pass`, or the Architect's
+`[board] ready-for-implementer:` handoff on a real-pin ticket — is
+resolved through GitHub edit-history timestamps; the verdict classes are
 PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
 progress), SPEC FINDING (fix-required; waves with native blockers), and
 AUDIT NOTE (trail-only). The two streams JOIN before triage.
