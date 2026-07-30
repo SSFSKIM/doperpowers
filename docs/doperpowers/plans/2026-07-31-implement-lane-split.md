@@ -133,8 +133,8 @@ pre-park) comes in later tasks — this task only renames and re-tables.
 Replace lines 19–36 (`OPEN_STATES` through `PULLABLE`) with:
 
 ```python
-# ── state vocabulary (v9: the E1 lane split — ready-for-agent split into
-#    ready-for-architect / in-design / ready-for-implementer) ──
+# ── state vocabulary (v9: the E1 lane split — the single pre-v9 agent queue
+#    split into ready-for-architect / in-design / ready-for-implementer) ──
 OPEN_STATES = ("ready-for-architect", "in-design", "ready-for-implementer",
                "in-progress", "needs-human", "needs-info",
                "interactive-preferred", "in-review", "confident-ready",
@@ -367,10 +367,13 @@ existing recovery/cancel/relay behavior. Fix any missed rename site the
 failures name (the suites are the enumerator; the grep in Step 8 is the
 proof).
 
-- [ ] **Step 8: Residual-vocabulary check (board area)**
+- [ ] **Step 8: Residual-vocabulary check (board scripts + suites)**
 
-Run: `grep -rn "ready-for-agent" skills/issue-tracker/ tests/issue-tracker/ | grep -v board-migrate-gh.sh`
-Expected: no output.
+Run: `grep -rn "ready-for-agent" skills/issue-tracker/scripts/ tests/issue-tracker/ | grep -v board-migrate-gh.sh`
+Expected: no output. (`skills/issue-tracker/SKILL.md` and
+`references/ticket-gate.md` still carry the old vocabulary at this
+point — their content rewrite is Task 13's; Task 16's repo-wide grep is
+the final proof.)
 
 - [ ] **Step 9: Commit**
 
