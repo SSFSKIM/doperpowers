@@ -64,6 +64,12 @@ assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
+echo "mode selection (plan-execution vs DIRECT):"
+assert_contains "$proto" "## Mode Selection" "mode selection section present"
+assert_contains "$proto" "plan-execution" "plan-execution mode named"
+assert_contains "$proto" "ready-for-architect" "architect escalation edge named"
+assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
+
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
@@ -144,15 +150,15 @@ if [ -e "$REPO_ROOT/skills/implementing/references/engine-blocks" ]; then
 else
     pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 fi
-assert_contains "$proto" "EXECPLAN:" "execution: execplan mode wired (not bare PLAN)"
-assert_contains "$proto" "doperpowers:execplan" "execution: routes to the execplan doctrine"
+assert_contains "$proto" "PLAN-EXECUTION:" "execution: plan-execution mode wired (not bare PLAN)"
+assert_contains "$proto" "doperpowers:architecting" "execution: routes plan authorship to the architect lane"
 assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
 assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
 assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
 assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
 assert_contains "$proto" "subagent-driven-development" "execution: names the forbidden interactive skills"
 assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
-assert_contains "$proto" "big-but-atomic" "execution: atomic execplan trigger"
+assert_contains "$proto" "survive context death" "execution: plan-need trigger names context-death survival"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
