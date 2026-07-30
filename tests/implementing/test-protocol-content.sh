@@ -242,6 +242,7 @@ assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
 assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
 assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
 assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
+assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

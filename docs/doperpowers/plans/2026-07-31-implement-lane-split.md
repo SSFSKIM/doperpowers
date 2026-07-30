@@ -1451,8 +1451,13 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Fail → the park state with its required note, classified against the
   park discriminant (doperpowers:issue-tracker owns the single copy),
   plus the 3–6 line orientation summary every park carries.
-- Too big (Check-2) → decompose (below). Slices needing one continuously
-  steered human context → interactive-preferred.
+- Too big (Check-2) → take the Pass write first — `in-design` plus the
+  gate comment "[gate] pass — architect: too big, decomposing" — then
+  decompose (below). Decomposing is design work and its exit is an
+  in-design exit; the board has no `ready-for-architect →
+  ready-for-implementer` edge, so skipping this write leaves you with no
+  legal move. Slices needing one continuously steered human context →
+  interactive-preferred.
 
 ## Design
 
