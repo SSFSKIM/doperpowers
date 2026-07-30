@@ -63,8 +63,10 @@ Read the PR body, the ticket brief, and the diff shape
 (git diff --stat origin/{{BASE_REF}}...HEAD). Correctness review of the
 full range is the engine's job — read what your audit needs, not to
 re-review. Locate the process evidence on the ticket: the `[gate] pass`
-comment (its GitHub timestamp is the authorization time) and any human
-answers posted while the ticket was parked. Until JOIN, stay read-only in
+comment (its GitHub timestamp is the authorization time) — or, on a
+`plan: <path>@<sha>` ticket, the `[board] ready-for-implementer:`
+handoff comment instead — and any human answers posted while the ticket
+was parked. Until JOIN, stay read-only in
 this shared worktree: no test runs, no builds — the engine may be running
 its own.
 
@@ -170,10 +172,13 @@ body from GitHub edit history (gh api graphql: Issue.userContentEdits) and
 audit against THAT; a material post-gate spec change the implementation
 never acknowledged is human-grade.
 
-On a ticket whose meta carries a `plan:` pin there is no implementer
-`[gate] pass` — the authorization time is the Architect's handoff: the
-`[board] ready-for-implementer:` comment's timestamp. Every rule in
-this audit keyed to the gate timestamp reads that comment instead.
+On a ticket whose `plan:` pin names a revision (`<path>@<sha>`, not the
+`pre-spec` sentinel) there is no implementer `[gate] pass` — that ticket
+ran in PLAN-EXECUTION mode, which posts none. The authorization time is
+the Architect's handoff: the `[board] ready-for-implementer:` comment's
+timestamp, and every rule in this audit keyed to the gate timestamp
+reads that comment instead. A `plan: pre-spec` ticket ran DIRECT and
+carries a real `[gate] pass` — anchor on it as usual.
 
 The audit answers four questions: was the issue substantively ready for
 the implemented scope (settled scope, requirements, acceptance, and
@@ -295,9 +300,9 @@ wave's fix spawning the next finding there — that is a decomposition
 defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to
 ready-for-architect with the impasse summary as the note (the
 design-gap address; the board converts a second traversal of this edge
-to needs-human mechanically — never write it twice yourself).
-Otherwise — an impasse that needs human judgment or input — set the
-ticket to needs-human with the impasse summary and end your turn.
+to needs-human mechanically — never write it twice yourself) and end
+your turn. Otherwise — an impasse that needs human judgment or input —
+set the ticket to needs-human with the impasse summary and end your turn.
 
 ## ESCALATE
 
@@ -331,9 +336,11 @@ is what I would have merged").
 
 PARKED tier — this ticket already sits at needs-human (a confirmed
 PROTOCOL BLOCKER, an unresolved SPEC FINDING, or blockers at the round
-cap): NEVER grant confident-ready over a park. Do not add the label, do
-not transition the ticket — post the review-trail comment (including
-everything the waves fixed) and end your turn with the park intact.
+cap) or was just routed to ready-for-architect (the seam-clustered
+impasse above): NEVER grant confident-ready over a park. Do not add the
+label, do not transition the ticket — post the review-trail comment
+(including everything the waves fixed) and end your turn with the park
+intact.
 
 HUMAN tier — anything else, or observation mode above:
   gh pr edit {{PR_NUMBER}} --add-label confident-ready
