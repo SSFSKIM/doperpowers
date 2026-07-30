@@ -4,8 +4,9 @@
 # Usage: board-reconcile.sh
 #
 # Lists the human wake queue (parked tickets: needs-human / needs-info /
-# interactive-preferred), flags in-progress tickets with no live bound
-# daemon, lists dispatchable tickets, and finishes with a board-lint pass.
+# interactive-preferred), flags in-progress/in-design tickets with no live
+# bound daemon, lists dispatchable tickets, and finishes with a board-lint
+# pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
 # register child/follow-up tickets directly (doperpowers:implementing).
 set -euo pipefail
@@ -56,13 +57,18 @@ for t, n in by_id(tickets.items()):
         note = " ".join((n.get("note") or "(no note — lint FAILs this)").split())
         print("parked    #%s: %s — %s" % (t, n["state"], note))
 
-# 2. in-progress tickets with a missing or terminal daemon.
+# 2. in-progress/in-design tickets with a missing or terminal daemon — the
+#    two in-flight worker states board-sweep.sh's RECOVER pass covers. An
+#    orphaned in-design ticket is mid-design work with nothing local to
+#    show for it (the plan lives only in the dead worker's context until
+#    its next park/handoff) — the pipeline's most expensive in-flight
+#    asset, so it must surface here exactly like an orphaned implementer.
 for t, n in by_id(tickets.items()):
-    if n["state"] != "in-progress":
+    if n["state"] not in ("in-progress", "in-design"):
         continue
     m = bound.get(t)
     if m is None:
-        print("orphaned  #%s: in-progress but no bound daemon — respawn + board-bind, or transition" % t)
+        print("orphaned  #%s: %s but no bound daemon — respawn + board-bind, or transition" % (t, n["state"]))
     elif m.get("status") in ("error", "retired"):
         print("anomaly   #%s: bound daemon %s status=%s" % (t, m["_uuid"][:8], m["status"]))
 
