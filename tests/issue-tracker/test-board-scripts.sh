@@ -1004,6 +1004,21 @@ ANS
 out="$(run board-transition.sh "$cv2_t" ready-for-architect "human-sanctioned re-escalation")"
 assert_contains "$out" "#$cv2_t: ready-for-implementer → ready-for-architect" "same-edge re-traversal passes after [answers] reset (no needs-human conversion)"
 
+# ---- mid-execution return edge: in-progress → ready-for-architect -------------
+# The Implementer's escalation when a plan turns out genuinely unbuildable
+# mid-build (E1's fourth new edge) — distinct from the ready-for-implementer →
+# ready-for-architect gate-fail edge exercised above. It is convergence-counted
+# too (EDGE_NOTE_REQUIRED minus only the in-design→ready-for-implementer
+# carve-out), so it must both require a note and emit the arrow-keyed comment.
+echo "mid-execution return:"
+run board-register.sh "Mid-execution return probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+mer_t="$(state "s['next']-1")"
+run board-transition.sh "$mer_t" in-progress >/dev/null
+assert_fails run board-transition.sh "$mer_t" ready-for-architect           # edge note required
+out="$(run board-transition.sh "$mer_t" ready-for-architect "blocked: plan assumed an API that doesn't exist")"
+assert_contains "$out" "#$mer_t: in-progress → ready-for-architect" "mid-execution return applied (legal edge)"
+assert_contains "$(state "s['issues']['$mer_t']['comments'][-1]")" "[board] in-progress → ready-for-architect: blocked: plan assumed an API that doesn't exist" "escalation comment carries the arrow-keyed edge form (convergence-counted)"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"
