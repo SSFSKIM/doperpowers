@@ -62,7 +62,7 @@ run() { (cd "$WORK" && "$SCRIPTS_DIR/$1" "${@:2}"); }
 # state(): eval is safe here — the expression is a test-author-written literal
 # from THIS file (never external input), evaluated against the mock's state.
 state() { python3 -c "import json,sys;print(eval(sys.argv[1], {'s': json.load(open('$MOCK_GH_STATE'))}))" "$1"; }
-# A filled spec body: ready-for-agent births require one (a pre-spec skeleton
+# A filled spec body: ready-for-implementer births require one (a pre-spec skeleton
 # is never implementable — see the pre-spec guard section).
 SPEC_BODY="$TEST_ROOT/spec-body.md"
 printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiable\n' > "$SPEC_BODY"
@@ -71,7 +71,7 @@ printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiab
 echo "board-register:"
 out="$(run board-register.sh "Epic: alpha" enhancement P2 --body-file "$SPEC_BODY")"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
-assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
+assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-implementer', 'priority:P2']" "category + birth status + priority labels"
 
 out="$(run board-register.sh $'Multi\nline title' bug P1 --state needs-human --note "waiting on A")"
 assert_equals "$(state "s['issues']['2']['title']")" "Multi line title" "title newlines collapsed"
@@ -122,10 +122,10 @@ assert_fails run board-transition.sh 3 needs-human                     # note re
 assert_fails run board-transition.sh 999 in-progress                   # unknown issue
 
 out="$(run board-transition.sh 3 in-progress)"
-assert_contains "$out" "#3: ready-for-agent → in-progress" "transition applied"
-assert_contains "$out" "#1: ready-for-agent → in-progress" "epic pulled by first active child"
+assert_contains "$out" "#3: ready-for-implementer → in-progress" "transition applied"
+assert_contains "$out" "#1: ready-for-implementer → in-progress" "epic pulled by first active child"
 assert_contains "$(state "s['issues']['3']['labels']")" "status:in-progress" "label swapped"
-assert_not_contains "$(state "s['issues']['3']['labels']")" "status:ready-for-agent" "old label removed"
+assert_not_contains "$(state "s['issues']['3']['labels']")" "status:ready-for-implementer" "old label removed"
 
 assert_fails run board-transition.sh 3 in-review                       # PR link required
 out="$(run board-transition.sh 3 in-review "review round 1" --pr https://github.com/test/repo/pull/9 --branch feat/a)"
@@ -172,7 +172,7 @@ assert_fails run board-edge.sh 8 --orphan                               # no par
 
 run board-transition.sh 6 in-progress >/dev/null
 out="$(run board-edge.sh 6 --parent 8)"                                 # move active child under new epic
-assert_contains "$out" "#8: ready-for-agent → in-progress" "in-progress child pulls new epic"
+assert_contains "$out" "#8: ready-for-implementer → in-progress" "in-progress child pulls new epic"
 
 # ---- relate --------------------------------------------------------------------
 echo "board-relate:"
@@ -273,8 +273,8 @@ FIX2
 assert_contains "$out" "FAIL #3: closed but still labeled" "closed-labeled named"
 assert_contains "$out" "FIX:" "FIX lines present"
 
-out="$(run board-transition.sh 9 ready-for-agent)"               # repair path: untracked → open state
-assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-agent" "repair labels untracked issue"
+out="$(run board-transition.sh 9 ready-for-implementer)"               # repair path: untracked → open state
+assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-implementer" "repair labels untracked issue"
 out="$(run board-transition.sh 7 in-progress)"                   # repair path: conflict → normalized
 assert_equals "$(state "sorted(l for l in s['issues']['7']['labels'] if l.startswith('status:'))")" "['status:in-progress']" "repair normalizes conflict to one label"
 python3 - <<'FIX'
@@ -366,13 +366,13 @@ assert_equals "$successes" "1" "concurrent bind has exactly one winner"
 assert_equals "$owners" "1" "concurrent bind leaves exactly one ticket owner"
 
 # Park state must be read after acquiring the metadata lock. Reproduce a bind
-# waiting on the lock while the ticket transitions ready-for-agent→needs-human:
+# waiting on the lock while the ticket transitions ready-for-implementer→needs-human:
 # a pre-lock snapshot would wrongly strip the newly parked owner.
 python3 - <<'PY'
 import json,os
 p=os.environ['MOCK_GH_STATE']; s=json.load(open(p)); src=dict(s['issues']['8'])
 src.update(number=999,id='ID_999',title='bind race park',state='OPEN',stateReason=None,
-           labels=['bug','status:ready-for-agent','priority:P2'],body='## Problem & intent\n\nrace')
+           labels=['bug','status:ready-for-implementer','priority:P2'],body='## Problem & intent\n\nrace')
 s['issues']['999']=src; json.dump(s,open(p,'w'))
 json.dump({'uuid':'park-race-old','name':'review-pr-999','status':'idle','ticket':'999'},
           open(os.path.join(os.environ['DAEMON_HOME'],'park-race-old.json'),'w'))
@@ -397,7 +397,7 @@ assert_not_contains "$(cat "$DAEMON_HOME/park-race-new.json")" '"ticket"' "lock-
 
 out="$(run board-show.sh 9)"
 assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
-assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
+assert_contains "$out" '"state": "ready-for-implementer"' "show prints node"
 
 run board-transition.sh 9 in-progress >/dev/null
 out="$(run board-reconcile.sh)"
@@ -490,7 +490,7 @@ cat > "$LEGACY/board.json" <<J
          "category": "enhancement", "note": "mid-flight", "parent": null,
          "blocked_by": [], "spawned_by": null, "relates_to": [], "branch": "feat/t1",
          "pr": null, "created": "2026-07-01", "updated": "2026-07-05", "gh": 8},
-  "T2": {"title": "Unlinked new", "md": "tickets/T2.md", "state": "ready-for-agent",
+  "T2": {"title": "Unlinked new", "md": "tickets/T2.md", "state": "ready-for-implementer",
          "category": "bug", "note": null, "parent": null, "blocked_by": ["T1"],
          "spawned_by": "T1", "relates_to": [], "branch": null, "pr": null,
          "created": "2026-07-02", "updated": "2026-07-02", "gh": null}
@@ -547,7 +547,7 @@ assert_contains "$out" "now eligible: #13" "finalize reports unblocked dependent
 out="$(run board-transition.sh 12 "done")"                          # idempotent re-run
 assert_contains "$out" "now eligible: #13" "finalize re-run is safe"
 assert_fails run board-transition.sh 12 wontfix "flip"            # done → wontfix still illegal
-assert_fails run board-transition.sh 13 ready-for-agent           # already ready (open states still die)
+assert_fails run board-transition.sh 13 ready-for-implementer           # already ready (open states still die)
 
 # ---- close candidate (derived signal, never a label) --------------------------
 # Open ticket + every linked PR merged/closed + ≥1 merged → CLOSE? in list,
@@ -583,7 +583,7 @@ assert_not_contains "$lint_out" "WARN #15: all" "abandoned-only not WARNed"
 assert_not_contains "$lint_out" "WARN #16: all" "open-PR not WARNed"
 
 out="$(run board-map.sh)"
-assert_contains "$out" "| #14 | P2 | ELIGIBLE · CLOSE? |" "md table marks the candidate"
+assert_contains "$out" "| #14 | P2 | ready-for-implementer · ELIGIBLE · CLOSE? |" "md table marks the candidate"
 run board-map.sh --write >/dev/null 2>&1
 # pull the per-node flag out of the embedded payload (grep can't scope to a node)
 ccflag() { python3 - "$WORK/doperpowers/issue-tracker/BOARD.html" "$1" <<'PY'
@@ -692,8 +692,8 @@ assert_contains "$out" "#19: interactive-preferred → in-progress" "human takes
 assert_fails run board-transition.sh 19 interactive-preferred                  # note required
 out="$(run board-transition.sh 19 interactive-preferred "back to parked")"
 assert_contains "$out" "#19: in-progress → interactive-preferred" "in-progress → interactive-preferred legal (gate-fail mid-build)"
-out="$(run board-transition.sh 19 ready-for-agent)"
-assert_contains "$out" "#19: interactive-preferred → ready-for-agent" "re-spec exit: settled decisions return it to the pool"
+out="$(run board-transition.sh 19 ready-for-implementer)"
+assert_contains "$out" "#19: interactive-preferred → ready-for-implementer" "re-spec exit: settled decisions return it to the pool"
 run board-transition.sh 19 interactive-preferred "back to parked" >/dev/null   # restore the park for the kanban asserts
 set +e
 lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
@@ -705,11 +705,11 @@ echo "needs-human:"
 run board-register.sh "NH probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                     # 20
 assert_fails run board-transition.sh 20 needs-human                            # note required
 out="$(run board-transition.sh 20 needs-human "pick auth provider: A or B (rec: A)")"
-assert_contains "$out" "#20: ready-for-agent → needs-human" "gate-fail park applied"
+assert_contains "$out" "#20: ready-for-implementer → needs-human" "gate-fail park applied"
 out="$(run board-transition.sh 20 needs-info "research first: provider capability matrix")"
 assert_contains "$out" "#20: needs-human → needs-info" "park-to-park re-triage legal"
-out="$(run board-transition.sh 20 ready-for-agent)"
-assert_contains "$out" "#20: needs-info → ready-for-agent" "answered park returns to ready"
+out="$(run board-transition.sh 20 ready-for-implementer)"
+assert_contains "$out" "#20: needs-info → ready-for-implementer" "answered park returns to ready"
 
 # ---- blocked is retired (v8) --------------------------------------------------
 echo "blocked retired:"
@@ -871,7 +871,7 @@ unset DAEMON_SCRIPTS STUB_STATE
 # ---- spike lane (category spike) ---------------------------------------------
 echo "spike category:"
 spike_t="$(run board-register.sh "Spike: is X feasible" spike P2  --body-file "$SPEC_BODY" | awk '{print $1}')"
-assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-agent', 'priority:P2']" "spike category + status + priority labels"
+assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-implementer', 'priority:P2']" "spike category + status + priority labels"
 assert_contains "$(state "s['labels']")" "spike" "spike label auto-created by ensure_labels"
 assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike category"
 run board-transition.sh "$spike_t" in-progress >/dev/null
@@ -881,19 +881,19 @@ run board-transition.sh "$spike_t" "done" >/dev/null   # the human read the find
 assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-human → done: the human closes a read spike directly"
 
 # ---- pre-spec guard (the #567 hole) --------------------------------------------
-# A ticket whose body is still the pre-spec skeleton was born ready-for-agent
+# A ticket whose body is still the pre-spec skeleton was born ready-for-implementer
 # and auto-dispatched to an implementer 45 seconds later — before any spec
-# existed. A skeleton is never implementable: explicit ready-for-agent birth
+# existed. A skeleton is never implementable: explicit ready-for-implementer birth
 # refuses it, a default birth demotes to needs-info, and the promotion to
-# ready-for-agent re-checks the body.
+# ready-for-implementer re-checks the body.
 echo "pre-spec guard:"
-assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-agent
+assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-implementer
 out="$(run board-register.sh "Skeleton follow-up" bug P2 --spawned-by 2)"
 skel="${out%% *}"
 assert_contains "$(state "s['issues']['$skel']['labels']")" "status:needs-info" "default skeleton birth demotes to needs-info"
-assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a skeleton is never born ready-for-agent"
+assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-implementer" "a skeleton is never born ready-for-implementer"
 assert_contains "$(state "s['issues']['$skel']['comments'][0]")" "pre-spec" "demotion posts the spec-pending note"
-assert_fails run board-transition.sh "$skel" ready-for-agent
+assert_fails run board-transition.sh "$skel" ready-for-implementer
 SKEL="$skel" python3 - <<'PY'
 import json, os
 p = os.environ["MOCK_GH_STATE"]
@@ -901,11 +901,11 @@ s = json.load(open(p))
 s["issues"][os.environ["SKEL"]]["body"] = "## Problem & intent\n\nnow specified\n"
 json.dump(s, open(p, "w"))
 PY
-out="$(run board-transition.sh "$skel" ready-for-agent)"
-assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a filled body promotes to ready-for-agent"
+out="$(run board-transition.sh "$skel" ready-for-implementer)"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-implementer" "a filled body promotes to ready-for-implementer"
 # a body-file that still carries the placeholder is a skeleton too
 printf '## Problem & intent\n\n_(pre-spec: fill in)_\n' > "$TEST_ROOT/still-skel.md"
-assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-agent --body-file "$TEST_ROOT/still-skel.md"
+assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-implementer --body-file "$TEST_ROOT/still-skel.md"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

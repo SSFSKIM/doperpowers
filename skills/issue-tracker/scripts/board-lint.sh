@@ -86,7 +86,7 @@ for tid in sorted(tickets, key=int):
     # Close candidate (derived, never a label): every linked PR landed or died,
     # at least one merged, yet the issue is open — usually a PR that skipped
     # "Closes #N". A triage cue, not a violation: no one-line FIX exists
-    # (ready-for-agent → done is deliberately not a legal transition), so the
+    # (a dispatchable lane state → done is deliberately not a legal transition), so the
     # judgment paths are named instead. ACTIVE states are normal mid-flight
     # shape and skipped (D4 in the ExecPlan).
     if n.get("close_candidate") and n["state"] not in B.ACTIVE:

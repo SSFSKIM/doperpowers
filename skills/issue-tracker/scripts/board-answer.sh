@@ -14,7 +14,8 @@
 #
 # Fresh-dispatch fallback (this script refuses; do it by hand): no bound
 # session, a dead/retired session, or answers that reshape the ticket's scope
-# → comment the answers, then `board-transition.sh <n> ready-for-agent`.
+# → comment the answers, then `board-transition.sh <n> ready-for-implementer
+# (or ready-for-architect per the park discriminant)`.
 #
 # NEVER RUN IN THE FOREGROUND — the resume blocks for the worker's whole turn
 # (same rule as daemon-resume.sh / codex-resume.sh): Monitor or background
@@ -71,7 +72,8 @@ state = tickets[tid]["state"]
 if state != "needs-human":
     B.die("#%s is %s, not needs-human — board-answer relays needs-human parks only\n"
           "  (interactive-preferred -> attach/brainstorm; needs-info -> fold the "
-          "research into the body, then ready-for-agent)" % (tid, state))
+          "research into the body, then ready-for-implementer (or "
+          "ready-for-architect per the park discriminant))" % (tid, state))
 meta = None
 for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
     try:
@@ -84,7 +86,8 @@ for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
         break
 if meta is None:
     B.die("#%s has no bound session — fresh dispatch instead: comment the answers, "
-          "then board-transition.sh %s ready-for-agent" % (tid, tid))
+          "then board-transition.sh %s ready-for-implementer (or ready-for-architect "
+          "per the park discriminant)" % (tid, tid))
 status = meta.get("status") or ""
 if status in ("working", "blocked"):
     B.die("#%s's bound session %s is mid-turn (status=%s) — nothing is waiting "

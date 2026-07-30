@@ -6,14 +6,15 @@
 # ticks are safe and a restart loses nothing.
 #
 # Passes, each independently guarded so one failure never stops the rest:
-#   RECOVER  in-progress tickets with a bound implement/spike worker that is
-#            dead (finalize: absent/error), silent past the stall timeout, or
-#            finished without a board transition → bounded resume (a nudge on
-#            the SAME session — context intact), 3 lifetime attempts per
-#            daemon, then park needs-human with an orientation note. A dead
-#            worker on a still-ready-for-agent ticket is just retired — the
+#   RECOVER  in-flight tickets (in-progress, in-design) with a bound
+#            implement/architect/spike worker that is dead (finalize:
+#            absent/error), silent past the stall timeout, or finished
+#            without a board transition → bounded resume (a nudge on the SAME
+#            session — context intact), 3 lifetime attempts per daemon, then
+#            park needs-human with an orientation note. A dead worker on a
+#            still-pre-verdict (ready-for-*) ticket is just retired — the
 #            dispatch pass fresh-dispatches it (re-orientation is cheap
-#            pre-gate).
+#            pre-verdict).
 #   CANCEL   live implement/spike workers whose ticket reached a terminal
 #            state (done/wontfix) → retire + a [board] termination comment.
 #            Park states never cancel (park = pause); review-pr-*/land-pr-*
@@ -159,7 +160,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
     log "[sweep] RECOVER: #$tk worker $uuid $why — cap ($RECOVERY_CAP) exhausted, parking needs-human"
     "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
-      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (daemon-resume/board-answer) or re-cut to ready-for-agent for a fresh dispatch" \
+      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (daemon-resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"
     return
@@ -183,7 +184,7 @@ pass_recover() {
     # silently abandon exactly the failed-resume and fast-fail-spawn shapes.
     [ "$fin" = "noop" ] && fin="$status"
     case "$state" in
-      in-progress)
+      in-progress|in-design)
         case "$fin" in
           absent) _recover "$tk" "$uuid" "$recov" "died mid-turn (session gone)"; acted=$((acted+1)) ;;
           error)  _recover "$tk" "$uuid" "$recov" "turn errored"; acted=$((acted+1)) ;;
@@ -198,17 +199,17 @@ pass_recover() {
               fi
             fi ;;
         esac ;;
-      ready-for-agent)
+      ready-for-architect|ready-for-implementer)
         # a dead pre-gate worker frees its slot; the dispatch pass re-runs it
         case "$fin" in
           absent|error)
-            log "[sweep] RECOVER: #$tk pre-gate worker $uuid dead — retired (dispatch pass re-runs the gate fresh)"
+            log "[sweep] RECOVER: #$tk pre-verdict worker $uuid dead — retired (dispatch pass re-runs the gate fresh)"
             "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
             acted=$((acted+1)) ;;
         esac ;;
     esac
   done <<EOF
-$(_bound_rows | grep -E '^(in-progress|ready-for-agent)\|' || true)
+$(_bound_rows | grep -E '^(in-progress|in-design|ready-for-architect|ready-for-implementer)\|' || true)
 EOF
   log "[sweep] RECOVER: $acted acted"
 }

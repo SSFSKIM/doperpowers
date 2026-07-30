@@ -78,7 +78,7 @@ elif op == "unblock":
     B.remove_blocked_by(n, tickets[ref])
     n["blocked_by"].remove(ref)
     lines.append("#%s: blocked_by -= #%s" % (tid, ref))
-    if n["state"] == "ready-for-agent" and tid not in B.epics(tickets) \
+    if n["state"] in B.DISPATCHABLE and tid not in B.epics(tickets) \
        and all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"]):
         lines.append("now eligible: #%s  %s" % (tid, " ".join(n["title"].split())))
 
