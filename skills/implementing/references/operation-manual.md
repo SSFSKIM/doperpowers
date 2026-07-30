@@ -53,9 +53,11 @@ Children via `board-register.sh --parent <original>`; sibling ordering via
 `--blocked-by` (a chain IS serialization — serial vs parallel is a
 dependency shape, not a policy branch). `--spawned-by` stays reserved for
 scope-outs/follow-ups discovered during work. Each child is gate-triaged
-honestly at registration (`ready-for-agent` only if the worker believes it
-passes the gate). Register only children specifiable as self-contained
-pre-specs NOW; contingent phases live as a `## Roadmap` section in the
+honestly at registration (a dispatchable lane state (the birth rule:
+design-heavy children → `ready-for-architect`, else `ready-for-implementer`)
+only if the worker believes it passes the gate). Register only children
+specifiable as self-contained pre-specs NOW; contingent phases live as a
+`## Roadmap` section in the
 parent body — the worker finishing phase K registers phase K+1 at PR time.
 The parent becomes an epic (never dispatched; the sweeps move it). The
 decomposing worker writes no code. Recursion is emergent: each child's
@@ -185,7 +187,7 @@ proposals, registration and comments are the only channels.
   answers to the still-bound session (issue-tracker's `board-answer.sh` —
   park = pause, not death); the resumed worker re-states its gate verdict
   against the answers before proceeding. Fallback (no/dead session, or
-  scope-reshaping answers): flip back to `ready-for-agent`; the next
+  scope-reshaping answers): flip back to `ready-for-implementer`; the next
   dispatch re-runs the gate with the comments as ticket content. Either
   way, answers belong in the body/comments, not in chat.
 - **Worker dies mid-build** — `board-reconcile.sh` flags the orphaned

@@ -43,20 +43,24 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing |
-| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
+| **Architect worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets | doperpowers:architecting |
+| **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | doperpowers:implementing |
+| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human` / `ready-for-architect`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
 
 ## State vocabulary
 
-`ready-for-agent → in-progress → in-review → done` is the happy path; under
-the review loop (doperpowers:reviewing-prs) a PR passes through
-`confident-ready` between `in-review` and `done`.
+The architect lane's happy path is `ready-for-architect → in-design →
+ready-for-implementer → in-progress → in-review → done`; a direct
+ticket starts at `ready-for-implementer`. Under the review loop a PR
+passes through `confident-ready` between `in-review` and `done`.
 
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
-| `ready-for-agent` | open + `status:ready-for-agent` | pre-spec complete (the bar: the Ticket Gate — `references/ticket-gate.md`, well-defined + well-scoped; the next worker re-runs it, so a registrar's claim is a recommendation, never inherited trust); dispatchable once blockers are done | — |
+| `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route) | — |
+| `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`) | optional |
+| `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → implementer) | — |
 | `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
@@ -75,9 +79,20 @@ recommended answer. Knowledge work that anyone could in principle do
 (substantial research, spec-deepening) → `needs-info`; the note says what
 is missing. Not one answer but ongoing steering of the work's core →
 `interactive-preferred`; any ENUMERABLE set of open decisions, however
-many and whatever the ticket's size, is `needs-human` — not steering. Waiting on other tickets is NOT a
-park: dependencies are edges — cut `blocked-by` and return the ticket to
-`ready-for-agent` (the note names any banked branch); the unblock sweep
+many and whatever the ticket's size, is `needs-human` — not steering.
+
+The discriminant has a THIRD address: missing or broken design that an
+AGENT can author → `ready-for-architect` — written by the Implementer's
+gate (plan-need), the Implementer mid-build (a genuinely blocked plan),
+and the review worker at a design-gap impasse; never by-passed into
+`needs-human` (the human address is for what only a human can give).
+The board counts these escalation edges: a second traversal of the same
+edge on one ticket converts to `needs-human` mechanically.
+
+Waiting on other tickets is NOT a park: dependencies are edges — cut
+`blocked-by` and return the ticket to its lane queue
+(`ready-for-implementer`, or `ready-for-architect` by your judgment of
+the birth rule) (the note names any banked branch); the unblock sweep
 re-surfaces it the moment its blockers land, which no park state does.
 (`blocked` was retired in v8: its meaning was absorbed by `needs-human`;
 lint names any legacy label with the migration FIX.)
@@ -102,7 +117,7 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for `ready-for-agent` and demoted to `needs-info` otherwise); prints `<number> <url>` |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
@@ -160,11 +175,16 @@ pick by repo visibility:
    bootstrap names, then reads its own ticket and the repo's
    `.doperpowers/repo-facts.md` itself). Substitute every
    `{{PLACEHOLDER}}`: `ROLE` = `SPIKE` when the ticket's category is
-   `spike`, else `IMPLEMENT`; `PROTOCOL_FILE` = the ABSOLUTE plugin path
-   of the lane's protocol (spike → implementing's
-   `references/spike-worker-protocol.md`, else implementing's
-   `SKILL.md` — the skill IS the implement protocol); `ISSUE_NUMBER`,
-   `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
+   `spike` (state-free — category outranks lane), `ARCHITECT` when the
+   state is `ready-for-architect`, else `IMPLEMENT`; `PROTOCOL_FILE` =
+   the lane's protocol (spike → doperpowers:implementing
+   `references/spike-worker-protocol.md`; architect →
+   doperpowers:architecting `SKILL.md`; else doperpowers:implementing
+   `SKILL.md`). The ARCHITECT dispatch ignores `engine:*` labels and
+   `$WORKER_ENGINE` — plan authorship is never label-routed — and pins
+   `${ARCHITECT_MODEL:-fable}` on the plain-Claude route; the
+   engine resolution earlier in this step applies to the other roles.
+   `ISSUE_NUMBER`, `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
    `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
    implementing's `references/implement-decompose.md` (a
    runtime-opened procedure: the prompt carries only the pointer; the
@@ -213,9 +233,12 @@ reviewing-prs, and nobody sits between them and the board.
      worker keeps its orientation and re-states its gate verdict against
      the answers before proceeding. Fallback — no/dead bound session, or
      answers that reshape the ticket's scope: answer in a comment (or edit
-     the body), then `board-transition.sh <n> ready-for-agent` — the next
-     dispatch re-runs the gate against the enriched ticket from fresh
-     context.
+     the body), then `board-transition.sh <n> ready-for-implementer` (or
+     `ready-for-architect` per the birth rule; strip a stale `plan:` pin
+     with a fresh Architect pass when the scope answer invalidates the
+     plan) — the next dispatch runs the lane's protocol against the
+     enriched ticket from fresh context. An answered park with a live
+     bound session returns to its `pre-park:` state automatically.
    - a spike's `needs-human "findings ready: …"` is a handoff, not a
      blockage: read the `[findings]` comment, then close (`done` — the
      manual flip for non-PR work), relay a follow-up question
@@ -223,11 +246,13 @@ reviewing-prs, and nobody sits between them and the board.
      graduate (the worker already registered clear-cut graduation tickets
      `--spawned-by`; register the rest yourself).
    - `needs-info` → do (or delegate) the research; fold the findings into
-     the body; back to `ready-for-agent`.
+     the body; back to its lane queue (`ready-for-implementer`, or
+     `ready-for-architect` by your judgment of the birth rule).
    - `interactive-preferred` → take it into a live doperpowers:brainstorming
      session (the note says which decision areas need steering); the session
      ends in a controlled-track build, a decomposition into gate-passing
-     children, or a re-spec back to `ready-for-agent`.
+     children, or a re-spec back to its lane queue (`ready-for-implementer`,
+     or `ready-for-architect` by your judgment of the birth rule).
 3. Finalize merges: `board-transition.sh <n> done` on merge-auto-closed
    tickets (lint's FIX line says the same). Workers registered their own
    follow-ups at PR time — verify against the PR's FOLLOW-UPS section; a
@@ -240,9 +265,11 @@ reviewing-prs, and nobody sits between them and the board.
 
 Both loops keep their protocol in the skill file and spawn through a short
 bootstrap that names the dispatcher-owned protocol path and supplies the
-runtime bindings: the implement-side protocol is doperpowers:implementing
-itself (`SKILL.md`; spike lane → its `references/spike-worker-protocol.md`;
-bootstrap `references/worker-bootstrap.md`), the review-side protocol is
+runtime bindings: the implement-side protocols are doperpowers:implementing
+itself (`SKILL.md`; spike lane → its `references/spike-worker-protocol.md`)
+and, on the architect lane, doperpowers:architecting itself (`SKILL.md`) —
+all three share the implement-side bootstrap
+(`references/worker-bootstrap.md`). The review-side protocol is
 doperpowers:reviewing-prs itself (`SKILL.md`; bootstrap
 `references/review-worker-bootstrap.md`). This file owns only the schema
 they write against.
@@ -314,6 +341,5 @@ follow-up not registered does not exist.
   `needs-human` migration.
 - Consumer label automation that already speaks `status:*` (e.g. assign →
   `status:in-progress`) is a legitimate board writer — same store, same
-  vocabulary, no sync. Its managed-label set must track the v8 vocabulary
-  (add `status:needs-human` / `status:interactive-preferred`, drop the
-  retired `status:blocked`).
+  vocabulary, no sync. Its managed-label set must track the v9 vocabulary
+  (the lane states replace `status:ready-for-agent`).
