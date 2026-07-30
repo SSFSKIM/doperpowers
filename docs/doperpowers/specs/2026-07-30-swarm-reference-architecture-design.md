@@ -25,9 +25,10 @@ choose between a "startup" design and an "enterprise" design: **there is
 one architecture, and scale is expressed as knob values.** The 2026-07-23
 program maintained two parallel specs because the ops cost of self-hosting
 was priced as a human engineer; the clean-slate round removed that constant
-(agent-ops ≈ $150/mo, flat in volume — `r4-economics.md` §7) and all four
-research lanes independently converged on the single-architecture answer
-(`r1` §3, `r2` §7, `r3` §6.2, `r4` §10).
+(agent-ops ≈ $150/mo, flat in volume — `r4-economics.md` §7) and the
+round's four sequenced, non-circular evidence bases each found no fork at
+its own layer — the single-architecture answer (`r1` §3, `r2` §7,
+`r3` §6.2, `r4` §10).
 
 **Terms of art.** *cc-harness*: the Claude Agent SDK harness co-designed
 with this platform (repo `CC-to-SDK`). *Run*: one worker session bound to
@@ -54,7 +55,7 @@ framework deploy at every scale. The knobs:
 | K3 | Run-class egress profile | credential-aligned 3-layer (§3.2) | same + optional hardening (proxy attenuator, srt inner layer) | this spec, DL-4 |
 | K4 | Ops runbook catalog | Standard catalog (T1–T7 taxonomy) | larger catalog; at ≥2 clusters, cross-watch | `r3` §6.2 |
 | K5 | Architect-lane concurrency cap | set from a **cost target** (Fable run ≈ 5× a Sonnet run; a 5-point share move ≈ $34k/mo at A0-mid) | same mechanism, larger budget | `r4` §6.3 |
-| K6 | Execution sidecar | none (virtual keys + gVisor + egress substitute) | two-container sidecar on the push-credential implement class only | governing principle; `p4` fallback |
+| K6 | Execution sidecar | none (virtual keys + gVisor + egress substitute) | deferred option: two-container sidecar on the push-credential implement class, exercisable only once T14 (§2) exists | governing principle; DL-12 |
 
 **Cluster mode is not a knob.** GKE Standard + Dataplane V2 + gVisor node
 pools is the default at BOTH tiers. Autopilot is retired as a tier and
@@ -116,7 +117,18 @@ the authoritative park feed for the E2 ledger and the E3 unified queue);
 cannot pin its sessionStore/hooks/posture; the probe-era workaround is a
 bespoke entry point); and **T12** — the fleet SDK pin + drift gate, which
 closes the version skew R1 found live (harness 0.3.220 vs probes
-0.3.211) so spike evidence lands on a pinned SDK.
+0.3.211) so spike evidence lands on a pinned SDK. Two items join the
+backlog from the critique round: **T14** (deferred — cross-container
+exec routing for the K6 sidecar; the ticket records the value case —
+preventing executed code from ever *touching* the push credential, vs
+branch protection + QAgent review as the current weaker backstop — and
+must carry the transcript-mirror shared-filesystem constraint across
+the container split, or B4's silent frame-drop recurs one layer down)
+and **T15** (the sessionStore append-failure posture: bounded
+buffer-and-retry, then fail loud — never silent local divergence).
+T5's acceptance additionally covers answer-to-re-raise correlation: a
+park answered while its pod is dead must bind to the re-raised decision
+on resume.
 
 ## 3. Platform layer — k8s + Agent Sandbox + egress
 
@@ -156,11 +168,16 @@ restriction with what the pod holds:
   GKE credential-theft path while leaving the public internet open and
   the pod able to resolve names and reach its model gateway; zero
   friction for research, Playwright, or scripts.
-- **Layer 3 — default-deny + FQDNNetworkPolicy allowlist: only on lanes
-  holding long-lived credentials** (the push-credential implement class).
+- **Layer 3 — default-deny + FQDNNetworkPolicy allowlist: on lanes
+  holding long-lived credentials** (the push-credential implement class)
+  **and, by DL-13's adversarial-code exception, the review lane**
+  (executes the PR under review by design; near-zero friction claim).
   Lanes mapped to the research class run **open public egress** and hold
-  nothing but a revocable per-run virtual key — restricting a pod with
-  nothing to steal is a hard gate without a validated failure state.
+  no durable credentials — restricting such a pod is a hard gate without
+  a validated *credential* failure state. What those pods do still hold
+  is the private source tree and transcript context; their exfiltration
+  over open egress is an explicitly ACCEPTED risk, not an oversight
+  (DL-13).
   Direct Playwright/web access is first-class on these lanes. The
   classifier-gated proxy attenuator (2026-07-29 enterprise DL) is
   **demoted to an enterprise hardening knob**, no longer the research-lane
@@ -174,13 +191,20 @@ on):
 |---|---|---|---|
 | `implementer` | implement | Layers 1–3 (FQDN allowlist) | push credential + virtual key |
 | `architect`, `spike` (board lane) | research | Layers 1–2 (open public) | virtual key only; repo via claim-time ephemeral read token, scrubbed after workspace provisioning |
-| `qagent` | review | Layers 1–2 (open public) | virtual key only; same ephemeral-read mechanism; no push credential, no implementer-volume mounts |
+| `qagent` | review | Layers 1–3 (allowlist: git host, registries, doc hosts) — **human veto pending**, DL-13 | virtual key only; same ephemeral-read mechanism; no push credential, no implementer-volume mounts |
 | `ops` | ops | n/a — not a sandbox pod | own key path on the out-of-cluster VM (§5) |
 
-The ephemeral-read mechanism (clone with a short-lived token at claim,
-then scrub it) is a synthesis addition: it is what qualifies the
-non-push lanes for open egress under the credential-alignment rule —
-after provisioning, those pods hold nothing durable to steal.
+The ephemeral-read mechanism is a synthesis addition: clone with a
+short-lived token at claim, **scrub it, and only then install
+dependencies** — postinstalls must never run while the token is live.
+After provisioning, those pods hold no durable credentials. The qagent
+row deliberately departs from pure credential alignment: review executes
+adversarial code *by design* (the PR under review) while its residual
+friction is near zero — doc lookups ride the provider's server-side
+web_search/web_fetch, and a genuinely blocked fetch files an env-issue
+or parks, never quietly widens the allowlist. The spike lane's
+deliverable is its report on the ticket; branch-producing exploration is
+not spike work — it re-enters as an implement-class ticket.
 
 Implementation: profiles are k8s objects selected by dispatcher-stamped
 pod labels (`run-class:`), so the egress class is chosen by the control
@@ -194,9 +218,17 @@ ever reopens.
 In-cluster LiteLLM-class gateway, control-plane namespace, HA pair; real
 provider keys live only there; sandbox pods can reach only the gateway
 for model traffic. Key lifecycle rides the claim lifecycle (§2). The ops
-agent never uses this gateway (§5). srt-inside-gVisor (likely-yes, desk
-confidence) is cluster-day-one probe P4; either outcome, srt is a cost
-knob — the load-bearing boundary stays egress + credential brokering.
+agent never uses this gateway (§5). Warm pods are born with their own
+appserver bearer as a 0600 token-file minted at pool creation; the claim
+registers its hash on the run row, and plaintext tokens live only in the
+E3 gateway's own secret store — never on the board. srt-inside-gVisor
+(likely-yes, desk confidence) is cluster-day-one probe P4. The P4-FAIL
+posture is **no second exec layer** — srt is never the load-bearing
+boundary (that stays egress + credential brokering), so losing it
+degrades defense-in-depth without forcing topology; the K6 sidecar
+remains a deferred enterprise option gated on T14, not a fallback
+default (DL-12, superseding the pre-synthesis fallback note in
+`p4` §(c)).
 
 ## 4. Board layer — Postgres SSOT
 
@@ -213,12 +245,29 @@ depends on:
   cc-harness Postgres sessionStore's `mtime` stamp — zero new worker
   duties, extended to the lease. One Postgres, two schemas
   (`board` / `sessions`), pooler-safe by construction; promote-sessions-
-  first is the standing separation ladder. **Sizing constraint:** the
-  `mtime` stamp lands at turn boundaries only (probe 62), so the lease
-  window MUST exceed the fleet's maximum turn duration — otherwise a
-  long live turn reads as dead and reclaim revokes its virtual key
-  mid-turn. This couples the lease knob to the small-turns design-around
-  (§2).
+  first is the standing separation ladder. **Liveness is phased and
+  probe-confirmed.** Pre-T11 (mtime only): the `mtime` stamp lands at
+  turn boundaries only (probe 62), so the lease window — per-lane
+  config, never a fleet scalar — MUST exceed that lane's maximum turn
+  duration; otherwise a long live turn reads as dead and reclaim
+  revokes its virtual key mid-turn. Once T11's hook-event emitter
+  lands, the liveness grain shrinks to the tool call under a
+  **suspicion → probe → condemn** rule: hook-silence past the lane's
+  window is suspicion only; condemnation requires a failed active probe
+  (pod get + the tokenless `/healthz` from T7). A healthy pod with
+  silent hooks is never reclaimed — it is logged as a T5-class
+  env-issue (wedged emitter). **Continuity gate, both signals:** the
+  reconciler may not condemn on ANY staleness unless the state plane
+  was continuously reachable for the relevant window since its own
+  recovery — otherwise a Postgres restart mass-false-reclaims the
+  fleet, revoking every live run's key; and staleness is judged on
+  board insertion time (`ticket_event.at`), never emitter-side
+  timestamps (T15 buffering makes late arrivals with old payloads
+  normal). Named residual: a live pod with a hung engine is
+  indistinguishable from a legitimately long tool call by every passive
+  signal — that tail stays ops-agent judgment (`r3` §2.3 feed 3),
+  bounded by per-lane tool-call ceilings; the phased liveness narrows
+  the ambiguity window, it does not close it.
 - **Mirrors are outbound-only daemons** on a transactional outbox with
   per-ticket coalescing (GitHub's ~500 content-writes/hr/actor cap).
   No inbound webhook surface exists at all; mirror edits are repaired,
@@ -245,7 +294,10 @@ three structural distinctions: it runs on a small VM **outside the
 cluster** (in-project; alert evaluation + dead-man's switch also outside,
 so cluster-down pages); its **own key path**, never the in-cluster
 gateway; an **independently pinned harness version**, upgraded last, so a
-fleet regression cannot disable its own fixer.
+fleet regression cannot disable its own fixer. Its patrol includes a
+self-check of its own key's credit/limit state (this round's live
+lesson: both local credentials died at once), and its silence trips the
+same outside dead-man alert as the fleet's.
 
 **Authority is structural, not prompted** (`r3` §3): runbooks are skills
 (guidance); the boundary is RBAC + a CEL ValidatingAdmissionPolicy +
@@ -273,8 +325,19 @@ lever — `r4` §9.3). Promotion bar (`r3` §5.6, with DL-3 applied):
    on-demand, so **Spot is a spike design requirement**, including
    preemption-behavior validation (DL-3, DL-7).
 
-Failure fallback: Autopilot break-glass (DL-2) — buy node ops, keep the
-architecture.
+**Failure attribution — the bar is a verdict vector, not one bit.** A
+failed bar names its taxonomy class, and the remedy follows the class:
+node/infra-class failures (T2, the node runbooks) → Autopilot
+break-glass; agent-judgment failures (lost diagnoses, thrash) → human
+ops retained and the runbook catalog iterated; queue-latency failures
+(parks nobody drained) → an E3/process fix. Autopilot remedies ONLY the
+first family — buying node ops cannot fix a judgment or queue failure.
+The cost leg is primarily live validation of the ops-token term (the
+one degree of freedom R4 could not price from a desk). Week 0
+additionally runs an **adversarial egress day**: red-team the boundary
+from inside pods, explicitly including DNS tunneling through allowed
+kube-dns against the implement lane's FQDN allowlist — a standard
+postinstall-malware technique that meets the validated-failure bar.
 
 ## 6. Economics layer — standing rules
 
@@ -296,6 +359,13 @@ architecture.
 - **Day-one instrumentation:** the per-run cache-hit-ratio meter (a +4×
   downside lever — a fleet-wide cache regression ≈ +$640k/mo at A0-mid)
   and bytes-per-run egress measurement.
+- **Ramp posture:** before the swarm campaign is approved there is no
+  standing cluster — the platform exists only as the separately gated
+  MTTR spike, and current tempo sits far below the crossover (FT1's
+  fixed floor, $445–700/mo plus the ops term, runs from cluster day one
+  regardless of volume). The standing rules above are stated at
+  campaign scale; the demand anchors remain unmeasured Fermi estimates
+  until the board's own run data replaces them.
 
 ## 7. Adoption path and gates
 
@@ -318,7 +388,8 @@ Observable behaviors, each checkable when its layer lands:
 1. **One-architecture check:** the A0 and enterprise deployments differ
    only in knob-confined changes — a single declared values file (K1/K2/
    K5 numbers, K3 lane→class assignments) plus the declared optional
-   overlays (K6's sidecar container, K3's enterprise hardening objects).
+   overlays (K6's sidecar container — exercisable only once T14 exists —
+   and K3's enterprise hardening objects).
    Any structural diff outside the values file and the named overlays is
    a fork and fails the check.
 2. **Egress posture check (in-cluster):** a research-class pod fetches an
@@ -363,7 +434,9 @@ Observable behaviors, each checkable when its layer lands:
   Rationale: Autopilot at A0 ≈ $4.2k/mo all-in vs Standard $2.4k
   (on-demand) / $1.7k (Spot) — a ~$1.9k/mo premium for node ops that
   agent-ops replaces at ~$150/mo ("paying twice for the same thing",
-  `r4` §4.4). The break-glass framing reconciles R2's dissent: if the
+  `r4` §4.4; directional — the premium buys only the node-ops slice of
+  what the flat ops term covers, so a raw multiplier overstates it). The
+  break-glass framing reconciles R2's dissent: if the
   spike fails, Autopilot IS the managed-ops purchase, same manifests.
   Rejected: R2's "Autopilot as the A0 entry" (does not survive its own
   price); deferring the call to the spike (the spike runs on Standard
@@ -462,6 +535,49 @@ Observable behaviors, each checkable when its layer lands:
   this spec binds to it rather than restating it.
   Date/Author: 2026-07-30, R2 deliverable, adopted at synthesis.
 
+- Decision: **The P4-fail posture is "no second exec layer"; the K6
+  sidecar is a deferred enterprise option gated on backlog item T14.**
+  Rationale: srt is never the load-bearing boundary, so a failed
+  srt-inside-gVisor probe removes an optional inner layer without
+  forcing topology at either tier. The pre-synthesis fallback note in
+  `p4` §(c) ("sidecar becomes the default shape") contradicts the same
+  probe's own closing line ("a defense-in-depth degradation, not a
+  design blocker") and is superseded. K6's future value case is
+  recorded on T14: with the push credential in-container, executed code
+  can USE it directly (the git host is necessarily on the Layer-3
+  allowlist) — the sidecar is the only layer preventing credential
+  touch, vs branch protection + QAgent review as the current weaker
+  backstop. Rejected: killing K6 outright (discards a legitimate
+  defense-in-depth option at near-zero carrying cost);
+  sidecar-as-default on P4 failure (would make an unbuilt, unticketed
+  topology a mandatory outcome).
+  Date/Author: 2026-07-30, critique-round convergence.
+
+- Decision: **The qagent lane moves behind a Layer-3 allowlist (git
+  host, registries, doc hosts) — HUMAN VETO PENDING; source-tree
+  confidentiality on the remaining research-class lanes is an
+  explicitly accepted risk; the two-hop injection chain is a named
+  residual.**
+  Rationale: review executes adversarial code by design (the PR under
+  review) while its friction claim is near zero — doc lookups ride the
+  provider's server-side web tools, and a blocked fetch files an
+  env-issue or parks, never quietly widens the allowlist. The remaining
+  research-class lanes (architect, board-lane spike) keep open egress
+  with the residual NAMED rather than hidden: those pods hold the
+  private source tree and transcript context, and exfiltration by
+  executed code is accepted per the human's stated risk appetite —
+  DL-4's original record argued only the credential axis. The injection
+  axis is likewise recorded: injected web content → architect plan →
+  implementer executing it WITH push credentials is invisible to
+  per-pod credential alignment; the mitigation chain is the implementer
+  gate binding the plan, plan-review + QAgent review downstream, and
+  Layer 3 on the only credentialed pod. Rejected: leaving qagent on
+  open egress (the one lane where the open-egress justification does
+  not apply); keeping the "nothing to steal" phrasing (false — fixed to
+  "no durable credentials").
+  Date/Author: 2026-07-30, critique-round convergence; the qagent row
+  awaits the human's veto.
+
 ## Surprises & Discoveries
 
 - Observation: the round's probe phase was itself disabled by a shared
@@ -501,3 +617,17 @@ Pending — written at finish.
   mechanism, "MTTR spike" disambiguated from the board's spike lane;
   minor citation fixes (DL-10 scope, +4× one-directional, npm premise
   sourced, GKE addon install rule, Autopilot-CUD open fact carried).
+- 2026-07-30: v1.2 — critique-round convergence (doperpowers:critique,
+  multi-turn debate, no open disagreements beyond the flagged veto):
+  DL-12 (P4-fail = no second exec layer; K6 reclassified as a
+  T14-gated deferred option, no longer a knob-value) and DL-13 (qagent
+  → Layer-3 allowlist, human veto pending; source-confidentiality
+  accepted-risk record; two-hop injection residual named); liveness
+  redesigned as phased suspicion → probe → condemn with a generalized
+  state-plane continuity gate (Postgres-restart mass-reclaim closed)
+  and per-lane lease windows; T14/T15 added to the backlog; spike bar
+  becomes a verdict vector with per-class remedies + week-0 adversarial
+  egress day; ramp posture added to §6; ephemeral-token
+  clone→scrub→install ordering; warm-pod appserver bearer scheme; ops
+  agent self-credential check; "independent convergence" softened to
+  sequenced non-circular.
