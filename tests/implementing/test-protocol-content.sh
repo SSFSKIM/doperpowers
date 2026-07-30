@@ -158,7 +158,7 @@ assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (
 assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
 assert_contains "$proto" "subagent-driven-development" "execution: names the forbidden interactive skills"
 assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
-assert_contains "$proto" "survive context death" "execution: plan-need trigger names context-death survival"
+assert_contains "$proto" "AGENT-answerable" "gate: plan-need names agent-answerable design gaps (the E1 escalation criterion)"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
