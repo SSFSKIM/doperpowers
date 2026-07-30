@@ -1283,8 +1283,8 @@ Insert a new section between `## Role` and `## The Gate`:
 ```markdown
 ## Mode Selection
 
-Read your ticket's `board:meta` block first. The `plan:` field decides
-your mode — machine-read, never note prose:
+MODE SELECTION — read your ticket's `board:meta` block first. The
+`plan:` field decides your mode — machine-read, never note prose:
 
 - `plan: <path>@<sha>` → **PLAN-EXECUTION**: an Architect authored your
   plan at that immutable revision on the recorded branch. NO intake

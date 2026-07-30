@@ -65,7 +65,7 @@ assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
 echo "mode selection (plan-execution vs DIRECT):"
-assert_contains "$proto" "## Mode Selection" "mode selection section present"
+assert_contains "$proto" "MODE SELECTION" "mode selection section present"
 assert_contains "$proto" "plan-execution" "plan-execution mode named"
 assert_contains "$proto" "ready-for-architect" "architect escalation edge named"
 assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
