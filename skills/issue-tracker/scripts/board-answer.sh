@@ -7,7 +7,8 @@
 #
 # The wake ritual's needs-human path: park = pause, not death. The answers
 # land on the TICKET first (the ticket is the record), the ticket returns to
-# in-progress, and the bound session is resumed with the answers relayed
+# its parking lane's in-flight state (pre-park: meta; in-progress when
+# absent), and the bound session is resumed with the answers relayed
 # verbatim — the worker keeps its orientation and re-states its gate verdict
 # before proceeding. No judge is reintroduced: the relay is mechanical, the
 # human is the author, the ticket is the record.
@@ -99,15 +100,16 @@ if status not in ("idle", "awaiting-human"):
           (tid, meta.get("uuid", "?"), status or "unknown"))
 if env["T_ANSWERS"]:
     B.comment(tid, "[answers] " + env["T_ANSWERS"])
-print("%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
-                          meta.get("status", "?"), meta.get("updated", "?")))
+ret = B.parse_meta(tickets[tid]["body"]).get("pre-park") or "in-progress"
+print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
+                              meta.get("status", "?"), meta.get("updated", "?"), ret))
 PY
 )"
-IFS=$'\t' read -r uuid engine status updated <<<"$info"
+IFS=$'\t' read -r uuid engine status updated ret <<<"$info"
 [ -n "$uuid" ] || die "binding lookup failed"
-echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated)"
+echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated, return=$ret)"
 
-"$SCRIPT_DIR/board-transition.sh" "$tid" in-progress \
+"$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
   "answers relayed — resuming bound session ${uuid:0:8}"
 
 if [ -n "$posted" ]; then

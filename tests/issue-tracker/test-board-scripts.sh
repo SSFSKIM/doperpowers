@@ -866,6 +866,20 @@ m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'))
 RETIRED
 assert_fails run board-answer.sh "$ans_t" "after retirement"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "terminal owners never orphan the ticket in-progress"
+
+# lane-aware return: an architect park's answer resumes into in-design
+out="$(run board-register.sh "Architect answer probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
+ans_arch_t="${out%% *}"
+run board-transition.sh "$ans_arch_t" in-design >/dev/null
+run board-transition.sh "$ans_arch_t" needs-human "Q: layout A or B?" >/dev/null
+cat > "$DAEMON_HOME/eeeeeeee-1111-2222-3333-444444444444.json" <<META
+{"uuid": "eeeeeeee-1111-2222-3333-444444444444", "engine": "codex",
+ "status": "idle", "ticket": "$ans_arch_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$ans_arch_t" "layout A" >/dev/null
+assert_contains "$(state "s['issues']['$ans_arch_t']['labels']")" "status:in-design" "answered architect park resumes into in-design"
+
 unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------
@@ -931,6 +945,22 @@ run board-transition.sh "$sc_t" in-design >/dev/null
 out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
 assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
 assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
+
+# ---- pre-park + lane-aware answer return (E1 transition 7) --------------------
+echo "pre-park returns:"
+run board-register.sh "Architect park probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pp_t="$(state "s['next']-1")"
+run board-transition.sh "$pp_t" in-design >/dev/null
+run board-transition.sh "$pp_t" needs-human "Q1: layout A or B? (rec: A)" >/dev/null
+assert_contains "$(state "s['issues']['$pp_t']['body']")" "pre-park: in-design" "architect park records its in-flight return target"
+out="$(run board-transition.sh "$pp_t" in-design "answers relayed")"
+assert_contains "$out" "#$pp_t: needs-human → in-design" "needs-human → in-design is a legal return"
+assert_not_contains "$(state "s['issues']['$pp_t']['body']")" "pre-park:" "return clears the pre-park meta"
+# gate-fail park from the architect QUEUE also returns to in-design
+run board-register.sh "Gate-fail park probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+gf_t="$(state "s['next']-1")"
+run board-transition.sh "$gf_t" needs-human "gate fail: purpose unstated" >/dev/null
+assert_contains "$(state "s['issues']['$gf_t']['body']")" "pre-park: in-design" "architect-queue gate-fail park targets in-design"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

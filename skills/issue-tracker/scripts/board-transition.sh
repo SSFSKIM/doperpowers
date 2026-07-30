@@ -99,6 +99,10 @@ if env["T_PR"]:
     extra["pr"] = env["T_PR"]
 if env["T_PLAN"]:
     extra["plan"] = env["T_PLAN"]
+if to == "needs-human" and cur in B.PRE_PARK:
+    extra["pre-park"] = B.PRE_PARK[cur]
+if cur == "needs-human" and to != "needs-human":
+    extra["pre-park"] = None
 lines = [B.apply_state(tickets, tid, to, note, extra_meta=extra)]
 
 # Sweep: first active child pulls its epic chain to in-progress.
