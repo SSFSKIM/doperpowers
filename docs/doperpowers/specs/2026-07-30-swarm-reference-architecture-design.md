@@ -118,12 +118,14 @@ cannot pin its sessionStore/hooks/posture; the probe-era workaround is a
 bespoke entry point); and **T12** — the fleet SDK pin + drift gate, which
 closes the version skew R1 found live (harness 0.3.220 vs probes
 0.3.211) so spike evidence lands on a pinned SDK. Two items join the
-backlog from the critique round: **T14** (deferred — cross-container
-exec routing for the K6 sidecar; the ticket records the value case —
-preventing executed code from ever *touching* the push credential, vs
-branch protection + QAgent review as the current weaker backstop — and
-must carry the transcript-mirror shared-filesystem constraint across
-the container split, or B4's silent frame-drop recurs one layer down)
+backlog from the critique round: **T14** (REDEFINED 2026-07-31 by DL-14
+— the egress-proxy sidecar: Phase-A transparent CONNECT/SNI proxy +
+`iptables-legacy` REDIRECT init container, then Phase-B TLS termination
++ egress credential brokering. The original value case carries over —
+preventing executed code from ever *touching* the push credential — now
+achieved at the network layer with six shipped precedents instead of
+unprecedented cross-container exec routing; K6's exec-split variant
+remains possible further hardening but loses its primary motivation)
 and **T15** (the sessionStore append-failure posture: bounded
 buffer-and-retry, then fail loud — never silent local divergence).
 T5's acceptance additionally covers answer-to-re-raise correlation: a
@@ -168,10 +170,10 @@ restriction with what the pod holds:
   GKE credential-theft path while leaving the public internet open and
   the pod able to resolve names and reach its model gateway; zero
   friction for research, Playwright, or scripts.
-- **Layer 3 — default-deny + FQDNNetworkPolicy allowlist: on lanes
-  holding long-lived credentials** (the push-credential implement class)
-  **and, by DL-13's adversarial-code exception, the review lane**
-  (executes the PR under review by design; near-zero friction claim).
+- **Layer 3 — allowlist egress: on lanes holding long-lived
+  credentials** (the push-credential implement class) **and, by DL-13's
+  adversarial-code exception, the review lane** (executes the PR under
+  review by design; near-zero friction claim).
   Lanes mapped to the research class run **open public egress** and hold
   no durable credentials — restricting such a pod is a hard gate without
   a validated *credential* failure state. What those pods do still hold
@@ -189,9 +191,9 @@ on):
 
 | Board lane | Run-class | Egress | Credentials in-pod |
 |---|---|---|---|
-| `implementer` | implement | Layers 1–3 (FQDN allowlist) | push credential + virtual key |
+| `implementer` | implement | Layers 1–3 (proxy allowlist) | virtual key; push credential in-pod until Phase B, then sidecar-brokered (never in the agent container) |
 | `architect`, `spike` (board lane) | research | Layers 1–2 (open public) | virtual key only; repo via claim-time ephemeral read token, scrubbed after workspace provisioning |
-| `qagent` | review | Layers 1–3 (allowlist: git host, registries, doc hosts) — **human veto pending**, DL-13 | virtual key only; same ephemeral-read mechanism; no push credential, no implementer-volume mounts |
+| `qagent` | review | Layers 1–3 (proxy allowlist: git host, registries, doc hosts) — DL-13, human-confirmed 2026-07-31 | virtual key only; same ephemeral-read mechanism; no push credential, no implementer-volume mounts |
 | `ops` | ops | n/a — not a sandbox pod | own key path on the out-of-cluster VM (§5) |
 
 The ephemeral-read mechanism is a synthesis addition: clone with a
@@ -206,12 +208,43 @@ or parks, never quietly widens the allowlist. The spike lane's
 deliverable is its report on the ticket; branch-producing exploration is
 not spike work — it re-enters as an implement-class ticket.
 
-Implementation: profiles are k8s objects selected by dispatcher-stamped
-pod labels (`run-class:`), so the egress class is chosen by the control
-plane, never the workload. The FQDN 50-resolved-IP cap and the
-pull-through registry cache mitigation are in-cluster verification items
-(`r2` §3, §8.4). Cilium `toFQDNs` is the self-managed parity if that gate
-ever reopens.
+**Enforcement mechanism (DL-14, 2026-07-31): a pod-local egress-proxy
+sidecar over a kernel default-drop floor** — FQDNNetworkPolicy is
+demoted to optional belt (its 50-resolved-IP cap, no-CNAME-chase rule,
+shared-CDN-VIP over-permission, and open-port-53 requirement are
+structural; `r5-egress-transport.md`). The shape is the field-converged
+one (GitHub AWF / Anthropic srt / Cloudflare): a native sidecar
+container whose readinessProbe gates pod readiness, plus an
+`iptables-legacy` init step — **NET_ADMIN on the init container ONLY,
+never the agent container** — that REDIRECTs 80/443 to the sidecar,
+forces DNS through the sidecar's resolver, and default-drops the rest
+of the pod netns. Interception is transparent, so the measured
+HTTP_PROXY-compliance gap (Node fetch, Playwright, Gradle, npm) never
+becomes an enforcement hole; gVisor supports exactly this primitive
+(nat-table REDIRECT + SO_ORIGINAL_DST verified upstream; TPROXY is NOT
+implemented — the inverse of general-Linux advice). Run-class proxy
+policy is delivered at claim, in-band with credentials, and is
+**runtime-updatable**: a blocked request is a structured proxy event →
+env-issue/park → policy update with no pod restart — friction becomes a
+board event, not a stalled run. **Phase A** (the spike substrate):
+CONNECT/SNI hostname allowlisting + full connection logging, no TLS
+termination (domain fronting accepted at this phase, as the vendor
+defaults do). **Phase B** (implement lane first): TLS termination with
+a per-pod ephemeral CA + **egress credential brokering** — the push
+credential lives in the sidecar and is injected only toward the git
+host over HTTPS (git forced HTTPS-only; SSH-over-CONNECT rejected as an
+opaque channel), so the agent container never holds it. Known limits
+carried from the vendors that ship this: request-signing clients
+(SigV4), format-validating CLIs, and OAuth token-exchange flows sit
+outside egress injection; cert-pinned clients need per-domain
+termination excludes. The egress class is still chosen by the control
+plane, never the workload (dispatcher-stamped `run-class:` labels select
+the Layer-2 objects; the claim delivers the proxy policy). The
+pull-through registry cache remains the warm-disk mitigation (`r2` §3).
+Cluster checks gating commitment (r5 §3): GKE Sandbox multi-container
+netns sharing; REDIRECT + SO_ORIGINAL_DST end-to-end under GKE Sandbox;
+the Agent Sandbox VAP edit exempting the egress-init container's
+NET_ADMIN.
 
 ### 3.3 Credential plane
 
@@ -395,9 +428,11 @@ Observable behaviors, each checkable when its layer lands:
 2. **Egress posture check (in-cluster):** a research-class pod fetches an
    arbitrary public URL successfully AND is refused RFC-1918/metadata
    endpoints other than the declared in-cluster allowances (gateway,
-   router, kube-dns); an implement-class pod with push credentials is
-   refused any non-allowlisted external host. Both as `kubectl exec`
-   probes.
+   router, kube-dns); an implement-class pod is refused any
+   non-allowlisted external host AT THE PROXY, and a direct-route
+   attempt from its agent container (dialing a raw IP with proxy env
+   scrubbed) is dropped by the pod-netns rules — proving enforcement
+   does not depend on client cooperation. All as `kubectl exec` probes.
 3. **Detached-worker check:** a model in a worker session dispatches a
    `DetachedTask`; the parent harness *process* is SIGKILLed inside the
    pod; the child completes and its transcript is resumable from a third
@@ -575,8 +610,36 @@ Observable behaviors, each checkable when its layer lands:
   open egress (the one lane where the open-egress justification does
   not apply); keeping the "nothing to steal" phrasing (false — fixed to
   "no durable credentials").
-  Date/Author: 2026-07-30, critique-round convergence; the qagent row
-  awaits the human's veto.
+  Date/Author: 2026-07-30, critique-round convergence. Veto resolved
+  2026-07-31: the human approved the allowlist.
+
+- Decision: **Layer 3's enforcement mechanism is a pod-local
+  egress-proxy sidecar over a kernel default-drop floor, adopted
+  phased (A: CONNECT/SNI allowlist + transparent REDIRECT + runtime
+  policy delivery at claim; B: per-pod-CA TLS termination + egress
+  credential brokering, implement lane first); FQDNNetworkPolicy is
+  demoted to optional belt; T14 is redefined accordingly.**
+  Rationale: the three-researcher survey `r5-egress-transport.md`
+  (2026-07-31, human-triggered) — every first-party agent vendor
+  enforces egress at a proxy, none ships DNS-snooping as its product
+  layer, and GitHub's open-source AWF is the exact three-container
+  shape; FQDN policy is structurally over-permissive (shared CDN VIPs,
+  50-IP cap, no CNAME chase) and requires open port 53 (a conceded
+  exfil channel); transparent REDIRECT erases the measured
+  HTTP_PROXY-compliance friction; gVisor implements REDIRECT and not
+  TPROXY (upstream-source-verified, refuting the circulating no-nat
+  claim); egress credential injection is a settled pattern (six shipped
+  implementations + the CB4A draft) that subsumes K6's credential-touch
+  goal; runtime-updatable proxy policy converts blocked-fetch friction
+  into board events — directly serving the friction concern that
+  triggered the inquiry. Rejected: keeping FQDNNetworkPolicy
+  load-bearing (the structural holes above); env-var-only proxying
+  (compliance gap = enforcement hole); Phase-A-only adoption (loses the
+  K6 subsumption; retained as fallback if Phase B's CA tax proves too
+  high in practice); a node-local shared proxy (remixes tenants at the
+  isolation seam — the Istio-ambient cost argument does not transfer
+  to bursty per-tenant pods with per-pod CAs).
+  Date/Author: 2026-07-31, human (grill: phased adoption).
 
 ## Surprises & Discoveries
 
@@ -631,3 +694,14 @@ Pending — written at finish.
   clone→scrub→install ordering; warm-pod appserver bearer scheme; ops
   agent self-credential check; "independent convergence" softened to
   sequenced non-circular.
+- 2026-07-31: v1.3 — DL-14 (human-approved on the r5 survey): Layer-3
+  enforcement moves from FQDNNetworkPolicy to the pod-local
+  egress-proxy sidecar over a kernel floor, phased (A: CONNECT/SNI +
+  transparent REDIRECT + claim-delivered runtime policy; B: per-pod-CA
+  TLS termination + egress credential brokering on the implement lane);
+  T14 redefined from cross-container exec routing to the egress
+  sidecar (K6's credential-touch goal absorbed); DL-13 veto resolved —
+  qagent allowlist human-confirmed; Acceptance 2 gains the
+  client-cooperation-independence probe; three cluster checks added
+  (netns sharing, REDIRECT e2e, VAP init-container exemption).
+  Evidence: `research/2026-07-30-clean-slate/r5-egress-transport.md`.

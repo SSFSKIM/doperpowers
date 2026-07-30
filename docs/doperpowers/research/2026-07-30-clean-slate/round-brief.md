@@ -240,6 +240,11 @@ for the cluster day it all gets tested.
 
 - 2026-07-30: v1, authored on the human's source-ledger confirmation;
   awaiting the explicit go to launch.
+- 2026-07-31: post-close supplemental — `r5-egress-transport.md` added
+  on the human's egress-sidecar proposal (3 opus researchers, live web
+  survey); synthesis spec revised to v1.3 (DL-14: pod-local egress-proxy
+  sidecar replaces FQDNNetworkPolicy as Layer-3 enforcement, phased;
+  T14 redefined; DL-13 qagent veto resolved-approved).
 - 2026-07-30: round EXECUTED on the human's go, as a background
   workflow (8 agents: probes P1–P4 = sonnet/opus/opus/sonnet; R1/R2/R3
   = fable; R4 = opus; ~1.48M subagent tokens, ~60 min). All
