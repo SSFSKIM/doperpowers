@@ -1,5 +1,11 @@
 # Cloud-scale reference architecture — the board pipeline at enterprise fleet scale
 
+> **Superseded (2026-07-30):** the current reference architecture is
+> `2026-07-30-swarm-reference-architecture-design.md` (one architecture,
+> knob-set tiers — closing the clean-slate round). This spec remains as
+> citable design history (Class B); its semantic-layer decisions survive
+> where the successor cites them.
+
 ## Purpose
 
 Today the board pipeline (implementer workers + adversarial review workers
@@ -675,3 +681,8 @@ Pending — written at finish.
   as credential brokering with per-class vendors. Three Surprises added
   (narrative-vs-artifact gap in the session store, server-side web
   tools dissolving research egress, brokering as a named category).
+- 2026-07-30: Superseded by `2026-07-30-swarm-reference-architecture-design.md`
+  at the clean-slate round's close (banner added at top). Notable revision
+  carried by the successor: the research-lane classifier-gated proxy
+  (2026-07-29 DL) is demoted to an enterprise hardening knob under the
+  credential-aligned egress posture (successor DL-4, human-authorized).

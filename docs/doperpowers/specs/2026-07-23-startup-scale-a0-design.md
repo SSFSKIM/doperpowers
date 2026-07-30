@@ -1,7 +1,14 @@
 # Startup-Scale (A0) Cloud Infrastructure — Named-Stack Design
 
-**Date:** 2026-07-23 · **Status:** Living spec · **Track:** controlled
+**Date:** 2026-07-23 · **Status:** Superseded · **Track:** controlled
 (brainstorming → this spec → writing-plans)
+
+> **Superseded (2026-07-30):** the current reference architecture is
+> `2026-07-30-swarm-reference-architecture-design.md` (one architecture,
+> knob-set tiers — closing the clean-slate round). The Stack M named-stack
+> conclusion is dead (k8s+gVisor pivot); this spec remains citable design
+> history (Class B) — notably its DL11–15 entries and the A0 anchor
+> definitions the successor still cites.
 
 ## Purpose
 
@@ -653,3 +660,7 @@ Pending — written at finish.
   (pointer added in §6). T2 spike gains four capability probes. Four
   Surprises recorded (Cloud Run research gap, hyperscaler ambient
   credential, SWP TLS-inspection question, server-side web tools).
+- 2026-07-30: Superseded by `2026-07-30-swarm-reference-architecture-design.md`
+  at the clean-slate round's close (banner added at top; Status flipped to
+  Superseded). Stack M is dead per the k8s+gVisor pivot; the A0 anchor
+  definitions and DL11–15 remain citable inputs to the successor.

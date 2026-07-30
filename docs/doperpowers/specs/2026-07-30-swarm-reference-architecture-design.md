@@ -1,0 +1,440 @@
+# Swarm Reference Architecture — One Architecture, Knob-Set Tiers (2026-07-30)
+
+> **What this is.** The synthesis spec closing the 2026-07-30 clean-slate
+> research round (`docs/doperpowers/research/2026-07-30-clean-slate/`,
+> reports r1–r4 + probes p1–p4). It is the **successor to both 2026-07-23
+> specs** — `2026-07-23-cloud-scale-reference-architecture-design.md`
+> (enterprise) and `2026-07-23-startup-scale-a0-design.md` (A0) — which
+> remain citable design history but no longer describe the current
+> architecture. Authored interactively with the human partner; the three
+> open forks the round queued were settled by the human in this session
+> (Decision Log).
+>
+> **Citation discipline:** this spec cites the round reports rather than
+> re-deriving them (read-once-then-cite). Where a claim below carries no
+> inline evidence, the named report section does.
+
+## Purpose
+
+One system runs autonomous agent swarms end to end: tickets are born on an
+AI-native Postgres board, workers execute them inside sandboxed Kubernetes
+pods running the cc-harness (Claude Agent SDK harness), humans steer
+through a control plane, and an agent — not a human — operates the
+infrastructure. After this spec, someone standing up the platform does not
+choose between a "startup" design and an "enterprise" design: **there is
+one architecture, and scale is expressed as knob values.** The 2026-07-23
+program maintained two parallel specs because the ops cost of self-hosting
+was priced as a human engineer; the clean-slate round removed that constant
+(agent-ops ≈ $150/mo, flat in volume — `r4-economics.md` §7) and all four
+research lanes independently converged on the single-architecture answer
+(`r1` §3, `r2` §7, `r3` §6.2, `r4` §10).
+
+**Terms of art.** *cc-harness*: the Claude Agent SDK harness co-designed
+with this platform (repo `CC-to-SDK`). *Run*: one worker session bound to
+one ticket claim. *Run-class*: the lane-derived profile (implement /
+research / review / ops) that selects a pod's egress policy and
+credentials. *Park*: a worker's blocking question, addressed to the human
+queue (board park) or an SDK decision (appserver park). *Turn*: one model
+API round-trip; the engine writes transcripts only at turn boundaries.
+*Spike*: the gated MTTR experiment of `r3-agent-ops.md` §5. *Agent
+Sandbox*: the `kubernetes-sigs/agent-sandbox` CRDs
+(SandboxTemplate / SandboxWarmPool / SandboxClaim / Sandbox).
+
+## 1. The through-question verdict and the knob list
+
+**One architecture; tiers are knob values.** The same manifests, the same
+CRDs, the same board schema, the same harness binary, and the same ops
+framework deploy at every scale. The knobs:
+
+| # | Knob | A0 value | Enterprise value | Owner |
+|---|------|----------|------------------|-------|
+| K1 | Discount instrument | **Spot** on the sandbox pool (duty cycle ~30% fails every CUD break-even; preemption costs ≤1 turn) | 3-yr resource CUD on baseline + Spot on burst | `r4` §9.1 |
+| K2 | Warm-pool size | small (≈5–16), near-free on Standard node headroom | sized to lane concurrency caps | `r2` §2 |
+| K3 | Run-class egress profile | credential-aligned 3-layer (§3.2) | same + optional hardening (proxy attenuator, srt inner layer) | this spec, DL-4 |
+| K4 | Ops runbook catalog | Standard catalog (T1–T7 taxonomy) | larger catalog; at ≥2 clusters, cross-watch | `r3` §6.2 |
+| K5 | Architect-lane concurrency cap | set from a **cost target** (Fable run ≈ 5× a Sonnet run; a 5-point share move ≈ $34k/mo at A0-mid) | same mechanism, larger budget | `r4` §6.3 |
+| K6 | Execution sidecar | none (virtual keys + gVisor + egress substitute) | two-container sidecar on the push-credential implement class only | governing principle; `p4` fallback |
+
+**Cluster mode is not a knob.** GKE Standard + Dataplane V2 + gVisor node
+pools is the default at BOTH tiers. Autopilot is retired as a tier and
+kept as **break-glass**: if the agent-ops spike fails its promotion bar,
+Autopilot is the managed-ops purchase — same manifests, zero switching
+cost (DL-2). Self-managed bare metal stays gated closed (DL-8).
+
+The strongest form of the one-architecture result is economic: the managed
+alternative's bill is linear in volume while the agent-ops term is flat,
+so the architecture's advantage **compounds with scale** (`r4` §10).
+
+## 2. Runtime layer — cc-harness worker pods
+
+One pod = one accountable worker = one harness session. The substrate for
+this already exists and is largely proven (`r1` §0.1); what follows are
+the design commitments layered on it.
+
+**Decoupling boundary (envelope asymmetry, applied).** Read/Write/Edit/
+Grep/Glob and foreground Bash never leave the pod — the transcript mirror
+itself assumes engine and SDK parent share a filesystem (`r1` §1C). Two
+tool families decouple: **Task above the durability threshold** becomes
+`DetachedTask` (spawns `ccx --bg`: own session id, own top-level
+transcript, survives parent death — `p2` §3), and **background Bash above
+the lifetime threshold** becomes a detached spawn or a board ticket.
+Everything else is blast-radius isolation (gVisor, optionally srt), not
+per-call containers.
+
+**The turn-durability ceiling.** The engine writes transcripts only at
+turn boundaries; a pod evicted mid-turn loses the in-flight turn in any
+store, and in-memory SDK parks die with the process (`p2` §4, engine-owned,
+unfixable from outside). Design-arounds are platform config: SIGTERM grace
+≥ turn close, small turns, idempotent re-dispatch, and park mirroring
+(T5). This ceiling is also why Spot preemption is affordable (K1).
+
+**Fleet auth: gateway virtual keys only.** Subscription OAuth is a
+fleet-wide correlated single point of failure — live-demonstrated when
+this round's own probe phase was disabled by a shared weekly limit
+(`r1` §1E). Keys are minted per claim, budget-tagged, and revoked on lease
+reclaim (spend-plane fencing). Because warm pods predate their runs,
+nothing per-run can arrive via env: **credentials and sessionStore
+selection are delivered in-band at claim** over `thread/start` config
+(`r2` §4.4).
+
+**cc-harness backlog.** R1's thirteen ticket-scoped co-design items
+(T1–T13, `r1-runtime-gaps.md` §4) are the runtime work list. Three form
+the **pre-spike set** (DL-10): **T5** — park mirroring to the board
+(converts park durability from process-memory to board-recoverable; also
+the authoritative park feed for the E2 ledger and the E3 unified queue);
+**T6** — `ccx serve --config` process-side defaults (without it a pod
+cannot pin its sessionStore/hooks/posture; the probe-era workaround is a
+bespoke entry point); and **T12** — the fleet SDK pin + drift gate, which
+closes the version skew R1 found live (harness 0.3.220 vs probes
+0.3.211) so spike evidence lands on a pinned SDK.
+
+## 3. Platform layer — k8s + Agent Sandbox + egress
+
+### 3.1 Substrate
+
+Adopt the **upstream Agent Sandbox CRDs** — now a vendor-neutral
+Kubernetes SIG-Apps subproject, which collapses the old "adopt the GKE
+product vs self-host the shape" fork (`r2` §1.2). Pin the controller
+version; treat upgrades as change windows (the v0.4→v0.5 warm-pool
+adoption bug is the validated failure state). The `Sandbox` CRD's stable
+DNS identity is the pod-addressability mechanism for the appserver seam
+(in-cluster check queued). GKE Standard + Dataplane V2 + gVisor node
+pools at both tiers (§1).
+
+### 3.2 Egress: credential-aligned three layers (DL-4)
+
+The sandbox's principal adversary is **the code the worker executes**
+(package postinstalls, build scripts, cloned repos), not the worker's
+judgment — model-quality arguments do not reduce that vector, and npm
+supply-chain compromise is a validated failure state. At the same time,
+blanket egress denial creates the exact environmental friction
+long-running autonomous work cannot afford. The posture aligns
+restriction with what the pod holds:
+
+- **Layer 1 — gVisor pod boundary: every class, always.** Transparent to
+  the workload; zero friction; protects the node and neighbors from
+  executed code.
+- **Layer 2 — RFC-1918 / CoreDNS / metadata-server block: every class,
+  always.** The Agent Sandbox default posture. Kills lateral movement and
+  the GKE credential-theft path while leaving the public internet open;
+  zero friction for research, Playwright, or scripts.
+- **Layer 3 — default-deny + FQDNNetworkPolicy allowlist: only on lanes
+  holding long-lived credentials** (the push-credential implement class).
+  Research/browse/spike lanes run **open public egress** and hold nothing
+  but a revocable per-run virtual key — restricting a pod with nothing to
+  steal is a hard gate without a validated failure state. Direct
+  Playwright/web access is first-class on these lanes. The
+  classifier-gated proxy attenuator (2026-07-29 enterprise DL) is
+  **demoted to an enterprise hardening knob**, no longer the research-lane
+  default — a human-authorized revision (DL-4).
+
+Implementation: profiles are k8s objects selected by dispatcher-stamped
+pod labels (`run-class:`), so the egress class is chosen by the control
+plane, never the workload. The FQDN 50-resolved-IP cap and the
+pull-through registry cache mitigation are in-cluster verification items
+(`r2` §3, §8.4). Cilium `toFQDNs` is the self-managed parity if that gate
+ever reopens.
+
+### 3.3 Credential plane
+
+In-cluster LiteLLM-class gateway, control-plane namespace, HA pair; real
+provider keys live only there; sandbox pods can reach only the gateway
+for model traffic. Key lifecycle rides the claim lifecycle (§2). The ops
+agent never uses this gateway (§5). srt-inside-gVisor (likely-yes, desk
+confidence) is cluster-day-one probe P4; either outcome, srt is a cost
+knob — the load-bearing boundary stays egress + credential brokering.
+
+## 4. Board layer — Postgres SSOT
+
+The board schema draft `r2-board-schema.md` is the binding shape and the
+input to the E3 platform decomposing run. Properties this architecture
+depends on:
+
+- **Append-only `ticket_event` + mutable current state** (E2): append-only
+  by *privilege* — no role holds UPDATE/DELETE. Any past board state
+  reconstructs from the log; reading current state never folds it.
+- **Claim ≠ state transition** (E1): claim sets ownership + fence; the
+  worker's first board write is its gate verdict.
+- **The heartbeat dissolves**: lease liveness = a reconciler JOIN on the
+  cc-harness Postgres sessionStore's `mtime` stamp — zero new worker
+  duties, extended to the lease. One Postgres, two schemas
+  (`board` / `sessions`), pooler-safe by construction; promote-sessions-
+  first is the standing separation ladder.
+- **Mirrors are outbound-only daemons** on a transactional outbox with
+  per-ticket coalescing (GitHub's ~500 content-writes/hr/actor cap).
+  No inbound webhook surface exists at all; mirror edits are repaired,
+  never ingested.
+- **The board owns discovery**: `run` rows carry pod DNS / session /
+  thread / virtual-key ids — "which pod holds ticket N" is a board query
+  (`thread/list` is per-process memory and unusable cross-pod, `p3`).
+
+**Appserver tenancy (DL-6).** The pod is the tenant boundary: one
+accountable worker per pod, so the appserver stays **single-tenant by
+design** — its bearer token is pod-root and that is acceptable *because
+the pod holds one tenant*. Cross-pod access (humans, control plane, other
+agents) is authenticated and authorized at the **E3 gateway**, per-thread,
+backed by the board's `run` table. R1's T8 fork (in-harness principal vs
+authorizing proxy) resolves to the proxy side by architecture rather than
+by harness code; TLS terminates at the mesh/ingress.
+
+## 5. Ops layer — agent-operated, spike-gated
+
+The ops agent is **one more accountable worker** on the board's
+`env-issue` lane (`r3` §1): same claim path, same park queue, same audit
+trail — MTTR and intervention counts are SQL over `ticket_event`. Its
+three structural distinctions: it runs on a small VM **outside the
+cluster** (in-project; alert evaluation + dead-man's switch also outside,
+so cluster-down pages); its **own key path**, never the in-cluster
+gateway; an **independently pinned harness version**, upgraded last, so a
+fleet regression cannot disable its own fixer.
+
+**Authority is structural, not prompted** (`r3` §3): runbooks are skills
+(guidance); the boundary is RBAC + a CEL ValidatingAdmissionPolicy +
+board/gateway scopes. Direction-of-safety: contraction (kill pod, revoke
+key, pause dispatch) always autonomous; restoration bounded to human-set
+[min, max]; egress policy, DDL, versions, IAM, budgets human-only — each
+ban mapped to a validated failure state. T7 (security trips) is
+containment-and-escalate only.
+
+**The MTTR spike is the single promotion gate** for agent-ops — and the
+only gate through which self-managed substrate could ever re-enter.
+Execution is separately gated (real spend, ≈$1,030 at live rates, abort
+cap $1.5k; halving the real-model Haiku lane is the cheapest headroom
+lever — `r4` §9.3). Promotion bar (`r3` §5.6, with DL-3 applied):
+
+1. ≤1 human intervention/week (precisely defined; by-design human-only
+   parks half-weight when containment was complete).
+2. MTTR ≤ 8 working hours, detection → verified resolution; the clock
+   does not pause while parked.
+3. Measured platform + agent-ops cost, scaled to 27.5k run-hr/mo,
+   ≤ 0.5× the **capability-parity managed band** — vendors that can
+   express the run-class egress allowlist (E2B / Daytona / Modal), i.e.
+   the counterfactual we would actually buy (≈ Autopilot's all-in price).
+   Consequence: the bar passes on Spot with 21–26% margin and is marginal
+   on-demand, so **Spot is a spike design requirement**, including
+   preemption-behavior validation (DL-3, DL-7).
+
+Failure fallback: Autopilot break-glass (DL-2) — buy node ops, keep the
+architecture.
+
+## 6. Economics layer — standing rules
+
+- **token:infra ≈ 100× (band 37–264×)**, stable under a complete re-price
+  of both sides: infra decisions are rounding error; token decisions are
+  the budget (`r4` §6.4).
+- **The architect-lane cap (K5) is the system's most valuable dial** —
+  worth 12–49× the entire substrate decision. Set it from a cost target;
+  the board carries per-lane spend rollups; judge the architect lane on
+  total downstream run cost (it pays for itself at ~5 avoided implementer
+  runs per architect run).
+- **The self-host crossover is 5–8 sustained concurrent** (was 300–500
+  under the human-engineer constant); every operating point of this
+  program sits far above it. Flip triggers FT1–FT8 (`r4` §8) are the
+  standing re-entry conditions; notably there is **no growth path that
+  makes managed cheaper**.
+- **Scheduled event:** Sonnet 5 intro pricing expires **2026-08-31**
+  (+50% on the implementer line, ≈ +$86k/mo at A0-mid). Budget now.
+- **Day-one instrumentation:** the per-run cache-hit-ratio meter (a ±4×
+  lever, ≈ ±$640k/mo at A0-mid) and bytes-per-run egress measurement.
+
+## 7. Adoption path and gates
+
+1. **cc-harness backlog** (T1–T13; pre-spike set T5+T6+T12 first) —
+   ticket-shaped work. Whether it runs on the interim GitHub board or
+   waits for the Postgres board remains the human's standing call.
+2. **E3 platform decomposing run** — now unblocked: `r2-board-schema.md`
+   is the input the E3 spec was gated on.
+3. **The MTTR spike** — separately gated go (spends real infra).
+4. **Production promotion** — only through the spike bar; failure →
+   Autopilot break-glass.
+
+Standing gates unchanged: A0 plan execution deferred; swarm campaign
+approval-gated.
+
+## Acceptance
+
+Observable behaviors, each checkable when its layer lands:
+
+1. **One-architecture check:** the same manifest set deploys the platform
+   at an A0-shaped cluster and an enterprise-shaped cluster with changes
+   confined to knob values (K1–K6) — no manifest forks. Verifiable by
+   diffing the two deployments' manifests.
+2. **Egress posture check (in-cluster):** a research-lane pod fetches an
+   arbitrary public URL successfully AND is refused RFC-1918/metadata
+   endpoints; an implement-lane pod with push credentials is refused any
+   non-allowlisted external host. Both as `kubectl exec` probes.
+3. **Detached-worker check:** a model in a worker session dispatches a
+   `DetachedTask`; the parent pod is SIGKILLed; the child completes and
+   its transcript is resumable from a third process (P2's §6 probe run
+   with a funded credential).
+4. **Board-durability check:** kill any worker pod mid-run; the
+   reconciler reclaims via the sessionStore-mtime JOIN with zero worker
+   heartbeat writes in the log, and the ticket resumes per the E1
+   recovery split.
+5. **Spike bar check:** all three promotion metrics compute as SQL over
+   `ticket_event` (plus the k8s audit log for interventions) — no
+   separate ops datastore exists.
+6. **Break-glass check:** switching the sandbox pool from Standard to
+   Autopilot requires only cluster-level changes — zero edits to
+   Sandbox/Template/WarmPool/Claim manifests or board/harness config.
+
+## Decision Log
+
+- Decision: **One architecture with knob-set tiers; this spec supersedes
+  both 2026-07-23 specs.**
+  Rationale: four independent evidence bases converged (runtime forces no
+  fork; platform CRD layer identical; ops framework tier-invariant; one
+  cost function with procurement knobs). Rejected: maintaining two specs
+  (enterprise + A0) — the divergence they encoded was the human-ops
+  constant, now removed.
+  Date/Author: 2026-07-30, round synthesis; human-approved.
+
+- Decision: **GKE Standard at both tiers; Autopilot retired as a tier,
+  kept as break-glass.**
+  Rationale: Autopilot at A0 ≈ $4.2k/mo all-in vs Standard $2.4k
+  (on-demand) / $1.7k (Spot) — a ~$1.9k/mo premium for node ops that
+  agent-ops replaces at ~$150/mo ("paying twice for the same thing",
+  `r4` §4.4). The break-glass framing reconciles R2's dissent: if the
+  spike fails, Autopilot IS the managed-ops purchase, same manifests.
+  Rejected: R2's "Autopilot as the A0 entry" (does not survive its own
+  price); deferring the call to the spike (the spike runs on Standard
+  regardless, so deferral collapses into this decision).
+  Date/Author: 2026-07-30, human (grill Q1).
+
+- Decision: **Spike promotion-bar comparator pinned to the
+  capability-parity managed band** (vendors that can express the
+  run-class egress allowlist: E2B / Daytona / Modal).
+  Rationale: the comparator must be the counterfactual actually purchased
+  on failure — which is ≈ Autopilot's price band, matched by the parity
+  vendors. Pinning to the whole band (incl. Northflank/Cloudflare, which
+  cannot enforce the boundary) makes the bar mechanically unpassable — a
+  dead-letter clause. The pin also defines FT4 trigger membership.
+  Rejected: whole-band comparator; dropping the economic leg (would
+  remove the only numeric answer to "why keep self-hosting").
+  Date/Author: 2026-07-30, human (grill Q2, after clarification).
+
+- Decision: **Run-class egress = credential-aligned three layers**;
+  research/browse lanes run open public egress; the classifier-gated
+  proxy attenuator is demoted from research-lane default to an
+  enterprise hardening knob (revising the 2026-07-29 enterprise DL).
+  Rationale: the sandbox's principal adversary is executed third-party
+  code (validated: npm supply chain), which layers 1–2 counter at zero
+  friction; layer 3 only defends credentials, so it applies only where
+  credentials exist. Restricting a pod holding nothing but a revocable
+  virtual key is a hard gate without a validated failure state
+  (constraint-minimization golden rule). Swarm trial counts (a day of A0
+  ≈ months of local use) and unattended operation justify layers 1–2
+  everywhere despite months of incident-free local auto-mode — the local
+  evidence speaks to the model-judgment channel, not the executed-code
+  channel. Rejected: R2's blanket default-deny + FQDN (recreates
+  environmental friction for long-running research work); layer-2-only
+  everywhere (leaves the push-credential exfiltration path open in the
+  supply-chain scenario).
+  Date/Author: 2026-07-30, human (raised the auto-mode challenge; grill
+  Q3).
+
+- Decision: **Adopt upstream Agent Sandbox CRDs; do not self-build the
+  template/warm-pool/claim shape.**
+  Rationale: the project became a vendor-neutral k8s SIG subproject —
+  the 07-23 fork's premise (GKE-only product) is dead; self-building
+  re-implements three hardened reconcilers with zero differentiation.
+  Risk accepted: pre-GA churn — pin versions, upgrades are change
+  windows. Rejected: self-hosting the shape (`r2` §1.2).
+  Date/Author: 2026-07-30, R2 verdict, adopted at synthesis.
+
+- Decision: **Appserver stays single-tenant per pod; cross-pod
+  authorization lives at the E3 gateway, backed by the board's run
+  table.**
+  Rationale: one accountable worker per pod makes the pod the tenant
+  boundary; the shared bearer token being pod-root is then acceptable.
+  Resolves R1's T8 fork on the proxy side by architecture. Rejected:
+  in-harness per-identity principal (builds multi-tenancy the pod model
+  never needs).
+  Date/Author: 2026-07-30, synthesis.
+
+- Decision: **Spot is the A0 procurement default and a spike design
+  requirement.**
+  Rationale: A0 duty cycle ~30% fails every CUD break-even; preemption
+  costs ≤1 turn (turn-durability ceiling); the comparator pin makes the
+  economic bar passable specifically on Spot. Rejected: CUDs at A0
+  (break-even needs ≥45–72% duty).
+  Date/Author: 2026-07-30, `r4` §9.1, adopted at synthesis.
+
+- Decision: **The self-managed bare-metal gate stays closed.**
+  Rationale: the assumed 5–10× cost gap collapsed to 0–2.7× against
+  CUD-discounted GKE, on a rate card three live sources dispute by 2.8×,
+  from a vendor with a +94–192% repricing precedent (FT6). Rejected:
+  funding a second self-managed spike.
+  Date/Author: 2026-07-30, `r4` §5, adopted at synthesis.
+
+- Decision: **Fleet auth is gateway virtual keys only; subscription OAuth
+  is banned for fleet workers.**
+  Rationale: live-demonstrated this round — one shared OAuth weekly limit
+  disabled the entire probe phase (a fleet-wide correlated failure with a
+  multi-day reset). Rejected: subscription auth for economy (the failure
+  mode is disqualifying regardless of price).
+  Date/Author: 2026-07-30, `r1` §1E.
+
+- Decision: **Pre-spike cc-harness set = T5 (park mirroring) + T6
+  (`ccx serve --config`) + T12 (SDK pin/drift gate).**
+  Rationale: T5 changes park-loss accounting under fault injection and
+  feeds the E2 ledger/E3 queue; T6 is the highest-leverage single item
+  (pods cannot pin store/hooks without it); T12 closes the live-found
+  version skew so spike evidence lands on a pinned SDK. Rejected:
+  running the spike on the bespoke-entry-point workaround alone.
+  Date/Author: 2026-07-30, synthesis (`r3` §7.4 asked; answered here).
+
+- Decision: **Board schema per `r2-board-schema.md`** (claim ≠
+  transition; heartbeat dissolved into the sessionStore-mtime JOIN;
+  append-only-by-privilege event log; outbound-only mirrors; board-owned
+  discovery).
+  Rationale: recorded in the draft and the E1/E2 specs (single copies);
+  this spec binds to it rather than restating it.
+  Date/Author: 2026-07-30, R2 deliverable, adopted at synthesis.
+
+## Surprises & Discoveries
+
+- Observation: the round's probe phase was itself disabled by a shared
+  OAuth weekly limit — which became the fleet-auth decision's strongest
+  evidence rather than a mere obstacle.
+  Evidence: `r1-runtime-gaps.md` §0.5, probe transcripts in `p1`–`p3`.
+- Observation: the tiers' economic difference reduced to a purchase
+  order (discount instrument) plus a scale-invariant $445–700/mo floor —
+  "the same architecture, whose advantage compounds with scale" is the
+  strongest available form of the one-architecture answer.
+  Evidence: `r4-economics.md` §9.1, §10.
+- Observation: the human's local auto-mode experience (months, no
+  sandbox, no incident) survived the grill as evidence about the
+  model-judgment channel and reshaped the egress posture (DL-4) — while
+  the executed-code channel argument kept layers 1–2 universal.
+  Evidence: this session's egress discussion; DL-4.
+
+## Outcomes & Retrospective
+
+Pending — written at finish.
+
+## Revision Notes
+
+- 2026-07-30: v1. Authored at round close, interactively with the human;
+  three queued forks settled (Autopilot, comparator pin, egress posture);
+  supersession banners added to both 2026-07-23 specs.

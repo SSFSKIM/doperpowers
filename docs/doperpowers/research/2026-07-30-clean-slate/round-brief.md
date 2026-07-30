@@ -205,7 +205,36 @@ board migration. No re-litigation of Class A. Standing gates unchanged.
 
 ## Outcomes & Retrospective
 
-Pending — written at round close, against the through-question.
+Round closed 2026-07-30 with the synthesis spec
+`docs/doperpowers/specs/2026-07-30-swarm-reference-architecture-design.md`
+(successor to both 2026-07-23 specs, banners added).
+
+**Against the through-question: answered — one architecture, knob-set
+tiers.** All four Rs converged independently (runtime forces no fork;
+platform CRD layer identical; ops framework tier-invariant; one cost
+function with procurement knobs), and the synthesis settled the three
+queued forks with the human: Autopilot retired to break-glass (R4's
+dissent adopted, reframed as the spike-failure fallback), promotion-bar
+comparator pinned to the capability-parity managed band (making Spot a
+spike design requirement), and run-class egress fixed as
+credential-aligned three layers (the human's auto-mode challenge
+reshaping R2's blanket default-deny; the 07-29 research-lane proxy
+demoted to an enterprise hardening knob).
+
+**What worked:** probes-first sequencing paid for itself — P2/P3
+supplied the evidence R1 leaned hardest on, and even the probe-phase
+*failure* (shared OAuth weekly limit) became the fleet-auth decision's
+strongest evidence. The 3-class source ledger held: no Class A item was
+re-litigated, and the startup-scale retention (R4 baseline) enabled the
+like-for-like crossover remeasure that produced the round's biggest
+number (crossover 300–500 → 5–8 concurrent).
+
+**What remains:** the cc-harness backlog (T1–T13, pre-spike set
+T5+T6+T12), the E3 platform decomposing run (now unblocked on
+r2-board-schema.md), the separately-gated MTTR spike, and the in-cluster
+verification lists (r1 §5, r2 §8, r3 §7) — every unverified claim stayed
+tagged rather than smoothed over, which is the round's standing hygiene
+for the cluster day it all gets tested.
 
 ## Revision Notes
 
