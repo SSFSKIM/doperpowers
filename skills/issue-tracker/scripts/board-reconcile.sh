@@ -7,7 +7,7 @@
 # interactive-preferred), flags in-progress tickets with no live bound
 # daemon, lists dispatchable tickets, and finishes with a board-lint pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
-# register child/follow-up tickets directly (doperpowers:implementing-tickets).
+# register child/follow-up tickets directly (doperpowers:implementing).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh

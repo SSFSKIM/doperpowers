@@ -1,5 +1,5 @@
 # issue-dispatch.yml — dispatch a local implement/spike worker when a ticket
-# becomes ready. Template from doperpowers:implementing-tickets — copy into
+# becomes ready. Template from doperpowers:implementing — copy into
 # .github/workflows/ of the consumer repo.
 #
 # SETUP (per adopting repo — same posture as pr-review-dispatch.yml in
@@ -43,4 +43,4 @@ jobs:
     steps:
       - name: Dispatch implement worker
         run: |
-          "${DOPERPOWERS_HOME:-$HOME/.claude/plugins/marketplaces/doperpowers}/skills/implementing-tickets/scripts/implement-dispatch.sh" "${{ github.event.issue.number }}"
+          "${DOPERPOWERS_HOME:-$HOME/.claude/plugins/marketplaces/doperpowers}/skills/implementing/scripts/implement-dispatch.sh" "${{ github.event.issue.number }}"

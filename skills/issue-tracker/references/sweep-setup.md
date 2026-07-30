@@ -112,7 +112,7 @@ doperpowers:reviewing-prs `references/runner-setup.md`), GitHub events can
 dispatch the latency-sensitive lanes directly; the sweep stays as catch-up:
 
 - PR opened → review worker: `reviewing-prs/references/pr-review-dispatch.yml`
-- issue becomes ready → implement worker: `implementing-tickets/references/issue-dispatch.yml`
+- issue becomes ready → implement worker: `implementing/references/issue-dispatch.yml`
 - PR review approved → land worker: `reviewing-prs/references/land-on-approve.yml`
 
 All three templates keep the same security posture: no checkout of PR code,

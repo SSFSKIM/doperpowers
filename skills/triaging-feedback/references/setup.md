@@ -4,7 +4,7 @@
 일회성 설정. `scripts/feedback-poll.sh`를 launchd로 주기 실행시키고, 그
 안에서 `src/poll.ts`가 pending 피드백 행을 찾아 read-only Codex-SDK 워커를
 돌립니다. 워커는 코드를 쓰지 않습니다 — 진단하고 티켓을 저작할 뿐이며,
-수정은 보드 파이프라인(implementing-tickets → reviewing-prs)의 몫입니다.
+수정은 보드 파이프라인(implementing → reviewing-prs)의 몫입니다.
 
 ## 0. 전제조건 — 피드백 트리아지 마이그레이션(p86)이 먼저 적용돼 있어야 함
 
@@ -104,7 +104,7 @@ gh label create "type:question" --color D4C5F9 --description "사용자 질문 �
 분류가 맞는지, 진단이 `file:line`으로 grounding됐는지, birth state 추천이
 정직한지(`ready-for-agent`가 남발되지 않는지), park 노트가 "사람이 무엇을
 결정해야 하는지"를 실제로 말하는지. 이 워커의 산출물은 곧
-implementing-tickets 루프의 입력이므로, 티켓 품질이 신뢰를 얻은 뒤 `K`를
+implementing 루프의 입력이므로, 티켓 품질이 신뢰를 얻은 뒤 `K`를
 올립니다. (v1의 `TRIAGE_FIX_ENABLED` 섀도 모드는 사라졌습니다 — 티켓-온리가
 최종 형태라 더 위험한 모드로의 승격 자체가 없습니다.)
 

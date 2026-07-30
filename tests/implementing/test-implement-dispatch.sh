@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DISPATCH="$REPO_ROOT/skills/implementing-tickets/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -158,7 +158,7 @@ assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries 
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
 assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
-assert_file_contains "$PROMPT" "implementing-tickets/SKILL.md" "implement lane opens the SKILL protocol"
+assert_file_contains "$PROMPT" "implementing/SKILL.md" "implement lane opens the SKILL protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
 meta_ticket="$(python3 -c "
 import glob, json

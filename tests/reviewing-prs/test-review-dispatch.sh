@@ -308,7 +308,7 @@ assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survi
 assert_contains "$PROMPT" "Use doperpowers:reviewing-prs" "prompt names the Review Worker Protocol skill"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
-assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing-tickets/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
 assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"

@@ -11,10 +11,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # The skill IS the protocol: SKILL.md carries the Implement Worker Protocol
 # (mirroring reviewing-prs); the operator doctrine lives in
 # references/operation-manual.md; spawn goes through references/worker-bootstrap.md.
-PROTO="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
-SKILL="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
-MANUAL="$REPO_ROOT/skills/implementing-tickets/references/operation-manual.md"
-BOOTSTRAP="$REPO_ROOT/skills/implementing-tickets/references/worker-bootstrap.md"
+PROTO="$REPO_ROOT/skills/implementing/SKILL.md"
+SKILL="$REPO_ROOT/skills/implementing/SKILL.md"
+MANUAL="$REPO_ROOT/skills/implementing/references/operation-manual.md"
+BOOTSTRAP="$REPO_ROOT/skills/implementing/references/worker-bootstrap.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -73,9 +73,9 @@ if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want";
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
 
 echo "skill-as-protocol shape:"
-assert_contains "$proto" "name: implementing-tickets" "frontmatter survives on the protocol skill file"
+assert_contains "$proto" "name: implementing" "frontmatter survives on the protocol skill file"
 assert_contains "$proto" "references/operation-manual.md" "operator-routing line points at the operation manual"
-if [ -e "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" ]; then
+if [ -e "$REPO_ROOT/skills/implementing/references/implement-worker-protocol.md" ]; then
     fail "the old separate protocol file is retired (the skill IS the protocol)"
 else
     pass "the old separate protocol file is retired (the skill IS the protocol)"
@@ -107,7 +107,7 @@ assert_contains "$manual" "doperpowers:issue-tracker" "manual: points at the boa
 assert_not_contains "$manual" "status:blocked" "manual: no retired vocabulary"
 
 echo "spike protocol:"
-SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.md"
+SPIKE="$REPO_ROOT/skills/implementing/references/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 # The brief/facts tails ride the bootstrap's binding sections for both lanes.
@@ -126,7 +126,7 @@ assert_contains "$spike" "author its body at register time" "spike: graduated ti
 assert_not_contains "$spike" "no exploring" "spike: the decompose verdict states its deliverable, not an exploration ban"
 
 echo "decompose procedure (runtime-opened):"
-DECOMP="$REPO_ROOT/skills/implementing-tickets/references/implement-decompose.md"
+DECOMP="$REPO_ROOT/skills/implementing/references/implement-decompose.md"
 [ -f "$DECOMP" ] || { echo "missing $DECOMP"; exit 1; }
 decomp="$(cat "$DECOMP")"
 assert_contains "$decomp" "a chain IS" "decompose doc: serialization-as-edges present"
@@ -139,7 +139,7 @@ echo "execution doctrine (inline — no engine-blocks indirection):"
 # One harness, one doctrine: both model routes (gateway "codex" / plain
 # "claude") are Claude-harness sessions, and the execution text lives in
 # the protocol's own Execution section.
-if [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks" ]; then
+if [ -e "$REPO_ROOT/skills/implementing/references/engine-blocks" ]; then
     fail "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 else
     pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
@@ -157,7 +157,7 @@ assert_contains "$proto" "big-but-atomic" "execution: atomic execplan trigger"
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
 skill="$(cat "$SKILL")"
-assert_contains "$skill" "name: implementing-tickets" "frontmatter name"
+assert_contains "$skill" "name: implementing" "frontmatter name"
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
 assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
@@ -202,7 +202,7 @@ assert_contains "$tracker" "which no park state does" "tracker: sweep rationale 
 assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
 daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
 assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
-assert_not_contains "$daemons" "discriminant in doperpowers:implementing-tickets" "daemons: no stale pointer at the old vendored copy"
+assert_not_contains "$daemons" "discriminant in doperpowers:implementing" "daemons: no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
@@ -217,7 +217,7 @@ assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the ma
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
 assert_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: runner-day land template named"
-for tpl in "$REPO_ROOT/skills/implementing-tickets/references/issue-dispatch.yml" \
+for tpl in "$REPO_ROOT/skills/implementing/references/issue-dispatch.yml" \
            "$REPO_ROOT/skills/reviewing-prs/references/land-on-approve.yml"; do
   tname="$(basename "$tpl")"
   tbody="$(cat "$tpl")"

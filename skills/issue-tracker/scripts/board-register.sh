@@ -7,7 +7,7 @@
 #                     [--body-file F]
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
-#             findings comment, never a merge — see doperpowers:implementing-tickets)
+#             findings comment, never a merge — see doperpowers:implementing)
 #   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
 #             the managed priority:* label (change later: board-priority.sh)
 #   --state   birth state: ready-for-implementer (default) | ready-for-architect

@@ -88,7 +88,7 @@ delist a surface it touches in the same commit; the manifest can only
 tighten the gate, never loosen an always-on category.
 
 **Repo facts feed the cross-check.** The optional
-`.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing-tickets)
+`.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing)
 is injected the same way — base ref, never HEAD. The review worker checks
 claimed Validation Evidence against the repo's declared validation
 commands, and a diff hitting a declared Evidence add-on class without the

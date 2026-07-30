@@ -9,7 +9,7 @@ A repo's issue board, stored where it cannot fork: **GitHub Issues is the
 single source of truth.** Tickets are **purpose-units**: born as pre-specs
 from an `organizing-sprints` materialization (or registered directly here),
 gated and driven to a PR by autonomous implement
-workers (doperpowers:implementing-tickets), reviewed to a confident merge by
+workers (doperpowers:implementing), reviewed to a confident merge by
 review workers (doperpowers:reviewing-prs), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
 spawned-by).
@@ -43,7 +43,7 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing-tickets |
+| **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets | doperpowers:implementing |
 | **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
@@ -102,7 +102,7 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing-tickets); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for `ready-for-agent` and demoted to `needs-info` otherwise); prints `<number> <url>` |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for `ready-for-agent` and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
@@ -155,18 +155,18 @@ pick by repo visibility:
    `claude` = plain Claude models). Label `engine:codex` to put one ticket
    back on the gateway; `engine:claude` is redundant now but still valid.
    Render the spawn bootstrap
-   (`doperpowers:implementing-tickets` `references/worker-bootstrap.md` —
+   (`doperpowers:implementing` `references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
    bootstrap names, then reads its own ticket and the repo's
    `.doperpowers/repo-facts.md` itself). Substitute every
    `{{PLACEHOLDER}}`: `ROLE` = `SPIKE` when the ticket's category is
    `spike`, else `IMPLEMENT`; `PROTOCOL_FILE` = the ABSOLUTE plugin path
-   of the lane's protocol (spike → implementing-tickets'
-   `references/spike-worker-protocol.md`, else implementing-tickets'
+   of the lane's protocol (spike → implementing's
+   `references/spike-worker-protocol.md`, else implementing's
    `SKILL.md` — the skill IS the implement protocol); `ISSUE_NUMBER`,
    `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
    `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
-   implementing-tickets' `references/implement-decompose.md` (a
+   implementing's `references/implement-decompose.md` (a
    runtime-opened procedure: the prompt carries only the pointer; the
    worker opens it when Check-2 says decompose; "(none — spike lane)" for
    a spike).
@@ -187,7 +187,7 @@ pick by repo visibility:
 
 Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
 are picked up by the review loop (doperpowers:reviewing-prs). The ritual is
-mechanized end-to-end by doperpowers:implementing-tickets
+mechanized end-to-end by doperpowers:implementing
 `scripts/implement-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
 same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
 invokes it on a timer. Running the ritual by hand stays valid — the sweep's
@@ -197,7 +197,7 @@ dedupe sees a hand-dispatched worker's binding like any other.
 calls, not a parallel doctrine.** For your own work: in-session fan-out is
 native subagents; a raw ad-hoc
 daemon is reserved for work that must survive your session with no board to
-hold it. Board pipeline workers' doctrine is implementing-tickets /
+hold it. Board pipeline workers' doctrine is implementing /
 reviewing-prs, and nobody sits between them and the board.
 
 ## The wake ritual (the human's catch-up)
@@ -240,7 +240,7 @@ reviewing-prs, and nobody sits between them and the board.
 
 Both loops keep their protocol in the skill file and spawn through a short
 bootstrap that names the dispatcher-owned protocol path and supplies the
-runtime bindings: the implement-side protocol is doperpowers:implementing-tickets
+runtime bindings: the implement-side protocol is doperpowers:implementing
 itself (`SKILL.md`; spike lane → its `references/spike-worker-protocol.md`;
 bootstrap `references/worker-bootstrap.md`), the review-side protocol is
 doperpowers:reviewing-prs itself (`SKILL.md`; bootstrap

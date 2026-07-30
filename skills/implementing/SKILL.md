@@ -1,5 +1,5 @@
 ---
-name: implementing-tickets
+name: implementing
 description: Use when dispatched as an implement worker onto a board ticket (including the spike lane), or when operating or setting up the autonomous implement loop — the inverse of doperpowers:reviewing-prs.
 ---
 # Implement Worker Protocol

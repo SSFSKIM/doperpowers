@@ -47,7 +47,7 @@
 # It is read from the PR's BASE ref (never HEAD) so a PR cannot weaken its own
 # gate in the same commit, and it only ADDS to the always-on risk categories.
 # Per-repo facts: an optional file at <base>:.doperpowers/repo-facts.md declares
-# Bootstrap / Validation / Evidence add-on facts (see implementing-tickets).
+# Bootstrap / Validation / Evidence add-on facts (see implementing).
 # Same BASE-ref discipline; the review worker cross-checks claimed evidence
 # against the declared validation commands and add-on requirements.
 # LOCAL_REPO must be a FULL clone (not --single-branch): the base read resolves
@@ -374,7 +374,7 @@ EOF2
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
-    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing-tickets/SKILL.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
