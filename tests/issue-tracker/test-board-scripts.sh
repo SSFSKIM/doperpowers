@@ -917,6 +917,21 @@ impl_t="${out%% *}"
 assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
 assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
 
+# ---- plan meta (E1 transitions 2 and 3) ---------------------------------------
+echo "plan meta:"
+run board-register.sh "Architect handoff probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+plan_t="$(state "s['next']-1")"
+run board-transition.sh "$plan_t" in-design >/dev/null
+out="$(run board-transition.sh "$plan_t" ready-for-implementer "plan ready: do X then Y" --branch tick/plan-probe --plan "docs/plans/x.md@0123456789abcdef0123456789abcdef01234567")"
+assert_contains "$(state "s['issues']['$plan_t']['body']")" "plan: docs/plans/x.md@0123456789abcdef0123456789abcdef01234567" "plan pin recorded in board:meta"
+assert_contains "$(state "s['issues']['$plan_t']['body']")" "branch: tick/plan-probe" "branch recorded on the handoff"
+run board-register.sh "Shortcircuit probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+sc_t="$(state "s['next']-1")"
+run board-transition.sh "$sc_t" in-design >/dev/null
+out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
+assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
+assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

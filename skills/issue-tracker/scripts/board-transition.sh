@@ -2,7 +2,7 @@
 # board-transition.sh — move a ticket to a new state, enforcing the invariants.
 #
 # Usage:
-#   board-transition.sh <number> <to-state> [note] [--branch NAME] [--pr URL]
+#   board-transition.sh <number> <to-state> [note] [--branch NAME] [--pr URL] [--plan PATH@SHA|pre-spec]
 #
 # Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
@@ -26,17 +26,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 tid="$1" to="$2"
 shift 2
-note="" branch="" pr=""
+note="" branch="" pr="" plan=""
 if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then note="$1"; shift; fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --branch) _need_arg "$1" "${2:-}"; branch="$2"; shift 2 ;;
     --pr) _need_arg "$1" "${2:-}"; pr="$2"; shift 2 ;;
+    --plan) _need_arg "$1" "${2:-}"; plan="$2"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
-T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" _py - <<'PY'
+T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _py - <<'PY'
 import os
 import _board as B
 
@@ -80,6 +81,12 @@ if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
 if to == "in-review" and not env["T_PR"]:
     B.die("a PR link is required when moving to in-review (--pr URL)")
+if env["T_PLAN"]:
+    import re as _re
+    if to != "ready-for-implementer":
+        B.die("--plan rides the Architect handoff edge (→ ready-for-implementer) only")
+    if env["T_PLAN"] != "pre-spec" and not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
+        B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")
 if to in B.DISPATCHABLE and "(pre-spec: fill in)" in (n.get("body") or ""):
     B.die("#%s is still a pre-spec skeleton — fill the body (gh issue edit "
           "%s --body-file <spec>) before a dispatchable lane state" % (tid, tid))
@@ -90,6 +97,8 @@ if env["T_BRANCH"]:
     extra["branch"] = env["T_BRANCH"]
 if env["T_PR"]:
     extra["pr"] = env["T_PR"]
+if env["T_PLAN"]:
+    extra["plan"] = env["T_PLAN"]
 lines = [B.apply_state(tickets, tid, to, note, extra_meta=extra)]
 
 # Sweep: first active child pulls its epic chain to in-progress.

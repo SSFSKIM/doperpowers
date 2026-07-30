@@ -150,7 +150,7 @@ CATEGORIES = ("bug", "enhancement", "spike")
 SPIKE_COLOR = "f9d0c4"
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
-META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "note")
+META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park", "note")
 
 
 def die(msg) -> NoReturn:
