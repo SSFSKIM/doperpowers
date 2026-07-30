@@ -163,8 +163,8 @@ outranked it would delete the opt-in).
    `board-transition.sh`**, not worker judgment: escalation/return
    edges always post a `[board]` comment (their notes are required), so
    the traversal count is machine-readable from the comment trail; the
-   script converts a third traversal into the `needs-human` park
-   mechanically. **The count resets at human adjudication**: traversals
+   script converts the SECOND traversal of the same edge into the
+   `needs-human` park mechanically (so no third bounce can occur). **The count resets at human adjudication**: traversals
    are counted since the last `[answers]` relay (or human comment), so
    a human-sanctioned re-traversal after a convergence park ("yes, the
    plan is wrong — send it back") starts a fresh count instead of
@@ -416,9 +416,10 @@ here; verified against the code 2026-07-31):
   eligible-first sort, column counts); `board-list.sh` (the ELIGIBLE
   tagging the dispatch ritual reads); `board-edge.sh` (third inline
   eligibility re-derivation); `board-lint.sh` — which holds NO legality
-  table (legality is enforced only in `board-transition.sh`); what lint
-  gains is the edge-keyed note rule its state-keyed check cannot
-  express.
+  table (legality is enforced only in `board-transition.sh`); lint gains
+  only the vocabulary — the edge-keyed note rule is WRITE-TIME
+  enforcement in `board-transition.sh` alone, since lint sees a
+  snapshot, not transition history.
 - **Dispatch** — dispatch ritual + `implement-dispatch.sh`
   (state→protocol routing; `_slots_used`'s lane tuple = both the
   binding-release mechanism and the architect concurrency cap);
@@ -732,6 +733,11 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-07-31: v1.3.1, planning-pass drift fixes (implementation plan =
+  `docs/doperpowers/plans/2026-07-31-implement-lane-split.md`, lands as
+  v7.30.0): board-lint gains vocabulary only — edge-note enforcement is
+  write-time in board-transition (lint has no transition history); the
+  convergence conversion is the SECOND traversal, stated consistently.
 - 2026-07-31: v1.3, pre-implementation maturity round (three independent
   evaluators: Opus code-grounding vs the actual scripts, Opus cross-spec
   vs E2/E3/the review-stack roadmap/the v8 schema, fable design review
