@@ -34,7 +34,7 @@ jobs:
     # org-owned repo: repository_owner is the ORG login — explicit allowlist instead
     # EDIT ME when adopting: the actor allowlist and LOCAL_REPO below are one
     # consumer repo's instance values, not part of the template.
-    if: github.event.label.name == 'status:ready-for-agent' && github.actor == 'SSFSKIM'
+    if: (github.event.label.name == 'status:ready-for-implementer' || github.event.label.name == 'status:ready-for-architect') && github.actor == 'SSFSKIM'
     runs-on: [self-hosted, claude-review]
     timeout-minutes: 10
     env:
