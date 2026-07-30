@@ -101,7 +101,8 @@ if (cur, to) in B.CONVERGENCE_EDGES:
             count += 1
     if count >= 1:
         note = ("convergence: second traversal of %s → %s — no third "
-                "mechanical bounce; both positions: %s" % (cur, to, note))
+                "mechanical bounce; this traversal's position: %s — see "
+                "the comment trail for the first" % (cur, to, note))
         to = "needs-human"
 
 if to in B.NOTE_REQUIRED and not note:
