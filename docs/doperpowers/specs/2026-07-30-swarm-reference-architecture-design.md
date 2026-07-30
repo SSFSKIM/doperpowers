@@ -36,7 +36,8 @@ research / review / ops) that selects a pod's egress policy and
 credentials. *Park*: a worker's blocking question, addressed to the human
 queue (board park) or an SDK decision (appserver park). *Turn*: one model
 API round-trip; the engine writes transcripts only at turn boundaries.
-*Spike*: the gated MTTR experiment of `r3-agent-ops.md` §5. *Agent
+*MTTR spike*: the gated ops experiment of `r3-agent-ops.md` §5 — distinct
+from the board's `spike` lane (exploratory tickets). *Agent
 Sandbox*: the `kubernetes-sigs/agent-sandbox` CRDs
 (SandboxTemplate / SandboxWarmPool / SandboxClaim / Sandbox).
 
@@ -59,7 +60,10 @@ framework deploy at every scale. The knobs:
 pools is the default at BOTH tiers. Autopilot is retired as a tier and
 kept as **break-glass**: if the agent-ops spike fails its promotion bar,
 Autopilot is the managed-ops purchase — same manifests, zero switching
-cost (DL-2). Self-managed bare metal stays gated closed (DL-8).
+cost (DL-2). One purchase-console fact rides the break-glass option and
+stays open: whether Autopilot resource CUDs are still purchasable
+(`r2` §8.9; corroborated but not closed by `r4` §11.5). Self-managed
+bare metal stays gated closed (DL-8).
 
 The strongest form of the one-architecture result is economic: the managed
 alternative's bill is linear in volume while the agent-ops term is flat,
@@ -76,10 +80,16 @@ Grep/Glob and foreground Bash never leave the pod — the transcript mirror
 itself assumes engine and SDK parent share a filesystem (`r1` §1C). Two
 tool families decouple: **Task above the durability threshold** becomes
 `DetachedTask` (spawns `ccx --bg`: own session id, own top-level
-transcript, survives parent death — `p2` §3), and **background Bash above
-the lifetime threshold** becomes a detached spawn or a board ticket.
-Everything else is blast-radius isolation (gVisor, optionally srt), not
-per-call containers.
+transcript — `p2` §3), and **background Bash above the lifetime
+threshold** becomes a detached spawn or a board ticket. Everything else
+is blast-radius isolation (gVisor, optionally srt), not per-call
+containers. **Placement rule:** a `DetachedTask` child runs *in the
+parent's pod* and therefore survives parent-*process* death only — the
+shape P2 verified live; work that must survive the *pod* goes through
+the board instead: a child ticket claimed onto its own pod, with its own
+credentials and egress class. In-pod detached children remain
+subordinate sessions of the pod's one accountable worker
+(subagents-never-write unchanged), so DL-6's tenancy model holds.
 
 **The turn-durability ceiling.** The engine writes transcripts only at
 turn boundaries; a pod evicted mid-turn loses the in-flight turn in any
@@ -116,7 +126,10 @@ Adopt the **upstream Agent Sandbox CRDs** — now a vendor-neutral
 Kubernetes SIG-Apps subproject, which collapses the old "adopt the GKE
 product vs self-host the shape" fork (`r2` §1.2). Pin the controller
 version; treat upgrades as change windows (the v0.4→v0.5 warm-pool
-adoption bug is the validated failure state). The `Sandbox` CRD's stable
+adoption bug is the validated failure state). On GKE, install via the
+addon only if its CRD version matches the pinned upstream — the addon
+lags (`v1alpha1` in its docs vs upstream `v1beta1`); otherwise install
+upstream directly (`r2` §1.1–1.2). The `Sandbox` CRD's stable
 DNS identity is the pod-addressability mechanism for the appserver seam
 (in-cluster check queued). GKE Standard + Dataplane V2 + gVisor node
 pools at both tiers (§1).
@@ -126,7 +139,9 @@ pools at both tiers (§1).
 The sandbox's principal adversary is **the code the worker executes**
 (package postinstalls, build scripts, cloned repos), not the worker's
 judgment — model-quality arguments do not reduce that vector, and npm
-supply-chain compromise is a validated failure state. At the same time,
+supply-chain compromise is a validated failure state (public record:
+recurring registry postinstall-malware campaigns — a synthesis-session
+premise, not a round-report finding). At the same time,
 blanket egress denial creates the exact environmental friction
 long-running autonomous work cannot afford. The posture aligns
 restriction with what the pod holds:
@@ -134,19 +149,38 @@ restriction with what the pod holds:
 - **Layer 1 — gVisor pod boundary: every class, always.** Transparent to
   the workload; zero friction; protects the node and neighbors from
   executed code.
-- **Layer 2 — RFC-1918 / CoreDNS / metadata-server block: every class,
-  always.** The Agent Sandbox default posture. Kills lateral movement and
-  the GKE credential-theft path while leaving the public internet open;
-  zero friction for research, Playwright, or scripts.
+- **Layer 2 — RFC-1918 / CoreDNS-spoof / metadata-server block: every
+  class, always** — plus the in-cluster allowances that ride with it:
+  standard NetworkPolicy permitting exactly {LLM gateway service, sandbox
+  router, kube-dns} (`r2` §3 items 1–2). Kills lateral movement and the
+  GKE credential-theft path while leaving the public internet open and
+  the pod able to resolve names and reach its model gateway; zero
+  friction for research, Playwright, or scripts.
 - **Layer 3 — default-deny + FQDNNetworkPolicy allowlist: only on lanes
   holding long-lived credentials** (the push-credential implement class).
-  Research/browse/spike lanes run **open public egress** and hold nothing
-  but a revocable per-run virtual key — restricting a pod with nothing to
-  steal is a hard gate without a validated failure state. Direct
-  Playwright/web access is first-class on these lanes. The
+  Lanes mapped to the research class run **open public egress** and hold
+  nothing but a revocable per-run virtual key — restricting a pod with
+  nothing to steal is a hard gate without a validated failure state.
+  Direct Playwright/web access is first-class on these lanes. The
   classifier-gated proxy attenuator (2026-07-29 enterprise DL) is
   **demoted to an enterprise hardening knob**, no longer the research-lane
   default — a human-authorized revision (DL-4).
+
+**Lane → run-class mapping** (input = the board's `run.lane`; the
+dispatcher stamps the class as the pod label the egress objects select
+on):
+
+| Board lane | Run-class | Egress | Credentials in-pod |
+|---|---|---|---|
+| `implementer` | implement | Layers 1–3 (FQDN allowlist) | push credential + virtual key |
+| `architect`, `spike` (board lane) | research | Layers 1–2 (open public) | virtual key only; repo via claim-time ephemeral read token, scrubbed after workspace provisioning |
+| `qagent` | review | Layers 1–2 (open public) | virtual key only; same ephemeral-read mechanism; no push credential, no implementer-volume mounts |
+| `ops` | ops | n/a — not a sandbox pod | own key path on the out-of-cluster VM (§5) |
+
+The ephemeral-read mechanism (clone with a short-lived token at claim,
+then scrub it) is a synthesis addition: it is what qualifies the
+non-push lanes for open egress under the credential-alignment rule —
+after provisioning, those pods hold nothing durable to steal.
 
 Implementation: profiles are k8s objects selected by dispatcher-stamped
 pod labels (`run-class:`), so the egress class is chosen by the control
@@ -179,7 +213,12 @@ depends on:
   cc-harness Postgres sessionStore's `mtime` stamp — zero new worker
   duties, extended to the lease. One Postgres, two schemas
   (`board` / `sessions`), pooler-safe by construction; promote-sessions-
-  first is the standing separation ladder.
+  first is the standing separation ladder. **Sizing constraint:** the
+  `mtime` stamp lands at turn boundaries only (probe 62), so the lease
+  window MUST exceed the fleet's maximum turn duration — otherwise a
+  long live turn reads as dead and reclaim revokes its virtual key
+  mid-turn. This couples the lease knob to the small-turns design-around
+  (§2).
 - **Mirrors are outbound-only daemons** on a transactional outbox with
   per-ticket coalescing (GitHub's ~500 content-writes/hr/actor cap).
   No inbound webhook surface exists at all; mirror edits are repaired,
@@ -254,8 +293,9 @@ architecture.
   makes managed cheaper**.
 - **Scheduled event:** Sonnet 5 intro pricing expires **2026-08-31**
   (+50% on the implementer line, ≈ +$86k/mo at A0-mid). Budget now.
-- **Day-one instrumentation:** the per-run cache-hit-ratio meter (a ±4×
-  lever, ≈ ±$640k/mo at A0-mid) and bytes-per-run egress measurement.
+- **Day-one instrumentation:** the per-run cache-hit-ratio meter (a +4×
+  downside lever — a fleet-wide cache regression ≈ +$640k/mo at A0-mid)
+  and bytes-per-run egress measurement.
 
 ## 7. Adoption path and gates
 
@@ -275,28 +315,37 @@ approval-gated.
 
 Observable behaviors, each checkable when its layer lands:
 
-1. **One-architecture check:** the same manifest set deploys the platform
-   at an A0-shaped cluster and an enterprise-shaped cluster with changes
-   confined to knob values (K1–K6) — no manifest forks. Verifiable by
-   diffing the two deployments' manifests.
-2. **Egress posture check (in-cluster):** a research-lane pod fetches an
+1. **One-architecture check:** the A0 and enterprise deployments differ
+   only in knob-confined changes — a single declared values file (K1/K2/
+   K5 numbers, K3 lane→class assignments) plus the declared optional
+   overlays (K6's sidecar container, K3's enterprise hardening objects).
+   Any structural diff outside the values file and the named overlays is
+   a fork and fails the check.
+2. **Egress posture check (in-cluster):** a research-class pod fetches an
    arbitrary public URL successfully AND is refused RFC-1918/metadata
-   endpoints; an implement-lane pod with push credentials is refused any
-   non-allowlisted external host. Both as `kubectl exec` probes.
+   endpoints other than the declared in-cluster allowances (gateway,
+   router, kube-dns); an implement-class pod with push credentials is
+   refused any non-allowlisted external host. Both as `kubectl exec`
+   probes.
 3. **Detached-worker check:** a model in a worker session dispatches a
-   `DetachedTask`; the parent pod is SIGKILLed; the child completes and
-   its transcript is resumable from a third process (P2's §6 probe run
-   with a funded credential).
+   `DetachedTask`; the parent harness *process* is SIGKILLed inside the
+   pod; the child completes and its transcript is resumable from a third
+   process (P2's §6 probe run with a funded credential). Pod-level
+   durability is exercised separately as the board path: a child ticket
+   claimed onto its own pod survives deletion of the parent's pod.
 4. **Board-durability check:** kill any worker pod mid-run; the
    reconciler reclaims via the sessionStore-mtime JOIN with zero worker
    heartbeat writes in the log, and the ticket resumes per the E1
    recovery split.
-5. **Spike bar check:** all three promotion metrics compute as SQL over
-   `ticket_event` (plus the k8s audit log for interventions) — no
-   separate ops datastore exists.
+5. **Spike bar check:** MTTR and intervention counts compute as SQL over
+   `ticket_event` plus the k8s audit log; the cost bar joins the
+   gateway's spend rollups and the cloud billing export. No separate
+   incident/intervention datastore exists.
 6. **Break-glass check:** switching the sandbox pool from Standard to
-   Autopilot requires only cluster-level changes — zero edits to
-   Sandbox/Template/WarmPool/Claim manifests or board/harness config.
+   Autopilot requires only cluster-level changes plus knob-value edits
+   (warm-pool replicas down, Spot selectors) — zero *structural* edits
+   to Sandbox/Template/WarmPool/Claim manifests and zero board/harness
+   config changes.
 
 ## Decision Log
 
@@ -338,9 +387,9 @@ Observable behaviors, each checkable when its layer lands:
   proxy attenuator is demoted from research-lane default to an
   enterprise hardening knob (revising the 2026-07-29 enterprise DL).
   Rationale: the sandbox's principal adversary is executed third-party
-  code (validated: npm supply chain), which layers 1–2 counter at zero
-  friction; layer 3 only defends credentials, so it applies only where
-  credentials exist. Restricting a pod holding nothing but a revocable
+  code (validated in the public record: recurring npm postinstall-malware
+  campaigns), which layers 1–2 counter at zero friction; layer 3 only
+  defends credentials, so it applies only where credentials exist. Restricting a pod holding nothing but a revocable
   virtual key is a hard gate without a validated failure state
   (constraint-minimization golden rule). Swarm trial counts (a day of A0
   ≈ months of local use) and unattended operation justify layers 1–2
@@ -402,7 +451,8 @@ Observable behaviors, each checkable when its layer lands:
   (pods cannot pin store/hooks without it); T12 closes the live-found
   version skew so spike evidence lands on a pinned SDK. Rejected:
   running the spike on the bespoke-entry-point workaround alone.
-  Date/Author: 2026-07-30, synthesis (`r3` §7.4 asked; answered here).
+  Date/Author: 2026-07-30, synthesis (`r3` §7.4 asked the T5-timing
+  half; T6/T12 added here).
 
 - Decision: **Board schema per `r2-board-schema.md`** (claim ≠
   transition; heartbeat dissolved into the sessionStore-mtime JOIN;
@@ -438,3 +488,16 @@ Pending — written at finish.
 - 2026-07-30: v1. Authored at round close, interactively with the human;
   three queued forks settled (Autopilot, comparator pin, egress posture);
   supersession banners added to both 2026-07-23 specs.
+- 2026-07-30: v1.1 — independent fable review, all 7 findings adopted:
+  Layer 2 gains the in-cluster allowances {gateway, router, kube-dns}
+  (was self-contradictory with §3.3); `DetachedTask` placement rule
+  (in-pod = process-death durability only; pod-death durability = board
+  path) and Acceptance 3 rewritten to the shape P2 actually verified;
+  Acceptance 5's cost bar re-sourced to gateway rollups + billing export
+  (was unobservable as written); lease-window > max-turn sizing
+  constraint added to §4 (turn-boundary mtime seam); Acceptance 1/6 made
+  decidable (knob-confined = values file + declared overlays); lane →
+  run-class → egress mapping table added with the ephemeral-read-token
+  mechanism, "MTTR spike" disambiguated from the board's spike lane;
+  minor citation fixes (DL-10 scope, +4× one-directional, npm premise
+  sourced, GKE addon install rule, Autopilot-CUD open fact carried).
