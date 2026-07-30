@@ -100,6 +100,15 @@ if status not in ("idle", "awaiting-human"):
           (tid, meta.get("uuid", "?"), status or "unknown"))
 if env["T_ANSWERS"]:
     B.comment(tid, "[answers] " + env["T_ANSWERS"])
+else:
+    # --posted: the human already commented on the ticket by hand — post a
+    # marker anyway. The convergence rule (board-transition.sh) resets its
+    # escalation count at the last comment starting with "[answers]"; with
+    # no marker here that reset never fires on the sweep's relay path, and
+    # a resumed worker's authorized retry of the same edge gets bounced
+    # right back to needs-human (the exact bounce the human just answered).
+    B.comment(tid, "[answers] relayed — see the human's comment on the "
+                   "ticket (gh issue view %s --comments)" % tid)
 ret = B.parse_meta(tickets[tid]["body"]).get("pre-park") or "in-progress"
 print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
                               meta.get("status", "?"), meta.get("updated", "?"), ret))
@@ -120,9 +129,10 @@ fi
 relay="Your needs-human park on ticket #$tid was answered by the human. The answers
 live on the ticket — the ticket remains the record. Re-state your gate
 verdict against them in ONE paragraph as a ticket comment (\"[gate] re-pass —
-<one line>\", or a fresh park if the answers reshape the work's scope), then
-proceed under your original protocol. Never build on momentum past an answer
-that changed the work's shape.
+<one line>\" — PLAN-EXECUTION, which ran no gate, restates plan-execution
+status instead), or a fresh park if the answers reshape the work's scope,
+then proceed under your original protocol. Never build on momentum past an
+answer that changed the work's shape.
 
 ---- answers (verbatim from the ticket) ----
 $block"
