@@ -26,8 +26,9 @@
 #   BOARD_REPO      owner/name (default: resolved from LOCAL_REPO via gh)
 #   IMPLEMENT_MAX_CONCURRENT  implement/spike worker slot cap (default 5);
 #                   review-pr-*/land-pr-* workers never count against it
-#   WORKER_ENGINE   model route codex|claude (default codex); an engine:*
-#                   ticket label wins over the env
+#   WORKER_ENGINE   model route codex|claude (default claude); an engine:*
+#                   ticket label wins over the env, so `engine:codex` opts a
+#                   single ticket back onto the gateway
 #   CLODEX_SETTINGS gateway settings file for the codex route
 #                   (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT   reasoning effort for the codex route (default xhigh)
@@ -175,7 +176,7 @@ dispatch_one() {
   fi
 
   engine="${T_ENGINE_LABEL:-}"
-  [ -n "$engine" ] || engine="${WORKER_ENGINE:-codex}"
+  [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
 
   if [ "$T_CATEGORY" = "spike" ]; then
     role="SPIKE"; protocol_file="$SPIKE_PROTOCOL"
@@ -217,7 +218,13 @@ PY
       "${IMPLEMENT_MODEL:-fable}")" \
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   else
-    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
+    # Cleared, not merely unset by us: this dispatcher can itself run inside a
+    # gateway-routed daemon whose environment exports these, and daemon-spawn.sh
+    # would inherit them, apply the flags AND persist them into the registry
+    # meta — so every later resume would keep riding the gateway while the log
+    # said engine=claude.
+    spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
       "${IMPLEMENT_MODEL:-}")" \
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   fi

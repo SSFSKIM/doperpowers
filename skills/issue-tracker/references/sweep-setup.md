@@ -100,7 +100,7 @@ actually run before trusting a cron arming.
 | `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (review/land workers never count) |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
-| `WORKER_ENGINE` | codex | default model route; an `engine:*` ticket/PR label wins |
+| `WORKER_ENGINE` | claude (implement/spike) · codex (review/land) | overrides the lane's default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts implement workers back on the gateway too |
 | `AUTO_MERGE_ENABLED` | false | review worker's trivial-tier self-merge |
 | `LAND_ENABLED` | false (dry-run) | land worker merges for real |
 

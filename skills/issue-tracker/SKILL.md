@@ -149,10 +149,12 @@ pick by repo visibility:
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
 2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
-   `$WORKER_ENGINE` → default `codex`. Every worker is ONE species — a
+   `$WORKER_ENGINE` → default `claude`. Every worker is ONE species — a
    Claude-harness daemon; the engine names only its model route (`codex` =
    the clodex gateway settings, GPT models through the local proxy;
-   `claude` = plain Claude models). Render the spawn bootstrap
+   `claude` = plain Claude models). Label `engine:codex` to put one ticket
+   back on the gateway; `engine:claude` is redundant now but still valid.
+   Render the spawn bootstrap
    (`doperpowers:implementing-tickets` `references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
    bootstrap names, then reads its own ticket and the repo's
@@ -170,13 +172,15 @@ pick by repo visibility:
    a spike).
 3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
-   The codex route prefixes the gateway env and pins the gateway's model
-   alias as arg 5:
+   The claude route — the default — passes no gateway env and no model
+   arg: the model inherits unless `IMPLEMENT_MODEL` pins it, and since
+   daemon-spawn writes no settings/effort into the meta, its resumes stay
+   plain too. The codex route prefixes the gateway env and pins the
+   gateway's model alias as arg 5:
    `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" daemon-spawn.sh … fable`
    (daemon-spawn persists settings/effort into the registry meta;
    daemon-resume restores them on every fork — without that a gateway
-   worker silently reverts to plain models on its first resume). The
-   claude route passes no gateway env; the model inherits unless pinned.
+   worker silently reverts to plain models on its first resume).
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) means
    the gate passed; a park state means it failed.

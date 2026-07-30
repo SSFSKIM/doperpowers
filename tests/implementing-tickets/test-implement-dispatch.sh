@@ -49,6 +49,13 @@ export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
 export BOARD_REPO="test/repo"
 export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
+# Ambient gateway route, as a gateway-routed daemon (or an operator shell that
+# sourced one) exports it. Present for the WHOLE suite on purpose: it makes every
+# "no gateway env" assertion below a regression test — the claude route must hand
+# daemon-spawn.sh nothing, since daemon-spawn.sh persists what it inherits into
+# the registry meta and every later resume would silently ride the gateway.
+export DAEMON_CLAUDE_SETTINGS="$TEST_ROOT/ambient-gateway.json"
+export DAEMON_CLAUDE_EFFORT="high"
 
 # real git: bare origin + clone whose main carries a repo-facts manifest
 ORIGIN="$TEST_ROOT/origin.git"
@@ -98,7 +105,7 @@ chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
 
 # ---- board seed ---------------------------------------------------------------
 # 1 ELIGIBLE P1 impl · 2 blocked-by-1 · 3 ELIGIBLE P0 spike · 4 in-progress ·
-# 5 ELIGIBLE P2 engine:claude
+# 5 ELIGIBLE P2 engine:claude · 7 ELIGIBLE unprioritized engine:codex
 python3 - <<'PY'
 import json, os
 def issue(num, title, labels, body="body of #%s", blocked=None):
@@ -109,7 +116,7 @@ def issue(num, title, labels, body="body of #%s", blocked=None):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 6, "labels": [], "issues": {
+s = {"next": 8, "labels": [], "issues": {
     "1": issue(1, "Fix the report builder pipeline",
                ["status:ready-for-agent", "priority:P1", "bug"],
                body="Repro: the report build fails on BUILD-MARKER."),
@@ -118,6 +125,7 @@ s = {"next": 6, "labels": [], "issues": {
     "4": issue(4, "Mid-flight work", ["status:in-progress"]),
     "5": issue(5, "Tune the copy", ["status:ready-for-agent", "priority:P2", "engine:claude"]),
     "6": issue(6, "Delivered, awaiting review", ["status:in-review"]),
+    "7": issue(7, "Port the legacy adapter", ["status:ready-for-agent", "engine:codex"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
@@ -130,10 +138,13 @@ out="$(run 1)"
 assert_contains "$out" "dispatched #1" "triggered dispatch reports the ticket"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 1-fix-the-report-builder-pipeline" \
   "spawn is --no-wait with the <n>-<slug> name"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
-  "default engine codex rides the gateway env"
-assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | head -1)" "model=fable" \
-  "codex route pins the gateway model alias"
+assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | head -1)" "settings=;effort=" \
+  "default engine claude passes no gateway env"
+# bracketed so the fixed-string match is exact: "[model=]" would otherwise be a
+# substring of "[model=fable]" and prove nothing about an EMPTY model arg.
+first_spawn="$(grep '^spawn:' "$SPAWN_LOG" | head -1)"
+assert_contains "[${first_spawn##* }]" "[model=]" \
+  "claude route pins no model — it inherits unless IMPLEMENT_MODEL says otherwise"
 PROMPT="$PROMPT_DIR/1-fix-the-report-builder-pipeline.prompt"
 assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries the IMPLEMENT role"
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
@@ -168,7 +179,30 @@ assert_file_contains "$PROMPT3" "(none — spike lane)" "spike gets the literal 
 out="$(run 5)"
 assert_contains "$(grep 'spawn:--no-wait 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
 last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
-assert_contains "$last_env" "settings=;effort=" "engine:claude label suppresses the gateway env"
+assert_contains "$last_env" "settings=;effort=" "engine:claude label (redundant since the default flipped) still suppresses the gateway env"
+
+out="$(run 7)"
+assert_contains "$(grep 'spawn:--no-wait 7-' "$SPAWN_LOG")" "7-port-the-legacy-adapter" "codex-engine ticket dispatches"
+last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
+assert_contains "$last_env" "settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
+  "engine:codex label opts back into the gateway route"
+assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" \
+  "label-selected codex route pins the gateway model alias"
+
+echo "implement-dispatch: WORKER_ENGINE env override"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(WORKER_ENGINE=codex run 1)"
+assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
+  "WORKER_ENGINE=codex overrides the claude default on a label-less ticket"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(WORKER_ENGINE=codex run 5)"
+assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" \
+  "engine:claude label still wins over WORKER_ENGINE=codex"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(run 1)"
 
 echo "implement-dispatch: idle owner does not block"
 
@@ -192,6 +226,9 @@ assert_contains "$order" "spawn:--no-wait3-,spawn:--no-wait1-,spawn:--no-wait5-"
   "sweep dispatches in priority order (P0, P1, P2)"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 2-" "sweep skips blocked tickets"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 4-" "sweep skips non-ready tickets"
+n_gateway="$(grep -c "settings=$HOME/.claude/clodex-settings.json" "$SPAWN_LOG" || true)"
+assert_contains "$n_gateway" "1" \
+  "sweep sends only the engine:codex ticket through the gateway — every other worker rides the claude default"
 
 out="$(run --sweep)"
 assert_contains "$out" "skip #3: bound worker" "consecutive sweep re-dispatches nothing"
