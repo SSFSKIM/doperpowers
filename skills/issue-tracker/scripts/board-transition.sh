@@ -77,6 +77,33 @@ if cur in (B.UNTRACKED, B.CONFLICT):
               % (tid, cur, len(n["status_labels"])))
 elif to not in B.LEGAL[cur]:
     B.die("illegal transition: %s → %s (#%s)" % (cur, to, tid))
+
+if (cur, to) in B.EDGE_NOTE_REQUIRED and not note:
+    B.die("a note is required on the %s → %s edge" % (cur, to))
+
+if (cur, to) in B.CONVERGENCE_EDGES:
+    # Convergence rule (E1 transition 6): count prior traversals of THIS
+    # edge since the last [answers] comment; a second traversal converts
+    # to a needs-human park. Comments are not in the snapshot — one
+    # extra gh call, only on escalation edges.
+    import json as _json
+    comments = _json.loads(B.gh(["issue", "view", tid, "-R", B.repo(),
+                                 "--json", "comments"])).get("comments") or []
+    marker = "[board] %s → %s:" % (cur, to)
+    count = 0
+    for c in comments:
+        # real gh (and the Step-3 mock handler) serve [{"body": ...}];
+        # tolerate plain strings defensively
+        body = ((c.get("body") if isinstance(c, dict) else c) or "").lstrip()
+        if body.startswith("[answers]"):
+            count = 0
+        elif body.startswith(marker):
+            count += 1
+    if count >= 1:
+        note = ("convergence: second traversal of %s → %s — no third "
+                "mechanical bounce; both positions: %s" % (cur, to, note))
+        to = "needs-human"
+
 if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
 if to == "in-review" and not env["T_PR"]:

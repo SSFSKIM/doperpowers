@@ -518,7 +518,10 @@ def apply_state(tickets, tid, to, why, extra_meta=None):
     updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
-        comment(tid, "[board] %s: %s" % (to, why))
+        if (old, to) in CONVERGENCE_EDGES:
+            comment(tid, "[board] %s → %s: %s" % (old, to, why))
+        else:
+            comment(tid, "[board] %s: %s" % (to, why))
     n["state"], n["status_labels"] = to, ([] if to in TERMINAL else [to])
     n["note"] = why or None
     return "#%s: %s → %s" % (tid, old, to)

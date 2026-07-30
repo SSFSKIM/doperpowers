@@ -962,6 +962,39 @@ gf_t="$(state "s['next']-1")"
 run board-transition.sh "$gf_t" needs-human "gate fail: purpose unstated" >/dev/null
 assert_contains "$(state "s['issues']['$gf_t']['body']")" "pre-park: in-design" "architect-queue gate-fail park targets in-design"
 
+# ---- edge notes + convergence (E1 transitions 4/5/6) --------------------------
+echo "convergence:"
+run board-register.sh "Escalation probe" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cv_t="$(state "s['next']-1")"
+assert_fails run board-transition.sh "$cv_t" ready-for-architect            # edge note required
+out="$(run board-transition.sh "$cv_t" ready-for-architect "gate: plan-need — multi-milestone")"
+assert_contains "$out" "#$cv_t: ready-for-implementer → ready-for-architect" "gate escalation applied"
+assert_contains "$(state "s['issues']['$cv_t']['comments'][-1]")" "[board] ready-for-implementer → ready-for-architect: gate: plan-need" "escalation comment carries the edge"
+# complete a design pass, execute, then hit the SAME escalation edge again
+run board-transition.sh "$cv_t" in-design >/dev/null
+run board-transition.sh "$cv_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec >/dev/null
+out="$(run board-transition.sh "$cv_t" ready-for-architect "still believe plan-need")"
+assert_contains "$out" "#$cv_t: ready-for-implementer → needs-human" "second traversal of the same edge converts to needs-human"
+assert_contains "$(state "s['issues']['$cv_t']['body']")" "convergence: second traversal" "conversion note names the convergence rule"
+assert_contains "$(state "s['issues']['$cv_t']['body']")" "pre-park: in-progress" "converted park still records a return target"
+# an [answers] comment resets the count: a sanctioned re-traversal of the
+# SAME edge passes. Fresh ticket (the converted one is parked) — the reset
+# only proves anything on the edge that was previously counted.
+run board-register.sh "Escalation probe 2" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cv2_t="$(state "s['next']-1")"
+run board-transition.sh "$cv2_t" ready-for-architect "gate: plan-need — round 1" >/dev/null
+run board-transition.sh "$cv2_t" in-design >/dev/null
+run board-transition.sh "$cv2_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
+CV2_T="$cv2_t" python3 - <<'ANS'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+t = os.environ["CV2_T"]
+s["issues"][t]["comments"].append("[answers] yes — architect may take it again")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+ANS
+out="$(run board-transition.sh "$cv2_t" ready-for-architect "human-sanctioned re-escalation")"
+assert_contains "$out" "#$cv2_t: ready-for-implementer → ready-for-architect" "same-edge re-traversal passes after [answers] reset (no needs-human conversion)"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

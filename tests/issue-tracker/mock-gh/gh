@@ -118,6 +118,13 @@ def main():
         save(s)
         return
 
+    if argv[:2] == ["issue", "view"]:
+        it = issue(s, argv[2])
+        if opt(argv, "--json") == "comments":
+            print(json.dumps({"comments": [{"body": c} for c in it["comments"]]}))
+            return
+        die("unhandled issue view fields: %s" % " ".join(argv))
+
     if argv[:2] == ["api", "graphql"]:
         fields = {}
         for flag in ("-f", "-F"):
