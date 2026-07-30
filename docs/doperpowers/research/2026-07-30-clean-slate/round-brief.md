@@ -167,7 +167,41 @@ board migration. No re-litigation of Class A. Standing gates unchanged.
 
 ## Surprises & Discoveries
 
-(none yet — filled during the round)
+- Observation: both local credentials were exhausted during the probe
+  phase (OAuth subscription weekly limit, resets 2026-08-03; API key
+  "Credit balance is too low"), so no probe completed a live model turn.
+  The probes were re-cut into keyless evidence (real on-disk
+  transcripts via the SDK read API, process-lifecycle tests through the
+  spawnClaudeCodeProcess/sessionFactory DI seams, shipped-bundle source
+  reads); each report lists what a credited/cluster environment must
+  still verify. The failure itself became evidence: R1 adopts it as a
+  live demonstration that subscription OAuth is a fleet-wide single
+  point of failure — fleet auth must be API-key/virtual-key.
+  Evidence: probes/p1–p3 reports, r1-runtime-gaps.md fleet-auth section.
+- Observation: Agent Sandbox is no longer a GKE-only product — it is a
+  vendor-neutral Kubernetes SIG-Apps subproject
+  (kubernetes-sigs/agent-sandbox, agents.x-k8s.io/v1beta1), which
+  collapses the 07-23 "adopt the product vs self-host the shape" fork
+  into adopt-upstream.
+  Evidence: r2-platform.md §CRDs.
+- Observation: the durability boundary is the TURN, not the session —
+  the engine writes transcripts only at turn boundaries, so a pod
+  evicted mid-turn loses the in-flight turn in any store; parked
+  decisions are in-process memory. Engine-owned, unfixable from
+  outside; design-around only.
+  Evidence: probes/p2 §4 (probe 71 + recorded probe 62), r1 gap table.
+- Observation: R4 measured the whole self-host-vs-managed question at
+  ~1% of all-in spend, while the E1 architect-lane mix (Fable ≈ 5× a
+  Sonnet run) is worth 12–49× more per month — the model-mix dial
+  dominates every infra decision. R4 also dissents from R2 on the
+  Autopilot knob (≈ managed-vendor parity at A0 → recommends retiring
+  it in favor of GKE Standard + Spot at both tiers).
+  Evidence: r4-economics.md keyFindings.
+- Observation: all four Rs independently converged on the
+  through-question — one architecture, two knob-sets (procurement
+  instrument, warm-pool size, sidecar presence, ops-catalog size) —
+  from four different evidence bases.
+  Evidence: the through-question sections of r1–r4.
 
 ## Outcomes & Retrospective
 
@@ -177,3 +211,13 @@ Pending — written at round close, against the through-question.
 
 - 2026-07-30: v1, authored on the human's source-ledger confirmation;
   awaiting the explicit go to launch.
+- 2026-07-30: round EXECUTED on the human's go, as a background
+  workflow (8 agents: probes P1–P4 = sonnet/opus/opus/sonnet; R1/R2/R3
+  = fable; R4 = opus; ~1.48M subagent tokens, ~60 min). All
+  deliverables landed: probes/p1–p4, r1-runtime-gaps.md,
+  r2-platform.md + r2-board-schema.md, r3-agent-ops.md,
+  r4-economics.md. Surprises recorded above. Remaining: the
+  interactive synthesis reference-architecture spec with the human;
+  queued human decisions at round close — R4-vs-R2 Autopilot knob
+  (retire vs keep as A0 entry) and R3's promotion-bar comparator
+  pinning (capability-parity managed sandboxes vs whole band).
