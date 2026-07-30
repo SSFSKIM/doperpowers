@@ -38,17 +38,22 @@ harness with a PATH-shimmed `gh` mock.
   or `skills/issue-tracker/scripts/board-migrate-gh.sh` (a v6→v7
   one-shot; its internal vocabulary is historical).
 - `grep` scope for "no residual vocabulary" checks:
-  `grep -rn "ready-for-agent" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=teaching .`
+  `grep -rn "ready-for-agent" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=teaching --exclude-dir=review-bench .`
   must end with matches ONLY in `board-migrate-gh.sh` (+ this plan file
-  if grepped before commit).
+  if grepped before commit). `tests/review-bench/results/` holds FROZEN
+  benchmark artifacts (old vocabulary preserved deliberately — never
+  rewrite them; always `--exclude-dir=review-bench` on vocabulary greps
+  and rename sweeps).
 - Shell: `scripts/lint-shell.sh` must stay green (shellcheck baseline).
 - Commits: no `Co-Authored-By` lines (repo convention).
 - Version bump ONLY via `scripts/bump-version.sh` (Task 16), never by
   hand.
 - Tests run from the repo root:
   `tests/issue-tracker/test-board-scripts.sh`,
+  `tests/issue-tracker/test-board-sweep.sh`,
   `tests/implementing-tickets/test-implement-dispatch.sh`,
   `node tests/issue-tracker/test-board-template.cjs`,
+  `tests/reviewing-prs/test-review-dispatch.sh`,
   `tests/claude-code/run-skill-tests.sh`,
   `(cd skills/triaging-feedback && npm test)`.
 
@@ -69,7 +74,7 @@ New files:
 
 - `skills/architecting/SKILL.md` — the Architect worker protocol (thin;
   Task 12).
-- Appended test sections in the two existing suites (no new test files).
+- Appended test sections in the existing suites (no new test files).
 
 Renamed: `skills/implementing-tickets/` → `skills/implementing/`
 (directory + frontmatter `name:`; Task 10). Until Task 10, tasks touch
@@ -351,12 +356,16 @@ replace kanban column assertions the same way (`ready-for-agent` →
 list, insert `ready-for-architect` and `in-design` in the positions the
 template's `KB_STATES` now defines.
 
-- [ ] **Step 7: Run both suites to green**
+- [ ] **Step 7: Run all three board suites to green**
 
-Run: `tests/issue-tracker/test-board-scripts.sh && node tests/issue-tracker/test-board-template.cjs`
-Expected: `all tests passed` from the shell suite; the cjs suite exits 0.
-Fix any missed rename site the failures name (the suite is the
-enumerator; the grep in Step 8 is the proof).
+Run: `tests/issue-tracker/test-board-scripts.sh && tests/issue-tracker/test-board-sweep.sh && node tests/issue-tracker/test-board-template.cjs`
+Expected: `all tests passed` from both shell suites; the cjs suite
+exits 0. `test-board-sweep.sh` needs no rename (it seeds only
+`in-progress`/`needs-human` states) — it runs here as the regression
+proof that the sweep's rewritten case arms (Step 5) preserve the
+existing recovery/cancel/relay behavior. Fix any missed rename site the
+failures name (the suites are the enumerator; the grep in Step 8 is the
+proof).
 
 - [ ] **Step 8: Residual-vocabulary check (board area)**
 
@@ -631,6 +640,7 @@ git commit -m "feat(board): pre-park meta + lane-aware answered-park returns (in
 **Files:**
 - Modify: `skills/issue-tracker/scripts/_board.py` (`apply_state` comment format)
 - Modify: `skills/issue-tracker/scripts/board-transition.sh` (edge-note check + convergence conversion)
+- Modify: `tests/issue-tracker/mock-gh/gh` (add the `issue view --json comments` handler — the shared mock has NONE today; unmatched commands `die("unhandled: …")`, so without this every convergence-edge transition in the suite hard-fails)
 - Test: `tests/issue-tracker/test-board-scripts.sh`
 
 **Interfaces:**
@@ -660,17 +670,23 @@ out="$(run board-transition.sh "$cv_t" ready-for-architect "still believe plan-n
 assert_contains "$out" "#$cv_t: ready-for-implementer → needs-human" "second traversal of the same edge converts to needs-human"
 assert_contains "$(state "s['issues']['$cv_t']['body']")" "convergence: second traversal" "conversion note names the convergence rule"
 assert_contains "$(state "s['issues']['$cv_t']['body']")" "pre-park: in-progress" "converted park still records a return target"
-# an [answers] comment resets the count: a sanctioned re-traversal passes
-run board-transition.sh "$cv_t" in-progress "answers relayed — resuming" >/dev/null
+# an [answers] comment resets the count: a sanctioned re-traversal of the
+# SAME edge passes. Fresh ticket (the converted one is parked) — the reset
+# only proves anything on the edge that was previously counted.
+run board-register.sh "Escalation probe 2" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cv2_t="$(state "s['next']-1")"
+run board-transition.sh "$cv2_t" ready-for-architect "gate: plan-need — round 1" >/dev/null
+run board-transition.sh "$cv2_t" in-design >/dev/null
+run board-transition.sh "$cv2_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
 python3 - <<'ANS'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
 t = str(max(int(k) for k in s["issues"]))
-s["issues"][t]["comments"].append("[answers] yes — send it back to the architect")
+s["issues"][t]["comments"].append("[answers] yes — architect may take it again")
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 ANS
-out="$(run board-transition.sh "$cv_t" ready-for-architect "human-sanctioned re-escalation")"
-assert_contains "$out" "#$cv_t: in-progress → ready-for-architect" "count resets after human adjudication"
+out="$(run board-transition.sh "$cv2_t" ready-for-architect "human-sanctioned re-escalation")"
+assert_contains "$out" "#$cv2_t: ready-for-implementer → ready-for-architect" "same-edge re-traversal passes after [answers] reset (no needs-human conversion)"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -679,7 +695,23 @@ Run: `tests/issue-tracker/test-board-scripts.sh 2>&1 | tail -30`
 Expected: FAIL on "edge note required" (state-keyed check does not cover
 it) and on the edge-format comment.
 
-- [ ] **Step 3: Implement the comment format** — in `_board.py`
+- [ ] **Step 3: Teach the mock `issue view --json comments`** — the
+shared mock (`tests/issue-tracker/mock-gh/gh`) has no `issue view`
+handler, and its fall-through is `die("unhandled: …")`. Add this block
+after the `["issue", "comment"]` handler (line ~119), serving the real
+gh shape (`[{"body": …}]`) mapped from the mock's plain-string comment
+store:
+
+```python
+    if argv[:2] == ["issue", "view"]:
+        it = issue(s, argv[2])
+        if opt(argv, "--json") == "comments":
+            print(json.dumps({"comments": [{"body": c} for c in it["comments"]]}))
+            return
+        die("unhandled issue view fields: %s" % " ".join(argv))
+```
+
+- [ ] **Step 4: Implement the comment format** — in `_board.py`
 `apply_state` (line 458), add a `frm_to_comment` decision: replace
 
 ```python
@@ -697,7 +729,7 @@ with
             comment(tid, "[board] %s: %s" % (to, why))
 ```
 
-- [ ] **Step 4: Implement the checks in `board-transition.sh`'s python
+- [ ] **Step 5: Implement the checks in `board-transition.sh`'s python
 block** — after the legality check (line 77–78), add:
 
 ```python
@@ -715,8 +747,8 @@ if (cur, to) in B.CONVERGENCE_EDGES:
     marker = "[board] %s → %s:" % (cur, to)
     count = 0
     for c in comments:
-        # tolerate both shapes: real gh serves [{"body": ...}]; the test
-        # mock's state may store plain strings
+        # real gh (and the Step-3 mock handler) serve [{"body": ...}];
+        # tolerate plain strings defensively
         body = ((c.get("body") if isinstance(c, dict) else c) or "").lstrip()
         if body.startswith("[answers]"):
             count = 0
@@ -732,12 +764,14 @@ Place this BEFORE the `NOTE_REQUIRED`/pre-park blocks so the converted
 park flows through them (the park gets its note check and its
 `pre-park:` write for free).
 
-- [ ] **Step 5: Run the suite to green**
+- [ ] **Step 6: Run both board suites to green**
 
-Run: `tests/issue-tracker/test-board-scripts.sh`
-Expected: `all tests passed`
+Run: `tests/issue-tracker/test-board-scripts.sh && tests/issue-tracker/test-board-sweep.sh`
+Expected: `all tests passed` from both. The sweep suite is regression
+insurance for the `apply_state` format change — the sweep's own parks
+traverse no convergence edge, so its comment format must be unchanged.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add skills/issue-tracker tests/issue-tracker
@@ -749,36 +783,77 @@ git commit -m "feat(board): edge-keyed notes + mechanical convergence enforcemen
 ### Task 6: Sweep recovery over the new states (behavior test)
 
 Task 1 already made the sweep's code changes; this task proves them. The
-sweep tests live in `tests/issue-tracker/test-board-scripts.sh` (the
-board-sweep section with the stubbed daemon scripts — search for
-`board-sweep:`; it stubs `daemon-finalize.sh`/`daemon-retire.sh`/
-`daemon-resume.sh` and seeds registry metas).
+sweep tests live in the DEDICATED suite
+`tests/issue-tracker/test-board-sweep.sh` (NOT `test-board-scripts.sh`,
+which has no sweep section). Its idiom: stub `daemon-finalize.sh`/
+`daemon-resume.sh`/`daemon-retire.sh` scripts append to `$ACTION_LOG`;
+the board is seeded by one python heredoc (the `issue()` helper +
+`meta()` registry writer, around line 136); per-uuid finalize verdicts
+come from `$FINALIZE_MAP`; assertions live under the
+`echo "board-sweep: full tick"` section (line ~235) and check
+`$ACTION_LOG` / the captured sweep output.
 
 **Files:**
-- Test: `tests/issue-tracker/test-board-scripts.sh`
+- Test: `tests/issue-tracker/test-board-sweep.sh`
 - Modify (only if the tests find gaps): `skills/issue-tracker/scripts/board-sweep.sh`
 
-- [ ] **Step 1: Append two cases to the sweep section**, in that
-section's exact stub idiom (mirror the existing dead-worker case,
-changing only the seeded ticket state and meta):
-  1. a ticket in `in-design` with a bound meta whose stub finalize says
-     `absent` → assert the sweep log contains `resume attempt 1/` (the
-     nudge ladder, NOT a retire);
-  2. a ticket in `ready-for-architect` with a dead bound meta → assert
-     the log contains `pre-verdict worker` and a `retire:` line lands in
-     the stub log (fresh-dispatch recovery).
+- [ ] **Step 1: Extend the seed with two lane-state tickets.** In the
+board-seed heredoc, add the two new status labels to the seed's label
+list (labels the sweep may apply must pre-exist in mock state):
 
-- [ ] **Step 2: Run — expected pass** (Task 1 implemented this); if a
-case fails, fix `board-sweep.sh`'s case arms / grep to match Task 1
-Step 5's specification, and re-run to green.
+```python
+s = {"next": 30, "labels": ["status:needs-human", "status:in-progress",
+                            "status:in-design", "status:ready-for-architect"], "issues": {
+```
 
-Run: `tests/issue-tracker/test-board-scripts.sh`
-Expected: `all tests passed`
+and append two issues to the dict (after `"19": …`):
 
-- [ ] **Step 3: Commit**
+```python
+    "20": issue(20, "dead architect mid-design", ["status:in-design"]),
+    "21": issue(21, "dead pre-verdict architect", ["status:ready-for-architect"]),
+```
+
+After the existing `meta(U("aaaa0019"), …)` line, bind them:
+
+```python
+meta(U("aaaa0020"), "20-design", "20", "working")
+meta(U("aaaa0021"), "21-preverdict", "21", "working")
+```
+
+In the FINALIZE_MAP heredoc, add both verdicts to the dict:
+
+```python
+           U("aaaa0020"): "absent", U("aaaa0021"): "absent",
+```
+
+- [ ] **Step 2: Append the assertions** to the `board-sweep: full tick`
+section, after the existing RECOVER block:
 
 ```bash
-git add tests/issue-tracker/test-board-scripts.sh skills/issue-tracker/scripts/board-sweep.sh
+# RECOVER — lane-state split (E1): in-flight design work resumes; a dead
+# pre-verdict worker is retired so the dispatch pass re-runs it fresh
+assert_contains "$log" "resume:aaaa0020-0000-4000-8000-000000000000" "dead in-design worker gets the resume ladder (mid-design WIP is preserved)"
+assert_contains "$out" "resume attempt 1/" "in-design recovery goes through _recover's counted ladder"
+assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready-for-architect worker is retired, not resumed"
+assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
+assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
+```
+
+- [ ] **Step 3: Run — expected pass** (Task 1 implemented the case
+arms); if a case fails, fix `board-sweep.sh`'s case arms / row grep to
+match Task 1 Step 5's specification (`in-progress|in-design)` resumes,
+`ready-for-architect|ready-for-implementer)` retires with "pre-verdict
+worker" log text, row grep
+`'^(in-progress|in-design|ready-for-architect|ready-for-implementer)\|'`),
+and re-run to green.
+
+Run: `tests/issue-tracker/test-board-sweep.sh`
+Expected: `all tests passed`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/issue-tracker/test-board-sweep.sh skills/issue-tracker/scripts/board-sweep.sh
 git commit -m "test(board): sweep recovery split over the lane states (in-design resumes, ready-for-* retires)"
 ```
 
@@ -1134,21 +1209,31 @@ IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scr
 
 - [ ] **Step 3: Grep-driven sweep of every remaining live reference**
 
-Run: `grep -rln "implementing-tickets" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=.git .`
+Run: `grep -rln "implementing-tickets" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=review-bench --exclude-dir=.git .`
 For every file listed: replace `implementing-tickets` →
 `implementing` (both the `doperpowers:implementing-tickets` skill name
-and path fragments). Historical `docs/` stay untouched. Re-run the grep.
+and path fragments). Historical `docs/` and the frozen benchmark
+artifacts under `tests/review-bench/results/` stay untouched (the
+`--exclude-dir` keeps them out of the listing — never rewrite them).
+One file the grep names deserves a caution:
+`tests/reviewing-prs/test-review-dispatch.sh:311` asserts the literal
+protocol path `skills/implementing-tickets/SKILL.md` — the plain
+replacement is exactly right there (the assertion tracks
+`review-dispatch.sh:377`'s Step-2 edit). Re-run the grep.
 Expected final output: empty.
 
 - [ ] **Step 4: Run everything renamed**
 
-Run: `tests/issue-tracker/test-board-scripts.sh && tests/implementing/test-implement-dispatch.sh && tests/implementing/test-protocol-content.sh`
-Expected: board + dispatch suites green. `test-protocol-content.sh` may
-FAIL on assertions naming old paths/skill names — update those assertion
-strings (rename only, e.g. `implementing-tickets/SKILL.md` →
-`implementing/SKILL.md`); content assertions that fail for missing prose
-belong to Task 11, and if any fails here, defer it by noting it in the
-Task 11 step rather than weakening it now.
+Run: `tests/issue-tracker/test-board-scripts.sh && tests/implementing/test-implement-dispatch.sh && tests/implementing/test-protocol-content.sh && tests/reviewing-prs/test-review-dispatch.sh`
+Expected: board + dispatch + review-dispatch suites green
+(`test-review-dispatch.sh` proves the renamed protocol path
+`review-dispatch.sh` emits still points at a real file).
+`test-protocol-content.sh` may FAIL on assertions naming old
+paths/skill names — update those assertion strings (rename only, e.g.
+`implementing-tickets/SKILL.md` → `implementing/SKILL.md`); content
+assertions that fail for missing prose belong to Task 11, and if any
+fails here, defer it by noting it in the Task 11 step rather than
+weakening it now.
 
 - [ ] **Step 5: Commit**
 
@@ -1221,6 +1306,12 @@ outcomes list), insert the escalation outcome:
   and end your turn. Design gaps route to the architect lane — never to
   needs-human (the human address is for decisions only a human can make).
 ```
+
+In `## Verdict`, the Fail bullet's dependency sentence (line 66) gets
+the rename rule's return-target mapping:
+"dependencies are edges, and the ticket goes back to ready-for-agent."
+→ "dependencies are edges, and the ticket goes back to
+`ready-for-implementer`."
 
 In `## Verdict`, after the Pass line's gate-comment instruction, add:
 
@@ -1727,9 +1818,11 @@ git commit -m "feat(reviewing-prs): plan-pin admissibility, handoff anchor, read
 
 ```bash
 tests/issue-tracker/test-board-scripts.sh
+tests/issue-tracker/test-board-sweep.sh
 node tests/issue-tracker/test-board-template.cjs
 tests/implementing/test-implement-dispatch.sh
 tests/implementing/test-protocol-content.sh
+tests/reviewing-prs/test-review-dispatch.sh
 (cd skills/triaging-feedback && npm test)
 tests/claude-code/run-skill-tests.sh
 scripts/lint-shell.sh
@@ -1741,9 +1834,11 @@ rename rule and re-run.
 
 - [ ] **Step 2: Repo-wide residual check**
 
-Run: `grep -rn "ready-for-agent" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=teaching --exclude-dir=.git . | grep -v board-migrate-gh.sh | grep -v 2026-07-31-implement-lane-split.md`
+Run: `grep -rn "ready-for-agent" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=teaching --exclude-dir=review-bench --exclude-dir=.git . | grep -v board-migrate-gh.sh | grep -v 2026-07-31-implement-lane-split.md`
 Expected: no output. Same for
-`grep -rln "implementing-tickets" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=.git .`
+`grep -rln "implementing-tickets" --exclude-dir=docs --exclude-dir=evals --exclude-dir=node_modules --exclude-dir=review-bench --exclude-dir=.git .`
+(`tests/review-bench/results/` is frozen benchmark output holding both
+old vocabularies — excluded, never rewritten.)
 
 - [ ] **Step 3: Version bump (minor — new states + skill split are a
 feature release)**
