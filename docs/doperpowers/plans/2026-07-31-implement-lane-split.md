@@ -1678,8 +1678,9 @@ to `ready-for-implementer`".
 
 - [ ] **Step 4: Verify no stale vocabulary in skills**
 
-Run: `grep -rn "ready-for-agent" skills/ | grep -v board-migrate-gh.sh`
-Expected: no output.
+Run: `grep -rn "ready-for-agent" skills/issue-tracker/ skills/implementing/ skills/architecting/ | grep -v board-migrate-gh.sh`
+Expected: no output. (Scoped to THIS task's skills — `skills/triaging-feedback/`
+is Task 14's, and Task 16's repo-wide grep is the final proof.)
 
 - [ ] **Step 5: Run the full local suites** (docs changes can break
 protocol-content assertions):
