@@ -1775,10 +1775,13 @@ against the pinned plan plus the issue body together.
 paragraph (line ~159), after "the `[gate] pass` timestamp", insert:
 
 ```markdown
-On a ticket whose meta carries a `plan:` pin there is no implementer
-`[gate] pass` — the authorization time is the Architect's handoff: the
-`[board] ready-for-implementer:` comment's timestamp. Every rule in
-this audit keyed to the gate timestamp reads that comment instead.
+On a ticket whose `plan:` pin names a revision (`<path>@<sha>`, not the
+`pre-spec` sentinel) there is no implementer `[gate] pass` — that ticket
+ran in PLAN-EXECUTION mode, which posts none. The authorization time is
+the Architect's handoff: the `[board] ready-for-implementer:` comment's
+timestamp, and every rule in this audit keyed to the gate timestamp
+reads that comment instead. A `plan: pre-spec` ticket ran DIRECT and
+carries a real `[gate] pass` — anchor on it as usual.
 ```
 
 - [ ] **Step 3: Missing-section rule** (line ~205): change "only when
@@ -1802,9 +1805,26 @@ Otherwise — an impasse that needs human judgment or input — set the
 ticket to needs-human with the impasse summary and end your turn.
 ```
 
+The `ready-for-architect` branch ends the turn too — say so on that
+branch, so neither exit reads as fall-through.
+
 In AUTHORITY (line ~326), change the parenthetical to
 "(confident-ready / needs-human / ready-for-architect — notes required
 for the parks and the escalation)".
+
+- [ ] **Step 4b: The two rules the new lane makes incomplete** — both
+outside the five sites above, both load-bearing:
+
+ORIENT (line ~65) tells the worker to locate the `[gate] pass` comment
+as the authorization time. A real-pin ticket has none — add the
+handoff-comment alternative here, matching the Step 2 anchor rule, so
+the read-only pass doesn't come up empty.
+
+ESCALATE's PARKED tier (line ~332) enumerates the states over which
+confident-ready may never be granted, and names only `needs-human`.
+Extend it to cover a ticket just set to `ready-for-architect` by the
+Step 4 impasse route — without this the new escalation has no
+confidence-tier protection behind it.
 
 - [ ] **Step 5: TOO-BIG registration** (line ~236): after the
 `board-register.sh` command line, add: "Birth classification applies:
