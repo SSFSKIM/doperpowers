@@ -43,8 +43,11 @@ const ids = {};
 
 // Four tickets covering the routing matrix: relocated candidate, plain ready,
 // active (in-progress) candidate that must stay put, and a default-hidden done.
+// #5 is a fifth, lane-split probe: an in-design ticket, which unlike the
+// architect/implementer queues is NOT a KB_CORE column (it renders only when
+// populated — this node is what populates it).
 const payload = {
-  meta: { count: 4, updated: "2026-07-08" },
+  meta: { count: 5, updated: "2026-07-08" },
   nodes: [
     { id: "#1", state: "ready-for-implementer", eligible: true, cls: "s_elig", label: "ELIGIBLE",
       title: "candidate ready", close_candidate: true, blocked_by: [], relates_to: [], prs: [], x: 0, y: 0 },
@@ -54,6 +57,8 @@ const payload = {
       title: "active candidate", close_candidate: true, blocked_by: [], relates_to: [], prs: [], x: 240, y: 0 },
     { id: "#4", state: "done", eligible: false, cls: "s_done", label: "done",
       title: "landed", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 240, y: 100 },
+    { id: "#5", state: "in-design", eligible: false, cls: "s_design", label: "designing",
+      title: "lane split probe", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 480, y: 0 },
   ],
   edges: [], epics: [],
 };
@@ -96,6 +101,20 @@ expect("candidate relocated to close-candidate column", (cols["close-candidate"]
 expect("plain ready stays in ready-for-implementer", (cols["ready-for-implementer"] || []).includes("#2"));
 expect("active (in-progress) candidate stays in its column", (cols["in-progress"] || []).includes("#3"));
 expect("done hidden by default", !("done" in cols));
+
+// lane split (E1): the architect queue is a KB_CORE column, so it renders
+// empty (no #-ticket is in that state here); in-design is NOT core, so its
+// column exists only because #5 populates it; and the three lane columns
+// render in KB_STATES declaration order (architect queue, then design, then
+// implementer queue).
+expect("architect-queue core column renders with no tickets in it", "ready-for-architect" in cols);
+expect("empty core column carries no cards", (cols["ready-for-architect"] || []).length === 0);
+expect("in-design ticket renders its own (non-core) column", (cols["in-design"] || []).includes("#5"));
+const laneOrder = Object.keys(cols);
+expect("lane columns render in KB_STATES order (architect, design, implementer)",
+  laneOrder.indexOf("ready-for-architect") >= 0 &&
+  laneOrder.indexOf("ready-for-architect") < laneOrder.indexOf("in-design") &&
+  laneOrder.indexOf("in-design") < laneOrder.indexOf("ready-for-implementer"));
 
 const rfaChip = ids.chips.children.find((b) => b.textContent === "ready-for-implementer");
 rfaChip.onclick();                           // hide the ready-for-implementer state

@@ -931,6 +931,15 @@ impl_t="${out%% *}"
 assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
 assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
 
+# ---- lane display (E1: list/map render the new lane states) -------------------
+# $arch_t (registered just above) is still ready-for-architect: nothing between
+# its birth and here transitions it.
+echo "lane display:"
+assert_contains "$(run board-list.sh)" "ELIGIBLE" "board-list still tags eligibility"
+assert_contains "$(run board-list.sh ready-for-architect)" "ready-for-architect" "state filter works for the architect queue"
+out="$(run board-map.sh)"
+assert_contains "$out" "ready-for-architect · ELIGIBLE" "board-map table shows lane + eligibility"
+
 # ---- plan meta (E1 transitions 2 and 3) ---------------------------------------
 echo "plan meta:"
 run board-register.sh "Architect handoff probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
