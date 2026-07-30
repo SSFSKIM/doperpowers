@@ -2,9 +2,11 @@
 
 > **Status:** design approved in-session (ideadump roadmapping, epic E1;
 > grill record in the Decision Log below), then amended v1.1 after an
-> independent fable review (see Revision Notes). Implementation sequencing
-> is routed by the roadmap consolidation at the end of the roadmapping
-> session — no skill/script edits land from this spec alone.
+> independent fable review, and v1.3 after the 2026-07-31 pre-
+> implementation maturity round (three independent evaluators; see
+> Revision Notes). Implementation sequencing is routed by the roadmap
+> consolidation at the end of the roadmapping session — no skill/script
+> edits land from this spec alone.
 > **Substrate target:** the AI-native Postgres board and the cloud runtime
 > (k8s + gVisor + cc-harness pods) per the 2026-07-30 cloud-native
 > pipeline pivot. The current GitHub Issues board (doperpowers:issue-tracker
@@ -53,6 +55,7 @@ register ─► ready-for-architect ─►(gate verdict)─► in-design ─►(
                                      │     └─ gate finds plan-need ──► ready-for-architect
                                      ▼
                               in-progress ──► in-review ──► (QAgent loop) ──► confident-ready ──► done
+                                     │                └─ review impasse (broken design) ──► ready-for-architect
                                      └─ genuine mid-build block ──► ready-for-architect (return park)
 
 Convergence: the SECOND traversal of the same escalation/return edge on a
@@ -63,8 +66,9 @@ gate's plan-need check.
 ## State machine changes
 
 `ready-for-agent` splits into two dispatchable states, and the Architect
-phase gains an in-flight state; everything downstream of `in-progress` is
-untouched.
+phase gains an in-flight state; downstream of `in-progress` the states
+are untouched — the only downstream edge edits are the QAgent's
+escalation edge and the park-return edges (transitions 6–8).
 
 | state | meaning | worker |
 |---|---|---|
@@ -82,7 +86,11 @@ gate costs far less than defaulting borderline tickets onto Fable.
 **Category `spike` is always born `ready-for-implementer`** and binds the
 spike protocol regardless of lane judgment — category precedence keeps
 the dispatcher's routing total (a findings-only exploration never needs a
-plan author).
+plan author). Precedence is state-free, not birth-only, matching today's
+rule (`ROLE = SPIKE` whenever the category is `spike`): a spike moved
+into `ready-for-architect` by hand still dispatches on the spike
+protocol. E2's `env-issue` category births per its own spec's
+classification.
 
 **The architect-lane gate bar.** The ticket gate's Check-1 cannot apply
 verbatim to this lane — it fails tickets with unanswered architecture
@@ -95,9 +103,15 @@ this variant (migration surface).
 
 **Engine labels.** The architect dispatch IGNORES `engine:*` labels —
 plan authorship is exempt from the X4 gateway opt-in, which now applies
-to implementer/QAgent routes only (a deliberate GPT-plan experiment is
-run by hand, not by label). This narrows the review-stack roadmap's X4
-contract and is flagged there on landing.
+to the implementer/QAgent/land routes only (a deliberate GPT-plan
+experiment is run by hand, not by label). This narrows the review-stack roadmap's X4
+contract; the roadmap's X4 section and Parent-Level Acceptance 3 are
+amended alongside this revision. **Precedence on the surviving routes:**
+an `engine:codex` opt-in overrides the lane's model pins for that
+ticket/PR — the QAgent and fix-wave pins bind the default plain-Claude
+route only, and acceptance 5 is read against a label-less dispatch (X4's
+purpose is exactly the deliberate per-ticket experiment; a pin that
+outranked it would delete the opt-in).
 
 **New legal transitions:**
 
@@ -107,16 +121,30 @@ contract and is flagged there on landing.
 2. **Architect completion** — `in-design → ready-for-implementer`. The
    closing contract: the plan document committed on the ticket branch
    **and pushed** (cattle reclaim depends on origin-visible artifacts),
-   the branch recorded via `--branch`, the plan's repo path recorded in a
-   dedicated meta field (`plan:`), and a note carrying brief context and
-   intent. "Plan attached" downstream means the meta field, never note
-   prose.
+   the branch recorded via `--branch`, and the plan recorded in a
+   dedicated meta field (`plan:`) as `<repo path>@<commit SHA>` — an
+   **immutable revision pin**, written via a new `--plan` flag on
+   `board-transition.sh` (`META_KEYS` gains `plan`; an unknown key is
+   silently dropped by `render_body` today, so the schema edit is load-
+   bearing, not cosmetic). The pin is what makes the plan admissible
+   review evidence (see the QAgent paragraph below) and what separates
+   the plan-as-authored from the Implementer's living-plan updates on
+   the branch. A note carries brief context and intent. "Plan attached"
+   downstream means the meta field, never note prose.
 3. **Architect down-shortcircuit** — the ticket turned out small:
-   `in-design → ready-for-implementer` with note "pre-spec suffices as
-   the plan"; no plan document. **This ruling binds the next
-   Implementer's plan-need check** (a narrow inherited-trust exception —
-   the stronger model has explicitly ruled on plan-need; the Implementer
-   may still park for unrelated reasons).
+   `in-design → ready-for-implementer` with the sentinel meta value
+   **`plan: pre-spec`** and note "pre-spec suffices as the plan"; no
+   plan document. The sentinel — not the note — carries the ruling:
+   `note:` meta is overwritten on every transition and note prose is
+   not machine-read, so a note-borne ruling would not survive an
+   intervening park/answer cycle, while the sentinel makes dispatch
+   routing uniform (every `ready-for-implementer` ticket has a `plan:`
+   value: a pin, `pre-spec`, or absent = plan-less DIRECT).
+   **The ruling is persistent and binds every subsequent Implementer's
+   plan-need check** — it attaches to the ticket, not to one worker, so
+   a fresh dispatch after a pre-verdict crash inherits it (a narrow
+   inherited-trust exception — the stronger model has explicitly ruled
+   on plan-need; the Implementer may still park for unrelated reasons).
 4. **Implementer gate escalation** — a plan-less ticket's gate finds
    plan-need (multiple sequenced milestones, work that must survive
    context death, missing design decisions that are agent-answerable):
@@ -131,24 +159,74 @@ contract and is flagged there on landing.
 6. **Convergence rule** — the second traversal of the SAME
    escalation/return edge on one ticket parks `needs-human`, its note
    carrying both sides' positions. No third mechanical bounce; two
-   honest model disagreements are a human fork.
-7. **Park return rule** — an answered park returns the ticket to its
-   pre-park state (read from the event record): `in-design` for an
-   Architect's park, `in-progress` for an Implementer's. This
-   generalizes `board-answer.sh`'s hardcoded `in-progress` and is what
-   makes an answered Architect park resumable at all.
+   honest model disagreements are a human fork. **Enforcement lives in
+   `board-transition.sh`**, not worker judgment: escalation/return
+   edges always post a `[board]` comment (their notes are required), so
+   the traversal count is machine-readable from the comment trail; the
+   script converts a third traversal into the `needs-human` park
+   mechanically. **The count resets at human adjudication**: traversals
+   are counted since the last `[answers]` relay (or human comment), so
+   a human-sanctioned re-traversal after a convergence park ("yes, the
+   plan is wrong — send it back") starts a fresh count instead of
+   tripping the rule it just resolved.
+7. **Park return rule** — an answered `needs-human` park returns the
+   ticket to **its parking lane's in-flight state**: `in-design` for
+   parks written from the architect lane (including a gate-fail park
+   from `ready-for-architect` — the resumed session re-states its
+   verdict, today's established precedent), `in-progress` for the
+   implementer lane's, `in-review` for the QAgent's. In-flight, never
+   the dispatchable queue: a return to a `ready-for-*` state would race
+   the sweep in the window before the resumed session's meta flips to
+   `working` (an idle bound meta deliberately never blocks a dispatch),
+   binding a second worker onto the ticket — the hardcoded `in-progress`
+   avoided this by accident; the generalization must avoid it by rule.
+   The return target is recorded at park time in a **`pre-park:` meta
+   field** written automatically by `board-transition.sh` (the mechanism
+   must be a build, not a read: entering an in-flight state is a
+   note-free write that posts no `[board]` comment, `note:` meta is
+   overwritten per transition, and no board script queries GitHub's
+   label timeline — there is no existing event record to consult). A
+   born-parked ticket has no `pre-park:`; its answer stays on the wake
+   ritual's fold path and the answerer assigns the lane per the birth
+   rule. `LEGAL` gains the return edges (`needs-human → in-design`,
+   `needs-human → in-review`). This generalizes `board-answer.sh`'s
+   hardcoded `in-progress` (and its `needs-human`-only refusal, which
+   stands — see transition 8) and is what makes an answered Architect
+   park resumable at all.
 8. **Binding release** — the lane-crossing transitions (2, 3, 4, 5) end
    the writing worker's scope and release its binding; the next dispatch
-   binds fresh. The "park = pause, session stays bound, answers arrive
-   as a resume" contract applies to `needs-human`/`needs-info` parks
-   only — lane transitions are scope ends, not pauses.
+   binds fresh. Release is implemented where it already de-facto lives:
+   the dispatcher's slot accounting (`_slots_used`'s state tuple) — a
+   bound meta on a state outside the lane's in-flight set never eats a
+   slot; no unbind ceremony exists or is added. The "park = pause,
+   session stays bound, answers arrive as a resume" contract applies to
+   **`needs-human` parks only** — `needs-info` stays on the wake
+   ritual's fold-and-re-cut path (no resume machinery exists for it,
+   deliberately: `board-answer.sh` refuses non-`needs-human` states and
+   the sweep's relay pass scans `needs-human` rows only). Lane
+   transitions are scope ends, not pauses.
 
 **The park discriminant becomes a three-address system** (extends
-issue-tracker's single authoritative copy): a decision or real-world
-input only the human can provide → `needs-human`; missing knowledge
-anyone could research → `needs-info`; **missing or broken design that an
-agent can author → `ready-for-architect`**. `interactive-preferred`
-survives unchanged for work whose core needs the human's live steering.
+issue-tracker's single authoritative copy, and the condensed second
+copy in `_board.py`'s comment): a decision or real-world input only the
+human can provide → `needs-human`; missing knowledge anyone could
+research → `needs-info`; **missing or broken design that an agent can
+author → `ready-for-architect`**. `interactive-preferred` survives
+unchanged for work whose core needs the human's live steering.
+
+**Who may write the third address** (the legality table is edited to
+exactly these edges, no others): the Implementer's gate (transition 4),
+the Implementer mid-build (transition 5), and — a deliberate new edge —
+**the QAgent at review impasse: `in-review → ready-for-architect`**,
+note required. The review loop's round-cap escalation ("a likely
+decomposition defect, not N independent bugs") is the archetypal
+agent-authorable design gap; leaving it parked `needs-human` while the
+purpose statement promises design gaps "flow to a named state instead
+of leaking into needs-human" would contradict the design's own core
+observable. The edge is counted by the convergence rule like every
+escalation edge — the second review→architect traversal on one ticket
+parks `needs-human`. reviewing-prs's AUTHORITY list gains the state
+(migration surface).
 
 **Sweep behavior over the new states**: a dead bound worker on an
 in-flight state (`in-design`, `in-progress`) gets the resume-with-nudge
@@ -156,6 +234,19 @@ recovery (mid-design Fable work is the pipeline's most expensive
 in-flight asset — never fresh-dispatched away); a dead worker on a
 `ready-for-*` state is the cheap pre-verdict case, fresh-dispatched as
 today.
+
+**Lane-aware queue returns.** Every existing path that returns a ticket
+to `ready-for-agent` today becomes lane-aware: the unblock return (the
+discriminant's "cut `blocked-by`" route), `deferred`'s revival edge, and
+the wake ritual's unbound-park fallback all target
+`ready-for-implementer` when `plan:` is attached or by the unsure
+default, `ready-for-architect` only by the returner's explicit judgment
+(the birth rule, re-applied at return time). The wake fallback's "next
+dispatch re-runs the gate" promise holds on plan-less tickets only — a
+plan-carrying ticket dispatches into plan-execution, gate-free by
+design; an answer that reshapes scope on such a ticket is the
+answerer's cue to strip `plan:` or route to `ready-for-architect`
+instead of returning it to the queue unchanged.
 
 ## Worker protocols
 
@@ -179,12 +270,35 @@ human-approval gate maps to the council (below) plus parks — there is no
 synchronous human gate. A ticket whose registrar wants a human
 spec-approval anyway says so in its body; the Architect then parks
 `needs-human` at spec completion (ticket-level configuration, not
-doctrine).
+doctrine). **Every Architect park from `in-design` banks its WIP**,
+mirroring transition 5's contract: draft plan committed and pushed on
+the ticket branch, branch recorded — a parked Fable session that dies
+unresumably must not take the pipeline's most expensive in-flight asset
+with it.
+
+**Mid-design decomposition has a defined exit.** Check-2 runs at the
+gate, but grills reveal scale late; a too-big discovery from `in-design`
+is a scope-ending verdict, not a dead end. The Architect registers
+children per `implement-decompose.md` (the birth rule applies to each
+child), updates the parent — which becomes an epic, exactly today's
+contract — and exits via the transition-2 edge with note "decomposed —
+parent is an epic" and no `plan:`. Epics are never dispatched
+(eligibility excludes them), so the missing plan is moot; the epic pull
+returns the finished parent to `in-progress` as today, which requires
+`PULLABLE` to gain the lane states (migration surface).
 
 **No intake gate at the Implementer.** The Architect's phase carries the
 quality machinery (council, spec review, plan review), so the plan is
 presumed sound — the Implementer does not re-run the gate or re-judge the
-design. When the codebase reveals divergence from the plan mid-execution,
+design. Its first board write is the `in-progress` transition with a
+note naming the plan revision it executes; it posts no `[gate]` comment
+(the convention two implementers would otherwise guess differently).
+On architect-lane tickets the authorization-time anchor that
+reviewing-prs's audit keys to the `[gate] pass` timestamp today becomes
+the Architect's transition-2 `[board] ready-for-implementer` comment —
+the moment implementation was actually authorized (migration surface).
+
+When the codebase reveals divergence from the plan mid-execution,
 the Implementer absorbs it under the living-spec doctrine (record in the
 spec's Surprises/Revision Notes, adapt, drive to the end). Only a
 genuinely blocked plan produces the return park (transition 5); if the
@@ -198,16 +312,36 @@ split across sessions, that exit-gate would be homeless. In this pipeline
 it is owned by the QAgent loop, which attaches to every non-draft PR —
 the Implementer adds no pre-PR review duplicate.
 
+**The plan is admissible review evidence.** reviewing-prs's
+specification hierarchy admits only documents the issue body explicitly
+references, resolved from base-ref or an immutable revision — never the
+PR head. Unamended, that contract would bar the QAgent from reading the
+very artifact this design makes the entire Architect→Implementer
+interface, leaving it to audit a plan-executed PR against an issue body
+that is no longer the operative spec. The amendment is one admissibility
+clause, not a loop change: the `plan:` meta's `path@SHA` pin names an
+admissible secondary spec source at an immutable revision (satisfying
+the same anti-self-certification rule that motivates the head-ref ban —
+the Implementer cannot rewrite the contract it is audited against). The
+QAgent audits against the plan as authored plus the issue body, and
+reads the branch's living-plan divergence notes as evidence of absorbed
+divergence, not as the contract.
+
 **Model pins ride dispatch, not protocols.** The lane state selects the
 worker protocol and its default model (architect → Fable,
 implementer/QAgent → Opus). The QAgent's Opus-high pin and the fix-wave
 agent declaration land as this initiative's implementation work in
-reviewing-prs, sequenced WITH the review-stack roadmap's C5
-(doperpowers#32) and C6 (doperpowers#33) so the dispatch scripts are
-touched once — C5/C6 flip route defaults; this spec adds the pins and
-the declared agent. Architect-lane concurrency is capped separately from
-the implementer lane (the Fable-spend lever; exact knob named in the
-implementation plan).
+reviewing-prs. Sequencing follows board reality, not the original
+"touched once" hope (already false: C6, doperpowers#33, is at
+`confident-ready` and lands before this spec's work starts): the
+implement-dispatch changes build on the post-C6 script; the
+reviewing-prs pins ride with C5 (doperpowers#32) — which unblocks on
+the human's pending wontfix closes of #30/#31 — or land as their own
+touch if C5 stays parked, the implementation plan's call. Pins bind the
+default plain-Claude route only (see Engine labels). Architect-lane
+concurrency is capped separately from the implementer lane (the
+Fable-spend lever; the knob lands in `_slots_used`'s lane accounting,
+which today counts no slot at all for an in-flight `in-design` row).
 
 ## Council scaling
 
@@ -219,7 +353,9 @@ existing brainstorming track logic, applied by the Architect):
 - **Spec → Impl Plan shape** (large/novel/high-stakes): the council —
   `doperpowers:critique` (design debate to convergence), the spec-review
   pass, and `doperpowers:plan-reviewer` on the implementation plan — all
-  existing agents, reused.
+  existing machinery, reused (critique and plan-reviewer are declared
+  agents; the spec-review pass is brainstorming's inline fable dispatch,
+  prose-defined, and stays that way).
 
 ## Skill topology
 
@@ -238,35 +374,85 @@ implementing-tickets is today:
   and minus gate-time decompose-vs-design ambiguity: plan-execution mode
   + DIRECT mode + the escalation/return transitions. The spike lane and
   its protocol move with it unchanged
-  (`references/spike-worker-protocol.md`). Two pieces of inherited text
-  need rework, not carry-over: the ticket-gate's ExecPlan-based scope
-  sizing ("roughly 1–2 ExecPlans") now describes the architect lane's
-  output, and the "writing-plans is never a daemon worker's" ban must be
-  re-scoped — the Architect is a daemon worker whose whole job is
-  authoring plans another session executes.
+  (`references/spike-worker-protocol.md`). Two pieces of existing text
+  need rework, not carry-over — one inherited, one cross-skill: the
+  "writing-plans is never a daemon worker's" ban is `implementing`'s
+  inherited text and must be re-scoped (the Architect is a daemon worker
+  whose whole job is authoring plans another session executes); the
+  ticket-gate's ExecPlan-based scope sizing ("roughly 1–2 ExecPlans")
+  now describes the architect lane's output, but it lives in
+  issue-tracker's `ticket-gate.md` — the board schema's single copy,
+  consumed by five registrar paths — so its rework is a cross-skill
+  edit, not text either new skill inherits.
 - The Implementer's clear-cut decompose authority (gate Check-2:
   children whose self-contained pre-specs can be written NOW) survives —
   that is mechanical splitting, not design. Children that need design
   are the escalation case.
 
 **Migration surface** (inventory for the implementation plan, not decided
-here): dispatch ritual and `implement-dispatch.sh` gain state→protocol
-routing and the architect lane's concurrency cap; worker-bootstrap
-`PROTOCOL_FILE` paths; issue-tracker SKILL.md protocol references, state
-vocabulary, and the park-discriminant paragraph (third address);
-`_board.py` (LEGAL table, BIRTH set, `eligible()`, `newly_eligible()`,
-and edge-keyed note enforcement — today's `NOTE_REQUIRED` is
-state-keyed, but transitions 2/4/5 require notes into states that are
-note-free at birth); `board-sweep.sh` (RECOVER set gains the new states
-with the in-flight/pre-verdict recovery split above); `board-answer.sh`
-(pre-park return state); `ticket-gate.md` (architect-lane variant +
-sizing-language rework); the triaging-feedback registrar (its
-TypeScript gate/prompt/verdict compile in `ready-for-agent` — must learn
-birth classification); `implement-decompose.md` and spike graduation
-paths (children born with lane states); `references/issue-dispatch.yml`;
-reviewing-prs (fix-wave agent declaration + QAgent pin); operation
-manuals; board-lint legality tables; the `ready-for-agent` label
-migration on live boards.
+here; verified against the code 2026-07-31):
+
+- **`_board.py`** — `LEGAL` (every `ready-for-agent` edge replaced by
+  lane equivalents; new escalation edges `ready-for-implementer` /
+  `in-progress` / `in-review → ready-for-architect`; park-return edges
+  `needs-human → in-design` / `in-review`), `BIRTH`, `OPEN_STATES`,
+  `ACTIVE`, `PULLABLE` (epic pulls — without it a decomposed parent in a
+  lane state is never pulled), `STATUS_COLORS` (a state with no color
+  entry never gets its GitHub label created), `eligible()` /
+  `newly_eligible()`, `META_KEYS` + `plan:` / `pre-park:` writers,
+  edge-keyed note enforcement (today's `NOTE_REQUIRED` is state-keyed,
+  but transitions 2/4/5 require notes into states that are note-free at
+  birth), the condensed park-discriminant comment.
+- **Board scripts** — `board-transition.sh` (legality, `--plan`,
+  automatic `pre-park:`, convergence-count enforcement, skeleton-guard
+  re-key off `ready-for-agent`); `board-register.sh` (the default birth
+  state constant and the skeleton-refusal rule, both keyed to the state
+  this spec deletes); `board-answer.sh` (pre-park return + refusal
+  text); `board-sweep.sh` (the recovery split is a hardcoded `case`
+  plus state regexes — RECOVER, CANCEL, and RELAY greps all carry the
+  vocabulary); `board-map.sh` (duplicates `eligible()` inline — a
+  second authority that would silently disagree; consolidate onto
+  `B.eligible`) + `board-map.template.html` (kanban columns, CSS map,
+  eligible-first sort, column counts); `board-list.sh` (the ELIGIBLE
+  tagging the dispatch ritual reads); `board-edge.sh` (third inline
+  eligibility re-derivation); `board-lint.sh` — which holds NO legality
+  table (legality is enforced only in `board-transition.sh`); what lint
+  gains is the edge-keyed note rule its state-keyed check cannot
+  express.
+- **Dispatch** — dispatch ritual + `implement-dispatch.sh`
+  (state→protocol routing; `_slots_used`'s lane tuple = both the
+  binding-release mechanism and the architect concurrency cap);
+  worker-bootstrap `PROTOCOL_FILE`/`ROLE` (one file — the review-side
+  bootstrap uses `{{SKILL_FILE}}` and no `{{ROLE}}`, a separate shape);
+  `references/issue-dispatch.yml` template AND its live consumer-repo
+  copies (the workflow's `if:` condition hardcodes the label).
+- **Gate & registrars** — `ticket-gate.md` (architect-lane variant +
+  sizing-language rework; issue-tracker-owned, five registrar
+  consumers); the triaging-feedback registrar (TypeScript: the
+  `BirthState` union, `routeTicket`, verdict `STATES`, the worker
+  prompt, plus its references/setup/SKILL.md prose — must learn birth
+  classification); `implement-decompose.md` and spike graduation paths
+  (children born with lane states); reviewing-prs's TOO-BIG
+  registration (births the default state today).
+- **reviewing-prs** — fix-wave agent declaration (`wave-board.md`'s
+  Task-tool dispatch line is the mechanism change; the quiescence/
+  ledger contract must hold for a declared agent) + QAgent pin;
+  AUTHORITY gains `ready-for-architect`; the spec-hierarchy
+  plan-admissibility clause; the `[gate] pass` authorization-time
+  anchor re-keyed for architect-lane tickets.
+- **Docs & boards** — issue-tracker SKILL.md (protocol references,
+  state vocabulary, park discriminant, wake-ritual fallback
+  lane-awareness); both operation manuals; the review-stack roadmap's
+  X4/acceptance amendment (landed with this revision); the
+  `ready-for-agent` label migration on live boards + new labels via
+  `STATUS_COLORS`; teaching materials (`teaching/cloud-scale-
+  architecture` SQL examples; low priority).
+- **Tests** — `tests/issue-tracker/test-board-scripts.sh` (~28 sites
+  assert exact transition strings and label lists),
+  `tests/implementing-tickets/test-implement-dispatch.sh` (fixtures
+  keyed on the old label), `test-protocol-content.sh` (asserts protocol
+  prose — fails on the skill split itself),
+  `tests/issue-tracker/test-board-template.cjs` (kanban columns).
 
 ## What does not change
 
@@ -276,7 +462,12 @@ loop). The spike lane's protocol and deliverable. The wake ritual's
 shape (its answer relay becomes pre-park-state-aware — transition 7).
 `needs-human`/`needs-info`/`interactive-preferred` semantics (minus the
 design-gap traffic that now has its own address). Workers registering
-their own follow-ups. The reviewing-prs loop structure and exit gates.
+their own follow-ups. The reviewing-prs loop structure and exit gates
+(its evidence rules gain the plan-admissibility clause and its
+authority the third address — the rounds and the exit bar are
+untouched). The land worker (human-Approve-triggered, not
+lane-dispatched) sits outside the lane states entirely; C5 flips its
+route independently.
 
 ## Acceptance (observable)
 
@@ -284,8 +475,9 @@ their own follow-ups. The reviewing-prs loop structure and exit gates.
    Fable-routed worker whose first board write is the gate verdict —
    `in-design` (+ `[gate]` comment) on pass, a park on fail. Its scope
    ends with `ready-for-implementer` carrying a pushed branch, a `plan:`
-   meta field, and a context/intent note. It writes no implementation
-   code.
+   meta field (a `path@SHA` pin, or `pre-spec` on the down-shortcircuit),
+   and a context/intent note — or the decompose exit (children
+   registered, epic parent, no plan). It writes no implementation code.
 2. A dispatch on `ready-for-implementer` with a `plan:` meta field
    spawns an Opus worker that authors no plan document, executes, and
    opens a PR whose body carries Validation Evidence — with no gate
@@ -297,9 +489,10 @@ their own follow-ups. The reviewing-prs loop structure and exit gates.
    `in-progress → ready-for-architect` with note + orientation summary +
    WIP on the recorded branch; mere divergence produces living-spec
    updates and a finished PR instead.
-5. A review dispatch spawns ONE Opus-high QAgent; fixes between rounds
-   arrive as fix-wave agent (Opus medium) dispatches; the loop's exit
-   behavior is unchanged.
+5. A label-less review dispatch spawns ONE Opus-high QAgent; fixes
+   between rounds arrive as fix-wave agent (Opus medium) dispatches; an
+   `engine:codex`-labelled dispatch still rides the gateway route with
+   its own models (X4); the loop's exit behavior is unchanged.
 6. An Architect on an oversized goal routes to decomposing and registers
    children carrying lane states per the birth rule; a `spike` child is
    born `ready-for-implementer`.
@@ -430,6 +623,69 @@ their own follow-ups. The reviewing-prs loop structure and exit gates.
   machine-readable attachment, not note prose; lane transitions are
   scope ends, so the bound-session park contract must not apply.
   Date/Author: 2026-07-30, session, from fable review F8.
+- Decision (v1.3): `plan:` = `path@SHA` immutable pin, and reviewing-prs's
+  spec hierarchy gains the pin as an admissible secondary source.
+  Rationale: the review contract admits only issue-body-referenced
+  documents at immutable revisions, never PR head — unamended it bars
+  the QAgent from the artifact that IS the phase interface; the pin
+  satisfies the same anti-self-certification rule (the Implementer
+  cannot rewrite the contract it is audited against) and separates
+  plan-as-authored from living-plan divergence. Rejected: issue-body
+  back-reference convention (registrars cannot know the path
+  pre-design); loosening the head-ref ban (lets the PR self-certify).
+  Date/Author: 2026-07-31, session, from cross-spec review (blocking).
+- Decision (v1.3): park returns target the parking lane's in-flight
+  state, carried by an automatic `pre-park:` meta field; `LEGAL` gains
+  `needs-human → in-design` / `in-review`.
+  Rationale: "read from the event record" was a build, not a read — no
+  script queries state history, `note:` is overwritten per transition,
+  and in-flight entries post no comment; returning to a dispatchable
+  state races the sweep onto a second bound worker (the hardcoded
+  `in-progress` avoided this by accident). Born-parked tickets (no
+  `pre-park:`) stay on the wake fold path with the birth rule
+  re-applied. Rejected: querying GitHub's label timeline (new GraphQL
+  surface + pagination for what one meta field records at write time).
+  Date/Author: 2026-07-31, session, from code-grounding + both reviews.
+- Decision (v1.3): down-shortcircuit ruling carried as sentinel
+  `plan: pre-spec`, persistent across dispatches.
+  Rationale: the ruling must survive note overwrites and pre-verdict
+  crashes; a sentinel makes every `ready-for-implementer` ticket's
+  routing machine-readable from one field. Rejected: note-borne ruling
+  (dies on the next transition); one-shot binding (the ruling is about
+  the ticket, not one worker).
+  Date/Author: 2026-07-31, session, from design review F3.
+- Decision (v1.3): convergence enforcement in `board-transition.sh`,
+  counting traversals since the last human adjudication.
+  Rationale: escalation edges always post comments (notes required), so
+  the count is mechanical; without a reset, a human-sanctioned
+  re-traversal after a convergence park would trip the rule it just
+  resolved. Rejected: worker-judgment enforcement (two implementers
+  build different things).
+  Date/Author: 2026-07-31, session, from design review F2.
+- Decision (v1.3): the QAgent may write the third address —
+  `in-review → ready-for-architect`, counted by the convergence rule.
+  Rationale: the review impasse's decomposition-defect cluster is the
+  archetypal agent-authorable design gap; leaving it at `needs-human`
+  contradicts the purpose statement's core promise. Rejected: scoping
+  the third address to implement-lane writers only (preserves a leak
+  the spec exists to close).
+  Date/Author: 2026-07-31, session, from cross-spec + design review
+  converging on the same gap.
+- Decision (v1.3): engine-label opt-in outranks lane model pins;
+  acceptance 5 reads against label-less dispatch.
+  Rationale: X4's surviving purpose is the deliberate per-ticket
+  experiment; a pin that outranked it would delete the opt-in.
+  Date/Author: 2026-07-31, session, from cross-spec review.
+- Decision (v1.3): mid-design decomposition exits via the transition-2
+  edge with epic semantics; `PULLABLE` gains the lane states; Architect
+  parks bank WIP; `needs-info` excluded from the resume contract;
+  queue returns become lane-aware (birth rule re-applied at return).
+  Rationale: seam gap-fills — each generalizes a hardcoded path
+  (`implement-decompose`'s parent contract, transition 5's banking,
+  `board-answer`'s refusal, the `ready-for-agent` return targets) that
+  the v1.1 rules referenced without covering.
+  Date/Author: 2026-07-31, session, from design review F4/F6/F7 +
+  cross-spec 4c.
 
 ## Surprises & Discoveries
 
@@ -451,6 +707,24 @@ their own follow-ups. The reviewing-prs loop structure and exit gates.
   A single new state (`in-design`) plus two edge rules resolved F1, F2,
   and the sweep half of F5 together.
   Evidence: fable review 2026-07-30, findings F1/F2/F5.
+- Observation: The v1.3 evaluation round (code-grounding, cross-spec,
+  and design review, run as three independent agents) found the same
+  pattern one level down: every residual defect was a seam where a v1.1
+  rule generalized a hardcoded mechanism without covering a case the
+  hardcode silently handled — `in-progress` returns were race-free by
+  accident, note-free gate writes meant no event trail existed to read,
+  the state-keyed `NOTE_REQUIRED` had quietly shaped what the comment
+  stream could carry, and the review loop's evidence rules predated the
+  existence of a plan to admit. Generalizing a hardcode means owning
+  its accidental guarantees.
+  Evidence: 2026-07-31 evaluation round; the v1.3 Decision Log block.
+- Observation: The sequencing clause aged in one day — C6 reached
+  `confident-ready` and C5's chain parked `needs-human` (#30/#31
+  wontfix recommendations awaiting the human), turning "touch the
+  dispatch scripts once" from a plan into a counterfactual. Substrate-
+  neutral state rules survived contact with reality; cross-roadmap
+  timing promises did not.
+  Evidence: board state 2026-07-31; the amended sequencing paragraph.
 
 ## Outcomes & Retrospective
 
@@ -458,6 +732,25 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-07-31: v1.3, pre-implementation maturity round (three independent
+  evaluators: Opus code-grounding vs the actual scripts, Opus cross-spec
+  vs E2/E3/the review-stack roadmap/the v8 schema, fable design review
+  of the v1.2 state machine; all surviving findings adopted as
+  gap-fills, no recorded decision re-opened): `plan:` = `path@SHA` pin +
+  QAgent plan-admissibility clause; `pre-park:` meta + in-flight return
+  targets + two new legal return edges; `plan: pre-spec` sentinel;
+  convergence enforcement locus + reset; QAgent third-address edge;
+  engine-label/pin precedence; mid-design decomposition exit;
+  Architect park WIP banking; `needs-info` out of the resume contract;
+  lane-aware queue returns; plan-execution first-write convention +
+  `[gate]`-anchor re-key; sequencing paragraph rewritten to board
+  reality (C6 landing, C5 parked behind #30/#31); migration surface
+  rewritten as a verified grouped inventory (board-register/map/list/
+  edge, `_board.py`'s full table set, sweep's three greps, tests,
+  consumer-repo workflow copies); board-lint and "RECOVER set"
+  mischaracterizations corrected; ticket-gate ownership corrected.
+  Companion edits: E2's writer clause/env-issue birth/acceptance 4;
+  review-stack roadmap X4 + Parent-Acceptance 3 amendment.
 - 2026-07-30: v1, authored from the E1 grill of the ideadump roadmapping
   session (handoff → states → intake → classification → authorship →
   topology, in that order; all decisions human-confirmed in-session).

@@ -47,11 +47,16 @@ first-class address instead of dying in chat logs.
   comments, made structural).
 - **Current-state fields: mutable.** Status, priority, current note,
   `plan:`, branch, PR, binding (v8's `board:meta` block, made columns).
-- **Writers:** the bound accountable worker (its own ticket only), the
-  human, and pipeline automation (sweep, dispatch). **Subagents never
-  write** — their output flows through the accountable worker (the
-  accountability model: one accountable agent per ticket). The derived
-  stream is read-only by construction.
+- **Writers:** the bound accountable worker — its own ticket's open
+  states, plus registering NEW child/follow-up/env-issue tickets (the
+  full v8 registration authority, restated whole; dropping the
+  second half would forbid decomposition children, Implementer
+  follow-ups, and the QAgent's TOO-BIG tickets) — the human, and the
+  sweep. **Dispatch writes nothing** (the worker's first board write is
+  its gate verdict — the E1 acceptance depends on this). **Subagents
+  never write** — their output flows through the accountable worker
+  (the accountability model: one accountable agent per ticket). The
+  derived stream is read-only by construction.
 
 ## The env-issue lane
 
@@ -60,7 +65,11 @@ first-class address instead of dying in chat logs.
   fixture that the worker routed around) filed by ANY worker through its
   existing registration authority (`--spawned-by <its ticket>`), after
   the standard search-before-register dedup. Filing is fire-and-continue
-  — the worker's own ticket is never parked for it.
+  — the worker's own ticket is never parked for it. An env-issue ticket
+  births per the standard registrar classification (E1's birth rule:
+  registrar judgment, unsure → `ready-for-implementer`; a park state
+  when only the human can act on it); on the interim board `CATEGORIES`
+  gains the label.
 - Blocking environmental failure remains what it is today: a park on the
   worker's own ticket. The PR `## Confusions` section remains the
   PR-time record; register an env-issue when the friction is actionable
@@ -87,7 +96,9 @@ decision deferred to E3.
 3. Any past board state is reconstructible from the event log alone
    (append-only); reading current state never requires folding the log.
 4. On the interim GitHub board, a v8 worker transcript and a post-E2
-   worker transcript are indistinguishable (no new duties there).
+   worker transcript are indistinguishable modulo the E1 lane-split
+   vocabulary, which lands there independently (E2 itself adds no new
+   duties; env-issue filing is opt-in authority, not a duty).
 
 ## Deferred
 
@@ -148,5 +159,12 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-07-31: v1.1, consistency fixes from the E1 maturity round's
+  cross-spec review (no decision re-opened): the Writers clause restated
+  with the full v8 registration authority (child/follow-up/env-issue
+  tickets) and dispatch removed from the writer set; env-issue birth
+  classification pinned to E1's birth rule + interim `CATEGORIES` note;
+  acceptance 4's "indistinguishable" claim carved out for the E1 lane
+  vocabulary that lands on the interim board independently.
 - 2026-07-30: v1, authored from the E2 grill of the ideadump roadmapping
   session (ledger essence → write semantics → env channel → naming).

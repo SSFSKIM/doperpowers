@@ -48,7 +48,9 @@ with recorded doctrine (resolved in the epics); [NOT-BUILT] real work.
 
 - **E1 — Implement lane split** →
   `docs/doperpowers/specs/2026-07-30-implement-lane-split-design.md`
-  (v1.1 after independent fable review; all 8 findings adopted).
+  (v1.1 after independent fable review, all 8 findings adopted; v1.3
+  after the 2026-07-31 three-evaluator maturity round — companion
+  consistency fixes in E2 v1.1 and review-stack roadmap v1.6).
   Relay: `ready-for-architect` → `in-design` → `ready-for-implementer`
   → `in-progress` → review loop. Plan authorship exclusive to Fable;
   no intake gate; convergence tie-breakers; three-address park
@@ -141,5 +143,7 @@ completes.
 
 ## Revision Notes
 
+- 2026-07-31: E1 outcome updated to v1.3 (pre-implementation maturity
+  round; E2 and the review-stack roadmap carry companion fixes).
 - 2026-07-30: v1, closing artifact of the roadmapping session (triage →
   E1 → E2 → E5 → E3, with E4 folded).

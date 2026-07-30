@@ -33,7 +33,9 @@ overrides:
    argus-review as the primary review method; `codex exec review` appears
    only as opt-in or fallback.
 3. A dispatched implement ticket runs on a plain-Claude worker by default;
-   `engine:codex` still opts a ticket or PR back into the clodex route.
+   `engine:codex` still opts a ticket or PR back into the clodex route
+   *(implementer/QAgent/land routes — the E1 architect dispatch is
+   exempt; see the X4 amendment)*.
 
 ## Grounding Baseline
 
@@ -174,6 +176,11 @@ overrides:
 - **Contracts:** participates in X4.
 - **Required:** required.
 - **Status:** not-dispatched (blocked-by C4).
+- *(2026-07-31 note: the argus framing above is superseded by v1.5 —
+  the retained multi-lens engine still shells out to `codex exec
+  review`, so the plumbing-removal half re-scopes at dispatch; the
+  route flip stands. The E1 lane-split's QAgent/fix-wave pins ride
+  with this child or land as their own touch if it stays parked.)*
 
 ### C6: Implement worker default → Claude — autonomous (small, direct)
 
@@ -214,7 +221,11 @@ overrides:
 - **X4 — route label semantics** (binds C5, C6). After the default flip,
   `engine:codex` label = clodex gateway opt-in; `engine:claude` becomes
   redundant-but-valid. The opt-in must survive so individual tickets/PRs
-  can ride the GPT route.
+  can ride the GPT route. *(Amended 2026-07-31 per the E1 lane-split
+  spec, human-confirmed 2026-07-30: X4 binds the implementer, QAgent,
+  and land routes only — the architect dispatch ignores `engine:*`;
+  plan authorship is never label-routed. On the surviving routes the
+  opt-in outranks the lane's model pins for that ticket/PR.)*
 
 ## Ordering & Dependency Map
 
@@ -500,6 +511,13 @@ same event — then retrospect.
 
 ## Revision Notes
 
+- **2026-07-31 (v1.6, X4 narrowed per the E1 lane-split spec):** the
+  architect dispatch is exempt from `engine:*` (plan authorship is
+  never label-routed; human-confirmed 2026-07-30), X4 re-scoped to
+  implementer/QAgent/land routes with opt-in-outranks-pins precedence;
+  Parent-Level Acceptance 3 annotated accordingly; C5's body annotated
+  as superseded by v1.5 on the argus framing (plumbing-removal
+  re-scopes at dispatch). No roadmap decision re-opened.
 - **2026-07-28 (v1.5, argus discarded — multi-lens lands in reviewing-prs
   instead):** By human direction after the PR752 evidence chain (model
   cells → cell E → lens validation): the argus-review engine is
