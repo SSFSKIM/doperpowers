@@ -1871,10 +1871,17 @@ Expected: no output. Same for
 (`tests/review-bench/results/` is frozen benchmark output holding both
 old vocabularies — excluded, never rewritten.)
 
+Two live residuals are known to remain here, both in the third argument
+(the human-readable test description) of assertions in
+`tests/implementing/test-protocol-content.sh` — the asserted strings
+themselves are already correct. Rename the descriptions to the lane
+vocabulary they now describe, then re-run the grep to no output.
+
 - [ ] **Step 3: Version bump (minor — new states + skill split are a
 feature release)**
 
-Run: `scripts/bump-version.sh minor`
+Run: `scripts/bump-version.sh 7.30.0` (the script takes an explicit
+target version, not a bump keyword; current is 7.29.0)
 Expected: manifests updated to 7.30.0 per `.version-bump.json`.
 
 - [ ] **Step 4: Commit**
