@@ -15,6 +15,7 @@ PROTO="$REPO_ROOT/skills/implementing/SKILL.md"
 SKILL="$REPO_ROOT/skills/implementing/SKILL.md"
 MANUAL="$REPO_ROOT/skills/implementing/references/operation-manual.md"
 BOOTSTRAP="$REPO_ROOT/skills/implementing/references/worker-bootstrap.md"
+ARCHITECT="$REPO_ROOT/skills/architecting/SKILL.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -231,6 +232,16 @@ for tpl in "$REPO_ROOT/skills/implementing/references/issue-dispatch.yml" \
   assert_not_contains "$tbody" "uses: actions/checkout" "$tname: never checks out repo code"
   assert_not_contains "$tbody" ".title" "$tname: no title/body interpolation (injection surface)"
 done
+
+echo "architecting protocol (Architect worker, E1 skill split):"
+[ -f "$ARCHITECT" ] || { echo "missing $ARCHITECT"; exit 1; }
+arch="$(cat "$ARCHITECT")"
+assert_contains "$arch" "name: architecting" "frontmatter names the architecting skill"
+assert_contains "$arch" "ARCHITECT worker" "role names the ARCHITECT worker"
+assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
+assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
+assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
+assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
