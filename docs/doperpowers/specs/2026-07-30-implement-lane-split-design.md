@@ -726,6 +726,17 @@ route independently.
   neutral state rules survived contact with reality; cross-roadmap
   timing promises did not.
   Evidence: board state 2026-07-31; the amended sequencing paragraph.
+- Discovery: the two `plan:` pin values are not one concept with two
+  spellings. A real `<path>@<sha>` pin is an AUTHORIZATION EVENT — it
+  routes the Implementer to PLAN-EXECUTION, which posts no `[gate] pass`,
+  so the Architect's handoff comment becomes the review loop's timestamp
+  anchor. The `pre-spec` sentinel is a PLAN-NEED RULING — the ticket
+  still runs DIRECT, still gates, still posts a real `[gate] pass`. Two
+  rules written during implementation keyed on "carries a `plan:` pin"
+  and were silently wrong for the sentinel case. Any future rule reading
+  the pin must say which of the two it means.
+  Evidence: Task 15 review; skills/implementing/SKILL.md Mode Selection
+  and Verdict; plan revision d004728.
 
 ## Outcomes & Retrospective
 
