@@ -16,8 +16,9 @@
 #
 # Dedupe and the concurrency cap read the REGISTRY first (bound metas in
 # status working/blocked/error), the board second: a just-spawned worker's
-# meta exists before its gate verdict moves the ticket off ready-for-agent,
-# so board-state-only counting would double-dispatch inside that window.
+# meta exists before its gate verdict moves the ticket off its lane's
+# dispatchable state (ready-for-architect / ready-for-implementer), so
+# board-state-only counting would double-dispatch inside that window.
 # An IDLE bound session never blocks a dispatch — re-dispatch is fresh
 # context by doctrine, and board-bind strips the stale owner.
 #
@@ -26,6 +27,12 @@
 #   BOARD_REPO      owner/name (default: resolved from LOCAL_REPO via gh)
 #   IMPLEMENT_MAX_CONCURRENT  implement/spike worker slot cap (default 5);
 #                   review-pr-*/land-pr-* workers never count against it
+#   ARCHITECT_MAX_CONCURRENT  architect-lane slot cap (default 1) — the
+#                   Fable-spend lever; counted over ready-for-architect/
+#                   in-design bound metas, separate from the implement cap
+#   ARCHITECT_MODEL model pin for the architect route (default fable);
+#                   the architect dispatch IGNORES engine:* labels and
+#                   WORKER_ENGINE — plan authorship is never label-routed
 #   WORKER_ENGINE   model route codex|claude (default claude); an engine:*
 #                   ticket label wins over the env, so `engine:codex` opts a
 #                   single ticket back onto the gateway
@@ -47,6 +54,8 @@ BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pw
 BOOTSTRAP_TEMPLATE="${IMPLEMENT_BOOTSTRAP_TEMPLATE:-$SKILL_DIR/references/worker-bootstrap.md}"
 SPIKE_PROTOCOL="$SKILL_DIR/references/spike-worker-protocol.md"
 IMPLEMENT_PROTOCOL="$SKILL_DIR/SKILL.md"
+ARCHITECT_PROTOCOL="$SKILL_DIR/../architecting/SKILL.md"
+ARCH_CAP="${ARCHITECT_MAX_CONCURRENT:-1}"
 DECOMPOSE_DOC="$SKILL_DIR/references/implement-decompose.md"
 CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
 
@@ -115,17 +124,20 @@ if best:
 PY
 }
 
-# Occupied implement/spike slots: bound metas in an active status whose
-# ticket is still in an active lane (ready-for-agent covers the pre-gate
-# window; in-progress covers the build). Review/land species excluded, and a
-# stale `working` meta on an in-review or parked ticket never eats a slot —
-# that worker's scope ended when the ticket moved on.
-_slots_used() {
-  BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+# Occupied slots for one lane: bound metas in an active status whose
+# ticket is still in that lane's active states. The architect lane's
+# states are (ready-for-architect, in-design); the implement lane's are
+# (ready-for-implementer, in-progress). A stale `working` meta on any
+# other state never eats a slot — that worker's scope ended when the
+# ticket moved on (binding release IS this accounting).
+_slots_used() {  # <architect|implement>
+  LANE="$1" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
 import glob, json, os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
+lane = {"architect": ("ready-for-architect", "in-design"),
+        "implement": ("ready-for-implementer", "in-progress")}[os.environ["LANE"]]
 used = 0
 for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -140,7 +152,7 @@ for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or m.get("status") not in ("working", "blocked", "error"):
         continue
-    if tickets.get(tk, {}).get("state") in ("ready-for-agent", "in-progress"):
+    if tickets.get(tk, {}).get("state") in lane:
         used += 1
 print(used)
 PY
@@ -150,7 +162,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status
+  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -170,22 +182,35 @@ dispatch_one() {
     return 0
   fi
 
-  if [ "$(_slots_used)" -ge "$CAP" ]; then
-    echo "cap reached ($CAP): #$n stays queued for the next sweep"
-    return 0
-  fi
-
-  engine="${T_ENGINE_LABEL:-}"
-  [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
-
   if [ "$T_CATEGORY" = "spike" ]; then
-    role="SPIKE"; protocol_file="$SPIKE_PROTOCOL"
+    # category precedence is state-free: a spike dispatches on the spike
+    # protocol from EITHER lane queue
+    lane="implement"; role="SPIKE"; protocol_file="$SPIKE_PROTOCOL"
     decompose="(none — spike lane)"
+  elif [ "$T_STATE" = "ready-for-architect" ]; then
+    lane="architect"; role="ARCHITECT"; protocol_file="$ARCHITECT_PROTOCOL"
+    decompose="$DECOMPOSE_DOC"
   else
-    role="IMPLEMENT"; protocol_file="$IMPLEMENT_PROTOCOL"
+    lane="implement"; role="IMPLEMENT"; protocol_file="$IMPLEMENT_PROTOCOL"
     decompose="$DECOMPOSE_DOC"
   fi
   [ -f "$protocol_file" ] || { echo "#$n: protocol file missing: $protocol_file" >&2; return 1; }
+
+  if [ "$lane" = "architect" ]; then
+    if [ "$(_slots_used architect)" -ge "$ARCH_CAP" ]; then
+      echo "architect cap reached ($ARCH_CAP): #$n stays queued for the next sweep"
+      return 0
+    fi
+    # X4 exemption: plan authorship is never label-routed
+    engine="claude"
+  else
+    if [ "$(_slots_used implement)" -ge "$CAP" ]; then
+      echo "cap reached ($CAP): #$n stays queued for the next sweep"
+      return 0
+    fi
+    engine="${T_ENGINE_LABEL:-}"
+    [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
+  fi
 
   # The prompt carries bindings only — the worker reads its ticket (and the
   # repo's .doperpowers/repo-facts.md, if any) from gh / its own worktree.
@@ -223,9 +248,11 @@ PY
     # would inherit them, apply the flags AND persist them into the registry
     # meta — so every later resume would keep riding the gateway while the log
     # said engine=claude.
+    local model="${IMPLEMENT_MODEL:-}"
+    [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
       "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
-      "${IMPLEMENT_MODEL:-}")" \
+      "$model")" \
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   fi
   printf '%s\n' "$spawn_out"
@@ -262,8 +289,8 @@ for tid in sorted(tickets, key=rank):
 PY
   while IFS= read -r tid; do
     [ -n "$tid" ] || continue
-    if [ "$(_slots_used)" -ge "$CAP" ]; then
-      echo "cap reached ($CAP/$CAP): remaining eligible tickets stay queued"
+    if [ "$(_slots_used implement)" -ge "$CAP" ] && [ "$(_slots_used architect)" -ge "$ARCH_CAP" ]; then
+      echo "cap reached: both lanes full — remaining eligible tickets stay queued"
       break
     fi
     dispatch_one "$tid" || echo "#$tid: dispatch error (continuing sweep)" >&2
