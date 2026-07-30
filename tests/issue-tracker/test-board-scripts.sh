@@ -907,6 +907,16 @@ assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-im
 printf '## Problem & intent\n\n_(pre-spec: fill in)_\n' > "$TEST_ROOT/still-skel.md"
 assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-implementer --body-file "$TEST_ROOT/still-skel.md"
 
+# ---- lane births (E1 birth classification) ------------------------------------
+echo "lane births:"
+out="$(run board-register.sh "Design-heavy epic work" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY")"
+arch_t="${out%% *}"
+assert_contains "$(state "s['issues']['$arch_t']['labels']")" "status:ready-for-architect" "explicit architect-lane birth honored"
+out="$(run board-register.sh "Default lane probe" enhancement P2 --body-file "$SPEC_BODY")"
+impl_t="${out%% *}"
+assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
+assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"
