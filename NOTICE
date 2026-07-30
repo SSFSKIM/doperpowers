@@ -54,8 +54,6 @@ commit that introduced this NOTICE file; run
 fork's history to regenerate it as the fork evolves (then subtract the
 third-party-adapted files listed in section 3 above).
 
-    AGENTS.local.md
-    CLAUDE.local.md
     docs/INSTALL-doperpowers.md
     docs/doperpowers/execplans/2026-07-07-board-close-candidate.md
     docs/doperpowers/execplans/2026-07-07-board-priority-axis.md
