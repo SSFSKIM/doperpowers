@@ -107,7 +107,11 @@ if (cur, to) in B.CONVERGENCE_EDGES:
 
 if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
-if to == "in-review" and not env["T_PR"]:
+if to == "in-review" and not env["T_PR"] and not n.get("pr"):
+    # A RETURN to in-review (the needs-human pre-park: E1 transition 7) never
+    # re-supplies --pr — the ticket's board:meta already carries it from the
+    # original entry. The invariant is "a ticket in in-review always has a
+    # PR recorded", not "every entry carries the flag".
     B.die("a PR link is required when moving to in-review (--pr URL)")
 if env["T_PLAN"]:
     import re as _re
