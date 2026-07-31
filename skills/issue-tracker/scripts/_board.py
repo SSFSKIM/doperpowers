@@ -104,9 +104,17 @@ LEGAL = {
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
     # merged SHOULD surface as a close candidate (the finalize cue).
     "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
+    # in-progress: added alongside the Finding C fix (pull_epics) — every
+    # other PULLABLE park state (needs-info/needs-human/interactive-
+    # preferred) already permits direct entry to in-progress (an active
+    # child, or a human taking the ticket up, overrides the park); deferred
+    # was the one PULLABLE member missing the edge, so an epic parked
+    # deferred whose child went active hit the exact illegal write Finding
+    # C reports for ready-for-architect, just unreported because nothing
+    # asserted the table before now.
     "deferred":        {"ready-for-architect", "ready-for-implementer",
                         "needs-info", "needs-human", "interactive-preferred",
-                        "wontfix"},
+                        "in-progress", "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
 }
@@ -528,10 +536,27 @@ def apply_state(tickets, tid, to, why, extra_meta=None):
 
 
 def pull_epics(tickets, tid, lines):
-    """First active child pulls its parent chain to in-progress."""
+    """First active child pulls its parent chain to its lane's in-flight
+    state — PRE_PARK's queue -> in-flight mapping, reused rather than a
+    second table (ready-for-architect -> in-design; every other PULLABLE
+    queue has no PRE_PARK entry and defaults to in-progress, matching its
+    existing legal edge). Writing straight to "in-progress" regardless of
+    the parent's queue used to write an edge LEGAL forbids whenever the
+    epic sat in ready-for-architect (LEGAL["ready-for-architect"] has no
+    in-progress) — silent, since apply_state itself never checks legality
+    (close_epics needs that same latitude for its own epic-closing edges).
+    The assert is the guard against a future PULLABLE addition (or a
+    LEGAL edit) reintroducing the same silent bypass — it fires only if
+    the two tables drift out of sync again.
+    """
     p = tickets[tid].get("parent")
     while p and p in tickets and tickets[p]["state"] in PULLABLE:
-        lines.append(apply_state(tickets, p, "in-progress", "epic: child #%s active" % tid))
+        pstate = tickets[p]["state"]
+        to = PRE_PARK.get(pstate, "in-progress")
+        assert to in LEGAL[pstate], (
+            "pull_epics: %s -> %s is not a legal edge (PRE_PARK/LEGAL "
+            "drifted out of sync for a PULLABLE state)" % (pstate, to))
+        lines.append(apply_state(tickets, p, to, "epic: child #%s active" % tid))
         p = tickets[p].get("parent")
 
 

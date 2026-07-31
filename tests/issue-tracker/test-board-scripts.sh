@@ -983,6 +983,53 @@ out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices 
 assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
 assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
 
+# ---- plan pin auto-clear (Finding B) -------------------------------------------
+# A superseded plan: pin is void by definition on two edges: any entry into
+# ready-for-architect (the design is being re-cut), and the Architect's own
+# decompose exit in-design -> ready-for-implementer with no --plan (a
+# positive "no plan" statement). Reproduces the reviewer's exact sequence:
+# --plan -> in-progress -> ready-for-architect "blocked" -> in-design ->
+# ready-for-implementer "decomposed" (no --plan) must leave no plan: pin —
+# otherwise an Implementer enters gate-free PLAN-EXECUTION against a plan
+# the Architect just declared blocked.
+echo "plan pin auto-clear:"
+run board-register.sh "Plan clear probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pc_t="$(state "s['next']-1")"
+run board-transition.sh "$pc_t" in-design >/dev/null
+run board-transition.sh "$pc_t" ready-for-implementer "plan ready" --plan "docs/p.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+assert_contains "$(state "s['issues']['$pc_t']['body']")" "plan: docs/p.md@0123456789abcdef0123456789abcdef01234567" "pin recorded before the escalation"
+run board-transition.sh "$pc_t" in-progress >/dev/null
+run board-transition.sh "$pc_t" ready-for-architect "plan is blocked" >/dev/null
+assert_not_contains "$(state "s['issues']['$pc_t']['body']")" "plan: docs/p.md" "entry into ready-for-architect clears the superseded plan pin"
+run board-transition.sh "$pc_t" in-design >/dev/null
+run board-transition.sh "$pc_t" ready-for-implementer "decomposed" >/dev/null
+assert_not_contains "$(state "s['issues']['$pc_t']['body']")" "plan:" "decompose exit with no --plan leaves no stale plan pin behind"
+
+# Deliberately NOT auto-cleared: a human unparking from needs-human back to
+# ready-for-implementer must not silently void a still-valid plan.
+run board-register.sh "Plan keep probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pk_t="$(state "s['next']-1")"
+run board-transition.sh "$pk_t" in-design >/dev/null
+run board-transition.sh "$pk_t" ready-for-implementer "plan ready" --plan "docs/q.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$pk_t" needs-human "unrelated human question" >/dev/null
+run board-transition.sh "$pk_t" ready-for-implementer >/dev/null
+assert_contains "$(state "s['issues']['$pk_t']['body']")" "plan: docs/q.md@0123456789abcdef0123456789abcdef01234567" "a needs-human unpark does not void a still-valid plan pin"
+
+# ---- epic pull routing (Finding C) ----------------------------------------------
+# PULLABLE now includes ready-for-architect, but LEGAL["ready-for-architect"]
+# has no in-progress edge — the first active child of an epic parked in the
+# design queue must pull it to in-design (PRE_PARK's queue -> in-flight
+# mapping), never the illegal in-progress.
+echo "epic pull routing:"
+run board-register.sh "Design epic" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+epic_c_t="$(state "s['next']-1")"
+run board-register.sh "Epic child" enhancement P2 --parent "$epic_c_t" --body-file "$SPEC_BODY" >/dev/null
+child_c_t="$(state "s['next']-1")"
+out="$(run board-transition.sh "$child_c_t" in-progress)"
+assert_contains "$out" "#$epic_c_t: ready-for-architect → in-design" "epic parked ready-for-architect is pulled to in-design, not the illegal in-progress"
+assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-design" "epic label reflects the legal in-flight state"
+assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
+
 # ---- pre-park + lane-aware answer return (E1 transition 7) --------------------
 echo "pre-park returns:"
 run board-register.sh "Architect park probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null

@@ -239,9 +239,10 @@ reviewing-prs, and nobody sits between them and the board.
      the answers before proceeding. Fallback — no/dead bound session, or
      answers that reshape the ticket's scope: answer in a comment (or edit
      the body), then `board-transition.sh <n> ready-for-implementer` (or
-     `ready-for-architect` per the birth rule; strip a stale `plan:` pin
-     with a fresh Architect pass when the scope answer invalidates the
-     plan) — the next dispatch runs the lane's protocol against the
+     `ready-for-architect` per the birth rule when the scope answer
+     invalidates a standing plan — that edge clears any `plan:` pin
+     automatically, since entering the lane means the design is being
+     re-cut) — the next dispatch runs the lane's protocol against the
      enriched ticket from fresh context. An answered park with a live
      bound session returns to its `pre-park:` state automatically.
    - a spike's `needs-human "findings ready: …"` is a handoff, not a

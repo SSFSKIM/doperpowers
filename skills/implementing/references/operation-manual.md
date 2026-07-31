@@ -193,9 +193,10 @@ proposals, registration and comments are the only channels.
   park = pause, not death); the resumed worker re-states its gate verdict
   against the answers before proceeding (PLAN-EXECUTION, which ran no
   gate, restates plan-execution status instead). Fallback (no/dead
-  session, or scope-reshaping answers): flip back to `ready-for-implementer`
-  — strip a stale `plan:` pin first when the answers invalidate it (a
-  fresh Architect pass re-cuts it); the next dispatch re-runs the gate
+  session, or scope-reshaping answers): flip back to `ready-for-implementer`,
+  or `ready-for-architect` when the answers invalidate a standing plan
+  (that edge clears any `plan:` pin automatically — entering the lane
+  means the design is being re-cut); the next dispatch re-runs the gate
   with the comments as ticket content, gate-free instead for a
   still-valid `plan:` pin (PLAN-EXECUTION). Either way, answers belong in
   the body/comments, not in chat.

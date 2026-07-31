@@ -139,6 +139,22 @@ if env["T_PR"]:
     extra["pr"] = env["T_PR"]
 if env["T_PLAN"]:
     extra["plan"] = env["T_PLAN"]
+elif to == "ready-for-architect" or (cur == "in-design" and to == "ready-for-implementer"):
+    # The plan: pin is void by definition on these two edges — clear it so
+    # a superseded pin can never survive into gate-free PLAN-EXECUTION
+    # (a real pin authorizes gate-free execution; conflating it with the
+    # unrelated `pre-spec` ruling value caused two defects on this branch,
+    # so this clears the field outright rather than keying on "has a pin").
+    # Entry into ready-for-architect always means the plan is being
+    # re-cut (T_PLAN can only be set when to == ready-for-implementer —
+    # validated above — so this branch never collides with a fresh pin
+    # write). The Architect's own decompose exit
+    # (in-design -> ready-for-implementer with no --plan) is a positive
+    # "no plan" statement — a pin surviving it is stale by construction.
+    # Deliberately NOT extended to other edges into ready-for-implementer:
+    # a human unparking from needs-human should not silently void a
+    # still-valid plan.
+    extra["plan"] = None
 if to == "needs-human" and cur in B.PRE_PARK:
     extra["pre-park"] = B.PRE_PARK[cur]
 if cur == "needs-human" and to != "needs-human":
