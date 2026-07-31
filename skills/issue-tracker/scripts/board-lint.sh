@@ -13,6 +13,8 @@
 #   FAIL closed issue still carrying status:* labels
 #   FAIL needs-human/needs-info/interactive-preferred without a note (board:meta)
 #   FAIL open issue carrying the retired status:blocked label (v8 → needs-human)
+#   FAIL open issue carrying the retired status:ready-for-agent label
+#        (v9 → ready-for-architect / ready-for-implementer)
 #   FAIL dependency cycle among blocked_by edges
 #   WARN in-progress issue without an assignee
 #   WARN open issue with no priority:* label (legacy — backfill gradually;
@@ -53,6 +55,12 @@ for tid in sorted(tickets, key=int):
         if n["status_labels"] == ["blocked"]:
             fail(tid, "retired state: status:blocked (v8 folded it into needs-human)",
                  "board-transition.sh %s needs-human \"<carried note>\" — the write swaps the label" % tid)
+        elif n["status_labels"] == ["ready-for-agent"]:
+            fail(tid, "retired state: status:ready-for-agent (v9 split it into "
+                      "ready-for-architect / ready-for-implementer)",
+                 "board-transition.sh %s ready-for-implementer \"<carried note>\" — the write "
+                 "swaps the label (ready-for-architect instead, per the birth rule, if the "
+                 "work is design-heavy)" % tid)
         else:
             fail(tid, "open with %d status:* labels: %s" %
                  (len(n["status_labels"]), ", ".join(n["status_labels"])),

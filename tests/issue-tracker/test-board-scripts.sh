@@ -730,6 +730,31 @@ out="$(run board-transition.sh 20 needs-human "migrated: carried note")"
 assert_contains "$(state "s['issues']['20']['labels']")" "status:needs-human" "migration swaps the label"
 assert_not_contains "$(state "s['issues']['20']['labels']")" "status:blocked" "retired label removed"
 
+# ---- ready-for-agent is retired (v9) --------------------------------------------
+# A lone status:ready-for-agent label used to fall into the generic
+# CONFLICT else-branch, which reports "N status:* labels" under a rule that
+# means 2+ — nonsense at N=1. Same treatment as blocked: a named branch with
+# an actionable FIX line naming the v9 migration path.
+echo "ready-for-agent retired:"
+run board-register.sh "Retired label probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+rfa_t="$(state "s['next']-1")"
+python3 - <<PY
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["$rfa_t"]["labels"] = ["enhancement", "status:ready-for-agent", "priority:P2"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+set +e
+lint_out="$(run board-lint.sh 2>&1)"; rc=$?
+set -e
+assert_equals "$rc" "1" "legacy status:ready-for-agent FAILs lint"
+assert_contains "$lint_out" "retired state: status:ready-for-agent" "retired label named"
+assert_not_contains "$lint_out" "with 1 status:* labels" "not misreported as a 1-label conflict (the bug this fix closes)"
+assert_contains "$lint_out" "board-transition.sh $rfa_t ready-for-implementer" "FIX points at the ready-for-implementer migration"
+out="$(run board-transition.sh "$rfa_t" ready-for-implementer "migrated: carried note")"
+assert_contains "$(state "s['issues']['$rfa_t']['labels']")" "status:ready-for-implementer" "migration swaps the label"
+assert_not_contains "$(state "s['issues']['$rfa_t']['labels']")" "status:ready-for-agent" "retired label removed"
+
 # ---- map: v8 park classes ------------------------------------------------------
 echo "board-map (v8 park classes):"
 run board-map.sh --write >/dev/null 2>&1
