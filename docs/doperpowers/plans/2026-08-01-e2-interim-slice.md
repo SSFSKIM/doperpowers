@@ -143,7 +143,7 @@ if category == "env-issue" and env["T_STATE_EXPLICIT"] != "1":
               "--state with a named agent repair path)")
 ```
 
-Note: this block must run BEFORE the `state in B.NOTE_REQUIRED and not note` check so the die message is the specific one; place it immediately after the spike ban and move nothing else. The generic NOTE_REQUIRED check then passes because `note` is set.
+Placement: immediately after the spike ban. (The generic `NOTE_REQUIRED` check at line ~72 runs earlier but does not fire for this case — `state` is still the non-park default when it runs; this block then flips the default to needs-human and enforces its own note requirement with the category-specific message.)
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -178,8 +178,12 @@ git commit -m "feat(issue-tracker): env-issue category with inverted needs-human
 - [ ] **Step 1: Write the failing tests** — in `tests/issue-tracker/test-board-scripts.sh`, REPLACE the two old auto-close assertions (lines ~146-147: "epic closes when all children terminal, one done" / "epic closed as completed") and the finalize-closes-epic assertions (~543-544) with the recomposition behavior, and add a new section:
 
 ```bash
-# (in place of the old auto-close assertion block)
-out="$(run board-transition.sh 4 done)"
+# (in place of the old auto-close assertion block — KEEP ticket 4's
+# existing `wontfix "superseded"` transition: 4 sits in
+# ready-for-implementer, so `4 done` would be an ILLEGAL transition and
+# abort the suite under set -e; the NOT_PLANNED assertion above also
+# depends on the wontfix path)
+out="$(run board-transition.sh 4 wontfix "superseded")"
 assert_contains "$out" "#1: in-progress → ready-for-architect" "last terminal child returns the epic for recomposition"
 assert_contains "$(state "s['issues']['1']['labels']")" "status:ready-for-architect" "epic waits in ready-for-architect"
 assert_not_contains "$out" "#1: in-progress → done" "epic never auto-closes"
@@ -206,8 +210,10 @@ assert_not_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board] i
 run board-register.sh "Recomp gap child" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
 rc_c="$(state "s['next']-1")"
 run board-transition.sh "$rc_c" in-progress >/dev/null
+# the gap child's pull maps the ready-for-architect epic to in-design
+# (PRE_PARK), so the second return fires from in-design, not in-progress
 out="$(run board-transition.sh "$rc_c" done)"
-assert_contains "$out" "#$rc_e: in-progress → ready-for-architect" "second recomposition cycle returns again"
+assert_contains "$out" "#$rc_e: in-design → ready-for-architect" "second recomposition cycle returns again"
 assert_not_contains "$(state "s['issues']['$rc_e']['labels']")" "status:needs-human" "bookkeeping returns never trip the convergence counter"
 ```
 
@@ -305,6 +311,8 @@ Update call sites — `board-transition.sh` lines 74 and 168-170 and the header 
 
 Run: `tests/issue-tracker/test-board-scripts.sh 2>&1 | tail -5`
 Expected: PASS. Also run `grep -rn "close_epics" skills/` — expected: no output.
+
+Downstream-fallout warning: epics #1 and #11 in the existing fixtures now stay OPEN in `ready-for-architect` (and become dispatch-eligible) instead of closing. Later assertions in this 1250-line suite may reference their state — treat such breakage as expected fallout of the behavior change and update those assertions to the new contract; it is not a regression.
 
 - [ ] **Step 5: Commit**
 
@@ -458,25 +466,26 @@ In `implement-dispatch.sh`, in `dispatch_one` after the role-meta write block (`
   # E2 parent-pin: stamp the inherited-contract pin at DISPATCH time (the
   # parent's spec moves between cut and dispatch; the repo HEAD sha pins
   # what the child actually read). Non-fatal like the role-meta write.
+  # IMPORTANT: go through B.snapshot() + B.update_meta — the shared
+  # mock-gh serves the snapshot GraphQL query and the update_meta write
+  # path, but does NOT handle `issue view --json body` (it dies on it,
+  # and the non-fatal guard would silently no-op the stamp in tests).
   if [ -n "${T_PARENT:-}" ]; then
     pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" _py - <<'PY' \
+    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
+    PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
       || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
 import os
 import _board as B
 env = os.environ
-tid = env["T_N"]
-body = B.gh(["issue", "view", tid, "-R", B.repo(), "--json", "body",
-             "--jq", ".body"])
-meta = B.parse_meta(body)
-meta["parent-pin"] = env["T_PIN"]
-B.gh(["issue", "edit", tid, "-R", B.repo(), "--body-file", "-"],
-     input_text=B.render_body(body, meta))
+tickets = B.snapshot()
+tid = B.resolve(env["T_N"], tickets)
+B.update_meta(tid, tickets[tid], **{"parent-pin": env["T_PIN"]})
 PY
   fi
 ```
 
-(If `_ticket_exports` doesn't already export `T_PARENT`, add `q("T_PARENT", n.get("parent") or "")` in its Python block. `_py` here must resolve the issue-tracker scripts dir on `PYTHONPATH` the same way the script's existing `_board`-importing blocks do — reuse the existing helper/pattern in this file; if it has none for `_board`, use `PYTHONPATH="$BOARD_SCRIPTS_DIR" python3` matching how `board-*.sh` callers do it.)
+(If `_ticket_exports` doesn't already export `T_PARENT`, add `q("T_PARENT", n.get("parent") or "")` in its Python block. The variable holding the issue-tracker scripts dir in this script is `BOARD_SCRIPTS` — verify its actual name at the top of `implement-dispatch.sh` and reuse it. Check `update_meta`'s exact signature in `_board.py` first — it takes `(num, node, **updates)` where a `None` value deletes a key; hyphenated keys need the `**{...}` dict form shown.)
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -500,7 +509,11 @@ git commit -m "feat(implement): dispatch stamps the parent-pin contract into chi
 
 **Interfaces:**
 - Consumes: the sweep's existing PR iteration, `dispatch_one`/`run_for`, board snapshot via `BOARD_SCRIPTS`.
-- Produces: after the open-PR loop, the sweep also lists board tickets that are (a) epics, (b) `in-review`, (c) have a `pr:` meta (the closure package), (d) have no live bound reviewer — and dispatches a reviewer with `P_REVIEW_MODE=scale` in the prompt environment (the bootstrap template gains a `{{REVIEW_MODE}}` slot rendered as `pr` today and `scale` for epics; the scale prompt names the closure-package URL instead of a PR number). Dedupe/retire logic reuses the existing `_reviewer_meta`/`_retire` helpers keyed `review-epic-<n>`.
+- Produces: after the open-PR loop, the sweep also lists board tickets that are (a) epics, (b) `in-review`, (c) have a `pr:` meta (the closure package), (d) have no live bound reviewer — and dispatches a reviewer with `P_REVIEW_MODE=scale` in the prompt environment. The bootstrap is the template FILE `skills/reviewing-prs/references/review-worker-bootstrap.md` (not a heredoc) — it gains `{{REVIEW_MODE}}` and `{{CLOSURE_PACKAGE}}` slots rendered as `pr`/empty today and `scale`/URL for epics. Dedupe/retire logic reuses the existing `_reviewer_meta`/`_retire` helpers keyed `review-epic-<n>`.
+- **Harness work this task owns (the existing harness cannot serve the new path):** in `tests/reviewing-prs/test-review-dispatch.sh`, `BOARD_SCRIPTS` points at a stub dir containing only `board-bind.sh`, and the case-based gh stub exits 1 on `api graphql` — the planned `B.snapshot()` listing would fail on import and be swallowed by the `|| epic_rows=""` guard. The task must: (1) point `BOARD_SCRIPTS` at the real `skills/issue-tracker/scripts` (or copy `_board.py` beside the stub), and (2) extend the gh stub to serve the snapshot GraphQL query with a canned epic fixture (borrow the response shape from `tests/issue-tracker/mock-gh/gh`). Name this in the test before the assertions.
+
+**Files (add):**
+- Modify: `skills/reviewing-prs/references/review-worker-bootstrap.md` (the two new template slots)
 
 - [ ] **Step 1: Write the failing test** — in `tests/reviewing-prs/test-review-dispatch.sh`, following its mock pattern:
 
@@ -546,7 +559,7 @@ $epic_rows
 EOF
 ```
 
-`dispatch_epic` mirrors `dispatch_one`'s spawn tail with: worker name `review-epic-<n>`, no PR checkout (worktree at the current base ref of the integration branch recorded on the epic's `branch:` meta, else the repo default branch), prompt rendered with `{{REVIEW_MODE}}=scale`, `{{CLOSURE_PACKAGE}}=<pkg url>`, `{{ISSUE_NUMBER}}=<etid>`; dedupe: skip when `_reviewer_meta review-epic-<n>` reports a live ACTIVE worker (reuse `_is_live`/`_retire` exactly as `dispatch_one` does). Add both template slots to the bootstrap heredoc with `pr`-mode defaults so leaf rendering is unchanged.
+`dispatch_epic` mirrors `dispatch_one`'s spawn tail with: worker name `review-epic-<n>`, no PR checkout (worktree at the current base ref of the integration branch recorded on the epic's `branch:` meta, else the repo default branch), prompt rendered with `{{REVIEW_MODE}}=scale`, `{{CLOSURE_PACKAGE}}=<pkg url>`, `{{ISSUE_NUMBER}}=<etid>`; dedupe: skip when `_reviewer_meta review-epic-<n>` reports a live ACTIVE worker (reuse `_is_live`/`_retire` exactly as `dispatch_one` does). Add both template slots to `references/review-worker-bootstrap.md` with `pr`-mode defaults so leaf rendering is unchanged.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -570,7 +583,8 @@ git commit -m "feat(reviewing-prs): sweep dispatches scale review onto in-review
 
 **Interfaces:**
 - Consumes: `_bound_rows`-style board reads, `B.snapshot`, `B.apply_state(..., bookkeeping=True)`, mock gh comments.
-- Produces: `pass_impact` — for every ACTIVE ticket with a parent, read its comments; a comment starting `[parent-impact]` that is NOT yet named by any `[board-epic] reconcile:` comment on the parent triggers: (1) parent returns to `ready-for-architect` (bookkeeping, note `reconciliation-due: [parent-impact] from #<child>`) unless the parent is already in `ready-for-architect` or `in-design`; (2) a `[board-epic] reconcile: #<child>@<comment-id>` comment on the parent (the dedupe marker — written even when the state write was skipped, so one proposal wakes one reconciliation).
+- Produces: `pass_impact` — for every ACTIVE ticket with a parent, read its comments; a comment starting `[parent-impact]` that is NOT yet named by any `[board-epic] reconcile:` comment on the parent triggers: (1) parent returns to `ready-for-architect` (bookkeeping, note `reconciliation-due: [parent-impact] from #<child>`); (2) a `[board-epic] reconcile: #<child>@<comment-id>` comment on the parent (the dedupe marker). **Dedupe-hole rule (plan-review finding): the marker is written ONLY when the state write actually fires.** A parent already in `ready-for-architect` (return already pending) or `in-design` (an Architect mid-claim) gets NO marker — the next tick re-sees the proposal and consumes it once the parent is claimable again. This prevents a proposal from being marked consumed while nobody reads it. The recomposition lineage check (Task 7 prose) independently reads ALL `[parent-impact]` proposals since each child's pin — marked or not — as the belt to this suspender.
+- **Harness work this task owns:** in `tests/issue-tracker/test-board-sweep.sh`, `--json comments` reads are served from `$COMMENTS_DIR/<n>.json` fixtures by the gh overlay shim, while `B.comment` writes land in the shared mock state — the reconcile marker written on the parent would be invisible to the second sweep's dedupe read, and fixture comments carry no `id`. The task must extend the overlay shim to (1) merge shared-mock-state comments into the fixture response and (2) serve a stable `id` per comment (index-based is fine). The helpers named in Step 1 (`mock_comment`, `issue_labels`, `last_comment`, `comment_count`) do not exist yet — write them in this harness's style (herestring greps, no printf-pipe).
 
 - [ ] **Step 1: Write the failing test** — in `tests/issue-tracker/test-board-sweep.sh`, following its existing pass-test style:
 
@@ -601,7 +615,7 @@ pass_impact() {
   # the parent's reconciliation return (board bookkeeping). Dedupe is a
   # [board-epic] reconcile: marker on the parent naming child@comment-id.
   local acted=0
-  PYTHONPATH="$BOARD_SCRIPTS_DIR" python3 - <<'PY' | tee -a "$SWEEP_LOG"
+  PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' | tee -a "$SWEEP_LOG"
 import json
 import _board as B
 tickets = B.snapshot()
@@ -626,15 +640,17 @@ for tid in sorted(tickets, key=int):
         marker = "#%s@%s" % (tid, cid)
         if marker in seen:
             continue
-        lines = []
-        if tickets[p]["state"] not in ("ready-for-architect", "in-design"):
-            lines.append(B.apply_state(
-                tickets, p, "ready-for-architect",
-                "reconciliation-due: [parent-impact] from #%s" % tid,
-                bookkeeping=True))
+        if tickets[p]["state"] in ("ready-for-architect", "in-design"):
+            # return already pending, or an Architect is mid-claim: leave
+            # the proposal UNMARKED so the next tick re-sees it — marking
+            # it now would consume it with no reader (dedupe hole).
+            continue
+        ln = B.apply_state(
+            tickets, p, "ready-for-architect",
+            "reconciliation-due: [parent-impact] from #%s" % tid,
+            bookkeeping=True)
         B.comment(p, "[board-epic] reconcile: %s" % marker)
-        for ln in lines:
-            print("[sweep] IMPACT: %s" % ln)
+        print("[sweep] IMPACT: %s" % ln)
 PY
   log "[sweep] IMPACT pass done"
 }
@@ -756,12 +772,19 @@ not the sum of child acceptances.
 1. **Lineage check first:** for every child, compare its `parent-pin:`
    meta (the parent revision it executed) against the parent's current
    revision; every material change is incorporated, explicitly
-   irrelevant (say why), or becomes a corrective child. Consume any
-   unconsumed `[parent-impact]` proposals the same way.
+   irrelevant (say why), or becomes a corrective child. Read ALL
+   `[parent-impact]` proposals on every child since its pin — marked
+   consumed or not — and give each the same disposition; the sweep's
+   reconcile marker is a dispatch dedupe, not proof anyone acted.
 2. **Reconciliation-due claims** (children still active): reconcile the
    parent's living spec, flag affected in-flight children on their
-   tickets, then exit in-design via a park return — the epic waits with
-   its children; you do NOT close it.
+   tickets, then RELEASE the epic with
+   `board-transition.sh <n> needs-info "reconciled: <one-line summary> —
+   waiting on children"` — the named release exit: legal from in-design,
+   PULLABLE (the next active child pulls the epic back in-flight), frees
+   your architect slot, and the sweep's RECOVER pass never force-parks a
+   parked ticket. You do NOT close it, and you never end your turn with
+   the epic still in in-design.
 3. **Recomposition-due claims** (all children terminal): verify the
    parent's acceptance. Non-code parent: record why no aggregate code
    review applies, then close with your verdict —
@@ -957,5 +980,6 @@ git commit -m "chore: v7.31.0 — E2 interim slice complete"
 ## Plan Self-Review Notes (author-run)
 
 - Spec coverage: every § Interim slice bullet maps to a task (env-issue → 1; recompose + mechanics → 2, 3; parent-pin → 4; scale review → 5; IMPACT pass → 6; protocols → 7; doctrine → 8; version/acceptance → 9). The feedback-triage exclusion is a non-change (documented in doctrine text only if the implementer finds existing prose claiming otherwise — none known).
-- Spec drift found during planning, already reflected here: the spec's eligibility carve-out said "an epic in ready-for-architect is dispatchable" without the reconciliation-due case (children still active) — Task 6 extends eligibility to `reconciliation-due:` notes, which the spec's step-3 dispatch requirement implies. Record in the spec's Revision Notes at Task 9 if not already noted.
+- Spec drift found during planning: recorded in the spec's Revision Notes as v2.1.1 (reconciliation release exit named as the `needs-info` park; marker-only-on-fire dedupe rule; reconciliation-due dispatch eligibility). The plan and spec are in agreement — no further Task 9 note needed beyond the implementation entry.
+- Plan-review findings (all 7 adopted): Task 2's test snippet fixed (keep `4 wontfix "superseded"`; second-cycle return fires from `in-design`); Task 4 rewritten onto `B.update_meta` + snapshot (the shared mock cannot serve `issue view --json body`); Tasks 5 and 6 now name the harness surgery they own (review harness board wiring + snapshot mock; sweep harness comment-store merge + comment ids); the reconciliation release path is the named `needs-info` park; the dedupe marker writes only when the return fires.
 - Type consistency: marker strings (`[board-epic]`, `[parent-impact]`, `reconciliation-due:`, `recomposition-due:`), function names (`recompose_epics`, `recomposition_ready`), and meta key (`parent-pin`) are identical across Tasks 2, 4, 6, 7, 8.

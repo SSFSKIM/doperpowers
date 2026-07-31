@@ -300,9 +300,14 @@ The defect is silence, not staleness. Protocol:
    the recomposition-due return — no new worker write on the parent),
    BEFORE final recomposition when siblings are building against the
    stale contract. The dispatched Architect reconciles the parent's
-   living spec, flags affected in-flight children, releases; the
-   first active child's pull returns the parent to its in-flight
-   waiting state.
+   living spec, flags affected in-flight children, then releases via
+   the interim board's named release exit: a `needs-info` park
+   ("reconciled — waiting on children"), which is legal from
+   `in-design`, PULLABLE (the next active child pulls the epic back
+   in-flight), frees the architect slot, and is never force-parked by
+   the sweep's recovery pass. An Architect never ends its turn with
+   the epic still in `in-design` — an escalation is only as real as
+   its return path, and so is a release.
 4. **Asymmetric authority:** the Architect may reconcile
    evidence-compelled technical consequences (clarify acceptance
    without changing intent, revise cross-child contracts, recut
@@ -682,6 +687,16 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-01: v2.1.1, plan-review pass (writing-plans is the first
+  hostile read): the reconciliation release exit is now NAMED — the
+  interim board's `needs-info` park from `in-design` (legal, PULLABLE,
+  recovery-safe) — closing the "release" verb the spec used without a
+  state; the sweep's reconcile marker is written only when the return
+  actually fires (a proposal arriving mid-claim stays unmarked for the
+  next tick), and the lineage check reads all proposals regardless of
+  markers; dispatch eligibility extends to `reconciliation-due:` epics
+  (children still active) so the reconciling Architect is dispatchable,
+  as step 3 requires.
 - 2026-08-01: v2.1, independent fable spec review (14 findings, all
   adopted). The critical cluster: the recomposition lifecycle had been
   designed as doctrine without walking it through the board machinery
