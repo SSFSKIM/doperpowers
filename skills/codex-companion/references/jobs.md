@@ -9,19 +9,24 @@ codex plugin installed also inherit ITS `CLAUDE_PLUGIN_DATA` from a hook;
 the explicit prefix wins over both.
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
-    CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" status [job-id] [--all] [--json]
     …                                                          result [job-id] [--json]
     …                                                          cancel [job-id] [--json]
 
-The second env var is the broker kill-switch. Left off, the first
-review/task spawns a detached broker + `codex app-server` pair per
-workspace that outlives the session — upstream cleaned these up with a
-SessionEnd hook this bundle doesn't have. Pointing the endpoint at a
-socket that never exists makes each call fail over to a per-call direct
-app-server that dies with it. If leaked pairs ever accumulate anyway
-(e.g. from running the runtime without the prefix), find them with
-`ps -axo pid,command | grep app-server-broker` and kill the pids.
+The broker kill-switch (`CODEX_COMPANION_APP_SERVER_ENDPOINT` pointed at
+a never-existing socket) belongs on `review`/`adversarial-review`/`task`
+only. Left off those, the first run spawns a detached broker +
+`codex app-server` pair per workspace that outlives the session —
+upstream reaped these with a SessionEnd hook this bundle doesn't have;
+with it, each call fails over to a per-call direct app-server that dies
+with it. The job verbs above never spawn a broker and take only the
+state-root env; `setup`'s auth probe would actually misread the dead
+endpoint as an auth failure. If leaked pairs accumulate anyway (from
+running work verbs without the kill-switch), find them with
+`ps -axo pid,command | grep app-server-broker`, kill the pids, and
+delete the workspace's stale `broker.json` under the state root —
+`setup`/`status` keep probing the dead socket it records until it's
+gone.
 
 Backgrounding differs by verb. For reviews, `--background` only shapes
 the job record — nothing detaches. For `task`, the runtime's own

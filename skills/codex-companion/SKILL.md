@@ -18,16 +18,18 @@ directory, printed when the skill loads:
     CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" <verb> [flags…]
 
-Both env vars are mandatory. `CLAUDE_PLUGIN_DATA` pins where job state and
+`CLAUDE_PLUGIN_DATA` goes on every verb: it pins where job state and
 resumable threads live — unset, the runtime falls back to a purgeable
 tmpdir, and a leftover OpenAI-plugin hook can silently redirect it.
-`CODEX_COMPANION_APP_SERVER_ENDPOINT` points at a socket that never
-exists, which forces the per-call direct app-server path — without it,
-every review/task spawns a detached broker + codex process pair that
-outlives the session (the upstream plugin cleaned these up with a
-SessionEnd hook this bundle deliberately does not have; we observed ~30
-leaked pairs before adopting this kill-switch). references/jobs.md has
-the details on both.
+`CODEX_COMPANION_APP_SERVER_ENDPOINT` goes on `review`,
+`adversarial-review`, and `task` only — those verbs otherwise spawn a
+detached broker + codex process pair that outlives the session (upstream
+reaped these with a SessionEnd hook this bundle deliberately lacks; ~30
+leaked pairs observed before this kill-switch); pointing it at a socket
+that never exists forces the per-call direct path. Leave it OFF
+`setup`/`status`/`result`/`cancel`: they never spawn a broker, and
+`setup`'s auth probe has no direct fallback, so the dead endpoint makes
+it misreport auth failure. references/jobs.md has the details on both.
 
 Verbs, and where each is specified:
 

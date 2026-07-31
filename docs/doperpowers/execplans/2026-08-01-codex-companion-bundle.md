@@ -14,7 +14,7 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 - [x] (2026-08-01) Milestone 2: `skills/codex-companion/SKILL.md` (index, model-invocable, trigger-only description) + `references/{reviews,delegation,jobs}.md` written; canonical invocation verified live via `setup --json` (ready:true, codex-cli 0.145.0, ChatGPT auth). Note: vendored `setup` output mentions `/codex:setup --enable-review-gate` in nextSteps — an upstream advisory string we cannot patch (byte-identity); harmless.
 - [x] (2026-08-01) Milestone 3: live verification against the real Codex CLI — `setup` ready-check; foreground working-tree review returned a correct P2 finding on the planted bug, exit 0; `status` listed running/finished jobs at the pinned state root (`~/.claude/doperpowers/codex-companion/state/…`); `cancel <job-id>` killed an orphaned job; `task` + `task --resume-last` round-trip resumed the same thread with a context-dependent correct answer; background review detached via harness background Bash, auto-woke on completion, and `result` retrieved the stored findings (3 valid P2s) plus the Codex session id for `codex resume`.
 - [x] (2026-08-01) Milestone 4: consumer swaps — `skills/execplan/SKILL.md` exit gate and `skills/subagent-driven-development/SKILL.md` final-review step (a consumer the plan missed, found by grep) now route through doperpowers:codex-companion; `~/.claude/CLAUDE.md` Independent Reviews section rewritten to the skill's `review` verb (`--model gpt-5.6-sol`, background Bash, effort via codex config). `skills/reviewing-prs` deliberately untouched (deferred round).
-- [ ] Milestone 5: version bump, release, uninstall the openai-codex plugin
+- [x] (2026-08-01) Milestone 5: released v7.31.0 (fast-forward push to `main`, marketplace refreshed, plugin updated user-scope 7.30.0 → 7.31.0; restart applies), then v7.31.1 with the verb-scoped kill-switch doc corrections; openai-codex plugin uninstalled at user scope. NOT uninstalled: its project-scope registration in `/Users/new/Developer/GitHub/codex_somersault/.claude/settings.json` — a different project that plausibly uses it deliberately; left for the human to decide. Post-release smoke test from the installed cache path: `setup` ready:true, zero broker processes.
 
 ## Surprises & Discoveries
 
@@ -30,6 +30,8 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
   Evidence: `status` showed the orphan at 7m11s elapsed; `cancel review-ms9gm7f6-sujbj2` → "Cancelled".
 - Observation: a `task` prompt passed as one quoted argument is re-tokenized (`normalizeArgv` splits a single-element argv), so flag-like words inside the prompt become real flags — `task 'explain why --write must be opt-in'` parses as `write: true` with the token stripped from the prompt: a silent write-permission escalation. A leading `--` disables flag parsing and preserves the prompt as one positional.
   Evidence: replayed the runtime's own parse pipeline: single-arg → `{"options":{"write":true},"positionals":["explain","why","must","be","opt-in"]}`; with `--` → `{"options":{},"positionals":["explain why --write must be opt-in"]}`. Skill docs now mandate `--` (or `--prompt-file`).
+- Observation: the broker kill-switch is verb-scoped, not universal. `setup`'s auth probe connects to the configured endpoint with no direct fallback, so the never-existing socket makes it report `ready: false` (auth "connect ENOENT") — while `review`/`task` fall back to a direct client and work fine. Separately, killing a broker by pid leaves a stale `broker.json` in the state root that `setup`/`status` keep probing (same false not-ready) until the file is deleted. Docs now scope the kill-switch to the three work verbs and describe the stale-file cleanup.
+  Evidence: `setup --json` with the kill-switch → `ready:false, auth: connect ENOENT …no-broker.sock`; without it but with a stale record → `ready:false, auth: connect ENOENT …cxc-brsUjP/broker.sock`; after deleting `broker.json` → `ready:true, ChatGPT login active, runtime: direct startup`.
 
 ## Decision Log
 
@@ -61,7 +63,11 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Delivered as purposed: doperpowers now owns a model-invocable Codex surface. The runtime is vendored byte-identically under `skills/codex-companion/runtime/` (81/81 adapted upstream tests green), fronted by an index SKILL.md with three progressive-disclosure references, and every capability was verified live against the real Codex CLI — native review (correct P2 on a planted bug), background review with `status`/`result`/`cancel`, and a `task --resume-last` thread round-trip. Consumers `execplan` and `subagent-driven-development` route their final reviews through the skill; the user-global CLAUDE.md routing now names the skill; the openai-codex plugin is gone at user scope. Released as v7.31.0 + v7.31.1.
+
+What the plan got wrong, and what caught it: the authoring-time claim that dropping the hook layer leaks nothing was backwards — work verbs spawn a detached broker per workspace, and the vendored test suite leaked ~28 process pairs per run. The exit-gate Codex review (run through the new bundle itself) caught this plus a genuine write-permission escalation in `task` prompt parsing. All seven findings were resolved at the call site (env kill-switch, `--` prompt guard, per-verb backgrounding contract, per-lens state roots) without patching a byte of vendored code — the byte-identity rule survived contact with real defects, which is decent evidence the call-site-only doctrine is workable.
+
+Remaining, deliberately out of scope: reviewing-prs engine unification and the brainstorming-critique integration (the `amigo` resume loop is the intended substrate); the upstream symlink-disclosure issue is documented, not fixed; `codex_somersault`'s project-scope plugin registration awaits a human call.
 
 ## Context and Orientation
 

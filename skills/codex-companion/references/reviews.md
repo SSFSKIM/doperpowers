@@ -5,6 +5,7 @@ findings (or an explicit no-findings result) to stdout. Both record a job
 (see references/jobs.md). Neither ever edits files.
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" review \
       [--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <m>] [--json] [--cwd <dir>]
 
