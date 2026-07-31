@@ -34,9 +34,10 @@ and outcomes; the worker chooses its means.
 Skills are not prose — they are code that shapes agent behavior. If you modify skill content:
 
 - Use `doperpowers:writing-skills` to develop and test changes
-- Run adversarial pressure testing across multiple sessions
+- Run pressure testing appropriate to the skill's consumers and failure modes
 - Show before/after eval results in your PR
-- Do not modify carefully-tuned content (Red Flags tables, rationalization lists, "human partner" language) without evidence the change is an improvement
+- Follow the essentialist principle: a skill carries only what the reading model cannot derive itself — validated knowledge, interfaces, defaults with their reasons — and leaves room for situational judgment. Adding constraint or enforcement machinery needs eval evidence of the failure it prevents.
+- "Your human partner" language is deliberate — don't rewrite the project's voice.
 
 ## Eval harness
 
