@@ -274,6 +274,34 @@ PY
     echo "#$n: bind failed — worker retired (an unbindable worker cannot be answer-relayed)" >&2
     return 1
   fi
+
+  # Persist the role (ARCHITECT/IMPLEMENT/SPIKE) this dispatcher already
+  # knows into the registry meta, same read-modify-write-under-lock shape
+  # board-bind.sh uses. board-answer.sh's needs-human fallback (no
+  # recorded pre-park:) reads it back to pick a lane-correct return state
+  # instead of hardcoding in-progress — an Architect resumed there would
+  # land in a state its protocol cannot exit. Non-fatal: a failed write
+  # only costs that fallback its lane-aware branch on THIS worker later.
+  T_UUID="$uuid" T_ROLE="$role" DAEMON_HOME="$DAEMON_HOME" python3 - <<'PY' \
+    || echo "#$n: role meta write failed (non-fatal)" >&2
+import fcntl, json, os
+home = os.environ["DAEMON_HOME"]
+path = os.path.join(home, os.environ["T_UUID"] + ".json")
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    with open(path) as f:
+        m = json.load(f)
+    m["role"] = os.environ["T_ROLE"]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(m, f, indent=2)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+
   echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
 }
 

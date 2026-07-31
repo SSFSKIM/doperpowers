@@ -160,6 +160,11 @@ import glob, json
 print(next((m.get('ticket','') for p in glob.glob('$DAEMON_HOME/*.json')
             for m in [json.load(open(p))] if m.get('name','').startswith('1-')), ''))")"
 assert_contains "$meta_ticket" "1" "board-bind bound the worker to ticket 1"
+role_meta_1="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('1-')), ''))")"
+assert_contains "$role_meta_1" "IMPLEMENT" "dispatch persists the IMPLEMENT role into the registry meta"
 
 out="$(run 2)"
 assert_contains "$out" "skip #2" "blocked ticket is refused"
@@ -178,6 +183,11 @@ PROMPT3="$PROMPT_DIR/3-probe-the-cache-layer.prompt"
 assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "spike role"
 assert_file_contains "$PROMPT3" "spike-worker-protocol.md" "spike lane opens the spike protocol"
 assert_file_contains "$PROMPT3" "(none — spike lane)" "spike gets the literal no-decompose binding"
+role_meta_3="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('3-')), ''))")"
+assert_contains "$role_meta_3" "SPIKE" "dispatch persists the SPIKE role into the registry meta"
 
 out="$(run 5)"
 assert_contains "$(grep 'spawn:--no-wait 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
@@ -313,6 +323,11 @@ assert_file_contains "$PROMPT8" "ARCHITECT worker for ticket #8" "prompt carries
 assert_file_contains "$PROMPT8" "architecting/SKILL.md" "architect lane opens the architecting protocol"
 assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" "architect route pins the frontier model"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "architect route never rides the gateway"
+role_meta_8="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('8-')), ''))")"
+assert_contains "$role_meta_8" "ARCHITECT" "dispatch persists the ARCHITECT role into the registry meta (Finding D: board-answer's needs-human fallback reads it back)"
 
 out="$(run 9)"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "engine:codex label is IGNORED on the architect lane (X4 exemption)"

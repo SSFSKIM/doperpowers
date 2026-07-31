@@ -897,6 +897,50 @@ META
 run board-answer.sh "$ans_rev_t" "still looks right" >/dev/null
 assert_contains "$(state "s['issues']['$ans_rev_t']['labels']")" "status:in-review" "answered in-review park resumes into in-review without re-supplying --pr"
 
+# ---- unrecorded pre-park fallback is lane-aware (Finding D) --------------------
+# PRE_PARK has no entry for needs-info (or interactive-preferred/deferred),
+# so a needs-human park reached via needs-info records no pre-park: meta.
+# board-answer's fallback must consult the BOUND worker's own role (persisted
+# at spawn by implement-dispatch.sh) rather than hardcoding in-progress — an
+# Architect resumed into in-progress has no legal exit from it.
+echo "unrecorded pre-park fallback:"
+out="$(run board-register.sh "Architect fallback probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
+fb_arch_t="${out%% *}"
+run board-transition.sh "$fb_arch_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_arch_t" needs-human "human decision needed" >/dev/null
+assert_not_contains "$(state "s['issues']['$fb_arch_t']['body']")" "pre-park:" "needs-info -> needs-human records no pre-park (PRE_PARK has no needs-info entry)"
+cat > "$DAEMON_HOME/11111111-1111-2222-3333-444444444444.json" <<META
+{"uuid": "11111111-1111-2222-3333-444444444444", "role": "ARCHITECT",
+ "status": "idle", "ticket": "$fb_arch_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_arch_t" "layout A" >/dev/null
+assert_contains "$(state "s['issues']['$fb_arch_t']['labels']")" "status:in-design" "unrecorded pre-park falls back on the bound Architect's own lane (in-design), never a hardcoded in-progress"
+
+out="$(run board-register.sh "Implement fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_impl_t="${out%% *}"
+run board-transition.sh "$fb_impl_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_impl_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/22222222-1111-2222-3333-444444444444.json" <<META
+{"uuid": "22222222-1111-2222-3333-444444444444", "role": "IMPLEMENT",
+ "status": "idle", "ticket": "$fb_impl_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_impl_t" "answer" >/dev/null
+assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "unrecorded pre-park with a non-architect role falls back on in-progress"
+
+out="$(run board-register.sh "Unknown-role fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_unk_t="${out%% *}"
+run board-transition.sh "$fb_unk_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_unk_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/33333333-1111-2222-3333-444444444444.json" <<META
+{"uuid": "33333333-1111-2222-3333-444444444444",
+ "status": "idle", "ticket": "$fb_unk_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_unk_t" "answer" >/dev/null
+assert_contains "$(state "s['issues']['$fb_unk_t']['labels']")" "status:in-progress" "a meta with no role at all (pre-fix daemon) preserves the prior default: in-progress"
+
 unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------

@@ -7,11 +7,12 @@
 #
 # The wake ritual's needs-human path: park = pause, not death. The answers
 # land on the TICKET first (the ticket is the record), the ticket returns to
-# its parking lane's in-flight state (pre-park: meta; in-progress when
-# absent), and the bound session is resumed with the answers relayed
-# verbatim — the worker keeps its orientation and re-states its gate verdict
-# before proceeding. No judge is reintroduced: the relay is mechanical, the
-# human is the author, the ticket is the record.
+# its parking lane's in-flight state (pre-park: meta; when absent, the bound
+# worker's own lane from its registry meta — in-design for an Architect,
+# in-progress otherwise), and the bound session is resumed with the answers
+# relayed verbatim — the worker keeps its orientation and re-states its gate
+# verdict before proceeding. No judge is reintroduced: the relay is
+# mechanical, the human is the author, the ticket is the record.
 #
 # Fresh-dispatch fallback (this script refuses; do it by hand): no bound
 # session, a dead/retired session, or answers that reshape the ticket's scope
@@ -109,7 +110,21 @@ else:
     # right back to needs-human (the exact bounce the human just answered).
     B.comment(tid, "[answers] relayed — see the human's comment on the "
                    "ticket (gh issue view %s --comments)" % tid)
-ret = B.parse_meta(tickets[tid]["body"]).get("pre-park") or "in-progress"
+pre_park = B.parse_meta(tickets[tid]["body"]).get("pre-park")
+if pre_park:
+    ret = pre_park
+else:
+    # No recorded pre-park: the park entered needs-human from a state
+    # PRE_PARK doesn't cover (needs-info / interactive-preferred /
+    # deferred — see _board.py's PRE_PARK). Fall back on the BOUND
+    # WORKER's own lane, persisted into the registry meta at spawn time
+    # (implement-dispatch.sh), rather than hardcoding in-progress: an
+    # Architect resumed there would land in a state its protocol cannot
+    # exit (LEGAL["in-progress"] has no ready-for-implementer edge).
+    # Workers bound before this fix (or spawned by any other route) carry
+    # no role — for those, in-progress stays the fallback, matching prior
+    # behavior; it was only ever wrong for the architect lane.
+    ret = "in-design" if (meta.get("role") or "").upper() == "ARCHITECT" else "in-progress"
 print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
                               meta.get("status", "?"), meta.get("updated", "?"), ret))
 PY
