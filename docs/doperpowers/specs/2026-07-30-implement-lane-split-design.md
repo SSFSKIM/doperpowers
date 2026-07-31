@@ -737,6 +737,22 @@ route independently.
   the pin must say which of the two it means.
   Evidence: Task 15 review; skills/implementing/SKILL.md Mode Selection
   and Verdict; plan revision d004728.
+- Discovery: the retrospective's own lesson — "generalizing a hardcode
+  means owning its accidental guarantees" — recurred during
+  implementation, twice, in the same shape. The park-return target was
+  hardcoded `in-progress`, which happens to be the one in-flight state
+  with no entry precondition; generalizing it via `PRE_PARK` routed
+  review-loop parks back to `in-review`, whose PR gate then rejected
+  every answer relay. The convergence reset was keyed to an `[answers]`
+  comment that only the inline-answer path posts; generalizing the relay
+  to the sweep's `--posted` path meant the reset marker stopped being
+  written. Neither was caught by a task-scoped review — both spanned a
+  script boundary — and both were found by the whole-branch pass. The
+  lesson generalizes further than the spec applied it: when a constant
+  becomes a lookup, enumerate what the constant's VALUE guaranteed, not
+  just what the lookup must now return.
+  Evidence: whole-branch review findings C1 and I1; commits 4f1111e,
+  21435dd, and their before/after reproductions.
 
 ## Outcomes & Retrospective
 
@@ -744,6 +760,17 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-07-31: v1.3.2, implementation-pass corrections (all found by
+  review during execution, all landed on the branch): transition 6's
+  convergence note no longer promises "both sides' positions" — it
+  carries this traversal's position plus a pointer to the comment trail,
+  because the mechanical substitution only ever had one; the reset now
+  also fires on the sweep's relay path, where `--posted` previously
+  posted no `[answers]` marker at all and a human-authorized
+  re-traversal therefore re-converted to `needs-human` (a livelock);
+  transition 7's `needs-human → in-review` return is legal without
+  re-supplying `--pr`, since generalizing the old hardcoded `in-progress`
+  return had silently inherited that state's freedom from the PR gate.
 - 2026-07-31: v1.3.1, planning-pass drift fixes (implementation plan =
   `docs/doperpowers/plans/2026-07-31-implement-lane-split.md`, lands as
   v7.30.0): board-lint gains vocabulary only — edge-note enforcement is
