@@ -948,6 +948,17 @@ impl_t="${out%% *}"
 assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
 assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
 
+# ---- spike / ready-for-architect ban (Finding A) -------------------------------
+# A spike has no legal exit from ready-for-architect (the spike protocol's
+# gate-pass write is `in-progress`, and LEGAL["ready-for-architect"] has none)
+# — banned at both the source (registration) and every transition into it.
+echo "spike/architect-lane ban:"
+assert_fails run board-register.sh "Spike arch birth" spike P2 --state ready-for-architect --body-file "$SPEC_BODY"
+spike_ban_t="$(run board-register.sh "Spike transition ban probe" spike P2 --body-file "$SPEC_BODY" | awk '{print $1}')"
+run board-transition.sh "$spike_ban_t" in-progress >/dev/null
+assert_fails run board-transition.sh "$spike_ban_t" ready-for-architect "blocked: needs a plan"
+assert_contains "$(state "s['issues']['$spike_ban_t']['labels']")" "status:in-progress" "spike stays in its lane after the refused transition"
+
 # ---- lane display (E1: list/map render the new lane states) -------------------
 # $arch_t (registered just above) is still ready-for-architect: nothing between
 # its birth and here transitions it.

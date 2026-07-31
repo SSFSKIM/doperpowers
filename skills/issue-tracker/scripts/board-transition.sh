@@ -50,6 +50,14 @@ cur = n["state"]
 
 if to not in B.STATES:
     B.die("unknown state: %s" % to)
+# Same ban as board-register.sh (Finding A): a spike has no legal exit
+# from ready-for-architect (LEGAL["ready-for-architect"] has no
+# in-progress edge, and the spike protocol's gate-pass write IS
+# in-progress regardless of which lane queue dispatched it). Close every
+# entry into the state, not just the birth one.
+if to == "ready-for-architect" and n["category"] == "spike":
+    B.die("#%s is a spike — it has no legal exit from ready-for-architect; "
+          "it stays in its current lane" % tid)
 if to == cur:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))

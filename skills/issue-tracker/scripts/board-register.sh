@@ -71,6 +71,21 @@ if state not in B.BIRTH:
     B.die("birth state must be one of: %s" % ", ".join(B.BIRTH))
 if state in B.NOTE_REQUIRED and not note:
     B.die("--note is required for state %s" % state)
+# A spike has no legal exit from ready-for-architect: role resolution is
+# state-free for spikes (category outranks lane — implement-dispatch.sh
+# dispatches the spike protocol from EITHER lane queue), but the spike
+# protocol's gate-pass write is `in-progress`, and
+# LEGAL["ready-for-architect"] has no `in-progress` edge — a spike stranded
+# there is left with only the parks, AND its stuck state eats an
+# architect-lane slot (ARCHITECT_MAX_CONCURRENT counts by ticket state, not
+# by which protocol actually dispatched). An earlier review declined a
+# registration-time ban absent a reproduced failure; this failure is now
+# reproduced, so the ban is earned.
+if category == "spike" and state == "ready-for-architect":
+    B.die("a spike cannot be born ready-for-architect — register it "
+          "ready-for-implementer (the default); spikes dispatch on the "
+          "spike protocol from either lane queue and have no legal exit "
+          "from the architect queue")
 
 tickets = B.snapshot()
 parent = B.resolve(env["T_PARENT"], tickets) if env["T_PARENT"] else None
