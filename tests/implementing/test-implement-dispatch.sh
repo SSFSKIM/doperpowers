@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DISPATCH="$REPO_ROOT/skills/implementing-tickets/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -116,16 +116,18 @@ def issue(num, title, labels, body="body of #%s", blocked=None):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 8, "labels": [], "issues": {
+s = {"next": 10, "labels": [], "issues": {
     "1": issue(1, "Fix the report builder pipeline",
-               ["status:ready-for-agent", "priority:P1", "bug"],
+               ["status:ready-for-implementer", "priority:P1", "bug"],
                body="Repro: the report build fails on BUILD-MARKER."),
-    "2": issue(2, "Downstream cleanup", ["status:ready-for-agent"], blocked=[1]),
-    "3": issue(3, "Probe the cache layer", ["status:ready-for-agent", "priority:P0", "spike"]),
+    "2": issue(2, "Downstream cleanup", ["status:ready-for-implementer"], blocked=[1]),
+    "3": issue(3, "Probe the cache layer", ["status:ready-for-implementer", "priority:P0", "spike"]),
     "4": issue(4, "Mid-flight work", ["status:in-progress"]),
-    "5": issue(5, "Tune the copy", ["status:ready-for-agent", "priority:P2", "engine:claude"]),
+    "5": issue(5, "Tune the copy", ["status:ready-for-implementer", "priority:P2", "engine:claude"]),
     "6": issue(6, "Delivered, awaiting review", ["status:in-review"]),
-    "7": issue(7, "Port the legacy adapter", ["status:ready-for-agent", "engine:codex"]),
+    "7": issue(7, "Port the legacy adapter", ["status:ready-for-implementer", "engine:codex"]),
+    "8": issue(8, "Design the ledger split", ["status:ready-for-architect", "priority:P0"]),
+    "9": issue(9, "Design with codex label", ["status:ready-for-architect", "priority:P1", "engine:codex"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
@@ -140,23 +142,29 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 1-fix-the-report-builder-
   "spawn is --no-wait with the <n>-<slug> name"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | head -1)" "settings=;effort=" \
   "default engine claude passes no gateway env"
-# bracketed so the fixed-string match is exact: "[model=]" would otherwise be a
-# substring of "[model=fable]" and prove nothing about an EMPTY model arg.
+# bracketed so the fixed-string match is exact — the model arg is last on the
+# spawn line, so the closing bracket pins the whole value and an unpinned
+# (empty) or differently-pinned arg cannot satisfy it by prefix.
 first_spawn="$(grep '^spawn:' "$SPAWN_LOG" | head -1)"
-assert_contains "[${first_spawn##* }]" "[model=]" \
-  "claude route pins no model — it inherits unless IMPLEMENT_MODEL says otherwise"
+assert_contains "[${first_spawn##* }]" "[model=opus]" \
+  "claude route pins the worker tier (IMPLEMENT_MODEL overrides; never inherited)"
 PROMPT="$PROMPT_DIR/1-fix-the-report-builder-pipeline.prompt"
 assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries the IMPLEMENT role"
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
 assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
-assert_file_contains "$PROMPT" "implementing-tickets/SKILL.md" "implement lane opens the SKILL protocol"
+assert_file_contains "$PROMPT" "implementing/SKILL.md" "implement lane opens the SKILL protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
 meta_ticket="$(python3 -c "
 import glob, json
 print(next((m.get('ticket','') for p in glob.glob('$DAEMON_HOME/*.json')
             for m in [json.load(open(p))] if m.get('name','').startswith('1-')), ''))")"
 assert_contains "$meta_ticket" "1" "board-bind bound the worker to ticket 1"
+role_meta_1="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('1-')), ''))")"
+assert_contains "$role_meta_1" "IMPLEMENT" "dispatch persists the IMPLEMENT role into the registry meta"
 
 out="$(run 2)"
 assert_contains "$out" "skip #2" "blocked ticket is refused"
@@ -175,6 +183,11 @@ PROMPT3="$PROMPT_DIR/3-probe-the-cache-layer.prompt"
 assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "spike role"
 assert_file_contains "$PROMPT3" "spike-worker-protocol.md" "spike lane opens the spike protocol"
 assert_file_contains "$PROMPT3" "(none — spike lane)" "spike gets the literal no-decompose binding"
+role_meta_3="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('3-')), ''))")"
+assert_contains "$role_meta_3" "SPIKE" "dispatch persists the SPIKE role into the registry meta"
 
 out="$(run 5)"
 assert_contains "$(grep 'spawn:--no-wait 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
@@ -222,8 +235,8 @@ echo "implement-dispatch: sweep mode order + cap"
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(run --sweep)"
 order="$(grep -o 'spawn:--no-wait [0-9]*-' "$SPAWN_LOG" | tr -d ' ' | paste -sd, -)"
-assert_contains "$order" "spawn:--no-wait3-,spawn:--no-wait1-,spawn:--no-wait5-" \
-  "sweep dispatches in priority order (P0, P1, P2)"
+assert_contains "$order" "spawn:--no-wait3-,spawn:--no-wait8-,spawn:--no-wait1-,spawn:--no-wait5-" \
+  "sweep dispatches in priority order (P0, P1, P2) across both lanes (#8 is the P0 architect ticket, tid-tiebreaks after #3)"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 2-" "sweep skips blocked tickets"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 4-" "sweep skips non-ready tickets"
 n_gateway="$(grep -c "settings=$HOME/.claude/clodex-settings.json" "$SPAWN_LOG" || true)"
@@ -237,7 +250,7 @@ rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
 assert_contains "$out" "cap reached" "sweep names the cap when it stops"
 n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
-assert_contains "$n_spawns" "2" "cap 2 permits exactly two dispatches"
+assert_contains "$n_spawns" "3" "implement cap 2 permits exactly two implement dispatches (plus #8's independent architect-lane slot)"
 
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 python3 - <<'PY'
@@ -250,7 +263,7 @@ json.dump({"uuid": "eeee0001-0000-4000-8000-000000000000", "current": "x",
 PY
 out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
 n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
-assert_contains "$n_spawns" "1" "a pre-existing working implement meta occupies a slot"
+assert_contains "$n_spawns" "2" "a pre-existing working implement meta occupies its lane's slot (the architect lane still dispatches independently)"
 
 python3 - <<'PY'
 import json, os
@@ -263,7 +276,7 @@ PY
 rm -f "$DAEMON_HOME"/aaaa*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
 n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
-assert_contains "$n_spawns" "1" "review/land workers never count against the implement cap"
+assert_contains "$n_spawns" "2" "review/land workers never count against the implement cap (the architect lane's own dispatch is unaffected)"
 
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 python3 - <<'PY'
@@ -276,7 +289,7 @@ json.dump({"uuid": "dddd0006-0000-4000-8000-000000000000", "current": "z",
 PY
 out="$(IMPLEMENT_MAX_CONCURRENT=2 run --sweep)"
 n_spawns="$(grep -c '^spawn:' "$SPAWN_LOG")"
-assert_contains "$n_spawns" "2" "a stale working meta on an in-review ticket does not eat a slot"
+assert_contains "$n_spawns" "3" "a stale working meta on an in-review ticket does not eat a slot (2 implement + #8's architect slot)"
 
 echo "implement-dispatch: failure isolation + strict render"
 
@@ -298,6 +311,55 @@ git -C "$CLONE" symbolic-ref -d refs/remotes/origin/HEAD
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(run 1)"
 assert_contains "$out" "dispatched #1" "a clone without origin/HEAD still dispatches (nothing reads the default branch)"
+
+echo "implement-dispatch: architect lane"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(run 8)"
+assert_contains "$out" "dispatched #8" "architect ticket dispatches"
+assert_contains "$out" "role=ARCHITECT" "architect role selected off the state"
+PROMPT8="$PROMPT_DIR/8-design-the-ledger-split.prompt"
+assert_file_contains "$PROMPT8" "ARCHITECT worker for ticket #8" "prompt carries the ARCHITECT role"
+assert_file_contains "$PROMPT8" "architecting/SKILL.md" "architect lane opens the architecting protocol"
+assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" "architect route pins the frontier model"
+assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "architect route never rides the gateway"
+role_meta_8="$(python3 -c "
+import glob, json
+print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
+            for m in [json.load(open(p))] if m.get('name','').startswith('8-')), ''))")"
+assert_contains "$role_meta_8" "ARCHITECT" "dispatch persists the ARCHITECT role into the registry meta (Finding D: board-answer's needs-human fallback reads it back)"
+
+out="$(run 9)"
+assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "engine:codex label is IGNORED on the architect lane (X4 exemption)"
+assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" "labelled architect ticket still pins fable"
+
+echo "implement-dispatch: per-lane caps"
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run --sweep)"
+n_arch="$(grep -c 'role=ARCHITECT' <<<"$out" || true)"
+assert_contains "$n_arch" "1" "architect cap 1 admits exactly one design dispatch"
+assert_contains "$out" "architect cap reached" "sweep names the architect cap"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 3-" "implementer lane still dispatches under its own cap (the P0 spike rides it)"
+
+# an in-design bound meta occupies an ARCHITECT slot (binding release = slot accounting)
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+python3 - <<'PY'
+import json, os
+json.dump({"uuid": "cccc0008-0000-4000-8000-000000000000", "current": "w",
+           "name": "8-design-the-ledger-split", "ticket": "8", "status": "working",
+           "updated": "2026-07-18T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "cccc0008-0000-4000-8000-000000000000.json"), "w"))
+PY
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:in-design", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_contains "$out" "architect cap reached" "an in-design bound worker occupies the architect slot"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

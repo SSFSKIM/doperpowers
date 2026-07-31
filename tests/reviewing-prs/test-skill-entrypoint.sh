@@ -109,6 +109,15 @@ assert_contains "$SKILL" "write the acknowledgement" "worker acks the barrier be
 assert_before "$SKILL" "BINDING BARRIER" "## ORIENT" "binding barrier precedes every review action"
 assert_contains "$SKILL" "board-answer" "active early park distinguishes notification from resume"
 
+echo "runtime skill — E1 architect-lane rules (plan pin, PLAN-EXECUTION mode, ready-for-architect escalation):"
+assert_contains "$SKILL" "resolve that path at exactly that SHA, never" "the plan: pin joins the spec hierarchy, resolved at its exact SHA, never the branch tip"
+assert_contains "$SKILL" "ran in PLAN-EXECUTION mode, which posts none." "a real plan: revision pin means no implementer [gate] pass exists (PLAN-EXECUTION mode)"
+assert_contains "$SKILL" "carries a real \`[gate] pass\` — anchor on it as usual." "a plan: pre-spec ticket ran DIRECT and keeps a real [gate] pass to anchor on"
+assert_contains "$SKILL" "Architect handoff comment (the \`plan:\` pin's authorization — see the" "the missing-Validation-Evidence-section rule admits the Architect handoff comment alongside [gate] pass"
+assert_contains "$SKILL" "defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to" "RE-REVIEW's seam-clustered impasse routes to ready-for-architect, not needs-human"
+assert_contains "$SKILL" "cap) or was just routed to ready-for-architect (the seam-clustered" "ESCALATE's PARKED tier covers a ticket just routed to ready-for-architect"
+assert_contains "$SKILL" "a finding that is missing DESIGN (not just missing work) passes" "TOO BIG registration births a design-missing finding on the architect lane"
+
 echo "runtime skill — escalation and dead ends:"
 assert_contains "$SKILL" "SELF-MERGE tier requires ALL" "merge authority lives in the runtime skill"
 assert_contains "$SKILL" "No unresolved PROTOCOL BLOCKER or SPEC FINDING" "worker-owned findings disqualify both confidence tiers"

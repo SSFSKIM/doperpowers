@@ -3,10 +3,10 @@ import type { TrustLevel } from './trust';
 import type { Verdict } from './verdict';
 
 export type ResolvedCategory = 'bug' | 'idea' | 'question' | 'other';
-export type BirthState = 'ready-for-agent' | 'needs-human' | 'needs-info';
+export type BirthState = 'ready-for-implementer' | 'needs-human' | 'needs-info';
 
 // spec R3 — ida-solution 골든룰에서 그대로 옮긴 리스크 표면(경로). 인용된 경로가 하나라도 닿으면
-// ready-for-agent 불가(needs-human 강등) — 사람 판단 없이 에이전트가 만지면 안 되는 영역.
+// ready-for-implementer 불가(needs-human 강등) — 사람 판단 없이 에이전트가 만지면 안 되는 영역.
 export const RISK_SURFACES: RegExp[] = [
   /^lib\/auth\.ts$/, /^middleware\.ts$/,                    // auth/RLS
   /^lib\/schema\.sql$/, /^sql\/.*\.sql$/, /^types\/index\.ts$/, // migrations/schema/mirror
@@ -61,12 +61,12 @@ export function extractFileCitations(text: string): string[] {
 
 const PARK_NOTE_FALLBACK = '워커가 park 사유를 남기지 않음 — verdict 확인 필요';
 
-// 내용 린트(결정론적) — ready-for-agent로 태어나는 티켓만 대상. 프로토콜의 본문 템플릿
+// 내용 린트(결정론적) — ready-for-implementer로 태어나는 티켓만 대상. 프로토콜의 본문 템플릿
 // 5개 섹션이 전부 있어야 구현 게이트(well-defined 심사)가 읽을 수 있는 형태가 된다.
 export const REQUIRED_SECTIONS = ['## 증상', '## 진단', '## 제안 수정 방향', '## 스코프 추정', '## 불명확한 점'] as const;
 const BODY_MAX_CHARS = 10_000;
 
-/** ready-for-agent 후보 티켓의 형식 검사. 실패 사유를 돌려주면 routeTicket이 needs-human으로
+/** ready-for-implementer 후보 티켓의 형식 검사. 실패 사유를 돌려주면 routeTicket이 needs-human으로
  * 강등한다(진단을 버리는 failed가 아니라 — 내용은 살리고 형식 미달만 사람에게 알린다). */
 export function lintTicket(t: { title: string; body: string }, rawBody: string): string | null {
   const missing = REQUIRED_SECTIONS.filter((s) => !t.body.includes(s));
@@ -81,8 +81,8 @@ export function lintTicket(t: { title: string; body: string }, rawBody: string):
 
 /** 등록 게이트(R1–R5): 워커의 추천 상태는 참고용, 최종 birth state는 디스패처가 결정한다.
  * 신뢰 2단계(2026-07-11): user 피드백은 보수적으로 — idea/question 무조건 needs-human(R4),
- * ready-for-agent는 bug만(R1). developer 피드백(role/코드로 판별)은 지시로 취급 —
- * R1/R4를 적용하지 않아 아이디어·개선도 ready-for-agent로 태어날 수 있다.
+ * ready-for-implementer는 bug만(R1). developer 피드백(role/코드로 판별)은 지시로 취급 —
+ * R1/R4를 적용하지 않아 아이디어·개선도 ready-for-implementer로 태어날 수 있다.
  * 두 수준 공통: 실제 file:line 인용(R2)과 리스크 표면 무접촉(R3, 경로+심볼)은 항상 요구 —
  * 리스크 표면을 에이전트가 무인으로 만지는 위험은 요청자가 누구든 동일하다.
  * rawBody(코드 제거 후 원문)는 내용 린트의 제목-복붙 검사에 쓰인다. */
@@ -94,23 +94,23 @@ export function routeTicket(trust: TrustLevel, rowCategory: FeedbackCategory, v:
       return { state: 'needs-human', note: v.ticket.note ?? '사용자 질문 — 사람이 답변' };
   }
 
-  if (v.ticket.state !== 'ready-for-agent')
+  if (v.ticket.state !== 'ready-for-implementer')
     return { state: v.ticket.state, note: v.ticket.note ?? PARK_NOTE_FALLBACK };
 
   if (trust === 'user' && v.resolved_category !== 'bug')
-    return { state: 'needs-human', note: `ready-for-agent 강등: 분류가 bug 아님(${v.resolved_category})` };
+    return { state: 'needs-human', note: `ready-for-implementer 강등: 분류가 bug 아님(${v.resolved_category})` };
   if (extractFileCitations(v.root_cause).length === 0)
-    return { state: 'needs-human', note: 'ready-for-agent 강등: 근본원인에 실제 file:line 인용 없음' };
+    return { state: 'needs-human', note: 'ready-for-implementer 강등: 근본원인에 실제 file:line 인용 없음' };
   const text = `${v.root_cause}\n${v.ticket.title}\n${v.ticket.body}`;
   const hit = touchesRiskSurface(extractCandidatePaths(text));
   if (hit)
-    return { state: 'needs-human', note: `ready-for-agent 강등: 리스크 표면 접촉(${hit})` };
+    return { state: 'needs-human', note: `ready-for-implementer 강등: 리스크 표면 접촉(${hit})` };
   const sym = touchesRiskSymbol(text);
   if (sym)
-    return { state: 'needs-human', note: `ready-for-agent 강등: 리스크 심볼 언급(${sym})` };
+    return { state: 'needs-human', note: `ready-for-implementer 강등: 리스크 심볼 언급(${sym})` };
   const lint = lintTicket(v.ticket, rawBody);
   if (lint)
-    return { state: 'needs-human', note: `ready-for-agent 강등: ${lint}` };
+    return { state: 'needs-human', note: `ready-for-implementer 강등: ${lint}` };
 
-  return { state: 'ready-for-agent', note: undefined };
+  return { state: 'ready-for-implementer', note: undefined };
 }

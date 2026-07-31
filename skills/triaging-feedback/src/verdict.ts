@@ -21,7 +21,7 @@ export interface Verdict {
 }
 
 const CATS = ['bug', 'idea', 'question', 'other'] satisfies ResolvedCategory[];
-const STATES = ['ready-for-agent', 'needs-human', 'needs-info'] satisfies BirthState[];
+const STATES = ['ready-for-implementer', 'needs-human', 'needs-info'] satisfies BirthState[];
 
 const asIssueNumber = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;

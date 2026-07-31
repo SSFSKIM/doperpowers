@@ -16,8 +16,10 @@ import subprocess
 import sys
 from typing import NoReturn
 
-# ── state vocabulary (v8: blocked retired into needs-human; the park trio) ──
-OPEN_STATES = ("ready-for-agent", "in-progress", "needs-human", "needs-info",
+# ── state vocabulary (v9: the E1 lane split — the single pre-v9 agent queue
+#    split into ready-for-architect / in-design / ready-for-implementer) ──
+OPEN_STATES = ("ready-for-architect", "in-design", "ready-for-implementer",
+               "in-progress", "needs-human", "needs-info",
                "interactive-preferred", "in-review", "confident-ready",
                "deferred")
 TERMINAL = ("done", "wontfix")
@@ -25,43 +27,86 @@ STATES = OPEN_STATES + TERMINAL
 # Actively-worked states: a close_candidate in one of these is normal
 # mid-flight shape (part-1 PR merged, part 2 coming) — surfaces that nag or
 # relocate (lint WARN, kanban column) skip them; passive displays still mark.
-ACTIVE = ("in-progress", "in-review")
-BIRTH = ("ready-for-agent", "needs-info", "needs-human",
-         "interactive-preferred", "deferred")
-# Park discriminant — WHO UNPARKS IT: the human as themselves (a decision or
-# a real-world input) → needs-human; knowledge work anyone could do →
-# needs-info; ongoing steering, not one answer → interactive-preferred.
+ACTIVE = ("in-design", "in-progress", "in-review")
+# The two dispatchable lane queues — the eligibility predicate, slot
+# accounting, and every ELIGIBLE display key off this tuple.
+DISPATCHABLE = ("ready-for-architect", "ready-for-implementer")
+BIRTH = ("ready-for-architect", "ready-for-implementer", "needs-info",
+         "needs-human", "interactive-preferred", "deferred")
+# Park discriminant — WHO UNPARKS IT (three addresses): the human as
+# themselves (a decision or a real-world input) → needs-human; knowledge
+# work anyone could do → needs-info; missing/broken design an AGENT can
+# author → ready-for-architect. Ongoing steering → interactive-preferred.
 NOTE_REQUIRED = ("needs-human", "needs-info", "interactive-preferred", "wontfix")
-PULLABLE = ("ready-for-agent", "needs-info", "needs-human",
-            "interactive-preferred", "deferred")
+# Edge-keyed note requirement (E1 transitions 2/4/5 + the QAgent edge):
+# these lane-crossing edges enter states that are note-free at birth, so
+# the state-keyed NOTE_REQUIRED cannot express them.
+EDGE_NOTE_REQUIRED = {
+    ("in-design", "ready-for-implementer"),
+    ("ready-for-implementer", "ready-for-architect"),
+    ("in-progress", "ready-for-architect"),
+    ("in-review", "ready-for-architect"),
+}
+# Convergence-counted escalation edges: a SECOND traversal of the same
+# edge on one ticket converts to a needs-human park (board-transition
+# enforces; count resets at the last [answers] comment).
+CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer")}
+# Park-return targets (E1 transition 7): written into pre-park: meta at
+# needs-human park time; board-answer returns the ticket there. Always an
+# IN-FLIGHT state — returning to a dispatchable queue would race the sweep
+# onto a second worker.
+PRE_PARK = {
+    "ready-for-architect": "in-design",
+    "in-design": "in-design",
+    "ready-for-implementer": "in-progress",
+    "in-progress": "in-progress",
+    "in-review": "in-review",
+}
+PULLABLE = ("ready-for-architect", "ready-for-implementer", "needs-info",
+            "needs-human", "interactive-preferred", "deferred")
 LEGAL = {
-    "ready-for-agent": {"in-progress", "needs-info", "needs-human",
-                        "interactive-preferred", "wontfix", "deferred"},
-    "in-progress":     {"needs-info", "needs-human", "interactive-preferred",
-                        "in-review", "done", "wontfix", "deferred"},
-    "needs-info":      {"ready-for-agent", "in-progress", "needs-human",
-                        "interactive-preferred", "wontfix", "deferred"},
+    "ready-for-architect":   {"in-design", "needs-info", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
+    # in-design: the Architect's in-flight state. Exit = transition 2/3
+    # (plan handoff / down-shortcircuit / decompose-epic) or a park.
+    "in-design":             {"ready-for-implementer", "needs-info",
+                              "needs-human", "interactive-preferred",
+                              "wontfix", "deferred"},
+    "ready-for-implementer": {"in-progress", "ready-for-architect",
+                              "needs-info", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
+    "in-progress":           {"ready-for-architect", "needs-info",
+                              "needs-human", "interactive-preferred",
+                              "in-review", "done", "wontfix", "deferred"},
+    "needs-info":            {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
     # done from needs-human: the spike handoff — a finished spike parks
     # needs-human "findings ready" and the human closes it after reading
     # (done is the manual flip for non-PR work). Human-only in practice:
     # worker doctrine forbids terminal states.
-    "needs-human":     {"ready-for-agent", "in-progress", "needs-info",
-                        "interactive-preferred", "done", "wontfix", "deferred"},
-    "interactive-preferred": {"ready-for-agent", "in-progress", "needs-info",
-                        "needs-human", "wontfix", "deferred"},
-    # needs-human reachable from in-review: the reviewing-prs review loop's
-    # impasse/precondition escalations (protocol safety valve) — all its
-    # parks route to needs-human. needs-info stays reachable here too, as a
-    # human/legacy affordance; the review worker itself no longer writes it.
-    "in-review":       {"in-progress", "confident-ready", "done", "wontfix",
-                        "deferred", "needs-info", "needs-human"},
+    # in-design / in-review from needs-human: the pre-park returns
+    # (board-answer reads pre-park: meta — E1 transition 7).
+    "needs-human":           {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "in-design", "in-review",
+                              "needs-info", "interactive-preferred",
+                              "done", "wontfix", "deferred"},
+    "interactive-preferred": {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "needs-info", "needs-human",
+                              "wontfix", "deferred"},
+    # ready-for-architect from in-review: the QAgent's design-gap
+    # escalation (E1 third address; convergence-counted).
+    "in-review":             {"in-progress", "ready-for-architect",
+                              "confident-ready", "done", "wontfix",
+                              "deferred", "needs-info", "needs-human"},
     # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
     # Reachable ONLY from in-review (a review verdict presupposes an open PR);
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
     # merged SHOULD surface as a close candidate (the finalize cue).
     "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
-    "deferred":        {"ready-for-agent", "needs-info", "needs-human",
-                        "interactive-preferred", "wontfix"},
+    "deferred":        {"ready-for-architect", "ready-for-implementer",
+                        "needs-info", "needs-human", "interactive-preferred",
+                        "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
 }
@@ -72,7 +117,9 @@ CONFLICT = "conflict"     # open, two+ status:* labels
 
 STATUS_PREFIX = "status:"
 STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
-    "ready-for-agent": "0e8a16",
+    "ready-for-architect": "006b75",
+    "in-design":           "bfd4f2",
+    "ready-for-implementer": "0e8a16",
     "in-progress":     "1d76db",
     "in-review":       "5319e7",
     "confident-ready": "008672",
@@ -103,7 +150,7 @@ CATEGORIES = ("bug", "enhancement", "spike")
 SPIKE_COLOR = "f9d0c4"
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
-META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "note")
+META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park", "note")
 
 
 def die(msg) -> NoReturn:
@@ -440,7 +487,7 @@ def epics(tickets):
 
 def eligible(tickets, tid):
     n = tickets[tid]
-    if tid in epics(tickets) or n["state"] != "ready-for-agent":
+    if tid in epics(tickets) or n["state"] not in DISPATCHABLE:
         return False
     return all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"])
 
@@ -471,17 +518,46 @@ def apply_state(tickets, tid, to, why, extra_meta=None):
     updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
-        comment(tid, "[board] %s: %s" % (to, why))
+        if (old, to) in CONVERGENCE_EDGES:
+            comment(tid, "[board] %s → %s: %s" % (old, to, why))
+        else:
+            comment(tid, "[board] %s: %s" % (to, why))
     n["state"], n["status_labels"] = to, ([] if to in TERMINAL else [to])
     n["note"] = why or None
     return "#%s: %s → %s" % (tid, old, to)
 
 
 def pull_epics(tickets, tid, lines):
-    """First active child pulls its parent chain to in-progress."""
+    """First active child pulls its parent chain to its lane's in-flight
+    state — PRE_PARK's queue -> in-flight mapping, reused rather than a
+    second table (ready-for-architect -> in-design; every other PULLABLE
+    queue has no PRE_PARK entry and defaults to in-progress, its existing
+    in-flight state). Writing straight to "in-progress" regardless of the
+    parent's queue used to strand a ready-for-architect epic outside every
+    state its own lane's happy path or park returns ever produce.
+
+    This is the board's own bookkeeping on an epic — never dispatched,
+    never gated — the same latitude close_epics already has for its
+    epic-closing writes; it does not answer to LEGAL, which governs what a
+    WORKER or human may transition to by hand. (An earlier version of this
+    fix asserted `to in LEGAL[pstate]` and, to satisfy that, added
+    deferred -> in-progress to LEGAL itself — which silently legalized a
+    human/worker skipping the queue and the gate on a deferred ticket.
+    That was the wrong invariant to assert; reverted.) The real invariant
+    is structural, not legal: an epic pull only ever lands on an in-flight
+    state (ACTIVE), never a queue or park — asserted below so a future
+    PULLABLE addition whose PRE_PARK-or-default target resolves outside
+    ACTIVE fails loud instead of silently routing an epic somewhere
+    nonsensical.
+    """
     p = tickets[tid].get("parent")
     while p and p in tickets and tickets[p]["state"] in PULLABLE:
-        lines.append(apply_state(tickets, p, "in-progress", "epic: child #%s active" % tid))
+        pstate = tickets[p]["state"]
+        to = PRE_PARK.get(pstate, "in-progress")
+        assert to in ACTIVE, (
+            "pull_epics: %s -> %s is not an in-flight state (PRE_PARK "
+            "drifted out of sync with ACTIVE for a PULLABLE state)" % (pstate, to))
+        lines.append(apply_state(tickets, p, to, "epic: child #%s active" % tid))
         p = tickets[p].get("parent")
 
 
@@ -503,7 +579,7 @@ def newly_eligible(tickets, done_tid):
     out = []
     for t in sorted(tickets, key=int):
         n = tickets[t]
-        if n["state"] == "ready-for-agent" and done_tid in n["blocked_by"] \
+        if n["state"] in DISPATCHABLE and done_tid in n["blocked_by"] \
            and all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"]):
             out.append("now eligible: #%s  %s" % (t, " ".join(n["title"].split())))
     return out

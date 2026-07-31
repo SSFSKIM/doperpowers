@@ -142,7 +142,8 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 30, "labels": ["status:needs-human", "status:in-progress"], "issues": {
+s = {"next": 30, "labels": ["status:needs-human", "status:in-progress",
+                            "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
     "12": issue(12, "stalled worker", ["status:in-progress"]),
@@ -156,6 +157,8 @@ s = {"next": 30, "labels": ["status:needs-human", "status:in-progress"], "issues
                 body="board:meta\nnote: q\n"),
     "18": issue(18, "healthy live worker", ["status:in-progress"]),
     "19": issue(19, "resume-fork failed once", ["status:in-progress"]),
+    "20": issue(20, "dead architect mid-design", ["status:in-design"]),
+    "21": issue(21, "dead pre-verdict architect", ["status:ready-for-architect"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
@@ -181,6 +184,8 @@ meta(U("aaaa0017"), "17-parked", "17", "working", updated="2026-07-18T01:00:00Z"
 meta(U("aaaa0018"), "18-healthy", "18", "working")
 # ALREADY-finalized error meta below the cap (a failed resume fork's shape):
 meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
+meta(U("aaaa0020"), "20-design", "20", "working")
+meta(U("aaaa0021"), "21-preverdict", "21", "working")
 PY
 
 # finalize verdicts per uuid (only consulted for working/blocked metas —
@@ -190,7 +195,8 @@ import json, os
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
 json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0013"): "live", U("aaaa0014"): "live", U("aaaa0018"): "live",
-           U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle"},
+           U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle",
+           U("aaaa0020"): "absent", U("aaaa0021"): "absent"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
@@ -252,6 +258,14 @@ import json, os
 print(json.load(open(os.path.join(os.environ['DAEMON_HOME'],
   'aaaa0010-0000-4000-8000-000000000000.json'))).get('sweep_recoveries'))")"
 assert_contains "$recov10" "1" "recovery attempt is counted durably in the meta"
+
+# RECOVER — lane-state split (E1): in-flight design work resumes; a dead
+# pre-verdict worker is retired so the dispatch pass re-runs it fresh
+assert_contains "$log" "resume:aaaa0020-0000-4000-8000-000000000000" "dead in-design worker gets the resume ladder (mid-design WIP is preserved)"
+assert_contains "$out" "RECOVER: #20 worker aaaa0020-0000-4000-8000-000000000000 died mid-turn (session gone) — resume attempt 1/3" "in-design recovery goes through _recover's counted ladder"
+assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready-for-architect worker is retired, not resumed"
+assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
+assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"

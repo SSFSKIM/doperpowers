@@ -32,11 +32,11 @@ assert_equals() {
         fail "$3"; echo "    expected: $2"; echo "    actual:   $1"; fi
 }
 assert_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
+    if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
         fail "$3"; echo "    expected to find: $2"; echo "    in: $1"; fi
 }
 assert_not_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then
+    if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
 assert_file_exists() {
@@ -62,7 +62,7 @@ run() { (cd "$WORK" && "$SCRIPTS_DIR/$1" "${@:2}"); }
 # state(): eval is safe here — the expression is a test-author-written literal
 # from THIS file (never external input), evaluated against the mock's state.
 state() { python3 -c "import json,sys;print(eval(sys.argv[1], {'s': json.load(open('$MOCK_GH_STATE'))}))" "$1"; }
-# A filled spec body: ready-for-agent births require one (a pre-spec skeleton
+# A filled spec body: ready-for-implementer births require one (a pre-spec skeleton
 # is never implementable — see the pre-spec guard section).
 SPEC_BODY="$TEST_ROOT/spec-body.md"
 printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiable\n' > "$SPEC_BODY"
@@ -71,7 +71,7 @@ printf '## Problem & intent\n\nA real spec.\n\n## Success criteria\n\n- verifiab
 echo "board-register:"
 out="$(run board-register.sh "Epic: alpha" enhancement P2 --body-file "$SPEC_BODY")"
 assert_contains "$out" "1 https://github.com/test/repo/issues/1" "prints number + url"
-assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-agent', 'priority:P2']" "category + birth status + priority labels"
+assert_equals "$(state "s['issues']['1']['labels']")" "['enhancement', 'status:ready-for-implementer', 'priority:P2']" "category + birth status + priority labels"
 
 out="$(run board-register.sh $'Multi\nline title' bug P1 --state needs-human --note "waiting on A")"
 assert_equals "$(state "s['issues']['2']['title']")" "Multi line title" "title newlines collapsed"
@@ -122,10 +122,10 @@ assert_fails run board-transition.sh 3 needs-human                     # note re
 assert_fails run board-transition.sh 999 in-progress                   # unknown issue
 
 out="$(run board-transition.sh 3 in-progress)"
-assert_contains "$out" "#3: ready-for-agent → in-progress" "transition applied"
-assert_contains "$out" "#1: ready-for-agent → in-progress" "epic pulled by first active child"
+assert_contains "$out" "#3: ready-for-implementer → in-progress" "transition applied"
+assert_contains "$out" "#1: ready-for-implementer → in-progress" "epic pulled by first active child"
 assert_contains "$(state "s['issues']['3']['labels']")" "status:in-progress" "label swapped"
-assert_not_contains "$(state "s['issues']['3']['labels']")" "status:ready-for-agent" "old label removed"
+assert_not_contains "$(state "s['issues']['3']['labels']")" "status:ready-for-implementer" "old label removed"
 
 assert_fails run board-transition.sh 3 in-review                       # PR link required
 out="$(run board-transition.sh 3 in-review "review round 1" --pr https://github.com/test/repo/pull/9 --branch feat/a)"
@@ -172,7 +172,7 @@ assert_fails run board-edge.sh 8 --orphan                               # no par
 
 run board-transition.sh 6 in-progress >/dev/null
 out="$(run board-edge.sh 6 --parent 8)"                                 # move active child under new epic
-assert_contains "$out" "#8: ready-for-agent → in-progress" "in-progress child pulls new epic"
+assert_contains "$out" "#8: ready-for-implementer → in-progress" "in-progress child pulls new epic"
 
 # ---- relate --------------------------------------------------------------------
 echo "board-relate:"
@@ -273,8 +273,8 @@ FIX2
 assert_contains "$out" "FAIL #3: closed but still labeled" "closed-labeled named"
 assert_contains "$out" "FIX:" "FIX lines present"
 
-out="$(run board-transition.sh 9 ready-for-agent)"               # repair path: untracked → open state
-assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-agent" "repair labels untracked issue"
+out="$(run board-transition.sh 9 ready-for-implementer)"               # repair path: untracked → open state
+assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-implementer" "repair labels untracked issue"
 out="$(run board-transition.sh 7 in-progress)"                   # repair path: conflict → normalized
 assert_equals "$(state "sorted(l for l in s['issues']['7']['labels'] if l.startswith('status:'))")" "['status:in-progress']" "repair normalizes conflict to one label"
 python3 - <<'FIX'
@@ -366,13 +366,13 @@ assert_equals "$successes" "1" "concurrent bind has exactly one winner"
 assert_equals "$owners" "1" "concurrent bind leaves exactly one ticket owner"
 
 # Park state must be read after acquiring the metadata lock. Reproduce a bind
-# waiting on the lock while the ticket transitions ready-for-agent→needs-human:
+# waiting on the lock while the ticket transitions ready-for-implementer→needs-human:
 # a pre-lock snapshot would wrongly strip the newly parked owner.
 python3 - <<'PY'
 import json,os
 p=os.environ['MOCK_GH_STATE']; s=json.load(open(p)); src=dict(s['issues']['8'])
 src.update(number=999,id='ID_999',title='bind race park',state='OPEN',stateReason=None,
-           labels=['bug','status:ready-for-agent','priority:P2'],body='## Problem & intent\n\nrace')
+           labels=['bug','status:ready-for-implementer','priority:P2'],body='## Problem & intent\n\nrace')
 s['issues']['999']=src; json.dump(s,open(p,'w'))
 json.dump({'uuid':'park-race-old','name':'review-pr-999','status':'idle','ticket':'999'},
           open(os.path.join(os.environ['DAEMON_HOME'],'park-race-old.json'),'w'))
@@ -397,7 +397,7 @@ assert_not_contains "$(cat "$DAEMON_HOME/park-race-new.json")" '"ticket"' "lock-
 
 out="$(run board-show.sh 9)"
 assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
-assert_contains "$out" '"state": "ready-for-agent"' "show prints node"
+assert_contains "$out" '"state": "ready-for-implementer"' "show prints node"
 
 run board-transition.sh 9 in-progress >/dev/null
 out="$(run board-reconcile.sh)"
@@ -490,7 +490,7 @@ cat > "$LEGACY/board.json" <<J
          "category": "enhancement", "note": "mid-flight", "parent": null,
          "blocked_by": [], "spawned_by": null, "relates_to": [], "branch": "feat/t1",
          "pr": null, "created": "2026-07-01", "updated": "2026-07-05", "gh": 8},
-  "T2": {"title": "Unlinked new", "md": "tickets/T2.md", "state": "ready-for-agent",
+  "T2": {"title": "Unlinked new", "md": "tickets/T2.md", "state": "ready-for-implementer",
          "category": "bug", "note": null, "parent": null, "blocked_by": ["T1"],
          "spawned_by": "T1", "relates_to": [], "branch": null, "pr": null,
          "created": "2026-07-02", "updated": "2026-07-02", "gh": null}
@@ -547,7 +547,7 @@ assert_contains "$out" "now eligible: #13" "finalize reports unblocked dependent
 out="$(run board-transition.sh 12 "done")"                          # idempotent re-run
 assert_contains "$out" "now eligible: #13" "finalize re-run is safe"
 assert_fails run board-transition.sh 12 wontfix "flip"            # done → wontfix still illegal
-assert_fails run board-transition.sh 13 ready-for-agent           # already ready (open states still die)
+assert_fails run board-transition.sh 13 ready-for-implementer           # already ready (open states still die)
 
 # ---- close candidate (derived signal, never a label) --------------------------
 # Open ticket + every linked PR merged/closed + ≥1 merged → CLOSE? in list,
@@ -583,7 +583,7 @@ assert_not_contains "$lint_out" "WARN #15: all" "abandoned-only not WARNed"
 assert_not_contains "$lint_out" "WARN #16: all" "open-PR not WARNed"
 
 out="$(run board-map.sh)"
-assert_contains "$out" "| #14 | P2 | ELIGIBLE · CLOSE? |" "md table marks the candidate"
+assert_contains "$out" "| #14 | P2 | ready-for-implementer · ELIGIBLE · CLOSE? |" "md table marks the candidate"
 run board-map.sh --write >/dev/null 2>&1
 # pull the per-node flag out of the embedded payload (grep can't scope to a node)
 ccflag() { python3 - "$WORK/doperpowers/issue-tracker/BOARD.html" "$1" <<'PY'
@@ -692,8 +692,8 @@ assert_contains "$out" "#19: interactive-preferred → in-progress" "human takes
 assert_fails run board-transition.sh 19 interactive-preferred                  # note required
 out="$(run board-transition.sh 19 interactive-preferred "back to parked")"
 assert_contains "$out" "#19: in-progress → interactive-preferred" "in-progress → interactive-preferred legal (gate-fail mid-build)"
-out="$(run board-transition.sh 19 ready-for-agent)"
-assert_contains "$out" "#19: interactive-preferred → ready-for-agent" "re-spec exit: settled decisions return it to the pool"
+out="$(run board-transition.sh 19 ready-for-implementer)"
+assert_contains "$out" "#19: interactive-preferred → ready-for-implementer" "re-spec exit: settled decisions return it to the pool"
 run board-transition.sh 19 interactive-preferred "back to parked" >/dev/null   # restore the park for the kanban asserts
 set +e
 lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
@@ -705,11 +705,11 @@ echo "needs-human:"
 run board-register.sh "NH probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                     # 20
 assert_fails run board-transition.sh 20 needs-human                            # note required
 out="$(run board-transition.sh 20 needs-human "pick auth provider: A or B (rec: A)")"
-assert_contains "$out" "#20: ready-for-agent → needs-human" "gate-fail park applied"
+assert_contains "$out" "#20: ready-for-implementer → needs-human" "gate-fail park applied"
 out="$(run board-transition.sh 20 needs-info "research first: provider capability matrix")"
 assert_contains "$out" "#20: needs-human → needs-info" "park-to-park re-triage legal"
-out="$(run board-transition.sh 20 ready-for-agent)"
-assert_contains "$out" "#20: needs-info → ready-for-agent" "answered park returns to ready"
+out="$(run board-transition.sh 20 ready-for-implementer)"
+assert_contains "$out" "#20: needs-info → ready-for-implementer" "answered park returns to ready"
 
 # ---- blocked is retired (v8) --------------------------------------------------
 echo "blocked retired:"
@@ -729,6 +729,31 @@ assert_contains "$lint_out" "board-transition.sh 20 needs-human" "FIX points at 
 out="$(run board-transition.sh 20 needs-human "migrated: carried note")"
 assert_contains "$(state "s['issues']['20']['labels']")" "status:needs-human" "migration swaps the label"
 assert_not_contains "$(state "s['issues']['20']['labels']")" "status:blocked" "retired label removed"
+
+# ---- ready-for-agent is retired (v9) --------------------------------------------
+# A lone status:ready-for-agent label used to fall into the generic
+# CONFLICT else-branch, which reports "N status:* labels" under a rule that
+# means 2+ — nonsense at N=1. Same treatment as blocked: a named branch with
+# an actionable FIX line naming the v9 migration path.
+echo "ready-for-agent retired:"
+run board-register.sh "Retired label probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+rfa_t="$(state "s['next']-1")"
+python3 - <<PY
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["$rfa_t"]["labels"] = ["enhancement", "status:ready-for-agent", "priority:P2"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+set +e
+lint_out="$(run board-lint.sh 2>&1)"; rc=$?
+set -e
+assert_equals "$rc" "1" "legacy status:ready-for-agent FAILs lint"
+assert_contains "$lint_out" "retired state: status:ready-for-agent" "retired label named"
+assert_not_contains "$lint_out" "with 1 status:* labels" "not misreported as a 1-label conflict (the bug this fix closes)"
+assert_contains "$lint_out" "board-transition.sh $rfa_t ready-for-implementer" "FIX points at the ready-for-implementer migration"
+out="$(run board-transition.sh "$rfa_t" ready-for-implementer "migrated: carried note")"
+assert_contains "$(state "s['issues']['$rfa_t']['labels']")" "status:ready-for-implementer" "migration swaps the label"
+assert_not_contains "$(state "s['issues']['$rfa_t']['labels']")" "status:ready-for-agent" "retired label removed"
 
 # ---- map: v8 park classes ------------------------------------------------------
 echo "board-map (v8 park classes):"
@@ -831,7 +856,7 @@ out="$(run board-answer.sh "$ans_t" --posted)"
 assert_contains "$(cat "$STUB_STATE/finalize.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay finalizes a lingering finished Claude owner before status check"
 assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
 assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
-assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "1" "--posted posts no second [answers] comment"
+assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "2" "--posted posts its own [answers] marker (the mechanical convergence reset)"
 
 # a mid-turn session is refused — nothing is waiting for answers
 run board-transition.sh "$ans_t" needs-human "round 3 questions" >/dev/null
@@ -866,12 +891,87 @@ m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'))
 RETIRED
 assert_fails run board-answer.sh "$ans_t" "after retirement"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "terminal owners never orphan the ticket in-progress"
+
+# lane-aware return: an architect park's answer resumes into in-design
+out="$(run board-register.sh "Architect answer probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
+ans_arch_t="${out%% *}"
+run board-transition.sh "$ans_arch_t" in-design >/dev/null
+run board-transition.sh "$ans_arch_t" needs-human "Q: layout A or B?" >/dev/null
+cat > "$DAEMON_HOME/eeeeeeee-1111-2222-3333-444444444444.json" <<META
+{"uuid": "eeeeeeee-1111-2222-3333-444444444444", "engine": "codex",
+ "status": "idle", "ticket": "$ans_arch_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$ans_arch_t" "layout A" >/dev/null
+assert_contains "$(state "s['issues']['$ans_arch_t']['labels']")" "status:in-design" "answered architect park resumes into in-design"
+
+# lane-aware return: an in-review park's answer resumes into in-review
+# WITHOUT re-supplying --pr (regression test for the merge blocker: the
+# invariant is "a ticket in in-review always has a PR recorded", not
+# "every entry needs the flag" — PRE_PARK["in-review"] = "in-review"
+# relies on the pr: meta already recorded at the original entry).
+out="$(run board-register.sh "In-review answer probe" enhancement P2 --body-file "$SPEC_BODY")"
+ans_rev_t="${out%% *}"
+run board-transition.sh "$ans_rev_t" in-progress >/dev/null
+run board-transition.sh "$ans_rev_t" in-review "opened PR" --pr https://github.com/test/repo/pull/77 >/dev/null
+run board-transition.sh "$ans_rev_t" needs-human "reviewer flagged a design gap" >/dev/null
+cat > "$DAEMON_HOME/ffffffff-1111-2222-3333-444444444444.json" <<META
+{"uuid": "ffffffff-1111-2222-3333-444444444444", "status": "idle", "ticket": "$ans_rev_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$ans_rev_t" "still looks right" >/dev/null
+assert_contains "$(state "s['issues']['$ans_rev_t']['labels']")" "status:in-review" "answered in-review park resumes into in-review without re-supplying --pr"
+
+# ---- unrecorded pre-park fallback is lane-aware (Finding D) --------------------
+# PRE_PARK has no entry for needs-info (or interactive-preferred/deferred),
+# so a needs-human park reached via needs-info records no pre-park: meta.
+# board-answer's fallback must consult the BOUND worker's own role (persisted
+# at spawn by implement-dispatch.sh) rather than hardcoding in-progress — an
+# Architect resumed into in-progress has no legal exit from it.
+echo "unrecorded pre-park fallback:"
+out="$(run board-register.sh "Architect fallback probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
+fb_arch_t="${out%% *}"
+run board-transition.sh "$fb_arch_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_arch_t" needs-human "human decision needed" >/dev/null
+assert_not_contains "$(state "s['issues']['$fb_arch_t']['body']")" "pre-park:" "needs-info -> needs-human records no pre-park (PRE_PARK has no needs-info entry)"
+cat > "$DAEMON_HOME/11111111-1111-2222-3333-444444444444.json" <<META
+{"uuid": "11111111-1111-2222-3333-444444444444", "role": "ARCHITECT",
+ "status": "idle", "ticket": "$fb_arch_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_arch_t" "layout A" >/dev/null
+assert_contains "$(state "s['issues']['$fb_arch_t']['labels']")" "status:in-design" "unrecorded pre-park falls back on the bound Architect's own lane (in-design), never a hardcoded in-progress"
+
+out="$(run board-register.sh "Implement fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_impl_t="${out%% *}"
+run board-transition.sh "$fb_impl_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_impl_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/22222222-1111-2222-3333-444444444444.json" <<META
+{"uuid": "22222222-1111-2222-3333-444444444444", "role": "IMPLEMENT",
+ "status": "idle", "ticket": "$fb_impl_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_impl_t" "answer" >/dev/null
+assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "unrecorded pre-park with a non-architect role falls back on in-progress"
+
+out="$(run board-register.sh "Unknown-role fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_unk_t="${out%% *}"
+run board-transition.sh "$fb_unk_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_unk_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/33333333-1111-2222-3333-444444444444.json" <<META
+{"uuid": "33333333-1111-2222-3333-444444444444",
+ "status": "idle", "ticket": "$fb_unk_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_unk_t" "answer" >/dev/null
+assert_contains "$(state "s['issues']['$fb_unk_t']['labels']")" "status:in-progress" "a meta with no role at all (pre-fix daemon) preserves the prior default: in-progress"
+
 unset DAEMON_SCRIPTS STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------
 echo "spike category:"
 spike_t="$(run board-register.sh "Spike: is X feasible" spike P2  --body-file "$SPEC_BODY" | awk '{print $1}')"
-assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-agent', 'priority:P2']" "spike category + status + priority labels"
+assert_equals "$(state "s['issues']['$spike_t']['labels']")" "['spike', 'status:ready-for-implementer', 'priority:P2']" "spike category + status + priority labels"
 assert_contains "$(state "s['labels']")" "spike" "spike label auto-created by ensure_labels"
 assert_contains "$(run board-list.sh)" "spike" "board-list shows the spike category"
 run board-transition.sh "$spike_t" in-progress >/dev/null
@@ -881,19 +981,19 @@ run board-transition.sh "$spike_t" "done" >/dev/null   # the human read the find
 assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-human → done: the human closes a read spike directly"
 
 # ---- pre-spec guard (the #567 hole) --------------------------------------------
-# A ticket whose body is still the pre-spec skeleton was born ready-for-agent
+# A ticket whose body is still the pre-spec skeleton was born ready-for-implementer
 # and auto-dispatched to an implementer 45 seconds later — before any spec
-# existed. A skeleton is never implementable: explicit ready-for-agent birth
+# existed. A skeleton is never implementable: explicit ready-for-implementer birth
 # refuses it, a default birth demotes to needs-info, and the promotion to
-# ready-for-agent re-checks the body.
+# ready-for-implementer re-checks the body.
 echo "pre-spec guard:"
-assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-agent
+assert_fails run board-register.sh "Skeleton explicit" bug P2 --state ready-for-implementer
 out="$(run board-register.sh "Skeleton follow-up" bug P2 --spawned-by 2)"
 skel="${out%% *}"
 assert_contains "$(state "s['issues']['$skel']['labels']")" "status:needs-info" "default skeleton birth demotes to needs-info"
-assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a skeleton is never born ready-for-agent"
+assert_not_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-implementer" "a skeleton is never born ready-for-implementer"
 assert_contains "$(state "s['issues']['$skel']['comments'][0]")" "pre-spec" "demotion posts the spec-pending note"
-assert_fails run board-transition.sh "$skel" ready-for-agent
+assert_fails run board-transition.sh "$skel" ready-for-implementer
 SKEL="$skel" python3 - <<'PY'
 import json, os
 p = os.environ["MOCK_GH_STATE"]
@@ -901,11 +1001,246 @@ s = json.load(open(p))
 s["issues"][os.environ["SKEL"]]["body"] = "## Problem & intent\n\nnow specified\n"
 json.dump(s, open(p, "w"))
 PY
-out="$(run board-transition.sh "$skel" ready-for-agent)"
-assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-agent" "a filled body promotes to ready-for-agent"
+out="$(run board-transition.sh "$skel" ready-for-implementer)"
+assert_contains "$(state "s['issues']['$skel']['labels']")" "status:ready-for-implementer" "a filled body promotes to ready-for-implementer"
 # a body-file that still carries the placeholder is a skeleton too
 printf '## Problem & intent\n\n_(pre-spec: fill in)_\n' > "$TEST_ROOT/still-skel.md"
-assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-agent --body-file "$TEST_ROOT/still-skel.md"
+assert_fails run board-register.sh "Still skeleton" bug P2 --state ready-for-implementer --body-file "$TEST_ROOT/still-skel.md"
+
+# ---- lane births (E1 birth classification) ------------------------------------
+echo "lane births:"
+out="$(run board-register.sh "Design-heavy epic work" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY")"
+arch_t="${out%% *}"
+assert_contains "$(state "s['issues']['$arch_t']['labels']")" "status:ready-for-architect" "explicit architect-lane birth honored"
+out="$(run board-register.sh "Default lane probe" enhancement P2 --body-file "$SPEC_BODY")"
+impl_t="${out%% *}"
+assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
+assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
+
+# ---- spike / ready-for-architect ban (Finding A) -------------------------------
+# A spike has no legal exit from ready-for-architect (the spike protocol's
+# gate-pass write is `in-progress`, and LEGAL["ready-for-architect"] has none)
+# — banned at both the source (registration) and every transition into it.
+echo "spike/architect-lane ban:"
+assert_fails run board-register.sh "Spike arch birth" spike P2 --state ready-for-architect --body-file "$SPEC_BODY"
+spike_ban_t="$(run board-register.sh "Spike transition ban probe" spike P2 --body-file "$SPEC_BODY" | awk '{print $1}')"
+run board-transition.sh "$spike_ban_t" in-progress >/dev/null
+assert_fails run board-transition.sh "$spike_ban_t" ready-for-architect "blocked: needs a plan"
+assert_contains "$(state "s['issues']['$spike_ban_t']['labels']")" "status:in-progress" "spike stays in its lane after the refused transition"
+
+# ---- lane display (E1: list/map render the new lane states) -------------------
+# $arch_t (registered just above) is still ready-for-architect: nothing between
+# its birth and here transitions it.
+echo "lane display:"
+assert_contains "$(run board-list.sh)" "ELIGIBLE" "board-list still tags eligibility"
+assert_contains "$(run board-list.sh ready-for-architect)" "ready-for-architect" "state filter works for the architect queue"
+out="$(run board-map.sh)"
+assert_contains "$out" "ready-for-architect · ELIGIBLE" "board-map table shows lane + eligibility"
+
+# ---- plan meta (E1 transitions 2 and 3) ---------------------------------------
+echo "plan meta:"
+run board-register.sh "Architect handoff probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+plan_t="$(state "s['next']-1")"
+run board-transition.sh "$plan_t" in-design >/dev/null
+out="$(run board-transition.sh "$plan_t" ready-for-implementer "plan ready: do X then Y" --branch tick/plan-probe --plan "docs/plans/x.md@0123456789abcdef0123456789abcdef01234567")"
+assert_contains "$(state "s['issues']['$plan_t']['body']")" "plan: docs/plans/x.md@0123456789abcdef0123456789abcdef01234567" "plan pin recorded in board:meta"
+assert_contains "$(state "s['issues']['$plan_t']['body']")" "branch: tick/plan-probe" "branch recorded on the handoff"
+run board-register.sh "Shortcircuit probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+sc_t="$(state "s['next']-1")"
+run board-transition.sh "$sc_t" in-design >/dev/null
+out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
+assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
+assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
+
+# ---- plan pin auto-clear (Finding B) -------------------------------------------
+# A superseded plan: pin is void by definition on two edges: any entry into
+# ready-for-architect (the design is being re-cut), and the Architect's own
+# decompose exit in-design -> ready-for-implementer with no --plan (a
+# positive "no plan" statement). Reproduces the reviewer's exact sequence:
+# --plan -> in-progress -> ready-for-architect "blocked" -> in-design ->
+# ready-for-implementer "decomposed" (no --plan) must leave no plan: pin —
+# otherwise an Implementer enters gate-free PLAN-EXECUTION against a plan
+# the Architect just declared blocked.
+echo "plan pin auto-clear:"
+run board-register.sh "Plan clear probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pc_t="$(state "s['next']-1")"
+run board-transition.sh "$pc_t" in-design >/dev/null
+run board-transition.sh "$pc_t" ready-for-implementer "plan ready" --plan "docs/p.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+assert_contains "$(state "s['issues']['$pc_t']['body']")" "plan: docs/p.md@0123456789abcdef0123456789abcdef01234567" "pin recorded before the escalation"
+run board-transition.sh "$pc_t" in-progress >/dev/null
+run board-transition.sh "$pc_t" ready-for-architect "plan is blocked" >/dev/null
+assert_not_contains "$(state "s['issues']['$pc_t']['body']")" "plan: docs/p.md" "entry into ready-for-architect clears the superseded plan pin"
+run board-transition.sh "$pc_t" in-design >/dev/null
+run board-transition.sh "$pc_t" ready-for-implementer "decomposed" >/dev/null
+assert_not_contains "$(state "s['issues']['$pc_t']['body']")" "plan:" "decompose exit with no --plan leaves no stale plan pin behind"
+
+# Deliberately NOT auto-cleared: a human unparking from needs-human back to
+# ready-for-implementer must not silently void a still-valid plan.
+run board-register.sh "Plan keep probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pk_t="$(state "s['next']-1")"
+run board-transition.sh "$pk_t" in-design >/dev/null
+run board-transition.sh "$pk_t" ready-for-implementer "plan ready" --plan "docs/q.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$pk_t" needs-human "unrelated human question" >/dev/null
+run board-transition.sh "$pk_t" ready-for-implementer >/dev/null
+assert_contains "$(state "s['issues']['$pk_t']['body']")" "plan: docs/q.md@0123456789abcdef0123456789abcdef01234567" "a needs-human unpark does not void a still-valid plan pin"
+
+# ---- epic pull routing (Finding C) ----------------------------------------------
+# PULLABLE now includes ready-for-architect, but LEGAL["ready-for-architect"]
+# has no in-progress edge — the first active child of an epic parked in the
+# design queue must pull it to in-design (PRE_PARK's queue -> in-flight
+# mapping), never the illegal in-progress.
+echo "epic pull routing:"
+run board-register.sh "Design epic" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+epic_c_t="$(state "s['next']-1")"
+run board-register.sh "Epic child" enhancement P2 --parent "$epic_c_t" --body-file "$SPEC_BODY" >/dev/null
+child_c_t="$(state "s['next']-1")"
+out="$(run board-transition.sh "$child_c_t" in-progress)"
+assert_contains "$out" "#$epic_c_t: ready-for-architect → in-design" "epic parked ready-for-architect is pulled to in-design, not the illegal in-progress"
+assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-design" "epic label reflects the legal in-flight state"
+assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
+
+# pull_epics is the board's own bookkeeping on an epic (never dispatched,
+# never gated) — it does not answer to LEGAL, the same latitude close_epics
+# already has. A deferred epic's active child still pulls it to in-progress
+# (PRE_PARK has no deferred entry, so the default applies) — but that must
+# stay pure bookkeeping: an ordinary worker/human transition straight from
+# deferred to in-progress stays illegal (LEGAL["deferred"] unchanged), so a
+# deferred TICKET itself cannot skip its queue and gate this way.
+run board-register.sh "Deferred epic" enhancement P1 --state deferred --body-file "$SPEC_BODY" >/dev/null
+epic_def_t="$(state "s['next']-1")"
+run board-register.sh "Deferred epic child" enhancement P2 --parent "$epic_def_t" --body-file "$SPEC_BODY" >/dev/null
+child_def_t="$(state "s['next']-1")"
+out="$(run board-transition.sh "$child_def_t" in-progress)"
+assert_contains "$out" "#$epic_def_t: deferred → in-progress" "a deferred epic's active child still pulls it to in-progress (board bookkeeping)"
+assert_contains "$(state "s['issues']['$epic_def_t']['labels']")" "status:in-progress" "deferred epic label reflects the pull"
+run board-register.sh "Plain deferred ticket" enhancement P2 --state deferred --body-file "$SPEC_BODY" >/dev/null
+plain_def_t="$(state "s['next']-1")"
+assert_fails run board-transition.sh "$plain_def_t" in-progress   # LEGAL["deferred"] unchanged: no gate-skip for a worker/human
+
+# ---- pre-park + lane-aware answer return (E1 transition 7) --------------------
+echo "pre-park returns:"
+run board-register.sh "Architect park probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pp_t="$(state "s['next']-1")"
+run board-transition.sh "$pp_t" in-design >/dev/null
+run board-transition.sh "$pp_t" needs-human "Q1: layout A or B? (rec: A)" >/dev/null
+assert_contains "$(state "s['issues']['$pp_t']['body']")" "pre-park: in-design" "architect park records its in-flight return target"
+out="$(run board-transition.sh "$pp_t" in-design "answers relayed")"
+assert_contains "$out" "#$pp_t: needs-human → in-design" "needs-human → in-design is a legal return"
+assert_not_contains "$(state "s['issues']['$pp_t']['body']")" "pre-park:" "return clears the pre-park meta"
+# gate-fail park from the architect QUEUE also returns to in-design
+run board-register.sh "Gate-fail park probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+gf_t="$(state "s['next']-1")"
+run board-transition.sh "$gf_t" needs-human "gate fail: purpose unstated" >/dev/null
+assert_contains "$(state "s['issues']['$gf_t']['body']")" "pre-park: in-design" "architect-queue gate-fail park targets in-design"
+
+# ---- edge notes + convergence (E1 transitions 4/5/6) --------------------------
+echo "convergence:"
+run board-register.sh "Escalation probe" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cv_t="$(state "s['next']-1")"
+assert_fails run board-transition.sh "$cv_t" ready-for-architect            # edge note required
+out="$(run board-transition.sh "$cv_t" ready-for-architect "gate: plan-need — multi-milestone")"
+assert_contains "$out" "#$cv_t: ready-for-implementer → ready-for-architect" "gate escalation applied"
+assert_contains "$(state "s['issues']['$cv_t']['comments'][-1]")" "[board] ready-for-implementer → ready-for-architect: gate: plan-need" "escalation comment carries the edge"
+# complete a design pass, execute, then hit the SAME escalation edge again
+run board-transition.sh "$cv_t" in-design >/dev/null
+run board-transition.sh "$cv_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec >/dev/null
+out="$(run board-transition.sh "$cv_t" ready-for-architect "still believe plan-need")"
+assert_contains "$out" "#$cv_t: ready-for-implementer → needs-human" "second traversal of the same edge converts to needs-human"
+assert_contains "$(state "s['issues']['$cv_t']['body']")" "convergence: second traversal" "conversion note names the convergence rule"
+assert_contains "$(state "s['issues']['$cv_t']['body']")" "pre-park: in-progress" "converted park still records a return target"
+# an [answers] comment resets the count: a sanctioned re-traversal of the
+# SAME edge passes. Fresh ticket (the converted one is parked) — the reset
+# only proves anything on the edge that was previously counted.
+run board-register.sh "Escalation probe 2" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cv2_t="$(state "s['next']-1")"
+run board-transition.sh "$cv2_t" ready-for-architect "gate: plan-need — round 1" >/dev/null
+run board-transition.sh "$cv2_t" in-design >/dev/null
+run board-transition.sh "$cv2_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
+CV2_T="$cv2_t" python3 - <<'ANS'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+t = os.environ["CV2_T"]
+s["issues"][t]["comments"].append("[answers] yes — architect may take it again")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+ANS
+out="$(run board-transition.sh "$cv2_t" ready-for-architect "human-sanctioned re-escalation")"
+assert_contains "$out" "#$cv2_t: ready-for-implementer → ready-for-architect" "same-edge re-traversal passes after [answers] reset (no needs-human conversion)"
+
+# ---- mid-execution return edge: in-progress → ready-for-architect -------------
+# The Implementer's escalation when a plan turns out genuinely unbuildable
+# mid-build (E1's fourth new edge) — distinct from the ready-for-implementer →
+# ready-for-architect gate-fail edge exercised above. It is convergence-counted
+# too (EDGE_NOTE_REQUIRED minus only the in-design→ready-for-implementer
+# carve-out), so it must both require a note and emit the arrow-keyed comment.
+echo "mid-execution return:"
+run board-register.sh "Mid-execution return probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+mer_t="$(state "s['next']-1")"
+run board-transition.sh "$mer_t" in-progress >/dev/null
+assert_fails run board-transition.sh "$mer_t" ready-for-architect           # edge note required
+out="$(run board-transition.sh "$mer_t" ready-for-architect "blocked: plan assumed an API that doesn't exist")"
+assert_contains "$out" "#$mer_t: in-progress → ready-for-architect" "mid-execution return applied (legal edge)"
+assert_contains "$(state "s['issues']['$mer_t']['comments'][-1]")" "[board] in-progress → ready-for-architect: blocked: plan assumed an API that doesn't exist" "escalation comment carries the arrow-keyed edge form (convergence-counted)"
+
+# ---- convergence reset via --posted relay --------------------------------------
+# The unattended sweep's RELAY pass always calls board-answer.sh --posted (the
+# human commented directly on the ticket, never through board-answer's inline
+# --answers arg). board-transition's convergence-park reset fires only at a
+# comment prefixed [answers] — if --posted never posted one, a resumed
+# worker's human-authorized retry of the SAME escalation edge would be
+# bounced right back to needs-human: exactly the livelock the human's answer
+# was meant to end. Reuses the board-answer daemon stubs.
+echo "convergence reset (--posted relay):"
+STUB_DS2="$TEST_ROOT/stub-daemon-scripts-2"; mkdir -p "$STUB_DS2"
+STUB_STATE2="$TEST_ROOT/stub-state-2"; mkdir -p "$STUB_STATE2"
+export STUB_STATE="$STUB_STATE2"
+cat > "$STUB_DS2/daemon-resume.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$STUB_STATE/daemon-resume.uuid"
+printf '%s' "$2" > "$STUB_STATE/daemon-resume.msg"
+echo "resumed: [daemon stub]"
+STUB
+chmod +x "$STUB_DS2/daemon-resume.sh"
+cat > "$STUB_DS2/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+echo noop
+STUB
+chmod +x "$STUB_DS2/daemon-finalize.sh"
+cat > "$STUB_DS2/daemon-retire.sh" <<'STUB'
+#!/usr/bin/env bash
+true
+STUB
+chmod +x "$STUB_DS2/daemon-retire.sh"
+export DAEMON_SCRIPTS="$STUB_DS2"
+
+run board-register.sh "Convergence reset probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+cr_t="$(state "s['next']-1")"
+run board-transition.sh "$cr_t" in-progress >/dev/null
+run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A" >/dev/null                    # 1st traversal
+run board-transition.sh "$cr_t" in-design >/dev/null
+run board-transition.sh "$cr_t" ready-for-implementer "plan ready" --plan "docs/plan.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$cr_t" in-progress >/dev/null
+out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A again")"                # 2nd traversal
+assert_contains "$out" "#$cr_t: in-progress → needs-human" "2nd traversal converts (unreset baseline)"
+cat > "$DAEMON_HOME/99999999-1111-2222-3333-444444444444.json" <<META
+{"uuid": "99999999-1111-2222-3333-444444444444", "status": "idle", "ticket": "$cr_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$cr_t" --posted >/dev/null
+assert_contains "$(state "s['issues']['$cr_t']['comments'][-2]")" "[answers]" "--posted relay posts an [answers] marker for the mechanical reset"
+out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A still")"                # 3rd traversal
+assert_contains "$out" "#$cr_t: in-progress → ready-for-architect" "3rd traversal after a --posted relay does NOT convert (reset fired)"
+unset DAEMON_SCRIPTS STUB_STATE
+
+# ---- in-design orphan (board-reconcile) ----------------------------------------
+# The missing-daemon check must cover the Architect's in-flight state too,
+# not just the Implementer's — an orphaned in-design ticket is mid-design
+# work with nothing local to show for it until its next park/handoff.
+echo "in-design orphan (board-reconcile):"
+run board-register.sh "In-design orphan probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+id_orphan_t="$(state "s['next']-1")"
+run board-transition.sh "$id_orphan_t" in-design >/dev/null      # no bound daemon
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "orphaned  #$id_orphan_t: in-design" "orphaned in-design flagged (Architect's in-flight state)"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

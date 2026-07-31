@@ -141,7 +141,7 @@ Create a task per phase; complete them in order.
    and citing this roadmap (path + child id). Skip for document-only
    projects — the tracking map is the handoff contract either way. (A
    dispatched worker that finds its ticket gate-failing on scope runs this
-   same division at board altitude — doperpowers:implementing-tickets'
+   same division at board altitude — doperpowers:implementing's
    decompose procedure is this skill's move in worker clothes.)
 7. **Dispatch and tend** — children go to their tracks per their track
    hint. As children land, the tracking map, Decision Log, and Surprises

@@ -10,7 +10,7 @@ const goodVerdict = {
   ticket: {
     title: '오늘 카드 버튼 무반응',
     body: '## 증상\n버튼 무반응\n\n## 진단\ncomponents/today/Card.tsx:42\n\n## 제안 수정 방향\n핸들러 연결\n\n## 스코프 추정\n1파일\n\n## 불명확한 점\n없음',
-    state: 'ready-for-agent',
+    state: 'ready-for-implementer',
   },
   confidence: 'high',
 };
@@ -39,13 +39,13 @@ function deps(over: any = {}) {
 }
 
 describe('dispatchRow', () => {
-  it('grounded bug → ready-for-agent ticket authored by the worker, writeback ticketed', async () => {
+  it('grounded bug → ready-for-implementer ticket authored by the worker, writeback ticketed', async () => {
     const d = deps();
     const st = await dispatchRow(row, d);
     expect(st).toBe('ticketed');
     expect(d.runTurn).toHaveBeenCalledTimes(1); // 단일 read-only 턴 — fix 턴은 존재하지 않는다
     const call = d.se.registerTicket.mock.calls[0][0];
-    expect(call.state).toBe('ready-for-agent');
+    expect(call.state).toBe('ready-for-implementer');
     expect(call.note).toBeUndefined();
     expect(call.title).toBe('오늘 카드 버튼 무반응'); // 워커 저작 제목 — 원문 슬라이스가 아님
     expect(call.priority).toBe('P2'); // 디스패처 고정
@@ -80,12 +80,12 @@ describe('dispatchRow', () => {
     expect(body.indexOf('## 증상')).toBeLessThan(body.indexOf('## 원문 피드백'));
   });
 
-  it('developer trust (role): idea allowed ready-for-agent, dev label, dev provenance heading', async () => {
+  it('developer trust (role): idea allowed ready-for-implementer, dev label, dev provenance heading', async () => {
     const d = deps({ runTurn: vi.fn().mockResolvedValue({ text: fence({ ...goodVerdict, resolved_category: 'idea' }) }) });
     const st = await dispatchRow({ ...row, role: 'admin', category: 'idea' }, d);
     expect(st).toBe('ticketed');
     const call = d.se.registerTicket.mock.calls[0][0];
-    expect(call.state).toBe('ready-for-agent');
+    expect(call.state).toBe('ready-for-implementer');
     expect(call.category).toBe('enhancement');
     expect(call.descriptiveLabels).toEqual(expect.arrayContaining(['source:dev-feedback']));
     expect(call.body).toContain('## 원문 피드백 (developer feedback)');

@@ -257,6 +257,7 @@ echo "99" > "$MOCK_DIR/techdebt-number.txt"
 SHA="$HEAD_SHA" python3 - <<'PY'
 import json, os
 d = os.environ["MOCK_DIR"]; sha = os.environ["SHA"]
+list_entries = []
 def pr(n, **kw):
     base = {"number": n, "title": "feat: add f", "body": "Adds f.\n\nCloses #7",
             "baseRefName": "main", "headRefName": "feat/x", "headRefOid": sha,
@@ -264,13 +265,17 @@ def pr(n, **kw):
             "state": "OPEN", "labels": [], "closingIssuesReferences": []}
     base.update(kw)
     json.dump(base, open(os.path.join(d, "pr-%d.json" % n), "w"))
+    # gh pr list carries the same ticket-linking fields gh pr view does — the
+    # sweep resolves the primary ticket from the list call now, before any
+    # per-PR view.
+    list_entries.append({k: base[k] for k in
+                          ("number", "isDraft", "labels", "title", "body",
+                           "closingIssuesReferences")})
 pr(5)
 pr(6, isDraft=True)
 pr(8, labels=[{"name": "confident-ready"}])
 pr(9, title="chore: tidy", body="No ticket for this one.")
-json.dump([{"number": 5, "isDraft": False, "labels": []},
-           {"number": 6, "isDraft": True, "labels": []},
-           {"number": 8, "isDraft": False, "labels": [{"name": "confident-ready"}]}],
+json.dump([e for e in list_entries if e["number"] != 9],
           open(os.path.join(d, "pr-list.json"), "w"))
 json.dump({"url": "https://github.com/test/repo/issues/7",
            "body": "Ticket seven brief body"}, open(os.path.join(d, "issue-7.json"), "w"))
@@ -308,7 +313,7 @@ assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survi
 assert_contains "$PROMPT" "Use doperpowers:reviewing-prs" "prompt names the Review Worker Protocol skill"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
-assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing-tickets/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
 assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"
@@ -530,6 +535,84 @@ N=7 python3 -c 'import json,os
 p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d.pop("labels", None)
 json.dump(d, open(p, "w"))'
+
+# ---- sweep skips a PR whose primary ticket has left in-review (any route) -------
+# Finding 2 (independent review, E1 lane-split dispatch fix): a reviewer only
+# makes sense while its ticket is in-review — this generalizes past
+# ready-for-architect specifically. Two distinct non-review states are
+# exercised: ready-for-architect (the actual RE-REVIEW escalation route) and
+# in-progress (an unrelated state, proving the gate is general — not
+# hardcoded to one label).
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:ready-for-architect"}]
+json.dump(d, open(p, "w"))'
+out="$("$DISPATCH" --sweep)"
+assert_contains "$out" "primary ticket #7 is parked (status:ready-for-architect)" "sweep names the ready-for-architect park it skips"
+assert_contains "$out" "resumes when the ticket returns to in-review" "ready-for-architect skip message states its own resume path"
+assert_not_contains "$out" "the review resumes via board-answer" "ready-for-architect skip message is not the board-answer wording"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns no reviewer over a ready-for-architect park"
+
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:in-progress"}]
+json.dump(d, open(p, "w"))'
+out="$("$DISPATCH" --sweep)"
+assert_contains "$out" "primary ticket #7 is parked (status:in-progress)" "sweep also skips a ticket at an UNRELATED non-review state (rule is general, not ready-for-architect-specific)"
+assert_contains "$out" "resumes when the ticket returns to in-review" "in-progress skip message resumes on its own too (not a board-answer park)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns no reviewer over an in-progress ticket"
+
+# ---- Finding 1: the DISPATCHER (not the dying worker) retires a stale reviewer --
+# The independent review caught a real defect in the original self-retire fix:
+# daemon-retire.sh calls `claude stop` BEFORE writing status=retired, so a
+# worker asking to stop itself most likely never reaches that write — the
+# meta would finalize idle instead, which is EXACTLY the state that strands
+# it forever. The corrected mechanism retires from the sweep instead: once
+# the ticket has left in-review, a FINISHED (idle) reviewer meta for that PR
+# is retired right here, before it can ever reach _decide's permanent
+# sweep-mode "skip finished reviewer" wall.
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:ready-for-architect"}]
+json.dump(d, open(p, "w"))'
+seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" --sweep)"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "the dispatcher retires the finished reviewer once its ticket has left in-review"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "no new reviewer spawns while the ticket is still parked"
+
+# ...and never touches a reviewer that is still genuinely ACTIVE — it owns
+# its own exit (the still-running worker's own turn, free to keep running
+# fix waves after an early PROTOCOL BLOCKER park, must never be interrupted
+# by the sweep).
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:ready-for-architect"}]
+json.dump(d, open(p, "w"))'
+seed_reviewer working
+echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" --sweep)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "an ACTIVE reviewer is never retired, even when its ticket has left in-review"
+assert_contains "$out" "still-active reviewer owns its own exit" "sweep names why it left the active reviewer alone"
+
+# ---- the ticket's return to in-review dispatches a fresh reviewer, unattended --
+# Simulates the state the retire above actually produces (unlike self-retire,
+# daemon-retire.sh here runs from the dispatcher against an ALREADY-finished
+# session, so `claude stop` is a harmless no-op and the status=retired write
+# always lands). The moment the ticket returns to in-review, that SAME
+# registry entry must hit the pre-existing "none / retired -> dispatch" row
+# with no special-case dispatch logic needed — no human step in between.
+reset_state; seed_reviewer retired
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d.pop("labels", None)
+json.dump(d, open(p, "w"))'
+out="$("$DISPATCH" --sweep)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "the ticket's return to in-review dispatches a fresh reviewer, unattended"
 
 # ---- sweep retries an engine-unavailable reviewer -------------------------------
 reset_state
@@ -816,8 +899,10 @@ def pr(n, **kw):
     base.update(kw)
     json.dump(base, open(os.path.join(d, "pr-%d.json" % n), "w"))
 pr(4)
-json.dump([{"number": 4, "isDraft": False, "labels": []},
-           {"number": 5, "isDraft": False, "labels": []}],
+json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: something",
+            "body": "No ticket for this one.", "closingIssuesReferences": []},
+           {"number": 5, "isDraft": False, "labels": [], "title": "feat: add f",
+            "body": "Adds f.\n\nCloses #7", "closingIssuesReferences": []}],
           open(os.path.join(d, "pr-list.json"), "w"))
 PY
 reset_state
@@ -842,8 +927,10 @@ echo "dispatch guards:"
 # (a) first-PR failure: [bad(3), good(5)] — loop must survive and report
 python3 - <<'PY'
 import json, os
-json.dump([{"number": 3, "isDraft": False, "labels": []},
-           {"number": 5, "isDraft": False, "labels": []}],
+json.dump([{"number": 3, "isDraft": False, "labels": [], "title": "",
+            "body": "", "closingIssuesReferences": []},
+           {"number": 5, "isDraft": False, "labels": [], "title": "feat: add f",
+            "body": "Adds f.\n\nCloses #7", "closingIssuesReferences": []}],
           open(os.path.join(os.environ["MOCK_DIR"], "pr-list.json"), "w"))
 PY
 reset_state
@@ -870,9 +957,12 @@ json.dump({"number": 4, "title": "feat: add g", "body": "No ticket for this one.
            "url": "https://github.com/test/repo/pull/4", "isDraft": False,
            "state": "OPEN", "labels": [], "closingIssuesReferences": []},
           open(os.path.join(d, "pr-4.json"), "w"))
-json.dump([{"number": 5, "isDraft": False, "labels": []},
-           {"number": 3, "isDraft": False, "labels": []},
-           {"number": 4, "isDraft": False, "labels": []}],
+json.dump([{"number": 5, "isDraft": False, "labels": [], "title": "feat: add f",
+            "body": "Adds f.\n\nCloses #7", "closingIssuesReferences": []},
+           {"number": 3, "isDraft": False, "labels": [], "title": "",
+            "body": "", "closingIssuesReferences": []},
+           {"number": 4, "isDraft": False, "labels": [], "title": "feat: add g",
+            "body": "No ticket for this one.", "closingIssuesReferences": []}],
           open(os.path.join(d, "pr-list.json"), "w"))
 PY
 reset_state

@@ -11,20 +11,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # The skill IS the protocol: SKILL.md carries the Implement Worker Protocol
 # (mirroring reviewing-prs); the operator doctrine lives in
 # references/operation-manual.md; spawn goes through references/worker-bootstrap.md.
-PROTO="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
-SKILL="$REPO_ROOT/skills/implementing-tickets/SKILL.md"
-MANUAL="$REPO_ROOT/skills/implementing-tickets/references/operation-manual.md"
-BOOTSTRAP="$REPO_ROOT/skills/implementing-tickets/references/worker-bootstrap.md"
+PROTO="$REPO_ROOT/skills/implementing/SKILL.md"
+SKILL="$REPO_ROOT/skills/implementing/SKILL.md"
+MANUAL="$REPO_ROOT/skills/implementing/references/operation-manual.md"
+BOOTSTRAP="$REPO_ROOT/skills/implementing/references/worker-bootstrap.md"
+ARCHITECT="$REPO_ROOT/skills/architecting/SKILL.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
 fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
 assert_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
+    if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
         fail "$3"; echo "    expected to find: $2"; fi
 }
 assert_not_contains() {
-    if printf '%s' "$1" | grep -Fq -- "$2"; then
+    if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; else pass "$3"; fi
 }
 
@@ -64,6 +65,12 @@ assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
 
+echo "mode selection (plan-execution vs DIRECT):"
+assert_contains "$proto" "MODE SELECTION" "mode selection section present"
+assert_contains "$proto" "plan-execution" "plan-execution mode named"
+assert_contains "$proto" "ready-for-architect" "architect escalation edge named"
+assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
+
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
@@ -73,9 +80,9 @@ if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want";
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
 
 echo "skill-as-protocol shape:"
-assert_contains "$proto" "name: implementing-tickets" "frontmatter survives on the protocol skill file"
+assert_contains "$proto" "name: implementing" "frontmatter survives on the protocol skill file"
 assert_contains "$proto" "references/operation-manual.md" "operator-routing line points at the operation manual"
-if [ -e "$REPO_ROOT/skills/implementing-tickets/references/implement-worker-protocol.md" ]; then
+if [ -e "$REPO_ROOT/skills/implementing/references/implement-worker-protocol.md" ]; then
     fail "the old separate protocol file is retired (the skill IS the protocol)"
 else
     pass "the old separate protocol file is retired (the skill IS the protocol)"
@@ -107,7 +114,7 @@ assert_contains "$manual" "doperpowers:issue-tracker" "manual: points at the boa
 assert_not_contains "$manual" "status:blocked" "manual: no retired vocabulary"
 
 echo "spike protocol:"
-SPIKE="$REPO_ROOT/skills/implementing-tickets/references/spike-worker-protocol.md"
+SPIKE="$REPO_ROOT/skills/implementing/references/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 # The brief/facts tails ride the bootstrap's binding sections for both lanes.
@@ -126,7 +133,7 @@ assert_contains "$spike" "author its body at register time" "spike: graduated ti
 assert_not_contains "$spike" "no exploring" "spike: the decompose verdict states its deliverable, not an exploration ban"
 
 echo "decompose procedure (runtime-opened):"
-DECOMP="$REPO_ROOT/skills/implementing-tickets/references/implement-decompose.md"
+DECOMP="$REPO_ROOT/skills/implementing/references/implement-decompose.md"
 [ -f "$DECOMP" ] || { echo "missing $DECOMP"; exit 1; }
 decomp="$(cat "$DECOMP")"
 assert_contains "$decomp" "a chain IS" "decompose doc: serialization-as-edges present"
@@ -139,25 +146,25 @@ echo "execution doctrine (inline — no engine-blocks indirection):"
 # One harness, one doctrine: both model routes (gateway "codex" / plain
 # "claude") are Claude-harness sessions, and the execution text lives in
 # the protocol's own Execution section.
-if [ -e "$REPO_ROOT/skills/implementing-tickets/references/engine-blocks" ]; then
+if [ -e "$REPO_ROOT/skills/implementing/references/engine-blocks" ]; then
     fail "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 else
     pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 fi
-assert_contains "$proto" "EXECPLAN:" "execution: execplan mode wired (not bare PLAN)"
-assert_contains "$proto" "doperpowers:execplan" "execution: routes to the execplan doctrine"
+assert_contains "$proto" "PLAN-EXECUTION:" "execution: plan-execution mode wired (not bare PLAN)"
+assert_contains "$proto" "doperpowers:architecting" "execution: routes plan authorship to the architect lane"
 assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
 assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
 assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
 assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
 assert_contains "$proto" "subagent-driven-development" "execution: names the forbidden interactive skills"
 assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
-assert_contains "$proto" "big-but-atomic" "execution: atomic execplan trigger"
+assert_contains "$proto" "AGENT-answerable" "gate: plan-need names agent-answerable design gaps (the E1 escalation criterion)"
 
 echo "skill doctrine:"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
 skill="$(cat "$SKILL")"
-assert_contains "$skill" "name: implementing-tickets" "frontmatter name"
+assert_contains "$skill" "name: implementing" "frontmatter name"
 assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
 assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
 assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
@@ -187,7 +194,7 @@ assert_contains "$gate" "land on main independently" "gate: landability decompos
 assert_contains "$gate" "recommendation, never inherited trust" "gate: registrar verdicts are recommendations (gate re-runs)"
 assert_contains "$gate" "The human is a source too" "gate: human-as-async-answer-source clause carried over"
 assert_not_contains "$gate" "{{" "gate: placeholder-free (opened at runtime, never rendered)"
-assert_contains "$tracker" "ticket-gate.md" "tracker: ready-for-agent row names its bar (the gate file)"
+assert_contains "$tracker" "ticket-gate.md" "tracker: both lane-queue rows name their bar (the gate file)"
 assert_contains "$manual" "ticket-gate.md" "manual: gate section routes to the schema file"
 assert_not_contains "$manual" "one obvious best answer" "manual: fork table not re-vendored"
 assert_contains "$spike" "ticket-gate.md" "spike: graduation bar routes to the gate file"
@@ -197,12 +204,12 @@ echo "board schema single-source (issue-tracker owns the discriminant):"
 assert_contains "$tracker" "Park discriminant — who unparks it?" "tracker: canonical discriminant lives here"
 assert_contains "$tracker" "recommended answer" "tracker: needs-human note contract (question list with recommendations)"
 assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-human rule is canonical here"
-assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + ready-for-agent)"
+assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + lane queues)"
 assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
 assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
 daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
 assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
-assert_not_contains "$daemons" "discriminant in doperpowers:implementing-tickets" "daemons: no stale pointer at the old vendored copy"
+assert_not_contains "$daemons" "discriminant in doperpowers:implementing" "daemons: no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
@@ -217,7 +224,7 @@ assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the ma
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
 assert_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: runner-day land template named"
-for tpl in "$REPO_ROOT/skills/implementing-tickets/references/issue-dispatch.yml" \
+for tpl in "$REPO_ROOT/skills/implementing/references/issue-dispatch.yml" \
            "$REPO_ROOT/skills/reviewing-prs/references/land-on-approve.yml"; do
   tname="$(basename "$tpl")"
   tbody="$(cat "$tpl")"
@@ -225,6 +232,17 @@ for tpl in "$REPO_ROOT/skills/implementing-tickets/references/issue-dispatch.yml
   assert_not_contains "$tbody" "uses: actions/checkout" "$tname: never checks out repo code"
   assert_not_contains "$tbody" ".title" "$tname: no title/body interpolation (injection surface)"
 done
+
+echo "architecting protocol (Architect worker, E1 skill split):"
+[ -f "$ARCHITECT" ] || { echo "missing $ARCHITECT"; exit 1; }
+arch="$(cat "$ARCHITECT")"
+assert_contains "$arch" "name: architecting" "frontmatter names the architecting skill"
+assert_contains "$arch" "ARCHITECT worker" "role names the ARCHITECT worker"
+assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
+assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
+assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
+assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
+assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

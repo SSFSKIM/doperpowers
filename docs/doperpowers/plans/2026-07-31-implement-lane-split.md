@@ -133,8 +133,8 @@ pre-park) comes in later tasks — this task only renames and re-tables.
 Replace lines 19–36 (`OPEN_STATES` through `PULLABLE`) with:
 
 ```python
-# ── state vocabulary (v9: the E1 lane split — ready-for-agent split into
-#    ready-for-architect / in-design / ready-for-implementer) ──
+# ── state vocabulary (v9: the E1 lane split — the single pre-v9 agent queue
+#    split into ready-for-architect / in-design / ready-for-implementer) ──
 OPEN_STATES = ("ready-for-architect", "in-design", "ready-for-implementer",
                "in-progress", "needs-human", "needs-info",
                "interactive-preferred", "in-review", "confident-ready",
@@ -367,10 +367,13 @@ existing recovery/cancel/relay behavior. Fix any missed rename site the
 failures name (the suites are the enumerator; the grep in Step 8 is the
 proof).
 
-- [ ] **Step 8: Residual-vocabulary check (board area)**
+- [ ] **Step 8: Residual-vocabulary check (board scripts + suites)**
 
-Run: `grep -rn "ready-for-agent" skills/issue-tracker/ tests/issue-tracker/ | grep -v board-migrate-gh.sh`
-Expected: no output.
+Run: `grep -rn "ready-for-agent" skills/issue-tracker/scripts/ tests/issue-tracker/ | grep -v board-migrate-gh.sh`
+Expected: no output. (`skills/issue-tracker/SKILL.md` and
+`references/ticket-gate.md` still carry the old vocabulary at this
+point — their content rewrite is Task 13's; Task 16's repo-wide grep is
+the final proof.)
 
 - [ ] **Step 9: Commit**
 
@@ -833,7 +836,7 @@ section, after the existing RECOVER block:
 # RECOVER — lane-state split (E1): in-flight design work resumes; a dead
 # pre-verdict worker is retired so the dispatch pass re-runs it fresh
 assert_contains "$log" "resume:aaaa0020-0000-4000-8000-000000000000" "dead in-design worker gets the resume ladder (mid-design WIP is preserved)"
-assert_contains "$out" "resume attempt 1/" "in-design recovery goes through _recover's counted ladder"
+assert_contains "$out" "RECOVER: #20 worker aaaa0020-0000-4000-8000-000000000000 died mid-turn (session gone) — resume attempt 1/3" "in-design recovery goes through _recover's counted ladder"
 assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready-for-architect worker is retired, not resumed"
 assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
 assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
@@ -1280,8 +1283,8 @@ Insert a new section between `## Role` and `## The Gate`:
 ```markdown
 ## Mode Selection
 
-Read your ticket's `board:meta` block first. The `plan:` field decides
-your mode — machine-read, never note prose:
+MODE SELECTION — read your ticket's `board:meta` block first. The
+`plan:` field decides your mode — machine-read, never note prose:
 
 - `plan: <path>@<sha>` → **PLAN-EXECUTION**: an Architect authored your
   plan at that immutable revision on the recorded branch. NO intake
@@ -1448,8 +1451,13 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Fail → the park state with its required note, classified against the
   park discriminant (doperpowers:issue-tracker owns the single copy),
   plus the 3–6 line orientation summary every park carries.
-- Too big (Check-2) → decompose (below). Slices needing one continuously
-  steered human context → interactive-preferred.
+- Too big (Check-2) → take the Pass write first — `in-design` plus the
+  gate comment "[gate] pass — architect: too big, decomposing" — then
+  decompose (below). Decomposing is design work and its exit is an
+  in-design exit; the board has no `ready-for-architect →
+  ready-for-implementer` edge, so skipping this write leaves you with no
+  legal move. Slices needing one continuously steered human context →
+  interactive-preferred.
 
 ## Design
 
@@ -1658,7 +1666,9 @@ edge on one ticket converts to `needs-human` mechanically.
 7. Worker protocols section (lines 239–248): name three protocols
    (architecting SKILL.md added; implementing paths renamed).
 8. Consumer-automation edge case (line 315–319): "must track the v9
-   vocabulary (the lane states replace `status:ready-for-agent`)".
+   vocabulary (the two lane-queue labels replace the single pre-v9
+   agent-queue label)" — phrased WITHOUT the retired literal, so the
+   repo-wide grep in Task 16 needs no carve-out for live skill prose.
 
 - [ ] **Step 3: The three implementing references** — apply the rename
 decision rule: `implement-decompose.md` step 3's `ready-for-agent` →
@@ -1670,8 +1680,9 @@ to `ready-for-implementer`".
 
 - [ ] **Step 4: Verify no stale vocabulary in skills**
 
-Run: `grep -rn "ready-for-agent" skills/ | grep -v board-migrate-gh.sh`
-Expected: no output.
+Run: `grep -rn "ready-for-agent" skills/issue-tracker/ skills/implementing/ skills/architecting/ | grep -v board-migrate-gh.sh`
+Expected: no output. (Scoped to THIS task's skills — `skills/triaging-feedback/`
+is Task 14's, and Task 16's repo-wide grep is the final proof.)
 
 - [ ] **Step 5: Run the full local suites** (docs changes can break
 protocol-content assertions):
@@ -1764,10 +1775,13 @@ against the pinned plan plus the issue body together.
 paragraph (line ~159), after "the `[gate] pass` timestamp", insert:
 
 ```markdown
-On a ticket whose meta carries a `plan:` pin there is no implementer
-`[gate] pass` — the authorization time is the Architect's handoff: the
-`[board] ready-for-implementer:` comment's timestamp. Every rule in
-this audit keyed to the gate timestamp reads that comment instead.
+On a ticket whose `plan:` pin names a revision (`<path>@<sha>`, not the
+`pre-spec` sentinel) there is no implementer `[gate] pass` — that ticket
+ran in PLAN-EXECUTION mode, which posts none. The authorization time is
+the Architect's handoff: the `[board] ready-for-implementer:` comment's
+timestamp, and every rule in this audit keyed to the gate timestamp
+reads that comment instead. A `plan: pre-spec` ticket ran DIRECT and
+carries a real `[gate] pass` — anchor on it as usual.
 ```
 
 - [ ] **Step 3: Missing-section rule** (line ~205): change "only when
@@ -1791,9 +1805,26 @@ Otherwise — an impasse that needs human judgment or input — set the
 ticket to needs-human with the impasse summary and end your turn.
 ```
 
+The `ready-for-architect` branch ends the turn too — say so on that
+branch, so neither exit reads as fall-through.
+
 In AUTHORITY (line ~326), change the parenthetical to
 "(confident-ready / needs-human / ready-for-architect — notes required
 for the parks and the escalation)".
+
+- [ ] **Step 4b: The two rules the new lane makes incomplete** — both
+outside the five sites above, both load-bearing:
+
+ORIENT (line ~65) tells the worker to locate the `[gate] pass` comment
+as the authorization time. A real-pin ticket has none — add the
+handoff-comment alternative here, matching the Step 2 anchor rule, so
+the read-only pass doesn't come up empty.
+
+ESCALATE's PARKED tier (line ~332) enumerates the states over which
+confident-ready may never be granted, and names only `needs-human`.
+Extend it to cover a ticket just set to `ready-for-architect` by the
+Step 4 impasse route — without this the new escalation has no
+confidence-tier protection behind it.
 
 - [ ] **Step 5: TOO-BIG registration** (line ~236): after the
 `board-register.sh` command line, add: "Birth classification applies:
@@ -1840,10 +1871,17 @@ Expected: no output. Same for
 (`tests/review-bench/results/` is frozen benchmark output holding both
 old vocabularies — excluded, never rewritten.)
 
+Two live residuals are known to remain here, both in the third argument
+(the human-readable test description) of assertions in
+`tests/implementing/test-protocol-content.sh` — the asserted strings
+themselves are already correct. Rename the descriptions to the lane
+vocabulary they now describe, then re-run the grep to no output.
+
 - [ ] **Step 3: Version bump (minor — new states + skill split are a
 feature release)**
 
-Run: `scripts/bump-version.sh minor`
+Run: `scripts/bump-version.sh 7.30.0` (the script takes an explicit
+target version, not a bump keyword; current is 7.29.0)
 Expected: manifests updated to 7.30.0 per `.version-bump.json`.
 
 - [ ] **Step 4: Commit**
