@@ -192,11 +192,14 @@ pick by repo visibility:
    a spike).
 3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
    from `orchestrating-daemons` — always a worktree; workers write code.
-   The claude route — the default — passes no gateway env and no model
-   arg: the model inherits unless `IMPLEMENT_MODEL` pins it, and since
-   daemon-spawn writes no settings/effort into the meta, its resumes stay
-   plain too. The codex route prefixes the gateway env and pins the
-   gateway's model alias as arg 5:
+   The claude route — the default — passes no gateway env, and pins the
+   lane's model as arg 5: `${ARCHITECT_MODEL:-fable}` on the architect
+   lane, `${IMPLEMENT_MODEL:-opus}` on implement and spike. Both lanes
+   pin rather than inherit, so the operator's own session model never
+   silently collapses the split's two model economies onto one price.
+   Since daemon-spawn writes no settings/effort into the meta, these
+   resumes stay plain. The codex route prefixes the gateway env and pins
+   the gateway's model alias as arg 5:
    `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" daemon-spawn.sh … fable`
    (daemon-spawn persists settings/effort into the registry meta;
    daemon-resume restores them on every fork — without that a gateway

@@ -142,11 +142,12 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 1-fix-the-report-builder-
   "spawn is --no-wait with the <n>-<slug> name"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | head -1)" "settings=;effort=" \
   "default engine claude passes no gateway env"
-# bracketed so the fixed-string match is exact: "[model=]" would otherwise be a
-# substring of "[model=fable]" and prove nothing about an EMPTY model arg.
+# bracketed so the fixed-string match is exact — the model arg is last on the
+# spawn line, so the closing bracket pins the whole value and an unpinned
+# (empty) or differently-pinned arg cannot satisfy it by prefix.
 first_spawn="$(grep '^spawn:' "$SPAWN_LOG" | head -1)"
-assert_contains "[${first_spawn##* }]" "[model=]" \
-  "claude route pins no model — it inherits unless IMPLEMENT_MODEL says otherwise"
+assert_contains "[${first_spawn##* }]" "[model=opus]" \
+  "claude route pins the worker tier (IMPLEMENT_MODEL overrides; never inherited)"
 PROMPT="$PROMPT_DIR/1-fix-the-report-builder-pipeline.prompt"
 assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries the IMPLEMENT role"
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"

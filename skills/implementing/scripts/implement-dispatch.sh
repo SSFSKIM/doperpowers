@@ -39,8 +39,12 @@
 #   CLODEX_SETTINGS gateway settings file for the codex route
 #                   (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT   reasoning effort for the codex route (default xhigh)
-#   IMPLEMENT_MODEL optional model override (codex route defaults to fable,
-#                   claude route to inherit)
+#   IMPLEMENT_MODEL model pin for the implement/spike routes (claude route
+#                   default opus, codex route default fable) — the worker-tier
+#                   half of the lane split's model economics, symmetric with
+#                   ARCHITECT_MODEL; pinned rather than inherited so the
+#                   operator's own session model never silently re-fuses the
+#                   two lanes onto one price
 #   BOARD_SCRIPTS / DAEMON_SCRIPTS / DAEMON_HOME / IMPLEMENT_BOOTSTRAP_TEMPLATE
 #                   overrides (tests)
 set -euo pipefail
@@ -248,7 +252,7 @@ PY
     # would inherit them, apply the flags AND persist them into the registry
     # meta — so every later resume would keep riding the gateway while the log
     # said engine=claude.
-    local model="${IMPLEMENT_MODEL:-}"
+    local model="${IMPLEMENT_MODEL:-opus}"
     [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
       "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \

@@ -769,18 +769,18 @@ review loop can each hand a ticket back to the architect lane instead of
 leaking it into `needs-human`. The convergence rule bounds that with no
 new bookkeeping: the comment log is the counter.
 
-**The gap between the purpose and what is enforced.** The purpose is an
-argument about model economics, and only half of it is enforced in code.
-The architect route hard-pins `${ARCHITECT_MODEL:-fable}` and ignores
-`engine:*` labels, so "every dispatched plan is Fable-authored" is
-structural. The implement route pins nothing — it inherits the operator's
-session model unless `IMPLEMENT_MODEL` is set — so "Opus workers execute"
-is an operational convention, and an operator running Fable by default
-silently re-fuses the two economies this split exists to separate. The
-acceptance criterion that says "spawns an Opus worker" is therefore not
-verifiable against this branch. Closing it is a one-line dispatcher change
-plus a test expectation, deliberately left to its own reviewed change
-rather than smuggled into this one.
+**The model economics are enforced on both sides.** The architect route
+hard-pins `${ARCHITECT_MODEL:-fable}` and ignores `engine:*` labels, so
+"every dispatched plan is Fable-authored" is structural. The implement and
+spike routes pin `${IMPLEMENT_MODEL:-opus}` on the plain-Claude route.
+That second pin was raised at review time as the branch's one unclosed
+half — the route had inherited the operator's session model since #35, so
+an operator running the frontier model by default would silently pay
+frontier rates on both lanes and re-fuse the two economies this split
+exists to separate. The human resolved it in favor of the pin, and it
+landed with the branch: both lanes now pin rather than inherit, and
+acceptance criterion 2's "spawns an Opus worker" is a property of the
+dispatcher rather than an operational convention.
 
 **What the branch could not prove.** Four of the eight acceptance criteria
 are only partially verified. Dispatch wiring — which role, which model,
@@ -820,6 +820,16 @@ deferred to a follow-up by design.
 
 ## Revision Notes
 
+- 2026-07-31: v1.3.3, the implement lane pins its model. The plain-Claude
+  implement/spike route now pins `${IMPLEMENT_MODEL:-opus}` instead of
+  inheriting the operator's session model (the posture #35 set when it
+  flipped that route off the clodex gateway). Raised by the whole-branch
+  review as the branch's one unenforced half — the split's whole argument
+  is asymmetric model routing, and only the architect side was structural
+  — and resolved by the human in favor of symmetry with
+  `${ARCHITECT_MODEL:-fable}`. The codex route's own default (`fable`,
+  the gateway alias) is unchanged, and `IMPLEMENT_MODEL` still overrides
+  both. Acceptance criterion 2 becomes statically verifiable.
 - 2026-07-31: v1.3.2, implementation-pass corrections (all found by
   review during execution, all landed on the branch): transition 6's
   convergence note no longer promises "both sides' positions" — it
