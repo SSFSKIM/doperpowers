@@ -65,6 +65,20 @@
 # reply to carry any marker) → retire + respawn (sweep too, capped at 3
 # consecutive failed reviewers per PR — beyond that only an explicit PR
 # event re-dispatches).
+#
+# Stale reviewer, any route off in-review: a reviewer bound to a ticket
+# whose board state is no longer in-review (ready-for-architect, parked on
+# the human, or anything else) is stale by definition — nothing will ever
+# re-dispatch a normally-finished reviewer on its own (sweep mode's
+# "cleanly finished → skip" row above is permanent, not a retry). The sweep
+# loop below resolves the ticket's status alongside the confident-ready
+# check, BEFORE consulting the registry dedupe machinery: when the ticket
+# isn't in-review, any FINISHED (non-active) reviewer meta it finds is
+# retired right there and the tick is skipped without spawning — never an
+# ACTIVE (working/blocked) reviewer, which owns its own exit. That retire
+# is what makes the ticket's eventual return to in-review land on the
+# ordinary "none / retired → dispatch" row above, with no special-case
+# dispatch logic needed once the ticket is back.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -236,7 +250,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid park
+  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -269,28 +283,6 @@ PY
   # primary ticket (first linked issue; the full list rides the prompt as
   # numbers only — the worker reads PR and ticket bodies live via gh)
   issue="${LINKED_ISSUES%% *}"
-
-  # A parked primary ticket means this PR's review is already waiting on the
-  # human (a prior reviewer's park) — board-bind would refuse the fresh
-  # worker anyway ("answer/resume it before rebinding"), so the sweep's
-  # catch-up lane skips BEFORE spawning instead of burning a spawn+retire
-  # every tick (observed live: PR #574 churned one reviewer per tick against
-  # parked #548). Triggered/manual dispatch still proceeds: resolving the
-  # park first is the operator's call, and bind protection stays the gate.
-  if [ "$mode" = "sweep" ] && [ -n "$issue" ]; then
-    park="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
-import json, sys
-try:
-    labels = [l.get("name") for l in json.load(sys.stdin).get("labels") or []]
-except Exception:
-    labels = []
-parks = [l for l in labels if l in ("status:needs-human", "status:needs-info", "status:interactive-preferred")]
-print(parks[0] if parks else "")')" || park=""
-    if [ -n "$park" ]; then
-      echo "#$pr: skip — primary ticket #$issue is parked ($park); the review resumes via board-answer, not a fresh dispatch"
-      rm -rf "$tmp"; return 0
-    fi
-  fi
 
   # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
@@ -575,9 +567,45 @@ _decide() {
   esac
 }
 
-run_for() {  # $1=pr $2=mode $3=cr-label
-  local verdict
-  verdict="$(_decide "$1" "$2" "$3")"
+# $4/$5 (sweep mode only): the primary ticket's off-review status name
+# (e.g. "ready-for-architect", "needs-human") and its number, when the
+# sweep already resolved the ticket is NOT in-review. Empty $4 means
+# in-review, ticketless, or triggered mode — never gated, same as before.
+#
+# A reviewer bound to a ticket that has left in-review is stale by
+# definition (header comment). $verdict from the ordinary dedupe machinery
+# already tells us everything needed to act on that: "skip active
+# reviewer" means a live session is mid-turn and owns its own exit (never
+# touched); "skip confident-ready ..." is an unrelated, already-correct
+# skip (passed through unchanged); anything else — dispatch, respawn
+# <uuid>, or any other "skip ..." — means at most a NON-live reviewer meta
+# is on file, so it's retired here instead of being left to strand the
+# ticket's next return to in-review behind "skip finished reviewer"
+# forever.
+run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
+  local pr="$1" mode="$2" cr="$3" stale="${4:-}" tid="${5:-}" verdict resume
+  verdict="$(_decide "$pr" "$mode" "$cr")"
+  if [ -n "$stale" ]; then
+    case "$verdict" in
+      "skip active reviewer")
+        echo "#$pr: skip — primary ticket #$tid is status:$stale, not in-review; its still-active reviewer owns its own exit"
+        return ;;
+      "skip confident-ready"*)
+        echo "#$pr: $verdict"
+        return ;;
+    esac
+    case "$stale" in
+      needs-human|needs-info|interactive-preferred)
+        resume="the review resumes via board-answer, not a fresh dispatch" ;;
+      *)
+        resume="resumes when the ticket returns to in-review, not from here" ;;
+    esac
+    local m
+    m="$(_reviewer_meta "$pr")"
+    [ -n "$m" ] && _retire "${m%%|*}"
+    echo "#$pr: skip — primary ticket #$tid is parked (status:$stale); $resume"
+    return
+  fi
   case "$verdict" in
     dispatch)  dispatch_one "$1" "$2" ;;
     respawn\ *) _retire "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
@@ -586,16 +614,45 @@ run_for() {  # $1=pr $2=mode $3=cr-label
 }
 
 if [ "${1:-}" = "--sweep" ]; then
-  gh pr list -R "$BOARD_REPO" --state open --limit 100 --json number,isDraft,labels \
+  # Extend the one list call with the same fields dispatch_one resolves the
+  # primary ticket from (closingIssuesReferences, else a close-keyword
+  # regex over title+body — identical logic, duplicated here rather than
+  # shared: it's the only way to know which PRs are ticketed before the
+  # per-PR ticket-status read below, with no extra gh call of its own).
+  gh pr list -R "$BOARD_REPO" --state open --limit 100 \
+      --json number,isDraft,labels,title,body,closingIssuesReferences \
     | python3 -c '
-import json, sys
+import json, re, sys
 for p in json.load(sys.stdin):
     if p.get("isDraft"):
         continue
     cr = 1 if any(l.get("name") == "confident-ready" for l in p.get("labels") or []) else 0
-    print("%s %s" % (p["number"], cr))' \
-    | while read -r prn cr; do
-        run_for "$prn" sweep "$cr" || echo "#$prn: dispatch error (continuing sweep)" >&2
+    linked = [str(n["number"]) for n in (p.get("closingIssuesReferences") or [])]
+    text = (p.get("title") or "") + "\n" + (p.get("body") or "")
+    for m in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)", text, re.I):
+        if m.group(1) not in linked:
+            linked.append(m.group(1))
+    print("%s %s %s" % (p["number"], cr, linked[0] if linked else "-"))' \
+    | while read -r prn cr issue; do
+        [ "$issue" = "-" ] && issue=""
+        # A reviewer only makes sense while its ticket is in-review — read
+        # the ticket's status label (the same read Finding 2 always did)
+        # BEFORE the dedupe machinery, so a normally-finished reviewer
+        # never even reaches the "skip finished reviewer" wall once its
+        # ticket has moved on. Absent any status:* label at all (untracked/
+        # off-machine), fail open — proceed as before.
+        stale=""
+        if [ -n "$issue" ]; then
+          stale="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
+import json, sys
+try:
+    labels = [l.get("name") for l in json.load(sys.stdin).get("labels") or []]
+except Exception:
+    labels = []
+status = [l[len("status:"):] for l in labels if l.startswith("status:")]
+print(status[0] if status and status[0] != "in-review" else "")')" || stale=""
+        fi
+        run_for "$prn" sweep "$cr" "$stale" "$issue" || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"

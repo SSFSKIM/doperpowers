@@ -232,6 +232,19 @@ self-review bias: the entity that grades the fixes never wrote them.
   reviewer (Claude: its session in `claude agents`; codex: its recorded pid)
   and skips; a worktree with a live reviewer is never reused underneath it.
   No lock, no backoff — dedupe on dispatch does the serializing.
+- **Ticket leaves in-review while its PR stays open (any route, not just
+  ready-for-architect)** — a review escalation (`ready-for-architect`), a
+  human park, or anything else that moves the ticket off `in-review`
+  leaves the PR's reviewer bound to a ticket no longer under review. The
+  sweep resolves the ticket's status alongside the confident-ready check,
+  BEFORE the registry dedupe machinery: whenever the ticket isn't
+  `in-review`, any FINISHED (non-active) reviewer it finds for that PR is
+  retired right there and the tick skips without spawning — an ACTIVE
+  (working/blocked) reviewer is never touched, since it owns its own
+  exit. That retire is what lets the ticket's eventual return to
+  `in-review` land on the ordinary "none / retired → dispatch" row
+  (Dedupe & sweep policy above) with no special-case dispatch logic
+  needed once it's back — no human intervention required.
 
 ## Adopting a repo (checklist)
 
