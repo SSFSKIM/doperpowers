@@ -11,7 +11,7 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 ## Progress
 
 - [x] (2026-08-01) Milestone 1: runtime vendored byte-identically (incl. `.claude-plugin/plugin.json` — see Surprises), adapted tests pass under `node --test`: 81 pass / 0 fail via `tests/codex-companion/run-codex-companion-tests.sh`. `commands.test.mjs` and `bump-version.test.mjs` deleted (they test the dropped commands layer and the upstream repo's version tooling, not the runtime).
-- [ ] Milestone 2: `codex-companion` SKILL.md + reference docs written
+- [x] (2026-08-01) Milestone 2: `skills/codex-companion/SKILL.md` (index, model-invocable, trigger-only description) + `references/{reviews,delegation,jobs}.md` written; canonical invocation verified live via `setup --json` (ready:true, codex-cli 0.145.0, ChatGPT auth). Note: vendored `setup` output mentions `/codex:setup --enable-review-gate` in nextSteps — an upstream advisory string we cannot patch (byte-identity); harmless.
 - [ ] Milestone 3: live verification against the real Codex CLI (foreground review, background review + status/result, task resume round-trip)
 - [ ] Milestone 4: consumer swaps (execplan exit-gate line, user-global CLAUDE.md routing)
 - [ ] Milestone 5: version bump, release, uninstall the openai-codex plugin
