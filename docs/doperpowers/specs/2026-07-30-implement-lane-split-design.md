@@ -756,7 +756,67 @@ route independently.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped as v7.30.0 (17 planned tasks plus a review-driven fix pass;
+implementation plan `docs/doperpowers/plans/2026-07-31-implement-lane-split.md`).
+
+**Against the purpose.** The state-machine half of the goal landed whole.
+`ready-for-agent` is gone rather than aliased; `ready-for-architect`,
+`in-design`, and `ready-for-implementer` carry the relay; the `plan:` pin
+routes an Implementer to PLAN-EXECUTION or DIRECT without the dispatcher
+making a judgment call; and a design gap discovered downstream now has a
+named address — the Implementer's gate, the Implementer mid-build, and the
+review loop can each hand a ticket back to the architect lane instead of
+leaking it into `needs-human`. The convergence rule bounds that with no
+new bookkeeping: the comment log is the counter.
+
+**The gap between the purpose and what is enforced.** The purpose is an
+argument about model economics, and only half of it is enforced in code.
+The architect route hard-pins `${ARCHITECT_MODEL:-fable}` and ignores
+`engine:*` labels, so "every dispatched plan is Fable-authored" is
+structural. The implement route pins nothing — it inherits the operator's
+session model unless `IMPLEMENT_MODEL` is set — so "Opus workers execute"
+is an operational convention, and an operator running Fable by default
+silently re-fuses the two economies this split exists to separate. The
+acceptance criterion that says "spawns an Opus worker" is therefore not
+verifiable against this branch. Closing it is a one-line dispatcher change
+plus a test expectation, deliberately left to its own reviewed change
+rather than smuggled into this one.
+
+**What the branch could not prove.** Four of the eight acceptance criteria
+are only partially verified. Dispatch wiring — which role, which model,
+which protocol file — and the protocol text a worker reads are provable
+statically, and are proven. A dispatched worker's actual runtime behavior
+is not, and no test here substitutes for the first live architect
+dispatch. Criterion 5 (the QAgent model pin and the fix-wave agent) is
+deferred to a follow-up by design.
+
+**Lessons.**
+
+1. *Generalizing a hardcode means owning its accidental guarantees* — the
+   v1.2 round's own lesson, which then recurred twice during
+   implementation, in the same shape, undetected by task-scoped review.
+   The park-return target and the convergence reset were both constants
+   whose specific values had silently satisfied a precondition elsewhere;
+   turning each into a lookup broke the precondition. Both defects spanned
+   a script boundary, which is exactly what a per-task reviewer cannot
+   see. The sharper form of the lesson: when a constant becomes a lookup,
+   enumerate what the constant's VALUE guaranteed, not just what the
+   lookup must now return.
+2. *A whole-branch review is not a formality when the change is a state
+   machine.* Every task passed its own review; the merge blocker was found
+   only by the pass that read all 33 commits at once, and it would have
+   broken the review loop's primary park-answering path on first use.
+3. *Two spellings of one field are two concepts.* The `plan:` pin's real-
+   SHA and `pre-spec` values look like variants and are not: one is an
+   authorization event, the other a plan-need ruling. Two rules written
+   during implementation keyed on "has a pin" and were wrong for the
+   sentinel. Recorded in Surprises; any future rule reading the pin must
+   say which value it means.
+4. *Prose that instructs a worker needs the same pinning as code.* The
+   new review-loop rules shipped unpinned until the acceptance pass caught
+   it, while the equivalent implementing and architecting text had
+   assertions from the start. In this repo a protocol sentence is
+   behavior, so an unpinned one is untested behavior.
 
 ## Revision Notes
 
