@@ -167,8 +167,9 @@ the disagreement to the human; never bounce a third time yourself.
 
 IF RESUMED WITH ANSWERS (your park was answered): the answers live on the
 ticket — treat them as ticket content. Re-state your gate verdict against
-them in ONE paragraph as a ticket comment ("[gate] re-pass — <one line>",
-or a fresh park if the answers reshape the work's scope), then proceed.
+them in ONE paragraph as a ticket comment ("[gate] re-pass — <one line>";
+PLAN-EXECUTION, which ran no gate, restates plan-execution status instead),
+or a fresh park if the answers reshape the work's scope, then proceed.
 Never build on momentum past an answer that changed the work's shape.
 
 ## Authority

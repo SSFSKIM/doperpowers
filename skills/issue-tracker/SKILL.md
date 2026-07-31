@@ -202,8 +202,10 @@ pick by repo visibility:
    daemon-resume restores them on every fork — without that a gateway
    worker silently reverts to plain models on its first resume).
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
-   write is its gate verdict — `in-progress` (+ a `[gate]` comment) means
-   the gate passed; a park state means it failed.
+   write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
+   Implementer, `in-design` (+ a `[gate]` comment) for an Architect, or
+   (PLAN-EXECUTION) `in-progress` with no gate comment; a park state means
+   it failed.
 
 Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
 are picked up by the review loop (doperpowers:reviewing-prs). The ritual is

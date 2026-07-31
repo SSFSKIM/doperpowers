@@ -169,7 +169,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
     || { log "[sweep] RECOVER: #$tk meta update failed — skipping resume"; return; }
   log "[sweep] RECOVER: #$tk worker $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
   nohup "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" \
-    "SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph, then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead." \
+    "SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead." \
     >>"$SWEEP_LOG" 2>&1 &
 }
 

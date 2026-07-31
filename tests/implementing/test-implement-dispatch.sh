@@ -57,12 +57,6 @@ export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 export DAEMON_CLAUDE_SETTINGS="$TEST_ROOT/ambient-gateway.json"
 export DAEMON_CLAUDE_EFFORT="high"
 
-# Architect protocol stub — Task 12 authors the real doperpowers:architecting
-# protocol; until then this guard keeps the dispatcher's pinned path present
-# without clobbering the real one once it lands.
-mkdir -p "$REPO_ROOT/skills/architecting"
-[ -f "$REPO_ROOT/skills/architecting/SKILL.md" ] || printf '# Architect Worker Protocol (stub)\n' > "$REPO_ROOT/skills/architecting/SKILL.md"
-
 # real git: bare origin + clone whose main carries a repo-facts manifest
 ORIGIN="$TEST_ROOT/origin.git"
 git init -q --bare "$ORIGIN"
