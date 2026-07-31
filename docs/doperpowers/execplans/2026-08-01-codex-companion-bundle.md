@@ -10,7 +10,7 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 
 ## Progress
 
-- [ ] Milestone 1: runtime vendored byte-identically, adapted tests pass under `node --test`
+- [x] (2026-08-01) Milestone 1: runtime vendored byte-identically (incl. `.claude-plugin/plugin.json` — see Surprises), adapted tests pass under `node --test`: 81 pass / 0 fail via `tests/codex-companion/run-codex-companion-tests.sh`. `commands.test.mjs` and `bump-version.test.mjs` deleted (they test the dropped commands layer and the upstream repo's version tooling, not the runtime).
 - [ ] Milestone 2: `codex-companion` SKILL.md + reference docs written
 - [ ] Milestone 3: live verification against the real Codex CLI (foreground review, background review + status/result, task resume round-trip)
 - [ ] Milestone 4: consumer swaps (execplan exit-gate line, user-global CLAUDE.md routing)
@@ -20,6 +20,10 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 
 - Observation: the OpenAI plugin's review/task execution paths never leave a resident broker process. `plugins/codex/scripts/lib/codex.mjs` connects with `disableBroker: true` (per-invocation `codex app-server` child) or `reuseExistingBroker: true` (attach only if one already exists); `ensureBrokerSession` — the only spawner — is reached solely from hook/stop-gate paths we are not vendoring. Dropping the hook layer therefore leaks nothing.
   Evidence: `grep -n "disableBroker\|reuseExistingBroker" plugins/codex/scripts/lib/codex.mjs` → lines 635, 645 (`disableBroker: true`), 944, 982 (`reuseExistingBroker: true`).
+- Observation: the runtime hard-requires `.claude-plugin/plugin.json` next to `scripts/` — `lib/app-server.mjs` reads it at module load to build the client-info version it reports to the Codex app-server. The initial vendor set omitted it and every runtime test failed with ENOENT. Resolution: vendor it byte-identical as part of the runtime tree.
+  Evidence: `Error: ENOENT … skills/codex-companion/runtime/.claude-plugin/plugin.json` from `app-server.mjs:20` during `node --test`; suite went 81 pass / 0 fail after the copy.
+- Observation: any session with the openai-codex plugin installed has `CLAUDE_PLUGIN_DATA`, `CODEX_COMPANION_SESSION_ID`, and `CODEX_COMPANION_TRANSCRIPT_PATH` injected into its shell environment by that plugin's SessionStart hook. This broke the state-dir tmpdir-fallback test and would silently redirect our pinned state root until the plugin is uninstalled. The test runner strips these vars; the skill's explicit `CLAUDE_PLUGIN_DATA=…` prefix wins either way.
+  Evidence: `env | grep CLAUDE_PLUGIN_DATA` in this session → `/Users/new/.claude/plugins/data/codex-openai-codex`.
 
 ## Decision Log
 
