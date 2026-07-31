@@ -53,7 +53,8 @@ Handing execution to a parallel session → doperpowers:executing-plans.
    changed design understanding into the spec's living tail
    (doperpowers:execspec). Implementation noise stays in commit messages.
 7. **After all tasks:** dispatch the final whole-branch review (external
-   reviewer — codex native review `codex exec review --base <base>`; a
+   reviewer — codex native review via doperpowers:codex-companion's
+   `review` verb with `--base <base>`; a
    fresh top-tier Claude reviewer if codex is unavailable) with its own
    package (`scripts/review-package PLAN_FILE MERGE_BASE HEAD`,
    MERGE_BASE = `git merge-base main HEAD`). Then
