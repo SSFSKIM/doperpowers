@@ -28,8 +28,9 @@ Verbs, and where each is specified:
   (`--base <ref>`); non-steerable by design → references/reviews.md
 - `adversarial-review` — challenge review of design and assumptions;
   trailing text is a lens, parallel lenses for big diffs → references/reviews.md
-- `task` — delegate any prompt; read-only unless `--write`; resumable
-  threads make it a multi-turn partner → references/delegation.md
+- `task` — any prompt to a resumable Codex thread; one-shot delegation
+  or a standing multi-turn partner (critique debates, steered execution);
+  read-only unless `--write` → references/amigo.md
 - `status` / `result` / `cancel` — job history and backgrounding
   mechanics (background Bash detaches and auto-wakes; don't poll) → references/jobs.md
 - `setup` — preflight: is codex installed and authenticated?
