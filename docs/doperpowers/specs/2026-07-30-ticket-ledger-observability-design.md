@@ -1,11 +1,19 @@
 # Ticket Ledger & Observability Doctrine (2026-07-30)
 
-> **Status:** design approved in-session (ideadump roadmapping, epic E2).
+> **Status:** v2 — matured 2026-08-01 through a pre-implementation
+> brainstorming review (grill + three independent code/spec/store
+> investigations). E2 is the ledger **domain contract**: it fixes
+> semantics, write authority, binding identity, and lifecycle rules.
+> Implementation is split across four separately-owned deliveries
+> (§ Implementation ownership); E2 closes when the interim doperpowers
+> slice ships and the contract herein is complete — it does NOT wait for
+> the E3 platform to render the ledger.
 > **Substrate target:** the AI-native Postgres board (2026-07-30
 > cloud-native pipeline pivot: Postgres is the SSOT; GitHub Issues and
 > Linear are one-way mirrors). On the interim GitHub board, worker
-> behavior stays byte-identical to v8 — the derived stream below requires
-> the Postgres convergence and simply doesn't exist there yet.
+> behavior stays byte-identical to v8 except the additions named in
+> § Interim slice — the derived stream requires the Postgres convergence
+> and simply doesn't exist there yet.
 
 ## Purpose
 
@@ -17,9 +25,9 @@ progress mirror — scope-end writes are the only status writes"). This
 spec resolves the tension without reversing either intent: **what
 workers author stays exactly as today (decisions only), and the silence
 between decisions is filled by a derived, read-only stream** — possible
-now because the board and the session transcripts land in the same
-Postgres (sessionStore adapter shipped 2026-07-30), with OTel carrying
-session-tagged telemetry.
+because the board and the session transcripts land in the same Postgres
+(sessionStore adapter shipped 2026-07-30), with trusted harness hooks
+carrying live activity and OTel carrying operational telemetry.
 
 After this: a human opens a ticket and sees one merged timeline — every
 decision event AND what the bound session is actually doing — with zero
@@ -34,50 +42,255 @@ first-class address instead of dying in chat logs.
   the Implementer's PR). Workers author no progress prose; worker
   turn-end messages remain audit trail, not communication — the board is
   the communication surface (v8 doctrine, restated for the swarm).
-- **Derived stream = read-only view** over the sessionStore transcripts
-  and OTel telemetry of the ticket's bound session(s), joined on the
-  ticket↔session binding. No worker cooperation required; rendering
-  (timeline UI, activity summaries) is E3's concern.
+- **Derived stream = read-only view** over the ticket's bound sessions,
+  sourced per the hierarchy below. Read-only means **workers and UI
+  clients cannot mutate it**; trusted platform automation (the hook
+  emitter, the mirror machinery) appends immutable derived records by
+  construction. Rendering (timeline UI, activity summaries) is E3's
+  concern.
 - **The human-visible ledger = the merged timeline of both streams.**
+
+### Source hierarchy (v2)
+
+The derived stream's sources, in trust order — each with an honest
+completeness contract:
+
+1. **Board events** — authoritative. Decisions, transitions, claims,
+   parks, answers, verdicts. The only source that is allowed to imply
+   workflow truth.
+2. **SessionStore transcripts** — durable history at TURN grain. The
+   shipped adapter persists opaque entries keyed
+   `(project_key, session_id, subpath)` with per-transcript `id`
+   ordering and a coarse `mtime` liveness hint. It is an archival
+   mirror, not a live feed: mirror batches can drop after retries,
+   in-flight turns are lost on eviction, and rewind-in-place is
+   destructive. Native subagents live as `subpath` transcripts under
+   the parent session, not as independent sessions.
+3. **Trusted hook activity events** — the live intra-turn carrier
+   (cc-harness T11): a trusted harness hook appends structured activity
+   records (tool starts/ends, prompt boundaries) to the board-owned
+   activity stream. Automation-authored, immutable, worker-read-only.
+4. **OTel telemetry** — operations plane ONLY: metrics, alerting, and
+   correlation (`session.id`, `prompt.id`, resource attributes). OTLP
+   permits loss, duplication, and reordering by design; OTel is never a
+   canonical human-timeline source. (v1 named it a primary carrier;
+   v2 demotes it — Decision Log.)
+
+**Ordering semantics:** there is no causal total order across sources.
+Every derived record carries its source, a source-local cursor
+(e.g. transcript entry id), observed-at time, and optional source time;
+consumers may interleave heuristically but the contract promises
+per-source order only. Source time and observation time are distinct
+fields, never conflated.
+
+**Access contract:** consumers read the ledger through a logical
+`TimelineReader` interface, not raw cross-schema SQL. The initial
+implementation may union board events and sessionStore entries in one
+Postgres; a later sessionStore promotion (separate DB, archive tier)
+must preserve the interface, not the join.
 
 ## Write semantics
 
-- **Event log: append-only.** Every transition, park, answer, and
-  verdict is an immutable event (the audit trail — v8's `[board]`
-  comments, made structural).
+- **Event log: append-only.** Every transition, park, answer, verdict,
+  claim, bind, release, and reclaim is an immutable event (the audit
+  trail — v8's `[board]` comments, made structural).
 - **Current-state fields: mutable.** Status, priority, current note,
-  `plan:`, branch, PR, binding (v8's `board:meta` block, made columns).
+  `plan:`, branch, PR, `owner_run` (v8's `board:meta` block, made
+  columns).
 - **Writers:** the bound accountable worker — its own ticket's open
   states, plus registering NEW child/follow-up/env-issue tickets (the
-  full v8 registration authority, restated whole; dropping the
-  second half would forbid decomposition children, Implementer
-  follow-ups, and the QAgent's TOO-BIG tickets) — the human, and the
-  sweep. **Dispatch writes nothing** (the worker's first board write is
-  its gate verdict — the E1 acceptance depends on this). **Subagents
-  never write** — their output flows through the accountable worker
-  (the accountability model: one accountable agent per ticket). The
-  derived stream is read-only by construction.
+  full v8 registration authority, restated whole) — the human, the
+  sweep, and **control-plane automation for claim-lifecycle records
+  only** (next section). **Subagents never write** — their output flows
+  through the accountable worker (the accountability model: one
+  accountable agent per ticket). The derived stream is
+  worker-read-only by construction.
+
+### Dispatch writes claims, never workflow state (v2)
+
+v1's "dispatch writes nothing" conflated two invariants; v2 narrows it:
+
+- **Dispatch makes no workflow-state transition.** It cannot move a
+  ticket between lanes, and the worker's first workflow decision on the
+  board remains its own (E1: the gate verdict or the plan-execution
+  `in-progress` note).
+- **Dispatch automation MAY — and must — write claim-lifecycle
+  records:** one fenced transaction creates the `run`, sets the
+  ticket's `owner_run`, and appends a `claim` event (actor:
+  automation). Without this there is no ticket↔session attribution and
+  no reconstructible claim history.
+- **Phase end is one transaction:** close the run, clear `owner_run`,
+  append a `release` event. (The stale R2 draft leaves `owner_run`
+  uncleared on lane crossings, which would strand every
+  Architect→Implementer handoff unclaimable — named rebase defect,
+  § R2 rebase.)
+
+## Binding identity: ticket → run → session (v2)
+
+The doctrine phrase stays **"ticket ↔ accountable claim."** One ticket,
+one accountable execution — carried by a relay team (Architect →
+Implementer → QAgent on a planned leaf), each phase holding its own
+exclusive claim. The storage contract beneath the phrase:
+
+- A **ticket** has at most one active **run** and an immutable history
+  of runs. The runs collectively form the ticket's accountable
+  execution.
+- A **run** is one fenced claim for one lane/phase. It records the
+  accountable lane, fence, lifecycle timestamps, and the exact
+  session-store locator: **(store namespace, project_key,
+  session_id)** — the composite key the shipped adapter actually uses,
+  not a bare session id.
+- The binding is recorded by the trusted launcher/runtime **after
+  observing the real SDK session id from `system/init`** (or by
+  preassigning an id and verifying it at init) — never as a
+  worker-prompt duty.
+- `owner_run` is the ticket's mutable pointer to its current claimant;
+  history lives in claim/bind/release/reclaim/supersede events, never
+  by overwrite.
+- **Same run:** process or appserver-thread restart that keeps the
+  claim and resumes the same SDK session.
+- **New run:** reclaim after ownership loss (even when it resumes the
+  prior session — with an explicit predecessor link), and every fork
+  (a forked session id is a successor binding with provenance).
+- **Native subagents** ride the parent session's `subpath` transcripts
+  under the parent's run — never modeled as independently resumable
+  sessions. A detached child session requires its own explicit binding
+  and parent-run edge.
+
+This gives E3 both historical attribution (timeline reads all runs) and
+live-terminal authorization (only the current run's thread/pod may
+attach).
+
+## Node lifecycle: leaves and recomposition (v2)
+
+A ticket = a purpose unit = one reliably-ownable goal (the decomposing
+gate). The tree decides ownability; the lane protocol decides which
+relay roles the unit needs:
+
+- **Implementation leaf:** Architect (size-gated) → Implementer →
+  QAgent. Small leaves skip the Architect (E1 DIRECT); spikes end in
+  findings.
+- **Non-leaf (epic):** the Architect brackets it — decompose at the
+  start, recompose at the end. No Implementer or QAgent phase of its
+  own; while children execute, the parent holds **no worker claim**.
+
+### Recomposition replaces epic auto-close
+
+The interim board's mechanical close (`close_epics`: all children
+terminal + one done ⇒ parent done) is a doctrine violation — the
+decomposing skill requires closing a parent by VERIFICATION against its
+own whole-unit acceptance, not by bookkeeping. v2 fixes the return
+path:
+
+1. All required children terminal ⇒ the parent returns to
+   `ready-for-architect` (event: `recomposition-due`), never directly
+   to done.
+2. An Architect claims it and verifies the parent's own acceptance —
+   integration seams, end-to-end behavior, the contract-lineage check
+   below.
+3. **Code-bearing integration parent** (two-plus children touched one
+   executable surface; parent owns cross-child state/ordering/authz/
+   migration/concurrency invariants; multi-repo composition; or the
+   roadmap marks review required) ⇒ the Architect hands a pinned
+   closure package to QAgent scale review (`in-review`): parent
+   acceptance, child closing artifacts, exact base/head ranges,
+   cross-child contracts, recomposition evidence. QAgent clean ⇒ done;
+   small defect ⇒ fix wave; independent gap ⇒ new child ticket and the
+   parent waits again.
+4. **Non-code parent** (docs, research, independent roll-ups) ⇒ the
+   Architect closes it directly, recording why no aggregate code
+   review applies.
+
+QAgent review is shape-gated, not per-level — reviewing every ancestor
+of every merge would re-review the same code once per tree level. And
+it never substitutes for recomposition: purpose-verdicts are the
+Architect's; correctness of the reconciled aggregate is QAgent's.
+
+### Upward revision: children change, parents must not go stale silently
+
+Child specs WILL legitimately diverge from the contract they inherited.
+The defect is silence, not staleness. Protocol:
+
+1. **Pin at dispatch:** each child records the parent spec path,
+   revision SHA, and inherited section id — "what contract did this
+   child actually execute" is always answerable.
+2. **Local vs parent-impacting:** a child revises its own MEANS freely.
+   Discovery that touches a parent-owned END — purpose, acceptance,
+   cross-child contract, dependency edge, sibling assumption, or the
+   division itself — becomes a **parent-impact proposal** on the
+   child's ticket (evidence + affected clauses). The child never edits
+   the parent's success criteria.
+3. **Reconciliation claim:** a material proposal wakes an Architect
+   onto the parent (`ready-for-architect`, short claim) BEFORE final
+   recomposition when siblings are building against the stale
+   contract. The Architect reconciles the parent's living spec, flags
+   affected in-flight children, releases; the parent returns to
+   waiting.
+4. **Asymmetric authority:** the Architect may reconcile
+   evidence-compelled technical consequences (clarify acceptance
+   without changing intent, revise cross-child contracts, recut
+   children, add gap children). Changing the parent's PURPOSE,
+   materially reducing acceptance, or product/taste calls remain the
+   human's — "we built something else, so we rewrote acceptance" is
+   the failure this guards.
+5. **Lineage check at recomposition:** the Architect reconciles every
+   child against the final parent revision (child, dispatch SHA, later
+   changes, reconciled?, evidence). No advance to QAgent until every
+   material change is incorporated, explicitly irrelevant, or carried
+   by a corrective child. The QAgent package pins the parent SHA; a
+   parent change mid-review restarts the review.
+
+The ledger carries this protocol as events: the proposal, the parent
+revision that resolved it, and the children it flagged.
 
 ## The env-issue lane
 
-- A new ticket category **`env-issue`**: non-blocking environmental
-  friction (missing tool in the pod image, flaky registry, broken test
-  fixture that the worker routed around) filed by ANY worker through its
-  existing registration authority (`--spawned-by <its ticket>`), after
-  the standard search-before-register dedup. Filing is fire-and-continue
-  — the worker's own ticket is never parked for it. An env-issue ticket
-  births per the standard registrar classification (E1's birth rule:
-  registrar judgment, unsure → `ready-for-implementer`; a park state
-  when only the human can act on it); on the interim board `CATEGORIES`
-  gains the label.
-- Blocking environmental failure remains what it is today: a park on the
-  worker's own ticket. The PR `## Confusions` section remains the
-  PR-time record; register an env-issue when the friction is actionable
-  or likely to recur for other workers.
+- A new ticket category **`env-issue`**: environmental friction filed
+  by ANY accountable worker through its existing registration authority
+  (`--spawned-by <its ticket>`), after the standard
+  search-before-register dedup. Filing is fire-and-continue — the
+  worker's own ticket is never parked for it.
+- **Birth rule (v2 — differs from the generic E1 default):**
+
+  > Can the registrar name a concrete repair path that an authorized
+  > agent can execute in a repository or environment it controls?
+  > Yes ⇒ `ready-for-implementer` (or `ready-for-architect` when
+  > design-heavy). No / uncertain ⇒ **`needs-human`**.
+
+  The inverted default is deliberate: environmental friction that an
+  authorized agent could reach would typically already be solved —
+  workers carry kube/gcloud/repo credentials. Dispatching an agent
+  with no capability beyond the reporter's is wasted work. (Generic
+  tickets keep E1's unsure ⇒ `ready-for-implementer`.)
+- A `needs-human` env-issue body carries: the observed friction, what
+  the worker attempted / routed around, why agent permissions cannot
+  resolve it, the exact human intervention requested, and a check that
+  proves resolution. If an ops agent later gains the capability, the
+  ticket reclassifies to an agent lane with a note naming the repair
+  path — category stable, resolver state changes.
+- Blocking environmental failure remains what it is today: a park on
+  the worker's own ticket. The PR `## Confusions` section remains the
+  PR-time record; register an env-issue when the friction is
+  actionable or likely to recur for other workers.
 - **Consumers:** the ops-agent sweep (the cloud program's R3 lane) and
-  the human wake queue. This is the "silent issue" killer from the
-  ideadump: friction becomes a board object with a resolution loop, not
-  a log line.
+  the human wake queue — but the human DECISION queue includes an
+  env-issue only when it actually sits in `needs-human`; agent-lane
+  env issues belong to the ops/filter view, or fire-and-continue
+  contradicts itself by taxing human attention.
+- `env-issue` is a **category, not a lane state** — no dedicated
+  dispatch route, no hardcoded worker species. On the interim board an
+  agent-lane env issue takes the ordinary implement route; on the
+  platform the ops agent may preferentially claim the category.
+
+## Park durability (v2)
+
+Every SDK decision park is mirrored into a durable board projection
+(cc-harness T5) with a stable correlation id; the queue reads that
+projection, so pod death never silently loses a question. A
+board-originated park answers through the board/wake relay; an
+SDK-originated park answers through appserver `decision/respond`; both
+outcomes land back in the event log, and a re-raised decision after pod
+death correlates to the original id idempotently.
 
 ## Naming
 
@@ -85,6 +298,66 @@ first-class address instead of dying in chat logs.
 purpose-unit; renaming the everyday word would churn every skill and
 script for cosmetic gain. What the E3 UI displays on a node is a surface
 decision deferred to E3.
+
+## Implementation ownership (v2)
+
+E2 fixes the contract; four separately-owned deliveries implement it:
+
+1. **Interim doperpowers slice** (this repo, rides
+   `feature/en-cycles`): `env-issue` category + birth rule + worker
+   protocol amendments; epic auto-close replaced by the
+   `ready-for-architect` recomposition return; recomposition/upward-
+   revision doctrine into the decomposing skill. See § Interim slice.
+2. **cc-harness runtime:** T5 durable decision mirroring +
+   answer/re-raise correlation; T11 trusted hook activity emitter;
+   pod-level sessionStore injection (the stock `ccx serve` entrypoint
+   constructs no store — deployment precondition, not config wire).
+3. **E3 board-service core:** the Postgres schema/API — atomic
+   claim/bind/release/reclaim, legal transitions per E1 v1.3.3, the
+   immutable event log, the activity projection, `TimelineReader`, the
+   mirror outbox.
+4. **E3 product:** timeline/queue/terminal rendering — consumes the
+   contract, never defines it.
+
+### R2 rebase requirements
+
+`r2-board-schema.md` (2026-07-30) predates E1 v1.3.3 and is a DRAFT
+input to E3 decomposition, not an implementation target. Named defects
+the rebase must fix — not silently:
+
+- missing `in-review → ready-for-architect` QAgent escalation edge;
+- claims all three park states resume to pre-park (only `needs-human`
+  carries the session-resume contract; `needs-info` is fold-and-recut);
+- requires `plan_path` on every `in-design → ready-for-implementer`
+  transition (the decompose exit legitimately carries none);
+- convergence counting lacks E1's post-adjudication reset;
+- lane-crossing release never clears `ticket.owner_run` (strands the
+  handoff);
+- hardcodes env-issue birth to `ready-for-implementer` (contradicts
+  the v2 birth rule above);
+- epic auto-close instead of the recomposition return path.
+
+## Interim slice (doperpowers, implementable now)
+
+- `_board.py`: `CATEGORIES` gains `env-issue`; `ensure_labels()`
+  creates the label (a consumer repo won't have it — registration
+  would fail).
+- `close_epics` retired in favor of the recomposition return: all
+  required children terminal ⇒ parent to `ready-for-architect` with
+  the `recomposition-due` note; an Architect closes it through the
+  normal lane (code-bearing parents route `in-review` first).
+- Worker protocols (Architect, Implementer, spike, QAgent): the
+  optional fire-and-continue env-issue authority — search first, full
+  body, `--spawned-by`, v2 birth rule, source ticket untouched;
+  subagents still never write.
+- Decomposing skill: the recomposition lifecycle and upward-revision
+  protocol (dispatch-time SHA pinning, parent-impact proposals,
+  reconciliation claims, lineage check).
+- The feedback-triage registrar (`bug | enhancement` only, no
+  provenance) is explicitly OUTSIDE "any worker" for env-issue filing;
+  an origin-less automation registration path is platform work.
+- Honest posture: no ops lane exists here; no derived stream exists
+  here; nothing may imply otherwise.
 
 ## Acceptance (observable)
 
@@ -94,11 +367,25 @@ decision deferred to E3.
 2. A worker files an `env-issue` ticket mid-build and its own ticket
    proceeds uninterrupted — no park, no state change on its ticket.
 3. Any past board state is reconstructible from the event log alone
-   (append-only); reading current state never requires folding the log.
+   (append-only) — including the claim/release history of every run —
+   and reading current state never requires folding the log.
 4. On the interim GitHub board, a v8 worker transcript and a post-E2
    worker transcript are indistinguishable modulo the E1 lane-split
-   vocabulary, which lands there independently (E2 itself adds no new
-   duties; env-issue filing is opt-in authority, not a duty).
+   vocabulary and the additions named in § Interim slice (env-issue
+   filing is opt-in authority, not a duty).
+5. An env-issue whose registrar cannot name an agent-executable repair
+   path is born `needs-human` and appears in the human decision queue;
+   one with a named repair path is born into an agent lane and does
+   NOT appear there.
+6. A parent whose last required child lands is observed in
+   `ready-for-architect` (not done); it reaches done only through an
+   Architect's recomposition — via `in-review` when code-bearing.
+7. A child's parent-impact proposal produces a parent reconciliation
+   event and flags affected in-flight children; the recomposition
+   lineage check names every child's dispatch SHA.
+8. Killing a pod mid-park loses no question: the park is present in
+   the durable projection and its eventual answer correlates to the
+   original decision id.
 
 ## Deferred
 
@@ -107,6 +394,9 @@ decision deferred to E3.
 - Mirror field-mapping (which columns flow to the GitHub/Linear
   mirrors) — board-platform work in the cloud program's round.
 - Retention/compaction policy for the derived stream.
+- The ops-agent worker protocol (R3) and any category-preferential
+  dispatch.
+- Origin-less automation registration (feedback-triage provenance).
 
 ## Decision Log
 
@@ -124,7 +414,7 @@ decision deferred to E3.
   made structural on Postgres.
   Date/Author: 2026-07-30, session decision, human-informed.
 - Decision: Write authority = bound worker + human + automation;
-  subagents excluded; derived stream read-only.
+  subagents excluded; derived stream worker-read-only.
   Rationale: the accountability model — one accountable agent per
   ticket; subagent output flows through it.
   Date/Author: 2026-07-30, human (ideadump) + session.
@@ -142,6 +432,91 @@ decision deferred to E3.
   purpose-unit already carries the doctrine; UI display naming is E3's.
   Rejected: new platform-wide name; UI-only alias decided now.
   Date/Author: 2026-07-30, human.
+- Decision (v2): E2 closes at the domain-contract boundary; four
+  implementation owners (interim slice, cc-harness, E3 core, E3
+  product).
+  Rationale: E2's acceptance crosses four independently-owned systems;
+  one build-epic would have no single reliable owner (the decomposing
+  gate). Rejected: E2 blocked until E3 renders the ledger (couples the
+  doctrine to a product timeline it doesn't need).
+  Date/Author: 2026-08-01, human + session.
+- Decision (v2): Source hierarchy board events > sessionStore > trusted
+  hooks > OTel; OTel demoted to operations plane.
+  Rationale: OTLP permits loss/duplication/reordering by design (spec
+  §retry/ack); sessionStore is turn-grain archival (mirror drops,
+  destructive rewind); hooks are the only trusted intra-turn carrier
+  (R1 verdict). "Read-only" sharpened to worker/client-read-only.
+  Rejected: v1's "sessionStore + OTel" as co-primary carriers (promises
+  a completeness and ordering neither source has).
+  Date/Author: 2026-08-01, human + session, per OTLP spec + R1 +
+  adapter inspection.
+- Decision (v2): Dispatch writes claim-lifecycle records, never
+  workflow state.
+  Rationale: without an automation-authored fenced claim/bind/release
+  event there is no ticket↔session attribution, no reconstructible
+  history, and no terminal authorization; E1's real invariant was that
+  the worker's first WORKFLOW decision is its own.
+  Rejected: v1's literal "dispatch writes nothing" (unimplementable
+  with the required binding).
+  Date/Author: 2026-08-01, human + session.
+- Decision (v2): Binding = ticket → runs → (store namespace,
+  project_key, session_id); wording stays "ticket ↔ accountable
+  claim"; relay phases are runs under one accountable execution.
+  Rationale: one ticket legitimately spans Architect/Implementer/QAgent
+  sessions plus restarts and reclaims; a mutable singular session id
+  destroys history and terminal authz. The composite key is what the
+  shipped adapter actually uses.
+  Rejected: bare ticket↔session_id binding (topological symmetry
+  without lifecycle truth).
+  Date/Author: 2026-08-01, human + session.
+- Decision (v2): Non-leaf nodes are Architect-bracketed (decompose,
+  then recompose); epic auto-close replaced by the
+  `ready-for-architect` recomposition return; QAgent scale review
+  shape-gated to code-bearing integration parents.
+  Rationale: the decomposing doctrine already requires closing a
+  parent by verification, not bookkeeping — the board's close_epics
+  contradicted it; per-level mandatory review would re-review the same
+  code once per ancestor.
+  Rejected: mechanical auto-close (status quo); Implementer/QAgent
+  phases on epics (no implementation of their own); unconditional
+  per-parent review (exponential cost, no marginal signal).
+  Date/Author: 2026-08-01, human + session.
+- Decision (v2): Upward revision — children propose, a re-dispatched
+  Architect reconciles, the human approves material purpose/acceptance
+  changes; dispatch-time SHA pinning + recomposition lineage check.
+  Rationale: child discovery legitimately changes parent contracts;
+  the defect is silent staleness. Asymmetric authority prevents
+  acceptance being rewritten to match what got built.
+  Rejected: frozen parent contracts (fiction); children editing the
+  parent directly (no accountable reconciler); deferring all
+  reconciliation to final recomposition (siblings build against stale
+  contracts meanwhile).
+  Date/Author: 2026-08-01, human + session.
+- Decision (v2): env-issue birth defaults to `needs-human`; agent lane
+  only when the registrar names a concrete authorized repair path.
+  Rationale: environmental friction reachable by agent authority would
+  typically already be solved (workers carry kube/gcloud/repo creds);
+  dispatching an agent with no capability beyond the reporter's is
+  waste. Inverts the generic E1 unsure-default deliberately, for this
+  category only.
+  Rejected: v1.1's generic birth rule for env-issue (routes
+  human-only interventions to agents); unconditional `needs-human`
+  (some friction IS agent-repairable — broken fixtures, image pins).
+  Date/Author: 2026-08-01, human.
+- Decision (v2): Park durability via T5 projection with correlation
+  ids; two answer paths (board relay / appserver respond), one durable
+  queue.
+  Rationale: appserver parks are process memory; pod death otherwise
+  loses questions silently — the reference architecture already
+  requires T5 correlation.
+  Date/Author: 2026-08-01, session, per R1/appserver inspection.
+- Decision (v2): Timeline access through a logical `TimelineReader`
+  interface, not raw SQL joins.
+  Rationale: same-Postgres is the initial deployment, not an
+  invariant; sessionStore promotion is an allowed future (archive
+  tier, separate DB) that must not break E3's query contract.
+  Rejected: hard same-database coupling as a spec premise.
+  Date/Author: 2026-08-01, session.
 
 ## Surprises & Discoveries
 
@@ -152,6 +527,30 @@ decision deferred to E3.
   turned filling it from a doctrine reversal into a join.
   Evidence: implementing-tickets "no live progress mirror" paragraph;
   Postgres sessionStore adapter shipped 2026-07-30 (cc-harness).
+- Observation (2026-08-01): the shipped sessionStore adapter supports
+  the derived stream only conditionally — no ticket knowledge, no
+  parent/child relations in schema, no turn entity, no status, TEXT
+  payloads (deliberately not jsonb: U+0000/lone-surrogate round-trip),
+  `mtime` as the only liveness hint, and hard-delete/rewind semantics.
+  "Zero new worker writes" survives, but only because the LAUNCHER
+  records the binding — zero new system integration it is not.
+  Evidence: postgresSessionStore.ts inspection; appserver
+  registry/turns are process memory; p2 probe (subagents are subpath
+  files, not sessions).
+- Observation (2026-08-01): the board's own code contradicted the
+  decomposing doctrine — close_epics closed parents by bookkeeping
+  while the skill required verification-by-recomposition. Nobody
+  noticed until the ledger design forced the parent lifecycle into
+  events. A contract made structural surfaces the doctrine violations
+  its prose form tolerated.
+  Evidence: _board.py close_epics vs decomposing SKILL.md
+  Recomposition section.
+- Observation (2026-08-01): E2's v1 acceptance was not ownable as one
+  epic — it crossed four systems (plugin, cc-harness, board core,
+  product UI). The cross-spec review, the store inspection, and the
+  repo surface map independently converged on the same contract-vs-
+  implementation split.
+  Evidence: the three 2026-08-01 investigation reports.
 
 ## Outcomes & Retrospective
 
@@ -159,6 +558,17 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-01: v2, pre-implementation maturity round (grill + three
+  independent investigations: repo surface map, cross-spec consistency,
+  sessionStore semantics). Contract boundary fixed (four
+  implementation owners); source hierarchy replaces "sessionStore +
+  OTel" (OTel demoted to ops plane); "dispatch writes nothing"
+  narrowed to workflow state (claim-lifecycle records are dispatch's);
+  ticket→run→session binding model with composite store key; non-leaf
+  lifecycle (Architect-bracketed recomposition, auto-close retired,
+  shape-gated QAgent scale review); upward-revision protocol; env-issue
+  birth inverted to needs-human default; park durability (T5
+  projection); TimelineReader interface; R2 rebase defects named.
 - 2026-07-31: v1.1, consistency fixes from the E1 maturity round's
   cross-spec review (no decision re-opened): the Writers clause restated
   with the full v8 registration authority (child/follow-up/env-issue
