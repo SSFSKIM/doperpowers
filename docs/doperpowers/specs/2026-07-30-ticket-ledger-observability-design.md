@@ -11,9 +11,10 @@
 > **Substrate target:** the AI-native Postgres board (2026-07-30
 > cloud-native pipeline pivot: Postgres is the SSOT; GitHub Issues and
 > Linear are one-way mirrors). On the interim GitHub board, worker
-> behavior stays byte-identical to v8 except the additions named in
-> § Interim slice — the derived stream requires the Postgres convergence
-> and simply doesn't exist there yet.
+> behavior stays byte-identical to v8 modulo the E1 lane-split
+> vocabulary (which lands there independently) and the additions named
+> in § Interim slice — the derived stream requires the Postgres
+> convergence and simply doesn't exist there yet.
 
 ## Purpose
 
@@ -93,7 +94,10 @@ must preserve the interface, not the join.
 
 - **Event log: append-only.** Every transition, park, answer, verdict,
   claim, bind, release, and reclaim is an immutable event (the audit
-  trail — v8's `[board]` comments, made structural).
+  trail — v8's `[board]` comments, made structural) — plus a
+  `field-change` event for every mutable-field write (priority,
+  `plan:`, branch, PR, note), so acceptance 7's reconstruction claim
+  holds for the whole board state, not just workflow state.
 - **Current-state fields: mutable.** Status, priority, current note,
   `plan:`, branch, PR, `owner_run` (v8's `board:meta` block, made
   columns).
@@ -114,16 +118,29 @@ v1's "dispatch writes nothing" conflated two invariants; v2 narrows it:
   ticket between lanes, and the worker's first workflow decision on the
   board remains its own (E1: the gate verdict or the plan-execution
   `in-progress` note).
-- **Dispatch automation MAY — and must — write claim-lifecycle
-  records:** one fenced transaction creates the `run`, sets the
-  ticket's `owner_run`, and appends a `claim` event (actor:
-  automation). Without this there is no ticket↔session attribution and
-  no reconstructible claim history.
+- **Dispatch automation MUST write claim-lifecycle records:** one
+  fenced transaction creates the `run`, sets the ticket's `owner_run`,
+  and appends a `claim` event (actor: automation). Without this there
+  is no ticket↔session attribution and no reconstructible claim
+  history.
 - **Phase end is one transaction:** close the run, clear `owner_run`,
-  append a `release` event. (The stale R2 draft leaves `owner_run`
-  uncleared on lane crossings, which would strand every
-  Architect→Implementer handoff unclaimable — named rebase defect,
-  § R2 rebase.)
+  append a `release` event — executed by the transition endpoint
+  itself, atomically with the state write that ends the phase (not by
+  a separate observer that could lag or die between the two). (The
+  stale R2 draft leaves `owner_run` uncleared on lane crossings, which
+  would strand every Architect→Implementer handoff unclaimable —
+  named rebase defect, § R2 rebase.)
+
+**Run state at parks and exits** — the "at most one active run"
+invariant needs every exit class mapped:
+
+- `needs-human` / `interactive-preferred`: a PAUSE — the run stays
+  open and bound; the answered resume is the same run.
+- `needs-info`, `deferred`, `wontfix`, `done`, and every lane
+  crossing: a SCOPE END — the run closes in the same transaction as
+  the transition. `needs-info` in particular is fold-and-recut (E1):
+  the later re-dispatch is a fresh claim, never a resume; leaving its
+  run open would let a later dispatch create a second active run.
 
 ## Binding identity: ticket → run → session (v2)
 
@@ -140,10 +157,11 @@ exclusive claim. The storage contract beneath the phrase:
   session-store locator: **(store namespace, project_key,
   session_id)** — the composite key the shipped adapter actually uses,
   not a bare session id.
-- The binding is recorded by the trusted launcher/runtime **after
-  observing the real SDK session id from `system/init`** (or by
-  preassigning an id and verifying it at init) — never as a
-  worker-prompt duty.
+- The binding is recorded by trusted automation, **verified against
+  the real session identity at initialization** — never a worker-prompt
+  duty. (Whether the runtime observes the id at `system/init` or
+  preassigns and verifies it is the cc-harness owner's choice; the
+  contract fixes the end, not the mechanism.)
 - `owner_run` is the ticket's mutable pointer to its current claimant;
   history lives in claim/bind/release/reclaim/supersede events, never
   by overwrite.
@@ -171,8 +189,11 @@ relay roles the unit needs:
   QAgent. Small leaves skip the Architect (E1 DIRECT); spikes end in
   findings.
 - **Non-leaf (epic):** the Architect brackets it — decompose at the
-  start, recompose at the end. No Implementer or QAgent phase of its
-  own; while children execute, the parent holds **no worker claim**.
+  start, recompose at the end. No Implementer phase, and no QAgent
+  phase from its own lane protocol (the shape-gated scale review below
+  is the exception); while children execute, the parent holds no
+  **standing** worker claim (transient reconciliation claims
+  excepted).
 
 ### Recomposition replaces epic auto-close
 
@@ -182,9 +203,13 @@ decomposing skill requires closing a parent by VERIFICATION against its
 own whole-unit acceptance, not by bookkeeping. v2 fixes the return
 path:
 
-1. All required children terminal ⇒ the parent returns to
-   `ready-for-architect` (event: `recomposition-due`), never directly
-   to done.
+1. **Trigger:** all children terminal ("required" = every child; the
+   board has no optionality machinery and this spec adds none) ⇒ the
+   parent returns to `ready-for-architect` with a `recomposition-due`
+   note, never directly to done. The old at-least-one-done guard is
+   retired deliberately: an all-wontfix epic also wakes recomposition,
+   and its Architect closes it `wontfix`, closes it `done`, or parks
+   `needs-human` — a verdict, not a stall.
 2. An Architect claims it and verifies the parent's own acceptance —
    integration seams, end-to-end behavior, the contract-lineage check
    below.
@@ -194,9 +219,10 @@ path:
    roadmap marks review required) ⇒ the Architect hands a pinned
    closure package to QAgent scale review (`in-review`): parent
    acceptance, child closing artifacts, exact base/head ranges,
-   cross-child contracts, recomposition evidence. QAgent clean ⇒ done;
-   small defect ⇒ fix wave; independent gap ⇒ new child ticket and the
-   parent waits again.
+   cross-child contracts, recomposition evidence. QAgent clean ⇒ the
+   epic closes done; any defect ⇒ a corrective child ticket (there is
+   no branch to fix-wave — the children are merged) and the parent
+   waits again.
 4. **Non-code parent** (docs, research, independent roll-ups) ⇒ the
    Architect closes it directly, recording why no aggregate code
    review applies.
@@ -206,26 +232,77 @@ of every merge would re-review the same code once per tree level. And
 it never substitutes for recomposition: purpose-verdicts are the
 Architect's; correctness of the reconciled aggregate is QAgent's.
 
+### Board mechanics of the recomposition lifecycle
+
+Every path above is walked through the state machine it rides — an
+escalation is only as real as its return path (E1 retrospective,
+lesson 3). The lifecycle requires these named amendments, each part of
+the interim slice's migration inventory:
+
+- **Epic dispatch carve-out.** Eligibility currently excludes every
+  epic. The ONE exception: an epic sitting in `ready-for-architect` is
+  dispatchable — to the architect lane only — for recomposition and
+  reconciliation claims. Every other epic state remains undispatchable.
+- **The return is board bookkeeping.** The recomposition-due return
+  fires from the epic's pulled in-flight state (`in-progress` or
+  `in-design`) with the same latitude `pull_epics`/`close_epics` have
+  today: exempt from `LEGAL`, and **excluded from convergence
+  counting** — its audit comment carries a distinguishable
+  `[board-epic]` marker so the convergence counter never reads a
+  bookkeeping return as a worker escalation traversal. (Without this,
+  the second recomposition cycle of any epic that needed a gap child
+  would mechanically convert to `needs-human`.)
+- **Where the parent waits.** After a reconciliation release, or after
+  a gap/corrective child is registered, children are active again — the
+  first active child's pull returns the epic to its in-flight state,
+  exactly today's `pull_epics`. "The parent waits again" = the pulled
+  in-flight state.
+- **Scoped terminal authority.** The recomposition Architect may write
+  the epic's terminal verdict (`done` or `wontfix`) — a deliberate,
+  narrow exception to the worker-never-writes-terminal doctrine,
+  legal only from a recomposition claim on an epic (new legal edges
+  from `in-design`, epic-guarded). The QAgent's clean scale-review
+  verdict closes the epic the same way. Leaf tickets are untouched:
+  their terminal writes keep today's rules.
+- **The in-review PR gate.** The board requires a PR to enter
+  `in-review`. For a recomposition parent the pinned closure package
+  is the artifact that satisfies that invariant (recorded in the same
+  meta slot); the gate accepts it only for epics. QAgent scale review
+  is a named protocol variant of reviewing-prs — same engine
+  machinery, different entry artifact and verdict set (close /
+  corrective child; no fix waves, no merge step).
+
 ### Upward revision: children change, parents must not go stale silently
 
 Child specs WILL legitimately diverge from the contract they inherited.
 The defect is silence, not staleness. Protocol:
 
-1. **Pin at dispatch:** each child records the parent spec path,
-   revision SHA, and inherited section id — "what contract did this
-   child actually execute" is always answerable.
+1. **Pin at dispatch:** dispatch automation stamps the parent spec
+   path, revision SHA, and inherited section id into the child's claim
+   record (an extension of the claim-lifecycle write authority — not a
+   worker duty, and not a cut-time snapshot, because the parent moves
+   between cut and dispatch). "What contract did this child actually
+   execute" is always answerable.
 2. **Local vs parent-impacting:** a child revises its own MEANS freely.
    Discovery that touches a parent-owned END — purpose, acceptance,
    cross-child contract, dependency edge, sibling assumption, or the
-   division itself — becomes a **parent-impact proposal** on the
-   child's ticket (evidence + affected clauses). The child never edits
-   the parent's success criteria.
-3. **Reconciliation claim:** a material proposal wakes an Architect
-   onto the parent (`ready-for-architect`, short claim) BEFORE final
-   recomposition when siblings are building against the stale
-   contract. The Architect reconciles the parent's living spec, flags
-   affected in-flight children, releases; the parent returns to
-   waiting.
+   division itself — becomes a **parent-impact proposal**: a
+   structured comment on the child's own ticket
+   (`[parent-impact] <parent> <affected clauses>: <evidence>`),
+   within the child worker's existing own-ticket write authority. The
+   child never edits the parent's success criteria. Materiality is
+   the proposing worker's judgment; the reconciling Architect reviews
+   it (a proposal judged immaterial is answered on the child ticket,
+   not folded into the parent).
+3. **Reconciliation claim:** the sweep's reconcile pass reads
+   unconsumed `[parent-impact]` markers and performs the parent's
+   `ready-for-architect` return (board bookkeeping, same authority as
+   the recomposition-due return — no new worker write on the parent),
+   BEFORE final recomposition when siblings are building against the
+   stale contract. The dispatched Architect reconciles the parent's
+   living spec, flags affected in-flight children, releases; the
+   first active child's pull returns the parent to its in-flight
+   waiting state.
 4. **Asymmetric authority:** the Architect may reconcile
    evidence-compelled technical consequences (clarify acceptance
    without changing intent, revise cross-child contracts, recut
@@ -252,10 +329,11 @@ revision that resolved it, and the children it flagged.
   worker's own ticket is never parked for it.
 - **Birth rule (v2 — differs from the generic E1 default):**
 
-  > Can the registrar name a concrete repair path that an authorized
-  > agent can execute in a repository or environment it controls?
-  > Yes ⇒ `ready-for-implementer` (or `ready-for-architect` when
-  > design-heavy). No / uncertain ⇒ **`needs-human`**.
+  > Can the registrar name a concrete repair path that some authorized
+  > agent of ours can execute in a repository or environment that
+  > agent controls? Yes ⇒ `ready-for-implementer` (or
+  > `ready-for-architect` when design-heavy). No / uncertain ⇒
+  > **`needs-human`**.
 
   The inverted default is deliberate: environmental friction that an
   authorized agent could reach would typically already be solved —
@@ -288,9 +366,14 @@ Every SDK decision park is mirrored into a durable board projection
 (cc-harness T5) with a stable correlation id; the queue reads that
 projection, so pod death never silently loses a question. A
 board-originated park answers through the board/wake relay; an
-SDK-originated park answers through appserver `decision/respond`; both
+SDK-originated park answers through the appserver's respond path; both
 outcomes land back in the event log, and a re-raised decision after pod
-death correlates to the original id idempotently.
+death correlates to the original id idempotently. **One answer binds
+per correlation id: first accepted wins**, enforced by the projection —
+a second answer (e.g. board and appserver racing on the same question)
+is rejected and recorded as a superseded-answer event, so the worker
+never observes two answers and the log never shows an ambiguous
+outcome.
 
 ## Naming
 
@@ -343,16 +426,26 @@ the rebase must fix — not silently:
   creates the label (a consumer repo won't have it — registration
   would fail).
 - `close_epics` retired in favor of the recomposition return: all
-  required children terminal ⇒ parent to `ready-for-architect` with
-  the `recomposition-due` note; an Architect closes it through the
-  normal lane (code-bearing parents route `in-review` first).
+  children terminal ⇒ parent to `ready-for-architect` with the
+  `recomposition-due` note; an Architect closes it through the normal
+  lane (code-bearing parents route `in-review` first). Carried by the
+  mechanics amendments above: the epic `ready-for-architect` dispatch
+  carve-out in eligibility; the bookkeeping return with the
+  `[board-epic]` convergence-exempt marker; the epic-guarded terminal
+  edges from `in-design`; the closure-package satisfaction of the
+  in-review PR gate; the sweep's `[parent-impact]` reconcile pass.
 - Worker protocols (Architect, Implementer, spike, QAgent): the
   optional fire-and-continue env-issue authority — search first, full
   body, `--spawned-by`, v2 birth rule, source ticket untouched;
-  subagents still never write.
+  subagents still never write. The Architect protocol gains the
+  recomposition claim (verification, lineage check, scoped terminal
+  verdict); the QAgent protocol gains the scale-review variant.
 - Decomposing skill: the recomposition lifecycle and upward-revision
-  protocol (dispatch-time SHA pinning, parent-impact proposals,
-  reconciliation claims, lineage check).
+  protocol (dispatch-time pinning, parent-impact proposals,
+  reconciliation claims, lineage check). On the interim board the
+  dispatch-time pin is written by the dispatch machinery into the
+  child's board meta (`parent-pin:`), mirroring the platform's
+  claim-record stamp.
 - The feedback-triage registrar (`bug | enhancement` only, no
   provenance) is explicitly OUTSIDE "any worker" for env-issue filing;
   an origin-less automation registration path is platform work.
@@ -361,31 +454,48 @@ the rebase must fix — not silently:
 
 ## Acceptance (observable)
 
-1. A ticket's rendered timeline (E3) interleaves decision events with
-   derived session activity — and diffing the worker protocols against
-   v8 shows zero new write duties.
-2. A worker files an `env-issue` ticket mid-build and its own ticket
+Each criterion names its verifying owner. **E2 closes when the
+E2-close items pass**; deferred items are verified by their owners
+when those deliveries land — they bind the contract but not E2's
+closure.
+
+*E2-close (interim slice, this repo):*
+
+1. A worker files an `env-issue` ticket mid-build and its own ticket
    proceeds uninterrupted — no park, no state change on its ticket.
-3. Any past board state is reconstructible from the event log alone
-   (append-only) — including the claim/release history of every run —
-   and reading current state never requires folding the log.
-4. On the interim GitHub board, a v8 worker transcript and a post-E2
+2. On the interim GitHub board, a v8 worker transcript and a post-E2
    worker transcript are indistinguishable modulo the E1 lane-split
    vocabulary and the additions named in § Interim slice (env-issue
-   filing is opt-in authority, not a duty).
-5. An env-issue whose registrar cannot name an agent-executable repair
+   filing is opt-in authority, not a duty; zero new write duties).
+3. An env-issue whose registrar cannot name an agent-executable repair
    path is born `needs-human` and appears in the human decision queue;
    one with a named repair path is born into an agent lane and does
    NOT appear there.
-6. A parent whose last required child lands is observed in
+4. A parent whose last child lands is observed in
    `ready-for-architect` (not done); it reaches done only through an
-   Architect's recomposition — via `in-review` when code-bearing.
-7. A child's parent-impact proposal produces a parent reconciliation
-   event and flags affected in-flight children; the recomposition
-   lineage check names every child's dispatch SHA.
+   Architect's recomposition — via `in-review` when code-bearing —
+   and a second recomposition cycle (gap child) does NOT trip the
+   convergence counter.
+5. A child's `[parent-impact]` proposal produces the parent's
+   reconciliation return and the flagging of affected in-flight
+   children; the recomposition lineage check names every child's
+   pinned parent revision.
+
+*Deferred verification — owner E3 (board core + product):*
+
+6. A ticket's rendered timeline interleaves decision events with
+   derived session activity.
+7. Any past board state is reconstructible from the event log alone
+   (append-only) — including the claim/release history of every run
+   and every mutable-field change — and reading current state never
+   requires folding the log.
+
+*Deferred verification — owner cc-harness:*
+
 8. Killing a pod mid-park loses no question: the park is present in
-   the durable projection and its eventual answer correlates to the
-   original decision id.
+   the durable projection, its eventual answer correlates to the
+   original decision id, and a racing second answer is rejected as
+   superseded.
 
 ## Deferred
 
@@ -503,6 +613,20 @@ the rebase must fix — not silently:
   human-only interventions to agents); unconditional `needs-human`
   (some friction IS agent-repairable — broken fixtures, image pins).
   Date/Author: 2026-08-01, human.
+- Decision (v2.1): The recomposition Architect holds scoped terminal
+  authority — it may write an epic's `done`/`wontfix` from a
+  recomposition claim (epic-guarded edges from `in-design`); the
+  QAgent's clean scale-review verdict closes the same way.
+  Rationale: recomposition IS the verification event the decomposing
+  doctrine requires before closure; routing every verified epic
+  through a `needs-human` close would tax the human queue with
+  verdicts already evidenced. The exception is narrow: epics only,
+  recomposition claims only — leaf terminal writes keep the
+  worker-never-closes doctrine.
+  Rejected: needs-human handoff for every epic close (queue tax on
+  evidenced verdicts); unrestricted worker terminal authority
+  (overturns the standing doctrine for no need).
+  Date/Author: 2026-08-01, session, from the fable review's finding.
 - Decision (v2): Park durability via T5 projection with correlation
   ids; two answer paths (board relay / appserver respond), one durable
   queue.
@@ -558,6 +682,22 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-01: v2.1, independent fable spec review (14 findings, all
+  adopted). The critical cluster: the recomposition lifecycle had been
+  designed as doctrine without walking it through the board machinery
+  it rides — epics were undispatchable (no consumer for
+  recomposition-due), no legal path let an Architect write done, the
+  return tripped the convergence counter on second cycles, and the
+  in-review PR gate rejected epics. New § Board mechanics names each
+  amendment. Also: writers/actors fixed for parent-impact proposals
+  (child comment + sweep reconcile pass) and dispatch-time pinning
+  (claim-record stamp); run-state-at-parks map (needs-human pauses,
+  needs-info closes); field-change events restore the event-log
+  reconstruction claim; first-accepted-answer arbitration; acceptance items
+  tagged with verifying owners (E2-close vs deferred); trigger
+  predicate pinned (all children, one-done guard deliberately
+  retired); wording fixes (standing claim, birth-rule antecedent,
+  MUST, mechanism footnoted to cc-harness).
 - 2026-08-01: v2, pre-implementation maturity round (grill + three
   independent investigations: repo surface map, cross-spec consistency,
   sessionStore semantics). Contract boundary fixed (four
