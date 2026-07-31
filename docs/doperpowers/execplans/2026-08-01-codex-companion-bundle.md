@@ -18,8 +18,8 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 
 ## Surprises & Discoveries
 
-- Observation: the OpenAI plugin's review/task execution paths never leave a resident broker process. `plugins/codex/scripts/lib/codex.mjs` connects with `disableBroker: true` (per-invocation `codex app-server` child) or `reuseExistingBroker: true` (attach only if one already exists); `ensureBrokerSession` — the only spawner — is reached solely from hook/stop-gate paths we are not vendoring. Dropping the hook layer therefore leaks nothing.
-  Evidence: `grep -n "disableBroker\|reuseExistingBroker" plugins/codex/scripts/lib/codex.mjs` → lines 635, 645 (`disableBroker: true`), 944, 982 (`reuseExistingBroker: true`).
+- Observation (CORRECTED — the original version of this entry was wrong): review/task execution paths DO spawn a resident broker. `withAppServer` calls `CodexAppServerClient.connect(cwd)` with no options, and that default path reaches `ensureBrokerSession`, spawning a detached broker + `codex app-server` pair per workspace; the `disableBroker: true` sites the original analysis leaned on are only the busy/error fallback. Upstream's SessionEnd hook was doing real teardown work. The vendored test suite leaks one pair per temp workspace per run (~28/run). Resolution without patching: set `CODEX_COMPANION_APP_SERVER_ENDPOINT` to a never-existing socket — broker connect fails ENOENT and `withAppServer` retries with a per-call direct client that dies with the call; the test runner reaps `codex-plugin-test-*` processes on exit.
+  Evidence: the exit-gate Codex review flagged it (P1) and `ps` showed ~30 live `app-server-broker.mjs` pairs including one for this workspace; after adopting the kill-switch env, a live `task` run completed with zero broker processes remaining.
 - Observation: the runtime hard-requires `.claude-plugin/plugin.json` next to `scripts/` — `lib/app-server.mjs` reads it at module load to build the client-info version it reports to the Codex app-server. The initial vendor set omitted it and every runtime test failed with ENOENT. Resolution: vendor it byte-identical as part of the runtime tree.
   Evidence: `Error: ENOENT … skills/codex-companion/runtime/.claude-plugin/plugin.json` from `app-server.mjs:20` during `node --test`; suite went 81 pass / 0 fail after the copy.
 - Observation: any session with the openai-codex plugin installed has `CLAUDE_PLUGIN_DATA`, `CODEX_COMPANION_SESSION_ID`, and `CODEX_COMPANION_TRANSCRIPT_PATH` injected into its shell environment by that plugin's SessionStart hook. This broke the state-dir tmpdir-fallback test and would silently redirect our pinned state root until the plugin is uninstalled. The test runner strips these vars; the skill's explicit `CLAUDE_PLUGIN_DATA=…` prefix wins either way.
@@ -28,6 +28,8 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
   Evidence: `git log --all -- scratch-review-target.sh` showed it inside the amigo-rename commit; after amend, review returned the P2 finding with the exact line reference.
 - Observation: an interrupted foreground run leaves its job record (and possibly its Codex turn) alive as `running` — the harness kill doesn't reach the job ledger. `cancel <job-id>` cleaned it up correctly.
   Evidence: `status` showed the orphan at 7m11s elapsed; `cancel review-ms9gm7f6-sujbj2` → "Cancelled".
+- Observation: a `task` prompt passed as one quoted argument is re-tokenized (`normalizeArgv` splits a single-element argv), so flag-like words inside the prompt become real flags — `task 'explain why --write must be opt-in'` parses as `write: true` with the token stripped from the prompt: a silent write-permission escalation. A leading `--` disables flag parsing and preserves the prompt as one positional.
+  Evidence: replayed the runtime's own parse pipeline: single-arg → `{"options":{"write":true},"positionals":["explain","why","must","be","opt-in"]}`; with `--` → `{"options":{},"positionals":["explain why --write must be opt-in"]}`. Skill docs now mandate `--` (or `--prompt-file`).
 
 ## Decision Log
 
@@ -52,6 +54,10 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 - Decision: tests are vendored *adapted*, not byte-identical — the import prefix `../plugins/codex/` is rewritten to point at the vendored tree.
   Rationale: byte-identity protects the diff channel for the runtime we execute; tests are our safety net and must import from where the code actually lives. A mechanical prefix rewrite is trivially re-appliable to future upstream test updates.
   Date/Author: 2026-08-01 / planning session.
+
+- Decision: dispositions for the exit-gate Codex review (7 findings), resolved without violating byte-identity — every fix is call-site env, docs, or test-runner: (1) prompt reparse/`--write` escalation → docs mandate `--` or `--prompt-file` (verified against the real parser); (2) untracked-symlink disclosure in working-tree review → accepted as an upstream limitation, documented as "don't review untrusted checkouts"; (3) broker leak → `CODEX_COMPANION_APP_SERVER_ENDPOINT` kill-switch in the canonical invocation + test-runner reaper; (4) `state.json` concurrent-write race → docs direct parallel lens runs to per-lens state roots; (5) `task --background` persist-after-spawn race → docs ban the flag, harness background Bash is the one backgrounding mechanism; (6) jobs.md's conflated backgrounding contract → rewritten per-verb; (7) `spark` alias silently un-normalized on reviews → docs scope the alias to `task`.
+  Rationale: the runtime stays diffable against upstream; every finding either has a call-site remedy or is a documented boundary. Nothing needed a code patch.
+  Date/Author: 2026-08-01 / exit-gate review evaluation.
 
 ## Outcomes & Retrospective
 

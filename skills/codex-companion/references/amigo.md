@@ -9,10 +9,22 @@ executor you steer mid-task. Prints Codex's final response; records a job
 (see references/jobs.md).
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" task \
-      [--background] [--write] [--resume-last|--fresh] \
+      [--write] [--resume-last|--fresh] \
       [--model <m|spark>] [--effort none|minimal|low|medium|high|xhigh] \
-      [--prompt-file <path>] [prompt text]
+      [--prompt-file <path>] -- [prompt text]
+
+The `--` before inline prompt text is load-bearing: a prompt passed as one
+quoted argument gets re-tokenized, so flag-like words inside it become
+real flags — observed: `task 'explain why --write must be opt-in'` parsed
+as `write: true` with the token stripped from the prompt, silently
+granting edit permission. `--` stops flag parsing and keeps the prompt
+intact; `--prompt-file` avoids the issue entirely. And don't use the
+runtime's own `--background` flag here — it spawns a detached worker with
+a persist-after-spawn race that can strand the job as "queued" forever;
+for a long task, background the whole foreground command with harness
+Bash instead (references/jobs.md).
 
 - Read-only by default. `--write` lets Codex edit the working tree — pass
   it only when edits are the point (a fix, an implementation), not for

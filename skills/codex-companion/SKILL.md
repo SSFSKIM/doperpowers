@@ -15,12 +15,19 @@ Every invocation follows one shape — `<skill-base>` is this skill's base
 directory, printed when the skill loads:
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" <verb> [flags…]
 
-The `CLAUDE_PLUGIN_DATA` prefix is mandatory: it pins where job state and
-resumable threads live. Unset, the runtime falls back to a purgeable
-tmpdir, and a leftover OpenAI-plugin hook can silently redirect it —
-references/jobs.md has the details.
+Both env vars are mandatory. `CLAUDE_PLUGIN_DATA` pins where job state and
+resumable threads live — unset, the runtime falls back to a purgeable
+tmpdir, and a leftover OpenAI-plugin hook can silently redirect it.
+`CODEX_COMPANION_APP_SERVER_ENDPOINT` points at a socket that never
+exists, which forces the per-call direct app-server path — without it,
+every review/task spawns a detached broker + codex process pair that
+outlives the session (the upstream plugin cleaned these up with a
+SessionEnd hook this bundle deliberately does not have; we observed ~30
+leaked pairs before adopting this kill-switch). references/jobs.md has
+the details on both.
 
 Verbs, and where each is specified:
 
