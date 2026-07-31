@@ -803,16 +803,31 @@ deferred to a follow-up by design.
    enumerate what the constant's VALUE guaranteed, not just what the
    lookup must now return.
 2. *A whole-branch review is not a formality when the change is a state
-   machine.* Every task passed its own review; the merge blocker was found
-   only by the pass that read all 33 commits at once, and it would have
-   broken the review loop's primary park-answering path on first use.
-3. *Two spellings of one field are two concepts.* The `plan:` pin's real-
+   machine — and one whole-branch review is not enough.* Every task passed
+   its own review; the first merge blocker was found only by the pass that
+   read all 33 commits at once. Then an independent second review found
+   seven more, three of them the same class the first pass had explicitly
+   cleared — it reported "every prose-instructed edge legal, no trapped
+   states" while a spike in the architect lane had no legal move, the
+   epic pull wrote a forbidden edge, and a resumed Architect landed in a
+   state its protocol cannot exit. A reviewer's clean bill on a state
+   machine is a hypothesis, not evidence. The cheapest way to test it is
+   a reviewer that shares none of the first one's framing.
+3. *An escalation is only as real as its return path.* Every new
+   escalation edge in this design was checked for legality and for
+   convergence, and one was never checked for RESUMPTION: the review
+   loop's hand-off to the architect lane had no mechanism that could ever
+   bring a reviewer back, so it silently converted "park for the human"
+   into "abandon the PR". Adding a state transition is not the same as
+   adding a state to the machine — the new state needs an owner, an exit,
+   and something that fires the exit.
+4. *Two spellings of one field are two concepts.* The `plan:` pin's real-
    SHA and `pre-spec` values look like variants and are not: one is an
    authorization event, the other a plan-need ruling. Two rules written
    during implementation keyed on "has a pin" and were wrong for the
    sentinel. Recorded in Surprises; any future rule reading the pin must
    say which value it means.
-4. *Prose that instructs a worker needs the same pinning as code.* The
+5. *Prose that instructs a worker needs the same pinning as code.* The
    new review-loop rules shipped unpinned until the acceptance pass caught
    it, while the equivalent implementing and architecting text had
    assertions from the start. In this repo a protocol sentence is
