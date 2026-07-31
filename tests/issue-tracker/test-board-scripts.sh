@@ -831,7 +831,7 @@ out="$(run board-answer.sh "$ans_t" --posted)"
 assert_contains "$(cat "$STUB_STATE/finalize.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay finalizes a lingering finished Claude owner before status check"
 assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
 assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
-assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "1" "--posted posts no second [answers] comment"
+assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "2" "--posted posts its own [answers] marker (the mechanical convergence reset)"
 
 # a mid-turn session is refused — nothing is waiting for answers
 run board-transition.sh "$ans_t" needs-human "round 3 questions" >/dev/null
@@ -879,6 +879,23 @@ cat > "$DAEMON_HOME/eeeeeeee-1111-2222-3333-444444444444.json" <<META
 META
 run board-answer.sh "$ans_arch_t" "layout A" >/dev/null
 assert_contains "$(state "s['issues']['$ans_arch_t']['labels']")" "status:in-design" "answered architect park resumes into in-design"
+
+# lane-aware return: an in-review park's answer resumes into in-review
+# WITHOUT re-supplying --pr (regression test for the merge blocker: the
+# invariant is "a ticket in in-review always has a PR recorded", not
+# "every entry needs the flag" — PRE_PARK["in-review"] = "in-review"
+# relies on the pr: meta already recorded at the original entry).
+out="$(run board-register.sh "In-review answer probe" enhancement P2 --body-file "$SPEC_BODY")"
+ans_rev_t="${out%% *}"
+run board-transition.sh "$ans_rev_t" in-progress >/dev/null
+run board-transition.sh "$ans_rev_t" in-review "opened PR" --pr https://github.com/test/repo/pull/77 >/dev/null
+run board-transition.sh "$ans_rev_t" needs-human "reviewer flagged a design gap" >/dev/null
+cat > "$DAEMON_HOME/ffffffff-1111-2222-3333-444444444444.json" <<META
+{"uuid": "ffffffff-1111-2222-3333-444444444444", "status": "idle", "ticket": "$ans_rev_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$ans_rev_t" "still looks right" >/dev/null
+assert_contains "$(state "s['issues']['$ans_rev_t']['labels']")" "status:in-review" "answered in-review park resumes into in-review without re-supplying --pr"
 
 unset DAEMON_SCRIPTS STUB_STATE
 
@@ -1018,6 +1035,67 @@ assert_fails run board-transition.sh "$mer_t" ready-for-architect           # ed
 out="$(run board-transition.sh "$mer_t" ready-for-architect "blocked: plan assumed an API that doesn't exist")"
 assert_contains "$out" "#$mer_t: in-progress → ready-for-architect" "mid-execution return applied (legal edge)"
 assert_contains "$(state "s['issues']['$mer_t']['comments'][-1]")" "[board] in-progress → ready-for-architect: blocked: plan assumed an API that doesn't exist" "escalation comment carries the arrow-keyed edge form (convergence-counted)"
+
+# ---- convergence reset via --posted relay --------------------------------------
+# The unattended sweep's RELAY pass always calls board-answer.sh --posted (the
+# human commented directly on the ticket, never through board-answer's inline
+# --answers arg). board-transition's convergence-park reset fires only at a
+# comment prefixed [answers] — if --posted never posted one, a resumed
+# worker's human-authorized retry of the SAME escalation edge would be
+# bounced right back to needs-human: exactly the livelock the human's answer
+# was meant to end. Reuses the board-answer daemon stubs.
+echo "convergence reset (--posted relay):"
+STUB_DS2="$TEST_ROOT/stub-daemon-scripts-2"; mkdir -p "$STUB_DS2"
+STUB_STATE2="$TEST_ROOT/stub-state-2"; mkdir -p "$STUB_STATE2"
+export STUB_STATE="$STUB_STATE2"
+cat > "$STUB_DS2/daemon-resume.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$STUB_STATE/daemon-resume.uuid"
+printf '%s' "$2" > "$STUB_STATE/daemon-resume.msg"
+echo "resumed: [daemon stub]"
+STUB
+chmod +x "$STUB_DS2/daemon-resume.sh"
+cat > "$STUB_DS2/daemon-finalize.sh" <<'STUB'
+#!/usr/bin/env bash
+echo noop
+STUB
+chmod +x "$STUB_DS2/daemon-finalize.sh"
+cat > "$STUB_DS2/daemon-retire.sh" <<'STUB'
+#!/usr/bin/env bash
+true
+STUB
+chmod +x "$STUB_DS2/daemon-retire.sh"
+export DAEMON_SCRIPTS="$STUB_DS2"
+
+run board-register.sh "Convergence reset probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+cr_t="$(state "s['next']-1")"
+run board-transition.sh "$cr_t" in-progress >/dev/null
+run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A" >/dev/null                    # 1st traversal
+run board-transition.sh "$cr_t" in-design >/dev/null
+run board-transition.sh "$cr_t" ready-for-implementer "plan ready" --plan "docs/plan.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$cr_t" in-progress >/dev/null
+out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A again")"                # 2nd traversal
+assert_contains "$out" "#$cr_t: in-progress → needs-human" "2nd traversal converts (unreset baseline)"
+cat > "$DAEMON_HOME/99999999-1111-2222-3333-444444444444.json" <<META
+{"uuid": "99999999-1111-2222-3333-444444444444", "status": "idle", "ticket": "$cr_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$cr_t" --posted >/dev/null
+assert_contains "$(state "s['issues']['$cr_t']['comments'][-2]")" "[answers]" "--posted relay posts an [answers] marker for the mechanical reset"
+out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A still")"                # 3rd traversal
+assert_contains "$out" "#$cr_t: in-progress → ready-for-architect" "3rd traversal after a --posted relay does NOT convert (reset fired)"
+unset DAEMON_SCRIPTS STUB_STATE
+
+# ---- in-design orphan (board-reconcile) ----------------------------------------
+# The missing-daemon check must cover the Architect's in-flight state too,
+# not just the Implementer's — an orphaned in-design ticket is mid-design
+# work with nothing local to show for it until its next park/handoff.
+echo "in-design orphan (board-reconcile):"
+run board-register.sh "In-design orphan probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+id_orphan_t="$(state "s['next']-1")"
+run board-transition.sh "$id_orphan_t" in-design >/dev/null      # no bound daemon
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "orphaned  #$id_orphan_t: in-design" "orphaned in-design flagged (Architect's in-flight state)"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
