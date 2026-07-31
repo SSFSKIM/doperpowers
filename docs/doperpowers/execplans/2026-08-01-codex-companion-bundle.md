@@ -12,8 +12,8 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
 
 - [x] (2026-08-01) Milestone 1: runtime vendored byte-identically (incl. `.claude-plugin/plugin.json` — see Surprises), adapted tests pass under `node --test`: 81 pass / 0 fail via `tests/codex-companion/run-codex-companion-tests.sh`. `commands.test.mjs` and `bump-version.test.mjs` deleted (they test the dropped commands layer and the upstream repo's version tooling, not the runtime).
 - [x] (2026-08-01) Milestone 2: `skills/codex-companion/SKILL.md` (index, model-invocable, trigger-only description) + `references/{reviews,delegation,jobs}.md` written; canonical invocation verified live via `setup --json` (ready:true, codex-cli 0.145.0, ChatGPT auth). Note: vendored `setup` output mentions `/codex:setup --enable-review-gate` in nextSteps — an upstream advisory string we cannot patch (byte-identity); harmless.
-- [ ] Milestone 3: live verification against the real Codex CLI (foreground review, background review + status/result, task resume round-trip)
-- [ ] Milestone 4: consumer swaps (execplan exit-gate line, user-global CLAUDE.md routing)
+- [ ] Milestone 3: live verification against the real Codex CLI (completed: `setup` ready-check; foreground working-tree review returned a correct P2 finding on the planted bug, exit 0; `status` listed running/finished jobs at the pinned state root; `cancel <job-id>` killed an orphaned job; `task` + `task --resume-last` round-trip resumed the same thread with a context-dependent correct answer. Remaining: background review completion → `result` retrieval.)
+- [x] (2026-08-01) Milestone 4: consumer swaps — `skills/execplan/SKILL.md` exit gate and `skills/subagent-driven-development/SKILL.md` final-review step (a consumer the plan missed, found by grep) now route through doperpowers:codex-companion; `~/.claude/CLAUDE.md` Independent Reviews section rewritten to the skill's `review` verb (`--model gpt-5.6-sol`, background Bash, effort via codex config). `skills/reviewing-prs` deliberately untouched (deferred round).
 - [ ] Milestone 5: version bump, release, uninstall the openai-codex plugin
 
 ## Surprises & Discoveries
@@ -24,6 +24,10 @@ After this change, doperpowers carries its own `skills/codex-companion/` bundle:
   Evidence: `Error: ENOENT … skills/codex-companion/runtime/.claude-plugin/plugin.json` from `app-server.mjs:20` during `node --test`; suite went 81 pass / 0 fail after the copy.
 - Observation: any session with the openai-codex plugin installed has `CLAUDE_PLUGIN_DATA`, `CODEX_COMPANION_SESSION_ID`, and `CODEX_COMPANION_TRANSCRIPT_PATH` injected into its shell environment by that plugin's SessionStart hook. This broke the state-dir tmpdir-fallback test and would silently redirect our pinned state root until the plugin is uninstalled. The test runner strips these vars; the skill's explicit `CLAUDE_PLUGIN_DATA=…` prefix wins either way.
   Evidence: `env | grep CLAUDE_PLUGIN_DATA` in this session → `/Users/new/.claude/plugins/data/codex-openai-codex`.
+- Observation: the first foreground-review verification returned "no changes to review" and it was the runtime being RIGHT, not a bug: an interrupted earlier attempt had already created the scratch fixture, and a later `git add -A` commit had swept it in, so the tree really was clean. Amended the file out of that commit and re-ran with a genuinely untracked fixture → correct P2 finding (unquoted `$CONFIG_FILE` word-splitting). Lesson: `git add -A` around scratch fixtures is how verification fixtures leak into history.
+  Evidence: `git log --all -- scratch-review-target.sh` showed it inside the amigo-rename commit; after amend, review returned the P2 finding with the exact line reference.
+- Observation: an interrupted foreground run leaves its job record (and possibly its Codex turn) alive as `running` — the harness kill doesn't reach the job ledger. `cancel <job-id>` cleaned it up correctly.
+  Evidence: `status` showed the orphan at 7m11s elapsed; `cancel review-ms9gm7f6-sujbj2` → "Cancelled".
 
 ## Decision Log
 
