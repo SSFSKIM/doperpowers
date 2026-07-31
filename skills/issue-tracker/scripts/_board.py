@@ -104,17 +104,9 @@ LEGAL = {
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
     # merged SHOULD surface as a close candidate (the finalize cue).
     "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
-    # in-progress: added alongside the Finding C fix (pull_epics) — every
-    # other PULLABLE park state (needs-info/needs-human/interactive-
-    # preferred) already permits direct entry to in-progress (an active
-    # child, or a human taking the ticket up, overrides the park); deferred
-    # was the one PULLABLE member missing the edge, so an epic parked
-    # deferred whose child went active hit the exact illegal write Finding
-    # C reports for ready-for-architect, just unreported because nothing
-    # asserted the table before now.
     "deferred":        {"ready-for-architect", "ready-for-implementer",
                         "needs-info", "needs-human", "interactive-preferred",
-                        "in-progress", "wontfix"},
+                        "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
 }
@@ -539,23 +531,32 @@ def pull_epics(tickets, tid, lines):
     """First active child pulls its parent chain to its lane's in-flight
     state — PRE_PARK's queue -> in-flight mapping, reused rather than a
     second table (ready-for-architect -> in-design; every other PULLABLE
-    queue has no PRE_PARK entry and defaults to in-progress, matching its
-    existing legal edge). Writing straight to "in-progress" regardless of
-    the parent's queue used to write an edge LEGAL forbids whenever the
-    epic sat in ready-for-architect (LEGAL["ready-for-architect"] has no
-    in-progress) — silent, since apply_state itself never checks legality
-    (close_epics needs that same latitude for its own epic-closing edges).
-    The assert is the guard against a future PULLABLE addition (or a
-    LEGAL edit) reintroducing the same silent bypass — it fires only if
-    the two tables drift out of sync again.
+    queue has no PRE_PARK entry and defaults to in-progress, its existing
+    in-flight state). Writing straight to "in-progress" regardless of the
+    parent's queue used to strand a ready-for-architect epic outside every
+    state its own lane's happy path or park returns ever produce.
+
+    This is the board's own bookkeeping on an epic — never dispatched,
+    never gated — the same latitude close_epics already has for its
+    epic-closing writes; it does not answer to LEGAL, which governs what a
+    WORKER or human may transition to by hand. (An earlier version of this
+    fix asserted `to in LEGAL[pstate]` and, to satisfy that, added
+    deferred -> in-progress to LEGAL itself — which silently legalized a
+    human/worker skipping the queue and the gate on a deferred ticket.
+    That was the wrong invariant to assert; reverted.) The real invariant
+    is structural, not legal: an epic pull only ever lands on an in-flight
+    state (ACTIVE), never a queue or park — asserted below so a future
+    PULLABLE addition whose PRE_PARK-or-default target resolves outside
+    ACTIVE fails loud instead of silently routing an epic somewhere
+    nonsensical.
     """
     p = tickets[tid].get("parent")
     while p and p in tickets and tickets[p]["state"] in PULLABLE:
         pstate = tickets[p]["state"]
         to = PRE_PARK.get(pstate, "in-progress")
-        assert to in LEGAL[pstate], (
-            "pull_epics: %s -> %s is not a legal edge (PRE_PARK/LEGAL "
-            "drifted out of sync for a PULLABLE state)" % (pstate, to))
+        assert to in ACTIVE, (
+            "pull_epics: %s -> %s is not an in-flight state (PRE_PARK "
+            "drifted out of sync with ACTIVE for a PULLABLE state)" % (pstate, to))
         lines.append(apply_state(tickets, p, to, "epic: child #%s active" % tid))
         p = tickets[p].get("parent")
 

@@ -1099,6 +1099,24 @@ assert_contains "$out" "#$epic_c_t: ready-for-architect → in-design" "epic par
 assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-design" "epic label reflects the legal in-flight state"
 assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
 
+# pull_epics is the board's own bookkeeping on an epic (never dispatched,
+# never gated) — it does not answer to LEGAL, the same latitude close_epics
+# already has. A deferred epic's active child still pulls it to in-progress
+# (PRE_PARK has no deferred entry, so the default applies) — but that must
+# stay pure bookkeeping: an ordinary worker/human transition straight from
+# deferred to in-progress stays illegal (LEGAL["deferred"] unchanged), so a
+# deferred TICKET itself cannot skip its queue and gate this way.
+run board-register.sh "Deferred epic" enhancement P1 --state deferred --body-file "$SPEC_BODY" >/dev/null
+epic_def_t="$(state "s['next']-1")"
+run board-register.sh "Deferred epic child" enhancement P2 --parent "$epic_def_t" --body-file "$SPEC_BODY" >/dev/null
+child_def_t="$(state "s['next']-1")"
+out="$(run board-transition.sh "$child_def_t" in-progress)"
+assert_contains "$out" "#$epic_def_t: deferred → in-progress" "a deferred epic's active child still pulls it to in-progress (board bookkeeping)"
+assert_contains "$(state "s['issues']['$epic_def_t']['labels']")" "status:in-progress" "deferred epic label reflects the pull"
+run board-register.sh "Plain deferred ticket" enhancement P2 --state deferred --body-file "$SPEC_BODY" >/dev/null
+plain_def_t="$(state "s['next']-1")"
+assert_fails run board-transition.sh "$plain_def_t" in-progress   # LEGAL["deferred"] unchanged: no gate-skip for a worker/human
+
 # ---- pre-park + lane-aware answer return (E1 transition 7) --------------------
 echo "pre-park returns:"
 run board-register.sh "Architect park probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
