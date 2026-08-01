@@ -280,9 +280,22 @@ echo "E2 board + decomposing doctrine (the mechanics' own prose):"
 DECOMPOSING="$REPO_ROOT/skills/decomposing/SKILL.md"
 [ -f "$DECOMPOSING" ] || { echo "missing $DECOMPOSING"; exit 1; }
 decomposing="$(cat "$DECOMPOSING")"
-assert_contains "$tracker" "env-issue" "board doctrine lists the env-issue category"
-assert_contains "$tracker" "recomposition" "board doctrine carries the recomposition return"
+# Pin the load-bearing CLAUSES, not the bare vocabulary: a bare "env-issue"
+# is satisfied by the toolkit table row alone, and a bare "recomposition"
+# by any passing mention — neither would notice the doctrine going wrong.
+assert_contains "$tracker" '`bug` | `enhancement` | `spike` | `env-issue`' \
+    "board doctrine: the category set is the four-member one"
+assert_contains "$tracker" 'defaults to `needs-human`' \
+    "board doctrine: env-issue's birth default is the inverted one"
+assert_contains "$tracker" 'REQUIRES `--note` naming the' \
+    "board doctrine: the env-issue default path requires --note (register refuses otherwise)"
+assert_contains "$tracker" 'RETURNS to `ready-for-architect`' \
+    "board doctrine: a fully-terminal epic returns for recomposition instead of auto-closing"
 assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
+assert_contains "$tracker" "convergence counter" \
+    "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
+assert_contains "$tracker" "its lane's in-flight state" \
+    "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"
 assert_not_contains "$tracker" "are never dispatched" \
     "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
 assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the proposal marker"

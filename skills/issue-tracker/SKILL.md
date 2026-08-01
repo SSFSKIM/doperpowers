@@ -47,7 +47,7 @@ unattended repos).
 | **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | doperpowers:implementing |
 | **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human` / `ready-for-architect`); finding-tickets; post-merge finalize; a scale review's clean `done` on a recomposition epic | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
-| **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the `in-progress` pull and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
+| **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
 
 ## Categories
@@ -60,12 +60,13 @@ worker hit and routed around (missing tool in the image, flaky registry,
 broken fixture), filed as its own ticket so the report survives the
 session that found it.
 
-An `env-issue`'s birth rule is INVERTED from every other category's.
-Elsewhere unsure means `ready-for-implementer`; here unsure means
-`needs-human`, because friction an authorized agent could have cleared
-would usually already be cleared — the implement queue is the wrong
-default. Registration on that default path REQUIRES `--note` naming the
-intervention being asked for (register refuses without it). An explicit
+An `env-issue` defaults to `needs-human` — its birth rule is INVERTED
+from every other category's. Elsewhere unsure means
+`ready-for-implementer`; here unsure means the human, because friction an
+authorized agent could have cleared would usually already be cleared, so
+the implement queue is the wrong default. Registration on that default
+path REQUIRES `--note` naming the intervention being asked for (register
+refuses without it). An explicit
 `--state` is the registrar's positive claim that a concrete repair path
 exists for some agent to execute; that claim is what buys a lane queue.
 Filing is fire-and-continue authority for every worker protocol — the
@@ -83,7 +84,7 @@ passes through `confident-ready` between `in-review` and `done`.
 | `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route); on an EPIC this is the recomposition/reconciliation claim (Epics below) | — |
 | `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
 | `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → implementer) | — |
-| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
+| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an implementer-queued or parked epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
@@ -131,8 +132,9 @@ land twice: the current note in the issue's `board:meta` body block, the audit
 trail as `[board]` comments.
 
 **Epics** (issues with sub-issues) ride their children: the first active
-child pulls the parent to `in-progress`, and it stays there while they
-run. An epic whose children are all terminal is never closed by
+child pulls the parent to its lane's in-flight state (`in-design` for an
+epic in the architect queue, `in-progress` otherwise), and it stays
+there while they run. An epic whose children are all terminal is never closed by
 bookkeeping: it RETURNS to `ready-for-architect` (`recomposition-due`)
 and an Architect closes it by verification — directly for non-code
 parents, via `in-review` with a closure package for code-bearing ones.

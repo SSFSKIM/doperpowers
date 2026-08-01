@@ -6,7 +6,9 @@
 #
 # Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
-#   → in-progress : the first active child pulls its parent epic(s) to in-progress
+#   → in-progress : the first active child pulls its parent epic(s) to THEIR
+#                   lane's in-flight state (architect queue → in-design;
+#                   implementer queue or a park → in-progress) — PRE_PARK
 #   → done/wontfix: an epic whose children are all terminal RETURNS to
 #                   ready-for-architect for recomposition (E2) — epics are
 #                   closed by an Architect's verdict, never by bookkeeping
@@ -173,7 +175,8 @@ if cur == "needs-human" and to != "needs-human":
     extra["pre-park"] = None
 lines = [B.apply_state(tickets, tid, to, note, extra_meta=extra)]
 
-# Sweep: first active child pulls its epic chain to in-progress.
+# Sweep: first active child pulls its epic chain to each parent's own
+# in-flight state (PRE_PARK: architect queue → in-design, else in-progress).
 if to == "in-progress":
     B.pull_epics(tickets, tid, lines)
 
