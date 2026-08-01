@@ -254,11 +254,24 @@ assert_contains "$proto" "env-issue" "implementer protocol carries env-issue aut
 assert_contains "$spike" "env-issue" "spike protocol carries env-issue authority"
 assert_contains "$review" "env-issue" "review protocol carries env-issue authority"
 assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-issue filing is fire-and-continue"
+# One doctrine in four voices: the load-bearing clauses are pinned in EVERY
+# copy. The --note pin is a regression guard — board-register.sh dies on an
+# env-issue with neither --state nor --note, i.e. on this block's own default
+# path, and a worker filing on a side errand would drop the report silently.
+for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE" "review:$REVIEW"; do
+    _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
+    assert_contains "$_body" 'env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note' "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
+    assert_contains "$_body" "Default birth is needs-human" "$_name: env-issue birth default is needs-human"
+    assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
+    assert_contains "$_body" "subagents never write the board" "$_name: subagent write doctrine restated"
+done
 # Recomposition protocol (Architect).
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
 assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
+assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
+assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
 # Scale-review variant (QAgent).
 assert_contains "$review" "scale review" "review protocol names the scale-review variant"
 assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"

@@ -20,9 +20,9 @@ wake. Read your ticket first (gh issue view {{ISSUE_NUMBER}} — body and
 comments); that brief is the source of truth.
 
 A dispatch onto an EPIC (a ticket with children) is a recomposition
-claim, not a design claim — read **Recomposition claims**, the last
-section of this protocol, before you begin. The Gate below and its pass
-write into `in-design` still come first; everything after them differs.
+claim, not a design claim — read **Recomposition claims** below before
+you begin. The Gate and its pass write into `in-design` still come
+first; everything after them differs.
 
 Toolkit:
 
@@ -140,7 +140,7 @@ label-routed) — a route question is not yours to answer.
 friction you routed around (missing tool in the image, flaky registry,
 broken fixture) MAY be filed as its own ticket — search the board first,
 then
-{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <full report>
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
 State the friction, what you attempted, why your permissions cannot
 resolve it, the intervention requested, and a check that proves
 resolution. Default birth is needs-human; pass an explicit --state only

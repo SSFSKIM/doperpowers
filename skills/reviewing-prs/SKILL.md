@@ -24,7 +24,8 @@ When your `REVIEW_MODE` binding reads `scale` there is no PR at all: you
 are the scale reviewer of recomposition epic #{{ISSUE_NUMBER}}, and
 **Scale review (recomposition epics)** below governs your entry
 artifact and your verdicts. Read that section before ORIENT — every step
-between here and it is written for the PR variant.
+between here and it is written for the PR variant; the scale section
+says which of them still apply.
 
 Ownership is split three ways: the engine owns correctness review of the
 whole range; fix-wave subagents own the edits (FIX WAVES below); you own
@@ -376,7 +377,7 @@ unchanged: TRIAGE still bins the round's findings, and a non-blocker
 still LOGs to the tech-debt issue rather than holding the epic open.
 The ESCALATE tier ladder does not apply to a scale run: it
 never grants `confident-ready` and never merges, so the two verdicts
-above are its only landing states. A park is still a park — an impasse
+above are its only closing verdicts. A park is still a park — an impasse
 that needs the human goes needs-human with the summary, exactly as
 elsewhere.
 
@@ -401,12 +402,12 @@ SHAs; the explicit PR event can dispatch a fresh review.
 friction you routed around (missing tool in the image, flaky registry,
 broken fixture) MAY be filed as its own ticket — search the board first,
 then
-{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <full report>
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
 (drop --spawned-by on a ticketless PR). State the friction, what you
 attempted, why your permissions cannot resolve it, the intervention
-requested, and a check that proves resolution. Default birth is
-needs-human; pass an explicit --state only when you can name a concrete
-repair path some authorized agent can execute. Filing is
+requested, and a check that proves resolution.
+Default birth is needs-human; pass an explicit --state only when you can
+name a concrete repair path some authorized agent can execute. Filing is
 fire-and-continue:
 never park, transition, or otherwise interrupt your own ticket to report
 non-blocking friction — a genuinely blocking failure stays what it is
