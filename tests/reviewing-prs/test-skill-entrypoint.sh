@@ -261,7 +261,10 @@ assert_not_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "no inlined ticket body (the w
 assert_not_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "no engine-block binding (engine text lives in the skill)"
 assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies the BASE-ref risk-surface snapshot"
 assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies the BASE-ref repo-facts snapshot"
-want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{RISK_MANIFEST}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}}"
+assert_contains "$BOOTSTRAP" '`REVIEW_MODE`: {{REVIEW_MODE}}' "bootstrap binds the review variant (pr | scale)"
+assert_contains "$BOOTSTRAP" '`CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}' "bootstrap binds the scale reviewer's entry artifact"
+assert_contains "$BOOTSTRAP" "recomposition reviewer of the" "bootstrap tells a scale worker the PR paragraph is not its assignment"
+want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

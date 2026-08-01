@@ -216,6 +216,11 @@ json.dump(m, open(p,"w"), indent=2)
 PY
 STUB
 chmod +x "$STUB_BOARD/board-bind.sh"
+# ...but the E2 scale-review branch reads the BOARD itself (`PYTHONPATH=
+# $BOARD_SCRIPTS python3 -c 'import _board'`), so the real module is copied
+# in beside the stub: board-bind stays stubbed, the snapshot is genuine and
+# runs against the mock `gh` below.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
 export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
@@ -240,6 +245,36 @@ case "${1:-} ${2:-}" in
       *) echo "mock gh: unhandled issue view: $*" >&2; exit 1 ;;
     esac ;;
   "issue list") cat "$MOCK_DIR/techdebt-number.txt" ;;
+  "api graphql")
+    # _board.py's snapshot query, served from an optional
+    # $MOCK_DIR/board-issues.json fixture in the same node shape
+    # tests/issue-tracker/mock-gh/gh produces. No fixture = an empty board.
+    python3 - <<'PY'
+import json, os
+try:
+    issues = json.load(open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json")))
+except Exception:
+    issues = []
+nodes = []
+for it in issues:
+    n = it["number"]
+    nodes.append({
+        "id": "ID_%d" % n, "number": n, "title": it.get("title", "ticket %d" % n),
+        "body": it.get("body", ""), "state": it.get("state", "OPEN"),
+        "stateReason": "COMPLETED" if it.get("state") == "CLOSED" else None,
+        "createdAt": "2026-08-01T00:00:00Z", "updatedAt": "2026-08-01T00:00:00Z",
+        "url": "https://github.com/test/repo/issues/%d" % n,
+        "labels": {"nodes": [{"name": l} for l in it.get("labels", [])]},
+        "assignees": {"nodes": []},
+        "parent": {"number": it["parent"]} if it.get("parent") else None,
+        "blockedBy": {"nodes": []},
+        "closedByPullRequestsReferences": {"totalCount": 0, "nodes": []},
+        "timelineItems": {"totalCount": 0, "nodes": []},
+    })
+print(json.dumps({"data": {"repository": {"issues": {
+    "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}))
+PY
+    ;;
   *) echo "mock gh: unhandled: $*" >&2; exit 1 ;;
 esac
 STUB
@@ -1206,6 +1241,110 @@ assert_contains "$out" "active reviewer" "same-host live pid still skips as acti
 assert_equals "$(cat "$SPAWN_LOG")" "" "same-host live pid spawns nothing"
 kill "$DEDUPID" 2>/dev/null; wait "$DEDUPID" 2>/dev/null || true
 reset_state
+
+# ---- E2 scale review: in-review recomposition epics carry no PR -----------------
+# A recomposition epic reaches in-review with a CLOSURE PACKAGE in its `pr:`
+# meta (a comment URL) and no GitHub PR at all — its children are already
+# merged — so the open-PR loop above can never see it. The sweep lists such
+# epics off the board and dispatches the scale variant, `review-epic-<n>`.
+#
+# This is the first case in this file that reads the board, and the two
+# harness pieces it needs are wired at the top: `_board.py` copied beside the
+# stub board-bind.sh, and the mock `gh` serving the snapshot GraphQL query
+# from $MOCK_DIR/board-issues.json (absent for every earlier case, which
+# therefore sweeps an empty board).
+echo "scale review (recomposition epics):"
+reset_state
+echo "[]" > "$MOCK_DIR/pr-list.json"       # the PR half of the sweep is empty here
+PKG="https://github.com/test/repo/issues/20#issuecomment-99"
+PKG="$PKG" python3 - <<'PY'
+import json, os
+def meta(k, v):
+    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
+def it(n, status, body, parent=None, closed=False):
+    return {"number": n, "state": "CLOSED" if closed else "OPEN",
+            "labels": [] if closed else ["status:" + status],
+            "body": body, "parent": parent}
+issues = [
+    # #20: the epic — in-review, closure package in `pr:`, both children terminal
+    it(20, "in-review", "Epic acceptance." + meta("pr", os.environ["PKG"])),
+    # #21: a LEAF in-review whose `pr:` is a real PR — never a scale review
+    it(21, "in-review", "Leaf." + meta("pr", "https://github.com/test/repo/pull/5")),
+    it(22, "done", "child a", parent=20, closed=True),
+    it(23, "done", "child b", parent=20, closed=True),
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+# The epic's outgoing owner: the Architect that assembled the closure package.
+# Its claude-species meta lingers status=working after its turn ends, and the
+# real board-bind.sh refuses to rebind a ticket owned by an ACTIVE daemon —
+# so the dispatch must finalize it first (2026-07-18 shakedown) or every
+# scale reviewer would bind-fail and be retired.
+python3 - <<'PY'
+import json, os
+u = "arch0001-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "20-recompose-epic", "role": "ARCHITECT",
+           "ticket": "20", "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "arch0001", "sessionId": "arch0001-0000-4000-8000-000000000000", "state": "done"}]' \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" --sweep 2>&1)"
+assert_contains "$(cat "$DAEMON_HOME/arch0001-0000-4000-8000-000000000000.json")" '"status": "idle"' \
+    "the epic's lingering Architect owner is finalized before the scale reviewer binds"
+assert_contains "$out" "review-epic-20" "sweep dispatches a scale reviewer onto the in-review epic"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "scale reviewer spawns under the review-epic-<n> registry name"
+assert_not_contains "$(cat "$SPAWN_LOG")" "review-epic-21" "an in-review LEAF is never scale-reviewed (PRs drive leaves)"
+EPIC_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
+assert_contains "$EPIC_PROMPT" '`REVIEW_MODE`: scale' "reviewer prompt carries the scale-review mode"
+assert_contains "$EPIC_PROMPT" "\`CLOSURE_PACKAGE\`: $PKG" "prompt binds the closure package as the entry artifact"
+assert_contains "$EPIC_PROMPT" '`ISSUE_NUMBER`: 20' "prompt binds the epic ticket under review"
+assert_contains "$EPIC_PROMPT" '`PR_NUMBER`: none' "scale prompt binds no PR (there is none)"
+assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the integration base ref the worktree sits at"
+assert_not_contains "$EPIC_PROMPT" "{{" "no unsubstituted placeholder survives the scale render"
+EPIC_META="$(python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m = json.load(open(p))
+    if m.get("name") == "review-epic-20": print(p); break
+PY
+)"
+assert_contains "$(cat "$EPIC_META")" '"ticket": "20"' "scale reviewer owns the epic ticket (board-answer can reach it)"
+assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" \
+    "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "scale worktree is detached at the integration base ref"
+
+# A live scale reviewer dedupes the next sweep — same registry machinery the
+# PR path uses, keyed review-epic-<n>.
+python3 - <<'PY' > "$MOCK_DIR/agents.json"
+import glob, json, os
+rows = []
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m = json.load(open(p))
+    if m.get("name") == "review-epic-20":
+        rows.append({"id": "epic0001", "sessionId": m["current"],
+                     "state": "working", "status": "busy"})
+print(json.dumps(rows))
+PY
+: > "$SPAWN_LOG"
+out2="$("$DISPATCH" --sweep 2>&1)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "second sweep dedupes the live epic reviewer"
+assert_contains "$out2" "active reviewer" "second sweep names the live scale reviewer it skipped"
+
+# An epic that has LEFT in-review (its verdict landed) is no longer listed —
+# the board state is the scale path's dedupe, so no reviewer follows it.
+reset_state
+python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
+issues = json.load(open(p))
+for it in issues:
+    if it["number"] == 20:
+        it["state"], it["labels"] = "CLOSED", []
+json.dump(issues, open(p, "w"))
+PY
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_equals "$(cat "$SPAWN_LOG")" "" "a closed (recomposed) epic is never scale-reviewed again"
+rm -f "$MOCK_DIR/board-issues.json"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

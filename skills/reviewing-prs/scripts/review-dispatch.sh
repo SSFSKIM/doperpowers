@@ -8,7 +8,17 @@
 #
 # Usage:
 #   review-dispatch.sh <pr-number>    triggered mode (GH workflow / manual)
-#   review-dispatch.sh --sweep        catch-up: every unbound open PR
+#   review-dispatch.sh --sweep        catch-up: every unbound open PR, then
+#                                     every in-review recomposition EPIC
+#
+# Two reviewer variants share one worker harness (see _spawn_reviewer):
+#   review-pr-<n>     a GitHub PR, worktree detached at the PR head SHA.
+#   review-epic-<n>   E2 scale review — an epic in in-review whose `pr:` meta
+#                     is a CLOSURE PACKAGE, not a PR (its children already
+#                     merged). Worktree detached at the epic's integration
+#                     branch. Sweep-only: nothing external triggers it, and
+#                     the epic's verdict (which leaves in-review) is what
+#                     ends the path.
 #
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
@@ -116,12 +126,12 @@ CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
 REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
-# Newest review-pr-<n> registry entry → "uuid|status|current|engine|pid|host|boot"
-# (empty if none).
+# Newest registry entry for worker name <1> (review-pr-<n> or review-epic-<n>)
+# → "uuid|status|current|engine|pid|host|boot" (empty if none).
 _reviewer_meta() {
-  DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
-home = os.environ["DAEMON_HOME"]; name = "review-pr-" + os.environ["PRN"]
+home = os.environ["DAEMON_HOME"]; name = os.environ["WNAME"]
 best = None
 for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
@@ -250,7 +260,7 @@ PY
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() {
-  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger ack spawn_out uuid
+  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -301,34 +311,7 @@ PY
     || : > "$tmp/risk.md"
   git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
     || : > "$tmp/facts.md"
-  # Normalize lingering finished ticket owners BEFORE binding (same
-  # preflight as land-dispatch): a claude-species implement worker has no
-  # self-finalizer, so its meta lingers status=working after its turn ends
-  # and board-bind protects it as a stable ACTIVE owner — which blocked the
-  # reviewer's bind and retired three reviewers in the 2026-07-18 live
-  # shakedown. finalize settles the truth (a genuinely live owner stays
-  # live and bind still refuses — correctly).
-  if [ -n "$issue" ]; then
-    while IFS= read -r owner; do
-      [ -n "$owner" ] || continue
-      "$DAEMON_SCRIPTS/daemon-finalize.sh" "$owner" >/dev/null 2>&1 || true
-    done <<EOF2
-$(DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$issue" python3 - <<'PY'
-import glob, json, os
-for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
-    if p.endswith(".reply.json"):
-        continue
-    try:
-        m = json.load(open(p))
-    except Exception:
-        continue
-    if str(m.get("ticket", "")).lstrip("#") == os.environ["T_ISSUE"] \
-            and m.get("status") in ("working", "blocked"):
-        print(m.get("uuid", ""))
-PY
-)
-EOF2
-  fi
+  [ -z "$issue" ] || _finalize_ticket_owners "$issue"
   # base-is-default drives the worker's main-exclusion clause.
   local base_is_default="no"
   [ "$BASE_REF" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
@@ -359,6 +342,7 @@ EOF2
   fi
 
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" \
+    P_REVIEW_MODE="pr" P_CLOSURE_PACKAGE="none" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
@@ -370,7 +354,127 @@ EOF2
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
-    python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
+    _render_prompt)" \
+    || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
+  rm -rf "$tmp"
+  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
+
+  _spawn_reviewer "review-pr-$pr" "$issue" "$prompt" "$wt" "$engine" "$control_dir"
+}
+
+# ---- scale review: one in-review recomposition epic (no PR) --------------------
+# E2: an epic reaches in-review with a CLOSURE PACKAGE in its `pr:` meta and
+# no GitHub PR — its children are already merged. Same worker harness as a PR
+# review, different entry artifact and worktree: a detached checkout of the
+# epic's integration branch (`branch:` meta), or the repo default branch when
+# that branch is gone — the normal shape once children merge and their
+# branches are deleted. Guarded per step for the same reason dispatch_one is:
+# the sweep runs it behind `||`.
+dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
+  local etid="$1" pkg="$2" branch="${3:-}" name tmp wt base_ref td prompt engine
+  local control_dir bind_ready ledger base_is_default
+  name="review-epic-$etid"
+  engine="${WORKER_ENGINE:-codex}"
+  base_ref="${branch:-$DEFAULT_BRANCH}"
+  if ! git -C "$LOCAL_REPO" fetch -q origin "$base_ref" 2>/dev/null; then
+    echo "$name: integration branch '$base_ref' unfetchable — reviewing $DEFAULT_BRANCH instead" >&2
+    base_ref="$DEFAULT_BRANCH"
+    git -C "$LOCAL_REPO" fetch -q origin "$base_ref" \
+      || { echo "$name: git fetch failed ($base_ref)" >&2; return 1; }
+  fi
+  base_is_default="no"
+  [ "$base_ref" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
+  _finalize_ticket_owners "$etid"
+
+  tmp="$(mktemp -d)"
+  # Same BASE-ref manifest discipline as a PR review (no head to read from).
+  git -C "$LOCAL_REPO" show "origin/$base_ref:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
+    || : > "$tmp/risk.md"
+  git -C "$LOCAL_REPO" show "origin/$base_ref:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
+    || : > "$tmp/facts.md"
+  td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
+
+  wt="$LOCAL_REPO/.claude/worktrees/$name"
+  if [ -e "$wt" ]; then
+    if _wt_occupied "$wt"; then
+      echo "$name: live daemon occupies $wt — not removing (retire it first)" >&2
+      rm -rf "$tmp"; return 1
+    fi
+    git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+  fi
+  git -C "$LOCAL_REPO" worktree prune
+  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$base_ref" \
+    || { echo "$name: worktree add failed (origin/$base_ref)" >&2; rm -rf "$tmp"; return 1; }
+
+  control_dir="$(mktemp -d "$DAEMON_HOME/$name-control.XXXXXX")" \
+    || { echo "$name: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }
+  bind_ready="$control_dir/bind-ready.json"
+  ledger="$control_dir/accepted-commits.json"
+  if ! chmod 700 "$control_dir" \
+    || ! printf '{"push_base":"","commits":{}}\n' > "$ledger" \
+    || ! chmod 600 "$ledger"; then
+    echo "$name: control state initialization failed" >&2
+    rm -rf "$tmp" "$control_dir"
+    return 1
+  fi
+
+  prompt="$(P_PR_NUMBER="none" P_PR_URL="none" P_HEAD_REF="none" P_HEAD_SHA="none" \
+    P_REVIEW_MODE="scale" P_CLOSURE_PACKAGE="$pkg" \
+    P_REPO="$BOARD_REPO" P_BASE_REF="$base_ref" \
+    P_ISSUE_NUMBER="$etid" P_ISSUE_LIST="$etid" \
+    P_TECH_DEBT_ISSUE="${td:-none}" \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
+    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
+    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
+    _render_prompt)" \
+    || { echo "$name: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
+  rm -rf "$tmp"
+  [ -n "$prompt" ] || { echo "$name: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
+
+  _spawn_reviewer "$name" "$etid" "$prompt" "$wt" "$engine" "$control_dir"
+}
+
+# ---- shared worker plumbing (both review variants) -----------------------------
+# Normalize lingering finished owners of ticket <1> BEFORE binding (same
+# preflight as land-dispatch): a claude-species worker has no self-finalizer,
+# so its meta lingers status=working after its turn ends and board-bind
+# protects it as a stable ACTIVE owner — which blocked the reviewer's bind
+# and retired three reviewers in the 2026-07-18 live shakedown. finalize
+# settles the truth (a genuinely live owner stays live and bind still
+# refuses — correctly). The scale variant needs it just as much: the epic's
+# outgoing owner is the Architect that assembled the closure package.
+_finalize_ticket_owners() {  # <ticket>
+  local owner
+  while IFS= read -r owner; do
+    [ -n "$owner" ] || continue
+    "$DAEMON_SCRIPTS/daemon-finalize.sh" "$owner" >/dev/null 2>&1 || true
+  done <<EOF2
+$(DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if str(m.get("ticket", "")).lstrip("#") == os.environ["T_ISSUE"] \
+            and m.get("status") in ("working", "blocked"):
+        print(m.get("uuid", ""))
+PY
+)
+EOF2
+}
+
+# Bootstrap render: every P_* var in the environment fills the matching
+# {{PLACEHOLDER}}, plus the two BASE-ref manifest snapshots (capped, with
+# their absent-file fallbacks). A placeholder with no P_* renders empty.
+_render_prompt() {  # P_* + RISK_FILE/FACTS_FILE in the environment
+  python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
 import os, re, sys
 CAP = 20000  # keep the spawn arg well under the OS arg-size limit
 def readcap(path):
@@ -386,9 +490,17 @@ subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
     "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
 print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
 PY
-)" || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
-  rm -rf "$tmp"
-  [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
+}
+
+# Spawn tail shared by both variants: spawn → parse identity → bind the
+# ticket → publish the startup barrier → wait for the worker's ack. Every
+# failure retires the worker and removes the control dir, leaving the
+# barrier closed; the caller's own guards handle everything before this.
+_spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir>
+  local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
+  local bind_ready="$control_dir/bind-ready.json"
+  local ledger="$control_dir/accepted-commits.json"
+  local spawn_out uuid ack
 
   # ONE worker harness, two model routes. The default "codex" engine is a
   # GATEWAY worker: the same Claude-harness daemon pointed at the local
@@ -398,23 +510,23 @@ PY
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" \
       "${REVIEW_MODEL:-fable}")" \
-      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
+      || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
-    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "review-pr-$pr" "$prompt" "$wt" "" "${REVIEW_MODEL:-}")" \
-      || { echo "#$pr: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
+    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" "${REVIEW_MODEL:-}")" \
+      || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
 
   # The worker's first protocol action waits on bind_ready. Publish it only
-  # after the new registry meta exists and (for ticketed PRs) board-bind has
+  # after the new registry meta exists and (for ticketed work) board-bind has
   # stripped every old owner and bound THIS reviewer. Thus spawn-before-bind
   # cannot race into review work, and any failure leaves the barrier closed.
   local bound="" attempts="${REVIEW_BIND_ATTEMPTS:-3}"
   if [ -z "$uuid" ]; then
-    echo "#$pr: spawned reviewer UUID was not parseable — startup barrier stays closed" >&2
+    echo "$name: spawned reviewer UUID was not parseable — startup barrier stays closed" >&2
     rm -rf "$control_dir"
     return 1
   fi
@@ -428,7 +540,7 @@ PY
     if [ -z "$bound" ]; then
       _retire "$uuid"
       rm -rf "$control_dir"
-      echo "#$pr: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
+      echo "$name: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
       return 1
     fi
   fi
@@ -445,7 +557,7 @@ PY
   then
     _retire "$uuid"
     rm -rf "$control_dir"
-    echo "#$pr: could not publish startup barrier — review worker retired" >&2
+    echo "$name: could not publish startup barrier — review worker retired" >&2
     return 1
   fi
 
@@ -469,12 +581,12 @@ PY
   then
     _retire "$uuid"
     rm -rf "$control_dir"
-    echo "#$pr: worker did not acknowledge startup barrier — retired" >&2
+    echo "$name: worker did not acknowledge startup barrier — retired" >&2
     return 1
   fi
 }
 
-# Consecutive FAILED reviewers for PR <1>, newest first: a reply carrying the
+# Consecutive FAILED reviewers for worker name <1>, newest first: a reply carrying the
 # ENGINE-UNAVAILABLE marker (engine outage) or a turn finalized status=error
 # (dead worker — e.g. the gateway refused its first turn, so no reply exists
 # to carry any marker). One shared streak, so interleaved failure kinds don't
@@ -482,9 +594,9 @@ PY
 # dead gateway can make the cron respawn a PR forever. Any cleanly finished
 # reviewer breaks the streak.
 _outage_streak() {
-  DAEMON_HOME="$DAEMON_HOME" PRN="$1" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
-home = os.environ["DAEMON_HOME"]; name = "review-pr-" + os.environ["PRN"]
+home = os.environ["DAEMON_HOME"]; name = os.environ["WNAME"]
 rows = []
 for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
@@ -511,7 +623,7 @@ print(streak)
 PY
 }
 
-# Verdict for a FINISHED reviewer of PR <1>, uuid <2>, mode <3>, status <4>.
+# Verdict for a FINISHED reviewer named <1>, uuid <2>, mode <3>, status <4>.
 # Triggered mode always re-dispatches (explicit event = fresh signal). Sweep
 # mode retries two failure kinds: an engine outage — the worker marks it with
 # a final-message marker line (fallback block) — and a turn that finalized
@@ -519,11 +631,11 @@ PY
 # leaves no reply, so no marker can exist). Both share the 3-consecutive
 # failed-reviewer cap per PR; anything else finished stays finished.
 _finished_verdict() {
-  local pr="$1" uuid="$2" mode="$3" status="$4"
+  local name="$1" uuid="$2" mode="$3" status="$4"
   if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
   elif [ "$status" = "error" ] \
     || grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
-    if [ "$(_outage_streak "$pr")" -ge 3 ]; then
+    if [ "$(_outage_streak "$name")" -ge 3 ]; then
       echo "skip outage/dead-worker failure persists (3 consecutive reviewers — an explicit PR event re-dispatches)"
     else
       echo "respawn $uuid"
@@ -531,12 +643,12 @@ _finished_verdict() {
   else echo "skip finished reviewer ($status)"; fi
 }
 
-# Dedupe verdict for PR <1> in mode <2> (triggered|sweep), cr-label flag <3>.
-# Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
+# Dedupe verdict for worker name <1> in mode <2> (triggered|sweep), cr-label
+# flag <3>. Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
 _decide() {
-  local pr="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
+  local name="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
-  meta="$(_reviewer_meta "$pr")"
+  meta="$(_reviewer_meta "$name")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
   uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
   current="${rest%%|*}"; rest="${rest#*|}"; engine="${rest%%|*}"; rest="${rest#*|}"
@@ -557,13 +669,13 @@ _decide() {
         fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null || echo "")"
         case "$fin" in
           live)       echo "skip active reviewer" ;;
-          idle|error) _finished_verdict "$pr" "$uuid" "$mode" "$fin" ;;
+          idle|error) _finished_verdict "$name" "$uuid" "$mode" "$fin" ;;
           noop)       echo "skip finished reviewer (raced finalize)" ;;
           *)          echo "respawn $uuid" ;;
         esac
       fi ;;
     retired) echo "dispatch" ;;
-    *) _finished_verdict "$pr" "$uuid" "$mode" "$status" ;;
+    *) _finished_verdict "$name" "$uuid" "$mode" "$status" ;;
   esac
 }
 
@@ -584,7 +696,7 @@ _decide() {
 # forever.
 run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
   local pr="$1" mode="$2" cr="$3" stale="${4:-}" tid="${5:-}" verdict resume
-  verdict="$(_decide "$pr" "$mode" "$cr")"
+  verdict="$(_decide "review-pr-$pr" "$mode" "$cr")"
   if [ -n "$stale" ]; then
     case "$verdict" in
       "skip active reviewer")
@@ -601,7 +713,7 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
         resume="resumes when the ticket returns to in-review, not from here" ;;
     esac
     local m
-    m="$(_reviewer_meta "$pr")"
+    m="$(_reviewer_meta "review-pr-$pr")"
     [ -n "$m" ] && _retire "${m%%|*}"
     echo "#$pr: skip — primary ticket #$tid is parked (status:$stale); $resume"
     return
@@ -610,6 +722,20 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
     dispatch)  dispatch_one "$1" "$2" ;;
     respawn\ *) _retire "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
     *)         echo "#$1: $verdict" ;;
+  esac
+}
+
+# One in-review epic's dedupe → dispatch decision, isolated per epic exactly
+# as run_for isolates a PR (the sweep runs it behind `||`). No stale-ticket
+# gate is needed here: the listing itself only yields epics still sitting in
+# in-review, so a landed verdict retires the path by removing the row.
+sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
+  local etid="$1" verdict
+  verdict="$(_decide "review-epic-$etid" sweep 0)"
+  case "$verdict" in
+    dispatch)   dispatch_epic "$@" ;;
+    respawn\ *) _retire "${verdict#respawn }"; dispatch_epic "$@" ;;
+    *)          echo "epic #$etid: $verdict" ;;
   esac
 }
 
@@ -654,6 +780,29 @@ print(status[0] if status and status[0] != "in-review" else "")')" || stale=""
         fi
         run_for "$prn" sweep "$cr" "$stale" "$issue" || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
+
+  # E2 scale review: recomposition epics enter in-review with a closure
+  # package in the pr: meta and no GitHub PR — the PR loop above cannot
+  # see them. List them off the board and dispatch the scale variant.
+  # Same dedupe machinery, keyed review-epic-<n>; the epic's own board state
+  # is what retires the path (a landed verdict leaves in-review, so the next
+  # sweep no longer lists it).
+  epic_rows="$(PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY'
+import _board as B
+tickets = B.snapshot()
+eps = B.epics(tickets)
+for tid in sorted(tickets, key=int):
+    n = tickets[tid]
+    if tid in eps and n["state"] == "in-review" and n.get("pr"):
+        print("%s|%s|%s" % (tid, n["pr"], n.get("branch") or ""))
+PY
+)" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
+  while IFS='|' read -r etid epkg ebranch; do
+    [ -n "$etid" ] || continue
+    sweep_epic "$etid" "$epkg" "$ebranch" || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
+  done <<EOF
+$epic_rows
+EOF
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"
   pr="${1#\#}"
