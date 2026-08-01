@@ -62,8 +62,13 @@ PRE_PARK = {
     "in-progress": "in-progress",
     "in-review": "in-review",
 }
-PULLABLE = ("ready-for-architect", "ready-for-implementer", "needs-info",
-            "needs-human", "interactive-preferred", "deferred")
+# Park states — the ones whose exit is somebody ELSE's action (a human
+# decision, an information hunt, ongoing steering, a deliberate defer). A
+# park is a live wake-queue entry: it owns the ticket's note and often a
+# bound idle session waiting to be resumed, so board bookkeeping must never
+# unpark a ticket out from under whoever holds it.
+PARKED = ("needs-info", "needs-human", "interactive-preferred", "deferred")
+PULLABLE = DISPATCHABLE + PARKED
 LEGAL = {
     "ready-for-architect":   {"in-design", "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},

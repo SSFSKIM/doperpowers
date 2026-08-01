@@ -149,6 +149,15 @@ with open(p, "w") as f:
     json.dump(s, f)
 PY
 }
+issue_note() {  # <ticket> → the board:meta note ("" when there is none)
+    T_N="$1" PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY'
+import json, os
+import _board as B
+with open(os.environ["MOCK_GH_STATE"]) as f:
+    s = json.load(f)
+print(B.parse_meta(s["issues"][os.environ["T_N"]]["body"]).get("note") or "")
+PY
+}
 board_eligible() {  # <ticket> → eligible | not-eligible (the dispatch predicate)
     PYTHONPATH="$BOARD_SCRIPTS" python3 - "$1" <<'PY'
 import sys
@@ -262,10 +271,15 @@ s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
     "29": issue(29, "epic closed while a child still runs", [],
                 state="CLOSED", reason="COMPLETED"),
     "30": issue(30, "child of a closed epic", ["status:in-progress"]),
+    # a parked parent owns its note and its place in the relay wake queue
+    "31": issue(31, "epic parked on a human answer", ["status:needs-human"],
+                body="Epic body\n\n<!-- board:meta\nnote: which flavor?\n-->\n"),
+    "32": issue(32, "child of a parked epic", ["status:in-progress"]),
 }}
 s["issues"]["26"]["parent"] = 25
 s["issues"]["28"]["parent"] = 27
 s["issues"]["30"]["parent"] = 29
+s["issues"]["32"]["parent"] = 31
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -442,10 +456,12 @@ out="$(run_sweep)"
 assert_contains "$(issue_labels "$EPIC")" "status:ready-for-architect" "parent-impact proposal returns the parent for reconciliation"
 assert_contains "$(last_comment "$EPIC")" "[board-epic] reconcile: #$CHILD@" "reconcile marker names the consumed proposal"
 assert_contains "$out" "IMPACT: #$EPIC: in-progress → ready-for-architect" "the return is logged as an IMPACT action"
+assert_contains "$out" "[sweep] IMPACT: 1 acted" "the pass reports how many returns it performed"
 assert_equals "$(board_eligible "$EPIC")" "eligible" "reconciliation-due epic is dispatch-eligible even with active children"
 
 out="$(run_sweep)"
 assert_equals "$(comment_count "$EPIC" "[board-epic] reconcile:")" "1" "a consumed proposal is not re-consumed"
+assert_contains "$out" "[sweep] IMPACT: 0 acted" "a tick with nothing to consume still reports its tally"
 
 # The marker, not the parent's state, is what makes consumption durable: put
 # the epic back in a claimable state and the same proposal must not re-fire.
@@ -467,6 +483,22 @@ mock_comment 30 "[parent-impact] #29 the parent shipped without this"
 out="$(run_sweep)"
 assert_equals "$(issue_labels 29)" "" "a closed parent is never re-labelled by a late proposal"
 assert_equals "$(comment_count 29 "[board-epic]")" "0" "a closed parent gets no bookkeeping comment"
+
+# A PARKED parent belongs to whoever holds the park: unparking it would
+# destroy the question note AND drop the ticket out of `status:needs-human`,
+# which is exactly how the relay pass finds a waiting human answer (and
+# IMPACT runs earlier in the same tick). Skipped unmarked, then consumed
+# normally once the park resolves into a claimable state.
+mock_comment 32 "[parent-impact] #31 this epic's acceptance needs a second pass"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 31)" "status:needs-human" "a parked parent is never unparked by a proposal"
+assert_equals "$(issue_note 31)" "which flavor?" "the park's own note survives the tick"
+assert_equals "$(comment_count 31 "[board-epic] reconcile:")" "0" "a proposal on a parked parent is left unmarked"
+
+set_status 31 in-progress   # the park resolves (board-answer's pre-park return)
+out="$(run_sweep)"
+assert_contains "$(issue_labels 31)" "status:ready-for-architect" "the skipped proposal is consumed once the park resolves"
+assert_equals "$(comment_count 31 "[board-epic] reconcile:")" "1" "an unparked parent consumes the proposal exactly once"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

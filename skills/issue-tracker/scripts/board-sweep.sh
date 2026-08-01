@@ -23,9 +23,12 @@
 #            the parent has not yet consumed → the parent returns to
 #            ready-for-architect (reconciliation-due), plus a
 #            [board-epic] reconcile: #<child>@<comment-id> dedupe marker.
-#            The marker is written ONLY when that return actually fires: a
-#            parent already ready-for-architect/in-design is re-read next
-#            tick instead, so no proposal is marked consumed unread.
+#            The marker is written ONLY when that return actually fires:
+#            a parent that is parked, terminal, or already in the architect
+#            lane is skipped UNMARKED and re-read next tick, so no proposal
+#            is marked consumed while nobody is there to read it. Parks in
+#            particular are never disturbed — unparking one would destroy
+#            its note and drop it out of the RELAY pass's wake queue below.
 #   DISPATCH implement-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
 #   LAND     open confident-ready PRs with a human APPROVED review or a
@@ -245,19 +248,34 @@ pass_impact() {
   # a [parent-impact] comment on its OWN ticket, and this pass performs
   # the parent's reconciliation return (board bookkeeping). Dedupe is a
   # [board-epic] reconcile: marker on the parent naming child@comment-id.
+  # The tally is printed by the python body, not counted in shell: a
+  # heredoc nested inside $(...) is mis-parsed by bash 3.2 (macOS, where
+  # launchd runs this) as soon as the body contains an apostrophe. It also
+  # reads better — a missing tally line means the body died early, where a
+  # shell-side count would have reported a confident "0 acted".
   PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' | tee -a "$SWEEP_LOG"
 import json
 import _board as B
+# The parent states that CANNOT take the return right now. Terminal: nothing
+# left to reconcile — a return would only stamp a label and a comment onto a
+# closed issue. Parked: the park owns the ticket's note AND its wake-queue
+# membership; unparking a needs-human parent here would destroy the human's
+# question and drop it out of the relay pass's needs-human selection — in
+# the same tick, since IMPACT runs first. Every skip is UNMARKED, so the
+# next tick re-sees the proposal once the parent is claimable again.
+UNCLAIMABLE = frozenset(B.TERMINAL) | frozenset(B.PARKED)
+# The architect lane: the return is already pending (ready-for-architect) or
+# an Architect is mid-claim (in-design). Re-checked per proposal, because
+# the first return of this tick puts the parent here itself.
+ARCHITECT_LANE = ("ready-for-architect", "in-design")
+acted = 0
 tickets = B.snapshot()
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     p = n.get("parent")
     if not p or p not in tickets or n["state"] not in B.ACTIVE:
         continue
-    if tickets[p]["state"] in B.TERMINAL:
-        # a closed parent has no reconciliation left to perform; a return
-        # would only stamp a status label and a bookkeeping comment onto a
-        # closed issue. Left unmarked, like every other skip here.
+    if tickets[p]["state"] in UNCLAIMABLE:
         continue
     child_comments = json.loads(B.gh(
         ["issue", "view", tid, "-R", B.repo(), "--json", "comments"]
@@ -279,19 +297,17 @@ for tid in sorted(tickets, key=int):
         marker = "#%s@%s" % (tid, cid)
         if marker in seen:
             continue
-        if tickets[p]["state"] in ("ready-for-architect", "in-design"):
-            # return already pending, or an Architect is mid-claim: leave
-            # the proposal UNMARKED so the next tick re-sees it — marking
-            # it now would consume it with no reader (dedupe hole).
+        if tickets[p]["state"] in ARCHITECT_LANE:
             continue
         ln = B.apply_state(
             tickets, p, "ready-for-architect",
             "reconciliation-due: [parent-impact] from #%s" % tid,
             bookkeeping=True)
         B.comment(p, "[board-epic] reconcile: %s" % marker)
+        acted += 1
         print("[sweep] IMPACT: %s" % ln)
+print("[sweep] IMPACT: %d acted" % acted)
 PY
-  log "[sweep] IMPACT pass done"
 }
 
 pass_land() {
