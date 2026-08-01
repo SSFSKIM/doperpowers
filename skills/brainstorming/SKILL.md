@@ -74,13 +74,13 @@ Three tracks leave this skill. The controlled track — the rest of this skill: 
 
 **Presenting the design:**
 
-Once you believe you understand what you're building, present the whole design in one pass, structured as a triage of your human partner's attention — the parts where their judgment matters most come first, and you say explicitly which parts those are, so they can review the top carefully and skim the rest:
+Once you believe you understand what you're building, present the whole design in one pass. The design itself — the description of the thing you intend to build — is the body of the presentation; the structure around it triages your human partner's attention, so they know which parts need their judgment and which they can skim:
 
 1. **Open forks** (rare) — decisions that first emerged while composing the design and have genuinely sound alternatives. Present each with its candidates, trade-offs, and your recommendation; your human partner decides.
-2. **Decisions to verify** — the significant calls you made, and the design sections where their taste or domain knowledge could change the outcome. Give your reasoning, scaled to each part's complexity: a few sentences if straightforward, up to 200-300 words if nuanced.
+2. **The design itself** — architecture, components, data flow, error handling, and testing, described in sections scaled to their complexity: a few sentences if straightforward, up to 200-300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, and the reasoning behind the significant calls. Where a section turns on your human partner's taste or domain knowledge, mark it as one to review carefully.
 3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
 
-Cover architecture, components, data flow, error handling, and testing — each inside whichever tier it belongs to. One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the frontier logic of reference/batch-grilling.md).
+One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the frontier logic of reference/batch-grilling.md).
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
