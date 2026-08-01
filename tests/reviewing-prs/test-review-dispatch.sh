@@ -1447,6 +1447,7 @@ assert_contains "$INT_PROMPT" '`BASE_REF`: main' "the engine base is the default
 assert_not_contains "$INT_PROMPT" '`BASE_REF`: epic/integration' "the engine never reviews the integration branch against itself"
 assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt names the integration branch the worktree sits at"
 assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
+assert_contains "$INT_PROMPT" '`BASE_IS_DEFAULT`: yes' "base-is-default follows BASE_REF, which for an epic is always the default branch"
 
 # ---- an in-review epic is a scale target only when recomposition is due -------
 # A leaf that gained children AFTER opening a real PR is in-review with a `pr:`

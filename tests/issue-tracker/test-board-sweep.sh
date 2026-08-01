@@ -255,6 +255,13 @@ s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
                 body="board:meta\nnote: which flavor?\n"),
     "16": issue(16, "parked, answers already relayed", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
+    # E2: an epic CAN sit in the relay wake queue (a dispatched Architect
+    # parked it), and the epic bookkeeping writes comment on it. The relay
+    # pass must read [board-epic] as machine-authored like every other
+    # marker — resuming a parked worker on the board's own bookkeeping line
+    # would relay it as if a human had answered.
+    "34": issue(34, "parked epic, newest comment is board bookkeeping",
+                ["status:needs-human"], body="board:meta\nnote: q\n"),
     "17": issue(17, "parked, no new comment", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
     "18": issue(18, "healthy live worker", ["status:in-progress"]),
@@ -304,6 +311,7 @@ meta(U("aaaa0014"), "land-pr-7", "14", "working")
 meta(U("aaaa0015"), "15-parked", "15", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0016"), "16-parked", "16", "working", updated="2026-07-18T01:00:00Z",
      recov=None)
+meta(U("aaaa0034"), "34-epic-parked", "34", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0017"), "17-parked", "17", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0018"), "18-healthy", "18", "working")
 # ALREADY-finalized error meta below the cap (a failed resume fork's shape):
@@ -320,6 +328,7 @@ U = lambda n: "%s-0000-4000-8000-000000000000" % n
 json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0013"): "live", U("aaaa0014"): "live", U("aaaa0018"): "live",
            U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle",
+           U("aaaa0034"): "idle",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
@@ -327,7 +336,7 @@ PY
 # transcripts: mtime is the turn-end ordering signal. 12 old (stall), 18
 # fresh (healthy); 15/16 old (comments postdate the turn → relay-eligible),
 # 17 fresh (its comment predates the turn end → not an answer).
-for u in aaaa0012 aaaa0015 aaaa0016; do
+for u in aaaa0012 aaaa0015 aaaa0016 aaaa0034; do
   f="$HOME/.claude/projects/proj/$u-0000-4000-8000-000000000000.jsonl"
   touch "$f"; touch -t 202607170000 "$f"
 done
@@ -343,6 +352,9 @@ cat > "$COMMENTS_DIR/16.json" <<'J'
 J
 cat > "$COMMENTS_DIR/17.json" <<'J'
 {"comments":[{"id":"IC_17a","author":{"login":"me"},"body":"old musing","createdAt":"2026-07-18T00:30:00Z"}]}
+J
+cat > "$COMMENTS_DIR/34.json" <<'J'
+{"comments":[{"id":"IC_34a","author":{"login":"me"},"body":"[board-epic] ready-for-architect: recomposition-due: all children terminal (was: q)","createdAt":"2026-07-18T02:00:00Z"}]}
 J
 
 # PRs for the land pass
@@ -414,6 +426,7 @@ assert_not_contains "$log" "land-dispatch:24" "an existing land meta means no se
 assert_contains "$log" "answer:15 --posted" "fresh human comment on a parked ticket relays"
 assert_not_contains "$log" "answer:16" "[answers] comment does not re-relay"
 assert_not_contains "$log" "answer:17" "a comment older than the park is not an answer"
+assert_not_contains "$log" "answer:34" "[board-epic] bookkeeping is machine-authored — never relayed as a human answer"
 relayed="$(python3 -c "
 import json, os
 print(json.load(open(os.path.join(os.environ['DAEMON_HOME'],

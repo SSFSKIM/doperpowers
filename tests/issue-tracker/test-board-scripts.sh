@@ -1118,6 +1118,26 @@ run board-register.sh "Plain deferred ticket" enhancement P2 --state deferred --
 plain_def_t="$(state "s['next']-1")"
 assert_fails run board-transition.sh "$plain_def_t" in-progress   # LEGAL["deferred"] unchanged: no gate-skip for a worker/human
 
+# An epic bookkeeping write that UNPARKS the epic must not destroy what the
+# park owned. The note of a park is somebody ELSE's — a human's pending
+# question, a reconciling Architect's "waiting on children" — so both epic
+# writes fold it into their own instead of overwriting it.
+run board-register.sh "Parked epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+epic_pk_t="$(state "s['next']-1")"
+run board-register.sh "Parked epic child" enhancement P2 --parent "$epic_pk_t" --body-file "$SPEC_BODY" >/dev/null
+child_pk_t="$(state "s['next']-1")"
+run board-transition.sh "$epic_pk_t" needs-human "Q: which flavor?" >/dev/null
+out="$(run board-transition.sh "$child_pk_t" in-progress)"
+assert_contains "$out" "#$epic_pk_t: needs-human → in-progress" "an active child pulls its parked epic in-flight"
+assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "(was: Q: which flavor?)" "the pull folds the park's own note into its bookkeeping note"
+# same discipline on the recomposition return, from a park it also unparks
+run board-transition.sh "$epic_pk_t" needs-human "Q2: still waiting on the human" >/dev/null
+out="$(run board-transition.sh "$child_pk_t" "done")"
+assert_contains "$out" "#$epic_pk_t: needs-human → ready-for-architect" "the last child's landing returns the parked epic for recomposition"
+assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "recomposition-due: all children terminal (was: Q2: still waiting on the human)" "the recomposition return preserves the park's note too"
+# an IN-FLIGHT epic's note is the board's own previous line — simply replaced
+assert_not_contains "$(state "s['issues']['$epic_c_t']['body']")" "(was:" "an unparked epic's pull note carries no fold"
+
 # ---- pre-park + lane-aware answer return (E1 transition 7) --------------------
 echo "pre-park returns:"
 run board-register.sh "Architect park probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null

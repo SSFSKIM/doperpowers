@@ -439,9 +439,14 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
   # No integration branch left ⇒ the worktree sits on the default branch and
   # there is no aggregate range at all; say so in the prompt rather than
   # letting the worker run an engine over nothing.
+  # Same formula as the PR path, on the same binding: BASE_REF is what the
+  # reviewed work merges into, and for an epic that is always the default
+  # branch — so this is always "yes". Hand-setting it "no" for the
+  # integration-branch case contradicted the BASE_REF the same prompt binds,
+  # and pointed the (scale-inapplicable) self-merge tier the permissive way.
   base_is_default="no"
+  [ "$base_ref" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
   if [ "$int_ref" = "$base_ref" ]; then
-    base_is_default="yes"
     range_note="This epic has NO aggregate branch range: its integration branch is gone (deleted when its children merged), so this worktree sits on $base_ref itself and an engine run based on origin/$base_ref would review nothing. The review ranges are the per-child base/head ranges the closure package names — drive the engine over those, one range at a time (the worktree is yours to move: detach it at a range's head and run the engine with that range's base)."
   else
     range_note="Your aggregate review range is this worktree's integration branch '$int_ref' against origin/$base_ref — the branch it merges into — which is exactly what the engine's \`--base origin/$base_ref\` reviews."
