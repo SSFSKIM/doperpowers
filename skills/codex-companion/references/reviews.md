@@ -65,6 +65,10 @@ applies. Don't run them on a checkout you don't trust.
 `--json` prints the structured result object instead of rendered text.
 
 Foreground (`--wait`) suits small diffs; anything multi-file belongs in a
-background Bash call (see references/jobs.md for the mechanics). If codex
+background Bash call (see references/jobs.md for the mechanics). Either
+way, add `2> <scratch>.events.log`: findings are stdout-only, and the
+redirect keeps the streamed per-command progress — and its truncated
+copy of the verdict — out of what you read back. On a wrapped run the
+same redirect also catches the private app-server's noise. If codex
 may be missing or unauthenticated, run the `setup` verb first — it
 diagnoses install and auth state.

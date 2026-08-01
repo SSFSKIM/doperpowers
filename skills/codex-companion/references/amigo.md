@@ -24,7 +24,9 @@ intact; `--prompt-file` avoids the issue entirely. And don't use the
 runtime's own `--background` flag here — it spawns a detached worker with
 a persist-after-spawn race that can strand the job as "queued" forever;
 for a long task, background the whole foreground command with harness
-Bash instead (references/jobs.md).
+Bash instead (references/jobs.md). Codex's answer is stdout-only — send
+stderr to a scratch file (`2> …`) so an exploration-heavy turn's streamed
+progress doesn't multiply what you read back.
 
 - Read-only by default. `--write` lets Codex edit the working tree — pass
   it only when edits are the point (a fix, an implementation), not for

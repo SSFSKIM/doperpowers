@@ -34,7 +34,10 @@ the job record — nothing detaches. For `task`, the runtime's own
 persist-after-spawn race that can strand the job (worker exits "No stored
 job found" while the record stays queued forever) — don't use it. The one
 backgrounding mechanism for everything: run the plain foreground command
-inside the harness's background Bash (`run_in_background: true`). That
+inside the harness's background Bash (`run_in_background: true`), stderr
+redirected to a scratch file — the result is stdout-only, so what you
+read on completion is the verdict rather than the full progress stream
+(the job log records that anyway). That
 wakes this session on completion, so don't poll `status` in a loop; it
 exists for mid-flight peeks at long runs and for picking up jobs from a
 different session. Without a job id, `status`/`result` default to the

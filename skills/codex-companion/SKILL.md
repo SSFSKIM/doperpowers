@@ -29,6 +29,14 @@ that never exists forces the per-call direct path. Leave it OFF
 `setup`'s auth probe has no direct fallback, so the dead endpoint makes
 it misreport auth failure. references/jobs.md has the details on both.
 
+Work-verb output is split by stream: stdout carries only the final
+rendered result, written after the turn completes; stderr streams
+`[codex]` progress — a line per command Codex runs, plus a truncated
+copy of the final answer — which on a real run dwarfs the verdict.
+Redirect it (`2> <scratch>.events.log`) so what you read back is just
+the result. The same progress persists in the job log, and errors also
+land on stderr, so keep the file and check it only on a nonzero exit.
+
 Verbs, and where each is specified:
 
 - `review` — Codex's native code review of the working tree or a branch
