@@ -1465,6 +1465,54 @@ PY
 out8="$("$DISPATCH" --sweep 2>&1)"
 assert_not_contains "$out8" "review-epic-20" "an in-review epic with a live child is not a scale target"
 assert_equals "$(cat "$SPAWN_LOG")" "" "no scale reviewer spawns while recomposition is not due"
+
+# ---- the gone-integration-branch fallback still fetches the default branch ----
+# When the `branch:` meta names a branch that is already deleted (the normal
+# shape once the children merge), the fallback collapses int_ref onto the
+# default branch — which makes the int_ref != base_ref fetch below it a no-op.
+# Everything downstream then comes from whatever origin/<default> the local
+# clone last saw: the worktree, both manifests, and the merged per-child head
+# SHAs the closure package names — in exactly the mode whose prompt sends the
+# worker at those per-child ranges. Advance origin/main from a SECOND clone so
+# this clone's remote-tracking ref is genuinely stale, and the worktree head
+# proves whether the fallback fetched.
+reset_state
+OTHER="$TEST_ROOT/other"
+rm -rf "$OTHER"
+git clone -q "$ORIGIN" "$OTHER" 2>/dev/null
+# the bare origin's HEAD is still the unborn branch git init made, so the
+# fresh clone lands with no local main — take it from the remote ref.
+git -C "$OTHER" checkout -q -B main origin/main
+echo "merged child work" > "$OTHER/merged.txt"
+git -C "$OTHER" add merged.txt
+git -C "$OTHER" -c user.email=t@t -c user.name=t commit -q -m "children merged into main"
+git -C "$OTHER" push -q origin main
+FRESH_MAIN="$(git -C "$OTHER" rev-parse HEAD)"
+STALE_MAIN="$(git -C "$LOCAL_REPO" rev-parse origin/main)"
+if [ "$STALE_MAIN" != "$FRESH_MAIN" ]; then
+    pass "the local clone's origin/main starts out stale (the condition under test)"
+else
+    fail "the local clone's origin/main starts out stale (the condition under test)"
+fi
+PKG="$PKG" python3 - <<'PY'
+import json, os
+meta = "\n\n<!-- board:meta\nbranch: epic/already-deleted\npr: %s\n-->\n" % os.environ["PKG"]
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Epic acceptance." + meta, "parent": None},
+    {"number": 22, "state": "CLOSED", "labels": [], "body": "child a", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+out9="$("$DISPATCH" --sweep 2>&1)"
+assert_contains "$out9" "integration branch 'epic/already-deleted' is gone" "the deleted integration branch is reported, not fatal"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the fallback still dispatches a scale reviewer"
+assert_equals "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "$FRESH_MAIN" \
+    "the fallback fetches the default branch instead of trusting a stale local ref"
+assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$FRESH_MAIN" \
+    "the fallback worktree sits at the FRESH default-branch head (where the merged children are)"
+GONE_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
+assert_contains "$GONE_PROMPT" "NO aggregate branch range" "the fallback prompt still routes the worker to the package's per-child ranges"
 rm -f "$MOCK_DIR/board-issues.json"
 
 echo

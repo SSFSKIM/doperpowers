@@ -431,6 +431,15 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
     fi
     echo "$name: integration branch '$int_ref' is gone (deleted when its children merged) — the closure package's PR ranges are the review ranges" >&2
     int_ref="$DEFAULT_BRANCH"
+    # The fetch that just failed never reached the default branch, and
+    # collapsing int_ref onto it makes the base_ref fetch below a no-op — so
+    # fetch it HERE or everything downstream is built from a possibly-stale
+    # local origin/<default>: the worktree, both manifests, and the merged
+    # per-child head SHAs the closure package names. This is precisely the
+    # mode whose prompt sends the worker at those per-child ranges, so a
+    # stale ref is the difference between reviewing them and not finding them.
+    git -C "$LOCAL_REPO" fetch -q origin "$DEFAULT_BRANCH" \
+      || { echo "$name: git fetch failed ($DEFAULT_BRANCH)" >&2; return 1; }
   fi
   if [ "$int_ref" != "$base_ref" ]; then
     git -C "$LOCAL_REPO" fetch -q origin "$base_ref" \
