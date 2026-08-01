@@ -1242,6 +1242,32 @@ run board-transition.sh "$id_orphan_t" in-design >/dev/null      # no bound daem
 out="$(run board-reconcile.sh)"
 assert_contains "$out" "orphaned  #$id_orphan_t: in-design" "orphaned in-design flagged (Architect's in-flight state)"
 
+# ---- env-issue category (E2 interim slice) --------------------------------------
+echo "env-issue category:"
+# default birth inverts to needs-human (spec v2.1 birth rule)
+out="$(run board-register.sh "Registry flakes on pull" env-issue P2 \
+  --note "need registry mirror credentials rotated" --body-file "$SPEC_BODY")"
+env_t="$(state "s['next']-1")"
+assert_contains "$(state "s['issues']['$env_t']['labels']")" "env-issue" "env-issue category label applied"
+assert_contains "$(state "s['issues']['$env_t']['labels']")" "status:needs-human" "env-issue defaults to needs-human, not ready-for-implementer"
+# the label is board-managed: ensure_labels created it in the mock label store
+assert_contains "$(state "sorted(s['labels'])")" "env-issue" "ensure_labels creates the env-issue label"
+# default birth without a note is refused (needs-human requires one)
+assert_fails run board-register.sh "Mystery env pain" env-issue P2 --body-file "$SPEC_BODY"
+# a named repair path births an agent lane explicitly
+run board-register.sh "Pin the broken fixture image" env-issue P2 \
+  --state ready-for-implementer --body-file "$SPEC_BODY" >/dev/null
+env_a="$(state "s['next']-1")"
+assert_contains "$(state "s['issues']['$env_a']['labels']")" "status:ready-for-implementer" "explicit agent-lane env-issue birth allowed"
+# filing never touches another ticket: register with --spawned-by and assert source unchanged
+run board-register.sh "Source ticket" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+src_t="$(state "s['next']-1")"
+run board-transition.sh "$src_t" in-progress >/dev/null
+before="$(state "sorted(s['issues']['$src_t']['labels'])")"
+run board-register.sh "Flaky DNS in CI" env-issue P3 \
+  --note "needs infra DNS fix" --spawned-by "$src_t" --body-file "$SPEC_BODY" >/dev/null
+assert_equals "$(state "sorted(s['issues']['$src_t']['labels'])")" "$before" "env-issue filing leaves the source ticket untouched"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

@@ -144,10 +144,12 @@ PRIORITY_COLORS = {  # ensure_labels palette (hex, no '#')
 }
 
 # Categories: bug/enhancement are GitHub defaults; spike (the exploration
-# lane — deliverable is findings, never a merge) is board-managed, so
-# ensure_labels creates it.
-CATEGORIES = ("bug", "enhancement", "spike")
+# lane — deliverable is findings, never a merge) and env-issue (E2:
+# environmental friction, fire-and-continue registration) are
+# board-managed, so ensure_labels creates them.
+CATEGORIES = ("bug", "enhancement", "spike", "env-issue")
 SPIKE_COLOR = "f9d0c4"
+ENV_ISSUE_COLOR = "e4a0f7"
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park", "note")
@@ -389,6 +391,9 @@ def ensure_labels():
     want += [("spike", SPIKE_COLOR,
               "issue-tracker board category: exploration spike — "
               "deliverable is findings, never a merge")]
+    want += [("env-issue", ENV_ISSUE_COLOR,
+              "issue-tracker board category: environmental friction — "
+              "fire-and-continue report; default birth needs-human")]
     for name, color, desc in want:
         if name not in have:
             gh(["label", "create", name, "-R", repo(), "--color", color,

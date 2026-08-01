@@ -8,6 +8,9 @@
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
 #             findings comment, never a merge — see doperpowers:implementing)
+#             | env-issue (environmental friction report — E2: defaults to
+#             needs-human unless the registrar names an agent-executable
+#             repair path via an explicit --state)
 #   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
 #             the managed priority:* label (change later: board-priority.sh)
 #   --state   birth state: ready-for-implementer (default) | ready-for-architect
@@ -86,6 +89,16 @@ if category == "spike" and state == "ready-for-architect":
           "ready-for-implementer (the default); spikes dispatch on the "
           "spike protocol from either lane queue and have no legal exit "
           "from the architect queue")
+# E2 birth rule (inverted for this category only): environmental friction
+# that an authorized agent could reach would typically already be solved —
+# unsure defaults to the human, not the implement queue. An explicit
+# --state is the registrar's positive claim of a named repair path.
+if category == "env-issue" and env["T_STATE_EXPLICIT"] != "1":
+    state = "needs-human"
+    if not note:
+        B.die("an env-issue defaults to needs-human and requires --note "
+              "naming the requested intervention (or pass an explicit "
+              "--state with a named agent repair path)")
 
 tickets = B.snapshot()
 parent = B.resolve(env["T_PARENT"], tickets) if env["T_PARENT"] else None
