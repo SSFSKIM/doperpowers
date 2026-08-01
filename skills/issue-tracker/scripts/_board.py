@@ -65,8 +65,15 @@ PRE_PARK = {
 # Park states — the ones whose exit is somebody ELSE's action (a human
 # decision, an information hunt, ongoing steering, a deliberate defer). A
 # park is a live wake-queue entry: it owns the ticket's note and often a
-# bound idle session waiting to be resumed, so board bookkeeping must never
-# unpark a ticket out from under whoever holds it.
+# bound idle session waiting to be resumed, so no bookkeeping unparks a LEAF.
+# The two EPIC bookkeeping writes are the deliberate exception — pull_epics
+# and recompose_epics both unpark a parked epic, because an epic's park is
+# the board's own (an epic is never dispatched for implementation and its
+# park has no bound worker of its own). Both preserve what the park owned:
+# the pull's target comes from PRE_PARK, and the recomposition return folds
+# the park's note into its own (see recompose_epics).
+# BIRTH above is the other longhand twin of this tuple — a park state added
+# here almost always belongs there too.
 PARKED = ("needs-info", "needs-human", "interactive-preferred", "deferred")
 PULLABLE = DISPATCHABLE + PARKED
 LEGAL = {
@@ -544,10 +551,13 @@ def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     update_meta(tid, n, **updates)
     if why:
         if bookkeeping:
-            # Board bookkeeping on an epic (recompose/pull): the marker is
-            # deliberately NOT the "[board] from → to:" format — the
-            # convergence counter greps that format, and a mechanical
-            # return must never count as a worker escalation traversal.
+            # Board bookkeeping on an epic (the recomposition/reconciliation
+            # return): the marker is deliberately NOT the "[board] from → to:"
+            # format — the convergence counter greps that format, and a
+            # mechanical return must never count as a worker escalation
+            # traversal. pull_epics writes plain "[board] <to>:" comments
+            # instead: no pull edge is a convergence edge, so it needs no
+            # exemption from the counter.
             comment(tid, "[board-epic] %s: %s" % (to, why))
         elif (old, to) in CONVERGENCE_EDGES:
             comment(tid, "[board] %s → %s: %s" % (old, to, why))
@@ -556,6 +566,18 @@ def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     n["state"], n["status_labels"] = to, ([] if to in TERMINAL else [to])
     n["note"] = why or None
     return "#%s: %s → %s" % (tid, old, to)
+
+
+def _epic_note(node, why):
+    """Bookkeeping note for an epic write that UNPARKS the epic — the park's
+    own note (a human's pending question, the reconciling Architect's
+    'waiting on children' line) is folded in rather than overwritten. Only
+    a park's note is somebody else's; an in-flight epic's note is the
+    board's own previous bookkeeping line and is simply replaced."""
+    old = node.get("note")
+    if node["state"] in PARKED and old:
+        return "%s (was: %s)" % (why, old)
+    return why
 
 
 def pull_epics(tickets, tid, lines):
@@ -584,11 +606,27 @@ def pull_epics(tickets, tid, lines):
     p = tickets[tid].get("parent")
     while p and p in tickets and tickets[p]["state"] in PULLABLE:
         pstate = tickets[p]["state"]
+        if pstate == "ready-for-architect" \
+           and (tickets[p].get("note") or "").startswith("reconciliation-due:"):
+            # An UNCLAIMED reconciliation return (the sweep's IMPACT pass put
+            # the epic here; the [board-epic] reconcile: marker already says
+            # the proposal is consumed, but no Architect has read it yet).
+            # Pulling it lands the epic in in-design — out of PULLABLE and out
+            # of the dispatch pool — so nobody would ever read that proposal,
+            # and every later proposal on this epic would defer to final
+            # recomposition. The gate is the NOTE, not the state: a
+            # recomposition-due epic (all children terminal) IS pulled back by
+            # a corrective child, deliberately. The walk stops here for the
+            # same reason it stops on any unpullable parent — an ancestor is
+            # pulled by its own child going active, not through a parent that
+            # stayed put.
+            break
         to = PRE_PARK.get(pstate, "in-progress")
         assert to in ACTIVE, (
             "pull_epics: %s -> %s is not an in-flight state (PRE_PARK "
             "drifted out of sync with ACTIVE for a PULLABLE state)" % (pstate, to))
-        lines.append(apply_state(tickets, p, to, "epic: child #%s active" % tid))
+        lines.append(apply_state(
+            tickets, p, to, _epic_note(tickets[p], "epic: child #%s active" % tid)))
         p = tickets[p].get("parent")
 
 
@@ -611,13 +649,23 @@ def recompose_epics(tickets, p, lines):
     never by child bookkeeping. When the last child lands, the epic
     returns to ready-for-architect — the one state where epics are
     dispatchable — with the recomposition-due note. Bookkeeping latitude:
-    exempt from LEGAL and from convergence counting ([board-epic] marker)."""
+    exempt from LEGAL and from convergence counting ([board-epic] marker).
+
+    The return also CLEARS the `pr` meta: on an epic that slot holds the
+    recomposition closure package, and a package assembled for the previous
+    cycle is void the moment the composition changes. Leaving it in place let
+    an Architect re-enter in-review without --pr (the gate accepts the stale
+    value) and the scale-review sweep, which dedupes on exact package
+    equality, would read the epic as already reviewed forever. The
+    reconciliation return (the sweep's IMPACT pass) deliberately does NOT
+    clear it — that is not a recomposition cycle."""
     while p and p in tickets:
         if recomposition_ready(tickets, p) \
            and tickets[p]["state"] != "ready-for-architect":
             lines.append(apply_state(
                 tickets, p, "ready-for-architect",
-                "recomposition-due: all children terminal",
+                _epic_note(tickets[p], "recomposition-due: all children terminal"),
+                extra_meta={"pr": None},
                 bookkeeping=True))
         # the chain walk ends here: an ancestor can only become ready when
         # THIS epic reaches terminal via its own recomposition verdict

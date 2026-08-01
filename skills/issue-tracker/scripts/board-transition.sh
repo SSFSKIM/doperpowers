@@ -62,13 +62,21 @@ if to == "ready-for-architect" and n["category"] == "spike":
     B.die("#%s is a spike — it has no legal exit from ready-for-architect; "
           "it stays in its current lane" % tid)
 # E2 epic guard: the in-design → done / in-review edges exist ONLY for a
-# recomposition claim on an epic (the scoped terminal-authority
-# exception). A leaf Architect never closes or reviews its own ticket.
-if cur == "in-design" and to in ("done", "in-review") \
-        and tid not in B.epics(tickets):
-    B.die("in-design → %s is the epic recomposition edge — #%s has no "
-          "children; a leaf exits in-design via ready-for-implementer "
-          "or a park" % (to, tid))
+# RECOMPOSITION claim (the scoped terminal-authority exception) — an epic
+# whose children are all terminal. A leaf Architect never closes or reviews
+# its own ticket, and an epic held on a RECONCILIATION claim (children still
+# running) exits in-design by releasing to needs-info, never by a verdict:
+# closing there would skip recomposition verification entirely.
+if cur == "in-design" and to in ("done", "in-review"):
+    if tid not in B.epics(tickets):
+        B.die("in-design → %s is the epic recomposition edge — #%s has no "
+              "children; a leaf exits in-design via ready-for-implementer "
+              "or a park" % (to, tid))
+    if not B.recomposition_ready(tickets, tid):
+        B.die("#%s still has non-terminal children — the in-design → %s "
+              "verdict edges belong to recomposition (every child terminal). "
+              "A reconciliation claim releases the epic instead: needs-info "
+              "\"reconciled: ... — waiting on children\"" % (tid, to))
 if to == cur:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))

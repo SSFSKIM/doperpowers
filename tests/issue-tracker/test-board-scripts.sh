@@ -1317,6 +1317,25 @@ run board-transition.sh "$ce_e" in-design >/dev/null
 assert_fails run board-transition.sh "$ce_e" in-review          # package required
 out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#closure-package")"
 assert_contains "$out" "#$ce_e: in-design → in-review" "code-bearing epic enters scale review with the closure package"
+
+# Second recomposition cycle: the scale review found a defect, so a corrective
+# child is registered and the epic waits for it again.
+run board-transition.sh "$ce_e" ready-for-architect "scale review: corrective child" >/dev/null
+run board-register.sh "Corrective child" bug P1 --parent "$ce_e" --body-file "$SPEC_BODY" >/dev/null
+ce_x="$(state "s['next']-1")"
+out="$(run board-transition.sh "$ce_x" in-progress)"
+assert_contains "$out" "#$ce_e: ready-for-architect → in-design" "the corrective child pulls the waiting epic back in-flight"
+# The verdict edges are RECOMPOSITION edges: an epic holding a reconciliation
+# claim over live children may not close or open a scale review early.
+assert_fails run board-transition.sh "$ce_e" "done"
+assert_fails run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#pkg-2"
+out="$(run board-transition.sh "$ce_x" "done")"
+assert_contains "$out" "#$ce_e: in-design → ready-for-architect" "the corrective child's landing returns the epic for a second recomposition"
+assert_not_contains "$(state "s['issues']['$ce_e']['body']")" "pr: https" "the recomposition return clears the previous cycle's closure package"
+run board-transition.sh "$ce_e" in-design >/dev/null
+assert_fails run board-transition.sh "$ce_e" in-review   # the cleared slot demands a FRESH package
+out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#pkg-2")"
+assert_contains "$out" "#$ce_e: in-design → in-review" "a fresh closure package re-enters scale review"
 out="$(run board-transition.sh "$ce_e" "done")"
 assert_contains "$out" "#$ce_e: in-review → done" "clean scale review closes the epic"
 

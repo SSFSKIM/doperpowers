@@ -275,8 +275,12 @@ s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
     "31": issue(31, "epic parked on a human answer", ["status:needs-human"],
                 body="Epic body\n\n<!-- board:meta\nnote: which flavor?\n-->\n"),
     "32": issue(32, "child of a parked epic", ["status:in-progress"]),
+    # a queued SIBLING of 26: its dispatch must not yank the epic back out of
+    # the reconciliation return the IMPACT pass just performed
+    "33": issue(33, "sibling of the child that proposed", ["status:ready-for-implementer"]),
 }}
 s["issues"]["26"]["parent"] = 25
+s["issues"]["33"]["parent"] = 25
 s["issues"]["28"]["parent"] = 27
 s["issues"]["30"]["parent"] = 29
 s["issues"]["32"]["parent"] = 31
@@ -462,6 +466,20 @@ assert_equals "$(board_eligible "$EPIC")" "eligible" "reconciliation-due epic is
 out="$(run_sweep)"
 assert_equals "$(comment_count "$EPIC" "[board-epic] reconcile:")" "1" "a consumed proposal is not re-consumed"
 assert_contains "$out" "[sweep] IMPACT: 0 acted" "a tick with nothing to consume still reports its tally"
+
+# The returned epic is UNCLAIMED — the reconcile marker says the proposal is
+# consumed, but no Architect has read it yet. A SIBLING going active must not
+# pull the epic to in-design: that is out of the dispatch pool, so the
+# proposal would be stranded unread and every later proposal on this epic
+# would defer to final recomposition.
+SIBLING=33
+pull_out="$(cd "$LOCAL_REPO" && "$BOARD_SCRIPTS/board-transition.sh" "$SIBLING" in-progress 2>&1)"
+assert_contains "$(issue_labels "$SIBLING")" "status:in-progress" "the sibling child goes active"
+assert_contains "$(issue_labels "$EPIC")" "status:ready-for-architect" \
+    "an unclaimed reconciliation-due epic is not pulled by a sibling going active"
+assert_not_contains "$pull_out" "#$EPIC:" "the epic pull reports no write it did not make"
+assert_contains "$(issue_note "$EPIC")" "reconciliation-due:" "the reconciliation-due note survives the sibling's dispatch"
+assert_equals "$(board_eligible "$EPIC")" "eligible" "the epic stays claimable by a reconciling Architect"
 
 # The marker, not the parent's state, is what makes consumption durable: put
 # the epic back in a claimable state and the same proposal must not re-fire.

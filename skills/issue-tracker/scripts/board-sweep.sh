@@ -377,7 +377,7 @@ if not comments:
     sys.exit(0)
 last = comments[-1]
 body = (last.get("body") or "").lstrip()
-if body.startswith(("[answers]", "[board]", "[gate]", "[findings]")):
+if body.startswith(("[answers]", "[board]", "[board-epic]", "[gate]", "[findings]")):
     sys.exit(0)
 if str(last.get("createdAt") or "") <= os.environ["T_TURN_END"]:
     sys.exit(0)
