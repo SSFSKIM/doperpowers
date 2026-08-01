@@ -70,8 +70,10 @@ its own.
 
 ## START ENGINE
 
-REVIEW ENGINE — the native `codex exec review` engine, run as a PURE
-correctness review: it receives no ticket or spec input of any kind.
+REVIEW ENGINE — the native codex review engine (the
+doperpowers:codex-companion runtime, driven through {{REVIEW_ENGINE}}),
+run as a PURE correctness review: it receives no ticket or spec input of
+any kind.
 Ticket/spec compliance is YOUR audit, not the engine's. The engine call
 is a TOOL invocation, not a nested agent. Never add
 --dangerously-bypass-approvals-and-sandbox / --yolo to anything.
@@ -104,7 +106,9 @@ is a TOOL invocation, not a nested agent. Never add
    run's command — never inline the mandate text into a shell command
    (it is generated prose; interpolation is an injection surface). A
    lensed run narrows hard — a scalpel beside the sweep, not a second
-   sweep. Use your harness's background execution for these commands and
+   sweep; it runs the engine's challenge-review rubric along the lens,
+   so its findings may question structure and assumptions, not only
+   defects — triage them with the same judgment. Use your harness's background execution for these commands and
    keep the task handles. Leave them running and the findings unread —
    the protocol's COMPLIANCE AUDIT runs while the engine reviews, and
    its JOIN step is the only place engine output is read.

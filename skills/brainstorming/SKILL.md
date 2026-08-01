@@ -87,12 +87,18 @@ Three tracks leave this skill. The controlled track — the rest of this skill: 
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
-raise confidence in it — dispatch the `doperpowers:critique` agent with brief
-context and paths to the design artifacts, and debate it via SendMessage
-until the discussion converges: evaluate each finding, adopt what survives,
-rebut what doesn't. A disagreement that survives honest debate goes to your
-human partner as an open question. Whether to fire it is your call; most
-designs don't need it.
+raise confidence in it — bring in a critic and debate until the discussion
+converges: evaluate each finding, adopt what survives, rebut what doesn't.
+A disagreement that survives honest debate goes to your human partner as an
+open question. Route by the design's center of gravity: a technical-heavy
+design (protocols, concurrency, data models, failure semantics) goes to a
+Codex thread via doperpowers:codex-companion's `task` verb — cross-model
+eyes catch what same-model review is blind to; its references/amigo.md has
+the critic recipe, debated over `--resume-last`. A product-heavy,
+judgment-heavy, or still-open design goes to the `doperpowers:critique`
+agent with brief context and paths to the design artifacts, debated via
+SendMessage. Whether to fire either is your call; most designs don't
+need it.
 
 **Design for isolation and clarity:**
 

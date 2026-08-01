@@ -6,8 +6,9 @@ The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
 background daemon (`orchestrating-daemons`) that runs TWO review tracks at
-once: the native Codex engine (`codex exec review` via review-engine.sh, in
-the background) reviews pure code correctness, while the worker itself audits
+once: the native Codex engine (the doperpowers:codex-companion runtime via
+review-engine.sh, in the background) reviews pure code correctness, while
+the worker itself audits
 implementer protocol/spec compliance against the linked ticket. The worker
 never fixes anything: it triages the joined findings on its own judgment
 (the engine's native severity is the starting rank),
@@ -26,7 +27,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
-| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate delivered as a developer message |
+| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
@@ -167,8 +168,11 @@ produce evidence, the review side verifies the claims were real.
 ## Review engine (pure correctness) + worker audit (compliance)
 
 Review responsibility is split between two concurrent tracks with one owner
-each. The ENGINE — the native `codex exec review --base origin/<base>` run
-by `scripts/review-engine.sh` — receives no ticket, spec, or policy input of
+each. The ENGINE — the native codex review run by
+`scripts/review-engine.sh` through the doperpowers:codex-companion runtime
+(plain run = the non-steerable `review` verb; lensed run = the
+`adversarial-review` verb with the lens as focus) — receives no ticket,
+spec, or policy input of
 any kind: coupling spec policy into the native reviewer measurably weakened
 its correctness review, so the interface is `--base` + `--out` plus the
 optional `CODEX_REVIEW_LENS` env — a structural focus mandate the worker

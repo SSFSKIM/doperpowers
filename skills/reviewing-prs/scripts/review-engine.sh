@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # review-engine.sh — the ONE review-engine invocation for the reviewing-prs
-# loop. PURE correctness review: the native `codex exec review --base` runs
-# with no ticket/spec input of any kind; the single optional modification is
-# a diff-derived structural LENS (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS,
-# see the lens block below) delivered as developer_instructions. Ticket/spec
-# compliance is the REVIEW WORKER's own audit, performed outside this engine
-# (skills/reviewing-prs/SKILL.md). The script stays synchronous; the caller
-# chooses foreground or background. The verdict lands in --out as a compact
-# findings file; the PR diff never enters the caller's context.
+# loop, driven by the doperpowers:codex-companion runtime (vendored codex
+# app-server client; sibling skill). PURE correctness review: a plain run is
+# codex's native `review` verb with no ticket/spec input of any kind; the
+# single optional modification is a diff-derived structural LENS
+# (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS, see the lens block below),
+# which routes the run through the `adversarial-review` verb with the lens
+# as its focus mandate. Ticket/spec compliance is the REVIEW WORKER's own
+# audit, performed outside this engine (skills/reviewing-prs/SKILL.md). The
+# script stays synchronous; the caller chooses foreground or background. The
+# verdict lands in --out as rendered findings (progress stream:
+# <out>.events.log); the PR diff never enters the caller's context.
 #
 # Usage: review-engine.sh --base <ref> --out <file>
 #   --base  diff base (e.g. origin/main); the engine reviews <ref>...HEAD
-#   --out   findings file the engine writes (event stream: <out>.events.jsonl)
+#   --out   findings file the engine writes
 # Env: CODEX_REVIEW_MODEL (default gpt-5.6-sol), CODEX_REVIEW_EFFORT
 # (default xhigh), CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS (optional
 # diff-derived structural focus mandate — see the lens block below; both
 # empty keeps the plain review).
 # Run from the worktree root — the engine reviews $PWD.
-# Exits with codex's rc (127 codex missing, 2 usage error).
+# Exits 127 when codex/node are missing, 2 on usage error, else the
+# runtime's rc.
 set -euo pipefail
 
 usage() { echo "usage: review-engine.sh --base <ref> --out <file>" >&2; exit 2; }
@@ -31,6 +35,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$base" ] && [ -n "$out" ] || usage
 command -v codex >/dev/null 2>&1 || { echo "review-engine: codex CLI not found" >&2; exit 127; }
+command -v node  >/dev/null 2>&1 || { echo "review-engine: node not found" >&2; exit 127; }
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+companion="$script_dir/../../codex-companion"
+[ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: codex-companion skill not found at $companion" >&2; exit 127; }
 
 model="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 effort="${CODEX_REVIEW_EFFORT:-xhigh}"
@@ -52,31 +61,39 @@ fi
 # Temporary CODEX_HOME: the engine must WRITE session state, and the default
 # ~/.codex is read-only under the outer seatbelt. Keep that state outside the
 # reviewed tree so untracked snapshots cannot affect the review. auth.json is
-# symlinked so login state carries over. Removed on every exit path.
+# symlinked so login state carries over. A temporary CLAUDE_PLUGIN_DATA
+# isolates each run's companion job ledger (state.json is unlocked
+# read-modify-write — parallel lens runs must not share a root). Both removed
+# on every exit path.
 eng_home="$(mktemp -d "${TMPDIR:-/tmp}/review-engine-home.XXXXXX")"
 trap 'rm -rf "$eng_home"' EXIT
 if [ -f "$source_codex_home/auth.json" ]; then
   ln -s "$source_codex_home/auth.json" "$eng_home/auth.json"
 fi
 export CODEX_HOME="$eng_home"
+export CLAUDE_PLUGIN_DATA="$eng_home/companion-state"
 
-# Nested only: macOS forbids applying a second Seatbelt profile
-# (sandbox_apply), so a nested engine must be told to skip self-profiling —
-# the OUTER workspace-write profile still confines it (children inherit).
-# Non-nested the flag would be a real widening, so it is omitted.
-sandbox_flags=()
+# Nested-codex caveat: review threads run their probing commands under
+# codex's own read-only sandbox, applied unconditionally by the app-server
+# (thread/start pins it; codex never skips seatbelt when CODEX_SANDBOX says
+# it is already inside one — verified against codex-rs). Under an OUTER
+# codex seatbelt those probes may fail; the review still renders findings
+# from the diff. Claude-harness workers (this loop's normal shape) are
+# unaffected. Warn so a degraded nested run is attributable.
 if [ -n "${CODEX_SANDBOX:-}" ]; then
-  sandbox_flags=( -c 'sandbox_mode="danger-full-access"' )
+  echo "review-engine: warning — running nested under a codex sandbox; engine probe commands may be confined" >&2
 fi
 
-# Optional lens: a diff-derived structural focus mandate delivered into the
-# review thread as a developer message (the rubric's own override channel).
-# Never ticket/spec content. CODEX_REVIEW_LENS_FILE (a path; read verbatim,
-# so generated prose never passes through shell interpolation — the review
-# worker MUST use this form) takes precedence over CODEX_REVIEW_LENS (inline,
-# for trusted/manual invocations). Passed as a raw literal — codex falls back
-# to the raw string when the value is not valid TOML, so plain prose needs no
-# extra quoting. Both empty/unset = today's exact invocation.
+# Optional lens: a diff-derived structural focus mandate. A lensed run uses
+# the adversarial-review verb — the steerable challenge review — with the
+# lens as its focus text; the rubric hunts along that mandate instead of
+# re-running the broad native sweep. Never ticket/spec content.
+# CODEX_REVIEW_LENS_FILE (a path; read verbatim, so generated prose never
+# passes through shell interpolation — the review worker MUST use this form)
+# takes precedence over CODEX_REVIEW_LENS (inline, for trusted/manual
+# invocations). The lens travels as a single argv element after `--`, so the
+# companion parser never re-tokenizes it into flags. Both empty/unset =
+# the plain native review.
 lens=""
 if [ -n "${CODEX_REVIEW_LENS_FILE:-}" ]; then
   [ -f "$CODEX_REVIEW_LENS_FILE" ] || { echo "review-engine: CODEX_REVIEW_LENS_FILE not found: $CODEX_REVIEW_LENS_FILE" >&2; exit 2; }
@@ -84,16 +101,17 @@ if [ -n "${CODEX_REVIEW_LENS_FILE:-}" ]; then
 elif [ -n "${CODEX_REVIEW_LENS:-}" ]; then
   lens="$CODEX_REVIEW_LENS"
 fi
-lens_flags=()
+
+verb_args=( review --base "$base" --wait --model "$model" )
 if [ -n "$lens" ]; then
-  lens_flags=( -c "developer_instructions=$lens" )
+  verb_args=( adversarial-review --base "$base" --wait --model "$model" -- "$lens" )
 fi
 
+# with-effort.mjs serves the verb a private app-server carrying the effort
+# override (the review protocol has no effort field) and provides its own
+# live endpoint — no detached broker, nothing outlives this run. Findings
+# render on stdout (--out), progress on stderr (<out>.events.log).
 rc=0
-codex exec review --base "$base" \
-  -m "$model" -c "model_reasoning_effort=\"$effort\"" \
-  -c 'features.hooks=false' \
-  ${lens_flags[@]+"${lens_flags[@]}"} \
-  ${sandbox_flags[@]+"${sandbox_flags[@]}"} \
-  --json -o "$out" > "$out.events.jsonl" || rc=$?
+node "$companion/scripts/with-effort.mjs" --effort "$effort" -- \
+  "${verb_args[@]}" > "$out" 2> "$out.events.log" || rc=$?
 exit "$rc"

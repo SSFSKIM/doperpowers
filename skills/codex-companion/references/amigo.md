@@ -40,3 +40,22 @@ narrow its focus, ask it to apply the fix it proposed (add `--write` on
 the resumed turn). `--resume-last` picks the most recent task thread in
 this workspace (`--resume` is an accepted synonym); `--fresh` forces a new
 thread when the request merely sounds like a follow-up.
+
+## As design critic
+
+doperpowers:brainstorming's peer-review layer routes technical-heavy
+designs here (product/judgment-heavy ones go to the doperpowers:critique
+agent). The opening prompt carries the charge and the pointers — Codex
+explores the repo itself, so paths beat pasted content:
+
+    …you are an independent peer reviewer for a matured design. Read
+    <design doc path> and its reasoning, explore the codebase it touches,
+    and attack the blind spots: alternatives nobody named, decisions made
+    before knowing enough. Order findings by what would change the
+    decision; say plainly what is sound.
+
+Then debate over `--resume-last`: adopt what survives your scrutiny,
+rebut what doesn't, and hold the thread until it converges. A
+disagreement that survives honest debate goes to the human partner as an
+open question, not another round. Keep the critic read-only — never
+`--write` in this role.
