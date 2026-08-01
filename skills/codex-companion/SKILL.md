@@ -1,14 +1,12 @@
 ---
 name: codex-companion
-description: Use when work should go to the Codex runtime — an independent or second-opinion code review, an adversarial or lens-focused challenge review of a diff or branch, delegating diagnosis, research, or implementation to Codex (GPT) models, resuming a prior Codex thread, or when another skill or CLAUDE.md routes a review to codex.
+description: Use when work should go to the Codex runtime — an independent or second-opinion review, delegating diagnosis, research, or implementation to Codex (GPT) models.
 ---
 
 # Codex Companion
 
-A vendored copy of OpenAI's Codex companion runtime (`runtime/`, from the
-codex-plugin-cc plugin — see `runtime/VENDORED-FROM`). You drive it
-directly with Bash; there is no subagent, slash command, or hook in the
-path. It needs the `codex` CLI installed and authenticated on this
+OpenAI's Codex companion runtime (`runtime/`). You drive it
+directly with Bash; It needs the `codex` CLI installed and authenticated on this
 machine (the `setup` verb diagnoses both).
 
 Every invocation follows one shape — `<skill-base>` is this skill's base
@@ -41,12 +39,5 @@ Verbs, and where each is specified:
   or a standing multi-turn partner (critique debates, steered execution);
   read-only unless `--write` → references/amigo.md
 - `status` / `result` / `cancel` — job history and backgrounding
-  mechanics (background Bash detaches and auto-wakes; don't poll) → references/jobs.md
-- `setup` — preflight: is codex installed and authenticated?
-
-Two standing rules. Never patch anything under `runtime/` — it is
-byte-identical to upstream so bugfix releases import as a clean diff;
-behavior changes belong at the call site (flags, env) or in these docs.
-And reviews are advisory input to your own judgment: read the findings,
-adopt what survives scrutiny, and never present Codex output as your own
-analysis.
+  mechanics → references/jobs.md
+- `setup` — is codex installed and authenticated (assume it is in most case. diagnose only when blocked)?

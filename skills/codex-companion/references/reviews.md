@@ -23,10 +23,9 @@ Target selection (shared by both):
 
 `review` is Codex's native reviewer, deliberately non-steerable: it errors
 on focus text and on staged-only/unstaged-only scopes. `--model` takes a
-literal model name only — the `spark` alias is task-only; review forwards
-the value un-normalized, so an alias reaches the app-server as an unknown
-model. Left unset, the user's codex `config.toml` decides. There is no
-`--effort` on reviews.
+literal model name only ; review forwards the value un-normalized, so an 
+alias reaches the app-server as an unknown model. Left unset, the user's 
+codex `config.toml` decides. There is no `--effort` on reviews.
 
 `adversarial-review` is the steerable challenge review: it questions the
 chosen design, tradeoffs, and hidden assumptions rather than only hunting
@@ -45,8 +44,7 @@ Working-tree and adversarial reviews embed the contents of untracked
 files — following symlinks — into the review prompt before any sandbox
 applies. Don't run them on a checkout you don't trust.
 
-`--json` prints the structured result object instead of rendered text —
-use it when a program (not a human) consumes the findings.
+`--json` prints the structured result object instead of rendered text.
 
 Foreground (`--wait`) suits small diffs; anything multi-file belongs in a
 background Bash call (see references/jobs.md for the mechanics). If codex

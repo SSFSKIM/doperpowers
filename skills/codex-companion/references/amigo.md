@@ -30,7 +30,7 @@ Bash instead (references/jobs.md).
   it only when edits are the point (a fix, an implementation), not for
   review/diagnosis/research.
 - `--model` and `--effort` left unset defer to the user's codex
-  `config.toml`. `spark` is an alias for `gpt-5.3-codex-spark`.
+  `config.toml`.
 - Long or structured prompts go in a file via `--prompt-file` instead of
   fighting shell quoting.
 
