@@ -345,6 +345,10 @@ assert_contains "$PROMPT" '`BASE_IS_DEFAULT`: yes' "prompt binds base==default (
 assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
 assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-facts-absent fallback when the repo has none"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
+assert_contains "$PROMPT" '`REVIEW_MODE`: pr' "leaf prompt binds the ordinary pr mode"
+assert_not_contains "$PROMPT" "SCALE REVIEWER" "leaf prompt carries none of the scale variant's framing"
+assert_not_contains "$PROMPT" "CLOSURE_PACKAGE" "leaf prompt carries no closure-package binding"
+assert_not_contains "$PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
 assert_contains "$PROMPT" "Use doperpowers:reviewing-prs" "prompt names the Review Worker Protocol skill"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
@@ -1299,9 +1303,12 @@ EPIC_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$EPIC_PROMPT" '`REVIEW_MODE`: scale' "reviewer prompt carries the scale-review mode"
 assert_contains "$EPIC_PROMPT" "\`CLOSURE_PACKAGE\`: $PKG" "prompt binds the closure package as the entry artifact"
 assert_contains "$EPIC_PROMPT" '`ISSUE_NUMBER`: 20' "prompt binds the epic ticket under review"
-assert_contains "$EPIC_PROMPT" '`PR_NUMBER`: none' "scale prompt binds no PR (there is none)"
+assert_contains "$EPIC_PROMPT" "SCALE REVIEWER of recomposition epic #20" "scale prompt opens as the epic's reviewer, not a PR reviewer"
+assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR framing at all (there is no PR)"
+assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
 assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the integration base ref the worktree sits at"
 assert_not_contains "$EPIC_PROMPT" "{{" "no unsubstituted placeholder survives the scale render"
+assert_not_contains "$EPIC_PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
 EPIC_META="$(python3 - <<'PY'
 import glob, json, os
 for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
@@ -1330,8 +1337,49 @@ out2="$("$DISPATCH" --sweep 2>&1)"
 assert_equals "$(cat "$SPAWN_LOG")" "" "second sweep dedupes the live epic reviewer"
 assert_contains "$out2" "active reviewer" "second sweep names the live scale reviewer it skipped"
 
-# An epic that has LEFT in-review (its verdict landed) is no longer listed —
-# the board state is the scale path's dedupe, so no reviewer follows it.
+# The reviewer finishes its turn. Its meta stays on file with a terminal
+# status — nothing ever retires it (the stale-ticket retirement in run_for is
+# PR-only, and an out-of-review epic is not even listed here) — so the
+# closure package it was dispatched against is the ONLY thing that can tell
+# a superseded reviewer from a current one. Same package ⇒ still skip: a
+# completed review must not be respawned every tick.
+python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m = json.load(open(p))
+    if m.get("name") == "review-epic-20":
+        m["status"] = "idle"
+        json.dump(m, open(p, "w"), indent=2)
+PY
+echo "[]" > "$MOCK_DIR/agents.json"
+: > "$SPAWN_LOG"
+out4="$("$DISPATCH" --sweep 2>&1)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "a finished scale reviewer is not respawned while the closure package is unchanged"
+assert_contains "$out4" "skip finished reviewer" "sweep names the finished-reviewer skip"
+
+# ...but a SECOND recomposition cycle must dispatch a second reviewer: the
+# corrective child landed, the Architect pinned a NEW closure package, and
+# the epic returned to in-review. Without the package comparison every cycle
+# after the first would strand on that same "skip finished reviewer" verdict.
+PKG2="https://github.com/test/repo/issues/20#issuecomment-200"
+PKG2="$PKG2" python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
+issues = json.load(open(p))
+for it in issues:
+    if it["number"] == 20:
+        it["body"] = "Epic acceptance.\n\n<!-- board:meta\npr: %s\n-->\n" % os.environ["PKG2"]
+json.dump(issues, open(p, "w"))
+PY
+: > "$SPAWN_LOG"
+out5="$("$DISPATCH" --sweep 2>&1)"
+assert_contains "$out5" "new closure package, new recomposition cycle" "sweep names the superseded reviewer it retired"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "the superseded reviewer's terminal meta is retired"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the second recomposition cycle dispatches a fresh scale reviewer"
+assert_contains "$(cat "$PROMPT_DIR/review-epic-20.prompt")" "$PKG2" "the second reviewer is bound to the NEW closure package"
+
+# An epic that has LEFT in-review for good (its verdict closed it) is no
+# longer listed at all — no reviewer follows it.
 reset_state
 python3 - <<'PY'
 import json, os
@@ -1342,8 +1390,9 @@ for it in issues:
         it["state"], it["labels"] = "CLOSED", []
 json.dump(issues, open(p, "w"))
 PY
-"$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_equals "$(cat "$SPAWN_LOG")" "" "a closed (recomposed) epic is never scale-reviewed again"
+out6="$("$DISPATCH" --sweep 2>&1)"
+assert_not_contains "$out6" "review-epic-20" "a closed (recomposed) epic is never scale-reviewed again"
+assert_equals "$(cat "$SPAWN_LOG")" "" "a closed epic spawns nothing"
 rm -f "$MOCK_DIR/board-issues.json"
 
 echo

@@ -173,6 +173,41 @@ sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 
 _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 
+# One field of daemon <1>'s registry meta (empty when absent).
+_meta_field() {  # <uuid> <key>
+  DAEMON_HOME="$DAEMON_HOME" M_UUID="$1" M_KEY="$2" python3 - <<'PY'
+import json, os
+try:
+    m = json.load(open(os.path.join(os.environ["DAEMON_HOME"], os.environ["M_UUID"] + ".json")))
+except Exception:
+    m = {}
+print(m.get(os.environ["M_KEY"]) or "")
+PY
+}
+
+# Write one field into daemon <1>'s registry meta, under the same lock
+# board-bind.sh takes (read-modify-write; unknown keys are preserved).
+_stamp_meta() {  # <uuid> <key> <value>
+  DAEMON_HOME="$DAEMON_HOME" M_UUID="$1" M_KEY="$2" M_VAL="$3" python3 - <<'PY'
+import fcntl, json, os
+home = os.environ["DAEMON_HOME"]
+path = os.path.join(home, os.environ["M_UUID"] + ".json")
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    with open(path) as f:
+        m = json.load(f)
+    m[os.environ["M_KEY"]] = os.environ["M_VAL"]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(m, f, indent=2)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+}
+
 # rc 0 when some LOCAL `claude agents` row's cwd equals worktree path <1>. A
 # visible row with matching foreign registry metadata migrated with the session
 # store, not the process, so it does not occupy the worktree. Unmanaged rows
@@ -341,8 +376,7 @@ PY
     return 1
   fi
 
-  prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" \
-    P_REVIEW_MODE="pr" P_CLOSURE_PACKAGE="none" \
+  prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_REVIEW_MODE="pr" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
@@ -377,7 +411,10 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
   engine="${WORKER_ENGINE:-codex}"
   base_ref="${branch:-$DEFAULT_BRANCH}"
   if ! git -C "$LOCAL_REPO" fetch -q origin "$base_ref" 2>/dev/null; then
-    echo "$name: integration branch '$base_ref' unfetchable — reviewing $DEFAULT_BRANCH instead" >&2
+    if [ "$base_ref" = "$DEFAULT_BRANCH" ]; then
+      echo "$name: git fetch failed ($base_ref)" >&2; return 1
+    fi
+    echo "$name: integration branch '$base_ref' is gone (deleted when its children merged) — reviewing $DEFAULT_BRANCH instead" >&2
     base_ref="$DEFAULT_BRANCH"
     git -C "$LOCAL_REPO" fetch -q origin "$base_ref" \
       || { echo "$name: git fetch failed ($base_ref)" >&2; return 1; }
@@ -418,8 +455,9 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
     return 1
   fi
 
-  prompt="$(P_PR_NUMBER="none" P_PR_URL="none" P_HEAD_REF="none" P_HEAD_SHA="none" \
-    P_REVIEW_MODE="scale" P_CLOSURE_PACKAGE="$pkg" \
+  # No PR bindings at all: the mode:scale template blocks carry no
+  # {{PR_NUMBER}}/{{PR_URL}}/{{HEAD_*}} slot to fill.
+  prompt="$(P_REVIEW_MODE="scale" P_CLOSURE_PACKAGE="$pkg" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$base_ref" \
     P_ISSUE_NUMBER="$etid" P_ISSUE_LIST="$etid" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
@@ -435,7 +473,14 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "$name: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
 
-  _spawn_reviewer "$name" "$etid" "$prompt" "$wt" "$engine" "$control_dir"
+  _spawn_reviewer "$name" "$etid" "$prompt" "$wt" "$engine" "$control_dir" || return 1
+  # Stamp WHICH closure package this reviewer was dispatched against. That
+  # stamp is what lets the next recomposition cycle tell a superseded
+  # reviewer from a current one (see sweep_epic). Non-fatal: an unstamped
+  # meta reads as superseded, which costs one redundant re-review — never a
+  # stranded epic.
+  _stamp_meta "$REVIEWER_UUID" closure_package "$pkg" \
+    || echo "$name: closure-package stamp failed (non-fatal)" >&2
 }
 
 # ---- shared worker plumbing (both review variants) -----------------------------
@@ -473,6 +518,14 @@ EOF2
 # Bootstrap render: every P_* var in the environment fills the matching
 # {{PLACEHOLDER}}, plus the two BASE-ref manifest snapshots (capped, with
 # their absent-file fallbacks). A placeholder with no P_* renders empty.
+#
+# The template also carries `<!-- mode:X -->…<!-- /mode:X -->` blocks: the
+# block whose X is this run's P_REVIEW_MODE survives, every other block is
+# dropped whole. That is how one template serves both variants without
+# either worker reading the other's framing — a scale reviewer is never
+# told it has a PR, and a PR reviewer never sees scale prose. Both modes'
+# wording stays here in the reference file where it is reviewable, rather
+# than moving into the dispatcher.
 _render_prompt() {  # P_* + RISK_FILE/FACTS_FILE in the environment
   python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
 import os, re, sys
@@ -484,6 +537,9 @@ def readcap(path):
     return t
 t = open(sys.argv[1]).read()
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
+mode = subs.get("REVIEW_MODE", "pr")
+t = re.sub(r"<!-- mode:(\w+) -->\n(.*?)<!-- /mode:\1 -->\n",
+           lambda m: m.group(2) if m.group(1) == mode else "", t, flags=re.S)
 subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
@@ -496,11 +552,14 @@ PY
 # ticket → publish the startup barrier → wait for the worker's ack. Every
 # failure retires the worker and removes the control dir, leaving the
 # barrier closed; the caller's own guards handle everything before this.
+# On success the spawned identity is left in REVIEWER_UUID for callers that
+# stamp their own bookkeeping onto the fresh meta.
 _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir>
   local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
   local bind_ready="$control_dir/bind-ready.json"
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
+  REVIEWER_UUID=""
 
   # ONE worker harness, two model routes. The default "codex" engine is a
   # GATEWAY worker: the same Claude-harness daemon pointed at the local
@@ -519,6 +578,7 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   fi
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+  REVIEWER_UUID="$uuid"
 
   # The worker's first protocol action waits on bind_ready. Publish it only
   # after the new registry meta exists and (for ticketed work) board-bind has
@@ -726,17 +786,40 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
 }
 
 # One in-review epic's dedupe → dispatch decision, isolated per epic exactly
-# as run_for isolates a PR (the sweep runs it behind `||`). No stale-ticket
-# gate is needed here: the listing itself only yields epics still sitting in
-# in-review, so a landed verdict retires the path by removing the row.
+# as run_for isolates a PR (the sweep runs it behind `||`).
+#
+# An epic is reviewed once PER RECOMPOSITION CYCLE, and there can be many:
+# a defect becomes a corrective child, the epic leaves in-review, the child
+# lands, the Architect pins a NEW closure package and the epic returns. Board
+# state alone cannot dedupe that — the first reviewer's meta stays on file
+# with a terminal status forever (the PR path's stale-ticket retirement is
+# PR-only, and an out-of-review epic is not listed here at all), so every
+# cycle after the first would hit "skip finished reviewer" and strand. The
+# discriminator is the closure package each reviewer was dispatched against,
+# stamped into its meta: a finished reviewer whose stamp no longer matches
+# the ticket reviewed a PREVIOUS cycle and is retired here. A missing stamp
+# counts as superseded — costing one redundant review, never a strand.
+# An ACTIVE reviewer is never touched: it owns its own exit, and its package
+# is the current one by construction.
 sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
-  local etid="$1" verdict
+  local etid="$1" pkg="$2" verdict meta uuid
   verdict="$(_decide "review-epic-$etid" sweep 0)"
   case "$verdict" in
-    dispatch)   dispatch_epic "$@" ;;
-    respawn\ *) _retire "${verdict#respawn }"; dispatch_epic "$@" ;;
-    *)          echo "epic #$etid: $verdict" ;;
+    dispatch)   dispatch_epic "$@"; return ;;
+    respawn\ *) _retire "${verdict#respawn }"; dispatch_epic "$@"; return ;;
+    "skip active reviewer") echo "epic #$etid: $verdict"; return ;;
   esac
+  # Every remaining verdict means a NON-live reviewer meta is on file and
+  # _decide has already finalized it.
+  meta="$(_reviewer_meta "review-epic-$etid")"
+  uuid="${meta%%|*}"
+  if [ -n "$uuid" ] && [ "$(_meta_field "$uuid" closure_package)" != "$pkg" ]; then
+    _retire "$uuid"
+    echo "epic #$etid: superseded reviewer $uuid retired — new closure package, new recomposition cycle"
+    dispatch_epic "$@"
+    return
+  fi
+  echo "epic #$etid: $verdict"
 }
 
 if [ "${1:-}" = "--sweep" ]; then
@@ -799,7 +882,10 @@ PY
 )" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
   while IFS='|' read -r etid epkg ebranch; do
     [ -n "$etid" ] || continue
-    sweep_epic "$etid" "$epkg" "$ebranch" || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
+    # </dev/null: the loop is fed by this heredoc, and anything dispatched
+    # inside it that read stdin would eat the remaining epic rows.
+    sweep_epic "$etid" "$epkg" "$ebranch" </dev/null \
+      || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
   done <<EOF
 $epic_rows
 EOF
