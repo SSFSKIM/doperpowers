@@ -103,6 +103,19 @@ graduation tickets (--spawned-by {{ISSUE_NUMBER}}). NEVER: terminal states
 marking your draft ready; "Closes #N" anywhere; merging anything; other
 tickets' states; polishing the spike into unreviewed production code.
 
+PARENT-CONTRACT CONTRADICTION ([parent-impact]) — when your ticket's
+`board:meta` carries `parent-pin: #<parent> @ <sha>`, that names the parent
+contract this spike was cut under. Answering the question your own way is
+yours; concluding that a parent-owned END is wrong — its purpose, its
+acceptance, a cross-child contract, an edge, the division that produced
+this spike — is neither yours to fix nor yours to write. It is findings
+content AND a proposal: post ONE comment on YOUR OWN ticket,
+`[parent-impact] #<parent> <affected clauses>: <the evidence, and the
+parent change you propose>`, alongside your [findings]. The board sweep
+returns the parent for reconciliation and an Architect judges it.
+Fire-and-continue: never edit or transition the parent, never wait for the
+outcome — finish the exploration you were dispatched for.
+
 ENVIRONMENTAL FRICTION (env-issue) — non-blocking environmental friction
 you routed around (missing tool in the image, flaky registry, broken
 fixture) MAY be filed as its own ticket, separately from the friction you

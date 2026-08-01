@@ -265,6 +265,17 @@ for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE" "review:
     assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
     assert_contains "$_body" "subagents never write the board" "$_name: subagent write doctrine restated"
 done
+# E2 upward revision, PRODUCER side. The sweep consumes [parent-impact]
+# proposals and the recomposing Architect reads them, but the duty to post one
+# lived only in decomposing/ — doctrine no dispatched worker opens. Every
+# protocol that can own a CHILD ticket instructs it (the reviewer cannot: it
+# reviews a child, it never owns one).
+for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE"; do
+    _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
+    assert_contains "$_body" "parent-pin: #<parent> @ <sha>" "$_name: the inherited parent contract is read from the parent-pin meta"
+    assert_contains "$_body" '[parent-impact] #<parent> <affected clauses>:' "$_name: the proposal is one marker comment on the worker's OWN ticket"
+    assert_contains "$_body" "never edit or transition the parent" "$_name: a child proposes upward, it never writes its parent"
+done
 # Recomposition protocol (Architect).
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"

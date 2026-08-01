@@ -184,6 +184,19 @@ call — to recommend it, park needs-human with the recommendation as the
 note); other tickets' states (a cross-ticket observation is a comment on
 that ticket, nothing more); scope beyond the ticket.
 
+**Parent-contract contradiction ([parent-impact]).** When your ticket's
+`board:meta` carries `parent-pin: #<parent> @ <sha>`, that names the parent
+contract this dispatch inherited — the ends your work serves. Your own
+MEANS stay yours to revise freely. A discovery that CONTRADICTS a
+parent-owned END — its purpose, its acceptance, a cross-child contract, an
+edge between children, the division itself — is neither yours to fix nor
+yours to write: post ONE comment on YOUR OWN ticket,
+`[parent-impact] #<parent> <affected clauses>: <the evidence, and the
+parent change you propose>`. The board sweep returns the parent for
+reconciliation and an Architect judges it. Fire-and-continue:
+never edit or transition the parent, never wait for the outcome — keep
+building under the contract you have.
+
 **Environmental friction (env-issue).** Non-blocking environmental
 friction you routed around (missing tool in the image, flaky registry,
 broken fixture) MAY be filed as its own ticket — search the board first,

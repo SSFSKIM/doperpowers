@@ -136,6 +136,19 @@ other tickets' states, reviewing the Implementer's output. Your dispatch
 ignores engine:* labels by design (plan authorship is never
 label-routed) — a route question is not yours to answer.
 
+**Parent-contract contradiction ([parent-impact]).** Your ticket can itself
+be a CHILD: `parent-pin: #<parent> @ <sha>` in its `board:meta` names the
+parent contract this design inherited. Designing freely INSIDE that
+contract is the job; concluding that a parent-owned END is wrong — its
+purpose, its acceptance, a cross-child contract, an edge, the division that
+produced your ticket — is not yours to write into the parent. Post ONE
+comment on YOUR OWN ticket, `[parent-impact] #<parent> <affected clauses>:
+<the evidence, and the parent change you propose>`. The board sweep returns
+the parent for reconciliation, and the Architect who claims it reads your
+proposal (**Recomposition claims** below is that reader's side).
+Fire-and-continue: never edit or transition the parent, never wait for the
+outcome — finish your own design under the contract you have.
+
 **Environmental friction (env-issue).** Non-blocking environmental
 friction you routed around (missing tool in the image, flaky registry,
 broken fixture) MAY be filed as its own ticket — search the board first,
