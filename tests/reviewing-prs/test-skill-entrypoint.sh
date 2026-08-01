@@ -32,8 +32,11 @@ assert_not_contains() {
 }
 assert_before() {
     local first second
-    first="$(grep -nF -- "$2" "$1" 2>/dev/null | cut -d: -f1 | head -1)"
-    second="$(grep -nF -- "$3" "$1" 2>/dev/null | cut -d: -f1 | head -1)"
+    # `|| true`: under `set -euo pipefail` a missing needle makes the whole
+    # pipeline non-zero, and the assignment would abort the suite silently
+    # instead of reporting the failed assertion.
+    first="$(grep -nF -- "$2" "$1" 2>/dev/null | cut -d: -f1 | head -1 || true)"
+    second="$(grep -nF -- "$3" "$1" 2>/dev/null | cut -d: -f1 | head -1 || true)"
     if [[ -n "$first" && -n "$second" && "$first" -lt "$second" ]]; then
         pass "$4"
     else
@@ -60,13 +63,14 @@ TRIAGE
 FIX WAVES
 RE-REVIEW
 ESCALATE
+Scale review (recomposition epics)
 AUTHORITY
 REVIEW TRAIL"
 got_headings="$(grep '^## ' "$SKILL" 2>/dev/null | sed 's/^## //' || true)"
 if [[ "$got_headings" == "$want_headings" ]]; then
-    pass "the eleven protocol sections exist in order"
+    pass "the twelve protocol sections exist in order"
 else
-    fail "the eleven protocol sections exist in order"
+    fail "the twelve protocol sections exist in order"
     echo "    expected:"; printf '      %s\n' $want_headings
     echo "    actual:";   printf '      %s\n' $got_headings
 fi
@@ -247,6 +251,12 @@ assert_not_contains "$MANUAL" "it never edits code" "manual states edit ownershi
 assert_not_contains "$MANUAL" "works the batch sequentially" "wave-work organization is the fixer's call"
 assert_not_contains "$MANUAL" "below the engine's critical/high class" "manual routes findings by the worker's judgment, not a severity class"
 assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail-safe order, not shell packaging"
+
+echo "runtime skill — E2 scale-review variant (recomposition epics):"
+assert_contains "$SKILL" 'A `review-epic-<n>` dispatch is the E2 scale review' "the scale section is keyed to the dispatcher's worker name"
+assert_contains "$SKILL" "no fix waves and no merge step" "the scale variant drops the wave/merge machinery"
+assert_contains "$SKILL" "never grants \`confident-ready\`" "a scale run never takes the ESCALATE tier ladder"
+assert_before "$SKILL" "REVIEW_MODE\` binding reads \`scale\`" "## ORIENT" "the mode fork is announced before the PR-shaped flow begins"
 
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"

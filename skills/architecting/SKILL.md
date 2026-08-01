@@ -19,6 +19,11 @@ escalation targets are the board itself and the human on their next
 wake. Read your ticket first (gh issue view {{ISSUE_NUMBER}} — body and
 comments); that brief is the source of truth.
 
+A dispatch onto an EPIC (a ticket with children) is a recomposition
+claim, not a design claim — read **Recomposition claims**, the last
+section of this protocol, before you begin. The Gate below and its pass
+write into `in-design` still come first; everything after them differs.
+
 Toolkit:
 
 - board scripts: {{BOARD_SCRIPTS}}
@@ -84,11 +89,13 @@ parks carry the quality machinery.
   (obvious multi-milestone / novel-design / cross-cutting children are
   born ready-for-architect; everything else — including every unsure
   case and every spike — ready-for-implementer). Update the parent (it
-  becomes an epic, never dispatched), then exit from in-design:
+  becomes an epic — never dispatched for implementation), then exit from
+  in-design:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "decomposed — parent is an epic"
-  No --plan (epics never dispatch; the epic pull returns the finished
-  parent to in-progress). You write no code; end when the children
-  stand.
+  No --plan (the epic pull carries the parent along while its children
+  run; when they all land it returns to ready-for-architect and an
+  Architect recomposes it — see the last section). You write no code;
+  end when the children stand.
 
 ## Closing Artifact
 
@@ -123,7 +130,73 @@ sends a second disagreement on the same edge to the human by itself.
 Yours: your OWN ticket's open states via board-transition.sh (never raw
 gh for status labels); registering decomposition children (--parent
 {{ISSUE_NUMBER}}) and follow-up tickets (--spawned-by {{ISSUE_NUMBER}})
-directly. NEVER: implementation code, plan execution, terminal states,
+directly. NEVER: implementation code, plan execution, terminal states
+(the ONE exception is a recomposition verdict on your own epic, below),
 other tickets' states, reviewing the Implementer's output. Your dispatch
 ignores engine:* labels by design (plan authorship is never
 label-routed) — a route question is not yours to answer.
+
+**Environmental friction (env-issue).** Non-blocking environmental
+friction you routed around (missing tool in the image, flaky registry,
+broken fixture) MAY be filed as its own ticket — search the board first,
+then
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <full report>
+State the friction, what you attempted, why your permissions cannot
+resolve it, the intervention requested, and a check that proves
+resolution. Default birth is needs-human; pass an explicit --state only
+when you can name a concrete repair path some authorized agent can
+execute. Filing is fire-and-continue:
+never park, transition, or otherwise interrupt your own ticket to report
+non-blocking friction — a genuinely blocking failure stays what it is
+today, a park on your own ticket. This is opt-in authority, not a duty;
+subagents never write the board.
+
+## Recomposition claims
+
+A dispatched ticket that is an EPIC is a recomposition (or
+reconciliation) claim, not a design claim. Your deliverable is a VERDICT
+against the epic's own acceptance — the whole-unit behavior, not the sum
+of child acceptances — and it starts from the children's contract
+lineage.
+
+1. **Lineage check first:** for every child, compare its `parent-pin:`
+   meta (the parent revision it executed) against the parent's current
+   revision; every material change is incorporated, explicitly
+   irrelevant (say why), or becomes a corrective child. Read ALL
+   `[parent-impact]` proposals on every child since its pin —
+   marked consumed or not — and give each the same disposition; the
+   sweep's `[board-epic] reconcile:` marker is a dispatch dedupe, not
+   proof anyone acted.
+2. **Reconciliation-due claims** (children still active): reconcile the
+   parent's living spec, flag affected in-flight children on their
+   tickets, then RELEASE the epic with
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-info "reconciled: <one-line summary> — waiting on children"
+   — the named release exit: legal from in-design, PULLABLE (the next
+   active child pulls the epic back in-flight), frees your architect
+   slot, and the sweep's RECOVER pass never force-parks a parked ticket.
+   You do NOT close it, and you never end your turn with the epic still
+   in in-design.
+3. **Recomposition-due claims** (all children terminal): verify the
+   parent's acceptance. Non-code parent: record why no aggregate code
+   review applies, then close with your verdict —
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done "<evidence>"
+   (or wontfix). This is the scoped terminal-authority exception: epics
+   only, recomposition claims only; you never close a leaf.
+4. **Code-bearing integration parent** (two-plus children touched one
+   executable surface, cross-child invariants, multi-repo composition,
+   or the roadmap marks review required): assemble the closure package
+   as a comment on the epic — parent acceptance, child closing
+   artifacts, exact base/head ranges, cross-child contracts, your
+   recomposition evidence. Post that package as a
+   NEW comment each recomposition cycle; NEVER edit a previous cycle's
+   closure-package comment in place. The scale-review dispatcher tells a
+   superseded reviewer from a current one by exact equality on the
+   package URL, and an edited-in-place comment keeps its old URL — the
+   sweep reads the epic as already reviewed and strands it in in-review
+   permanently. Then
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL>
+   The scale reviewer's clean verdict closes the epic; any defect
+   becomes a corrective child and the epic waits again.
+5. A change to the parent's PURPOSE, a material reduction of acceptance,
+   or a product/taste call is the human's — park needs-human with the
+   proposal and your recommendation.

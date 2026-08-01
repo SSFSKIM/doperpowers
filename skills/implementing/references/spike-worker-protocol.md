@@ -102,3 +102,19 @@ graduation tickets (--spawned-by {{ISSUE_NUMBER}}). NEVER: terminal states
 (the human closes a spike after reading the findings); a non-draft PR, or
 marking your draft ready; "Closes #N" anywhere; merging anything; other
 tickets' states; polishing the spike into unreviewed production code.
+
+ENVIRONMENTAL FRICTION (env-issue) — non-blocking environmental friction
+you routed around (missing tool in the image, flaky registry, broken
+fixture) MAY be filed as its own ticket, separately from the friction you
+report as findings content. Search the board first, then
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3>
+--spawned-by {{ISSUE_NUMBER}} --body-file <full report>. State the
+friction, what you attempted, why your permissions cannot resolve it, the
+intervention requested, and a check that proves resolution. Default birth
+is needs-human; pass an explicit --state only when you can name a
+concrete repair path some authorized agent can execute. Filing is
+fire-and-continue:
+never park, transition, or otherwise interrupt your own ticket to report
+non-blocking friction — a genuinely blocking failure stays what it is
+today, a park on your own ticket. This is opt-in authority, not a duty;
+subagents never write the board.

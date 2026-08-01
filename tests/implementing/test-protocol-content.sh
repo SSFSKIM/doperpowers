@@ -244,6 +244,25 @@ assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the 
 assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
 assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 
+echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
+REVIEW="$REPO_ROOT/skills/reviewing-prs/SKILL.md"
+[ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
+review="$(cat "$REVIEW")"
+# env-issue authority — all four worker protocols carry the same opt-in filing.
+assert_contains "$arch" "env-issue" "architect protocol carries env-issue authority"
+assert_contains "$proto" "env-issue" "implementer protocol carries env-issue authority"
+assert_contains "$spike" "env-issue" "spike protocol carries env-issue authority"
+assert_contains "$review" "env-issue" "review protocol carries env-issue authority"
+assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-issue filing is fire-and-continue"
+# Recomposition protocol (Architect).
+assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
+assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
+assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
+assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
+# Scale-review variant (QAgent).
+assert_contains "$review" "scale review" "review protocol names the scale-review variant"
+assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
 echo "all tests passed"

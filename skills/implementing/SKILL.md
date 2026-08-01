@@ -184,6 +184,21 @@ call — to recommend it, park needs-human with the recommendation as the
 note); other tickets' states (a cross-ticket observation is a comment on
 that ticket, nothing more); scope beyond the ticket.
 
+**Environmental friction (env-issue).** Non-blocking environmental
+friction you routed around (missing tool in the image, flaky registry,
+broken fixture) MAY be filed as its own ticket — search the board first,
+then
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <full report>
+State the friction, what you attempted, why your permissions cannot
+resolve it, the intervention requested, and a check that proves
+resolution. Default birth is needs-human; pass an explicit --state only
+when you can name a concrete repair path some authorized agent can
+execute. Filing is fire-and-continue:
+never park, transition, or otherwise interrupt your own ticket to report
+non-blocking friction — a genuinely blocking failure stays what it is
+today, a park on your own ticket. This is opt-in authority, not a duty;
+subagents never write the board.
+
 ## Closing Artifact
 
 Opening your PR closes out your scope:
