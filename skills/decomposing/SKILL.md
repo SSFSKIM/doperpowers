@@ -104,11 +104,40 @@ landed, closing the parent is a VERIFICATION event against that acceptance
 (integration seams, end-to-end behavior). Only then does the retrospective
 write.
 
+On the board that verification is a dispatch. When the last child goes
+terminal the parent RETURNS to `ready-for-architect` (`recomposition-due`)
+instead of closing — the only state an epic is dispatchable in — and an
+Architect issues the verdict. A non-code parent closes on its
+verification evidence directly. A code-bearing one — children that
+touched one executable surface, cross-child invariants, multi-repo
+composition, or a roadmap that marks review required — posts a closure
+package and goes to `in-review` for a SCALE REVIEW, whose clean verdict
+closes the parent and whose defects become corrective children (the
+parent waits and recomposes again). The shape of the unit gates which
+path runs; nothing about it is a status flip.
+
 <HARD-GATE>
 Materialization onto the issue board is gated on the human approving the
 written roadmap spec. Registering a unit's worth of tickets is an
 outward-facing batch action — do not touch the board before approval.
 </HARD-GATE>
+
+## Upward Revision
+
+Children read the parent's current state at dispatch — the dispatch
+machinery stamps `parent-pin:` (parent + repo revision) into the child
+so "what contract did this child execute" is always answerable. A child
+revises its own means freely; discovery that touches a parent-owned
+end — purpose, acceptance, a cross-child contract, an edge, the
+division itself — becomes a `[parent-impact]` comment on the child's
+own ticket (evidence + affected clauses; the child never edits the
+parent). The sweep returns the parent to `ready-for-architect`
+(`reconciliation-due`); the reconciling Architect judges materiality,
+updates the parent's living tail, and flags affected in-flight
+children. Purpose changes and material acceptance reductions go to the
+human. At final recomposition the Architect runs the lineage check:
+every child's pin against the final parent revision — incorporated,
+explicitly irrelevant, or a corrective child.
 
 ## The Pipeline
 

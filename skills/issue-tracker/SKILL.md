@@ -43,11 +43,33 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Architect worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets | doperpowers:architecting |
+| **Architect worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | doperpowers:architecting |
 | **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | doperpowers:implementing |
-| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human` / `ready-for-architect`); finding-tickets; post-merge finalize | doperpowers:reviewing-prs |
+| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human` / `ready-for-architect`); finding-tickets; post-merge finalize; a scale review's clean `done` on a recomposition epic | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
+| **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the `in-progress` pull and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
+
+## Categories
+
+`bug` | `enhancement` | `spike` | `env-issue`. The first two are GitHub's
+own labels; the board manages the other two. `spike` is the exploration
+lane — its deliverable is a findings comment, never a merge
+(doperpowers:implementing). `env-issue` is environmental friction a
+worker hit and routed around (missing tool in the image, flaky registry,
+broken fixture), filed as its own ticket so the report survives the
+session that found it.
+
+An `env-issue`'s birth rule is INVERTED from every other category's.
+Elsewhere unsure means `ready-for-implementer`; here unsure means
+`needs-human`, because friction an authorized agent could have cleared
+would usually already be cleared — the implement queue is the wrong
+default. Registration on that default path REQUIRES `--note` naming the
+intervention being asked for (register refuses without it). An explicit
+`--state` is the registrar's positive claim that a concrete repair path
+exists for some agent to execute; that claim is what buys a lane queue.
+Filing is fire-and-continue authority for every worker protocol — the
+reporter never parks its own ticket over friction it routed around.
 
 ## State vocabulary
 
@@ -58,14 +80,14 @@ passes through `confident-ready` between `in-review` and `done`.
 
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
-| `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route) | — |
-| `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`) | optional |
+| `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route); on an EPIC this is the recomposition/reconciliation claim (Epics below) | — |
+| `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
 | `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → implementer) | — |
 | `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an epic stays here while children run) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
-| `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it) | PR link |
+| `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it); on an epic, the recomposition closure package rides the same `pr:` slot and draws a scale review | PR link (epic: package link) |
 | `confident-ready` | open + `status:confident-ready` | PR rigorously reviewed (reviewing-prs loop); merge/close with confidence | optional |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
@@ -104,10 +126,21 @@ repairs it (any open state is reachable from either).
 
 Ticket dependencies are **edges** (native GitHub dependencies), never states —
 eligibility is computed. Edges are born at register time and re-cut later with
-`board-edge.sh` (understanding changes; the graph follows). Epics (issues with
-sub-issues) are never dispatched; the sweep moves them automatically. Notes
+`board-edge.sh` (understanding changes; the graph follows). Notes
 land twice: the current note in the issue's `board:meta` body block, the audit
 trail as `[board]` comments.
+
+**Epics** (issues with sub-issues) ride their children: the first active
+child pulls the parent to `in-progress`, and it stays there while they
+run. An epic whose children are all terminal is never closed by
+bookkeeping: it RETURNS to `ready-for-architect` (`recomposition-due`)
+and an Architect closes it by verification — directly for non-code
+parents, via `in-review` with a closure package for code-bearing ones.
+Board bookkeeping writes on epics (recomposition/reconciliation returns)
+post `[board-epic]` comments — a marker the convergence counter
+deliberately never reads. Epics are dispatchable ONLY in
+`ready-for-architect` (awaiting recomposition, or a reconciliation-due
+return), never to implementation.
 
 ## Toolkit
 
@@ -117,7 +150,7 @@ checkout's repo.
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike` (spike = the exploration lane: deliverable is findings, never a merge — doperpowers:implementing); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike`\|`env-issue` (Categories above owns their semantics — note an `env-issue` with no explicit `--state` is born `needs-human` and is REFUSED without `--note`); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |

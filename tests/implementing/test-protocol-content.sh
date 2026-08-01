@@ -276,6 +276,18 @@ assert_contains "$arch" "waiting on children" "release note names what the relea
 assert_contains "$review" "scale review" "review protocol names the scale-review variant"
 assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"
 
+echo "E2 board + decomposing doctrine (the mechanics' own prose):"
+DECOMPOSING="$REPO_ROOT/skills/decomposing/SKILL.md"
+[ -f "$DECOMPOSING" ] || { echo "missing $DECOMPOSING"; exit 1; }
+decomposing="$(cat "$DECOMPOSING")"
+assert_contains "$tracker" "env-issue" "board doctrine lists the env-issue category"
+assert_contains "$tracker" "recomposition" "board doctrine carries the recomposition return"
+assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
+assert_not_contains "$tracker" "are never dispatched" \
+    "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
+assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the proposal marker"
+assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the dispatch-time pin"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
 echo "all tests passed"
