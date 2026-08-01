@@ -646,6 +646,43 @@ closure.
   tier, separate DB) that must not break E3's query contract.
   Rejected: hard same-database coupling as a spec premise.
   Date/Author: 2026-08-01, session.
+- Decision (implementation): Parked parents are skipped UNMARKED by the
+  sweep's `[parent-impact]` reconcile pass. `pass_impact` returns a
+  parent only from a claimable or in-flight state; parked parents
+  (`needs-info`, `needs-human`, `interactive-preferred`, `deferred`)
+  and terminal parents are skipped without consuming the proposal, so
+  the proposal is still there on the tick after the park resolves. A
+  `PARKED` state table now exists in `_board.py`, with
+  `PULLABLE = DISPATCHABLE + PARKED`.
+  Rationale: writing the return over a park would destroy the park's
+  own note and, for `needs-human`, silently cut the relay path a human
+  is waiting on — the same reasoning that already justified the
+  endorsed terminal-parent skip. Consuming the proposal while skipping
+  would lose it permanently. The plan's text enumerated only terminal
+  parents; parks were an unhandled state, not a decided one.
+  Rejected: returning a parked parent anyway (breaks the spec's park
+  durability commitment); marking the proposal consumed on a skip
+  (loses the impact silently).
+  Date/Author: 2026-08-01, session (controller ruling during the
+  interim-slice implementation).
+- Decision (implementation): Scale review runs once per RECOMPOSITION
+  CYCLE, keyed on the closure package — not once per epic. The
+  dispatcher stamps the dispatched package URL into the reviewer run's
+  meta and supersedes a finished reviewer whose stamp no longer matches
+  the epic's current closure package, which re-dispatches review for
+  the new cycle.
+  Rationale: an epic can recompose more than once (a gap child, a
+  corrective child); a once-per-epic key would leave every cycle after
+  the first unreviewed. Consequence, and the reason it is recorded
+  here: supersession is exact-string equality on the package URL, so
+  the Architect protocol now MANDATES a NEW closure-package comment per
+  cycle — an in-place edit of the old comment leaves the stamp matching
+  and strands the epic in `in-review` with a stale verdict.
+  Rejected: once-per-epic keying (silently unreviewed later cycles);
+  content-hashing the package body (no cheaper than the URL key and
+  still breaks on an in-place edit).
+  Date/Author: 2026-08-01, session, during the interim-slice
+  implementation.
 
 ## Surprises & Discoveries
 
@@ -680,6 +717,18 @@ closure.
   repo surface map independently converged on the same contract-vs-
   implementation split.
   Evidence: the three 2026-08-01 investigation reports.
+- Observation (2026-08-01, implementation): bash 3.2 — macOS's system
+  bash, which is what launchd runs the sweep under — mis-parses a
+  heredoc nested inside a `$( )` command substitution when the heredoc
+  body contains an apostrophe, and reports the resulting parse error
+  roughly 90 lines away from the real construct. The IMPACT pass
+  therefore prints its own tally from inside the python body rather
+  than having the shell count the pass's output. Side effect worth
+  knowing: `pass_impact` is consequently the only sweep pass whose
+  `|| log errored` guard actually fires — the other passes end in a
+  `log` call that swallows the exit status.
+  Evidence: board-sweep.sh IMPACT pass; reproduced under bash 3.2
+  during the Task 6 implementation.
 
 ## Outcomes & Retrospective
 
@@ -687,6 +736,18 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-01: interim slice implemented (v7.36.0, branch
+  e2-ledger-contract): env-issue category + inverted birth; recompose
+  replaces auto-close with the four mechanics amendments; parent-pin
+  dispatch stamp; sweep IMPACT pass; scale-review dispatch; protocol
+  and doctrine prose. E2-close acceptance 1-5 verified by the suite.
+  Two implementation decisions are recorded in the Decision Log (parked
+  parents skipped unmarked by the reconcile pass; scale review keyed on
+  the closure package, once per recomposition cycle) and one in
+  Surprises (the bash 3.2 heredoc-in-`$( )` parse defect).
+- 2026-08-01: the version bump landed as 7.36.0, not the plan's
+  7.31.0 — main released 7.31 through 7.35.2 while this branch was in
+  flight.
 - 2026-08-01: v2.1.1, plan-review pass (writing-plans is the first
   hostile read): the reconciliation release exit is now NAMED — the
   interim board's `needs-info` park from `in-design` (legal, PULLABLE,
