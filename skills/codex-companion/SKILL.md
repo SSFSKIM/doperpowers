@@ -32,7 +32,8 @@ it misreport auth failure. references/jobs.md has the details on both.
 Verbs, and where each is specified:
 
 - `review` — Codex's native code review of the working tree or a branch
-  (`--base <ref>`); non-steerable by design → references/reviews.md
+  (`--base <ref>`); non-steerable by design; reasoning effort is choosable
+  via the `scripts/with-effort.mjs` wrapper → references/reviews.md
 - `adversarial-review` — challenge review of design and assumptions;
   trailing text is a lens, parallel lenses for big diffs → references/reviews.md
 - `task` — any prompt to a resumable Codex thread; one-shot delegation

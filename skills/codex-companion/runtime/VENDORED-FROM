@@ -1,1 +1,2 @@
 https://github.com/openai/codex-plugin-cc.git plugins/codex @ db52e28f4d9ded852ab3942cea316258ae4ef346 (v1.0.6), vendored 2026-08-01. Byte-identical: scripts/, prompts/, schemas/, .claude-plugin/plugin.json (required at module load by scripts/lib/app-server.mjs for client info), LICENSE, NOTICE. Never patch these files — behavior changes happen at the call site (env, flags) or in the skill docs.
+Known deliberate divergence: prompts/adversarial-review.md was hand-tuned post-vendor (commit 042a8f2, 2026-08-01) — re-graft, don't overwrite, when re-vendoring.

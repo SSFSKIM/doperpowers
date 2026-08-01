@@ -25,7 +25,25 @@ Target selection (shared by both):
 on focus text and on staged-only/unstaged-only scopes. `--model` takes a
 literal model name only ; review forwards the value un-normalized, so an 
 alias reaches the app-server as an unknown model. Left unset, the user's 
-codex `config.toml` decides. There is no `--effort` on reviews.
+codex `config.toml` decides.
+
+Reasoning effort: the review protocol has no effort field — a review runs
+at whatever `model_reasoning_effort` the serving app-server process was
+configured with (the user's global config.toml default). To choose it
+per-run, wrap the invocation in `<skill-base>/scripts/with-effort.mjs`,
+which serves the verb a private app-server started with the override:
+
+    CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+      node "<skill-base>/scripts/with-effort.mjs" --effort medium -- \
+      review --base main --wait
+
+Everything after `--` is ordinary verb arguments (works for
+`adversarial-review` too; `task` has a native `--effort` flag and doesn't
+need it). Repeatable `-c key=value` before `--` passes any other codex
+config override the same way. Don't set
+`CODEX_COMPANION_APP_SERVER_ENDPOINT` yourself on a wrapped run — the
+wrapper provides its own live endpoint, and its per-connection app-servers
+die with the run, so the broker kill-switch isn't needed there either.
 
 `adversarial-review` is the steerable challenge review: it questions the
 chosen design, tradeoffs, and hidden assumptions rather than only hunting
