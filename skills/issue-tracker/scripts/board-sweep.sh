@@ -19,6 +19,13 @@
 #            state (done/wontfix) → retire + a [board] termination comment.
 #            Park states never cancel (park = pause); review-pr-*/land-pr-*
 #            workers are PR-lifecycle species and are never board-cancelled.
+#   IMPACT   ACTIVE children whose ticket carries a [parent-impact] proposal
+#            the parent has not yet consumed → the parent returns to
+#            ready-for-architect (reconciliation-due), plus a
+#            [board-epic] reconcile: #<child>@<comment-id> dedupe marker.
+#            The marker is written ONLY when that return actually fires: a
+#            parent already ready-for-architect/in-design is re-read next
+#            tick instead, so no proposal is marked consumed unread.
 #   DISPATCH implement-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
 #   LAND     open confident-ready PRs with a human APPROVED review or a
@@ -233,6 +240,60 @@ EOF
   log "[sweep] CANCEL: $acted acted"
 }
 
+pass_impact() {
+  # E2 upward revision: a child worker may not write its parent — it posts
+  # a [parent-impact] comment on its OWN ticket, and this pass performs
+  # the parent's reconciliation return (board bookkeeping). Dedupe is a
+  # [board-epic] reconcile: marker on the parent naming child@comment-id.
+  PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' | tee -a "$SWEEP_LOG"
+import json
+import _board as B
+tickets = B.snapshot()
+for tid in sorted(tickets, key=int):
+    n = tickets[tid]
+    p = n.get("parent")
+    if not p or p not in tickets or n["state"] not in B.ACTIVE:
+        continue
+    if tickets[p]["state"] in B.TERMINAL:
+        # a closed parent has no reconciliation left to perform; a return
+        # would only stamp a status label and a bookkeeping comment onto a
+        # closed issue. Left unmarked, like every other skip here.
+        continue
+    child_comments = json.loads(B.gh(
+        ["issue", "view", tid, "-R", B.repo(), "--json", "comments"]
+    )).get("comments") or []
+    proposals = [str(c.get("id") or "")
+                 for c in child_comments
+                 if (c.get("body") or "").lstrip().startswith("[parent-impact]")]
+    if not proposals:
+        continue
+    parent_comments = json.loads(B.gh(
+        ["issue", "view", p, "-R", B.repo(), "--json", "comments"]
+    )).get("comments") or []
+    seen = set()
+    for c in parent_comments:
+        body = (c.get("body") or "").strip()
+        if body.startswith("[board-epic] reconcile:"):
+            seen.add(body.split(":", 1)[1].strip())
+    for cid in proposals:
+        marker = "#%s@%s" % (tid, cid)
+        if marker in seen:
+            continue
+        if tickets[p]["state"] in ("ready-for-architect", "in-design"):
+            # return already pending, or an Architect is mid-claim: leave
+            # the proposal UNMARKED so the next tick re-sees it — marking
+            # it now would consume it with no reader (dedupe hole).
+            continue
+        ln = B.apply_state(
+            tickets, p, "ready-for-architect",
+            "reconciliation-due: [parent-impact] from #%s" % tid,
+            bookkeeping=True)
+        B.comment(p, "[board-epic] reconcile: %s" % marker)
+        print("[sweep] IMPACT: %s" % ln)
+PY
+  log "[sweep] IMPACT pass done"
+}
+
 pass_land() {
   local acted=0 rows pr
   rows="$(gh pr list -R "$BOARD_REPO" --state open --label confident-ready \
@@ -324,6 +385,7 @@ EOF
 
 pass_recover  || log "[sweep] RECOVER pass errored (continuing)"
 pass_cancel   || log "[sweep] CANCEL pass errored (continuing)"
+pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
 "$IMPLEMENT_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] DISPATCH pass errored (continuing)"
 "$REVIEW_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \

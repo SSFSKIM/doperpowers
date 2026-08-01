@@ -28,6 +28,10 @@ assert_not_contains() {
     if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
+assert_equals() {
+    if [ "$1" = "$2" ]; then pass "$3"; else
+        fail "$3"; echo "    expected: $2"; echo "    actual:   $1"; fi
+}
 
 # ---- environment --------------------------------------------------------------
 export HOME="$TEST_ROOT/home"; mkdir -p "$HOME/.claude/projects/proj"
@@ -48,21 +52,110 @@ export FINALIZE_MAP="$TEST_ROOT/finalize.json"; echo "{}" > "$FINALIZE_MAP"
 export LOCAL_REPO="$TEST_ROOT/consumer"
 git init -q "$LOCAL_REPO"
 
-# gh overlay: pr list + issue-view comments are test fixtures; everything
-# else delegates to the shared issue-tracker mock.
+# The harness keeps comments in TWO stores: seeded fixtures (per-ticket JSON
+# under $COMMENTS_DIR, with the createdAt/author shape the relay pass reads)
+# and whatever the tick itself wrote through B.comment, which lands in the
+# shared mock-gh state as a bare body string. A `--json comments` read must
+# see both, or a marker the sweep just posted would be invisible to the next
+# tick's dedupe read. Fixtures come first (they are the older, seeded trail),
+# run-written comments after; every comment carries a stable id — fixtures
+# keep their own, mock-state comments get their append index — because the
+# reconcile marker names the proposal by comment id.
+export MERGE_COMMENTS="$TEST_ROOT/merge-comments.py"
+cat > "$MERGE_COMMENTS" <<'PY'
+import json, os, sys
+num = sys.argv[1]
+out = []
+fixture = os.path.join(os.environ["COMMENTS_DIR"], num + ".json")
+if os.path.exists(fixture):
+    with open(fixture) as f:
+        for i, c in enumerate(json.load(f).get("comments") or []):
+            c.setdefault("id", "FX_%s_%d" % (num, i))
+            out.append(c)
+with open(os.environ["MOCK_GH_STATE"]) as f:
+    issues = json.load(f)["issues"]
+for i, body in enumerate((issues.get(num) or {}).get("comments") or []):
+    # Seed-era createdAt: comments the tick wrote are the board's own trail,
+    # never a human answer the relay pass should chase.
+    out.append({"id": "IC_%s_%d" % (num, i), "author": {"login": "board"},
+                "body": body, "createdAt": "2026-07-18T00:00:00Z"})
+print(json.dumps({"comments": out}))
+PY
+
+# gh overlay: pr list is a test fixture and issue-view comments are the merge
+# above; everything else delegates to the shared issue-tracker mock.
 GH_EXTRA="$TEST_ROOT/gh-extra"; mkdir -p "$GH_EXTRA"
 cat > "$GH_EXTRA/gh" <<SHIM
 #!/usr/bin/env bash
 if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
   cat "\$MOCK_PR_LIST"; exit 0
 fi
-if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ] && printf '%s' "\$*" | grep -q "json comments"; then
-  cat "\$COMMENTS_DIR/\$3.json" 2>/dev/null || echo '{"comments":[]}'; exit 0
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ] && grep -q -- "json comments" <<<"\$*"; then
+  exec python3 "\$MERGE_COMMENTS" "\$3"
 fi
 exec "$REPO_ROOT/tests/issue-tracker/mock-gh/gh" "\$@"
 SHIM
 chmod +x "$GH_EXTRA/gh"
 export PATH="$GH_EXTRA:$PATH"
+
+# ---- board readers/writers over the shared mock state -------------------------
+mock_comment() {  # <ticket> <body> — post as a worker/human would
+    T_N="$1" T_BODY="$2" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+s["issues"][os.environ["T_N"]]["comments"].append(os.environ["T_BODY"])
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+issue_labels() {  # <ticket> → comma-joined labels
+    T_N="$1" python3 - <<'PY'
+import json, os
+with open(os.environ["MOCK_GH_STATE"]) as f:
+    s = json.load(f)
+print(",".join(s["issues"][os.environ["T_N"]]["labels"]))
+PY
+}
+last_comment() {  # <ticket> → newest comment body ("" when there are none)
+    T_N="$1" python3 - <<'PY'
+import json, os
+with open(os.environ["MOCK_GH_STATE"]) as f:
+    s = json.load(f)
+c = s["issues"][os.environ["T_N"]]["comments"]
+print(c[-1] if c else "")
+PY
+}
+comment_count() {  # <ticket> <substring> → how many comments contain it
+    T_N="$1" T_SUB="$2" python3 - <<'PY'
+import json, os
+with open(os.environ["MOCK_GH_STATE"]) as f:
+    s = json.load(f)
+sub = os.environ["T_SUB"]
+print(sum(1 for c in s["issues"][os.environ["T_N"]]["comments"] if sub in c))
+PY
+}
+set_status() {  # <ticket> <state> — fixture surgery, bypassing the legality table
+    T_N="$1" T_TO="$2" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+it = s["issues"][os.environ["T_N"]]
+it["labels"] = [l for l in it["labels"] if not l.startswith("status:")]
+it["labels"].append("status:" + os.environ["T_TO"])
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+board_eligible() {  # <ticket> → eligible | not-eligible (the dispatch predicate)
+    PYTHONPATH="$BOARD_SCRIPTS" python3 - "$1" <<'PY'
+import sys
+import _board as B
+print("eligible" if B.eligible(B.snapshot(), sys.argv[1]) else "not-eligible")
+PY
+}
 
 # daemon-verb stubs
 STUB_DAEMONS="$TEST_ROOT/stub-daemons"; mkdir -p "$STUB_DAEMONS"
@@ -142,7 +235,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 30, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -159,7 +252,20 @@ s = {"next": 30, "labels": ["status:needs-human", "status:in-progress",
     "19": issue(19, "resume-fork failed once", ["status:in-progress"]),
     "20": issue(20, "dead architect mid-design", ["status:in-design"]),
     "21": issue(21, "dead pre-verdict architect", ["status:ready-for-architect"]),
+    # IMPACT pass: two epic/child pairs, no bound workers. 25 is claimable
+    # (pulled in-progress by its active child); 27 has already returned to
+    # ready-for-architect, so its child's proposal must be left unmarked.
+    "25": issue(25, "epic pulled by an active child", ["status:in-progress"]),
+    "26": issue(26, "child that finds a parent-level gap", ["status:in-progress"]),
+    "27": issue(27, "epic already awaiting an architect", ["status:ready-for-architect"]),
+    "28": issue(28, "child of the already-returned epic", ["status:in-progress"]),
+    "29": issue(29, "epic closed while a child still runs", [],
+                state="CLOSED", reason="COMPLETED"),
+    "30": issue(30, "child of a closed epic", ["status:in-progress"]),
 }}
+s["issues"]["26"]["parent"] = 25
+s["issues"]["28"]["parent"] = 27
+s["issues"]["30"]["parent"] = 29
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -323,6 +429,44 @@ rmdir "$DAEMON_HOME/board-sweep.lock"
 out="$(DAEMON_HOME="$TEST_ROOT/fresh-registry" SWEEP_LOG="$TEST_ROOT/fresh-sweep.log" run_sweep)"
 assert_contains "$out" "tick complete" "a fresh machine (no registry dir yet) still ticks"
 assert_not_contains "$out" "another sweep holds the lock" "missing registry dir is not misread as a held lock"
+
+# ---- IMPACT pass (E2 upward revision) -----------------------------------------
+# A child worker may not write its parent: it posts a [parent-impact] comment
+# on its OWN ticket and the sweep performs the parent's reconciliation return.
+echo "board-sweep: IMPACT pass"
+EPIC=25; CHILD=26; PENDING_EPIC=27; PENDING_CHILD=28
+assert_equals "$(comment_count "$EPIC" "[board-epic] reconcile:")" "0" "no proposal, no reconcile marker"
+
+mock_comment "$CHILD" "[parent-impact] #$EPIC acceptance-A3: discovered the queue contract cannot hold ordering"
+out="$(run_sweep)"
+assert_contains "$(issue_labels "$EPIC")" "status:ready-for-architect" "parent-impact proposal returns the parent for reconciliation"
+assert_contains "$(last_comment "$EPIC")" "[board-epic] reconcile: #$CHILD@" "reconcile marker names the consumed proposal"
+assert_contains "$out" "IMPACT: #$EPIC: in-progress → ready-for-architect" "the return is logged as an IMPACT action"
+assert_equals "$(board_eligible "$EPIC")" "eligible" "reconciliation-due epic is dispatch-eligible even with active children"
+
+out="$(run_sweep)"
+assert_equals "$(comment_count "$EPIC" "[board-epic] reconcile:")" "1" "a consumed proposal is not re-consumed"
+
+# The marker, not the parent's state, is what makes consumption durable: put
+# the epic back in a claimable state and the same proposal must not re-fire.
+set_status "$EPIC" in-progress
+out="$(run_sweep)"
+assert_equals "$(comment_count "$EPIC" "[board-epic] reconcile:")" "1" "the marker dedupes even once the parent is claimable again"
+assert_contains "$(issue_labels "$EPIC")" "status:in-progress" "a consumed proposal never returns the parent a second time"
+
+# Dedupe-hole rule: a parent already awaiting/holding an Architect gets NO
+# marker — marking it there would consume the proposal with nobody reading it.
+mock_comment "$PENDING_CHILD" "[parent-impact] #$PENDING_EPIC the acceptance cannot be met as written"
+out="$(run_sweep)"
+assert_equals "$(comment_count "$PENDING_EPIC" "[board-epic] reconcile:")" "0" "a proposal on an already-returned parent is left unmarked"
+assert_equals "$(board_eligible "$PENDING_EPIC")" "not-eligible" "an epic with no reconciliation-due note stays out of the pool while children are active"
+
+# A closed parent has no reconciliation to perform — a late proposal must not
+# stamp a status label back onto it (epics do get closed under live children).
+mock_comment 30 "[parent-impact] #29 the parent shipped without this"
+out="$(run_sweep)"
+assert_equals "$(issue_labels 29)" "" "a closed parent is never re-labelled by a late proposal"
+assert_equals "$(comment_count 29 "[board-epic]")" "0" "a closed parent gets no bookkeeping comment"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

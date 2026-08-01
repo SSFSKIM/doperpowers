@@ -496,12 +496,16 @@ def epics(tickets):
 def eligible(tickets, tid):
     n = tickets[tid]
     if tid in epics(tickets):
-        # E2 carve-out: the ONE dispatchable epic state is
-        # ready-for-architect, and only with every child terminal — a
-        # queued corrective child must pull the epic back out of the
-        # dispatch pool before an Architect claims a moving target.
-        if n["state"] != "ready-for-architect" \
-           or not recomposition_ready(tickets, tid):
+        # E2 carve-out: dispatchable epic states are exactly
+        # ready-for-architect awaiting recomposition (children all
+        # terminal — a queued corrective child must pull the epic back out
+        # of the dispatch pool before an Architect claims a moving target)
+        # or awaiting reconciliation (the sweep's reconciliation-due
+        # return — children may still be active).
+        if n["state"] != "ready-for-architect":
+            return False
+        if not recomposition_ready(tickets, tid) \
+           and not (n.get("note") or "").startswith("reconciliation-due:"):
             return False
     elif n["state"] not in DISPATCHABLE:
         return False
