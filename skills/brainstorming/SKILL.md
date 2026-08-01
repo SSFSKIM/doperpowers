@@ -17,13 +17,12 @@ Work through these in order:
 
 1. **Explore project context** — check files, docs, recent commits
 2. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
-3. **Recommend the track, then get confirmation** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 6–9 don't apply); see Choosing the Track below
-4. **Propose 2-3 approaches** — with trade-offs and your recommendation
-5. **Present design** — in sections scaled to their complexity, approval after each section
-6. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from step 4's alternatives); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-8. **User reviews written spec** — ask your human partner to review the spec file before proceeding
-9. **Transition to implementation** — invoke doperpowers:writing-plans
+3. **Recommend the track, then get confirmation** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); see Choosing the Track below
+4. **Present the design** — one holistic pass, attention-ranked, one approval (see Presenting the Design below)
+5. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
+6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
+7. **User reviews written spec** — ask your human partner to review the spec file before proceeding
+8. **Transition to implementation** — invoke doperpowers:writing-plans
 
 Three exits leave this skill: writing-plans (controlled), execplan (autonomous, on your human partner's explicit choice), or implementing directly in this session (direct track — no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logic). One earlier exit exists at scope-assessment time, before any design: a goal that fails the scope check — too big for one agent to reliably own as one unit — routes to doperpowers:decomposing; see the scope bullet below.
 
@@ -55,11 +54,13 @@ One more move extends the grill's codebase rule outward — **situate at four ra
 
 Triage the grilling: grill what is fuzzy or important; don't grind an already-clear request to death.
 
+A design fork with genuinely sound alternatives is a grill question, not presentation material — put it to your human partner when it surfaces, with your recommendation, like any other question. By the time you present the design, the forks the grill could see are already settled; only forks that first emerge while composing the full design survive to the presentation, and those go to the top of its attention ranking.
+
 **The challenger duty.** Converging the idea is half the grill; the other half is judging whether the idea as conceived deserves to converge. Run this assessment on every idea: hold it against the project's standing purpose — and not only for internal fit. Make the outward move your human partner cannot: compare the idea against the other levers the purpose itself suggests, including levers absent from the codebase (an absent obvious lever is often the prerequisite frame, not background to assume) and what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find ONLY when it would change the decision — a materially better or prerequisite frame, a consideration that shifts scope or approach — and say it once, sharply, BEFORE convergence, grounded in this project's purpose, this codebase, or named sources.
 
 **Choosing the Track (after the grill):**
 
-Three tracks leave this skill. The controlled track — the rest of this skill: approaches → design → spec → doperpowers:writing-plans — keeps human gates until your human partner types `<agent-ready>`; from that signal on, run the remaining steps autonomously. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan.
+Three tracks leave this skill. The controlled track — the rest of this skill: design → spec → doperpowers:writing-plans — keeps human gates until your human partner types `<agent-ready>`; from that signal on, run the remaining steps autonomously. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan.
 
 **You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
 
@@ -71,19 +72,15 @@ Three tracks leave this skill. The controlled track — the rest of this skill: 
 - Routing still requires your human partner's explicit confirmation — never route silently, and never treat "just handle it" as the choice. Their explicit yes to autonomous is the approval the gate requires; doperpowers:execplan's contract governs from there.
 - If they override your recommendation, follow their choice. On a confirmed controlled track (whether you recommended it or they chose it), continue this skill.
 
-**Exploring approaches:**
-
-- Propose 2-3 different approaches with trade-offs
-- Present options conversationally with your recommendation and reasoning
-- Lead with your recommended option and explain why
-
 **Presenting the design:**
 
-- Once you believe you understand what you're building, present the design
-- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
-- Ask after each section whether it looks right so far
-- Cover: architecture, components, data flow, error handling, testing
-- Be ready to go back and clarify if something doesn't make sense
+Once you believe you understand what you're building, present the whole design in one pass, structured as a triage of your human partner's attention — the parts where their judgment matters most come first, and you say explicitly which parts those are, so they can review the top carefully and skim the rest:
+
+1. **Open forks** (rare) — decisions that first emerged while composing the design and have genuinely sound alternatives. Present each with its candidates, trade-offs, and your recommendation; your human partner decides.
+2. **Decisions to verify** — the significant calls you made, and the design sections where their taste or domain knowledge could change the outcome. Give your reasoning, scaled to each part's complexity: a few sentences if straightforward, up to 200-300 words if nuanced.
+3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
+
+Cover architecture, components, data flow, error handling, and testing — each inside whichever tier it belongs to. One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the frontier logic of reference/batch-grilling.md).
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
@@ -120,7 +117,7 @@ need it.
 - Write the validated design (spec) to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`
   - (User preferences for spec location override this default)
 - Shape it per doperpowers:execspec: purpose-first opening, acceptance phrased as observable behavior, and the living tail (`## Decision Log`, `## Surprises & Discoveries`, `## Outcomes & Retrospective` reading "Pending — written at finish.", `## Revision Notes`)
-- Seed the Decision Log with the chosen approach and each rejected alternative from the approaches step, with why it lost — they are already generated; capturing them is free
+- Seed the Decision Log from the grill's resolved forks and the presentation's decisions — each choice with its rejected alternatives and why they lost; they are already generated, capturing them is free
 - Commit the design document to git
 
 **Spec Self-Review:**
