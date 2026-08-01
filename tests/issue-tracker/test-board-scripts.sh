@@ -143,8 +143,9 @@ assert_not_contains "$out" "#1: in-progress" "epic stays open (child 4 not termi
 
 out="$(run board-transition.sh 4 wontfix "superseded")"
 assert_equals "$(state "s['issues']['4']['stateReason']")" "NOT_PLANNED" "wontfix → not planned"
-assert_contains "$out" "#1: in-progress → done" "epic closes when all children terminal, one done"
-assert_equals "$(state "s['issues']['1']['stateReason']")" "COMPLETED" "epic closed as completed"
+assert_contains "$out" "#1: in-progress → ready-for-architect" "last terminal child returns the epic for recomposition"
+assert_contains "$(state "s['issues']['1']['labels']")" "status:ready-for-architect" "epic waits in ready-for-architect"
+assert_not_contains "$out" "#1: in-progress → done" "epic never auto-closes"
 
 assert_fails run board-transition.sh 3 in-progress                     # terminal is terminal
 
@@ -540,8 +541,8 @@ assert_contains "$lint_out" "board-transition.sh 12 done" "lint FIX points at fi
 out="$(run board-transition.sh 12 "done")"
 assert_contains "$out" "#12: done — stripped residual status labels" "finalize strips labels"
 assert_not_contains "$(state "s['issues']['12']['labels']")" "status:in-review" "stale in-review label gone"
-assert_contains "$out" "#11: in-progress → done" "finalize closes the epic"
-assert_equals "$(state "s['issues']['11']['stateReason']")" "COMPLETED" "epic closed as completed"
+assert_contains "$out" "#11: in-progress → ready-for-architect" "finalize returns the epic for recomposition"
+assert_contains "$(state "s['issues']['11']['labels']")" "status:ready-for-architect" "finalized epic waits in ready-for-architect"
 assert_contains "$out" "now eligible: #13" "finalize reports unblocked dependent"
 
 out="$(run board-transition.sh 12 "done")"                          # idempotent re-run
@@ -1100,8 +1101,8 @@ assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-desig
 assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
 
 # pull_epics is the board's own bookkeeping on an epic (never dispatched,
-# never gated) — it does not answer to LEGAL, the same latitude close_epics
-# already has. A deferred epic's active child still pulls it to in-progress
+# never gated) — it does not answer to LEGAL, the same latitude
+# recompose_epics already has. A deferred epic's active child still pulls it to in-progress
 # (PRE_PARK has no deferred entry, so the default applies) — but that must
 # stay pure bookkeeping: an ordinary worker/human transition straight from
 # deferred to in-progress stays illegal (LEGAL["deferred"] unchanged), so a
@@ -1267,6 +1268,32 @@ before="$(state "sorted(s['issues']['$src_t']['labels'])")"
 run board-register.sh "Flaky DNS in CI" env-issue P3 \
   --note "needs infra DNS fix" --spawned-by "$src_t" --body-file "$SPEC_BODY" >/dev/null
 assert_equals "$(state "sorted(s['issues']['$src_t']['labels'])")" "$before" "env-issue filing leaves the source ticket untouched"
+
+# ---- recomposition lifecycle (E2) -----------------------------------------------
+echo "recomposition:"
+run board-register.sh "Recomp epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+rc_e="$(state "s['next']-1")"
+run board-register.sh "Recomp child A" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
+rc_a="$(state "s['next']-1")"
+run board-register.sh "Recomp child B" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
+rc_b="$(state "s['next']-1")"
+run board-transition.sh "$rc_a" in-progress >/dev/null
+# all-wontfix epic also returns (the one-done guard is retired)
+run board-transition.sh "$rc_a" wontfix "not needed" >/dev/null
+out="$(run board-transition.sh "$rc_b" wontfix "not needed either")"
+assert_contains "$out" "#$rc_e: in-progress → ready-for-architect" "all-wontfix epic returns for recomposition (guard retired)"
+# the return's audit comment is the bookkeeping marker, not the convergence format
+assert_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board-epic]" "recomposition return posts the board-epic marker"
+assert_not_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board] in-progress → ready-for-architect:" "return never writes the convergence-counted format"
+# second cycle: corrective child, land it, return fires again w/o needs-human conversion
+run board-register.sh "Recomp gap child" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
+rc_c="$(state "s['next']-1")"
+run board-transition.sh "$rc_c" in-progress >/dev/null
+# the gap child's pull maps the ready-for-architect epic to in-design
+# (PRE_PARK), so the second return fires from in-design, not in-progress
+out="$(run board-transition.sh "$rc_c" "done")"
+assert_contains "$out" "#$rc_e: in-design → ready-for-architect" "second recomposition cycle returns again"
+assert_not_contains "$(state "s['issues']['$rc_e']['labels']")" "status:needs-human" "bookkeeping returns never trip the convergence counter"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

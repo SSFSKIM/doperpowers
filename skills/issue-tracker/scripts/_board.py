@@ -492,7 +492,15 @@ def epics(tickets):
 
 def eligible(tickets, tid):
     n = tickets[tid]
-    if tid in epics(tickets) or n["state"] not in DISPATCHABLE:
+    if tid in epics(tickets):
+        # E2 carve-out: the ONE dispatchable epic state is
+        # ready-for-architect, and only with every child terminal — a
+        # queued corrective child must pull the epic back out of the
+        # dispatch pool before an Architect claims a moving target.
+        if n["state"] != "ready-for-architect" \
+           or not recomposition_ready(tickets, tid):
+            return False
+    elif n["state"] not in DISPATCHABLE:
         return False
     return all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"])
 
@@ -507,7 +515,7 @@ def ancestors(tickets, t):
 
 
 # ── the transition core (state write + note + sweeps) ────────────────────
-def apply_state(tickets, tid, to, why, extra_meta=None):
+def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     """Write one state change to GitHub + the in-memory snapshot; return the
     human line. Notes ride the meta block (current) and a comment (audit);
     extra_meta lets the caller fold branch/pr into the same body write."""
@@ -523,7 +531,13 @@ def apply_state(tickets, tid, to, why, extra_meta=None):
     updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
-        if (old, to) in CONVERGENCE_EDGES:
+        if bookkeeping:
+            # Board bookkeeping on an epic (recompose/pull): the marker is
+            # deliberately NOT the "[board] from → to:" format — the
+            # convergence counter greps that format, and a mechanical
+            # return must never count as a worker escalation traversal.
+            comment(tid, "[board-epic] %s: %s" % (to, why))
+        elif (old, to) in CONVERGENCE_EDGES:
             comment(tid, "[board] %s → %s: %s" % (old, to, why))
         else:
             comment(tid, "[board] %s: %s" % (to, why))
@@ -542,8 +556,8 @@ def pull_epics(tickets, tid, lines):
     state its own lane's happy path or park returns ever produce.
 
     This is the board's own bookkeeping on an epic — never dispatched,
-    never gated — the same latitude close_epics already has for its
-    epic-closing writes; it does not answer to LEGAL, which governs what a
+    never gated — the same latitude recompose_epics already has for its
+    epic-return writes; it does not answer to LEGAL, which governs what a
     WORKER or human may transition to by hand. (An earlier version of this
     fix asserted `to in LEGAL[pstate]` and, to satisfy that, added
     deferred -> in-progress to LEGAL itself — which silently legalized a
@@ -566,18 +580,36 @@ def pull_epics(tickets, tid, lines):
         p = tickets[p].get("parent")
 
 
-def close_epics(tickets, p, lines):
-    """An epic closes when every child is terminal and at least one is done
-    (an all-wontfix epic stays a human call)."""
+def recomposition_ready(tickets, tid):
+    """An epic whose every child is terminal awaits recomposition — E2:
+    'required' = every child (no optionality machinery), and the old
+    at-least-one-done guard is retired: an all-wontfix epic also wakes an
+    Architect, whose verdict (done / wontfix / needs-human) replaces the
+    guard's silent stall."""
+    n = tickets.get(tid)
+    if n is None or n["state"] in TERMINAL:
+        return False
+    kids = children(tickets, tid)
+    return bool(kids) and all(tickets[k]["state"] in TERMINAL for k in kids)
+
+
+def recompose_epics(tickets, p, lines):
+    """E2 replaces the mechanical epic auto-close: a parent is closed by an
+    Architect's VERIFICATION against its own acceptance (recomposition),
+    never by child bookkeeping. When the last child lands, the epic
+    returns to ready-for-architect — the one state where epics are
+    dispatchable — with the recomposition-due note. Bookkeeping latitude:
+    exempt from LEGAL and from convergence counting ([board-epic] marker)."""
     while p and p in tickets:
-        kids = children(tickets, p)
-        if kids and tickets[p]["state"] not in TERMINAL \
-           and all(tickets[k]["state"] in TERMINAL for k in kids) \
-           and any(tickets[k]["state"] == "done" for k in kids):
-            lines.append(apply_state(tickets, p, "done", "epic: all children terminal"))
-            p = tickets[p].get("parent")
-        else:
-            break
+        if recomposition_ready(tickets, p) \
+           and tickets[p]["state"] != "ready-for-architect":
+            lines.append(apply_state(
+                tickets, p, "ready-for-architect",
+                "recomposition-due: all children terminal",
+                bookkeeping=True))
+        # the chain walk ends here: an ancestor can only become ready when
+        # THIS epic reaches terminal via its own recomposition verdict
+        break
 
 
 def newly_eligible(tickets, done_tid):

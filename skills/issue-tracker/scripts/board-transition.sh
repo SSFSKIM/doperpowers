@@ -7,8 +7,9 @@
 # Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
 #   → in-progress : the first active child pulls its parent epic(s) to in-progress
-#   → done/wontfix: an epic closes when every child is terminal and at least one
-#                   is done; a done ticket prints its newly-eligible dependents
+#   → done/wontfix: an epic whose children are all terminal RETURNS to
+#                   ready-for-architect for recomposition (E2) — epics are
+#                   closed by an Architect's verdict, never by bookkeeping
 #
 # Repair path: an issue whose labels are off-machine (zero or 2+ status:*
 # labels — lint calls these untracked/conflict) may transition to any OPEN
@@ -71,7 +72,7 @@ if to == cur:
         lines.append("#%s: %s — stripped residual status labels" % (tid, cur))
     if note:
         B.comment(tid, "[board] %s: %s" % (to, note))
-    B.close_epics(tickets, n.get("parent"), lines)
+    B.recompose_epics(tickets, n.get("parent"), lines)
     out = (B.newly_eligible(tickets, tid) if to == "done" else []) + lines
     for ln in out:
         print(ln)
@@ -165,9 +166,9 @@ lines = [B.apply_state(tickets, tid, to, note, extra_meta=extra)]
 if to == "in-progress":
     B.pull_epics(tickets, tid, lines)
 
-# Sweep: a terminal child may close its epic chain.
+# Sweep: a terminal child may return its epic for recomposition.
 if to in B.TERMINAL:
-    B.close_epics(tickets, n.get("parent"), lines)
+    B.recompose_epics(tickets, n.get("parent"), lines)
 
 # Report dependents this `done` made eligible (derived, nothing written).
 eligible_lines = B.newly_eligible(tickets, tid) if to == "done" else []

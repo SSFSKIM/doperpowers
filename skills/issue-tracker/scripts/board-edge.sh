@@ -13,7 +13,7 @@
 # cycles, and ancestor-epic blockers (a guaranteed deadlock). Membership
 # changes re-derive epic states, so it runs the same sweeps as
 # board-transition: an in-progress child pulls its new epic chain, and an
-# epic whose last active child leaves may close.
+# epic whose last active child leaves may return for recomposition.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -96,9 +96,9 @@ elif op == "parent":
     if n["state"] == "in-progress":
         B.pull_epics(tickets, tid, lines)
     if n["state"] in B.TERMINAL:
-        B.close_epics(tickets, ref, lines)
+        B.recompose_epics(tickets, ref, lines)
     if old:
-        B.close_epics(tickets, old, lines)
+        B.recompose_epics(tickets, old, lines)
 
 elif op == "orphan":
     old = n.get("parent")
@@ -107,7 +107,7 @@ elif op == "orphan":
     B.remove_sub_issue(tickets[old], n)
     n["parent"] = None
     lines.append("#%s: parent cleared (was #%s)" % (tid, old))
-    B.close_epics(tickets, old, lines)
+    B.recompose_epics(tickets, old, lines)
 
 for ln in lines:
     print(ln)
