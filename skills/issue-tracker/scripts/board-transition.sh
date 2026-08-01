@@ -59,6 +59,14 @@ if to not in B.STATES:
 if to == "ready-for-architect" and n["category"] == "spike":
     B.die("#%s is a spike — it has no legal exit from ready-for-architect; "
           "it stays in its current lane" % tid)
+# E2 epic guard: the in-design → done / in-review edges exist ONLY for a
+# recomposition claim on an epic (the scoped terminal-authority
+# exception). A leaf Architect never closes or reviews its own ticket.
+if cur == "in-design" and to in ("done", "in-review") \
+        and tid not in B.epics(tickets):
+    B.die("in-design → %s is the epic recomposition edge — #%s has no "
+          "children; a leaf exits in-design via ready-for-implementer "
+          "or a park" % (to, tid))
 if to == cur:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))
@@ -120,8 +128,11 @@ if to == "in-review" and not env["T_PR"] and not n.get("pr"):
     # A RETURN to in-review (the needs-human pre-park: E1 transition 7) never
     # re-supplies --pr — the ticket's board:meta already carries it from the
     # original entry. The invariant is "a ticket in in-review always has a
-    # PR recorded", not "every entry carries the flag".
-    B.die("a PR link is required when moving to in-review (--pr URL)")
+    # PR recorded", not "every entry carries the flag". For an EPIC the pr
+    # slot carries the recomposition closure package (E2) — same invariant,
+    # different artifact.
+    B.die("a PR link is required when moving to in-review (--pr URL; for an "
+          "epic: the closure-package URL)")
 if env["T_PLAN"]:
     import re as _re
     if to != "ready-for-implementer":

@@ -1295,6 +1295,31 @@ out="$(run board-transition.sh "$rc_c" "done")"
 assert_contains "$out" "#$rc_e: in-design → ready-for-architect" "second recomposition cycle returns again"
 assert_not_contains "$(state "s['issues']['$rc_e']['labels']")" "status:needs-human" "bookkeeping returns never trip the convergence counter"
 
+# Architect recomposition verdict paths (epic-guarded edges)
+run board-transition.sh "$rc_e" in-design >/dev/null           # Architect claims
+out="$(run board-transition.sh "$rc_e" "done")"
+assert_contains "$out" "#$rc_e: in-design → done" "recomposition Architect closes a non-code epic from in-design"
+assert_equals "$(state "s['issues']['$rc_e']['stateReason']")" "COMPLETED" "epic closed as completed"
+# a LEAF may never use the epic edges
+run board-register.sh "Leaf in design" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+leaf_t="$(state "s['next']-1")"
+run board-transition.sh "$leaf_t" in-design >/dev/null
+assert_fails run board-transition.sh "$leaf_t" "done"
+assert_fails run board-transition.sh "$leaf_t" in-review --pr "https://example.com/pkg"
+# code-bearing epic routes in-review with the closure package as the pr slot
+run board-register.sh "Code epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+ce_e="$(state "s['next']-1")"
+run board-register.sh "Code child" enhancement P2 --parent "$ce_e" --body-file "$SPEC_BODY" >/dev/null
+ce_c="$(state "s['next']-1")"
+run board-transition.sh "$ce_c" in-progress >/dev/null
+run board-transition.sh "$ce_c" "done" >/dev/null                 # epic → ready-for-architect
+run board-transition.sh "$ce_e" in-design >/dev/null
+assert_fails run board-transition.sh "$ce_e" in-review          # package required
+out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#closure-package")"
+assert_contains "$out" "#$ce_e: in-design → in-review" "code-bearing epic enters scale review with the closure package"
+out="$(run board-transition.sh "$ce_e" "done")"
+assert_contains "$out" "#$ce_e: in-review → done" "clean scale review closes the epic"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"

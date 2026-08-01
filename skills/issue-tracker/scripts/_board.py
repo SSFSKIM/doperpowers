@@ -69,9 +69,11 @@ LEGAL = {
                               "interactive-preferred", "wontfix", "deferred"},
     # in-design: the Architect's in-flight state. Exit = transition 2/3
     # (plan handoff / down-shortcircuit / decompose-epic) or a park.
+    # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
+    # terminal-authority exception; board-transition enforces the guard).
     "in-design":             {"ready-for-implementer", "needs-info",
                               "needs-human", "interactive-preferred",
-                              "wontfix", "deferred"},
+                              "wontfix", "deferred", "done", "in-review"},
     "ready-for-implementer": {"in-progress", "ready-for-architect",
                               "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},
