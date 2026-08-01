@@ -732,7 +732,45 @@ closure.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+E2 closed 2026-08-02 at the contract boundary it declared: the domain
+contract (v2.x of this spec) is complete, and the interim doperpowers
+slice shipped as v7.36.0 on `e2-ledger-contract` (22 commits,
+2104c21..HEAD), merged to `feature/en-cycles`. The three deferred
+acceptance items (6–7 to E3, 8 to cc-harness) remain with their named
+owners, along with the § R2 rebase requirements.
+
+**Against the purpose.** Both journeys the contract defines now run
+end-to-end on the interim board: recomposition (children terminal →
+`ready-for-architect` return → Architect verification → epic-guarded
+close or closure-package scale review, once per cycle) and upward
+revision (parent-pin at dispatch → `[parent-impact]` proposals → sweep
+reconcile with marker dedupe → Architect reconciliation claim →
+`needs-info` release). env-issue exists as a category with the inverted
+`needs-human` birth default. Every write path has an authorized writer,
+every escalation a return path — verified twice, by a whole-branch
+review and an independent codex review.
+
+**What the reviews caught that per-task gates could not.** Six of the
+eight codex findings and the whole-branch must-fix were seam defects
+invisible inside any one task: the pull that yanked an unclaimed
+reconciliation return, the scale reviewer whose engine range was empty
+by construction, the startup barrier no scale worker could satisfy, the
+stale closure package that survived into the next cycle, the verdict
+edges legal mid-reconciliation, and — the emblematic one — a consumer
+(`pass_impact`) shipped with no instructed producer: no dispatched
+child protocol told a worker to post `[parent-impact]` until the fix
+wave. Lesson (now thrice-confirmed in this program): an escalation is
+only as real as its return path, and a channel is only as real as its
+*instructed* producer.
+
+**Gaps and follow-ups.** Four follow-up tickets were named by the final
+review: board-lint orphan scan (open children under a terminal parent),
+a bound on the scale-review supersede loop under persistent stamp-write
+failure, and the pre-existing skill-links linter blindness to `agents/`
+(plus the lint-shell `--all` baseline). One accepted corner: a
+corrective child taken terminal without ever going active leaves the
+prior closure package in `pr` meta — protocol-belted by the mandatory
+new-comment-per-cycle clause.
 
 ## Revision Notes
 
