@@ -56,7 +56,9 @@ Toolkit:
 120 seconds for dispatcher-owned `{{BIND_READY_FILE}}` to appear. If it does
 not, end without reviewing or changing state (dispatch will retire a failed
 bind). Read its JSON and verify: ticket matches `{{ISSUE_NUMBER}}`; its UUID's
-registry meta is this `review-pr-{{PR_NUMBER}}` worker in this worktree; and no
+registry meta is this `{{WORKER_NAME}}` worker in this worktree (the
+dispatcher binds that name for both variants — `review-pr-<n>` for a PR,
+`review-epic-<n>` for a scale run); and no
 other registry meta owns the same ticket. Ticketless dispatch binds `none`.
 The JSON also names the orchestrator-only accepted-commit ledger. Verify it is
 a regular file with mode 0600 inside the ready file's 0700 parent directory;
@@ -85,7 +87,7 @@ Ticket/spec compliance is YOUR audit, not the engine's. The engine call
 is a TOOL invocation, not a nested agent. Never add
 --dangerously-bypass-approvals-and-sandbox / --yolo to anything.
 
-1. Run `mktemp -d "${TMPDIR:-/tmp}/review-pr-{{PR_NUMBER}}.XXXXXX"`
+1. Run `mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}.XXXXXX"`
    once. Treat the returned path as `<review-tmp>` for this invocation and
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
@@ -359,8 +361,13 @@ HUMAN tier — anything else, or observation mode above:
 A `review-epic-<n>` dispatch is the E2 scale review: the ticket is an
 EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
 `CLOSURE_PACKAGE` binding names it). Same engine machinery — whole-range
-codex runs over the package's named base/head ranges, lenses derived
-from the cross-child contracts — but a different entry artifact and
+codex runs, lenses derived from the cross-child contracts: your worktree
+sits at the epic's integration branch and START ENGINE's
+`--base origin/{{BASE_REF}}` reviews it against the branch it merges
+into. When your dispatch prompt instead says this epic has NO aggregate
+range (its integration branch was deleted as its children merged), the
+package's per-child base/head ranges ARE the ranges — run the engine over
+them. Different entry artifact and
 verdict set: there are no fix waves and no merge step (the children are
 already merged; there is no branch to fix). Verdicts: clean →
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done "<summary>"

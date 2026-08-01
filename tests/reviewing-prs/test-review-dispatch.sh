@@ -86,6 +86,16 @@ PY
 # ready file, validate it, then acknowledge before ORIENT. Tests can suppress
 # this to prove dispatch does not report success for a worker that never starts.
 bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
+# The real barrier also verifies the worker's OWN registry identity against
+# the name the protocol gives it. A stub that acked without checking hid a
+# barrier no scale worker could ever satisfy (it named review-pr-<n> while a
+# scale worker is review-epic-<n>), so check it here: a mismatch leaves the
+# barrier unacked and dispatch fails exactly as it would in production.
+wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
+if [ "$wname" != "$name" ]; then
+  echo "stub worker: barrier identity mismatch (prompt names '$wname', registry name is '$name')" >&2
+  bind_ready=""
+fi
 if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
   READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
 import json, os, time
@@ -1306,7 +1316,12 @@ assert_contains "$EPIC_PROMPT" '`ISSUE_NUMBER`: 20' "prompt binds the epic ticke
 assert_contains "$EPIC_PROMPT" "SCALE REVIEWER of recomposition epic #20" "scale prompt opens as the epic's reviewer, not a PR reviewer"
 assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR framing at all (there is no PR)"
 assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
-assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the integration base ref the worktree sits at"
+assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the engine base (the branch the epic integrates into)"
+assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity the startup barrier verifies"
+# This epic has no `branch:` meta, so the worktree sits on the default branch
+# itself — there is no aggregate range to hand the engine, and the prompt must
+# say so instead of leaving the worker to review nothing.
+assert_contains "$EPIC_PROMPT" "NO aggregate branch range" "the missing-integration-branch case names the closure package's PR ranges as the review ranges"
 assert_not_contains "$EPIC_PROMPT" "{{" "no unsubstituted placeholder survives the scale render"
 assert_not_contains "$EPIC_PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
 EPIC_META="$(python3 - <<'PY'
@@ -1393,6 +1408,62 @@ PY
 out6="$("$DISPATCH" --sweep 2>&1)"
 assert_not_contains "$out6" "review-epic-20" "a closed (recomposed) epic is never scale-reviewed again"
 assert_equals "$(cat "$SPAWN_LOG")" "" "a closed epic spawns nothing"
+
+# ---- the engine's review range is the epic's AGGREGATE diff --------------------
+# The worktree sits at the epic's integration branch (its `branch:` meta), but
+# the engine's base must be what that branch merges INTO — the default branch.
+# Binding BASE_REF to the integration branch itself, which the worktree is
+# already checked out at, made `--base origin/{{BASE_REF}}` review
+# merge-base(X,X)..X: nothing at all.
+reset_state
+git -C "$CLONE" checkout -q -b epic/integration main
+echo aggregate > "$CLONE/agg.txt"
+git -C "$CLONE" add agg.txt
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m "epic children, merged"
+git -C "$CLONE" push -q -u origin epic/integration
+INT_SHA="$(git -C "$CLONE" rev-parse HEAD)"
+git -C "$CLONE" checkout -q main
+PKG="$PKG" python3 - <<'PY'
+import json, os
+def it(n, status, body, parent=None, closed=False):
+    return {"number": n, "state": "CLOSED" if closed else "OPEN",
+            "labels": [] if closed else ["status:" + status],
+            "body": body, "parent": parent}
+meta = "\n\n<!-- board:meta\nbranch: epic/integration\npr: %s\n-->\n" % os.environ["PKG"]
+issues = [
+    it(20, "in-review", "Epic acceptance." + meta),
+    it(22, "done", "child a", parent=20, closed=True),
+    it(23, "done", "child b", parent=20, closed=True),
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+out7="$("$DISPATCH" --sweep 2>&1)"
+assert_contains "$out7" "review-epic-20" "the sweep reports the scale dispatch it made"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an epic with an integration branch dispatches its scale reviewer"
+assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$INT_SHA" \
+    "the scale worktree sits at the epic's integration-branch head"
+INT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
+assert_contains "$INT_PROMPT" '`BASE_REF`: main' "the engine base is the default branch, not the epic's own branch"
+assert_not_contains "$INT_PROMPT" '`BASE_REF`: epic/integration' "the engine never reviews the integration branch against itself"
+assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt names the integration branch the worktree sits at"
+assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
+
+# ---- an in-review epic is a scale target only when recomposition is due -------
+# A leaf that gained children AFTER opening a real PR is in-review with a `pr:`
+# meta too — dispatching a scale reviewer there puts a second reviewer on the
+# wrong artifact.
+reset_state
+python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
+issues = json.load(open(p))
+issues.append({"number": 24, "state": "OPEN", "labels": ["status:in-progress"],
+               "body": "late corrective child", "parent": 20})
+json.dump(issues, open(p, "w"))
+PY
+out8="$("$DISPATCH" --sweep 2>&1)"
+assert_not_contains "$out8" "review-epic-20" "an in-review epic with a live child is not a scale target"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no scale reviewer spawns while recomposition is not due"
 rm -f "$MOCK_DIR/board-issues.json"
 
 echo

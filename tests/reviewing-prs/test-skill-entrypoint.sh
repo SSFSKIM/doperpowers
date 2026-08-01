@@ -110,6 +110,11 @@ assert_contains "$SKILL" "BINDING BARRIER" "worker cannot start review before ex
 assert_contains "$SKILL" "{{BIND_READY_FILE}}" "worker barrier uses the dispatcher-owned ready file"
 assert_contains "$SKILL" "regular file with mode 0600" "barrier validates the hidden ledger artifact"
 assert_contains "$SKILL" "write the acknowledgement" "worker acks the barrier before ORIENT"
+# The barrier's expected identity must be satisfiable in BOTH variants: a
+# scale worker is review-epic-<n> with no PR number at all, so a hardcoded
+# review-pr-{{PR_NUMBER}} could never be verified or acked.
+assert_contains "$SKILL" 'registry meta is this `{{WORKER_NAME}}` worker' "the barrier's expected identity is the dispatcher-bound worker name"
+assert_not_contains "$SKILL" 'meta is this `review-pr-{{PR_NUMBER}}` worker' "the barrier no longer hardcodes the PR-variant identity"
 assert_before "$SKILL" "BINDING BARRIER" "## ORIENT" "binding barrier precedes every review action"
 assert_contains "$SKILL" "board-answer" "active early park distinguishes notification from resume"
 
@@ -144,7 +149,7 @@ assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 
 echo "runtime skill — placeholder set:"
-want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -273,10 +278,11 @@ assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies the BASE-re
 assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies the BASE-ref repo-facts snapshot"
 assert_contains "$BOOTSTRAP" '`REVIEW_MODE`: {{REVIEW_MODE}}' "bootstrap binds the review variant (pr | scale)"
 assert_contains "$BOOTSTRAP" '`CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}' "bootstrap binds the scale reviewer's entry artifact"
+assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds the registry identity both variants' barriers verify"
 assert_contains "$BOOTSTRAP" "SCALE REVIEWER of recomposition epic" "bootstrap carries the scale variant's own opening"
 assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
-want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}}"
+want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

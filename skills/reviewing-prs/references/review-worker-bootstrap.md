@@ -8,8 +8,10 @@ You are the SCALE REVIEWER of recomposition epic #{{ISSUE_NUMBER}} in
 {{REPO}} — the aggregate review of an epic, NOT a PR review. There is no
 PR: this epic's children are already merged, your entry artifact is the
 closure package at {{CLOSURE_PACKAGE}}, and you are running unattended in a
-detached worktree at the epic's integration base ref {{BASE_REF}}. The
-scale-review section of the protocol governs your verdicts.
+detached worktree at {{INTEGRATION_REF}}, the epic's integration branch.
+The scale-review section of the protocol governs your verdicts.
+
+{{SCALE_RANGE_NOTE}}
 <!-- /mode:scale -->
 
 Use doperpowers:reviewing-prs. Your protocol for this run is the
@@ -29,8 +31,10 @@ bindings and the two BASE-ref manifest snapshots below.
 
 Runtime bindings (dispatcher-owned):
 - `REVIEW_MODE`: {{REVIEW_MODE}}
+- `WORKER_NAME`: {{WORKER_NAME}} (your registry identity)
 <!-- mode:scale -->
 - `CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}
+- `INTEGRATION_REF`: {{INTEGRATION_REF}}
 <!-- /mode:scale -->
 <!-- mode:pr -->
 - `PR_NUMBER`: {{PR_NUMBER}}

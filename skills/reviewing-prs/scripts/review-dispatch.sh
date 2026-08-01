@@ -16,9 +16,11 @@
 #   review-epic-<n>   E2 scale review — an epic in in-review whose `pr:` meta
 #                     is a CLOSURE PACKAGE, not a PR (its children already
 #                     merged). Worktree detached at the epic's integration
-#                     branch. Sweep-only: nothing external triggers it, and
-#                     the epic's verdict (which leaves in-review) is what
-#                     ends the path.
+#                     branch; the engine's base is what that branch merges
+#                     into (the default branch), so the review range is the
+#                     epic's aggregate diff. Sweep-only: nothing external
+#                     triggers it, and the epic's verdict (which leaves
+#                     in-review) is what ends the path.
 #
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
@@ -377,6 +379,7 @@ PY
   fi
 
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_REVIEW_MODE="pr" \
+    P_WORKER_NAME="review-pr-$pr" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
@@ -405,22 +408,44 @@ PY
 # branches are deleted. Guarded per step for the same reason dispatch_one is:
 # the sweep runs it behind `||`.
 dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
-  local etid="$1" pkg="$2" branch="${3:-}" name tmp wt base_ref td prompt engine
-  local control_dir bind_ready ledger base_is_default
+  local etid="$1" pkg="$2" branch="${3:-}" name tmp wt int_ref base_ref td prompt engine
+  local control_dir bind_ready ledger base_is_default range_note
   name="review-epic-$etid"
   engine="${WORKER_ENGINE:-codex}"
-  base_ref="${branch:-$DEFAULT_BRANCH}"
-  if ! git -C "$LOCAL_REPO" fetch -q origin "$base_ref" 2>/dev/null; then
-    if [ "$base_ref" = "$DEFAULT_BRANCH" ]; then
-      echo "$name: git fetch failed ($base_ref)" >&2; return 1
+  # Two different refs, and conflating them cost the engine its whole range:
+  #   int_ref  — the epic's integration branch, where the worktree sits (the
+  #              aggregate of the children's merged work).
+  #   base_ref — what that branch integrates INTO, i.e. the repo default
+  #              branch. This is the ENGINE's --base: `merge-base(base,HEAD)
+  #              ..HEAD` is the epic's aggregate diff. Binding BASE_REF to the
+  #              integration branch itself (which the worktree is checked out
+  #              at) made that range empty.
+  # It is also the manifest ref, on the same discipline a PR review uses: the
+  # risk-surface/repo-facts snapshots come from the branch the reviewed work
+  # merges into, never from the reviewed work itself.
+  int_ref="${branch:-$DEFAULT_BRANCH}"
+  base_ref="$DEFAULT_BRANCH"
+  if ! git -C "$LOCAL_REPO" fetch -q origin "$int_ref" 2>/dev/null; then
+    if [ "$int_ref" = "$DEFAULT_BRANCH" ]; then
+      echo "$name: git fetch failed ($int_ref)" >&2; return 1
     fi
-    echo "$name: integration branch '$base_ref' is gone (deleted when its children merged) — reviewing $DEFAULT_BRANCH instead" >&2
-    base_ref="$DEFAULT_BRANCH"
+    echo "$name: integration branch '$int_ref' is gone (deleted when its children merged) — the closure package's PR ranges are the review ranges" >&2
+    int_ref="$DEFAULT_BRANCH"
+  fi
+  if [ "$int_ref" != "$base_ref" ]; then
     git -C "$LOCAL_REPO" fetch -q origin "$base_ref" \
       || { echo "$name: git fetch failed ($base_ref)" >&2; return 1; }
   fi
+  # No integration branch left ⇒ the worktree sits on the default branch and
+  # there is no aggregate range at all; say so in the prompt rather than
+  # letting the worker run an engine over nothing.
   base_is_default="no"
-  [ "$base_ref" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
+  if [ "$int_ref" = "$base_ref" ]; then
+    base_is_default="yes"
+    range_note="This epic has NO aggregate branch range: its integration branch is gone (deleted when its children merged), so this worktree sits on $base_ref itself and an engine run based on origin/$base_ref would review nothing. The review ranges are the per-child base/head ranges the closure package names — drive the engine over those, one range at a time (the worktree is yours to move: detach it at a range's head and run the engine with that range's base)."
+  else
+    range_note="Your aggregate review range is this worktree's integration branch '$int_ref' against origin/$base_ref — the branch it merges into — which is exactly what the engine's \`--base origin/$base_ref\` reviews."
+  fi
   _finalize_ticket_owners "$etid"
 
   tmp="$(mktemp -d)"
@@ -440,8 +465,8 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
     git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
   fi
   git -C "$LOCAL_REPO" worktree prune
-  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$base_ref" \
-    || { echo "$name: worktree add failed (origin/$base_ref)" >&2; rm -rf "$tmp"; return 1; }
+  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$int_ref" \
+    || { echo "$name: worktree add failed (origin/$int_ref)" >&2; rm -rf "$tmp"; return 1; }
 
   control_dir="$(mktemp -d "$DAEMON_HOME/$name-control.XXXXXX")" \
     || { echo "$name: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }
@@ -459,6 +484,8 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
   # {{PR_NUMBER}}/{{PR_URL}}/{{HEAD_*}} slot to fill.
   prompt="$(P_REVIEW_MODE="scale" P_CLOSURE_PACKAGE="$pkg" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$base_ref" \
+    P_WORKER_NAME="$name" P_INTEGRATION_REF="$int_ref" \
+    P_SCALE_RANGE_NOTE="$range_note" \
     P_ISSUE_NUMBER="$etid" P_ISSUE_LIST="$etid" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
@@ -876,7 +903,12 @@ tickets = B.snapshot()
 eps = B.epics(tickets)
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
-    if tid in eps and n["state"] == "in-review" and n.get("pr"):
+    # recomposition_ready is part of the selector, not a detail: a LEAF that
+    # gained children after opening a real PR is in-review with a `pr:` meta
+    # too, and dispatching a scale reviewer onto it would put a second
+    # reviewer on the wrong artifact.
+    if tid in eps and n["state"] == "in-review" and n.get("pr") \
+       and B.recomposition_ready(tickets, tid):
         print("%s|%s|%s" % (tid, n["pr"], n.get("branch") or ""))
 PY
 )" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
