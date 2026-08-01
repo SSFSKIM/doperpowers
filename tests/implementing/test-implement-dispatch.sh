@@ -361,6 +361,57 @@ PY
 out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
 assert_contains "$out" "architect cap reached" "an in-design bound worker occupies the architect slot"
 
+echo "implement-dispatch: parent-pin stamp + recomposition dispatch"
+
+# Fixtures land AFTER the sweep/cap sections on purpose — a new eligible
+# ticket would shift their spawn counts and priority order.
+#   10 = child of epic 11 · 12 = recomposition-ready epic (child 13 closed)
+python3 - <<'PY'
+import json, os
+def issue(num, title, labels, parent=None, state="OPEN", reason=None):
+    return {"number": num, "id": "ID_%d" % num, "title": title,
+            "body": "body of #%d" % num,
+            "state": state, "stateReason": reason, "labels": labels,
+            "assignees": [], "parent": parent, "blockedBy": [],
+            "closesPRs": [], "xrefPRs": [], "comments": [],
+            "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
+            "url": "https://github.com/test/repo/issues/%d" % num}
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["10"] = issue(10, "Child of the ledger epic",
+                          ["status:ready-for-implementer", "priority:P1"], parent=11)
+s["issues"]["11"] = issue(11, "Ledger epic mid-flight", ["status:in-design", "priority:P1"])
+s["issues"]["12"] = issue(12, "Epic awaiting recomposition",
+                          ["status:ready-for-architect", "priority:P1"])
+s["issues"]["13"] = issue(13, "Landed child", [], parent=12,
+                          state="CLOSED", reason="COMPLETED")
+s["next"] = 14
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+
+mock_issue_body() {
+    MB_N="$1" python3 -c "
+import json, os
+print(json.load(open(os.environ['MOCK_GH_STATE']))['issues'][os.environ['MB_N']]['body'])"
+}
+
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+HEAD_SHA="$(git -C "$CLONE" rev-parse HEAD)"
+out="$(run 10)"
+assert_contains "$out" "dispatched #10" "a child of an epic dispatches on the implement lane"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $HEAD_SHA" \
+  "dispatch stamps parent-pin (parent + repo HEAD sha) into the child meta"
+assert_contains "$(mock_issue_body 10)" "body of #10" \
+  "the stamp preserves the ticket body outside the meta block"
+assert_not_contains "$(mock_issue_body 1)" "parent-pin:" \
+  "no parent-pin on a parentless dispatch"
+
+out="$(run 12)"
+assert_contains "$out" "dispatched #12" "recomposition-ready epic dispatches"
+assert_contains "$out" "role=ARCHITECT" \
+  "recomposition-ready epic in ready-for-architect dispatches an Architect"
+assert_not_contains "$(mock_issue_body 12)" "parent-pin:" \
+  "a parentless epic gets no stamp"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"

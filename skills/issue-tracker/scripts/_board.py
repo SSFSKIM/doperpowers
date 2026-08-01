@@ -154,7 +154,8 @@ SPIKE_COLOR = "f9d0c4"
 ENV_ISSUE_COLOR = "e4a0f7"
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
-META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park", "note")
+META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
+             "parent-pin", "note")
 
 
 def die(msg) -> NoReturn:

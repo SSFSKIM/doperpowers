@@ -98,6 +98,7 @@ n = tickets[tid]
 q("T_STATE", n["state"])
 q("T_ELIGIBLE", 1 if B.eligible(tickets, tid) else 0)
 q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
+q("T_PARENT", n.get("parent") or "")
 eng = "claude" if "engine:claude" in n["labels"] else ("codex" if "engine:codex" in n["labels"] else "")
 q("T_ENGINE_LABEL", eng)
 import re
@@ -166,7 +167,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model
+  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model pin_sha
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -301,6 +302,25 @@ finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
 PY
+
+  # E2 parent-pin: stamp the inherited-contract pin at DISPATCH time. The
+  # parent's spec keeps moving between the cut and the dispatch, so the repo
+  # HEAD sha pins what this child actually read. Non-fatal like the role
+  # write — a missing pin costs the parent-impact reconcile its lineage
+  # check on THIS child, nothing more.
+  if [ -n "${T_PARENT:-}" ]; then
+    pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
+    PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
+      || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
+import os
+import _board as B
+env = os.environ
+tickets = B.snapshot()
+tid = B.resolve(env["T_N"], tickets)
+B.update_meta(tid, tickets[tid], **{"parent-pin": env["T_PIN"]})
+PY
+  fi
 
   echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
 }
