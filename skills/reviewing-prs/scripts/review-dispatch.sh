@@ -81,6 +81,14 @@ die() { echo "error: $*" >&2; exit 1; }
 
 command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
+# The board scripts this run invokes bare (board-bind, board-transition, …)
+# anchor _lib.sh's BOARD_ROOT on the CURRENT directory and die at source time
+# when it is not a checkout ("not inside a git repo"). Our own git calls use
+# `git -C`, so cwd would otherwise never be corrected — and the GitHub Actions
+# entrypoint runs us from an EMPTY workspace, because pr-review-dispatch.yml
+# deliberately omits actions/checkout (the job must never execute PR code).
+# Every path above is already absolute, so this is safe to do here.
+cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 

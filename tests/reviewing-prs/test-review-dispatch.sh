@@ -196,6 +196,14 @@ STUB_BOARD="$TEST_ROOT/stub-board"; mkdir -p "$STUB_BOARD"
 cat > "$STUB_BOARD/board-bind.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+# Contract guard, not stub detail: the real board scripts source _lib.sh, whose
+# _board_root() resolves BOARD_ROOT from the CURRENT directory and dies "not
+# inside a git repo" when cwd is not a checkout. The dispatcher must therefore
+# hand us a cwd inside LOCAL_REPO. Reproduce that requirement here — without
+# it, the Actions entrypoint (which runs from an EMPTY workspace, since
+# pr-review-dispatch.yml omits actions/checkout on purpose) regressed silently.
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  || { echo "error: not inside a git repo" >&2; exit 1; }
 q="$1"; ticket="$2"; hit=""
 for p in "$DAEMON_HOME"/*.json; do
   [ "$(basename "$p" .json)" = "$q" ] || [[ "$(basename "$p" .json)" == "$q"* ]] || continue
@@ -334,6 +342,28 @@ PY
 )"
 assert_contains "$(cat "$NEW_META")" '"ticket": "7"' "new reviewer owns ticket #7"
 assert_not_contains "$(cat "$DAEMON_HOME/impl0000-0000-4000-8000-000000000000.json")" '"ticket"' "old implement worker binding is stripped"
+
+# Regression (2026-08-02): the GitHub Actions entrypoint runs the dispatcher
+# from an EMPTY, non-git workspace — pr-review-dispatch.yml omits
+# actions/checkout so the job never executes PR code. The dispatcher's own git
+# calls all use `git -C "$LOCAL_REPO"`, so nothing corrected the process cwd,
+# and every bare board-script call died at source time in _lib.sh. Live effect:
+# four ticketed PRs in a row spawned a reviewer, failed to bind, and retired it.
+echo "board scripts are invoked from inside LOCAL_REPO:"
+NOT_A_REPO="$TEST_ROOT/not-a-repo"; mkdir -p "$NOT_A_REPO"
+reset_state
+if (cd "$NOT_A_REPO" && "$DISPATCH" 5 >/dev/null 2>&1); then
+    pass "dispatch from a non-repo cwd still reaches board-bind"
+else
+    fail "dispatch from a non-repo cwd still reaches board-bind"
+fi
+assert_contains "$(cat "$(python3 - <<'PY'
+import glob, json, os
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    m=json.load(open(p))
+    if m.get("name") == "review-pr-5": print(p); break
+PY
+)")" '"ticket": "7"' "ticket binds even when the caller's cwd is not a checkout"
 
 # Binding is mandatory: an unbound reviewer could park needs-human where the
 # answer relay cannot reach it. Retire it instead of allowing the dispatch.
