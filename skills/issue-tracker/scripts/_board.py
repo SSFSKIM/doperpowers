@@ -673,21 +673,28 @@ def recompose_epics(tickets, p, lines):
     dispatchable — with the recomposition-due note. Bookkeeping latitude:
     exempt from LEGAL and from convergence counting ([board-epic] marker).
 
-    The return also CLEARS the `pr` meta: on an epic that slot holds the
-    recomposition closure package, and a package assembled for the previous
-    cycle is void the moment the composition changes. Leaving it in place let
-    an Architect re-enter in-review without --pr (the gate accepts the stale
-    value) and the scale-review sweep, which dedupes on exact package
-    equality, would read the epic as already reviewed forever. The
-    reconciliation return (the sweep's IMPACT pass) deliberately does NOT
-    clear it — that is not a recomposition cycle."""
+    The return also CLEARS the `pr` AND `branch` meta. Both describe the
+    composition, and a composition that just changed voids both: `pr` holds
+    the recomposition closure package, `branch` the integration ref that
+    package's aggregate range is read from. Leaving `pr` let an Architect
+    re-enter in-review without --pr (the gate accepts the stale value) and
+    the scale-review sweep, which dedupes on exact package equality, would
+    read the epic as already reviewed forever. Leaving `branch` let a scale
+    reviewer check out a ref from an earlier cycle — or a leftover from a
+    plan handoff or park that was never an integration branch at all — and
+    review the wrong diff entirely. Clearing it makes provenance structural:
+    any `branch` present at scale dispatch was supplied by the Architect THIS
+    cycle, on the in-review entry, alongside the package.
+
+    The reconciliation return (the sweep's IMPACT pass) deliberately clears
+    NEITHER — that is not a recomposition cycle."""
     while p and p in tickets:
         if recomposition_ready(tickets, p) \
            and tickets[p]["state"] != "ready-for-architect":
             lines.append(apply_state(
                 tickets, p, "ready-for-architect",
                 _epic_note(tickets[p], "recomposition-due: all children terminal"),
-                extra_meta={"pr": None},
+                extra_meta={"pr": None, "branch": None},
                 bookkeeping=True))
         # the chain walk ends here: an ancestor can only become ready when
         # THIS epic reaches terminal via its own recomposition verdict

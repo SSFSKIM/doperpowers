@@ -297,6 +297,13 @@ assert_contains "$review" "artifact that cannot exist is never a finding" \
 assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
     "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
+# The integration ref is per-cycle supply, not inherited state: the
+# recomposition return clears branch: with pr:, so what the handoff passes is
+# what the scale reviewer checks out, and silence means the default branch.
+assert_contains "$arch" 'in-review "<summary>" --pr <package URL> --branch <integration ref>' \
+    "the closure-package handoff supplies this cycle's integration ref"
+assert_contains "$arch" "omit it when the children landed on the default branch" \
+    "...and omitting it is the stated shape when there is no integration branch"
 # A real plan pin is only reclaimable from a recorded ref (cattle clone).
 assert_contains "$arch" "a cattle clone fetches the plan's sha from" \
     "the handoff states why a pinned plan needs its branch recorded"

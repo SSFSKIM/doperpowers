@@ -1463,6 +1463,55 @@ assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt 
 assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
 assert_contains "$INT_PROMPT" '`BASE_IS_DEFAULT`: yes' "base-is-default follows BASE_REF, which for an epic is always the default branch"
 
+# ...and the NEXT cycle must not ride that branch. The recomposition return
+# clears `branch:` with `pr:` (both describe a composition that just changed),
+# so an epic whose new closure package arrives without --branch has no
+# integration ref at all — even though the previous cycle recorded one. The
+# fixture below is exactly what recompose_epics + a --branch-less in-review
+# entry leave behind.
+reset_state
+PKG2="$PKG2" python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
+issues = json.load(open(p))
+for it in issues:
+    if it["number"] == 20:
+        it["body"] = "Epic acceptance.\n\n<!-- board:meta\npr: %s\n-->\n" % os.environ["PKG2"]
+json.dump(issues, open(p, "w"))
+PY
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the next cycle still dispatches its scale reviewer"
+assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" \
+    "$(git -C "$LOCAL_REPO" rev-parse origin/main)" \
+    "with no branch: of its own it falls back to the default branch, not the previous cycle's integration ref"
+NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
+assert_contains "$NEXT_PROMPT" "NO aggregate branch range" "and the prompt says so instead of implying a range it does not have"
+assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
+
+# ---- the scale selector needs a closure package, not any pr: value ------------
+# A LEAF that opened a real PR and later gained children reaches
+# recomposition-ready while still in-review with a /pull/ URL in `pr:` —
+# nothing cleared it (only the recomposition return clears `pr`, and a merge
+# auto-close never runs it). Handing that PR to a scale reviewer as its
+# closure package is the wrong artifact; the PR loop owns real PRs.
+echo "scale selector artifact check:"
+reset_state
+python3 - <<'PY'
+import json, os
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Grew children after its own PR."
+             "\n\n<!-- board:meta\npr: https://github.com/test/repo/pull/7\n-->\n",
+     "parent": None},
+    {"number": 22, "state": "CLOSED", "labels": [], "body": "child a", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+OUT_ART="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "a recomposition-ready parent whose pr: is a real PR gets no scale reviewer"
+assert_contains "$OUT_ART" "not a closure package" "the sweep says why it skipped it"
+assert_contains "$OUT_ART" "https://github.com/test/repo/pull/7" "and names the artifact it refused to review"
+
 # ---- an in-review epic is a scale target only when recomposition is due -------
 # A leaf that gained children AFTER opening a real PR is in-review with a `pr:`
 # meta too — dispatching a scale reviewer there puts a second reviewer on the

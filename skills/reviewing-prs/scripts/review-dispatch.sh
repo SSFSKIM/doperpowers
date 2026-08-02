@@ -959,13 +959,27 @@ for tid in sorted(tickets, key=int):
     # gained children after opening a real PR is in-review with a `pr:` meta
     # too, and dispatching a scale reviewer onto it would put a second
     # reviewer on the wrong artifact.
-    if tid in eps and n["state"] == "in-review" and n.get("pr") \
-       and B.recomposition_ready(tickets, tid):
-        print("%s|%s|%s" % (tid, n["pr"], n.get("branch") or ""))
+    if not (tid in eps and n["state"] == "in-review" and n.get("pr")
+            and B.recomposition_ready(tickets, tid)):
+        continue
+    # ...and recomposition-ready is not by itself proof the `pr:` value is a
+    # closure package. That same leaf reaches recomposition-ready once its
+    # last child lands, and nothing cleared the real PR URL it entered
+    # in-review with (only the recomposition return clears `pr`, and an
+    # auto-close path never runs it). Handing a PR to a scale reviewer as its
+    # closure package is the wrong artifact again — the PR loop owns real PRs.
+    if "/pull/" in n["pr"]:
+        print("SKIP|%s|%s" % (tid, n["pr"]))
+        continue
+    print("%s|%s|%s" % (tid, n["pr"], n.get("branch") or ""))
 PY
 )" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
   while IFS='|' read -r etid epkg ebranch; do
     [ -n "$etid" ] || continue
+    if [ "$etid" = "SKIP" ]; then
+      echo "epic #$epkg: pr: meta is a PR ($ebranch), not a closure package — no scale review (the PR loop owns it)"
+      continue
+    fi
     # </dev/null: the loop is fed by this heredoc, and anything dispatched
     # inside it that read stdin would eat the remaining epic rows.
     sweep_epic "$etid" "$epkg" "$ebranch" </dev/null \

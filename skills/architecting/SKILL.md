@@ -219,7 +219,13 @@ lineage.
    package URL, and an edited-in-place comment keeps its old URL — the
    sweep reads the epic as already reviewed and strands it in in-review
    permanently. Then
-   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL>
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL> --branch <integration ref>
+   Add `--branch` when the composition HAS an integration ref — that is
+   the branch the reviewer checks out and reviews against the default
+   branch; omit it when the children landed on the default branch
+   directly, and the reviewer works the package's per-child ranges
+   instead. The recomposition return clears `branch:` with `pr:`, so
+   whatever you supply here is this cycle's, and silence means silence.
    The scale reviewer's clean verdict closes the epic; any defect
    becomes a corrective child and the epic waits again.
 5. A change to the parent's PURPOSE, a material reduction of acceptance,

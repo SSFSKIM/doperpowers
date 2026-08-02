@@ -1458,8 +1458,9 @@ run board-transition.sh "$ce_c" in-progress >/dev/null
 run board-transition.sh "$ce_c" "done" >/dev/null                 # epic → ready-for-architect
 run board-transition.sh "$ce_e" in-design >/dev/null
 assert_fails run board-transition.sh "$ce_e" in-review          # package required
-out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#closure-package")"
+out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#closure-package" --branch epic/integration-1)"
 assert_contains "$out" "#$ce_e: in-design → in-review" "code-bearing epic enters scale review with the closure package"
+assert_contains "$(state "s['issues']['$ce_e']['body']")" "branch: epic/integration-1" "the Architect supplies this cycle's integration ref alongside the package"
 
 # Second recomposition cycle: the scale review found a defect, so a corrective
 # child is registered and the epic waits for it again.
@@ -1482,6 +1483,7 @@ assert_fails run board-transition.sh "$ce_e" in-review --pr "https://github.com/
 out="$(run board-transition.sh "$ce_x" "done")"
 assert_contains "$out" "#$ce_e: in-design → ready-for-architect" "the corrective child's landing returns the epic for a second recomposition"
 assert_not_contains "$(state "s['issues']['$ce_e']['body']")" "pr: https" "the recomposition return clears the previous cycle's closure package"
+assert_not_contains "$(state "s['issues']['$ce_e']['body']")" "branch:" "...and the integration ref with it — both describe a composition that just changed"
 run board-transition.sh "$ce_e" in-design >/dev/null
 assert_fails run board-transition.sh "$ce_e" in-review   # the cleared slot demands a FRESH package
 out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/issues/$ce_e#pkg-2")"
