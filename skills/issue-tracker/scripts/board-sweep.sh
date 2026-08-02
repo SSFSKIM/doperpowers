@@ -122,7 +122,7 @@ log() { printf '%s\n' "$*" | tee -a "$SWEEP_LOG"; }
 log "[sweep $(date -u +%Y-%m-%dT%H:%M:%SZ)] tick — repo=$BOARD_REPO"
 
 # Bound implement/spike metas joined with ticket state, one line each:
-#   <state>|<ticket>|<uuid>|<status>|<current>|<updated>|<recoveries>
+#   <state>|<ticket>|<uuid>|<status>|<current>|<updated>|<recoveries>|<is-epic>
 # Review/land species are excluded here once, for every pass.
 _bound_rows() {
   python3 - <<'PY'
@@ -130,6 +130,7 @@ import glob, json, os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
+eps = B.epics(tickets)
 for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
     if p.endswith(".reply.json"):
         continue
@@ -150,7 +151,8 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
         continue
     print("|".join([tickets[tk]["state"], tk, m.get("uuid") or "",
                     m.get("status") or "", m.get("current") or m.get("uuid") or "",
-                    str(m.get("updated") or ""), str(m.get("sweep_recoveries") or "0")]))
+                    str(m.get("updated") or ""), str(m.get("sweep_recoveries") or "0"),
+                    "1" if tk in eps else "0"]))
 PY
 }
 
@@ -203,7 +205,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
 
 pass_recover() {
   local acted=0 state tk uuid status current recov fin tx age
-  while IFS='|' read -r state tk uuid status current _ recov; do
+  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked|error) ;; *) [ "$status" = "idle" ] || continue ;; esac
     fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null)" || fin="noop"
@@ -213,6 +215,21 @@ pass_recover() {
     [ "$fin" = "noop" ] && fin="$status"
     case "$state" in
       in-progress|in-design)
+        # An EPIC's in-progress is never a worker's own lane — it is the
+        # pull's bookkeeping state (a child went active). The architect lane
+        # is in-design; children own real in-progress. So an idle worker
+        # bound to an epic sitting in in-progress is a FINISHED Architect
+        # whose handoff the pull moved out from under it: the normal
+        # decomposed-epic path is hand off to ready-for-implementer, end the
+        # turn, then a child pulls the parent to in-progress — and L1's
+        # stall-retire only covers the queue-state window the pull closes.
+        # Resuming it would restart a worker with nothing left to do.
+        if [ "$state" = "in-progress" ] && [ "${is_epic:-0}" = "1" ] && [ "$fin" = "idle" ]; then
+          log "[sweep] RECOVER: #$tk is an epic pulled to in-progress and worker $uuid is idle — its handoff is done; retiring the binding instead of resuming it"
+          "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
+          acted=$((acted+1))
+          continue
+        fi
         case "$fin" in
           absent) _recover "$tk" "$uuid" "$recov" "died mid-turn (session gone)"; acted=$((acted+1)) ;;
           error)  _recover "$tk" "$uuid" "$recov" "turn errored"; acted=$((acted+1)) ;;
@@ -266,7 +283,7 @@ EOF
 
 pass_cancel() {
   local acted=0 state tk uuid status current recov fin
-  while IFS='|' read -r state tk uuid status current _ recov; do
+  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked) ;; *) continue ;; esac
     fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null)" || fin="noop"
@@ -343,6 +360,27 @@ def trusted(c):
 # with no parseable target falls back to the child's current parent, which is
 # what every proposal written before this rule meant anyway.
 TARGET_RE = re.compile(r"^\[parent-impact\]\s*#(\d+)")
+# ...but only within the child's own LINEAGE. authorAssociation proves
+# repo-side authorship, not truthfulness: workers post through the repo
+# token, so a malformed or prompt-injected proposal could name ANY open
+# ticket and this pass would move it to ready-for-architect — a write no
+# LEGAL edge authorizes and nobody asked for. The admissible targets are the
+# child's current native parent and the parent recorded in its `parent-pin:`
+# meta (stamped at dispatch). The pin is what makes the legitimate cases
+# work: it holds the OLD parent across a reparent (K3) and survives an
+# orphan (L4), which is exactly when current-parent alone is not enough.
+PIN_RE = re.compile(r"#(\d+)")
+
+
+def lineage(node):
+    out = set()
+    if node.get("parent"):
+        out.add(str(node["parent"]))
+    pin = B.parse_meta(node.get("body") or "").get("parent-pin") or ""
+    m = PIN_RE.search(pin)
+    if m:
+        out.add(m.group(1))
+    return out
 # Marker homes follow the TARGET, so the dedupe scan is keyed by target and
 # cached per tick — one read per target rather than per (child, proposal).
 seen_cache = {}
@@ -400,6 +438,12 @@ for tid in sorted(tickets, key=int):
                   "has none itself — left unmarked" % tid)
             continue
         marker = "#%s@%s" % (tid, cid)
+        kin = lineage(n)
+        if target not in kin:
+            print("[sweep] IMPACT: #%s claims parent #%s, which is not in its "
+                  "lineage (%s) — left unmarked" %
+                  (tid, target, ", ".join("#" + k for k in sorted(kin, key=int)) or "none"))
+            continue
         if target not in tickets:
             print("[sweep] IMPACT: #%s names parent #%s, which is not on the "
                   "board — left unmarked" % (tid, target))
@@ -465,7 +509,7 @@ EOF
 
 pass_relay() {
   local acted=0 state tk uuid status current recov fin tx turn_end verdict cid
-  while IFS='|' read -r state tk uuid status current _ recov; do
+  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     # Normalize first: a --no-wait worker that parked leaves its meta
     # status=working forever (nothing else finalizes it). Only a genuinely

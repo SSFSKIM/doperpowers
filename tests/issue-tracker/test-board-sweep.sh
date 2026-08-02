@@ -252,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 55, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 62, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -280,10 +280,21 @@ s = {"next": 55, "labels": ["status:needs-human", "status:in-progress",
     "47": issue(47, "the epic the proposal actually names", ["status:in-progress"]),
     "48": issue(48, "the epic the child now hangs off", ["status:in-progress"]),
     "49": issue(49, "reparented child with a proposal about its old parent",
-                ["status:in-progress"]),
+                ["status:in-progress"],
+                body="Child body\n\n<!-- board:meta\nparent-pin: #47 @ abc123\n-->\n"),
     # orphaned after posting: board-edge --orphan must not kill the discovery
     "52": issue(52, "the parent an orphan's proposal names", ["status:in-progress"]),
-    "53": issue(53, "orphaned child carrying a proposal", ["status:in-progress"]),
+    "53": issue(53, "orphaned child carrying a proposal", ["status:in-progress"],
+                body="Orphan body\n\n<!-- board:meta\nparent-pin: #52 @ abc123\n-->\n"),
+    # a decomposed epic pulled to in-progress by a child, its Architect idle:
+    # the handoff is done, so the pull must not turn into a resume
+    "58": issue(58, "epic pulled in-progress, Architect finished", ["status:in-progress"]),
+    "59": issue(59, "the child that pulled it", ["status:in-progress"]),
+    "60": issue(60, "epic mid-recomposition claim", ["status:in-design"]),
+    "61": issue(61, "its terminal child", [], state="CLOSED", reason="COMPLETED"),
+    "55": issue(55, "child whose proposal names a stranger", ["status:in-progress"]),
+    "56": issue(56, "the unrelated ticket that proposal names", ["status:in-progress"]),
+    "57": issue(57, "the real parent of #55", ["status:in-progress"]),
     "54": issue(54, "orphaned child carrying nothing", ["status:in-progress"]),
     "45": issue(45, "parked, newest comment is a stranger's", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
@@ -342,6 +353,9 @@ s["issues"]["38"]["parent"] = 37
 s["issues"]["42"]["parent"] = 41
 s["issues"]["44"]["parent"] = 43
 s["issues"]["49"]["parent"] = 48
+s["issues"]["55"]["parent"] = 57
+s["issues"]["59"]["parent"] = 58
+s["issues"]["61"]["parent"] = 60
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -375,6 +389,8 @@ meta(U("aaaa0018"), "18-healthy", "18", "working")
 meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
 meta(U("aaaa0020"), "20-design", "20", "working")
 meta(U("aaaa0021"), "21-preverdict", "21", "working")
+meta(U("aaaa0058"), "58-architect", "58", "working")
+meta(U("aaaa0060"), "60-recomposer", "60", "working")
 meta(U("aaaa0050"), "50-handed-off", "50", "working")
 meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 PY
@@ -390,7 +406,8 @@ json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0045"): "idle", U("aaaa0046"): "idle",
            U("aaaa0034"): "idle",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent",
-           U("aaaa0050"): "live", U("aaaa0051"): "live"},
+           U("aaaa0050"): "live", U("aaaa0051"): "live",
+           U("aaaa0058"): "idle", U("aaaa0060"): "idle"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
@@ -484,6 +501,16 @@ assert_contains "$out" "handed-off ready-for-implementer ticket" "the retire log
 assert_not_contains "$log" "resume:aaaa0050" "it is retired, never put on the resume ladder"
 assert_not_contains "$log" "retire:aaaa0051-0000-4000-8000-000000000000" "a worker still inside the threshold is left alone"
 assert_not_contains "$log" "retire:aaaa0018" "and a live worker on an IN-FLIGHT ticket is never touched — it owns its exit"
+# An EPIC in in-progress is the PULL's bookkeeping state, never a worker's own
+# lane (the architect lane is in-design; children own real in-progress). So an
+# idle worker bound to one is a finished Architect whose handoff a child's
+# pull moved out from under it — retire the binding, never resume a worker
+# with nothing left to do.
+assert_contains "$log" "retire:aaaa0058-0000-4000-8000-000000000000" "an idle worker on an epic pulled to in-progress is retired"
+assert_not_contains "$log" "resume:aaaa0058" "...and never resumed"
+assert_contains "$out" "its handoff is done" "the log says why the binding was released"
+# a recomposition Architect mid-claim (epic in in-design) is still resumable
+assert_contains "$log" "resume:aaaa0060-0000-4000-8000-000000000000" "an idle Architect on an epic in in-design still gets the resume ladder"
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"
@@ -689,6 +716,18 @@ assert_contains "$(issue_labels 48)" "status:in-progress" "the parent the child 
 assert_equals "$(comment_count 48 "[board-epic] reconcile:")" "0" "and gets no marker for a proposal that was never about it"
 out="$(run_sweep)"
 assert_equals "$(comment_count 47 "[board-epic] reconcile:")" "1" "the marker on the named parent dedupes the next tick"
+
+# Routing by NAMED target needs a lineage check, or the name is an unchecked
+# write primitive: authorAssociation proves repo-side authorship, not
+# truthfulness, and a malformed or injected proposal naming any open ticket
+# would move it to ready-for-architect outside LEGAL. Admissible targets are
+# the child's current parent and its parent-pin parent — nothing else.
+mock_comment 55 "[parent-impact] #56 rewrite that unrelated epic's acceptance"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 56)" "status:in-progress" "a proposal naming a ticket outside the child's lineage moves nothing"
+assert_equals "$(comment_count 56 "[board-epic] reconcile:")" "0" "and is never marked consumed"
+assert_contains "$(issue_labels 57)" "status:in-progress" "nor is the child's real parent disturbed by the claim"
+assert_contains "$out" "not in its lineage" "the pass names the rejection"
 
 # ...and an ORPHANED child still routes what it named. board-edge --orphan
 # after the proposal was posted would otherwise bury the discovery, which is
