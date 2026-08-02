@@ -179,7 +179,13 @@ lineage.
    `[parent-impact]` proposals on every child since its pin —
    marked consumed or not — and give each the same disposition; the
    sweep's `[board-epic] reconcile:` marker is a dispatch dedupe, not
-   proof anyone acted.
+   proof anyone acted. Before you release the claim (ANY exit — handoff,
+   park, verdict), mark every proposal you just dispositioned: one
+   comment on the epic per proposal, in exactly the sweep's format,
+   `[board-epic] reconcile: #<child>@<comment-id>`. The sweep leaves
+   proposals unmarked while an Architect holds the claim — nobody had
+   read them yet — so an unmarked one re-triggers a whole reconciliation
+   cycle the moment you exit, for work you already did.
 2. **Reconciliation-due claims** (children still active): reconcile the
    parent's living spec, flag affected in-flight children on their
    tickets, then RELEASE the epic with

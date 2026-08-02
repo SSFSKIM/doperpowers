@@ -280,6 +280,22 @@ done
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
 assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
+# ...and the claim CLOSES the loop it opened: the sweep leaves proposals
+# unmarked while an Architect holds the claim, so an unmarked one re-triggers
+# a whole cycle the moment the claim exits. The marker format is the sweep's
+# dedupe key verbatim — a paraphrase would never match.
+assert_contains "$arch" '[board-epic] reconcile: #<child>@<comment-id>' \
+    "the claim marks every proposal it dispositioned, in the sweep's exact dedupe format"
+assert_contains "$arch" "Before you release the claim" \
+    "the marking duty binds to every exit, not just the closing verdict"
+# Scale review: the audit object and the trail's target are BOTH PR-shaped by
+# default, and an epic has neither a PR body nor an implementer gate comment.
+assert_contains "$review" "object is the CLOSURE PACKAGE" \
+    "scale audit rebinds its object to the closure package, not a PR"
+assert_contains "$review" "artifact that cannot exist is never a finding" \
+    "scale audit never turns a nonexistent PR artifact into a finding"
+assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
+    "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
 assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
 assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
@@ -305,8 +321,10 @@ assert_contains "$tracker" 'RETURNS to `ready-for-architect`' \
 assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
 assert_contains "$tracker" "convergence counter" \
     "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
-assert_contains "$tracker" "its lane's in-flight state" \
+assert_contains "$tracker" '`in-design` from the architect queue' \
     "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"
+assert_contains "$tracker" "The other three parks are never pulled" \
+    "board doctrine: only the needs-info release is pulled; the parks that own a session or the human are not"
 assert_not_contains "$tracker" "are never dispatched" \
     "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
 assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the proposal marker"

@@ -375,9 +375,16 @@ any defect → register a corrective child ticket
 ({{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --parent {{ISSUE_NUMBER}} --spawned-by {{ISSUE_NUMBER}} --body-file <full finding>)
 and
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-architect "scale review: corrective child #<c>"
-— the epic waits for the child and recomposes again. Audit the closure
-package against the epic's acceptance the same way you audit a PR
-against its ticket.
+— the epic waits for the child and recomposes again.
+
+Your COMPLIANCE AUDIT runs as always — same classes, same specification
+hierarchy — but its object is the CLOSURE PACKAGE, not a PR: every child
+terminal with its disposition stated; the package's claims verified
+against the integration branch at the head it pins; the epic's own
+acceptance, read from its body, checked against the composed result.
+An epic has no PR body and no implementer `[gate] pass`, so the audit's
+PR-artifact rules have nothing to bind to here — the absence of an
+artifact that cannot exist is never a finding.
 
 Which findings force a corrective child is your blocker routing,
 unchanged: TRIAGE still bins the round's findings, and a non-blocker
@@ -435,7 +442,8 @@ compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board
 outcomes; deferred findings inline when the tech-debt issue is "none";
 secondary linked issues if any; and the tier judgment with the rubric
-clauses it satisfied.
+clauses it satisfied. A scale run has no PR to post it on: its trail goes
+on the EPIC ISSUE, the same thread its closure package lives in.
 
 Cleanup: a needs-human park preserves `<review-tmp>` and the dispatcher control
 directory (parent of `{{BIND_READY_FILE}}`) for resume. Any non-park terminal
