@@ -764,7 +764,11 @@ PY
 # failed-reviewer cap per PR; anything else finished stays finished.
 _finished_verdict() {
   local name="$1" uuid="$2" mode="$3" status="$4"
-  if [ "$mode" = "triggered" ]; then echo "respawn $uuid"
+  # A triggered re-review REPLACES a cleanly finished reviewer — an explicit
+  # PR event, not a failure. It gets its own verdict so the retire that
+  # follows carries no failure stamp: two ordinary re-reviews plus one real
+  # outage must not reach the 3-consecutive cap.
+  if [ "$mode" = "triggered" ]; then echo "respawn-clean $uuid"
   elif [ "$status" = "error" ] \
     || grep -qx 'ENGINE-UNAVAILABLE' "$DAEMON_HOME/$uuid.reply.txt" 2>/dev/null; then
     if [ "$(_outage_streak "$name")" -ge 3 ]; then
@@ -776,7 +780,9 @@ _finished_verdict() {
 }
 
 # Dedupe verdict for worker name <1> in mode <2> (triggered|sweep), cr-label
-# flag <3>. Prints: "dispatch" | "respawn <uuid>" | "skip <why>".
+# flag <3>. Prints: "dispatch" | "respawn <uuid>" (a FAILED reviewer is being
+# replaced — the retire is stamped) | "respawn-clean <uuid>" (an explicit
+# event replacing a finished one — unstamped) | "skip <why>".
 _decide() {
   local name="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
   if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
@@ -838,6 +844,16 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
         echo "#$pr: $verdict"
         return ;;
     esac
+    if [ "$stale" = "needs-human" ]; then
+      # NOT stale: this is the resumable park. board-answer.sh relays to the
+      # BOUND session and accepts only an idle/awaiting-human one, so retiring
+      # the finalized meta here would break the wake path the park's own note
+      # promises. The meta is the park's wake target — leave it exactly alone.
+      # (needs-human is the whole set: board-answer refuses every other park
+      # state by name, so no other park has a session-resume path to protect.)
+      echo "#$pr: skip — primary ticket #$tid is parked needs-human; its reviewer meta is the park's wake target (board-answer resumes it), left intact"
+      return
+    fi
     local m
     m="$(_reviewer_meta "review-pr-$pr")"
     [ -n "$m" ] && _retire "${m%%|*}"
@@ -848,8 +864,11 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
         # a reviewer to a ticket whose state is undecided.
         echo "#$pr: skip — primary ticket #$tid carries multiple status labels ($stale); repair it (board-lint.sh names the fix) before a reviewer binds"
         return ;;
-      needs-human|needs-info|interactive-preferred)
-        resume="the review resumes via board-answer, not a fresh dispatch" ;;
+      needs-info|interactive-preferred|deferred)
+        # board-answer relays needs-human parks ONLY (it dies on these by
+        # name), so there is no bound-session wake here — the ticket returns
+        # to in-review by hand, and a fresh reviewer goes out then.
+        resume="it resumes when the ticket returns to in-review — board-answer relays needs-human parks only" ;;
       *)
         resume="resumes when the ticket returns to in-review, not from here" ;;
     esac
@@ -858,9 +877,33 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
   fi
   case "$verdict" in
     dispatch)  dispatch_one "$1" "$2" ;;
-    respawn\ *) _retire_failed "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
+    respawn\ *)       _retire_failed "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
+    respawn-clean\ *) _retire "${verdict#respawn-clean }"; dispatch_one "$1" "$2" ;;
     *)         echo "#$1: $verdict" ;;
   esac
+}
+
+# Registry-driven cleanup for a reviewer whose WORK OBJECT is gone — an epic
+# that left in-review, or a PR that left the open listing. Neither is visible
+# to any dispatch path (the listings enumerate live work only) and
+# board-sweep's pass_cancel deliberately skips reviewer metas, so nothing else
+# would ever finalize one. Its meta lingers `working` and keeps OWNING the
+# ticket: implement-dispatch's _bound_meta refuses to dispatch a ticket with a
+# bound working worker, and _slots_used charges it to a lane. Same rule as
+# everywhere else — a live reviewer owns its own exit and is untouched; a
+# finished one is finalized (that is what _decide does before judging it) and
+# retired, unstamped: this is not a failure, so it must not feed the streak.
+_cleanup_orphaned_reviewer() {  # <worker-name> <why>
+  local name="$1" why="$2" verdict meta
+  verdict="$(_decide "$name" sweep 0)"
+  if [ "$verdict" = "skip active reviewer" ]; then
+    echo "$name: skip — $why; its still-active reviewer owns its own exit"
+    return
+  fi
+  meta="$(_reviewer_meta "$name")"
+  [ -n "$meta" ] || return
+  _retire "${meta%%|*}"
+  echo "$name: reviewer ${meta%%|*} retired — $why"
 }
 
 # One in-review epic's dedupe → dispatch decision, isolated per epic exactly
@@ -885,7 +928,8 @@ sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
   verdict="$(_decide "review-epic-$etid" sweep 0)"
   case "$verdict" in
     dispatch)   dispatch_epic "$@"; return ;;
-    respawn\ *) _retire_failed "${verdict#respawn }"; dispatch_epic "$@"; return ;;
+    respawn\ *)       _retire_failed "${verdict#respawn }"; dispatch_epic "$@"; return ;;
+    respawn-clean\ *) _retire "${verdict#respawn-clean }"; dispatch_epic "$@"; return ;;
     "skip active reviewer") echo "epic #$etid: $verdict"; return ;;
   esac
   # Every remaining verdict means a NON-live reviewer meta is on file and
@@ -933,8 +977,18 @@ if [ "${1:-}" = "--sweep" ]; then
   # regex over title+body — identical logic, duplicated here rather than
   # shared: it's the only way to know which PRs are ticketed before the
   # per-PR ticket-status read below, with no extra gh call of its own).
-  gh pr list -R "$BOARD_REPO" --state open --limit 100 \
-      --json number,isDraft,labels,title,body,closingIssuesReferences \
+  pr_list_json="$(gh pr list -R "$BOARD_REPO" --state open --limit 100 \
+      --json number,isDraft,labels,title,body,closingIssuesReferences)" || pr_list_json="[]"
+  # Every open PR number, drafts included — the registry cleanup below asks
+  # "is this reviewer's PR still open?", and a draft is open (it is merely
+  # never dispatched, so a meta for one should not exist in the first place).
+  open_prs="$(printf '%s' "$pr_list_json" | python3 -c '
+import json, sys
+try:
+    print(" ".join(str(p["number"]) for p in json.load(sys.stdin)))
+except Exception:
+    pass')" || open_prs=""
+  printf '%s' "$pr_list_json" \
     | python3 -c '
 import json, re, sys
 for p in json.load(sys.stdin):
@@ -976,7 +1030,8 @@ if len(status) > 1:
 elif status and status[0] != "in-review":
     print(status[0])')" || stale=""
         fi
-        run_for "$prn" sweep "$cr" "$stale" "$issue" || echo "#$prn: dispatch error (continuing sweep)" >&2
+        run_for "$prn" sweep "$cr" "$stale" "$issue" \
+          || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
 
   # E2 scale review: recomposition epics enter in-review with a closure
@@ -1054,24 +1109,58 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
     tid = name[len("review-epic-"):]
     if tid in seen or tid not in tickets:
         continue
-    if tickets[tid]["state"] != "in-review":
+    # needs-human is the resumable park: board-answer relays to THIS bound
+    # session, so retiring it would break the wake path (the M2 rule, applied
+    # on the registry side too).
+    if tickets[tid]["state"] not in ("in-review", "needs-human"):
         seen.add(tid)
         print(tid)
 PY
 )" || { echo "scale review: stale-reviewer scan failed (continuing)" >&2; stale_epics=""; }
   while IFS= read -r etid; do
     [ -n "$etid" ] || continue
-    verdict="$(_decide "review-epic-$etid" sweep 0)"
-    if [ "$verdict" = "skip active reviewer" ]; then
-      echo "epic #$etid: skip — no longer in-review; its still-active reviewer owns its own exit"
-      continue
-    fi
-    meta="$(_reviewer_meta "review-epic-$etid")"
-    [ -n "$meta" ] || continue
-    _retire "${meta%%|*}"
-    echo "epic #$etid: reviewer ${meta%%|*} retired — the epic has left in-review"
+    _cleanup_orphaned_reviewer "review-epic-$etid" "the epic has left in-review"
   done <<EOF
 $stale_epics
+EOF
+
+  # Same deadlock, PR side: the loop above enumerates OPEN PRs, so when a
+  # reviewer routes its ticket off in-review and the PR then closes, nothing
+  # ever finalizes the lingering meta and the now-eligible ticket is skipped
+  # by implement-dispatch forever. Walk review-pr-* metas whose PR is not in
+  # this tick's open listing. A parked (needs-human) ticket is exempt for the
+  # same reason as above — that meta is the park's wake target.
+  stale_prs="$(OPEN_PRS="$open_prs" PYTHONPATH="$BOARD_SCRIPTS" DAEMON_HOME="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+import _board as B
+open_prs = set((os.environ.get("OPEN_PRS") or "").split())
+tickets = B.snapshot()
+seen = set()
+for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    name = str(m.get("name") or "")
+    if not name.startswith("review-pr-") or m.get("status") == "retired":
+        continue
+    prn = name[len("review-pr-"):]
+    if prn in seen or prn in open_prs:
+        continue
+    tk = str(m.get("ticket") or "").lstrip("#")
+    if tk and tickets.get(tk, {}).get("state") == "needs-human":
+        continue
+    seen.add(prn)
+    print(prn)
+PY
+)" || { echo "review sweep: stale PR-reviewer scan failed (continuing)" >&2; stale_prs=""; }
+  while IFS= read -r prn; do
+    [ -n "$prn" ] || continue
+    _cleanup_orphaned_reviewer "review-pr-$prn" "PR #$prn is no longer open"
+  done <<EOF
+$stale_prs
 EOF
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"

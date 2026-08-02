@@ -621,7 +621,14 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d["labels"] = [{"name": "status:needs-human"}]
 json.dump(d, open(p, "w"))'
 out="$("$DISPATCH" --sweep)"
-assert_contains "$out" "primary ticket #7 is parked (status:needs-human)" "sweep names the park it skips"
+assert_contains "$out" "primary ticket #7 is parked needs-human" "sweep names the park it skips"
+# ...and the park's own reviewer meta is LEFT INTACT: board-answer relays to
+# that bound session, so retiring it would break the wake path the park's
+# note promises. (Verified: board-answer accepts needs-human parks ONLY — it
+# dies by name on needs-info / interactive-preferred — so needs-human is the
+# whole set of parks with a session-resume path to protect.)
+assert_contains "$out" "the park's wake target" "the sweep says why it leaves the reviewer meta alone"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "a parked ticket's resumable reviewer is not retired"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep spawns no reviewer over a parked ticket"
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered dispatch still proceeds over the park"
@@ -1766,6 +1773,78 @@ OUT_SUPER="$("$DISPATCH" --sweep 2>&1 || true)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an unstamped (superseded) retirement breaks the streak — no false cap"
 assert_not_contains "$OUT_SUPER" "parked needs-human" "so the epic is not escalated on a streak it never had"
 
+# ---- a triggered re-review is not a failure ------------------------------------
+# Triggered mode respawns a CLEANLY finished reviewer on every explicit PR
+# event. Stamping those retirements as failures (L2 stamped the whole respawn
+# path) meant two ordinary re-reviews plus one real outage reached the
+# 3-consecutive cap and parked a healthy PR.
+echo "triggered re-review carries no failure stamp:"
+reset_state
+U="feed0000-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "status": "idle", "updated": "2026-07-09T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf 'review complete; confident-ready set.\n' \
+  > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
+"$DISPATCH" 5 >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "the clean reviewer is still replaced on an explicit event"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "and the fresh one dispatches"
+assert_not_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" "retired_from" \
+    "but its retirement carries NO failure stamp — a re-review must not advance the streak"
+
+# ---- a reviewer whose PR left the open listing ---------------------------------
+# The sweep enumerates OPEN PRs, so once a reviewer routes its ticket off
+# in-review and the PR closes, nothing finalizes the lingering meta and
+# implement-dispatch skips the now-eligible ticket forever. Same deadlock G1
+# fixed on the epic side, same registry-driven cleanup.
+echo "stale PR-reviewer retirement:"
+reset_state
+echo "[]" > "$MOCK_DIR/pr-list.json"          # PR #5 is no longer open
+python3 - <<'PY'
+import json, os
+issues = [{"number": 7, "state": "OPEN", "labels": ["status:ready-for-architect"],
+           "body": "the ticket its reviewer bounced", "parent": None}]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+python3 - <<'PY'
+import json, os
+u = "c10ded01-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "ticket": "7",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "c10ded01", "sessionId": "c10ded01-0000-4000-8000-000000000000", "state": "done"}]' \
+    > "$MOCK_DIR/agents.json"
+OUT_CLOSEDPR="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_file_exists "$DAEMON_HOME/c10ded01-0000-4000-8000-000000000000.reply.txt" \
+    "the reviewer of a closed PR is finalized"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:c10ded01" "and retired, releasing the ticket it still owned"
+assert_contains "$OUT_CLOSEDPR" "is no longer open" "the sweep names why"
+assert_not_contains "$(cat "$DAEMON_HOME/c10ded01-0000-4000-8000-000000000000.json")" "retired_from" \
+    "an orphaned-work retirement is not a failure — it must not feed the streak"
+
+# ...but a PARKED ticket keeps its reviewer, closed PR or not (M2's rule).
+reset_state
+python3 - <<'PY'
+import json, os
+issues = [{"number": 7, "state": "OPEN", "labels": ["status:needs-human"],
+           "body": "parked on the human", "parent": None}]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+u = "c10ded02-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "ticket": "7",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "c10ded02", "sessionId": "c10ded02-0000-4000-8000-000000000000", "state": "done"}]' \
+    > "$MOCK_DIR/agents.json"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:c10ded02" "a parked ticket's reviewer survives even when its PR is gone"
+echo "[]" > "$MOCK_DIR/agents.json"
+rm -f "$MOCK_DIR/board-issues.json"
+# the PR half stays empty from here on, as the scale-review blocks below expect
 # ---- a scale reviewer whose epic left in-review gets finalized + retired ------
 # The in-review listing above cannot see this reviewer (its epic moved on when
 # a defect became a corrective child), and board-sweep's pass_cancel skips
