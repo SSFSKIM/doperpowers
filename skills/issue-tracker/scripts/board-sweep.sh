@@ -311,7 +311,14 @@ pass_impact() {
   # exit is post-findings-then-park, and a child that parks or lands right
   # after posting its proposal left it for the Architect's end-of-epic
   # lineage check. So: every parented child is read, in any state.
-  # SCAN BOUND (state file $DAEMON_HOME/impact-scan.json). Reading every
+  # SCAN BOUND (state file $DAEMON_HOME/sweep/impact-scan.json — a
+  # SUBDIRECTORY, because the top level of DAEMON_HOME is the daemon
+  # metadata namespace: every *.json there is read as a worker meta, so a
+  # cursor sitting beside them showed up as a bogus fleet row in
+  # daemon-list, answered to `daemon-retire impact-scan` through
+  # _resolve_uuid's prefix match, and could be deleted or rewritten by
+  # daemon tooling that had every right to assume it owned the file).
+  # Reading every
   # child every tick cost one `gh issue view --json comments` per child: at
   # the documented ~300-ticket board size and a 5-minute cadence that is
   # 3,600+ sequential calls an hour, most of the GraphQL quota and minutes
@@ -426,7 +433,8 @@ def markers_on(target):
 acted = 0
 tickets = B.snapshot()
 
-STATE_PATH = os.path.join(os.environ["DAEMON_HOME"], "impact-scan.json")
+STATE_DIR = os.path.join(os.environ["DAEMON_HOME"], "sweep")
+STATE_PATH = os.path.join(STATE_DIR, "impact-scan.json")
 try:
     with open(STATE_PATH) as f:
         _loaded = json.load(f)
@@ -541,6 +549,7 @@ print("[sweep] IMPACT: %d acted" % acted)
 # file (or none) and the next tick re-reads more than it strictly must, which
 # is the harmless direction.
 try:
+    os.makedirs(STATE_DIR, exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"version": 1, "children": next_state}, f)

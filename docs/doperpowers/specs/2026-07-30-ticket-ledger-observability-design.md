@@ -686,6 +686,16 @@ closure.
 
 ## Surprises & Discoveries
 
+- **MIGRATION NOTE (2026-08-03 campaign).** Four identifier/value-space
+  changes landed, each a ONE-SHOT mismatch against data written by earlier
+  code: reconcile marker ids and the relay dedupe id both moved from GraphQL
+  node ids to REST integer ids (comment reads switched transport), and the
+  parent-pin moved twice — repo git sha → whole-body hash → body hash with
+  `board:meta` stripped. All fail in the safe direction (a stale value reads
+  as "changed"/"not yet consumed", never as "unchanged"), costing at most one
+  duplicate reconcile or one re-read per affected record. All are moot unless
+  a board actually ran the pre-campaign branch code, which none did.
+
 - Observation: The ideadump's core demand — "report at the ledger
   instead of the final message" — was ALREADY v8 doctrine at scope ends
   (turn-ends are audit trail; the board is the communication surface).
@@ -773,6 +783,13 @@ prior closure package in `pr` meta — protocol-belted by the mandatory
 new-comment-per-cycle clause.
 
 ## Revision Notes
+
+- 2026-08-03: post-merge hardening campaign on `e2-ledger-contract` — 15
+  rounds of independent codex review, each followed by a fix wave. Ranged
+  over the whole interim slice and its neighbours: dispatch lane routing and
+  slot accounting, the IMPACT/RELAY passes and their comment transport, the
+  recomposition claim protocol, scale-review dispatch, and the board map.
+  Every fix landed RED-first with its own pins; suites green at close.
 
 - 2026-08-01: interim slice implemented (v7.36.0, branch
   e2-ledger-contract): env-issue category + inverted birth; recompose

@@ -360,6 +360,13 @@ assert_contains "$tracker" "convergence counter" \
     "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
 assert_contains "$tracker" '`in-design` from the architect queue' \
     "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"
+# The command table said board-answer always returns a ticket to in-progress.
+# The lane-aware return shipped rounds ago: an Architect sent to in-progress
+# lands in a state its own protocol has no legal exit from.
+assert_contains "$tracker" "returns the ticket to the state it parked FROM" \
+    "board-answer's row describes the lane-aware return, not a hardcoded in-progress"
+assert_contains "$tracker" '`in-design` for an ARCHITECT' \
+    "...and names the architect-lane fallback the role meta drives"
 assert_contains "$tracker" "The other three parks are never pulled" \
     "board doctrine: only the needs-info release is pulled; the parks that own a session or the human are not"
 assert_not_contains "$tracker" "are never dispatched" \

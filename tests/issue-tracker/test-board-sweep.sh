@@ -550,6 +550,13 @@ PY
 
 run_sweep() { SWEEP_STALL_MINUTES=60 "$SWEEP" 2>&1; }
 
+# The IMPACT cursor lives in a SUBDIRECTORY of DAEMON_HOME. The top level is
+# the daemon metadata namespace — every *.json there is read as a worker meta
+# — so a cursor beside them was a phantom fleet row, a resolvable
+# `daemon-retire` target, and deletable by tooling that owned the namespace.
+SCAN_STATE="$DAEMON_HOME/sweep/impact-scan.json"
+mkdir -p "$DAEMON_HOME/sweep"
+
 # Every board comment read is paginated (R2/11b), so the mock's single-page
 # path should now be reachable by NOTHING the tick does. Shrinking the page to
 # two for the whole run is the standing proof of that: if any read regresses to
@@ -878,6 +885,26 @@ assert_equals "$(issue_labels 54)" "status:in-progress" "an orphan carrying no p
 # it correct: a proposal the pass could not disposition gets NO new comment,
 # so updatedAt alone would strand it forever.
 echo "board-sweep: IMPACT scan bound"
+# The cursor must not live in the daemon metadata namespace. This is
+# daemon-list/_resolve_uuid's own predicate — every top-level *.json is a
+# worker meta — so a file there is a phantom daemon, and daemon-retire can
+# resolve and delete it by prefix.
+assert_contains "$(ls "$DAEMON_HOME/sweep/" 2>/dev/null || true)" "impact-scan.json" \
+    "the IMPACT cursor lives under DAEMON_HOME/sweep/"
+STRAYS="$(python3 -c "
+import glob, json, os
+out = []
+for p in glob.glob(os.path.join(os.environ['DAEMON_HOME'], '*.json')):
+    if p.endswith('.reply.json'):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        m = {}
+    if not isinstance(m, dict) or not m.get('uuid'):
+        out.append(os.path.basename(p))
+print(' '.join(out) or 'none')")"
+assert_equals "$STRAYS" "none" "no non-daemon file sits in the daemon metadata namespace (daemon-list would list it as a worker)"
 reads_for() {  # <ticket> → how many times this tick read its comments
     grep -cx "$1" "$COMMENT_READ_LOG" || true
 }
@@ -916,11 +943,11 @@ out="$(run_sweep)"
 assert_equals "$(reads_for 32)" "0" "a dispositioned child stops being re-read"
 
 # losing the state file costs correctness nothing: everything is rescanned
-rm -f "$DAEMON_HOME/impact-scan.json"
+rm -f "$SCAN_STATE"
 : > "$COMMENT_READ_LOG"
 out="$(run_sweep)"
 assert_equals "$(reads_for $SETTLED)" "1" "a missing state file means a full rescan"
-printf 'not json at all' > "$DAEMON_HOME/impact-scan.json"
+printf 'not json at all' > "$SCAN_STATE"
 : > "$COMMENT_READ_LOG"
 out="$(run_sweep)"
 assert_equals "$(reads_for $SETTLED)" "1" "and so does a corrupt one"
@@ -931,16 +958,16 @@ assert_equals "$(reads_for $SETTLED)" "1" "and so does a corrupt one"
 # Reconciliation stayed dead until a human deleted the file. Each bad shape
 # must rescan AND leave a valid state file behind.
 for _shape in '[]' 'null' '"a string"' '{"version": 1, "children": []}' '{"version": 1}'; do
-    printf '%s' "$_shape" > "$DAEMON_HOME/impact-scan.json"
+    printf '%s' "$_shape" > "$SCAN_STATE"
     : > "$COMMENT_READ_LOG"
     out="$(run_sweep)"
     assert_equals "$(reads_for $SETTLED)" "1" "shape-corrupt state ($_shape) means a full rescan"
-    assert_contains "$(cat "$DAEMON_HOME/impact-scan.json")" '"version": 1' \
+    assert_contains "$(cat "$SCAN_STATE")" '"version": 1' \
         "...and the pass survives to rewrite it, so the next tick is not dead too"
 done
 # a single malformed ENTRY costs that child a rescan, not the whole pass
 printf '%s' '{"version": 1, "children": {"'"$SETTLED"'": "not a record"}}' \
-    > "$DAEMON_HOME/impact-scan.json"
+    > "$SCAN_STATE"
 : > "$COMMENT_READ_LOG"
 out="$(run_sweep)"
 assert_equals "$(reads_for $SETTLED)" "1" "a non-dict entry rescans that child instead of killing the pass"
