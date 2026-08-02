@@ -111,11 +111,14 @@ async function leaseRace(n, preseed) {
 }
 
 // Repeat locally with LEASE_RACE_ITERS to hunt low-probability interleavings.
-const ITERS = Number(process.env.LEASE_RACE_ITERS || 2);
+// Default 15: at the measured ~6.7%/race pre-fix failure rate, 2 races catch a
+// regression ~13% of the time; 15 raise that to ~65% for ~1.1s extra.
+const ITERS = Number(process.env.LEASE_RACE_ITERS || 15);
 for (let i = 0; i < ITERS; i++) {
   const r = await leaseRace(2, null);
   assert.equal(r.winners.length, 1, `lease race: expected exactly 1 winner, got ${r.winners.length}`);
   assert.equal(r.leasePid, r.winners[0], "surviving lease does not belong to the declared winner");
+  assert.deepEqual(r.tokens, [], "break token left behind on a fresh-dir race");
 
   // Preseeded DEAD lease: every child must break it, and the break itself must
   // be atomic — two breakers that each delete the other's fresh live lease
