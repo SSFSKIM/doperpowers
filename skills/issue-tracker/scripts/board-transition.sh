@@ -114,9 +114,20 @@ if (cur, to) in B.EDGE_NOTE_REQUIRED and not note:
 
 if (cur, to) in B.CONVERGENCE_EDGES:
     # Convergence rule (E1 transition 6): count prior traversals of THIS
-    # edge since the last [answers] comment; a second traversal converts
-    # to a needs-human park. Comments are not in the snapshot — one
-    # extra gh call, only on escalation edges.
+    # edge since the last RESET comment; a second traversal converts to a
+    # needs-human park. Comments are not in the snapshot — one extra gh
+    # call, only on escalation edges.
+    #
+    # Two comments reset the count. [answers] is the human sanctioning
+    # another go. [board-epic] ready-for-architect: is the board opening a
+    # fresh Architect cycle on an EPIC — the recomposition-due return (new
+    # children landed) and the reconciliation-due return (a new
+    # [parent-impact] proposal) both do it. Without this, two successive
+    # closure packages that each turn up a real defect read as one
+    # mechanical bounce, and the second escalation — about a package that
+    # did not exist during the first — is rewritten into a needs-human park.
+    # The prefix is written only by epic bookkeeping (apply_state's
+    # bookkeeping branch), so it never appears on a leaf.
     import json as _json
     comments = _json.loads(B.gh(["issue", "view", tid, "-R", B.repo(),
                                  "--json", "comments"])).get("comments") or []
@@ -128,6 +139,8 @@ if (cur, to) in B.CONVERGENCE_EDGES:
         body = ((c.get("body") if isinstance(c, dict) else c) or "").lstrip()
         if body.startswith("[answers]"):
             count = 0
+        elif body.startswith("[board-epic] ready-for-architect:"):
+            count = 0
         elif body.startswith(marker):
             count += 1
     if count >= 1:
@@ -138,15 +151,25 @@ if (cur, to) in B.CONVERGENCE_EDGES:
 
 if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
-if to == "in-review" and not env["T_PR"] and not n.get("pr"):
-    # A RETURN to in-review (the needs-human pre-park: E1 transition 7) never
-    # re-supplies --pr — the ticket's board:meta already carries it from the
-    # original entry. The invariant is "a ticket in in-review always has a
-    # PR recorded", not "every entry carries the flag". For an EPIC the pr
-    # slot carries the recomposition closure package (E2) — same invariant,
-    # different artifact.
-    B.die("a PR link is required when moving to in-review (--pr URL; for an "
-          "epic: the closure-package URL)")
+if to == "in-review" and not env["T_PR"]:
+    # A RETURN to in-review (the pre-park: meta — E1 transition 7) never
+    # re-supplies --pr: the ticket's board:meta already carries the artifact
+    # from the entry the park interrupted. The invariant is "a ticket in
+    # in-review always has a PR recorded", not "every entry carries the
+    # flag". For an EPIC the pr slot carries the recomposition closure
+    # package (E2) — same invariant, different artifact.
+    #
+    # But ONLY that return may ride the recorded value. A stale pr: survives
+    # every route back out of in-review (a review that bounced the ticket to
+    # ready-for-architect leaves it; only recomposition clears it, and the
+    # reconciliation return deliberately does not), so accepting the meta on
+    # any entry pointed the board at a superseded PR — or, on an epic, at the
+    # previous cycle's closure package — with nobody having said so.
+    prepark = B.parse_meta(n.get("body")).get("pre-park")
+    if not (cur in B.PARKED and prepark == "in-review" and n.get("pr")):
+        B.die("a PR link is required when moving to in-review (--pr URL; for an "
+              "epic: the closure-package URL). Only a park return whose "
+              "pre-park: meta records in-review may reuse the recorded one.")
 if env["T_PLAN"]:
     import re as _re
     # The EDGE, not just the destination: a plan pin authorizes gate-free

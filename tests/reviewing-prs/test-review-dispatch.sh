@@ -1565,7 +1565,11 @@ OUT_CAPEPIC="$("$DISPATCH" --sweep 2>&1 || true)"
 CAP_LOG="$(cat "$SPAWN_LOG")"
 assert_contains "$CAP_LOG" "retire:feed0003" "the capped scale review retires its latest failed reviewer"
 assert_contains "$CAP_LOG" "board-transition:20 needs-human" "the capped scale review parks the epic on the human"
-assert_contains "$CAP_LOG" "answering returns the epic to review" "the park note tells the human what their answer does"
+# The note must carry the RECIPE: this park has no resumable session (the
+# reviewer was just retired) and board-answer refuses a dead bound session by
+# design, so "answer it" alone points at a path that dies.
+assert_contains "$CAP_LOG" "no session to resume" "the park note says why answering alone will not work"
+assert_contains "$CAP_LOG" "board-transition.sh 20 in-review" "the park note names the exact command that returns the epic"
 assert_not_contains "$CAP_LOG" "spawn:--no-wait review-epic-20" "the capped epic spawns no fourth reviewer"
 assert_contains "$OUT_CAPEPIC" "parked needs-human" "the sweep reports the escalation it performed"
 

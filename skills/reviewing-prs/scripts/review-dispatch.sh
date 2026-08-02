@@ -877,14 +877,21 @@ sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
   # no event exists, so a capped epic would sit unreviewed forever with an
   # unchanged closure package. Escalate to the human instead — retire the
   # last failed reviewer and park the epic. The park is self-limiting (a
-  # parked epic leaves the in-review sweep list, so this fires once), and
-  # answering it returns the epic to in-review via the pre-park path, where
-  # the retired meta reads as "dispatch" and a fresh reviewer goes out.
+  # parked epic leaves the in-review sweep list, so this fires once).
+  #
+  # The note carries the RECIPE, not just the situation. This park has no
+  # resumable session behind it — we just retired the reviewer — and
+  # board-answer.sh refuses a dead or retired bound session by design, so
+  # "answer it" alone would send the human down a path that dies. The
+  # documented fallback is the two-step one below; the board-transition it
+  # names needs no --pr because entering needs-human from in-review recorded
+  # `pre-park: in-review`, which is exactly the case the in-review gate lets
+  # reuse the epic's recorded closure package.
   case "$verdict" in
     "skip outage/dead-worker failure persists"*)
       [ -n "$uuid" ] && _retire "$uuid"
       if "$BOARD_SCRIPTS/board-transition.sh" "$etid" needs-human \
-        "scale review: the review engine was unavailable on 3 consecutive attempts — answering returns the epic to review"; then
+        "scale review: the review engine was unavailable on 3 consecutive attempts; this reviewer was retired, so there is no session to resume — reply on this ticket, then run board-transition.sh $etid in-review (no --pr needed) and the next sweep dispatches a fresh reviewer"; then
         echo "epic #$etid: review engine unavailable 3 consecutive attempts — reviewer $uuid retired and the epic parked needs-human"
       else
         echo "epic #$etid: outage cap reached but the needs-human park FAILED — the epic stays in-review" >&2

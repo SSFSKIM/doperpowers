@@ -1428,6 +1428,83 @@ assert_contains "$out" "#$ce_e: in-design → in-review" "a fresh closure packag
 out="$(run board-transition.sh "$ce_e" "done")"
 assert_contains "$out" "#$ce_e: in-review → done" "clean scale review closes the epic"
 
+# ---- in-review entry: a stale pr: never satisfies a fresh entry ---------------
+# pr: survives every route back out of in-review (a review that bounced the
+# ticket to ready-for-architect leaves it behind; only recomposition clears
+# it), so honoring the meta on ANY entry pointed the board at a superseded PR
+# — or, on an epic, at the previous cycle's closure package. Only the park
+# return whose pre-park: records in-review may ride the recorded value.
+echo "in-review entry guard:"
+run board-register.sh "Stale PR probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+sp_t="$(state "s['next']-1")"
+run board-transition.sh "$sp_t" in-progress >/dev/null
+run board-transition.sh "$sp_t" in-review "round 1" --pr https://github.com/test/repo/pull/90 >/dev/null
+run board-transition.sh "$sp_t" ready-for-architect "review found a design gap" >/dev/null
+run board-transition.sh "$sp_t" in-design >/dev/null
+run board-transition.sh "$sp_t" ready-for-implementer "re-cut" >/dev/null
+run board-transition.sh "$sp_t" in-progress >/dev/null
+assert_contains "$(state "s['issues']['$sp_t']['body']")" "pr: https://github.com/test/repo/pull/90" "the superseded pr: is still on the ticket (nothing clears it on a leaf)"
+sp_err="$(run board-transition.sh "$sp_t" in-review "round 2" 2>&1 || true)"
+assert_contains "$sp_err" "Only a park return" "a fresh in-review entry may not ride the recorded pr:"
+assert_contains "$(state "s['issues']['$sp_t']['labels']")" "status:in-progress" "the refused entry wrote nothing"
+out="$(run board-transition.sh "$sp_t" in-review "round 2" --pr https://github.com/test/repo/pull/92)"
+assert_contains "$out" "#$sp_t: in-progress → in-review" "a fresh entry passes with its own --pr"
+# the park return still rides the meta — that is the whole point of pre-park
+run board-transition.sh "$sp_t" needs-human "push conflict — needs a human" >/dev/null
+assert_contains "$(state "s['issues']['$sp_t']['body']")" "pre-park: in-review" "the in-review park records its return target"
+out="$(run board-transition.sh "$sp_t" in-review "answered")"
+assert_contains "$out" "#$sp_t: needs-human → in-review" "a pre-park: in-review return needs no --pr"
+
+# The same return, on an EPIC — this is the path the capped scale-review park
+# tells the human to take (reply, then board-transition <n> in-review), so it
+# has to work end to end with the closure package the epic already carries.
+run board-register.sh "Capped scale epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cs_e="$(state "s['next']-1")"
+run board-register.sh "Capped scale child" enhancement P2 --parent "$cs_e" --body-file "$SPEC_BODY" >/dev/null
+cs_c="$(state "s['next']-1")"
+run board-transition.sh "$cs_c" in-progress >/dev/null
+run board-transition.sh "$cs_c" "done" >/dev/null                 # epic → ready-for-architect
+run board-transition.sh "$cs_e" in-design >/dev/null
+run board-transition.sh "$cs_e" in-review --pr "https://github.com/o/r/issues/$cs_e#pkg" >/dev/null
+run board-transition.sh "$cs_e" needs-human "scale review: the review engine was unavailable on 3 consecutive attempts; this reviewer was retired, so there is no session to resume — reply on this ticket, then run board-transition.sh $cs_e in-review (no --pr needed) and the next sweep dispatches a fresh reviewer" >/dev/null
+assert_contains "$(state "s['issues']['$cs_e']['body']")" "pre-park: in-review" "the capped-scale park records in-review as its return target"
+out="$(run board-transition.sh "$cs_e" in-review "answered: retry the review")"
+assert_contains "$out" "#$cs_e: needs-human → in-review" "the recipe in the park note works: the epic returns with no --pr"
+assert_contains "$(state "s['issues']['$cs_e']['body']")" "pr: https://github.com/o/r/issues/$cs_e#pkg" "the closure package it returns with is the one it carried"
+
+# ---- convergence resets at a recomposition-cycle boundary ---------------------
+# Two successive closure packages that each turn up a real defect are not a
+# mechanical bounce: the second escalation is about a package that did not
+# exist during the first. The board's own [board-epic] ready-for-architect:
+# return is what marks the boundary.
+echo "convergence across recomposition cycles:"
+run board-register.sh "Cycle epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+cy_e="$(state "s['next']-1")"
+run board-register.sh "Cycle child A" enhancement P2 --parent "$cy_e" --body-file "$SPEC_BODY" >/dev/null
+cy_a="$(state "s['next']-1")"
+run board-transition.sh "$cy_a" in-progress >/dev/null
+run board-transition.sh "$cy_a" "done" >/dev/null                 # [board-epic] return #1
+run board-transition.sh "$cy_e" in-design >/dev/null
+run board-transition.sh "$cy_e" in-review --pr "https://github.com/o/r/issues/$cy_e#pkg-1" >/dev/null
+out="$(run board-transition.sh "$cy_e" ready-for-architect "scale review: defect — corrective child")"
+assert_contains "$out" "#$cy_e: in-review → ready-for-architect" "first cycle's escalation is an ordinary traversal"
+run board-register.sh "Cycle child B" enhancement P2 --parent "$cy_e" --body-file "$SPEC_BODY" >/dev/null
+cy_b="$(state "s['next']-1")"
+run board-transition.sh "$cy_b" in-progress >/dev/null
+out="$(run board-transition.sh "$cy_b" "done")"
+assert_contains "$out" "#$cy_e: in-design → ready-for-architect" "the corrective child's landing opens a NEW recomposition cycle"
+run board-transition.sh "$cy_e" in-design >/dev/null
+run board-transition.sh "$cy_e" in-review --pr "https://github.com/o/r/issues/$cy_e#pkg-2" >/dev/null
+out="$(run board-transition.sh "$cy_e" ready-for-architect "scale review: a different defect in the NEW package")"
+assert_contains "$out" "#$cy_e: in-review → ready-for-architect" "the second cycle's escalation is not a mechanical bounce"
+assert_not_contains "$(state "s['issues']['$cy_e']['labels']")" "status:needs-human" "the [board-epic] return reset the convergence count"
+# ...and WITHOUT a boundary between them, the conversion still fires: same
+# edge twice inside one cycle is exactly what the rule is for.
+run board-transition.sh "$cy_e" in-design >/dev/null
+run board-transition.sh "$cy_e" in-review --pr "https://github.com/o/r/issues/$cy_e#pkg-2" >/dev/null
+out="$(run board-transition.sh "$cy_e" ready-for-architect "same package, same complaint")"
+assert_contains "$out" "#$cy_e: in-review → needs-human" "a second traversal inside ONE cycle still converts to needs-human"
+
 echo "board-migrate-gh (retired v6 state):"
 # A legacy ticket in the RETIRED v6 queue state, migrated on its own board so
 # the numbering above is untouched. v9 split ready-for-agent into the two lane
