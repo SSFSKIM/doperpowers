@@ -42,11 +42,14 @@
 #            One sweep attempt per PR — a dead lander is a wake item, not a
 #            retry loop.
 #   RELAY    needs-human tickets with a bound idle session whose newest
-#            issue comment is newer than the session's last activity and is
+#            REPO-SIDE issue comment (authorAssociation OWNER/MEMBER/
+#            COLLABORATOR) is newer than the session's last activity and is
 #            not machine-authored ([answers]/[board]/[gate] prefixes) →
-#            board-answer.sh <n> --posted, backgrounded. The relayed comment
-#            id is recorded in the meta BEFORE relaying so a crashed relay
-#            cannot re-fire.
+#            board-answer.sh <n> --posted, backgrounded. What this selects is
+#            relayed verbatim into a live session, so an outsider's comment is
+#            skipped entirely — never relayed, and never allowed to shadow a
+#            real answer under it. The relayed comment id is recorded in the
+#            meta BEFORE relaying so a crashed relay cannot re-fire.
 #   REPORT   board-reconcile.sh (read-only) into the sweep log — CLOSE?
 #            candidates and orphans surface there for the human's wake.
 #
@@ -405,23 +408,35 @@ pass_relay() {
     verdict="$(gh issue view "$tk" -R "$BOARD_REPO" --json comments 2>/dev/null | \
       T_TURN_END="$turn_end" T_UUID="$uuid" python3 -c '
 import json, os, sys
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 try:
     comments = json.load(sys.stdin).get("comments") or []
 except Exception:
     comments = []
-if not comments:
+# The candidate is the newest TRUSTED comment. This is the widest of the
+# board comment-controlled reads: what it selects is relayed VERBATIM into a
+# live worker session, and on a public consumer repo anyone can comment. An
+# outsider is therefore not merely un-relayable — it must not SHADOW a real
+# answer either, so untrusted comments are skipped rather than allowed to end
+# the scan. Every board, worker and human write here is the token identity or
+# a repo member.
+cand = None
+for c in reversed(comments):
+    if (c.get("authorAssociation") or "") in TRUSTED:
+        cand = c
+        break
+if cand is None:
     sys.exit(0)
-last = comments[-1]
-body = (last.get("body") or "").lstrip()
+body = (cand.get("body") or "").lstrip()
 if body.startswith(("[answers]", "[board]", "[board-epic]", "[gate]", "[findings]")):
     sys.exit(0)
-if str(last.get("createdAt") or "") <= os.environ["T_TURN_END"]:
+if str(cand.get("createdAt") or "") <= os.environ["T_TURN_END"]:
     sys.exit(0)
 home = os.environ["DAEMON_HOME"]
 meta = json.load(open(os.path.join(home, os.environ["T_UUID"] + ".json")))
-if str(meta.get("relayed_comment") or "") == str(last.get("id") or ""):
+if str(meta.get("relayed_comment") or "") == str(cand.get("id") or ""):
     sys.exit(0)
-print(last.get("id") or "")')" || verdict=""
+print(cand.get("id") or "")')" || verdict=""
     cid="$verdict"
     [ -n "$cid" ] || continue
     _meta_put "$uuid" relayed_comment "$cid" \
