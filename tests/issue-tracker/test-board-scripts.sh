@@ -1375,6 +1375,27 @@ seed_comment "$ua_t" NONE "[answers] go ahead, bounce it as often as you like"
 out="$(run board-transition.sh "$ua_t" ready-for-architect "second time")"
 assert_contains "$out" "#$ua_t: ready-for-implementer → needs-human" "an outsider's [answers] does not reset the count"
 
+# The count reads the WHOLE comment log, not page 1 (R2). `gh issue view
+# --json comments` serves a single page, so on a busy ticket the earlier
+# traversal falls off the read and the bounce that should have parked the
+# ticket is waved through — the convergence rule silently stops applying to
+# exactly the tickets that bounce most. Two seeded comments sit ahead of the
+# first marker here and the mock's page is shrunk to two, so a page-1 reader
+# sees chatter only.
+echo "convergence past page 1:"
+export MOCK_GH_COMMENT_PAGE=2
+run board-register.sh "Long-trail convergence probe" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+pg_t="$(state "s['next']-1")"
+seed_comment "$pg_t" OWNER "worker chatter that predates the first escalation"
+seed_comment "$pg_t" OWNER "more chatter, same"
+run board-transition.sh "$pg_t" ready-for-architect "gate: plan-need — round 1" >/dev/null
+run board-transition.sh "$pg_t" in-design >/dev/null
+run board-transition.sh "$pg_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
+out="$(run board-transition.sh "$pg_t" ready-for-architect "second traversal, buried first one")"
+assert_contains "$out" "#$pg_t: ready-for-implementer → needs-human" \
+    "a traversal marker past page 1 is still counted (paginated read)"
+unset MOCK_GH_COMMENT_PAGE
+
 # ---- a real plan pin needs a branch the sha is reachable from -----------------
 # The pin authorizes gate-free PLAN-EXECUTION, and the worker starts from a
 # fresh cattle clone: with no recorded ref there is nothing to fetch the sha
@@ -1484,6 +1505,27 @@ id_orphan_t="$(state "s['next']-1")"
 run board-transition.sh "$id_orphan_t" in-design >/dev/null      # no bound daemon
 out="$(run board-reconcile.sh)"
 assert_contains "$out" "orphaned  #$id_orphan_t: in-design" "orphaned in-design flagged (Architect's in-flight state)"
+# ...but a PULLED epic is in-design by bookkeeping and has no daemon by
+# design: a corrective child going active drags its queued parent here
+# (PRE_PARK) and the children are the ones working. Calling that orphaned
+# invents work, and acting on the advice puts a second Architect on a live
+# epic. Three shapes, one discriminant — the children.
+run board-register.sh "Pulled epic probe" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+pull_e="$(state "s['next']-1")"
+run board-register.sh "Its corrective child" bug P1 --parent "$pull_e" --body-file "$SPEC_BODY" >/dev/null
+pull_c="$(state "s['next']-1")"
+run board-transition.sh "$pull_e" ready-for-architect "gate: recomposition" >/dev/null
+run board-transition.sh "$pull_c" in-progress >/dev/null        # pulls the parent to in-design
+assert_contains "$(state "s['issues']['$pull_e']['labels']")" "status:in-design" "the child's activation pulled the parent to in-design"
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "pulled    #$pull_e: in-design with 1 live child" "a pulled epic reports as bookkeeping, not as an orphan"
+assert_not_contains "$out" "orphaned  #$pull_e" "...and never asks the operator to respawn a worker onto it"
+# all children terminal: this IS a recomposition claim that should have a
+# live Architect, so the warning comes back
+run board-transition.sh "$pull_c" "done" >/dev/null             # epic → ready-for-architect
+run board-transition.sh "$pull_e" in-design >/dev/null          # claimed, but no daemon bound
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "orphaned  #$pull_e: in-design" "an epic whose children are all terminal is a possibly-abandoned claim"
 
 # ---- env-issue category (E2 interim slice) --------------------------------------
 echo "env-issue category:"
@@ -1558,6 +1600,32 @@ leaf_t="$(state "s['next']-1")"
 run board-transition.sh "$leaf_t" in-design >/dev/null
 assert_fails run board-transition.sh "$leaf_t" "done"
 assert_fails run board-transition.sh "$leaf_t" in-review --pr "https://example.com/pkg"
+# wontfix is the THIRD terminal out of in-design and LEGAL has it, so the
+# guard has to cover it or an epic can be abandoned with children still
+# running — every recomposition invariant bypassed by picking a different
+# terminal. Epics only: the leaf case below is pinned unchanged on purpose.
+echo "epic wontfix guard:"
+run board-register.sh "Abandonable epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+wf_e="$(state "s['next']-1")"
+run board-register.sh "Its live child" enhancement P2 --parent "$wf_e" --body-file "$SPEC_BODY" >/dev/null
+wf_c="$(state "s['next']-1")"
+run board-transition.sh "$wf_e" ready-for-architect "gate: design the epic" >/dev/null
+run board-transition.sh "$wf_e" in-design >/dev/null
+run board-transition.sh "$wf_c" in-progress >/dev/null
+assert_fails run board-transition.sh "$wf_e" wontfix "abandon it"
+assert_contains "$(state "s['issues']['$wf_e']['labels']")" "status:in-design" "the epic with a live child is not abandoned"
+assert_equals "$(state "s['issues']['$wf_e']['state']")" "OPEN" "...and its issue is not closed behind the board's back"
+run board-transition.sh "$wf_c" "done" >/dev/null               # epic → ready-for-architect
+run board-transition.sh "$wf_e" in-design >/dev/null            # Architect re-claims
+out="$(run board-transition.sh "$wf_e" wontfix "recomposed: not worth building")"
+assert_contains "$out" "#$wf_e: in-design → wontfix" "a recomposition-ready epic may still be wontfixed"
+# LEAF wontfix from in-design is untouched by this guard — pinning today's
+# behavior explicitly so the guard's scope is visible, not adjudicating it.
+run board-register.sh "Leaf abandoned mid-design" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+wf_l="$(state "s['next']-1")"
+run board-transition.sh "$wf_l" in-design >/dev/null
+out="$(run board-transition.sh "$wf_l" wontfix "not worth designing further")"
+assert_contains "$out" "#$wf_l: in-design → wontfix" "a LEAF wontfix from in-design keeps whatever legality it had"
 # code-bearing epic routes in-review with the closure package as the pr slot
 run board-register.sh "Code epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
 ce_e="$(state "s['next']-1")"

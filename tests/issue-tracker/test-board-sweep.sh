@@ -70,10 +70,17 @@ git init -q "$LOCAL_REPO"
 # writes and read only repo-side authors. Comments the tick itself wrote are
 # OWNER (the token identity); a fixture can declare its own to play an
 # outsider.
+#
+# Two output modes, because the board reads comments two ways and the
+# difference is load-bearing (R2). `page` is `gh issue view --json comments`:
+# GraphQL shape, ONE page, capped like the real thing ($MOCK_GH_COMMENT_PAGE,
+# default the real 100) — still what the answer-relay pass uses. `rest` is
+# `gh api .../comments --paginate`: REST shape (author_association) and the
+# WHOLE log, which is what the convergence count and the IMPACT scans use.
 export MERGE_COMMENTS="$TEST_ROOT/merge-comments.py"
 cat > "$MERGE_COMMENTS" <<'PY'
 import json, os, sys
-num = sys.argv[1]
+num, mode = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "page")
 out = []
 fixture = os.path.join(os.environ["COMMENTS_DIR"], num + ".json")
 if os.path.exists(fixture):
@@ -90,7 +97,12 @@ for i, body in enumerate((issues.get(num) or {}).get("comments") or []):
     out.append({"id": "IC_%s_%d" % (num, i), "author": {"login": "board"},
                 "authorAssociation": "OWNER",
                 "body": body, "createdAt": "2026-07-18T00:00:00Z"})
-print(json.dumps({"comments": out}))
+if mode == "rest":
+    print(json.dumps([{"id": c["id"], "body": c.get("body") or "",
+                       "author_association": c.get("authorAssociation")}
+                      for c in out]))
+else:
+    print(json.dumps({"comments": out[:int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)]}))
 PY
 
 # gh overlay: pr list is a test fixture and issue-view comments are the merge
@@ -103,7 +115,15 @@ if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
 fi
 if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ] && grep -q -- "json comments" <<<"\$*"; then
   [ -z "\${COMMENT_READ_LOG:-}" ] || echo "\$3" >> "\$COMMENT_READ_LOG"
-  exec python3 "\$MERGE_COMMENTS" "\$3"
+  exec python3 "\$MERGE_COMMENTS" "\$3" page
+fi
+if [ "\${1:-}" = "api" ]; then
+  case "\${2:-}" in
+    repos/*/issues/*/comments)
+      _n="\${2%/comments}"; _n="\${_n##*/}"
+      [ -z "\${COMMENT_READ_LOG:-}" ] || echo "\$_n" >> "\$COMMENT_READ_LOG"
+      exec python3 "\$MERGE_COMMENTS" "\$_n" rest ;;
+  esac
 fi
 exec "$REPO_ROOT/tests/issue-tracker/mock-gh/gh" "\$@"
 SHIM
@@ -376,6 +396,11 @@ s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
     "42": issue(42, "child an outsider commented on", ["status:in-progress"]),
     "43": issue(43, "epic an outsider tries to silence", ["status:in-progress"]),
     "44": issue(44, "child whose real proposal was pre-marked", ["status:in-progress"]),
+    # R2 pagination probe: both tickets already carry chatter, so the
+    # proposal (on the child) and the board's own dedupe marker (on the
+    # parent) both land past a one-page read.
+    "70": issue(70, "epic with a long comment trail", ["status:in-progress"]),
+    "71": issue(71, "child with a long comment trail", ["status:in-progress"]),
 }}
 s["issues"]["26"]["parent"] = 25
 s["issues"]["33"]["parent"] = 25
@@ -391,6 +416,7 @@ s["issues"]["55"]["parent"] = 57
 s["issues"]["59"]["parent"] = 58
 s["issues"]["61"]["parent"] = 60
 s["issues"]["62"]["parent"] = 64
+s["issues"]["71"]["parent"] = 70
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -863,6 +889,36 @@ printf '%s' '{"version": 1, "children": {"'"$SETTLED"'": "not a record"}}' \
 : > "$COMMENT_READ_LOG"
 out="$(run_sweep)"
 assert_equals "$(reads_for $SETTLED)" "1" "a non-dict entry rescans that child instead of killing the pass"
+
+# ---- comment reads are PAGINATED (R2) -----------------------------------------
+# `gh issue view --json comments` serves one page. Both IMPACT scans read the
+# comment log as if it were complete, and on a busy ticket it is not: a
+# proposal past the cap is invisible, and — because the cursor records
+# seen=<updatedAt> for a child it believes it read — invisible FOREVER. A
+# dedupe marker past the cap is the mirror failure: the parent looks
+# unreconciled and the same proposal fires again every tick.
+# MOCK_GH_COMMENT_PAGE shrinks the mock's page so the fixture costs two
+# comments instead of a hundred; the paginated read ignores it by construction.
+echo "board-sweep: comment reads are paginated"
+export MOCK_GH_COMMENT_PAGE=2
+mock_comment 71 "status note one, pure chatter"
+mock_comment 71 "status note two, pure chatter"
+mock_comment 70 "epic chatter one"
+mock_comment 70 "epic chatter two"
+mock_comment 71 "[parent-impact] #70 the acceptance assumes an ordering the queue cannot give"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 70)" "status:ready-for-architect" \
+    "a proposal past page 1 is still found (the scan reads the whole log)"
+assert_contains "$(last_comment 70)" "[board-epic] reconcile: #71@" "and its marker lands on the parent"
+# The marker now sits behind the epic's own two chatter comments — a page-1
+# read of THIS parent would call the proposal unconsumed and fire it again.
+assert_equals "$(comment_count 70 "[board-epic] reconcile:")" "1" "the marker is found past page 1 too"
+set_status 70 in-progress
+out="$(run_sweep)"
+assert_equals "$(comment_count 70 "[board-epic] reconcile:")" "1" \
+    "so a claimable parent whose marker is past page 1 is not re-reconciled"
+assert_contains "$(issue_labels 70)" "status:in-progress" "...and never returned a second time"
+unset MOCK_GH_COMMENT_PAGE
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

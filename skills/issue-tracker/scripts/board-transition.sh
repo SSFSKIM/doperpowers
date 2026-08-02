@@ -69,12 +69,20 @@ if to not in B.STATES:
 # its own ticket, and an epic held on a RECONCILIATION claim (children still
 # running) exits in-design by releasing to needs-info, never by a verdict:
 # closing there would skip recomposition verification entirely.
-if cur == "in-design" and to in ("done", "in-review"):
-    if tid not in B.epics(tickets):
+#
+# `wontfix` joins done/in-review on the EPIC side only. LEGAL["in-design"]
+# has it, and it closes the issue through the same apply_state, so an epic
+# could be abandoned with children still running — every recomposition
+# invariant bypassed by picking the third terminal instead of the first two.
+# The leaf side of `wontfix` is deliberately NOT adjudicated here: whatever
+# legality a leaf wontfix from in-design has today, it keeps.
+if cur == "in-design" and to in ("done", "in-review", "wontfix"):
+    is_epic = tid in B.epics(tickets)
+    if to != "wontfix" and not is_epic:
         B.die("in-design → %s is the epic recomposition edge — #%s has no "
               "children; a leaf exits in-design via ready-for-implementer "
               "or a park" % (to, tid))
-    if not B.recomposition_ready(tickets, tid):
+    if is_epic and not B.recomposition_ready(tickets, tid):
         B.die("#%s still has non-terminal children — the in-design → %s "
               "verdict edges belong to recomposition (every child terminal). "
               "A reconciliation claim releases the epic instead: needs-info "
@@ -134,10 +142,9 @@ if (cur, to) in B.CONVERGENCE_EDGES:
     # repo-side authors count or reset — every board and worker write is the
     # token identity, i.e. OWNER. A comment that is not an object carries no
     # association at all and is therefore untrusted.
-    import json as _json
     TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
-    comments = _json.loads(B.gh(["issue", "view", tid, "-R", B.repo(),
-                                 "--json", "comments"])).get("comments") or []
+    comments = B.comments(tid)          # fully paginated: a page-1 read would
+                                        # miss traversals and under-count
     marker = "[board] %s → %s:" % (cur, to)
     count = 0
     for c in comments:

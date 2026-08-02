@@ -412,9 +412,8 @@ seen_cache = {}
 
 def markers_on(target):
     if target not in seen_cache:
-        comments = json.loads(B.gh(
-            ["issue", "view", target, "-R", B.repo(), "--json", "comments"]
-        )).get("comments") or []
+        comments = B.comments(target)   # paginated: a marker past page 1 read
+                                        # as absent re-consumes its proposal
         found = set()
         for c in comments:
             body = (c.get("body") or "").strip()
@@ -474,9 +473,10 @@ for tid in sorted(tickets, key=int):
     # The parent-state skip that used to sit here is gone too: the proposal
     # may name a DIFFERENT parent than the one this child points at, and
     # that one can be perfectly claimable.
-    child_comments = json.loads(B.gh(
-        ["issue", "view", tid, "-R", B.repo(), "--json", "comments"]
-    )).get("comments") or []
+    # Paginated: this read is what the cursor below records as "seen". A
+    # page-1 read that missed a proposal would write seen=<updatedAt> anyway
+    # and skip that child forever.
+    child_comments = B.comments(tid)
     proposals = [(str(c.get("id") or ""), (c.get("body") or "").lstrip())
                  for c in child_comments
                  if trusted(c)

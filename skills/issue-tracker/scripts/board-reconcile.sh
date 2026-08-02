@@ -68,6 +68,22 @@ for t, n in by_id(tickets.items()):
         continue
     m = bound.get(t)
     if m is None:
+        # A PULLED epic has no daemon by design and is not orphaned. A
+        # corrective child going active drags its queued parent to in-design
+        # (PRE_PARK) purely as bookkeeping — "the parent waits again" — so
+        # telling the operator to respawn and bind a worker onto it invents
+        # work and would put a second Architect on a live epic. The
+        # discriminant is the children: any non-terminal child means they are
+        # the ones working, and the epic is just parked in-flight. All
+        # children terminal is the other shape — a recomposition claim that
+        # SHOULD have a live Architect — and keeps the warning, as does any
+        # childless in-design ticket (an ordinary leaf design).
+        kids = B.children(tickets, t)
+        if n["state"] == "in-design" and any(
+                tickets[k]["state"] not in B.TERMINAL for k in kids):
+            print("pulled    #%s: in-design with %d live child(ren) — bookkeeping, no worker expected"
+                  % (t, sum(1 for k in kids if tickets[k]["state"] not in B.TERMINAL)))
+            continue
         print("orphaned  #%s: %s but no bound daemon — respawn + board-bind, or transition" % (t, n["state"]))
     elif m.get("status") in ("error", "retired"):
         print("anomaly   #%s: bound daemon %s status=%s" % (t, m["_uuid"][:8], m["status"]))

@@ -61,6 +61,21 @@ def issue(s, num):
         die("no issue #%s" % num)
     return it
 
+def comment_objs(it):
+    """Stored comments as API objects. A bare string is the board's own write
+    (the token identity, i.e. OWNER); a test seeds a dict to play any other
+    author or to pin an id."""
+    out = []
+    for c in it["comments"]:
+        if isinstance(c, dict):
+            c = dict(c)
+            c.setdefault("authorAssociation", "OWNER")
+        else:
+            c = {"body": c, "authorAssociation": "OWNER"}
+        out.append(c)
+    return out
+
+
 def by_id(s, gid):
     for it in s["issues"].values():
         if it["id"] == gid:
@@ -140,15 +155,14 @@ def main():
             # A comment stored as a bare string is the board's own write —
             # the token identity, i.e. OWNER; a test seeds a dict directly to
             # play any other author.
-            out = []
-            for c in it["comments"]:
-                if isinstance(c, dict):
-                    c = dict(c)
-                    c.setdefault("authorAssociation", "OWNER")
-                    out.append(c)
-                else:
-                    out.append({"body": c, "authorAssociation": "OWNER"})
-            print(json.dumps({"comments": out}))
+            #
+            # TRUNCATED AT ONE PAGE, like the real thing: this path is a
+            # capped GraphQL fetch, not a paginated one. Modelling the cap is
+            # what lets a test tell a page-1 reader from a paginated one; the
+            # default is the real 100 and $MOCK_GH_COMMENT_PAGE shrinks it so
+            # a fixture need not seed a hundred comments to prove the point.
+            page = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
+            print(json.dumps({"comments": comment_objs(it)[:page]}))
             return
         die("unhandled issue view fields: %s" % " ".join(argv))
 
@@ -159,6 +173,23 @@ def main():
     # error; anything not listed is a 404, as the real API returns.
     if argv[:1] == ["api"] and len(argv) > 1 and argv[1] != "graphql":
         path = argv[1]
+        # repos/<owner>/<repo>/issues/<n>/comments — the paginated read the
+        # board's comment-controlled scans use. `--paginate` makes real gh
+        # concatenate every page into one JSON array, so the mock serves the
+        # whole log here and the `issue view` path above stays capped: the two
+        # differ by exactly the bug this endpoint exists to fix. REST field
+        # names differ from the GraphQL ones (`author_association`), which is
+        # why _board.comments() normalizes.
+        m_c = re.match(r"^repos/[^/]+/[^/]+/issues/([0-9]+)/comments$", path)
+        if m_c:
+            if "--paginate" not in argv:
+                die("issue comments read must be --paginate (page 1 is a bug)")
+            out = []
+            for i, c in enumerate(comment_objs(issue(s, m_c.group(1)))):
+                out.append({"id": c.get("id", i + 1), "body": c.get("body") or "",
+                            "author_association": c.get("authorAssociation")})
+            print(json.dumps(out))
+            return
         try:
             with open(os.environ["MOCK_GH_REFS"]) as f:
                 refs = json.load(f)

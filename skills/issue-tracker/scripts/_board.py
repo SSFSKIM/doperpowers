@@ -466,6 +466,29 @@ def comment(num, text):
     gh(["issue", "comment", num, "-R", repo(), "--body-file", "-"], input_text=text)
 
 
+def comments(num):
+    """EVERY comment on issue <num>, oldest first, normalized to the field
+    names the board's comment-controlled scans use: id, body,
+    authorAssociation.
+
+    REST + `--paginate`, never `gh issue view --json comments`: that serves a
+    SINGLE page, and three scans read it as the whole log — the convergence
+    count here, and the sweep's IMPACT proposal and dedupe-marker reads. Past
+    ~100 comments a truncated read silently drops traversals (extra bounces
+    the convergence rule exists to stop), proposals, and markers. The IMPACT
+    pass makes it permanent: its cursor would persist seen=<updatedAt> for a
+    child whose proposal it never reached, so nothing brings that child back.
+    A failed page is not a short read — gh() dies on non-zero exit, which
+    kills the pass before any cursor write, so a cursor only ever records a
+    COMPLETE read."""
+    raw = json.loads(gh(["api", "repos/%s/issues/%s/comments" % (repo(), num),
+                         "--paginate"]) or "[]")
+    return [{"id": c.get("id"),
+             "body": c.get("body") or "",
+             "authorAssociation": c.get("author_association") or ""}
+            for c in raw if isinstance(c, dict)]
+
+
 def set_body(num, body):
     gh(["issue", "edit", num, "-R", repo(), "--body-file", "-"], input_text=body)
 
