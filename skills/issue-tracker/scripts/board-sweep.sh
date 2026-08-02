@@ -31,6 +31,10 @@
 #            is marked consumed while nobody is there to read it. Parks in
 #            particular are never disturbed — unparking one would destroy
 #            its note and drop it out of the RELAY pass's wake queue below.
+#            Both scans read only comments from repo-side authors
+#            (authorAssociation OWNER/MEMBER/COLLABORATOR): they are
+#            comment-CONTROLLED board writes, and on a public repo anyone
+#            can comment.
 #   DISPATCH implement-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
 #   LAND     open confident-ready PRs with a human APPROVED review or a
@@ -285,6 +289,20 @@ UNCLAIMABLE = frozenset(B.TERMINAL) | frozenset(B.PARKED)
 # an Architect is mid-claim (in-design). Re-checked per proposal, because
 # the first return of this tick puts the parent here itself.
 ARCHITECT_LANE = ("ready-for-architect", "in-design")
+# Both scans below are comment-CONTROLLED board writes, and on a public
+# consumer repo anyone can comment. An outsider's [parent-impact] would force
+# reconciliation cycles at will; an outsider's pre-seeded reconcile marker
+# would suppress a real proposal (the Architect's lineage check still catches
+# it at end-of-epic, but mid-flight reconciliation goes silent). So both
+# scans read only repo-side authors. Workers comment as the token identity,
+# which is OWNER, so no legitimate path is cut; an absent field fails closed.
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+
+
+def trusted(c):
+    return (c.get("authorAssociation") or "") in TRUSTED
+
+
 acted = 0
 tickets = B.snapshot()
 for tid in sorted(tickets, key=int):
@@ -299,7 +317,8 @@ for tid in sorted(tickets, key=int):
     )).get("comments") or []
     proposals = [str(c.get("id") or "")
                  for c in child_comments
-                 if (c.get("body") or "").lstrip().startswith("[parent-impact]")]
+                 if trusted(c)
+                 and (c.get("body") or "").lstrip().startswith("[parent-impact]")]
     if not proposals:
         continue
     parent_comments = json.loads(B.gh(
@@ -308,7 +327,7 @@ for tid in sorted(tickets, key=int):
     seen = set()
     for c in parent_comments:
         body = (c.get("body") or "").strip()
-        if body.startswith("[board-epic] reconcile:"):
+        if trusted(c) and body.startswith("[board-epic] reconcile:"):
             seen.add(body.split(":", 1)[1].strip())
     for cid in proposals:
         marker = "#%s@%s" % (tid, cid)

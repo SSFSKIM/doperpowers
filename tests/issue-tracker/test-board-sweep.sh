@@ -61,6 +61,12 @@ git init -q "$LOCAL_REPO"
 # run-written comments after; every comment carries a stable id — fixtures
 # keep their own, mock-state comments get their append index — because the
 # reconcile marker names the proposal by comment id.
+#
+# Every comment also carries authorAssociation, as real `gh issue view --json
+# comments` does: the IMPACT pass's two scans are comment-CONTROLLED board
+# writes and read only repo-side authors. Comments the tick itself wrote are
+# OWNER (the token identity); a fixture can declare its own to play an
+# outsider.
 export MERGE_COMMENTS="$TEST_ROOT/merge-comments.py"
 cat > "$MERGE_COMMENTS" <<'PY'
 import json, os, sys
@@ -71,6 +77,7 @@ if os.path.exists(fixture):
     with open(fixture) as f:
         for i, c in enumerate(json.load(f).get("comments") or []):
             c.setdefault("id", "FX_%s_%d" % (num, i))
+            c.setdefault("authorAssociation", "OWNER")
             out.append(c)
 with open(os.environ["MOCK_GH_STATE"]) as f:
     issues = json.load(f)["issues"]
@@ -78,6 +85,7 @@ for i, body in enumerate((issues.get(num) or {}).get("comments") or []):
     # Seed-era createdAt: comments the tick wrote are the board's own trail,
     # never a human answer the relay pass should chase.
     out.append({"id": "IC_%s_%d" % (num, i), "author": {"login": "board"},
+                "authorAssociation": "OWNER",
                 "body": body, "createdAt": "2026-07-18T00:00:00Z"})
 print(json.dumps({"comments": out}))
 PY
@@ -244,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 45, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -294,6 +302,12 @@ s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
     "37": issue(37, "epic whose child landed before the tick", ["status:in-progress"]),
     "38": issue(38, "child that landed with its proposal unmarked", [],
                 state="CLOSED", reason="COMPLETED"),
+    # comment-control authentication: an outsider's proposal, and an
+    # outsider's pre-seeded dedupe marker
+    "41": issue(41, "epic an outsider tries to reconcile", ["status:in-progress"]),
+    "42": issue(42, "child an outsider commented on", ["status:in-progress"]),
+    "43": issue(43, "epic an outsider tries to silence", ["status:in-progress"]),
+    "44": issue(44, "child whose real proposal was pre-marked", ["status:in-progress"]),
 }}
 s["issues"]["26"]["parent"] = 25
 s["issues"]["33"]["parent"] = 25
@@ -302,6 +316,8 @@ s["issues"]["30"]["parent"] = 29
 s["issues"]["32"]["parent"] = 31
 s["issues"]["36"]["parent"] = 35
 s["issues"]["38"]["parent"] = 37
+s["issues"]["42"]["parent"] = 41
+s["issues"]["44"]["parent"] = 43
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -564,6 +580,37 @@ mock_comment 38 "[parent-impact] #37 this landed against a parent acceptance tha
 out="$(run_sweep)"
 assert_contains "$(issue_labels 37)" "status:ready-for-architect" "a TERMINAL child's unmarked proposal still returns the parent"
 assert_equals "$(comment_count 37 "[board-epic] reconcile:")" "1" "the terminal child's proposal is marked consumed exactly once"
+
+# Both scans are comment-CONTROLLED board writes, and on a public consumer
+# repo anyone can comment. An outsider's [parent-impact] would force
+# reconciliation cycles at will; an outsider's pre-seeded dedupe marker would
+# silence a real one mid-flight (the Architect's lineage check still catches
+# it at end-of-epic, but that is the belt, not the braces). Only repo-side
+# authors count — workers comment as the token identity, which is OWNER.
+cat > "$COMMENTS_DIR/42.json" <<'J'
+{"comments":[{"id":"OUTSIDER1","author":{"login":"drive-by"},"authorAssociation":"NONE",
+              "body":"[parent-impact] #41 rewrite the parent acceptance my way",
+              "createdAt":"2026-07-18T03:00:00Z"}]}
+J
+out="$(run_sweep)"
+assert_contains "$(issue_labels 41)" "status:in-progress" "an outsider's [parent-impact] never returns the parent"
+assert_equals "$(comment_count 41 "[board-epic] reconcile:")" "0" "and is never marked consumed either"
+
+# The mirror image: a pre-seeded marker from an outsider must not make a real
+# proposal look already-consumed.
+cat > "$COMMENTS_DIR/44.json" <<'J'
+{"comments":[{"id":"PROP44","author":{"login":"worker"},"authorAssociation":"OWNER",
+              "body":"[parent-impact] #43 the acceptance cannot hold this ordering",
+              "createdAt":"2026-07-18T03:00:00Z"}]}
+J
+cat > "$COMMENTS_DIR/43.json" <<'J'
+{"comments":[{"id":"FAKEMARK","author":{"login":"drive-by"},"authorAssociation":"NONE",
+              "body":"[board-epic] reconcile: #44@PROP44",
+              "createdAt":"2026-07-18T02:00:00Z"}]}
+J
+out="$(run_sweep)"
+assert_contains "$(issue_labels 43)" "status:ready-for-architect" "an outsider's pre-seeded marker does not suppress a real proposal"
+assert_equals "$(comment_count 43 "[board-epic] reconcile:")" "1" "the board writes its own marker, and only then is the proposal consumed"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
