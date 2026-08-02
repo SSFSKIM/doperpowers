@@ -239,9 +239,10 @@ owner: finders gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
    prompt names the five defect families from the X1 taxonomy
    (changed-logic accuracy, cross-file contract impact, removed/moved
    behavior, security surface, performance/resources) as coverage
-   inspiration, but the mandates must be diff-specific. Callers may
-   bypass derivation by passing `lenses` explicitly (their length sets
-   K). *Rationale: the lens-as-scalpel evidence — a lens redirects the
+   inspiration, but the mandates must be diff-specific and **extremely
+   simple — at most two sentences each** (owner constraint, 2026-08-03;
+   the F3-recovering lens was one sentence). Callers may bypass
+   derivation by passing `lenses` explicitly (their length sets K). *Rationale: the lens-as-scalpel evidence — a lens redirects the
    run's whole attention budget, so a taxonomy family irrelevant to
    this diff would waste an entire sol/xhigh finder.* (Owner-approved
    2026-08-03.)
@@ -387,6 +388,12 @@ truth set for one frozen diff.
 - Fix-wave orchestration: the panel reviews; fixing remains the calling
   session's loop. Parallelism replaces discovery breadth only — the
   serial fix→re-review cycle is intentionally kept.
+- Two owner-flagged future variants (2026-08-03, "proceed as-is for
+  now"): moving the VERIFIER out of the workflow into the calling main
+  session (the panel would return the raw stub pool); and passing the
+  lens-derivation agent a spec/design-doc path so mandates carry code
+  context beyond the diff. Both are script-level changes the engine
+  already supports; revisit after X1 results.
 
 ## Open Questions (owner)
 
@@ -507,3 +514,7 @@ Pending — written at finish.
   honors serving-process `developer_instructions` (marker finding
   returned). Scalpel transport fixed to devinstr per-worker config;
   adversarial-review focus text recorded as fallback.
+- 2026-08-03: v2.2 — SPEC APPROVED by owner with one amendment: lens
+  mandates capped at two simple sentences. Two future variants noted
+  in Out of scope (main-session verifier; spec-path context for the
+  lens deriver) — explicitly deferred, proceed as-is.
