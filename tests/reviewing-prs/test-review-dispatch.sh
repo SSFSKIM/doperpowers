@@ -630,6 +630,38 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d.pop("labels", None)
 json.dump(d, open(p, "w"))'
 
+# ---- a CONFLICT ticket never binds a reviewer ----------------------------------
+# Two or more status labels is `conflict` by _board.py's own definition, and
+# reading only the first position let `in-review` + `needs-human` pass as
+# in-review — binding a reviewer to an unrepaired ticket whose park says a
+# human is waiting.
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p))
+d["labels"] = [{"name": "status:in-review"}, {"name": "status:needs-human"}]
+json.dump(d, open(p, "w"))'
+OUT_CONFLICT="$("$DISPATCH" --sweep)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "a ticket carrying two status labels binds no reviewer"
+assert_contains "$OUT_CONFLICT" "multiple status labels" "the sweep names the conflict rather than a puzzling not-in-review"
+assert_contains "$OUT_CONFLICT" "repair it" "and points at the repair"
+# single-label in-review is unchanged: it dispatches
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = [{"name": "status:in-review"}]
+json.dump(d, open(p, "w"))'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a single status:in-review label still dispatches"
+# zero labels keeps the deliberate fail-open
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d.pop("labels", None)
+json.dump(d, open(p, "w"))'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "an untracked ticket still fails open, as before"
+
 # ---- sweep skips a PR whose primary ticket has left in-review (any route) -------
 # Finding 2 (independent review, E1 lane-split dispatch fix): a reviewer only
 # makes sense while its ticket is in-review — this generalizes past

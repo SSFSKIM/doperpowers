@@ -838,15 +838,21 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
         echo "#$pr: $verdict"
         return ;;
     esac
+    local m
+    m="$(_reviewer_meta "review-pr-$pr")"
+    [ -n "$m" ] && _retire "${m%%|*}"
     case "$stale" in
+      conflict*)
+        # Off-machine, not parked: two or more status labels. board-lint
+        # names it and board-transition repairs it; nothing here should bind
+        # a reviewer to a ticket whose state is undecided.
+        echo "#$pr: skip — primary ticket #$tid carries multiple status labels ($stale); repair it (board-lint.sh names the fix) before a reviewer binds"
+        return ;;
       needs-human|needs-info|interactive-preferred)
         resume="the review resumes via board-answer, not a fresh dispatch" ;;
       *)
         resume="resumes when the ticket returns to in-review, not from here" ;;
     esac
-    local m
-    m="$(_reviewer_meta "review-pr-$pr")"
-    [ -n "$m" ] && _retire "${m%%|*}"
     echo "#$pr: skip — primary ticket #$tid is parked (status:$stale); $resume"
     return
   fi
@@ -949,6 +955,13 @@ for p in json.load(sys.stdin):
         # never even reaches the "skip finished reviewer" wall once its
         # ticket has moved on. Absent any status:* label at all (untracked/
         # off-machine), fail open — proceed as before.
+        #
+        # EXACTLY one label, though. Two or more is `conflict` by _board.py's
+        # own definition, and reading the first position let a ticket labelled
+        # in-review + needs-human pass as in-review and bind a reviewer to an
+        # unrepaired ticket — whose park, incidentally, said a human was
+        # waiting. A conflict is reported by its own name so the operator sees
+        # what to repair rather than a puzzling "not in-review".
         stale=""
         if [ -n "$issue" ]; then
           stale="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
@@ -958,7 +971,10 @@ try:
 except Exception:
     labels = []
 status = [l[len("status:"):] for l in labels if l.startswith("status:")]
-print(status[0] if status and status[0] != "in-review" else "")')" || stale=""
+if len(status) > 1:
+    print("conflict(%s)" % ",".join(sorted(status)))
+elif status and status[0] != "in-review":
+    print(status[0])')" || stale=""
         fi
         run_for "$prn" sweep "$cr" "$stale" "$issue" || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
