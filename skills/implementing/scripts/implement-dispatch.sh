@@ -153,7 +153,16 @@ for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     except Exception:
         continue
     name = str(m.get("name") or "")
-    if name.startswith("review-pr-") or name.startswith("land-pr-"):
+    # Reviewer species are accounted in their OWN registry and never against a
+    # lane's slots. review-epic- matters here for the same reason the other two
+    # do, and for a window G1's stale-side cleanup cannot cover: a LIVE scale
+    # reviewer that has already moved its epic to ready-for-architect is still
+    # posting its trail, and while it does, its meta sat on the single
+    # architect slot and blocked every unrelated Architect dispatch. (This is
+    # only the lane-wide count — _bound_meta still refuses to dispatch THAT
+    # epic while a worker owns it, correctly.)
+    if name.startswith("review-pr-") or name.startswith("review-epic-") \
+       or name.startswith("land-pr-"):
         continue
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or m.get("status") not in ("working", "blocked", "error"):

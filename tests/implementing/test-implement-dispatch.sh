@@ -364,6 +364,38 @@ PY
 out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
 assert_contains "$out" "architect cap reached" "an in-design bound worker occupies the architect slot"
 
+# ...but a REVIEWER never occupies a lane slot, whatever state its ticket is
+# in. A live scale reviewer that has moved its epic to ready-for-architect is
+# still posting its trail, and while it does its meta sat on the single
+# architect slot and blocked every unrelated Architect dispatch.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:ready-for-architect", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+u = "eeee0008-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-epic-8", "ticket": "8",
+           "status": "working", "updated": "2026-07-18T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+os.remove(os.path.join(os.environ["DAEMON_HOME"],
+                       "cccc0008-0000-4000-8000-000000000000.json"))
+PY
+: > "$SPAWN_LOG"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_not_contains "$out" "architect cap reached" "a working scale reviewer does not occupy the architect slot"
+assert_contains "$out" "dispatched #9" "so an unrelated architect-lane ticket still dispatches"
+# the per-ticket binding is untouched: the epic the reviewer owns stays blocked
+out="$(run 8)"
+assert_contains "$out" "skip #8: bound worker" "the reviewer still blocks dispatch of ITS OWN ticket"
+python3 - <<'PY'
+import json, os
+d = os.environ["DAEMON_HOME"]
+os.remove(os.path.join(d, "eeee0008-0000-4000-8000-000000000000.json"))
+for p in os.listdir(d):
+    if p.startswith("aaaa") or p.startswith("cccc"):
+        os.remove(os.path.join(d, p))
+PY
+
 echo "implement-dispatch: parent-pin stamp + recomposition dispatch"
 
 # Fixtures land AFTER the sweep/cap sections on purpose — a new eligible
