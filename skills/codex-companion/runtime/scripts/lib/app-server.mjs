@@ -187,13 +187,17 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
-    this.proc = spawn("codex", ["app-server"], {
+    // Each configOverride is a `codex -c key=value` pair, so a caller that owns
+    // this server (a workflow worker) can differ from the session default.
+    const configArgs = (this.options.configOverrides ?? []).flatMap((kv) => ["-c", kv]);
+    this.proc = spawn("codex", [...configArgs, "app-server"], {
       cwd: this.cwd,
       env: this.options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
       windowsHide: true
     });
+    this.options.onSpawn?.(this.proc.pid);
 
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");

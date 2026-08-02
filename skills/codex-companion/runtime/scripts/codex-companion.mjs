@@ -16,6 +16,7 @@ import {
     getSessionRuntimeStatus,
     importExternalAgentSession,
     interruptAppServerTurn,
+    nativeReviewTarget,
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
@@ -256,18 +257,6 @@ function ensureCodexAvailable(cwd) {
   }
 }
 
-function buildNativeReviewTarget(target) {
-  if (target.mode === "working-tree") {
-    return { type: "uncommittedChanges" };
-  }
-
-  if (target.mode === "branch") {
-    return { type: "baseBranch", branch: target.baseRef };
-  }
-
-  return null;
-}
-
 function validateNativeReviewRequest(target, focusText) {
   if (focusText.trim()) {
     throw new Error(
@@ -275,7 +264,7 @@ function validateNativeReviewRequest(target, focusText) {
     );
   }
 
-  const nativeTarget = buildNativeReviewTarget(target);
+  const nativeTarget = nativeReviewTarget(target);
   if (!nativeTarget) {
     throw new Error("This `/codex:review` target is not supported by the built-in reviewer. Retry with `/codex:adversarial-review` for custom targeting.");
   }

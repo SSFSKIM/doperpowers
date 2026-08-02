@@ -132,6 +132,9 @@ export function getWorkingTreeState(cwd) {
   };
 }
 
+// Resolves base/scope into a review descriptor: what to review, plus the label
+// the CLI prints. The wire object the built-in reviewer takes is derived from
+// this by codex.mjs's resolveReviewTarget/nativeReviewTarget.
 export function resolveReviewTarget(cwd, options = {}) {
   ensureGitRepository(cwd);
 

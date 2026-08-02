@@ -40,6 +40,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { readJsonFile } from "./fs.mjs";
+// git.mjs resolves base/scope into a human-facing descriptor (mode, label, baseRef);
+// the wire target review/start takes is derived from it by nativeReviewTarget below.
+import { resolveReviewTarget as resolveReviewScope } from "./git.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
@@ -610,7 +613,24 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   }
 }
 
-async function withAppServer(cwd, fn) {
+/**
+ * @param {string} cwd
+ * @param {(client: CodexAppServerClient) => Promise<unknown>} fn
+ * @param {{ disableBroker?: boolean, configOverrides?: string[], onSpawn?: (pid: number) => void } | null} connect
+ *   When set, the caller owns the app-server: it is spawned directly with the
+ *   caller's config overrides and never shared through the session broker (so
+ *   there is nothing to fall back FROM, hence no broker-retry wrapper).
+ */
+async function withAppServer(cwd, fn, connect = null) {
+  if (connect) {
+    const ownClient = await CodexAppServerClient.connect(cwd, { disableBroker: true, ...connect });
+    try {
+      return await fn(ownClient);
+    } finally {
+      await ownClient.close();
+    }
+  }
+
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd);
@@ -999,6 +1019,41 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
 }
 
+/**
+ * The `target` the built-in reviewer takes, derived from a resolved review
+ * descriptor. Returns null for a descriptor the built-in reviewer cannot express.
+ * @param {{ mode: string, baseRef?: string }} descriptor
+ * @returns {ReviewTarget | null}
+ */
+export function nativeReviewTarget(descriptor) {
+  if (descriptor.mode === "working-tree") {
+    return { type: "uncommittedChanges" };
+  }
+
+  if (descriptor.mode === "branch") {
+    return { type: "baseBranch", branch: descriptor.baseRef };
+  }
+
+  return null;
+}
+
+/**
+ * base/scope → the exact object `review/start` carries. Same resolution the
+ * `/codex:review` verb runs (explicit base wins; scope auto|working-tree|branch),
+ * so a caller that drives runAppServerReview itself reviews the same thing.
+ * @param {string} cwd
+ * @param {{ base?: string | null, scope?: string | null }} [options]
+ * @returns {ReviewTarget}
+ */
+export function resolveReviewTarget(cwd, options = {}) {
+  const descriptor = resolveReviewScope(cwd, options);
+  const target = nativeReviewTarget(descriptor);
+  if (!target) {
+    throw new Error(`This review target is not supported by the built-in reviewer: ${descriptor.label}.`);
+  }
+  return target;
+}
+
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -1052,7 +1107,7 @@ export async function runAppServerReview(cwd, options = {}) {
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
-  });
+  }, options.connect ?? null);
 }
 
 export async function importExternalAgentSession(cwd, options = {}) {
@@ -1156,7 +1211,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  });
+  }, options.connect ?? null);
 }
 
 export async function findLatestTaskThread(cwd) {
