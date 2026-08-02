@@ -374,7 +374,12 @@
   // where a merged part-1 PR is normal mid-flight shape: those stay put and
   // only carry the CLOSE? mark on the card.
   function colOf(n) {
-    return n.close_candidate && n.state !== "in-progress" && n.state !== "in-review"
+    // The close-candidate relocation skips ACTIVE states (_board.ACTIVE):
+    // a merged linked PR on a ticket someone is still working is ordinary
+    // mid-flight shape, not a close cue. in-design is the architect lane's
+    // in-flight state and belongs here with the other two.
+    return n.close_candidate && n.state !== "in-design"
+      && n.state !== "in-progress" && n.state !== "in-review"
       ? "close-candidate" : n.state;
   }
   var KB_CORE = { "ready-for-architect": 1, "ready-for-implementer": 1, "in-progress": 1, "in-review": 1, "done": 1 };

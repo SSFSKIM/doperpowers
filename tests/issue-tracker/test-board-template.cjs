@@ -45,7 +45,8 @@ const ids = {};
 // active (in-progress) candidate that must stay put, and a default-hidden done.
 // #5 is a fifth, lane-split probe: an in-design ticket, which unlike the
 // architect/implementer queues is NOT a KB_CORE column (it renders only when
-// populated — this node is what populates it).
+// populated — this node is what populates it). It is also a close candidate,
+// which must NOT relocate it: in-design is an active state.
 const payload = {
   meta: { count: 5, updated: "2026-07-08" },
   nodes: [
@@ -58,7 +59,7 @@ const payload = {
     { id: "#4", state: "done", eligible: false, cls: "s_done", label: "done",
       title: "landed", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 240, y: 100 },
     { id: "#5", state: "in-design", eligible: false, cls: "s_design", label: "designing",
-      title: "lane split probe", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 480, y: 0 },
+      title: "lane split probe", close_candidate: true, blocked_by: [], relates_to: [], prs: [], x: 480, y: 0 },
   ],
   edges: [], epics: [],
 };
@@ -110,6 +111,11 @@ expect("done hidden by default", !("done" in cols));
 expect("architect-queue core column renders with no tickets in it", "ready-for-architect" in cols);
 expect("empty core column carries no cards", (cols["ready-for-architect"] || []).length === 0);
 expect("in-design ticket renders its own (non-core) column", (cols["in-design"] || []).includes("#5"));
+// #5 is ALSO a close candidate: in-design is an ACTIVE state (_board.ACTIVE),
+// so a merged linked PR under an Architect mid-design is ordinary mid-flight
+// shape, not a close cue — it stays in its lane like in-progress/in-review.
+expect("in-design candidate is not relocated out of its lane",
+  !(cols["close-candidate"] || []).includes("#5"));
 const laneOrder = Object.keys(cols);
 expect("lane columns render in KB_STATES order (architect, design, implementer)",
   laneOrder.indexOf("ready-for-architect") >= 0 &&
