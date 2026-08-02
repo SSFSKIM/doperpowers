@@ -494,11 +494,12 @@ assert_contains "$out" "dispatched #12" "recomposition-ready epic dispatches"
 assert_contains "$out" "role=ARCHITECT" \
   "recomposition-ready epic in ready-for-architect dispatches an Architect"
 
-# EPIC-HOOD OUTRANKS CATEGORY in the architect queue. A spike that decomposed
-# keeps its spike label and returns here for recomposition; routed on category
-# it would open the spike protocol, whose first board write
-# (ready-for-architect → in-progress) has no LEGAL edge — the worker hard-fails
-# and the sweep re-dispatches into the same failure every tick.
+# THE ARCHITECT QUEUE IS STATE-BASED and the state outranks category. Every
+# legal exit from ready-for-architect is an architect-lane exit; the spike
+# protocol's first board write (ready-for-architect → in-progress) has no LEGAL
+# edge from here — a category-routed spike hard-fails and the sweep
+# re-dispatches into the same failure every tick. Case one: the epic (a spike
+# that decomposed keeps its label and returns here for recomposition).
 python3 - <<'PY'
 import json, os
 def issue(num, title, labels, parent=None, state="OPEN", reason=None):
@@ -524,8 +525,34 @@ assert_contains "$out" "role=ARCHITECT" "...as an Architect claim, not on its sp
 PROMPT14="$PROMPT_DIR/14-spike-that-decomposed.prompt"
 assert_file_contains "$PROMPT14" "ARCHITECT worker for ticket #14" "the recomposed spike opens the architect protocol"
 assert_file_not_contains "$PROMPT14" "spike-worker-protocol.md" "never the spike protocol, whose first write is an illegal edge here"
-# a spike that never decomposed is untouched — #3 above is a leaf spike
-assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "a leaf spike still routes SPIKE"
+# Case two: the CHILDLESS spike. Epic-hood was never what made the old routing
+# wrong — the state is. A leaf spike lands in this queue whenever a human files
+# one design-first, and an ex-epic lands here childless once its children are
+# reparented away (the sweep's reconciliation-due return does exactly that).
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["16"] = {"number": 16, "id": "ID_16", "title": "Leaf spike awaiting design",
+                     "body": "body of #16", "state": "OPEN", "stateReason": None,
+                     "labels": ["status:ready-for-architect", "priority:P1", "spike"],
+                     "assignees": [], "parent": None, "blockedBy": [],
+                     "closesPRs": [], "xrefPRs": [], "comments": [],
+                     "createdAt": "2026-07-18T00:00:00Z",
+                     "updatedAt": "2026-07-18T00:00:00Z",
+                     "url": "https://github.com/test/repo/issues/16"}
+s["next"] = 17
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 16)"
+assert_contains "$out" "dispatched #16" "a childless spike in the architect queue dispatches"
+assert_contains "$out" "role=ARCHITECT" "...on its STATE, not its spike category"
+PROMPT16="$PROMPT_DIR/16-leaf-spike-awaiting-design.prompt"
+assert_file_contains "$PROMPT16" "ARCHITECT worker for ticket #16" "the childless spike opens the architect protocol"
+assert_file_not_contains "$PROMPT16" "spike-worker-protocol.md" "never the spike protocol — its first write is an illegal edge from this state"
+# category still routes WITHIN the implement lane — #3 above is a leaf spike
+# sitting in ready-for-implementer
+assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "a spike out of ready-for-implementer still routes SPIKE"
 assert_not_contains "$(mock_issue_body 12)" "parent-pin:" \
   "a parentless epic gets no stamp"
 
