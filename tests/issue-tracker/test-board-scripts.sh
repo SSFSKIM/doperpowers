@@ -1111,12 +1111,26 @@ assert_contains "$out" "#$epic_c_t: ready-for-architect → in-design" "epic par
 assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-design" "epic label reflects the legal in-flight state"
 assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
 
-# The pull walks lane QUEUES only. A PARKED epic (deferred here) is left
-# exactly where it is: a park is somebody else's live wake-queue entry, and
-# unparking it by bookkeeping would drop it out of that queue while its
-# owner waits. (Its own transition stays illegal for a worker/human too —
-# LEGAL["deferred"] has no in-progress edge — so nothing can skip the queue
-# and the gate this way.)
+# PULL_FROM = the two lane queues + needs-info, and the discriminant is the
+# park CONTRACT. needs-info is fold-and-recut: no bound session, no relay
+# entry, and on an epic it is the reconciling Architect's release exit
+# ("waiting on children") — so a child going active is the very information
+# that park names, and the pull IS the wake. It lands in-progress (PRE_PARK
+# has no needs-info entry, so the default applies) and folds the park's note.
+run board-register.sh "Released epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+epic_ni_t="$(state "s['next']-1")"
+run board-register.sh "Released epic child" enhancement P2 --parent "$epic_ni_t" --body-file "$SPEC_BODY" >/dev/null
+child_ni_t="$(state "s['next']-1")"
+run board-transition.sh "$epic_ni_t" needs-info "reconciled: acceptance holds — waiting on children" >/dev/null
+out="$(run board-transition.sh "$child_ni_t" in-progress)"
+assert_contains "$out" "#$epic_ni_t: needs-info → in-progress" "a needs-info release IS pulled back in-flight by a child going active"
+assert_contains "$(state "s['issues']['$epic_ni_t']['body']")" "(was: reconciled: acceptance holds — waiting on children)" "the pull folds the release note into its bookkeeping note"
+
+# The other three parks own a bound session (needs-human) or a claim on the
+# human (interactive-preferred, deferred) and are never disturbed by
+# bookkeeping. deferred first — and its own transition stays illegal for a
+# worker/human too (LEGAL["deferred"] has no in-progress edge), so nothing
+# can skip the queue and the gate this way.
 run board-register.sh "Deferred epic" enhancement P1 --state deferred --body-file "$SPEC_BODY" >/dev/null
 epic_def_t="$(state "s['next']-1")"
 run board-register.sh "Deferred epic child" enhancement P2 --parent "$epic_def_t" --body-file "$SPEC_BODY" >/dev/null
@@ -1127,11 +1141,19 @@ assert_contains "$(state "s['issues']['$epic_def_t']['labels']")" "status:deferr
 run board-register.sh "Plain deferred ticket" enhancement P2 --state deferred --body-file "$SPEC_BODY" >/dev/null
 plain_def_t="$(state "s['next']-1")"
 assert_fails run board-transition.sh "$plain_def_t" in-progress   # LEGAL["deferred"] unchanged: no gate-skip for a worker/human
+run board-register.sh "Steered epic" enhancement P1 --state interactive-preferred \
+  --note "the spine needs live steering" --body-file "$SPEC_BODY" >/dev/null
+epic_ip_t="$(state "s['next']-1")"
+run board-register.sh "Steered epic child" enhancement P2 --parent "$epic_ip_t" --body-file "$SPEC_BODY" >/dev/null
+child_ip_t="$(state "s['next']-1")"
+out="$(run board-transition.sh "$child_ip_t" in-progress)"
+assert_not_contains "$out" "#$epic_ip_t:" "an interactive-preferred epic's child does not pull it off the human's attention"
+assert_contains "$(state "s['issues']['$epic_ip_t']['labels']")" "status:interactive-preferred" "the steered epic stays parked"
 
-# A needs-human epic is a live relay-queue entry (the sweep's RELAY pass
-# selects on that state) and often has a bound worker waiting on the answer.
-# A child going active must not silently remove it from that queue — the
-# child transitions, the epic does not move, and its note survives intact.
+# needs-human is the session-resume contract: a bound worker waits on the
+# answer, and the sweep's RELAY pass selects on THAT state to find it. A
+# child going active must not silently remove the epic from that queue —
+# the child transitions, the epic does not move, its note survives intact.
 run board-register.sh "Parked epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
 epic_pk_t="$(state "s['next']-1")"
 run board-register.sh "Parked epic child" enhancement P2 --parent "$epic_pk_t" --body-file "$SPEC_BODY" >/dev/null

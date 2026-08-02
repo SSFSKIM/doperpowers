@@ -6,11 +6,11 @@
 #
 # Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
-#   → in-progress : the first active child pulls its parent epic(s) out of
-#                   their lane QUEUE into that lane's in-flight state
-#                   (architect queue → in-design; implementer queue →
-#                   in-progress) — PRE_PARK. A PARKED parent is left alone:
-#                   its park is somebody else's wake-queue entry.
+#   → in-progress : the first active child pulls its parent epic(s) in-flight
+#                   (architect queue → in-design; implementer queue or a
+#                   needs-info release → in-progress) — PRE_PARK/PULL_FROM.
+#                   needs-human / interactive-preferred / deferred parents are
+#                   left alone: those parks own a session or the human.
 #   → done/wontfix: an epic whose children are all terminal RETURNS to
 #                   ready-for-architect for recomposition (E2) — epics are
 #                   closed by an Architect's verdict, never by bookkeeping

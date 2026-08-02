@@ -63,19 +63,32 @@ PRE_PARK = {
     "in-review": "in-review",
 }
 # Park states — the ones whose exit is somebody ELSE's action (a human
-# decision, an information hunt, ongoing steering, a deliberate defer). A
-# park is a live wake-queue entry: it owns the ticket's note, its place in
-# the sweep's relay selection (which reads state needs-human), and often a
-# bound idle session waiting to be resumed. That is as true of an EPIC as
-# of a leaf — E2's Architect recomposition claims and scale reviewers bind
-# to epics and park them — so no bookkeeping unparks a park.
-# The ONE deliberate exception is recompose_epics: when an epic's last
-# child lands, nothing but a recomposition verdict can ever close it, and
-# nobody else will wake it for that. It preserves what the park owned by
-# folding the park's note into its own (see recompose_epics).
+# decision, an information hunt, ongoing steering, a deliberate defer).
 # BIRTH above is the other longhand twin of this tuple — a park state added
 # here almost always belongs there too.
 PARKED = ("needs-info", "needs-human", "interactive-preferred", "deferred")
+# What an active child may pull its parent epic out of. The two lane queues,
+# plus exactly one park — and the discriminant is the E2 park contract, not
+# "epics have no workers" (they do: recomposition claims and scale reviewers
+# bind to epics and park them).
+#   needs-human            the session-resume contract — a bound worker waits
+#                          on the answer, and the sweep's RELAY pass selects
+#                          on THIS state to find it. Unparking would delete
+#                          the human's question and drop the epic out of that
+#                          queue while its worker sits idle.
+#   interactive-preferred  a claim on the human's live attention.
+#   deferred               a deliberate "not now" decision.
+#   needs-info             fold-and-recut: NO bound worker and no relay
+#                          entry by contract. On an epic it is the reconciling
+#                          Architect's release exit ("reconciled: … — waiting
+#                          on children"), and a child going active is
+#                          literally the information whose absence that park
+#                          names. The pull IS the wake.
+# The other bookkeeping unpark is recompose_epics, which wakes a parked epic
+# of ANY kind when its last child lands — nothing but a recomposition verdict
+# can close an epic, so no one else ever would. Both preserve what the park
+# owned by folding its note into their own (see _epic_note).
+PULL_FROM = DISPATCHABLE + ("needs-info",)
 LEGAL = {
     "ready-for-architect":   {"in-design", "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},
@@ -581,21 +594,21 @@ def _epic_note(node, why):
 
 
 def pull_epics(tickets, tid, lines):
-    """First active child pulls its parent chain out of its lane QUEUE into
-    that lane's in-flight state — PRE_PARK's queue -> in-flight mapping,
-    reused rather than a second table (ready-for-architect -> in-design,
-    ready-for-implementer -> in-progress). Writing straight to "in-progress"
-    regardless of the parent's queue used to strand a ready-for-architect
-    epic outside every state its own lane's happy path or park returns
-    ever produce.
+    """First active child pulls its parent chain out of PULL_FROM into its
+    lane's in-flight state — PRE_PARK's queue -> in-flight mapping, reused
+    rather than a second table (ready-for-architect -> in-design;
+    ready-for-implementer and the one pullable park have no PRE_PARK entry
+    and default to in-progress, their existing in-flight state). Writing
+    straight to "in-progress" regardless of the parent's queue used to
+    strand a ready-for-architect epic outside every state its own lane's
+    happy path or park returns ever produce.
 
-    The walk stops at a PARKED parent, exactly as pass_impact's UNCLAIMABLE
-    skip does: an epic's park is somebody's — a human's pending question
-    (also a live relay-queue entry, selected on state needs-human), a
-    bound recomposition Architect's or scale reviewer's hold — and pulling
-    it would silently remove it from that queue while its worker waits.
-    A parked ancestor is woken by whoever owns the park, or by
-    recompose_epics when the last child lands; never by a sibling going
+    The walk stops at every OTHER park (see PULL_FROM for the contract that
+    discriminates them), exactly as pass_impact's UNCLAIMABLE skip does:
+    those parks own a bound session or a claim on the human, and unparking
+    one would delete its note and drop the epic out of the queue its owner
+    is waiting in. Such an ancestor is woken by whoever owns the park, or
+    by recompose_epics when the last child lands; never by a sibling going
     active.
 
     This is the board's own bookkeeping on an epic — never dispatched,
@@ -608,12 +621,12 @@ def pull_epics(tickets, tid, lines):
     That was the wrong invariant to assert; reverted.) The real invariant
     is structural, not legal: an epic pull only ever lands on an in-flight
     state (ACTIVE), never a queue or park — asserted below so a future
-    DISPATCHABLE addition whose PRE_PARK-or-default target resolves outside
+    PULL_FROM addition whose PRE_PARK-or-default target resolves outside
     ACTIVE fails loud instead of silently routing an epic somewhere
     nonsensical.
     """
     p = tickets[tid].get("parent")
-    while p and p in tickets and tickets[p]["state"] in DISPATCHABLE:
+    while p and p in tickets and tickets[p]["state"] in PULL_FROM:
         pstate = tickets[p]["state"]
         if pstate == "ready-for-architect" \
            and (tickets[p].get("note") or "").startswith("reconciliation-due:"):
@@ -633,7 +646,7 @@ def pull_epics(tickets, tid, lines):
         to = PRE_PARK.get(pstate, "in-progress")
         assert to in ACTIVE, (
             "pull_epics: %s -> %s is not an in-flight state (PRE_PARK "
-            "drifted out of sync with ACTIVE for a DISPATCHABLE state)" % (pstate, to))
+            "drifted out of sync with ACTIVE for a PULL_FROM state)" % (pstate, to))
         lines.append(apply_state(
             tickets, p, to, _epic_note(tickets[p], "epic: child #%s active" % tid)))
         p = tickets[p].get("parent")
