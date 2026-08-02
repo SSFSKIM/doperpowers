@@ -98,11 +98,21 @@ for i, body in enumerate((issues.get(num) or {}).get("comments") or []):
     out.append({"id": "IC_%s_%d" % (num, i), "author": {"login": "board"},
                 "authorAssociation": "OWNER",
                 "body": body, "createdAt": "2026-07-18T00:00:00Z"})
-if mode == "rest":
-    print(json.dumps([{"id": c["id"], "body": c.get("body") or "",
-                       "created_at": c.get("createdAt") or "",
-                       "author_association": c.get("authorAssociation")}
-                      for c in out]))
+if mode.startswith("rest"):
+    rows = [{"id": c["id"], "body": c.get("body") or "",
+             "created_at": c.get("createdAt") or "",
+             "author_association": c.get("authorAssociation")}
+            for c in out]
+    # Paginated for real, in whichever of the two shapes the caller asked for
+    # (see the shared mock): concatenated per-page arrays without --slurp,
+    # one outer array of page-arrays with it.
+    size = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
+    pages = [rows[i:i + size] for i in range(0, len(rows), size)] or [[]]
+    if mode == "rest-slurp":
+        print(json.dumps(pages))
+    else:
+        for pg in pages:
+            print(json.dumps(pg))
 else:
     print(json.dumps({"comments": out[:int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)]}))
 PY
@@ -124,7 +134,8 @@ if [ "\${1:-}" = "api" ]; then
     repos/*/issues/*/comments)
       _n="\${2%/comments}"; _n="\${_n##*/}"
       [ -z "\${COMMENT_READ_LOG:-}" ] || echo "\$_n" >> "\$COMMENT_READ_LOG"
-      exec python3 "\$MERGE_COMMENTS" "\$_n" rest ;;
+      _m=rest; case " \$* " in *" --slurp "*) _m=rest-slurp ;; esac
+      exec python3 "\$MERGE_COMMENTS" "\$_n" "\$_m" ;;
   esac
 fi
 exec "$REPO_ROOT/tests/issue-tracker/mock-gh/gh" "\$@"

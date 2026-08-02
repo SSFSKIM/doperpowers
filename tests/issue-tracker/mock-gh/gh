@@ -189,7 +189,20 @@ def main():
                 out.append({"id": c.get("id", i + 1), "body": c.get("body") or "",
                             "created_at": c.get("createdAt") or "",
                             "author_association": c.get("authorAssociation")})
-            print(json.dumps(out))
+            # REAL PAGINATION, both shapes. Bare --paginate streams each page
+            # as its own top-level array, concatenated — several JSON documents
+            # in one stream, which a single json.loads rejects once a second
+            # page exists. --slurp wraps them into one outer array instead.
+            # Serving only the slurped shape (or one array either way) would
+            # make every multi-page fixture vacuous: the decode path that
+            # actually broke is the one between these two shapes.
+            page = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
+            pages = [out[i:i + page] for i in range(0, len(out), page)] or [[]]
+            if "--slurp" in argv:
+                print(json.dumps(pages))
+            else:
+                for p in pages:
+                    print(json.dumps(p))
             return
         try:
             with open(os.environ["MOCK_GH_REFS"]) as f:

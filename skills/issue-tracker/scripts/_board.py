@@ -480,9 +480,19 @@ def comments(num):
     child whose proposal it never reached, so nothing brings that child back.
     A failed page is not a short read — gh() dies on non-zero exit, which
     kills the pass before any cursor write, so a cursor only ever records a
-    COMPLETE read."""
-    raw = json.loads(gh(["api", "repos/%s/issues/%s/comments" % (repo(), num),
-                         "--paginate"]) or "[]")
+    COMPLETE read.
+
+    `--slurp` is not optional. Bare `--paginate` streams each page as its own
+    top-level array, concatenated — valid JSON documents back to back, which
+    json.loads rejects with "Extra data" the moment a second page exists. That
+    fails on precisely the long trails this read was written for. --slurp wraps
+    the pages in one outer array instead, so the result is a list of
+    page-lists and flattening it one level yields the log. (gh >= 2.53; an
+    older gh rejects the flag outright, and gh() surfaces that stderr rather
+    than half-reading.)"""
+    pages = json.loads(gh(["api", "repos/%s/issues/%s/comments" % (repo(), num),
+                           "--paginate", "--slurp"]) or "[]")
+    raw = [c for page in pages for c in (page or [])]
     return [{"id": c.get("id"),
              "body": c.get("body") or "",
              "createdAt": c.get("created_at") or "",
