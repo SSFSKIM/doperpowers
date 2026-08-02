@@ -75,11 +75,19 @@ export async function runWorkflow(spec) {
       const n = occurrences.get(base) ?? 0;
       occurrences.set(base, n + 1);
       const key = `${base}#${n}`;
+      // The cache serves SUCCESSES only. A journaled failure falls through to a
+      // live re-run: resume exists to recover a crashed run, and replaying a
+      // transient worker death would mean a lost result can never be regained.
+      // A deterministic failure merely re-fails, bounded by the transport retry.
+      // The occurrence counter above still consumed this key either way, so
+      // later identical calls stay aligned with the journal.
       if (finished.has(key)) {
-        emit(`cache ${kind}:${label ?? ""}`);
         const hit = finished.get(key);
-        if (hit.error) throw Object.assign(new Error(hit.error), { cached: true });
-        return hit.result;
+        if (!hit.error) {
+          emit(`cache ${kind}:${label ?? ""}`);
+          return hit.result;
+        }
+        emit(`cache-skip ${kind}:${label ?? ""}`);
       }
       await sem.acquire();
       appendEvent(journalPath, { type: "started", key, kind, label });

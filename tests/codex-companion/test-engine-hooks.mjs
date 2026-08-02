@@ -291,6 +291,56 @@ const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "worker
   );
 }
 
+// --- resume recovers a failed call, keeps a successful one cached ------------
+// The cache serves SUCCESSES only. Replaying a journaled failure would mean a
+// crashed run can never regain a worker it lost to a transient death; a
+// genuinely deterministic failure just re-fails, bounded by the transport retry.
+{
+  const c = newCase("recover", [
+    { finalMessage: "good answer" },        // 1  run 1: the call that sticks
+    { die: true },                          // 2  run 1: risky, first attempt
+    { die: true },                          // 3  run 1: risky, retry
+    { finalMessage: "risky recovered" }     // 4  run 2: risky, re-run live
+  ]);
+  const spec = {
+    scriptPath: path.join(FIXTURES, "fx-recover.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir
+  };
+  const first = await runWorkflow(spec);
+  assert.deepEqual(first.result, { good: "good answer", risky: null }, "run 1 loses the risky call");
+  assert.equal(counter(c.mockDir), 3, "run 1 burned one turn on the good call and two on the dead one");
+
+  const lines = [];
+  const second = await runWorkflow({ ...spec, resume: true, emit: (l) => lines.push(l) });
+  assert.deepEqual(
+    second.result,
+    { good: "good answer", risky: "risky recovered" },
+    "the resume serves the cached success and re-runs the failure to a real answer"
+  );
+  assert.equal(counter(c.mockDir), 4, "exactly one new turn: the failure re-ran live, the success did not");
+  assert.equal(second.agents, 1, "only the previously-failed call was issued again");
+  assert.ok(lines.includes("cache agent:good"), "the successful call is announced as a cache hit");
+  assert.ok(lines.includes("cache-skip agent:risky"), "the failed call is announced as a deliberate cache miss");
+  assert.ok(!lines.includes("cache agent:risky"), "a failed record is never served as a hit");
+  assert.ok(!lines.includes("start agent:good"), "the cached success never reaches a live turn");
+
+  const evs = journal(c.runDir);
+  const riskyKey = evs.find((e) => e.type === "started" && e.label === "risky").key;
+  const riskyFinished = evs.filter((e) => e.type === "finished" && e.key === riskyKey);
+  assert.equal(riskyFinished.length, 2, "both the failure and the recovery are journaled under the same key");
+  assert.ok(riskyFinished[0].error, "the first record is the failure");
+  assert.equal(riskyFinished[1].result, "risky recovered", "the last record wins, so a third run cache-hits the success");
+  const goodKey = evs.find((e) => e.type === "started" && e.label === "good").key;
+  assert.equal(
+    evs.filter((e) => e.type === "started" && e.key === goodKey).length,
+    1,
+    "the successful call was never started a second time"
+  );
+  assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
+}
+
 // --- lease and script-error refusals -----------------------------------------
 {
   const c = newCase("refuse", [{ finalMessage: "unused" }]);
