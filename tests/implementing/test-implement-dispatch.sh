@@ -431,6 +431,32 @@ assert_contains "$(mock_issue_body 10)" "body of #10" \
 assert_not_contains "$(mock_issue_body 1)" "parent-pin:" \
   "no parent-pin on a parentless dispatch"
 
+# The pin ACCUMULATES across reparents: a redispatch under a new parent must
+# not erase the old entry, because the IMPACT pass reads exactly this field to
+# decide whether a proposal naming that old parent is admissible (M1). A
+# redispatch under the SAME parent refreshes its sha in place — lineage, not
+# attempts.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $HEAD_SHA" "same-parent redispatch keeps a single entry"
+assert_not_contains "$(mock_issue_body 10)" ";" "...refreshed in place, not appended"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["10"]["parent"] = 12          # reparented onto the other epic
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(mock_issue_body 10)" "#11 @ $HEAD_SHA; #12 @ $HEAD_SHA" \
+  "a redispatch under a NEW parent appends, preserving the old lineage entry"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["10"]["parent"] = 11          # put it back for the blocks below
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+
 out="$(run 12)"
 assert_contains "$out" "dispatched #12" "recomposition-ready epic dispatches"
 assert_contains "$out" "role=ARCHITECT" \

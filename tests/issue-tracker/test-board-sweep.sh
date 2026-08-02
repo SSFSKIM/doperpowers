@@ -252,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 62, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -281,7 +281,7 @@ s = {"next": 62, "labels": ["status:needs-human", "status:in-progress",
     "48": issue(48, "the epic the child now hangs off", ["status:in-progress"]),
     "49": issue(49, "reparented child with a proposal about its old parent",
                 ["status:in-progress"],
-                body="Child body\n\n<!-- board:meta\nparent-pin: #47 @ abc123\n-->\n"),
+                body="Child body\n\n<!-- board:meta\nparent-pin: #47 @ abc123; #48 @ def456\n-->\n"),
     # orphaned after posting: board-edge --orphan must not kill the discovery
     "52": issue(52, "the parent an orphan's proposal names", ["status:in-progress"]),
     "53": issue(53, "orphaned child carrying a proposal", ["status:in-progress"],
@@ -292,6 +292,15 @@ s = {"next": 62, "labels": ["status:needs-human", "status:in-progress",
     "59": issue(59, "the child that pulled it", ["status:in-progress"]),
     "60": issue(60, "epic mid-recomposition claim", ["status:in-design"]),
     "61": issue(61, "its terminal child", [], state="CLOSED", reason="COMPLETED"),
+    # twice-reparented child: dispatched under #63, redispatched under #65
+    # (pin appended), then moved to #64 without a redispatch. Its proposal
+    # about #65 is admissible only through the SECOND pin entry — a
+    # single-value pin, or a first-match read of a multi-entry one, rejects it.
+    "62": issue(62, "twice-reparented child", ["status:in-progress"],
+                body="Child\n\n<!-- board:meta\nparent-pin: #63 @ s1; #65 @ s2\n-->\n"),
+    "63": issue(63, "its first parent", ["status:in-progress"]),
+    "64": issue(64, "its current parent", ["status:in-progress"]),
+    "65": issue(65, "the parent its proposal is about", ["status:in-progress"]),
     "55": issue(55, "child whose proposal names a stranger", ["status:in-progress"]),
     "56": issue(56, "the unrelated ticket that proposal names", ["status:in-progress"]),
     "57": issue(57, "the real parent of #55", ["status:in-progress"]),
@@ -356,6 +365,7 @@ s["issues"]["49"]["parent"] = 48
 s["issues"]["55"]["parent"] = 57
 s["issues"]["59"]["parent"] = 58
 s["issues"]["61"]["parent"] = 60
+s["issues"]["62"]["parent"] = 64
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -728,6 +738,19 @@ assert_contains "$(issue_labels 56)" "status:in-progress" "a proposal naming a t
 assert_equals "$(comment_count 56 "[board-epic] reconcile:")" "0" "and is never marked consumed"
 assert_contains "$(issue_labels 57)" "status:in-progress" "nor is the child's real parent disturbed by the claim"
 assert_contains "$out" "not in its lineage" "the pass names the rejection"
+# ...and the accumulated pin is what keeps the reparented case admissible: #49
+# carries BOTH parents (a redispatch under #48 appended rather than erasing
+# #47), so its proposal about #47 above routed on the OLD entry. A single-value
+# pin would have rejected it as out-of-lineage.
+assert_contains "$(issue_note 47)" "reconciliation-due:" "an accumulated pin keeps the previous parent admissible"
+# The whole accumulated pin counts, not just its first entry: #62 was
+# dispatched under #63, redispatched under #65 (appending), then moved to #64.
+# Its proposal about #65 is admissible only through that SECOND entry.
+mock_comment 62 "[parent-impact] #65 the contract it executed cannot hold"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 65)" "status:ready-for-architect" "a proposal about a parent recorded LATER in the pin still routes"
+assert_contains "$(last_comment 65)" "[board-epic] reconcile: #62@" "and its marker lands there"
+assert_contains "$(issue_labels 64)" "status:in-progress" "the current parent is untouched"
 
 # ...and an ORPHANED child still routes what it named. board-edge --orphan
 # after the proposal was posted would otherwise bury the discovery, which is

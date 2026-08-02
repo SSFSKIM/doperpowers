@@ -241,6 +241,17 @@ dispatch_one() {
   # above; nothing in it wants the worker's name or uuid. Non-fatal like the
   # role write below — a missing pin costs the parent-impact reconcile its
   # lineage check on THIS child, nothing more.
+  # The pin ACCUMULATES across reparents. A single-value overwrite erased the
+  # previous parent from the record, and the IMPACT pass reads exactly this
+  # field to decide whether a proposal may name that parent (M1): a child
+  # reparented and redispatched while its old proposal still sat unmarked —
+  # the parent was parked, or in the architect lane — lost the only evidence
+  # that made the proposal admissible, and it was rejected forever. Entries
+  # are separated by "; " (parse_meta splits a meta line on the FIRST colon
+  # only, so the value carries separators safely), newest last. A redispatch
+  # under the SAME parent replaces that parent entry with the fresh sha —
+  # accumulation tracks lineage, not attempts. No expiry: a pin retires when
+  # the board forgets the ticket.
   if [ -n "${T_PARENT:-}" ]; then
     pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
     T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
@@ -251,7 +262,13 @@ import _board as B
 env = os.environ
 tickets = B.snapshot()
 tid = B.resolve(env["T_N"], tickets)
-B.update_meta(tid, tickets[tid], **{"parent-pin": env["T_PIN"]})
+node = tickets[tid]
+recorded = B.parse_meta(node["body"]).get("parent-pin") or ""
+mine = env["T_PIN"].split("@")[0].strip()
+kept = [e.strip() for e in recorded.split(";")
+        if e.strip() and e.split("@")[0].strip() != mine]
+B.update_meta(tid, node,
+              **{"parent-pin": "; ".join(kept + [env["T_PIN"]])})
 PY
   fi
 

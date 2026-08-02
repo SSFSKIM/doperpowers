@@ -376,10 +376,12 @@ def lineage(node):
     out = set()
     if node.get("parent"):
         out.add(str(node["parent"]))
+    # EVERY recorded parent, not just the newest: the pin accumulates across
+    # reparents (implement-dispatch appends on a differing parent), and an
+    # older entry is exactly what keeps an undispositioned proposal about a
+    # previous parent admissible after the child was redispatched.
     pin = B.parse_meta(node.get("body") or "").get("parent-pin") or ""
-    m = PIN_RE.search(pin)
-    if m:
-        out.add(m.group(1))
+    out.update(PIN_RE.findall(pin))
     return out
 # Marker homes follow the TARGET, so the dedupe scan is keyed by target and
 # cached per tick — one read per target rather than per (child, proposal).
