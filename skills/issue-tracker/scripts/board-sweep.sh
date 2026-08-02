@@ -11,10 +11,12 @@
 #            absent/error), silent past the stall timeout, or finished
 #            without a board transition → bounded resume (a nudge on the SAME
 #            session — context intact), 3 lifetime attempts per daemon, then
-#            park needs-human with an orientation note. A dead worker on a
-#            still-pre-verdict (ready-for-*) ticket is just retired — the
-#            dispatch pass fresh-dispatches it (re-orientation is cheap
-#            pre-verdict).
+#            park needs-human with an orientation note. A worker on a
+#            still-pre-verdict (ready-for-*) ticket is just retired — dead,
+#            or live-but-silent past the stall threshold on a state it has
+#            already handed off — and the dispatch pass fresh-dispatches it
+#            (re-orientation is cheap pre-verdict; a lingering binding is
+#            not, it holds the destination lane's slot).
 #   CANCEL   live implement/spike workers whose ticket reached a terminal
 #            state (done/wontfix) → retire + a [board] termination comment.
 #            Park states never cancel (park = pause); review-pr-*,
@@ -232,6 +234,28 @@ pass_recover() {
             log "[sweep] RECOVER: #$tk pre-verdict worker $uuid dead — retired (dispatch pass re-runs the gate fresh)"
             "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
             acted=$((acted+1)) ;;
+          live)
+            # Live but silent past the threshold, on a ticket sitting in a
+            # lane QUEUE. A queue state is a HANDED-OFF state: whatever this
+            # worker was doing, its writes on this ticket are done — the
+            # ticket is waiting for the next lane's dispatch. Yet the meta
+            # still binds the ticket, and implement-dispatch charges it to
+            # the destination lane's slots (and refuses to dispatch a ticket
+            # with a bound working worker at all), so a cap-1 lane blocks for
+            # as long as the process lingers. Retire the binding — not the
+            # in-flight arm's resume ladder, which exists for a worker that
+            # still owns its exit. Same silence signal as that arm: the
+            # transcript's mtime, the only stable turn-end clock here (the
+            # meta's `updated` is bumped by the finalize just above).
+            tx="$(_transcript "$current")"
+            if [ -n "$tx" ]; then
+              age="$(( ( $(date +%s) - $(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx") ) / 60 ))"
+              if [ "$age" -ge "$STALL_MIN" ]; then
+                log "[sweep] RECOVER: #$tk worker $uuid is live but silent for ${age}m (threshold ${STALL_MIN}m) on a handed-off $state ticket — retiring the binding; it owns no further writes here"
+                "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
+                acted=$((acted+1))
+              fi
+            fi ;;
         esac ;;
     esac
   done <<EOF

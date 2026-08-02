@@ -252,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 50, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 52, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -289,6 +289,12 @@ s = {"next": 50, "labels": ["status:needs-human", "status:in-progress",
     "19": issue(19, "resume-fork failed once", ["status:in-progress"]),
     "20": issue(20, "dead architect mid-design", ["status:in-design"]),
     "21": issue(21, "dead pre-verdict architect", ["status:ready-for-architect"]),
+    # a queue state is a HANDED-OFF state: the worker that wrote it owns no
+    # further writes here, but its binding still charges the destination lane
+    "50": issue(50, "handed off, worker still live and silent",
+                ["status:ready-for-implementer"]),
+    "51": issue(51, "handed off moments ago, worker still live",
+                ["status:ready-for-implementer"]),
     # IMPACT pass: two epic/child pairs, no bound workers. 25 is claimable
     # (pulled in-progress by its active child); 27 has already returned to
     # ready-for-architect, so its child's proposal must be left unmarked.
@@ -365,6 +371,8 @@ meta(U("aaaa0018"), "18-healthy", "18", "working")
 meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
 meta(U("aaaa0020"), "20-design", "20", "working")
 meta(U("aaaa0021"), "21-preverdict", "21", "working")
+meta(U("aaaa0050"), "50-handed-off", "50", "working")
+meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 PY
 
 # finalize verdicts per uuid (only consulted for working/blocked metas —
@@ -377,18 +385,20 @@ json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle",
            U("aaaa0045"): "idle", U("aaaa0046"): "idle",
            U("aaaa0034"): "idle",
-           U("aaaa0020"): "absent", U("aaaa0021"): "absent"},
+           U("aaaa0020"): "absent", U("aaaa0021"): "absent",
+           U("aaaa0050"): "live", U("aaaa0051"): "live"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
 # transcripts: mtime is the turn-end ordering signal. 12 old (stall), 18
 # fresh (healthy); 15/16 old (comments postdate the turn → relay-eligible),
 # 17 fresh (its comment predates the turn end → not an answer).
-for u in aaaa0012 aaaa0015 aaaa0016 aaaa0034 aaaa0045 aaaa0046; do
+for u in aaaa0012 aaaa0015 aaaa0016 aaaa0034 aaaa0045 aaaa0046 aaaa0050; do
   f="$HOME/.claude/projects/proj/$u-0000-4000-8000-000000000000.jsonl"
   touch "$f"; touch -t 202607170000 "$f"
 done
 touch "$HOME/.claude/projects/proj/aaaa0018-0000-4000-8000-000000000000.jsonl"
+touch "$HOME/.claude/projects/proj/aaaa0051-0000-4000-8000-000000000000.jsonl"
 touch "$HOME/.claude/projects/proj/aaaa0017-0000-4000-8000-000000000000.jsonl"
 
 # comments: 15 fresh human answer · 16 newest is [answers] · 17 stale comment
@@ -460,6 +470,16 @@ assert_contains "$out" "RECOVER: #20 worker aaaa0020-0000-4000-8000-000000000000
 assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready-for-architect worker is retired, not resumed"
 assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
 assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
+# A live-but-silent worker on a HANDED-OFF (queue) ticket holds the
+# destination lane: implement-dispatch charges its binding to that lane's
+# slots and refuses to dispatch a ticket a working worker owns, so a cap-1
+# lane blocks for as long as the process lingers. Past the stall threshold
+# the binding is retired — not resumed; the worker owns no writes here.
+assert_contains "$log" "retire:aaaa0050-0000-4000-8000-000000000000" "a live-but-stalled worker on a queue-state ticket is retired"
+assert_contains "$out" "handed-off ready-for-implementer ticket" "the retire log says why the binding was released"
+assert_not_contains "$log" "resume:aaaa0050" "it is retired, never put on the resume ladder"
+assert_not_contains "$log" "retire:aaaa0051-0000-4000-8000-000000000000" "a worker still inside the threshold is left alone"
+assert_not_contains "$log" "retire:aaaa0018" "and a live worker on an IN-FLIGHT ticket is never touched — it owns its exit"
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"
@@ -665,6 +685,7 @@ assert_contains "$(issue_labels 48)" "status:in-progress" "the parent the child 
 assert_equals "$(comment_count 48 "[board-epic] reconcile:")" "0" "and gets no marker for a proposal that was never about it"
 out="$(run_sweep)"
 assert_equals "$(comment_count 47 "[board-epic] reconcile:")" "1" "the marker on the named parent dedupes the next tick"
+
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
