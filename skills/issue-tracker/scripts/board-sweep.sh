@@ -19,8 +19,8 @@
 #            state (done/wontfix) → retire + a [board] termination comment.
 #            Park states never cancel (park = pause); review-pr-*/land-pr-*
 #            workers are PR-lifecycle species and are never board-cancelled.
-#   IMPACT   ACTIVE children whose ticket carries a [parent-impact] proposal
-#            the parent has not yet consumed → the parent returns to
+#   IMPACT   children in ANY state whose ticket carries a [parent-impact]
+#            proposal the parent has not yet consumed → the parent returns to
 #            ready-for-architect (reconciliation-due), plus a
 #            [board-epic] reconcile: #<child>@<comment-id> dedupe marker.
 #            The marker is written ONLY when that return actually fires:
@@ -248,6 +248,16 @@ pass_impact() {
   # a [parent-impact] comment on its OWN ticket, and this pass performs
   # the parent's reconciliation return (board bookkeeping). Dedupe is a
   # [board-epic] reconcile: marker on the parent naming child@comment-id.
+  #
+  # The CHILD's state is not a filter. It used to be (ACTIVE only), which
+  # meant the primary case never got scanned mid-flight: a spike's standard
+  # exit is post-findings-then-park, and a child that parks or lands right
+  # after posting its proposal left it for the Architect's end-of-epic
+  # lineage check. So: every parented child is read, in any state.
+  # Cost: one `gh issue view --json comments` per parented child per tick.
+  # The dedupe markers stop the pass ACTING twice, never READING twice; a
+  # per-parent comment cache (two lines) would cut the parent-side reads if
+  # this ever gets expensive — deliberately left out while it is cheap.
   # The tally is printed by the python body, not counted in shell: a
   # heredoc nested inside $(...) is mis-parsed by bash 3.2 (macOS, where
   # launchd runs this) as soon as the body contains an apostrophe. It also
@@ -273,7 +283,7 @@ tickets = B.snapshot()
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     p = n.get("parent")
-    if not p or p not in tickets or n["state"] not in B.ACTIVE:
+    if not p or p not in tickets:
         continue
     if tickets[p]["state"] in UNCLAIMABLE:
         continue

@@ -285,12 +285,23 @@ s = {"next": 40, "labels": ["status:needs-human", "status:in-progress",
     # a queued SIBLING of 26: its dispatch must not yank the epic back out of
     # the reconciliation return the IMPACT pass just performed
     "33": issue(33, "sibling of the child that proposed", ["status:ready-for-implementer"]),
+    # the child's OWN state is not a filter: a spike parks needs-human right
+    # after posting its findings (its standard exit), and a child can land
+    # before the next tick reads its proposal. Both must still be scanned.
+    "35": issue(35, "epic whose child parked after proposing", ["status:in-progress"]),
+    "36": issue(36, "spike parked after posting its proposal", ["status:needs-human"],
+                body="Spike\n\n<!-- board:meta\nnote: findings ready\n-->\n"),
+    "37": issue(37, "epic whose child landed before the tick", ["status:in-progress"]),
+    "38": issue(38, "child that landed with its proposal unmarked", [],
+                state="CLOSED", reason="COMPLETED"),
 }}
 s["issues"]["26"]["parent"] = 25
 s["issues"]["33"]["parent"] = 25
 s["issues"]["28"]["parent"] = 27
 s["issues"]["30"]["parent"] = 29
 s["issues"]["32"]["parent"] = 31
+s["issues"]["36"]["parent"] = 35
+s["issues"]["38"]["parent"] = 37
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -530,6 +541,24 @@ set_status 31 in-progress   # the park resolves (board-answer's pre-park return)
 out="$(run_sweep)"
 assert_contains "$(issue_labels 31)" "status:ready-for-architect" "the skipped proposal is consumed once the park resolves"
 assert_equals "$(comment_count 31 "[board-epic] reconcile:")" "1" "an unparked parent consumes the proposal exactly once"
+
+# The CHILD's state is not a filter. A spike's standard exit is
+# post-findings-then-park, so the pass's primary use case sits in
+# needs-human by the time any tick reads it; a child can also land before
+# the next tick. Either way the parent still owes a reconciliation, and the
+# Architect's end-of-epic lineage check must not be the only thing that
+# catches it.
+mock_comment 36 "[parent-impact] #35 the acceptance assumes an ordering the queue cannot give"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 35)" "status:ready-for-architect" "a PARKED child's proposal still returns the parent"
+assert_contains "$(issue_note 35)" "reconciliation-due:" "the parked child's return carries the reconciliation-due note"
+assert_equals "$(comment_count 35 "[board-epic] reconcile:")" "1" "the parked child's proposal is marked consumed exactly once"
+assert_contains "$(issue_labels 36)" "status:needs-human" "the proposing child keeps its own park"
+
+mock_comment 38 "[parent-impact] #37 this landed against a parent acceptance that has since moved"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 37)" "status:ready-for-architect" "a TERMINAL child's unmarked proposal still returns the parent"
+assert_equals "$(comment_count 37 "[board-epic] reconcile:")" "1" "the terminal child's proposal is marked consumed exactly once"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
