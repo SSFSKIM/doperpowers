@@ -252,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 45, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 50, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -275,6 +275,12 @@ s = {"next": 45, "labels": ["status:needs-human", "status:in-progress",
     # relay author trust: what the relay selects is injected verbatim into a
     # live session, so an outsider must neither be relayed nor shadow the
     # real answer sitting under it
+    # a proposal names the parent whose contract it contradicts; #49 was
+    # reparented from #47 to #48 after posting one about #47
+    "47": issue(47, "the epic the proposal actually names", ["status:in-progress"]),
+    "48": issue(48, "the epic the child now hangs off", ["status:in-progress"]),
+    "49": issue(49, "reparented child with a proposal about its old parent",
+                ["status:in-progress"]),
     "45": issue(45, "parked, newest comment is a stranger's", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
     "46": issue(46, "parked, a stranger commented over the answer", ["status:needs-human"],
@@ -325,6 +331,7 @@ s["issues"]["36"]["parent"] = 35
 s["issues"]["38"]["parent"] = 37
 s["issues"]["42"]["parent"] = 41
 s["issues"]["44"]["parent"] = 43
+s["issues"]["49"]["parent"] = 48
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 
 def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z", current=None):
@@ -577,6 +584,7 @@ mock_comment 30 "[parent-impact] #29 the parent shipped without this"
 out="$(run_sweep)"
 assert_equals "$(issue_labels 29)" "" "a closed parent is never re-labelled by a late proposal"
 assert_equals "$(comment_count 29 "[board-epic]")" "0" "a closed parent gets no bookkeeping comment"
+assert_contains "$out" "names parent #29, which is done" "the pass says why it left that proposal unmarked"
 
 # A PARKED parent belongs to whoever holds the park: unparking it would
 # destroy the question note AND drop the ticket out of `status:needs-human`,
@@ -642,6 +650,21 @@ J
 out="$(run_sweep)"
 assert_contains "$(issue_labels 43)" "status:ready-for-architect" "an outsider's pre-seeded marker does not suppress a real proposal"
 assert_equals "$(comment_count 43 "[board-epic] reconcile:")" "1" "the board writes its own marker, and only then is the proposal consumed"
+
+# A proposal names the parent whose contract it contradicts, and goes THERE.
+# #49 was reparented onto #48 after posting a proposal about #47: consuming it
+# against the current parent would yank an unrelated epic to
+# ready-for-architect AND mark the real target reconciled without anyone
+# having read it. The discovery is about reality, not about edge membership.
+mock_comment 49 "[parent-impact] #47 the ordering guarantee its acceptance assumes does not exist"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 47)" "status:ready-for-architect" "the proposal reconciles the parent it NAMES"
+assert_contains "$(last_comment 47)" "[board-epic] reconcile: #49@" "and its consumption marker lands on that parent"
+assert_contains "$(issue_note 47)" "reconciliation-due:" "the named parent carries the reconciliation-due note"
+assert_contains "$(issue_labels 48)" "status:in-progress" "the parent the child now hangs off is left alone"
+assert_equals "$(comment_count 48 "[board-epic] reconcile:")" "0" "and gets no marker for a proposal that was never about it"
+out="$(run_sweep)"
+assert_equals "$(comment_count 47 "[board-epic] reconcile:")" "1" "the marker on the named parent dedupes the next tick"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

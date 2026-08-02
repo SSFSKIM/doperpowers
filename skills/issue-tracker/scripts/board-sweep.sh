@@ -22,7 +22,9 @@
 #            (the reviewer IS what put the ticket in its terminal state)
 #            and are never board-cancelled.
 #   IMPACT   children in ANY state whose ticket carries a [parent-impact]
-#            proposal the parent has not yet consumed → the parent returns to
+#            proposal the parent it NAMES has not yet consumed (the format
+#            pins that parent; a reparented child's proposal still belongs to
+#            the contract it cited) → that parent returns to
 #            ready-for-architect (reconciliation-due), plus a
 #            [board-epic] reconcile: #<child>@<comment-id> dedupe marker.
 #            The marker is written ONLY when that return actually fires:
@@ -268,10 +270,9 @@ pass_impact() {
   # exit is post-findings-then-park, and a child that parks or lands right
   # after posting its proposal left it for the Architect's end-of-epic
   # lineage check. So: every parented child is read, in any state.
-  # Cost: one `gh issue view --json comments` per parented child per tick.
-  # The dedupe markers stop the pass ACTING twice, never READING twice; a
-  # per-parent comment cache (two lines) would cut the parent-side reads if
-  # this ever gets expensive — deliberately left out while it is cheap.
+  # Cost: one `gh issue view --json comments` per parented child per tick,
+  # plus one per PROPOSAL TARGET (cached per tick — see markers_on). The
+  # dedupe markers stop the pass ACTING twice, never READING twice.
   # The tally is printed by the python body, not counted in shell: a
   # heredoc nested inside $(...) is mis-parsed by bash 3.2 (macOS, where
   # launchd runs this) as soon as the body contains an apostrophe. It also
@@ -279,6 +280,7 @@ pass_impact() {
   # shell-side count would have reported a confident "0 acted".
   PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' | tee -a "$SWEEP_LOG"
 import json
+import re
 import _board as B
 # The parent states that CANNOT take the return right now. Terminal: nothing
 # left to reconcile — a return would only stamp a label and a comment onto a
@@ -306,6 +308,36 @@ def trusted(c):
     return (c.get("authorAssociation") or "") in TRUSTED
 
 
+# A proposal names the parent whose contract it contradicts — the protocols
+# pin the format `[parent-impact] #<parent> <affected clauses>: ...` — and it
+# is routed to THAT ticket, not to whatever parent the child happens to point
+# at now. A child can be reparented after posting (board-edge --parent), and
+# consuming the proposal against the new parent did two wrong things at once:
+# it yanked an unrelated epic to ready-for-architect, and it marked the REAL
+# target reconciled without anyone having read it. The discovery is about
+# reality, not about edge membership — a recut does not retire it. A comment
+# with no parseable target falls back to the child's current parent, which is
+# what every proposal written before this rule meant anyway.
+TARGET_RE = re.compile(r"^\[parent-impact\]\s*#(\d+)")
+# Marker homes follow the TARGET, so the dedupe scan is keyed by target and
+# cached per tick — one read per target rather than per (child, proposal).
+seen_cache = {}
+
+
+def markers_on(target):
+    if target not in seen_cache:
+        comments = json.loads(B.gh(
+            ["issue", "view", target, "-R", B.repo(), "--json", "comments"]
+        )).get("comments") or []
+        found = set()
+        for c in comments:
+            body = (c.get("body") or "").strip()
+            if trusted(c) and body.startswith("[board-epic] reconcile:"):
+                found.add(body.split(":", 1)[1].strip())
+        seen_cache[target] = found
+    return seen_cache[target]
+
+
 acted = 0
 tickets = B.snapshot()
 for tid in sorted(tickets, key=int):
@@ -313,36 +345,43 @@ for tid in sorted(tickets, key=int):
     p = n.get("parent")
     if not p or p not in tickets:
         continue
-    if tickets[p]["state"] in UNCLAIMABLE:
-        continue
+    # The parent-state skip that used to sit here is gone: the proposal may
+    # name a DIFFERENT parent than the one this child points at, and that one
+    # can be perfectly claimable. Every parented child's comments are read.
     child_comments = json.loads(B.gh(
         ["issue", "view", tid, "-R", B.repo(), "--json", "comments"]
     )).get("comments") or []
-    proposals = [str(c.get("id") or "")
+    proposals = [(str(c.get("id") or ""), (c.get("body") or "").lstrip())
                  for c in child_comments
                  if trusted(c)
                  and (c.get("body") or "").lstrip().startswith("[parent-impact]")]
     if not proposals:
         continue
-    parent_comments = json.loads(B.gh(
-        ["issue", "view", p, "-R", B.repo(), "--json", "comments"]
-    )).get("comments") or []
-    seen = set()
-    for c in parent_comments:
-        body = (c.get("body") or "").strip()
-        if trusted(c) and body.startswith("[board-epic] reconcile:"):
-            seen.add(body.split(":", 1)[1].strip())
-    for cid in proposals:
+    for cid, body in proposals:
+        m = TARGET_RE.match(body)
+        target = m.group(1) if m else p
         marker = "#%s@%s" % (tid, cid)
-        if marker in seen:
+        if target not in tickets:
+            print("[sweep] IMPACT: #%s names parent #%s, which is not on the "
+                  "board — left unmarked" % (tid, target))
             continue
-        if tickets[p]["state"] in ARCHITECT_LANE:
+        if marker in markers_on(target):
+            continue
+        tstate = tickets[target]["state"]
+        if tstate in B.TERMINAL:
+            print("[sweep] IMPACT: #%s names parent #%s, which is %s — nothing "
+                  "to reconcile; left unmarked" % (tid, target, tstate))
+            continue
+        # Parked, or already in the architect lane: skip UNMARKED and re-see it
+        # next tick. Both are transient and say nothing, so neither logs.
+        if tstate in UNCLAIMABLE or tstate in ARCHITECT_LANE:
             continue
         ln = B.apply_state(
-            tickets, p, "ready-for-architect",
+            tickets, target, "ready-for-architect",
             "reconciliation-due: [parent-impact] from #%s" % tid,
             bookkeeping=True)
-        B.comment(p, "[board-epic] reconcile: %s" % marker)
+        B.comment(target, "[board-epic] reconcile: %s" % marker)
+        markers_on(target).add(marker)
         acted += 1
         print("[sweep] IMPACT: %s" % ln)
 print("[sweep] IMPACT: %d acted" % acted)
