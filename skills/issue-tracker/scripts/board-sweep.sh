@@ -311,9 +311,30 @@ pass_impact() {
   # exit is post-findings-then-park, and a child that parks or lands right
   # after posting its proposal left it for the Architect's end-of-epic
   # lineage check. So: every parented child is read, in any state.
-  # Cost: one `gh issue view --json comments` per parented child per tick,
-  # plus one per PROPOSAL TARGET (cached per tick — see markers_on). The
-  # dedupe markers stop the pass ACTING twice, never READING twice.
+  # SCAN BOUND (state file $DAEMON_HOME/impact-scan.json). Reading every
+  # child every tick cost one `gh issue view --json comments` per child: at
+  # the documented ~300-ticket board size and a 5-minute cadence that is
+  # 3,600+ sequential calls an hour, most of the GraphQL quota and minutes
+  # added to every tick. A child is now read only when one of two things
+  # holds, and BOTH are required for correctness:
+  #   (a) its issue updatedAt advanced since the last completed scan — every
+  #       new comment bumps it, so a fresh proposal always qualifies; or
+  #   (b) the last scan saw a proposal it did not disposition (an unclaimable
+  #       or invalid target). Those get no new comment, so an updatedAt
+  #       cursor alone would strand them forever — this is the trap that
+  #       makes a naive cursor wrong here, and `pending` is what closes it.
+  # State file format (JSON, rewritten atomically at the end of a successful
+  # pass; NEVER a board write):
+  #   {"version": 1, "children": {"<ticket>": {"seen": "<updatedAt>",
+  #                                            "pending": true|false}}}
+  # `seen` is the child updatedAt at the last completed read; `pending` is
+  # set when that read left a proposal undispositioned and cleared when one
+  # disposes of them all. Entries for tickets that left the board are pruned.
+  # A missing or corrupt file means a full rescan — the failure direction is
+  # correctness, never a silent skip — and so does a pass that dies before
+  # the write.
+  # Remaining cost: one read per QUALIFYING child, plus one per proposal
+  # TARGET (cached per tick — see markers_on).
   # The tally is printed by the python body, not counted in shell: a
   # heredoc nested inside $(...) is mis-parsed by bash 3.2 (macOS, where
   # launchd runs this) as soon as the body contains an apostrophe. It also
@@ -321,6 +342,7 @@ pass_impact() {
   # shell-side count would have reported a confident "0 acted".
   PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' | tee -a "$SWEEP_LOG"
 import json
+import os
 import re
 import _board as B
 # The parent states that CANNOT take the return right now. Terminal: nothing
@@ -404,10 +426,27 @@ def markers_on(target):
 
 acted = 0
 tickets = B.snapshot()
+
+STATE_PATH = os.path.join(os.environ["DAEMON_HOME"], "impact-scan.json")
+try:
+    with open(STATE_PATH) as f:
+        _loaded = json.load(f)
+    scan_state = dict(_loaded["children"]) if _loaded.get("version") == 1 else {}
+except (OSError, ValueError, KeyError, TypeError):
+    scan_state = {}          # missing or corrupt: rescan everything
+next_state = {}
+
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     p = n.get("parent")
     if p and p not in tickets:
+        continue
+    prior = scan_state.get(tid) or {}
+    now = str(n.get("updated_at") or "")
+    if prior and prior.get("seen") == now and not prior.get("pending"):
+        # Unchanged since the last completed read, and that read left nothing
+        # owing. Carry its record forward untouched and skip the call.
+        next_state[tid] = prior
         continue
     # No native parent is no longer a reason to skip: board-edge --orphan
     # after a proposal was posted would otherwise kill the discovery, which
@@ -430,7 +469,9 @@ for tid in sorted(tickets, key=int):
                  if trusted(c)
                  and (c.get("body") or "").lstrip().startswith("[parent-impact]")]
     if not proposals:
+        next_state[tid] = {"seen": now, "pending": False}
         continue
+    undispositioned = 0
     for cid, body in proposals:
         m = TARGET_RE.match(body)
         target = m.group(1) if m else p
@@ -438,6 +479,7 @@ for tid in sorted(tickets, key=int):
             # no named target and no native parent to fall back on
             print("[sweep] IMPACT: #%s carries a proposal naming no parent and "
                   "has none itself — left unmarked" % tid)
+            undispositioned += 1
             continue
         marker = "#%s@%s" % (tid, cid)
         kin = lineage(n)
@@ -445,10 +487,12 @@ for tid in sorted(tickets, key=int):
             print("[sweep] IMPACT: #%s claims parent #%s, which is not in its "
                   "lineage (%s) — left unmarked" %
                   (tid, target, ", ".join("#" + k for k in sorted(kin, key=int)) or "none"))
+            undispositioned += 1
             continue
         if target not in tickets:
             print("[sweep] IMPACT: #%s names parent #%s, which is not on the "
                   "board — left unmarked" % (tid, target))
+            undispositioned += 1
             continue
         if marker in markers_on(target):
             continue
@@ -456,10 +500,12 @@ for tid in sorted(tickets, key=int):
         if tstate in B.TERMINAL:
             print("[sweep] IMPACT: #%s names parent #%s, which is %s — nothing "
                   "to reconcile; left unmarked" % (tid, target, tstate))
+            undispositioned += 1
             continue
         # Parked, or already in the architect lane: skip UNMARKED and re-see it
         # next tick. Both are transient and say nothing, so neither logs.
         if tstate in UNCLAIMABLE or tstate in ARCHITECT_LANE:
+            undispositioned += 1
             continue
         ln = B.apply_state(
             tickets, target, "ready-for-architect",
@@ -469,7 +515,18 @@ for tid in sorted(tickets, key=int):
         markers_on(target).add(marker)
         acted += 1
         print("[sweep] IMPACT: %s" % ln)
+    next_state[tid] = {"seen": now, "pending": undispositioned > 0}
 print("[sweep] IMPACT: %d acted" % acted)
+# Rewritten atomically, and only now: a pass that died earlier leaves the old
+# file (or none) and the next tick re-reads more than it strictly must, which
+# is the harmless direction.
+try:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"version": 1, "children": next_state}, f)
+    os.replace(tmp, STATE_PATH)
+except OSError as e:
+    print("[sweep] IMPACT: scan-state write failed (%s) — next tick rescans" % e)
 PY
 }
 

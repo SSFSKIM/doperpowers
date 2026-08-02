@@ -386,6 +386,10 @@ def snapshot(refresh=False):
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
                 "created": it["createdAt"][:10],
                 "updated": it["updatedAt"][:10],
+                # Full precision alongside the display date: the sweep's
+                # IMPACT pass uses it as a per-child scan cursor, and a
+                # day-granular value would stall every re-read within a day.
+                "updated_at": it["updatedAt"],
                 "url": it["url"],
                 "body": it["body"] or "",
             }

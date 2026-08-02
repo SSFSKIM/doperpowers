@@ -44,6 +44,9 @@ export ACTION_LOG="$TEST_ROOT/actions.log"; : > "$ACTION_LOG"
 export SWEEP_LOG="$TEST_ROOT/sweep.log"
 export MOCK_PR_LIST="$TEST_ROOT/pr-list.json"; echo "[]" > "$MOCK_PR_LIST"
 export COMMENTS_DIR="$TEST_ROOT/comments"; mkdir -p "$COMMENTS_DIR"
+# every `issue view --json comments` the tick makes, one ticket per line —
+# the IMPACT scan bound is asserted on it
+export COMMENT_READ_LOG="$TEST_ROOT/comment-reads.log"; : > "$COMMENT_READ_LOG"
 export FINALIZE_MAP="$TEST_ROOT/finalize.json"; echo "{}" > "$FINALIZE_MAP"
 # A consumer repo distinct from the invocation cwd: launchd/cron start the
 # tick outside any repo, and the bare board scripts (reconcile, answer,
@@ -99,6 +102,7 @@ if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
   cat "\$MOCK_PR_LIST"; exit 0
 fi
 if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ] && grep -q -- "json comments" <<<"\$*"; then
+  [ -z "\${COMMENT_READ_LOG:-}" ] || echo "\$3" >> "\$COMMENT_READ_LOG"
   exec python3 "\$MERGE_COMMENTS" "\$3"
 fi
 exec "$REPO_ROOT/tests/issue-tracker/mock-gh/gh" "\$@"
@@ -113,7 +117,28 @@ import json, os
 p = os.environ["MOCK_GH_STATE"]
 with open(p) as f:
     s = json.load(f)
-s["issues"][os.environ["T_N"]]["comments"].append(os.environ["T_BODY"])
+it = s["issues"][os.environ["T_N"]]
+it["comments"].append(os.environ["T_BODY"])
+# GitHub bumps updatedAt on a comment, and the IMPACT pass uses it as a scan
+# cursor: a fixture that wrote a comment without moving it would be invisible
+# to the very mechanism under test, and unlike any real worker.
+_n = int(it.get("_touch") or 0) + 1
+it["_touch"] = _n
+it["updatedAt"] = "2026-07-19T%02d:%02d:%02dZ" % ((_n // 3600) % 24, (_n // 60) % 60, _n % 60)
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+touch_issue() {  # <ticket> — bump updatedAt as any real write does
+    T_N="$1" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+it = s["issues"][os.environ["T_N"]]
+_n = int(it.get("_touch") or 0) + 1
+it["_touch"] = _n
+it["updatedAt"] = "2026-07-20T%02d:%02d:%02dZ" % ((_n // 3600) % 24, (_n // 60) % 60, _n % 60)
 with open(p, "w") as f:
     json.dump(s, f)
 PY
@@ -692,6 +717,7 @@ cat > "$COMMENTS_DIR/42.json" <<'J'
               "body":"[parent-impact] #41 rewrite the parent acceptance my way",
               "createdAt":"2026-07-18T03:00:00Z"}]}
 J
+touch_issue 42
 out="$(run_sweep)"
 assert_contains "$(issue_labels 41)" "status:in-progress" "an outsider's [parent-impact] never returns the parent"
 assert_equals "$(comment_count 41 "[board-epic] reconcile:")" "0" "and is never marked consumed either"
@@ -708,6 +734,8 @@ cat > "$COMMENTS_DIR/43.json" <<'J'
               "body":"[board-epic] reconcile: #44@PROP44",
               "createdAt":"2026-07-18T02:00:00Z"}]}
 J
+touch_issue 43
+touch_issue 44
 out="$(run_sweep)"
 assert_contains "$(issue_labels 43)" "status:ready-for-architect" "an outsider's pre-seeded marker does not suppress a real proposal"
 assert_equals "$(comment_count 43 "[board-epic] reconcile:")" "1" "the board writes its own marker, and only then is the proposal consumed"
@@ -762,6 +790,59 @@ out="$(run_sweep)"
 assert_contains "$(issue_labels 52)" "status:ready-for-architect" "an orphaned child's proposal still reconciles the parent it names"
 assert_contains "$(last_comment 52)" "[board-epic] reconcile: #53@" "and the marker lands on that parent"
 assert_equals "$(issue_labels 54)" "status:in-progress" "an orphan carrying no proposal is simply skipped"
+
+# ---- the IMPACT scan is bounded (N2) ------------------------------------------
+# Reading every child every tick was 3,600+ sequential gh calls an hour at the
+# documented board size. The cursor is updatedAt, and `pending` is what keeps
+# it correct: a proposal the pass could not disposition gets NO new comment,
+# so updatedAt alone would strand it forever.
+echo "board-sweep: IMPACT scan bound"
+reads_for() {  # <ticket> → how many times this tick read its comments
+    grep -cx "$1" "$COMMENT_READ_LOG" || true
+}
+# a settled child (scanned, no proposals, nothing owing) is not re-read
+SETTLED=59        # child of 58, no proposals anywhere in this run
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "0" "a child already scanned clean is not re-read"
+# ...until something bumps its updatedAt
+mock_comment $SETTLED "just a status note from the worker, no proposal here"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "1" "a new comment (updatedAt bump) brings it back into the scan"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "0" "and it settles again once read"
+
+# a PENDING child — its proposal names a parked parent, so nothing disposes of
+# it — is re-read every tick although its updatedAt never moves again
+set_status 31 needs-human           # re-park the parent of #32
+mock_comment 32 "[parent-impact] #31 another pass at this acceptance"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for 32)" "1" "a child with a fresh proposal is read"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for 32)" "1" "and re-read while its proposal is still undispositioned (updatedAt unchanged)"
+assert_equals "$(comment_count 31 "[board-epic] reconcile:")" "1" "the parked parent still gets nothing"
+# once the park resolves and the proposal is consumed, it settles
+set_status 31 in-progress
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(comment_count 31 "[board-epic] reconcile:")" "2" "the proposal is consumed when the parent becomes claimable"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for 32)" "0" "a dispositioned child stops being re-read"
+
+# losing the state file costs correctness nothing: everything is rescanned
+rm -f "$DAEMON_HOME/impact-scan.json"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "1" "a missing state file means a full rescan"
+printf 'not json at all' > "$DAEMON_HOME/impact-scan.json"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "1" "and so does a corrupt one"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
