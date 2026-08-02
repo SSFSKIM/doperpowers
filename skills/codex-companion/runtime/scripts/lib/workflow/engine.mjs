@@ -54,6 +54,10 @@ export async function runWorkflow(spec) {
         throw new WorkflowError("fingerprint-mismatch",
           `repo changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
       }
+      // A run interrupted before it recorded a fingerprint has nothing to compare
+      // against. Record the current one now rather than leaving the drift guard
+      // off for every later resume of this run dir.
+      if (!recorded) fs.writeFileSync(fpPath, fp);
     } else {
       fs.writeFileSync(fpPath, fp);
     }
@@ -96,7 +100,7 @@ export async function runWorkflow(spec) {
       const callPids = [];                       // EVERY spawn of this call (retries + repair turns)
       const onSpawn = (pid) => { callPids.push(pid); trackSpawn(pid); };
       try {
-        const attempt = () => exec(onSpawn);
+        const attempt = () => exec(onSpawn, key);
         let out;
         try {
           out = await attempt();
@@ -129,9 +133,9 @@ export async function runWorkflow(spec) {
       log: (m) => { appendEvent(journalPath, { type: "log", message: String(m) }); emit(`log ${m}`); },
 
       agent: (prompt, opts = {}) =>
-        leafCall("agent", opts.label, { prompt, opts: sanitize(opts) }, async (onSpawn) => {
-          const overrides = [];
-          const connect = { disableBroker: true, configOverrides: overrides, onSpawn };
+        leafCall("agent", opts.label, { prompt, opts: sanitize(opts) }, async (onSpawn, key) => {
+          // No -c overrides on this lane: model and effort ride the turn params.
+          const connect = { disableBroker: true, onSpawn };
           const turn = await runAppServerTurn(opts.cwd ?? spec.cwd, {
             prompt, model: opts.model, effort: opts.effort,
             sandbox: "read-only", persistThread: true,
@@ -145,7 +149,7 @@ export async function runWorkflow(spec) {
           let parsed = parseStructuredOutput(turn.finalMessage);
           let errors = parsed.parseError ? [parsed.parseError] : validateSchema(parsed.parsed, opts.schema);
           if (errors.length === 0) return parsed.parsed;
-          appendEvent(journalPath, { type: "retry", key: "schema-repair", label: opts.label, errors });
+          appendEvent(journalPath, { type: "retry", key, reason: "schema-repair", label: opts.label, errors });
           const repair = await runAppServerTurn(opts.cwd ?? spec.cwd, {
             prompt: REPAIR_PROMPT(errors), resumeThreadId: turn.threadId,
             model: opts.model, effort: opts.effort, sandbox: "read-only",

@@ -68,6 +68,7 @@ const turnRequests = (mockDir) => {
 const journal = (runDir) =>
   fs.readFileSync(path.join(runDir, "journal.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
 const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "workers.json"), "utf8"));
+const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockDir, `spawn-${pid}.json`), "utf8"));
 
 // --- happy path: log, agent, parallel absorption, pipeline, transport retry ---
 {
@@ -160,6 +161,12 @@ const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "worker
   const retries = evs.filter((e) => e.type === "retry");
   assert.equal(retries.length, 1, "exactly one retry event for the repair");
   assert.deepEqual(retries[0].errors, ['$: missing required "ok" (have: okk)'], "the retry event records why");
+  assert.equal(
+    retries[0].key,
+    evs.find((e) => e.type === "started" && e.label === "js").key,
+    "the repair's retry event is keyed to the call it belongs to, so events correlate"
+  );
+  assert.equal(retries[0].reason, "schema-repair", "…and still says it was a schema repair, not a transport retry");
 
   const reqs = turnRequests(c.mockDir);
   assert.equal(reqs.length, 2, "two turn/start requests");
@@ -182,6 +189,11 @@ const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "worker
     reqs[1].params.outputSchema,
     { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
     "the repair turn still carries the output schema"
+  );
+  assert.deepEqual(
+    spawnRecord(c.mockDir, reqs[0].pid).argv,
+    ["app-server"],
+    "the agent lane passes no -c overrides: model and effort ride the turn params"
   );
   assert.deepEqual(workers(c.runDir), [], "both the original and the repair pid were untracked");
 }
@@ -234,6 +246,75 @@ const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "worker
   assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
 }
 
+// --- the review hook ---------------------------------------------------------
+// The panel rides on this hook. A review that silently reviews the wrong thing,
+// or that loses its lens, returns a clean-looking report about the wrong code.
+{
+  const c = newCase("review", [{ reviewText: "# Sweep\n\nauth looks wrong" }]);
+  const lines = [];
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-review.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir,
+    emit: (l) => lines.push(l)
+  });
+
+  const reqs = turnRequests(c.mockDir);
+  assert.equal(reqs.length, 1, "one review request");
+  assert.equal(reqs[0].method, "review/start", "the hook drives review/start, not a turn");
+  assert.deepEqual(
+    reqs[0].params.target,
+    { type: "baseBranch", branch: "main" },
+    "review/start carries the resolved WIRE target — an explicit base becomes a baseBranch target"
+  );
+  assert.deepEqual(
+    spawnRecord(c.mockDir, reqs[0].pid).argv,
+    ["-c", "model_reasoning_effort=xhigh", "-c", "developer_instructions=watch the auth paths.", "app-server"],
+    "effort and lens reach this worker's own app-server as -c overrides, in that order"
+  );
+  assert.deepEqual(
+    out.result,
+    { reviewText: "# Sweep\n\nauth looks wrong", threadId: reqs[0].params.threadId, status: 0 },
+    "the hook returns the review text with the thread it ran on and a success status"
+  );
+  assert.equal(out.agents, 1, "a review is one leaf call");
+
+  const evs = journal(c.runDir);
+  const started = evs.find((e) => e.type === "started");
+  assert.equal(started.kind, "review", "the journal records the call as a review");
+  assert.equal(started.label, "sweep", "…under its label");
+  assert.deepEqual(
+    evs.find((e) => e.type === "finished").result,
+    out.result,
+    "the review result is journaled and therefore cacheable across a resume"
+  );
+  assert.ok(lines.includes("start review:sweep") && lines.includes("done review:sweep"), "emit names the review lane");
+  assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
+}
+
+// --- a review whose turn failed is not a review ------------------------------
+{
+  const c = newCase("review-fail", [
+    { turnStatus: "failed", reviewText: "# Sweep\n\nno findings" },
+    { turnStatus: "failed", reviewText: "# Sweep\n\nno findings" }
+  ]);
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-review-fail.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir
+  });
+
+  assert.deepEqual(out.result, [null], "a failed review turn rejects — a clean-looking report is not a result");
+  assert.equal(counter(c.mockDir), 2, "both attempts ran");
+  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  assert.equal(fin.length, 1, "one finished record");
+  assert.match(fin[0].error, /review completed unsuccessfully/, "the status gate is what rejected it");
+  assert.ok(!("result" in fin[0]), "the review text is never recorded as a result");
+  assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
+}
+
 // --- the leaf semaphore caps a bare Promise.all ------------------------------
 {
   const c = newCase("cap", Array.from({ length: 10 }, (_, i) => ({ finalMessage: `c${i} answer`, hangMs: 150 })));
@@ -271,8 +352,18 @@ const workers = (runDir) => JSON.parse(fs.readFileSync(path.join(runDir, "worker
   assert.deepEqual(first.result, ["first", "second"], "two identical calls get their own turns");
   assert.equal(counter(c.mockDir), 2, "two turns consumed on the fresh run");
 
+  // A run interrupted before it recorded a fingerprint (or one journaled by an
+  // older engine) must not resume with the drift guard permanently disarmed:
+  // the first resume records the CURRENT fingerprint and guards the rest of the
+  // chain from there.
+  fs.rmSync(path.join(c.runDir, "fingerprint"));
+
   const lines = [];
   const resumed = await runWorkflow({ ...spec, resume: true, emit: (l) => lines.push(l) });
+  assert.ok(
+    fs.existsSync(path.join(c.runDir, "fingerprint")),
+    "a resume with no recorded fingerprint arms the guard instead of leaving it off"
+  );
   assert.deepEqual(
     resumed.result,
     ["first", "second"],
