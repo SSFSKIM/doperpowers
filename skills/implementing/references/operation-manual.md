@@ -60,7 +60,9 @@ only if the worker believes it passes the gate). Register only children
 specifiable as self-contained pre-specs NOW; contingent phases live as a
 `## Roadmap` section in the
 parent body — the worker finishing phase K registers phase K+1 at PR time.
-The parent becomes an epic (never dispatched; the sweeps move it). The
+The parent becomes an epic — never dispatched for IMPLEMENTATION; the
+sweeps move it, and it returns to `ready-for-architect` for an Architect's
+recomposition claim once every child is terminal. The
 decomposing worker writes no code. Recursion is emergent: each child's
 worker re-runs the same gate; no depth machinery exists.
 
@@ -186,8 +188,13 @@ proposals, registration and comments are the only channels.
 
 ## Edge cases
 
-- **Dispatched onto an epic** — refuse: epics are never dispatched; end the
-  turn naming the mistake (the sweep owns epic states).
+- **Dispatched onto an epic** — refuse IF the role is IMPLEMENT or SPIKE:
+  epics are never dispatched for implementation; end the turn naming the
+  mistake (the sweep owns epic states). An ARCHITECT dispatch onto an epic
+  in `ready-for-architect` is NOT that mistake — it is the recomposition or
+  reconciliation claim (see architecting), the one way an epic is
+  dispatchable at all, and the dispatcher routes it there on epic-hood over
+  the ticket's own category.
 - **needs-human answered** — preferred path: the wake ritual relays the
   answers to the still-bound session (issue-tracker's `board-answer.sh` —
   park = pause, not death); the resumed worker re-states its gate verdict

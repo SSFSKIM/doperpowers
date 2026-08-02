@@ -338,6 +338,26 @@ assert_contains "$tracker" "The other three parks are never pulled" \
 assert_not_contains "$tracker" "are never dispatched" \
     "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
 assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the proposal marker"
+# E2 made "epics are never dispatched" false: the recomposition/reconciliation
+# claim IS a dispatch, and a manual that tells a worker to refuse any epic
+# dispatch is instructing it to refuse a valid claim.
+OPS_MANUAL="$REPO_ROOT/skills/implementing/references/operation-manual.md"
+DECOMPOSE_DOC="$REPO_ROOT/skills/implementing/references/implement-decompose.md"
+ops="$(cat "$OPS_MANUAL")"; decompose_doc="$(cat "$DECOMPOSE_DOC")"
+assert_contains "$ops" "epics are never dispatched for implementation" \
+    "the operator manual's edge case bans IMPLEMENTATION dispatch, not every dispatch"
+assert_contains "$ops" "is NOT that mistake" \
+    "...and says the ARCHITECT claim onto a ready-for-architect epic is legitimate"
+assert_not_contains "$decompose_doc" "(never dispatched; the sweeps move" \
+    "the decompose reference no longer claims an epic is never dispatched at all"
+# Feedback triage never births into the architect lane (E1 lane-split plan):
+# a design-heavy item parks needs-human and the human routes it.
+TRIAGE="$REPO_ROOT/skills/triaging-feedback/references/triage-worker-protocol.md"
+triage="$(cat "$TRIAGE")"
+assert_contains "$triage" '이 프로토콜은 `ready-for-architect`로 티켓을 낳지 않습니다' \
+    "triage protocol states it never births an architect-lane ticket"
+assert_contains "$triage" "설계가 앞서야 하는 항목도 \`needs-human\`입니다" \
+    "design-heavy feedback parks needs-human for the human to route"
 assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the dispatch-time pin"
 
 echo

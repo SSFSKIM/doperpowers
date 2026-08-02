@@ -29,8 +29,9 @@ only the PROCEDURE and grants no authority beyond your prompt's.
    worker finishing phase K registers phase K+1 at PR time.
 
 5. Update the parent: the roadmap plus a Decision log entry saying why
-   this cut. The parent becomes an epic (never dispatched; the sweeps move
-   it).
+   this cut. The parent becomes an epic — never dispatched for
+   implementation; the sweeps move it, and once every child is terminal it
+   returns to `ready-for-architect` for an Architect's recomposition claim.
 
 6. End your turn. The decomposing worker writes NO code — recursion is
    emergent: each child's worker re-runs the same gate from fresh context
