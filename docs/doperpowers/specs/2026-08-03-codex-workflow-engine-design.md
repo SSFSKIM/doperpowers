@@ -1,6 +1,6 @@
 # Codex Workflow Engine — Design
 
-**Status:** v2 — revised after independent adversarial review (codex sol/xhigh, 2026-08-03); panel finder substrate awaiting owner confirmation (see Open Questions)
+**Status:** v2.1 — approved shape: diff-derived scalpels (adaptive, ≤5) on steered native review; lens transport live-proven on the app-server path (2026-08-03 probe)
 **Branch:** `codex-workflow-engine` (off `main` @ 6765c24, post-PR #42)
 **Owner consumers:** interactive Claude sessions, headless daemon workers (QAgent lineage), any harness that can run Bash
 
@@ -54,11 +54,18 @@ the Claude side:
   findings. It has no per-request effort field — effort (and any other
   config) must be set on the serving app-server process
   (references/reviews.md:31). It IS steerable via the
-  `-c developer_instructions=...` config override — verified live
-  2026-07-12 and shipped in `reviewing-prs`' lens transport
-  (`CODEX_REVIEW_LENS_FILE`, multilens execplan Milestone 2). The
-  "non-steerable" note in references/reviews.md refers only to positional
-  focus text.
+  `-c developer_instructions=...` config override on the serving
+  process. Transport history: proven on the CLI path 2026-07-12 and
+  validated for recall effect 2026-07-28 (F3); when reviewing-prs
+  migrated to the codex-companion bundle its scalpels quietly moved to
+  `adversarial-review` positional focus (review-engine.sh:106) — the
+  devinstr path went unused there. **Live-proven on the app-server path
+  2026-08-03**: a probe review served by an app-server spawned with
+  `-c developer_instructions=<marker instruction>` (via with-effort.mjs)
+  returned the marker finding alongside a real finding
+  (`tests/review-bench/results/2026-08-03-appserver-devinstr-probe/`). The
+  "non-steerable" note in references/reviews.md refers only to
+  positional focus text.
 - `withAppServer` consults/creates a broker when configured
   (app-server.mjs:335) — per-worker isolation requires explicit direct
   spawn. `scripts/with-effort.mjs` demonstrates the mechanism: spawn
@@ -218,27 +225,37 @@ one strong verifier judges the pool.
 semantics); optional `{ cwd, finderModel, finderEffort, verifierModel,
 verifierEffort, lenses }`.
 
-**Shape — 6 finders + 1 verifier** (models fixed by owner: finders
-gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
+**Shape — 1 sweep + up to 5 scalpels + 1 verifier** (models fixed by
+owner: finders gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
 
 1. **Lens derivation** (cheap, sol/medium `agent()` turn): reads the diff
-   stat and summary, writes **five diff-derived structural scalpel
-   mandates** — concrete focus statements anchored on this diff's actual
-   surfaces ("authorization and actor-identity assumptions in the changed
-   API routes"), not generic taxonomy labels. The derivation prompt names
-   the five defect families from the X1 taxonomy (changed-logic accuracy,
-   cross-file contract impact, removed/moved behavior, security surface,
-   performance/resources) as coverage inspiration, but the mandates must
-   be diff-specific. Callers may bypass derivation by passing `lenses`
-   explicitly. *Rationale: the lens-as-scalpel evidence — a lens
-   redirects the run's whole attention budget, so a taxonomy family
-   irrelevant to this diff would waste an entire finder.* (Owner
-   confirmation pending — see Open Questions.)
-2. **Six parallel finders**: one lens-free `review({base})` sweep + five
+   stat and summary, judges the scalpel count **K (0–5)** from the
+   diff's size and heterogeneity — no numeric thresholds, mirroring the
+   shipped 1–4 run-count doctrine ("usually few; whole-branch scale
+   earns five") — and writes K **diff-derived structural scalpel
+   mandates**: concrete focus statements anchored on this diff's actual
+   surfaces ("authorization and actor-identity assumptions in the
+   changed API routes"), not generic taxonomy labels. The derivation
+   prompt names the five defect families from the X1 taxonomy
+   (changed-logic accuracy, cross-file contract impact, removed/moved
+   behavior, security surface, performance/resources) as coverage
+   inspiration, but the mandates must be diff-specific. Callers may
+   bypass derivation by passing `lenses` explicitly (their length sets
+   K). *Rationale: the lens-as-scalpel evidence — a lens redirects the
+   run's whole attention budget, so a taxonomy family irrelevant to
+   this diff would waste an entire sol/xhigh finder.* (Owner-approved
+   2026-08-03.)
+2. **1+K parallel finders**: one lens-free `review({base})` sweep + K
    `review({base, lens})` scalpels, all native codex review at
-   sol/xhigh (per-worker app-server config). Native review is the
-   benchmark-winning engine; scalpels ride `developer_instructions`
-   exactly as `reviewing-prs` ships today.
+   sol/xhigh — each served by its own app-server spawned with the
+   worker's `-c` overrides (`model_reasoning_effort`, and
+   `developer_instructions` carrying the lens; transport live-proven,
+   see Grounding). Native review is the benchmark-winning engine and
+   the F3 recall evidence was earned on exactly this
+   review+developer_instructions mechanism. (`adversarial-review`
+   lens turns — reviewing-prs' current scalpel transport — remain the
+   documented fallback if the devinstr path regresses in a future
+   codex release.)
 3. **Mechanical candidate extraction** (script code, no model): parse
    each finder's `reviewText` into candidate stubs
    (`[P#] title — path:lines` + body), assigning stable ids
@@ -265,10 +282,11 @@ gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
 - Verdict: `incorrect` iff ≥1 CONFIRMED survives; else `correct`; either
   degrades to `interrupted` under the coverage rules below.
 - Output: findings entries (`[P#] title — path:lines` + verifier comment),
-  verdict, explanation, and a coverage section naming every finder with
-  its status and stub count (an all-clean run on a real diff where all six
-  finders returned zero stubs is reported as suspicious in the coverage
-  section, though not blocked).
+  verdict, explanation, and a coverage section naming every finder (the
+  sweep and each scalpel with its mandate) with its status and stub
+  count (an all-clean run on a real diff where every finder returned
+  zero stubs is reported as suspicious in the coverage section, though
+  not blocked).
 
 **Coverage honesty:**
 
@@ -281,9 +299,9 @@ gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
   with the raw stub pool attached; unverified candidates are never
   published as findings and never silently dropped.
 
-**Pool bound:** native review self-caps per run (≈10 findings), so six
-finders bound the pool structurally (≈60 worst case) — within one
-sol/high context. No sharding in M0; revisit with data.
+**Pool bound:** native review self-caps per run (≈10 findings), so at
+most six finders bound the pool structurally (≈60 worst case) — within
+one sol/high context. No sharding in M0; revisit with data.
 
 ## Acceptance
 
@@ -372,19 +390,12 @@ truth set for one frozen diff.
 
 ## Open Questions (owner)
 
-1. **Finder substrate + lens source.** Owner's original instruction:
-   five FIXED taxonomy lenses (argus L1–L5) as schema-forced task turns.
-   This spec's recommendation, per the repo's own shipped evidence:
-   five DIFF-DERIVED scalpel mandates riding steered NATIVE review
-   (`developer_instructions`), because (a) native review outperformed
-   every prompted-agent configuration on the real-PR benchmark, and
-   (b) a lens consumes its finder's whole attention budget, so a
-   taxonomy family irrelevant to the diff wastes a sol/xhigh run.
-   Reverting to fixed L1–L5 texts (still on native review) is a
-   one-line change in the workflow script; reverting to schema-forced
-   task-turn finders is also supported by the engine (`agent()` with the
-   finder schema) but contradicts the benchmark. Decision needed before
-   the panel script is written; the engine is unaffected either way.
+1. **RESOLVED (owner, 2026-08-03): diff-derived scalpels on steered
+   native review, adaptive count — at most five, not always five.**
+   The owner raised the transport doubt (does app-server native review
+   take developer_instructions?); settled the same day by live probe
+   (see Grounding): process-level config on the per-worker app-server
+   reaches the review thread.
 2. (Noted, defaulted per owner) Verifier stays ONE model at sol/high, no
    refuter vote — the mechanical exact-set postconditions close the
    silent-laundering hole; a P0/P1 second-vote option and verifier-effort
@@ -432,12 +443,17 @@ truth set for one frozen diff.
   v1's E2-ledger A/B could not reject a bad panel (no threshold; ledger
   is not a truth set for a frozen diff; unfrozen HEAD would include this
   work itself). Replaced with the existing seeded-recall + FP bar.
-- **Diff-derived scalpel lenses on steered native review**
-  (spec-review + multilens-evidence adoption; OWNER CONFIRMATION
-  PENDING): supersedes v1's fixed L1–L5 schema-turn finders. Grounds:
+- **Diff-derived scalpel lenses on steered native review, adaptive
+  count ≤ 5** (owner decision, 2026-08-03): supersedes v1's fixed
+  L1–L5 schema-turn finders and v2's always-five draft. Grounds:
   10/13-vs-8/13 native-review benchmark win; lens-as-scalpel
-  attention-budget evidence; `developer_instructions` steering already
-  shipped in reviewing-prs.
+  attention-budget evidence; the owner's count doctrine matches the
+  shipped 1–4 judgment rule. Scalpel transport =
+  `developer_instructions` on the per-worker app-server — live-proven
+  on this exact path 2026-08-03 (marker-finding probe), after
+  discovering reviewing-prs' bundled engine had quietly moved scalpels
+  to `adversarial-review` focus text (which stays as the documented
+  fallback).
 - **Native `review` as the overall sweep** — the native reviewer is
   codex's tuned general pass; a prompted imitation adds steering surface
   for no recall gain. (Unchanged from v1, now with benchmark grounding.)
@@ -459,6 +475,14 @@ truth set for one frozen diff.
   compacted past it). Lesson reinforced: the look-outside pass before
   locking a design must include *this repo's own* specs/execplans/bench
   results, not just external prior art.
+- (2026-08-03, transport probe) App-server native review DOES honor
+  `developer_instructions` set on the serving process: a with-effort
+  wrapped `review` run with a marker instruction returned the marker
+  finding alongside a genuine finding on a seeded 3-line diff. Also
+  discovered en route: reviewing-prs' current bundled engine no longer
+  uses devinstr at all — `review-engine.sh:106` swaps lensed runs to
+  `adversarial-review` positional focus, so the F3-validated mechanism
+  had silently fallen out of production use at the bundle migration.
 
 ## Outcomes & Retrospective
 
@@ -477,3 +501,9 @@ Pending — written at finish.
   steered native review per repo evidence — flagged for owner
   confirmation (Open Question 1). Acceptance rewritten so every case
   discriminates (false-green table addressed).
+- 2026-08-03: v2.1 — owner locked the panel: diff-derived scalpels on
+  native review, adaptive count (≤5, judged by the deriver). Owner's
+  transport doubt settled by live probe: app-server native review
+  honors serving-process `developer_instructions` (marker finding
+  returned). Scalpel transport fixed to devinstr per-worker config;
+  adversarial-review focus text recorded as fallback.
