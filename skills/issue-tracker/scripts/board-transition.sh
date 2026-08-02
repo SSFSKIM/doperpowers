@@ -6,7 +6,9 @@
 #
 # Enforces transition legality and mandatory notes (the park trio + wontfix),
 # records branch/pr (board:meta), posts notes as [board] comments, and sweeps:
-#   → in-progress : the first active child pulls its parent epic(s) in-flight
+#   → ACTIVE      : entering in-design / in-progress / in-review from a
+#                   NON-active state makes this the epic's first active
+#                   child, and it pulls its parent epic(s) in-flight
 #                   (architect queue → in-design; implementer queue or a
 #                   needs-info release → in-progress) — PRE_PARK/PULL_FROM.
 #                   needs-human / interactive-preferred / deferred parents are
@@ -194,7 +196,12 @@ lines = [B.apply_state(tickets, tid, to, note, extra_meta=extra)]
 
 # Sweep: first active child pulls its epic chain to each parent's own
 # in-flight state (PRE_PARK: architect queue → in-design, else in-progress).
-if to == "in-progress":
+# Any entry INTO an active state counts — an architect-lane child entering
+# in-design is its epic's first active child exactly as an implementer-lane
+# child entering in-progress is. The from-non-ACTIVE half is what keeps it
+# to entries: in-review is only ever reached from an active state, so it
+# never re-fires, and a child moving in-design → in-progress does not either.
+if to in B.ACTIVE and cur not in B.ACTIVE:
     B.pull_epics(tickets, tid, lines)
 
 # Sweep: a terminal child may return its epic for recomposition.

@@ -93,7 +93,7 @@ elif op == "parent":
     B.add_sub_issue(tickets[ref], n, replace=bool(old))
     n["parent"] = ref
     lines.append("#%s: parent = #%s (was %s)" % (tid, ref, ("#%s" % old) if old else "none"))
-    if n["state"] == "in-progress":
+    if n["state"] in B.ACTIVE:
         B.pull_epics(tickets, tid, lines)
     if n["state"] in B.TERMINAL:
         B.recompose_epics(tickets, ref, lines)

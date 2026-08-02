@@ -1125,6 +1125,23 @@ run board-transition.sh "$epic_ni_t" needs-info "reconciled: acceptance holds �
 out="$(run board-transition.sh "$child_ni_t" in-progress)"
 assert_contains "$out" "#$epic_ni_t: needs-info → in-progress" "a needs-info release IS pulled back in-flight by a child going active"
 assert_contains "$(state "s['issues']['$epic_ni_t']['body']")" "(was: reconciled: acceptance holds — waiting on children)" "the pull folds the release note into its bookkeeping note"
+# ACTIVE, not in-progress: an architect-lane child entering in-design is its
+# epic's first active child exactly as an implementer-lane child is — and the
+# from-non-ACTIVE half keeps the pull to ENTRIES, so a later in-review does
+# not re-fire it.
+run board-register.sh "Design-lane released epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+epic_ad_t="$(state "s['next']-1")"
+run board-register.sh "Design-lane child" enhancement P2 --parent "$epic_ad_t" \
+  --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+child_ad_t="$(state "s['next']-1")"
+run board-transition.sh "$epic_ad_t" needs-info "reconciled: still waiting on children" >/dev/null
+out="$(run board-transition.sh "$child_ad_t" in-design)"
+assert_contains "$out" "#$epic_ad_t: needs-info → in-progress" "a child entering in-design pulls its released parent in-flight"
+assert_contains "$(state "s['issues']['$epic_ad_t']['body']")" "(was: reconciled: still waiting on children)" "the in-design pull folds the release note too"
+run board-transition.sh "$child_ad_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
+run board-transition.sh "$child_ad_t" in-progress >/dev/null
+out="$(run board-transition.sh "$child_ad_t" in-review "PR up" --pr https://github.com/test/repo/pull/91)"
+assert_not_contains "$out" "#$epic_ad_t:" "in-review is only ever entered from an active state — the pull does not re-fire"
 
 # The other three parks own a bound session (needs-human) or a claim on the
 # human (interactive-preferred, deferred) and are never disturbed by
