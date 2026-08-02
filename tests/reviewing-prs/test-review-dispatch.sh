@@ -345,7 +345,18 @@ cat > "$STUB_BIN/claude" <<'STUB'
 [ "${1:-}" = "agents" ] && { cat "$MOCK_DIR/agents.json"; exit 0; }
 exit 0
 STUB
-chmod +x "$STUB_BIN/gh" "$STUB_BIN/claude"
+# Transparent git recorder: real git, every invocation logged. The scale path
+# has to FETCH things (per-child pull heads) whose absence is silent
+# otherwise — a missing fetch shows up only as a review that cannot resolve a
+# range, hours later and somewhere else.
+export GIT_CALL_LOG="$TEST_ROOT/git-calls.log"; : > "$GIT_CALL_LOG"
+REAL_GIT="$(command -v git)"
+cat > "$STUB_BIN/git" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GIT_CALL_LOG"
+exec "$REAL_GIT" "\$@"
+STUB
+chmod +x "$STUB_BIN/gh" "$STUB_BIN/claude" "$STUB_BIN/git"
 export PATH="$STUB_BIN:$PATH"
 
 # canned GitHub data
@@ -1406,7 +1417,12 @@ issues = [
     it(20, "in-review", "Epic acceptance." + meta("pr", os.environ["PKG"])),
     # #21: a LEAF in-review whose `pr:` is a real PR — never a scale review
     it(21, "in-review", "Leaf." + meta("pr", "https://github.com/test/repo/pull/5")),
-    it(22, "done", "child a", parent=20, closed=True),
+    # #22 carries a merged PR in its `pr:` meta. Squash/rebase merges rewrite
+    # commits and delete the branch, so its head SHA is an ancestor of nothing
+    # on main — the dispatcher has to fetch refs/pull/<n>/head or the
+    # reviewer cannot detach at the range the closure package names.
+    it(22, "done", "child a" + meta("pr", "https://github.com/test/repo/pull/41"),
+       parent=20, closed=True),
     it(23, "done", "child b", parent=20, closed=True),
 ]
 json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
@@ -1456,6 +1472,16 @@ PY
 assert_contains "$(cat "$EPIC_META")" '"ticket": "20"' "scale reviewer owns the epic ticket (board-answer can reach it)"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" \
     "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "scale worktree is detached at the integration base ref"
+# U3: the children's PR heads are fetched by ref, not assumed reachable.
+assert_contains "$(cat "$GIT_CALL_LOG")" "fetch -q origin refs/pull/41/head" \
+    "the dispatcher fetches each merged child's pull head into the shared object store"
+# ...and a pull ref that will not fetch is the REVIEWER's finding, not a
+# reason to refuse the review. This mock origin has no refs/pull/* at all, so
+# the fetch above genuinely failed — and the reviewer still went out.
+assert_contains "$out" "refs/pull/41/head is unfetchable" \
+    "an unfetchable pull head is logged"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" \
+    "...and the scale review is dispatched anyway"
 
 # A live scale reviewer dedupes the next sweep — same registry machinery the
 # PR path uses, keyed review-epic-<n>.
@@ -1595,6 +1621,50 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
 NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$NEXT_PROMPT" "NO aggregate branch range" "and the prompt says so instead of implying a range it does not have"
 assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
+
+# ---- scale review honors the epic's engine:* label ----------------------------
+# Scale review is a QAgent route, and per-ticket engine overrides apply to
+# every QAgent route — the X4 exemption covers ARCHITECT dispatch alone, where
+# plan authorship is deliberately never label-routed. The epic's label was
+# ignored and the environment always won.
+echo "scale review engine label:"
+reset_state
+echo "[]" > "$MOCK_DIR/pr-list.json"
+PKG2="https://github.com/test/repo/issues/30#issuecomment-77"
+PKG2="$PKG2" python3 - <<'PY'
+import json, os
+def meta(k, v):
+    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
+issues = [
+    {"number": 30, "state": "OPEN",
+     "labels": ["status:in-review", "engine:claude"],
+     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
+    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+: > "$SPAWN_LOG"
+out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-30" "the labelled epic gets its scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "engine:claude on the EPIC routes its scale review through the claude harness"
+# ...and an unlabelled epic still takes the environment default (the gateway
+# route), which is what the block above already exercised on #20.
+reset_state
+echo "[]" > "$MOCK_DIR/pr-list.json"
+PKG2="$PKG2" python3 - <<'PY'
+import json, os
+def meta(k, v):
+    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
+issues = [
+    {"number": 30, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
+    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+: > "$SPAWN_LOG"
+out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "an unlabelled epic keeps the environment default"
 
 # ---- the scale selector needs a closure package, not any pr: value ------------
 # A LEAF that opened a real PR and later gained children reaches

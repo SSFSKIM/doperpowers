@@ -432,11 +432,16 @@ PY
 # that branch is gone — the normal shape once children merge and their
 # branches are deleted. Guarded per step for the same reason dispatch_one is:
 # the sweep runs it behind `||`.
-dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
-  local etid="$1" pkg="$2" branch="${3:-}" name tmp wt int_ref base_ref td prompt engine
+dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-label] [child pull numbers]
+  local etid="$1" pkg="$2" branch="${3:-}" eng_label="${4:-}" pulls="${5:-}"
+  local name tmp wt int_ref base_ref td prompt engine pr_ref
   local control_dir bind_ready ledger base_is_default range_note
   name="review-epic-$etid"
-  engine="${WORKER_ENGINE:-codex}"
+  # The epic's own engine:* label wins over the environment, exactly as the PR
+  # path resolves it. Scale review is a QAgent route, and per-ticket engine
+  # overrides apply to every QAgent route — the X4 exemption covers ARCHITECT
+  # dispatch only, where plan authorship is deliberately never label-routed.
+  engine="${eng_label:-${WORKER_ENGINE:-codex}}"
   # Two different refs, and conflating them cost the engine its whole range:
   #   int_ref  — the epic's integration branch, where the worktree sits (the
   #              aggregate of the children's merged work).
@@ -470,6 +475,20 @@ dispatch_epic() {  # <epic-ticket> <closure-package-url> [integration-branch]
     git -C "$LOCAL_REPO" fetch -q origin "$base_ref" \
       || { echo "$name: git fetch failed ($base_ref)" >&2; return 1; }
   fi
+  # The children's PR heads. Squash and rebase merges rewrite commits, so a
+  # merged child's head SHA is an ancestor of nothing on the default branch
+  # and its branch is usually deleted — yet the closure package names those
+  # SHAs and the no-integration-branch mode tells the reviewer to detach at
+  # each one. In a fresh clone that detach simply fails. GitHub retains
+  # refs/pull/<n>/head past branch deletion, so fetch them here. Objects land
+  # in LOCAL_REPO and every worktree of it shares that object store, so the
+  # reviewer's worktree can reach them. Per-ref non-fatal: a pull ref that is
+  # genuinely gone is a finding for the reviewer to report against the closure
+  # package, not a reason for the dispatcher to refuse the whole review.
+  for pr_ref in $pulls; do
+    git -C "$LOCAL_REPO" fetch -q origin "refs/pull/$pr_ref/head" 2>/dev/null \
+      || echo "$name: pull head refs/pull/$pr_ref/head is unfetchable — that child's range may not resolve" >&2
+  done
   # No integration branch left ⇒ the worktree sits on the default branch and
   # there is no aggregate range at all; say so in the prompt rather than
   # letting the worker run an engine over nothing.
@@ -926,7 +945,7 @@ _cleanup_orphaned_reviewer() {  # <worker-name> <why>
 # counts as superseded — costing one redundant review, never a strand.
 # An ACTIVE reviewer is never touched: it owns its own exit, and its package
 # is the current one by construction.
-sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
+sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-label $5=child pull numbers
   local etid="$1" pkg="$2" verdict meta uuid
   verdict="$(_decide "review-epic-$etid" sweep 0)"
   case "$verdict" in
@@ -1066,6 +1085,7 @@ elif status and status[0] != "in-review":
   # is what retires the path (a landed verdict leaves in-review, so the next
   # sweep no longer lists it).
   epic_rows="$(PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY'
+import re
 import _board as B
 tickets = B.snapshot()
 eps = B.epics(tickets)
@@ -1085,12 +1105,41 @@ for tid in sorted(tickets, key=int):
     # auto-close path never runs it). Handing a PR to a scale reviewer as its
     # closure package is the wrong artifact again — the PR loop owns real PRs.
     if "/pull/" in n["pr"]:
-        print("SKIP|%s|%s" % (tid, n["pr"]))
+        print("SKIP|%s|%s||" % (tid, n["pr"]))
         continue
-    print("%s|%s|%s" % (tid, n["pr"], n.get("branch") or ""))
+    # Per-ticket engine override, same rule the PR path applies: the label
+    # wins over the environment. Scale review is a QAgent route and QAgent
+    # routes honor it — only ARCHITECT dispatch is exempt (X4).
+    # (No apostrophes anywhere in this heredoc: it is nested inside $( ), and
+    # bash 3.2 — macOS, where launchd runs this — mis-parses that combination
+    # the moment the body contains one.)
+    labels = n.get("labels") or []
+    eng = "claude" if "engine:claude" in labels else (
+        "codex" if "engine:codex" in labels else "")
+    # The PR head refs of the children. A squash- or rebase-merged child
+    # leaves a head SHA that is an ancestor of nothing on the default branch,
+    # and a deleted branch, so a fresh clone cannot detach at the per-child
+    # heads the closure package names — which is exactly what the
+    # no-integration-branch mode tells the reviewer to do. GitHub keeps
+    # refs/pull/<n>/head after the branch dies, so name the pulls here and let
+    # the dispatcher fetch them.
+    pulls = []
+    for kid in B.children(tickets, tid):
+        k = tickets[kid]
+        for p in k.get("prs") or []:
+            pulls.append(str(p["num"]))
+        m = re.search(r"/pull/(\d+)", k.get("pr") or "")
+        if m:
+            pulls.append(m.group(1))
+    seen = []
+    for x in pulls:
+        if x not in seen:
+            seen.append(x)
+    print("%s|%s|%s|%s|%s" % (tid, n["pr"], n.get("branch") or "", eng,
+                              " ".join(seen)))
 PY
 )" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
-  while IFS='|' read -r etid epkg ebranch; do
+  while IFS='|' read -r etid epkg ebranch eengine epulls; do
     [ -n "$etid" ] || continue
     if [ "$etid" = "SKIP" ]; then
       echo "epic #$epkg: pr: meta is a PR ($ebranch), not a closure package — no scale review (the PR loop owns it)"
@@ -1098,7 +1147,7 @@ PY
     fi
     # </dev/null: the loop is fed by this heredoc, and anything dispatched
     # inside it that read stdin would eat the remaining epic rows.
-    sweep_epic "$etid" "$epkg" "$ebranch" </dev/null \
+    sweep_epic "$etid" "$epkg" "$ebranch" "$eengine" "$epulls" </dev/null \
       || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
   done <<EOF
 $epic_rows

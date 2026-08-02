@@ -141,8 +141,10 @@ import glob, json, os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
+LANE = os.environ["LANE"]
 lane = {"architect": ("ready-for-architect", "in-design"),
-        "implement": ("ready-for-implementer", "in-progress")}[os.environ["LANE"]]
+        "implement": ("ready-for-implementer", "in-progress")}[LANE]
+ROLES = {"architect": ("ARCHITECT",), "implement": ("IMPLEMENT", "SPIKE")}[LANE]
 used = 0
 for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -166,8 +168,22 @@ for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or m.get("status") not in ("working", "blocked", "error"):
         continue
-    if tickets.get(tk, {}).get("state") in lane:
-        used += 1
+    if tickets.get(tk, {}).get("state") not in lane:
+        continue
+    # ROLE **and** state. State alone charged a worker to whichever lane its
+    # ticket had reached, so a live Implementer that handed off to the
+    # architect queue sat on the single architect slot while it wrote its
+    # closing trail — blocking every unrelated Architect until finalize or
+    # the stall reaper caught up, up to 45 minutes later. Lane crossing IS
+    # binding release (lane-split spec, transition 8); a handed-off worker
+    # charges nothing to either lane and L1's stall reaper owns the rest of
+    # its lifecycle. A meta with NO role predates this write (or its
+    # non-fatal write failed): fall back to state alone rather than stop
+    # counting a worker that is genuinely in-lane.
+    role = str(m.get("role") or "")
+    if role and role not in ROLES:
+        continue
+    used += 1
 print(used)
 PY
 }

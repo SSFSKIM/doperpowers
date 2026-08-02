@@ -387,6 +387,61 @@ assert_contains "$out" "dispatched #9" "so an unrelated architect-lane ticket st
 # the per-ticket binding is untouched: the epic the reviewer owns stays blocked
 out="$(run 8)"
 assert_contains "$out" "skip #8: bound worker" "the reviewer still blocks dispatch of ITS OWN ticket"
+
+# LANE CROSSING RELEASES THE SLOT (spec transition 8). State alone charged a
+# worker to whichever lane its ticket had REACHED, so an Implementer that
+# handed its ticket to the architect queue kept writing its closing trail
+# while sitting on the single architect slot — every unrelated Architect
+# blocked until finalize or the stall reaper, up to 45 minutes. The charge
+# now needs BOTH the persisted role and the current state.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:ready-for-architect", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):                     # #9 got dispatched just above
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) == "9":
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+u = "ffff0008-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "8-handed-off", "ticket": "8",
+           "status": "working", "role": "IMPLEMENT",
+           "updated": "2026-07-18T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+: > "$SPAWN_LOG"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_not_contains "$out" "architect cap reached" "a live IMPLEMENT worker whose ticket crossed into the architect queue charges no architect slot"
+assert_contains "$out" "dispatched #9" "so an unrelated architect-lane ticket still dispatches"
+# ...and the same meta with the matching role DOES charge: this is a
+# role/state agreement test, not a licence to stop counting.
+python3 - <<'PY'
+import json, os
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):                     # #9 got dispatched again
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) == "9":
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+u = "ffff0008-0000-4000-8000-000000000000"
+p = os.path.join(d, u + ".json")
+m = json.load(open(p)); m["role"] = "ARCHITECT"
+json.dump(m, open(p, "w"))
+PY
+: > "$SPAWN_LOG"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_contains "$out" "architect cap reached" "an ARCHITECT-role worker on a ready-for-architect ticket still occupies the slot"
+python3 - <<'PY'
+import json, os
+os.remove(os.path.join(os.environ["DAEMON_HOME"],
+                       "ffff0008-0000-4000-8000-000000000000.json"))
+PY
 python3 - <<'PY'
 import json, os
 d = os.environ["DAEMON_HOME"]
