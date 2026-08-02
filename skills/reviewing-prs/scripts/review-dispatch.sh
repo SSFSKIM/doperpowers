@@ -9,7 +9,9 @@
 # Usage:
 #   review-dispatch.sh <pr-number>    triggered mode (GH workflow / manual)
 #   review-dispatch.sh --sweep        catch-up: every unbound open PR, then
-#                                     every in-review recomposition EPIC
+#                                     every in-review recomposition EPIC, then
+#                                     the retirement of scale reviewers whose
+#                                     epic has left in-review
 #
 # Two reviewer variants share one worker harness (see _spawn_reviewer):
 #   review-pr-<n>     a GitHub PR, worktree detached at the PR head SHA.
@@ -117,6 +119,12 @@ if [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
 fi
 [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
+# EXPORTED, not just set: the scale-review passes shell out to python that
+# imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep it
+# arrives exported already and the miss is invisible; run directly — the
+# documented path — an unexported value made every scale epic die
+# "BOARD_REPO is unset" inside the subprocess and be silently skipped.
+export BOARD_REPO
 
 # Repo-wide config injected into every worker prompt (constant across PRs):
 #   DEFAULT_BRANCH — self-merge is forbidden onto it (main-exclusion).
@@ -836,8 +844,9 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
 # a defect becomes a corrective child, the epic leaves in-review, the child
 # lands, the Architect pins a NEW closure package and the epic returns. Board
 # state alone cannot dedupe that — the first reviewer's meta stays on file
-# with a terminal status forever (the PR path's stale-ticket retirement is
-# PR-only, and an out-of-review epic is not listed here at all), so every
+# with a terminal status forever (the stale-reviewer pass at the bottom of
+# --sweep retires a reviewer whose epic LEFT in-review, but this is the
+# opposite case: the epic came back), so every
 # cycle after the first would hit "skip finished reviewer" and strand. The
 # discriminator is the closure package each reviewer was dispatched against,
 # stamped into its meta: a finished reviewer whose stamp no longer matches
@@ -956,6 +965,56 @@ PY
       || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
   done <<EOF
 $epic_rows
+EOF
+
+  # Stale scale reviewers, mirroring run_for's off-review retirement on the
+  # epic side. The loop above lists only epics that ARE in-review, so a
+  # reviewer whose epic left in-review mid-run (it found a defect, a
+  # corrective child was cut, the epic moved on) is never looked at again —
+  # and board-sweep's pass_cancel deliberately skips review-epic-* metas, so
+  # nothing else finalizes it either. Its meta then lingers `working` and
+  # keeps OWNING the ticket: implement-dispatch's _bound_meta refuses to
+  # dispatch a ticket with a bound working worker, and _slots_used counts it
+  # against the architect lane. Same rule as everywhere else: a live reviewer
+  # owns its own exit and is untouched; a finished one is finalized (that is
+  # what _decide does before judging) and retired. Metas already retired are
+  # not enumerated, so this fires once.
+  stale_epics="$(PYTHONPATH="$BOARD_SCRIPTS" DAEMON_HOME="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+import _board as B
+tickets = B.snapshot()
+seen = set()
+for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    name = str(m.get("name") or "")
+    if not name.startswith("review-epic-") or m.get("status") == "retired":
+        continue
+    tid = name[len("review-epic-"):]
+    if tid in seen or tid not in tickets:
+        continue
+    if tickets[tid]["state"] != "in-review":
+        seen.add(tid)
+        print(tid)
+PY
+)" || { echo "scale review: stale-reviewer scan failed (continuing)" >&2; stale_epics=""; }
+  while IFS= read -r etid; do
+    [ -n "$etid" ] || continue
+    verdict="$(_decide "review-epic-$etid" sweep 0)"
+    if [ "$verdict" = "skip active reviewer" ]; then
+      echo "epic #$etid: skip — no longer in-review; its still-active reviewer owns its own exit"
+      continue
+    fi
+    meta="$(_reviewer_meta "review-epic-$etid")"
+    [ -n "$meta" ] || continue
+    _retire "${meta%%|*}"
+    echo "epic #$etid: reviewer ${meta%%|*} retired — the epic has left in-review"
+  done <<EOF
+$stale_epics
 EOF
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"

@@ -252,7 +252,13 @@ cat > "$STUB_BIN/gh" <<'STUB'
 set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
 case "${1:-} ${2:-}" in
-  "repo view") echo "${MOCK_DEFAULT_BRANCH:-main}" ;;   # -q .defaultBranchRef.name
+  "repo view")
+    # two callers: the default-branch read, and BOARD_REPO self-resolution
+    # when the caller did not supply one
+    case "$*" in
+      *nameWithOwner*) echo "test/repo" ;;
+      *) echo "${MOCK_DEFAULT_BRANCH:-main}" ;;          # -q .defaultBranchRef.name
+    esac ;;
   "pr view")   cat "$MOCK_DIR/pr-$3.json" ;;
   "pr list")   cat "$MOCK_DIR/pr-list.json" ;;
   "issue view")
@@ -1571,6 +1577,80 @@ rm -f "$DAEMON_HOME"/*.reply.txt
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
 assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a fresh dispatch does not re-park the epic"
+
+# ---- a scale reviewer whose epic left in-review gets finalized + retired ------
+# The in-review listing above cannot see this reviewer (its epic moved on when
+# a defect became a corrective child), and board-sweep's pass_cancel skips
+# review-epic-* metas on purpose — so nothing else would ever finalize it, and
+# its lingering `working` meta keeps OWNING the ticket against implement
+# dispatch. Mirrors run_for's off-review retirement on the epic side.
+echo "stale scale reviewer retirement:"
+reset_state
+python3 - <<'PY'
+import json, os
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-progress"],
+     "body": "Epic acceptance — a corrective child is running.", "parent": None},
+    {"number": 24, "state": "OPEN", "labels": ["status:in-progress"],
+     "body": "corrective child", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+python3 - <<'PY'
+import json, os
+u = "dead0001-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-epic-20", "ticket": "20",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "dead0001", "sessionId": "dead0001-0000-4000-8000-000000000000", "state": "done"}]' \
+    > "$MOCK_DIR/agents.json"
+OUT_STALE="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$(cat "$DAEMON_HOME/dead0001-0000-4000-8000-000000000000.json")" '"status": "idle"' \
+    "the finished reviewer of an out-of-review epic is finalized"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:dead0001" "and retired, releasing the ticket it still owned"
+assert_contains "$OUT_STALE" "the epic has left in-review" "the sweep names why it retired the reviewer"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an out-of-review epic is never re-dispatched by this pass"
+
+# a LIVE reviewer owns its own exit — the same rule everywhere else
+reset_state
+python3 - <<'PY'
+import json, os
+u = "live0001-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-epic-20", "ticket": "20",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "live0001", "sessionId": "live0001-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' \
+    > "$MOCK_DIR/agents.json"
+OUT_LIVE="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "a live reviewer on an out-of-review epic is left completely alone"
+assert_contains "$OUT_LIVE" "owns its own exit" "the sweep says why it left the live reviewer alone"
+assert_contains "$(cat "$DAEMON_HOME/live0001-0000-4000-8000-000000000000.json")" '"status": "working"' \
+    "the live reviewer's meta is not finalized out from under it"
+echo "[]" > "$MOCK_DIR/agents.json"
+
+# ---- the scale listing survives a SELF-RESOLVED BOARD_REPO --------------------
+# _board.repo() reads the ENVIRONMENT. When the caller supplies no BOARD_REPO
+# the script resolves one itself — and that assignment used to be a plain
+# shell variable, so every scale epic died "BOARD_REPO is unset" inside the
+# python subprocess and vanished silently. board-sweep exports it and masks
+# the miss; the documented direct invocation does not.
+echo "scale listing with a self-resolved BOARD_REPO:"
+reset_state
+PKG="$PKG" python3 - <<'PY'
+import json, os
+meta = "\n\n<!-- board:meta\npr: %s\n-->\n" % os.environ["PKG"]
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Epic acceptance." + meta, "parent": None},
+    {"number": 22, "state": "CLOSED", "labels": [], "body": "child a", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+OUT_UNEXP="$(env -u BOARD_REPO "$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the scale listing still finds its epic when the script resolved BOARD_REPO itself"
+assert_not_contains "$OUT_UNEXP" "BOARD_REPO is unset" "no scale subprocess dies for want of BOARD_REPO in its environment"
 
 rm -f "$MOCK_DIR/board-issues.json"
 
