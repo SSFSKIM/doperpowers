@@ -1317,6 +1317,10 @@ out="$(run board-transition.sh "$rc_b" wontfix "not needed either")"
 assert_contains "$out" "#$rc_e: in-progress → ready-for-architect" "all-wontfix epic returns for recomposition (guard retired)"
 # the return's audit comment is the bookkeeping marker, not the convergence format
 assert_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board-epic]" "recomposition return posts the board-epic marker"
+# board-list must show an operator what the dispatcher will actually claim:
+# a recomposition-due epic is eligible, and the epic tag alone hid that.
+list_rc="$(run board-list.sh)"
+assert_contains "$(grep -F "#$rc_e " <<<"$list_rc" || true)" "[epic ELIGIBLE]" "a recomposition-due epic lists as eligible"
 assert_not_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board] in-progress → ready-for-architect:" "return never writes the convergence-counted format"
 # second cycle: corrective child, land it, return fires again w/o needs-human conversion
 run board-register.sh "Recomp gap child" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
@@ -1330,6 +1334,9 @@ assert_not_contains "$(state "s['issues']['$rc_e']['labels']")" "status:needs-hu
 
 # Architect recomposition verdict paths (epic-guarded edges)
 run board-transition.sh "$rc_e" in-design >/dev/null           # Architect claims
+list_rc2="$(run board-list.sh)"
+assert_contains "$(grep -F "#$rc_e " <<<"$list_rc2" || true)" "[epic]" "a claimed (in-design) epic still lists its epic tag"
+assert_not_contains "$(grep -F "#$rc_e " <<<"$list_rc2" || true)" "ELIGIBLE" "an in-design epic is not eligible — nothing dispatches it"
 out="$(run board-transition.sh "$rc_e" "done")"
 assert_contains "$out" "#$rc_e: in-design → done" "recomposition Architect closes a non-code epic from in-design"
 assert_equals "$(state "s['issues']['$rc_e']['stateReason']")" "COMPLETED" "epic closed as completed"

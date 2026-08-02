@@ -33,7 +33,7 @@ Three worker turns died on transient upstream failures during the shakedown
 three — but only because an operator was watching. Unattended, a dead worker
 sits in `error` and its ticket in `in-progress` until `board-reconcile.sh`
 flags the orphan **and a human acts**. The auto-attach trigger phase
-(doperpowers:implementing-tickets `scripts/`, unbuilt) must specify a
+(doperpowers:implementing `scripts/`, unbuilt) must specify a
 retry-on-transient policy: distinguish transient (stream disconnect,
 capacity) from real failures via the recorded turn error, bounded auto-resume
 for the former, park for the latter. Do not arm unattended dispatch without
@@ -67,7 +67,7 @@ The protocol-content test carried two stale assertions for a full
 commit-cycle because suites are run by hand — found only when the shakedown
 happened to run it. A pre-push hook (or minimal CI) running the three
 skill-infrastructure suites (`tests/orchestrating-daemons/`,
-`tests/implementing-tickets/`, `tests/reviewing-prs/`) closes the class.
+`tests/implementing/`, `tests/reviewing-prs/`) closes the class.
 
 ### 5. Self-hosted runner registration (external dependency)
 

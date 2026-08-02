@@ -2,7 +2,7 @@
 
 `doperpowers` is a two-track software-development methodology for coding agents:
 a human-gated controlled track (brainstorm → plan → subagent-driven-TDD → review)
-plus an autonomous board loop (`issue-tracker`, `implementing-tickets`,
+plus an autonomous board loop (`issue-tracker`, `architecting`, `implementing`,
 `reviewing-prs`, `orchestrating-daemons`) for well-scoped, unattended work.
 
 It ships as its own Claude Code plugin from a self-hosted marketplace in this repo,

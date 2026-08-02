@@ -317,6 +317,10 @@ meta(U("aaaa0011"), "11-hopeless", "11", "error", recov="3")
 meta(U("aaaa0012"), "12-stalled", "12", "working")
 meta(U("aaaa0013"), "13-cancelled", "13", "working")
 meta(U("aaaa0014"), "land-pr-7", "14", "working")
+# A scale reviewer whose own verdict just closed the epic: still live,
+# still finishing its trail and cleanup. The terminal-ticket rule must not
+# retire it mid-turn.
+meta(U("aaaa0039"), "review-epic-13", "13", "working")
 # Parked workers in the PRODUCTION shape: nothing finalizes a --no-wait
 # worker's meta when it parks, so status lingers `working`.
 meta(U("aaaa0015"), "15-parked", "15", "working", updated="2026-07-18T01:00:00Z")
@@ -422,6 +426,7 @@ s = json.load(open(os.environ['MOCK_GH_STATE']))
 print(' / '.join(s['issues']['13']['comments']))")"
 assert_contains "$c13" "[board] sweep" "cancel posts a termination comment"
 assert_not_contains "$log" "retire:aaaa0014" "land workers are never board-cancelled"
+assert_not_contains "$log" "retire:aaaa0039" "a live scale reviewer survives the terminal ticket its own verdict produced"
 
 # DISPATCH + REVIEW lanes
 assert_contains "$log" "impl-dispatch:--sweep" "implement lane sweeps"

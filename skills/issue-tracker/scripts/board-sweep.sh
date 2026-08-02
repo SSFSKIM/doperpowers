@@ -17,8 +17,10 @@
 #            pre-verdict).
 #   CANCEL   live implement/spike workers whose ticket reached a terminal
 #            state (done/wontfix) → retire + a [board] termination comment.
-#            Park states never cancel (park = pause); review-pr-*/land-pr-*
-#            workers are PR-lifecycle species and are never board-cancelled.
+#            Park states never cancel (park = pause); review-pr-*,
+#            review-epic-* and land-pr-* workers own their own lifecycle
+#            (the reviewer IS what put the ticket in its terminal state)
+#            and are never board-cancelled.
 #   IMPACT   children in ANY state whose ticket carries a [parent-impact]
 #            proposal the parent has not yet consumed → the parent returns to
 #            ready-for-architect (reconciliation-due), plus a
@@ -125,7 +127,12 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
     except Exception:
         continue
     name = str(m.get("name") or "")
-    if name.startswith("review-pr-") or name.startswith("land-pr-"):
+    # Review/land species own their own lifecycle: review-epic- is in the
+    # list because a scale reviewer that just wrote its epic's verdict
+    # (done/wontfix) is still finishing its trail and cleanup, and the
+    # terminal-ticket rule in pass_cancel would retire it mid-turn.
+    if name.startswith("review-pr-") or name.startswith("review-epic-") \
+       or name.startswith("land-pr-"):
         continue
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or tk not in tickets:
