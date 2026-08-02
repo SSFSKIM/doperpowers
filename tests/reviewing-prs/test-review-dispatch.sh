@@ -288,8 +288,17 @@ case "${1:-} ${2:-}" in
       *nameWithOwner*) echo "test/repo" ;;
       *) echo "${MOCK_DEFAULT_BRANCH:-main}" ;;          # -q .defaultBranchRef.name
     esac ;;
-  "pr view")   cat "$MOCK_DIR/pr-$3.json" ;;
-  "pr list")   cat "$MOCK_DIR/pr-list.json" ;;
+  "pr view")
+    # `--json state -q .state` is the cleanup pass's per-candidate check; a PR
+    # with no fixture answers like a gone/unreachable one (non-zero).
+    if [ ! -f "$MOCK_DIR/pr-$3.json" ]; then echo "gh: no such PR $3" >&2; exit 1; fi
+    case "$*" in
+      *"--json state"*) python3 -c 'import json,os,sys; print(json.load(open(os.environ["MOCK_DIR"]+"/pr-"+sys.argv[1]+".json")).get("state","OPEN"))' "$3" ;;
+      *) cat "$MOCK_DIR/pr-$3.json" ;;
+    esac ;;
+  "pr list")
+    [ "${MOCK_PR_LIST_FAILS:-0}" = "1" ] && { echo "gh: pr list exploded" >&2; exit 1; }
+    cat "$MOCK_DIR/pr-list.json" ;;
   "issue view")
     case "$*" in
       *"--json url"*)  N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["url"])' ;;
@@ -1803,6 +1812,9 @@ assert_not_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.js
 echo "stale PR-reviewer retirement:"
 reset_state
 echo "[]" > "$MOCK_DIR/pr-list.json"          # PR #5 is no longer open
+# ...and absence from the listing is only a CANDIDATE: the cleanup verifies
+# each one directly, so the fixture has to say the PR really closed.
+python3 -c 'import json,os; p=os.environ["MOCK_DIR"]+"/pr-5.json"; d=json.load(open(p)); d["state"]="CLOSED"; json.dump(d,open(p,"w"))'
 python3 - <<'PY'
 import json, os
 issues = [{"number": 7, "state": "OPEN", "labels": ["status:ready-for-architect"],
@@ -1822,9 +1834,54 @@ OUT_CLOSEDPR="$("$DISPATCH" --sweep 2>&1 || true)"
 assert_file_exists "$DAEMON_HOME/c10ded01-0000-4000-8000-000000000000.reply.txt" \
     "the reviewer of a closed PR is finalized"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:c10ded01" "and retired, releasing the ticket it still owned"
-assert_contains "$OUT_CLOSEDPR" "is no longer open" "the sweep names why"
+assert_contains "$OUT_CLOSEDPR" "PR #5 is CLOSED, no longer open" "the sweep names why, with the state it verified"
 assert_not_contains "$(cat "$DAEMON_HOME/c10ded01-0000-4000-8000-000000000000.json")" "retired_from" \
     "an orphaned-work retirement is not a failure — it must not feed the streak"
+
+# Absence from the listing is not proof of closure. The listing is capped at
+# 100 and has a failure fallback, so a transient gh failure once read as
+# "every PR closed" and would retire completed dedupe records wholesale —
+# duplicate reviews on the next healthy sweep.
+echo "cleanup needs a healthy, complete listing:"
+reset_state
+python3 - <<'PY'
+import json, os
+issues = [{"number": 7, "state": "OPEN", "labels": ["status:ready-for-architect"],
+           "body": "the ticket its reviewer bounced", "parent": None}]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+u = "c10ded03-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "ticket": "7",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+echo '[{"id": "c10ded03", "sessionId": "c10ded03-0000-4000-8000-000000000000", "state": "done"}]' \
+    > "$MOCK_DIR/agents.json"
+OUT_LISTFAIL="$(MOCK_PR_LIST_FAILS=1 "$DISPATCH" --sweep 2>&1 || true)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:c10ded03" "a failed listing retires nothing"
+assert_contains "$OUT_LISTFAIL" "absence is not evidence when the listing is unhealthy" "and the sweep says why it cleaned nothing"
+
+# a candidate absent from the (healthy) listing but actually OPEN — the
+# 100-cap case — survives, costing only its verification call
+: > "$SPAWN_LOG"
+echo "[]" > "$MOCK_DIR/pr-list.json"
+python3 -c 'import json,os; p=os.environ["MOCK_DIR"]+"/pr-5.json"; d=json.load(open(p)); d["state"]="OPEN"; json.dump(d,open(p,"w"))'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:c10ded03" "a candidate that is still OPEN is left alone (the 100-cap costs calls, not correctness)"
+
+# a candidate the API will not answer for is left alone too, and says so
+: > "$SPAWN_LOG"
+python3 - <<'PY'
+import json, os
+d = os.environ["DAEMON_HOME"]
+u = "c10ded04-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "review-pr-404", "ticket": "7",
+           "status": "working", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(d, u + ".json"), "w"))
+PY
+OUT_UNVERIF="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:c10ded04" "an unverifiable candidate is not retired on a guess"
+assert_contains "$OUT_UNVERIF" "cannot confirm PR #404 is closed" "and the sweep names it"
+rm -f "$DAEMON_HOME/c10ded04-0000-4000-8000-000000000000.json"
 
 # ...but a PARKED ticket keeps its reviewer, closed PR or not (M2's rule).
 reset_state

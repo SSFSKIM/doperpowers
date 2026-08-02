@@ -977,8 +977,14 @@ if [ "${1:-}" = "--sweep" ]; then
   # regex over title+body — identical logic, duplicated here rather than
   # shared: it's the only way to know which PRs are ticketed before the
   # per-PR ticket-status read below, with no extra gh call of its own).
+  # The listing's health is tracked, not swallowed: the cleanup pass below
+  # treats absence from it as evidence a PR is gone, and a transient gh
+  # failure would otherwise read as "every PR closed" and retire completed
+  # dedupe records wholesale — duplicate reviews on the next healthy sweep.
+  pr_list_ok=1
   pr_list_json="$(gh pr list -R "$BOARD_REPO" --state open --limit 100 \
-      --json number,isDraft,labels,title,body,closingIssuesReferences)" || pr_list_json="[]"
+      --json number,isDraft,labels,title,body,closingIssuesReferences)" \
+    || { pr_list_json="[]"; pr_list_ok=0; }
   # Every open PR number, drafts included — the registry cleanup below asks
   # "is this reviewer's PR still open?", and a draft is open (it is merely
   # never dispatched, so a meta for one should not exist in the first place).
@@ -1130,6 +1136,8 @@ EOF
   # by implement-dispatch forever. Walk review-pr-* metas whose PR is not in
   # this tick's open listing. A parked (needs-human) ticket is exempt for the
   # same reason as above — that meta is the park's wake target.
+  stale_prs=""
+  if [ "$pr_list_ok" = "1" ]; then
   stale_prs="$(OPEN_PRS="$open_prs" PYTHONPATH="$BOARD_SCRIPTS" DAEMON_HOME="$DAEMON_HOME" python3 - <<'PY'
 import glob, json, os
 import _board as B
@@ -1158,10 +1166,25 @@ PY
 )" || { echo "review sweep: stale PR-reviewer scan failed (continuing)" >&2; stale_prs=""; }
   while IFS= read -r prn; do
     [ -n "$prn" ] || continue
-    _cleanup_orphaned_reviewer "review-pr-$prn" "PR #$prn is no longer open"
+    # Absence from the listing is a CANDIDATE, not a verdict: the listing is
+    # capped at 100, so PR #101 is absent while perfectly open. Candidates are
+    # few, so each one is checked directly — and one that will not answer is
+    # left alone this tick rather than retired on a guess.
+    pr_state="$(gh pr view "$prn" -R "$BOARD_REPO" --json state -q .state 2>/dev/null)" || pr_state=""
+    case "$pr_state" in
+      "")
+        echo "review sweep: cannot confirm PR #$prn is closed — leaving its reviewer alone this tick" >&2 ;;
+      OPEN)
+        : ;;   # open but off the listing (the 100-cap) — nothing to clean up
+      *)
+        _cleanup_orphaned_reviewer "review-pr-$prn" "PR #$prn is $pr_state, no longer open" ;;
+    esac
   done <<EOF
 $stale_prs
 EOF
+  else
+    echo "review sweep: the open-PR listing failed this tick — no reviewer cleanup (absence is not evidence when the listing is unhealthy)" >&2
+  fi
 else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"
   pr="${1#\#}"
