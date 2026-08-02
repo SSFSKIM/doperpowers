@@ -1028,6 +1028,23 @@ spike_ban_t="$(run board-register.sh "Spike transition ban probe" spike P2 --bod
 run board-transition.sh "$spike_ban_t" in-progress >/dev/null
 assert_fails run board-transition.sh "$spike_ban_t" ready-for-architect "blocked: needs a plan"
 assert_contains "$(state "s['issues']['$spike_ban_t']['labels']")" "status:in-progress" "spike stays in its lane after the refused transition"
+# ...but leaf-hood is the discriminant, not the label. A spike that DECOMPOSED
+# is an epic, and an epic in ready-for-architect is an Architect's
+# recomposition claim — the dispatcher routes it on epic-hood over category,
+# so the spike protocol's illegal in-progress write never enters the picture.
+# Banning by category alone rejected such an epic's scale-defect route and
+# left the parent mislabeled in-review with nothing able to move it.
+run board-register.sh "Spike that decomposed" spike P1 --body-file "$SPEC_BODY" >/dev/null
+spike_epic_t="$(state "s['next']-1")"
+run board-register.sh "Spike epic child" enhancement P2 --parent "$spike_epic_t" --body-file "$SPEC_BODY" >/dev/null
+spike_kid_t="$(state "s['next']-1")"
+run board-transition.sh "$spike_kid_t" in-progress >/dev/null
+run board-transition.sh "$spike_kid_t" "done" >/dev/null            # epic → ready-for-architect
+run board-transition.sh "$spike_epic_t" in-design >/dev/null
+run board-transition.sh "$spike_epic_t" in-review --pr "https://github.com/o/r/issues/$spike_epic_t#pkg" >/dev/null
+out="$(run board-transition.sh "$spike_epic_t" ready-for-architect "scale review: corrective child")"
+assert_contains "$out" "#$spike_epic_t: in-review → ready-for-architect" "a spike EPIC takes the architect-queue edge (epic rules, not category)"
+assert_contains "$(state "s['issues']['$spike_epic_t']['labels']")" "status:ready-for-architect" "and lands there instead of sitting mislabeled in-review"
 
 # ---- lane display (E1: list/map render the new lane states) -------------------
 # $arch_t (registered just above) is still ready-for-architect: nothing between

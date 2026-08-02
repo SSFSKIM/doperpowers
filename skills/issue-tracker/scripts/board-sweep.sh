@@ -367,11 +367,21 @@ tickets = B.snapshot()
 for tid in sorted(tickets, key=int):
     n = tickets[tid]
     p = n.get("parent")
-    if not p or p not in tickets:
+    if p and p not in tickets:
         continue
-    # The parent-state skip that used to sit here is gone: the proposal may
-    # name a DIFFERENT parent than the one this child points at, and that one
-    # can be perfectly claimable. Every parented child's comments are read.
+    # No native parent is no longer a reason to skip: board-edge --orphan
+    # after a proposal was posted would otherwise kill the discovery, which
+    # is exactly what routing-by-named-target exists to prevent — the recut
+    # does not retire what the child found. A parentless child's comments
+    # have to be READ to know whether it carries one, so the read cost that
+    # widened when the child-state filter went (F3) and again when the
+    # parent-state filter went (K3) now covers every child with a parent
+    # edge or a proposal. Same bound options if it ever matters: a per-child
+    # "no proposals" marker, or a since-filter on the comment read.
+    #
+    # The parent-state skip that used to sit here is gone too: the proposal
+    # may name a DIFFERENT parent than the one this child points at, and
+    # that one can be perfectly claimable.
     child_comments = json.loads(B.gh(
         ["issue", "view", tid, "-R", B.repo(), "--json", "comments"]
     )).get("comments") or []
@@ -384,6 +394,11 @@ for tid in sorted(tickets, key=int):
     for cid, body in proposals:
         m = TARGET_RE.match(body)
         target = m.group(1) if m else p
+        if not target:
+            # no named target and no native parent to fall back on
+            print("[sweep] IMPACT: #%s carries a proposal naming no parent and "
+                  "has none itself — left unmarked" % tid)
+            continue
         marker = "#%s@%s" % (tid, cid)
         if target not in tickets:
             print("[sweep] IMPACT: #%s names parent #%s, which is not on the "

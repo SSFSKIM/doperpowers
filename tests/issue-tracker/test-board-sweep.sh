@@ -252,7 +252,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 52, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 55, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
@@ -281,6 +281,10 @@ s = {"next": 52, "labels": ["status:needs-human", "status:in-progress",
     "48": issue(48, "the epic the child now hangs off", ["status:in-progress"]),
     "49": issue(49, "reparented child with a proposal about its old parent",
                 ["status:in-progress"]),
+    # orphaned after posting: board-edge --orphan must not kill the discovery
+    "52": issue(52, "the parent an orphan's proposal names", ["status:in-progress"]),
+    "53": issue(53, "orphaned child carrying a proposal", ["status:in-progress"]),
+    "54": issue(54, "orphaned child carrying nothing", ["status:in-progress"]),
     "45": issue(45, "parked, newest comment is a stranger's", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
     "46": issue(46, "parked, a stranger commented over the answer", ["status:needs-human"],
@@ -686,6 +690,16 @@ assert_equals "$(comment_count 48 "[board-epic] reconcile:")" "0" "and gets no m
 out="$(run_sweep)"
 assert_equals "$(comment_count 47 "[board-epic] reconcile:")" "1" "the marker on the named parent dedupes the next tick"
 
+# ...and an ORPHANED child still routes what it named. board-edge --orphan
+# after the proposal was posted would otherwise bury the discovery, which is
+# the same contract the reparent case rests on: the recut does not retire what
+# the child found. A parentless child's comments must be READ to know whether
+# it carries one, so this widens the read set once more (same bound options).
+mock_comment 53 "[parent-impact] #52 its acceptance rules out the only workable ordering"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 52)" "status:ready-for-architect" "an orphaned child's proposal still reconciles the parent it names"
+assert_contains "$(last_comment 52)" "[board-epic] reconcile: #53@" "and the marker lands on that parent"
+assert_equals "$(issue_labels 54)" "status:in-progress" "an orphan carrying no proposal is simply skipped"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
