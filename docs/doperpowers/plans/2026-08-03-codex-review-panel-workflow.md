@@ -93,15 +93,16 @@ export default async function run({ agent, review, parallel, log, args }) {
 - Test: `tests/codex-companion/test-panel-extract.mjs`
 
 **Interfaces:**
-- Produces: `extractStubs(reviewText, finderId) → {stubs: [{id, priority, title, file, lines, body}], failed: boolean}` — `failed` true iff the text contains `[P` markers but zero stubs parsed (formatting drift ⇒ treated as dead finder), or is empty/whitespace when `status` indicated findings.
+- Produces: `extractStubs(reviewText, finderId) → {stubs, clean, failed}` with a STRICT trichotomy: `stubs.length > 0` (findings parsed); `clean: true` ONLY when the text matches a recognized no-findings rendering (read `lib/render.mjs` for the exact phrasing(s) the runtime emits and match those, not a guess); `failed: true` for EVERYTHING else — blank output, untagged drift, unrecognized prose. Zero stubs is never silently "ok": an unrecognized empty answer is a dead finder, not a clean one.
 
 - [ ] **Step 1: Build fixtures from REAL outputs** (mock-fidelity rule):
   - `probe.md` ← copy of `tests/review-bench/results/2026-08-03-appserver-devinstr-probe/probe-out.md` (2 findings, one without a `[P#]` tag — the LENSPROBE line; extraction must tolerate untagged entries by defaulting priority `P3`).
   - `campaign-r14.md` / `campaign-r15.md` ← the E2 campaign round-14/15 rendered outputs (recover from the session scratch or re-render from any recent codex review; 2–3 findings each with `[P1]`/`[P2]`/`[P3]` tags, multi-line indented bodies, `path:start-end` and `path:line-line` variants).
   - `no-findings.md` ← a real clean-run rendering (`No findings` phrasing as the runtime renders it — check `lib/render.mjs` for the exact no-findings text).
   - `drifted.md` ← campaign-r15.md with the leading `- ` list markers stripped (simulated format drift: `[P` present, list structure gone).
+  - `blank.md` ← empty file; `untagged-drift.md` ← findings-like prose with NO `[P#]` tags and no recognized no-findings phrasing (e.g. the campaign fixture with tags stripped). Both must classify `failed: true` — output loss can never become a clean finder.
 
-- [ ] **Step 2: Write the failing test**: probe.md → 2 stubs (LENSPROBE entry priority `"P3"`, file + lines parsed); campaign fixtures → exact expected counts/titles/line-ranges (hand-derive from the fixture ONCE, assert literally); no-findings.md → `{stubs: [], failed: false}`; drifted.md → `failed: true`; ids are `<finderId>#<ordinal>`.
+- [ ] **Step 2: Write the failing test**: probe.md → 2 stubs (LENSPROBE entry priority `"P3"`, file + lines parsed); campaign fixtures → exact expected counts/titles/line-ranges (hand-derive from the fixture ONCE, assert literally); no-findings.md → `{stubs: [], clean: true, failed: false}`; drifted.md, blank.md, untagged-drift.md → `failed: true`; ids are `<finderId>#<ordinal>`.
 
 - [ ] **Step 3: Implement `extract.mjs`.**
 
@@ -131,10 +132,14 @@ export function extractStubs(reviewText, finderId) {
     }
   }
   if (current) stubs.push(current);
-  const failed = stubs.length === 0 && /\[P[0-3]\]/.test(String(reviewText ?? ""));
-  return { stubs, failed };
+  if (stubs.length > 0) return { stubs, clean: false, failed: false };
+  const text = String(reviewText ?? "").trim();
+  const clean = NO_FINDINGS_PATTERNS.some((re) => re.test(text));  // from render.mjs phrasings
+  return { stubs, clean, failed: !clean };
 }
 ```
+
+  `NO_FINDINGS_PATTERNS` is built in Step 3 from the exact renderings found in `lib/render.mjs` — everything that is neither parsed findings nor a recognized clean rendering is `failed`.
 
   Calibrate the regex against the fixtures — the fixtures are the contract, the regex serves them (adjust separator variants — `—` vs `--` — to whatever the real renders contain; NEVER edit a fixture to make the regex pass).
 
@@ -174,8 +179,9 @@ Then continue `run()`:
   reviews.forEach((r, i) => {
     const f = finders[i];
     if (!r) { coverage.push({ finder: f.finderId, lens: f.lens, status: "dead", stubs: 0 }); return; }
-    const { stubs, failed } = extractStubs(r.reviewText, f.finderId);
+    const { stubs, clean, failed } = extractStubs(r.reviewText, f.finderId);
     if (failed) { coverage.push({ finder: f.finderId, lens: f.lens, status: "extraction-failed", stubs: 0 }); return; }
+    // clean === true (recognized no-findings rendering) or stubs parsed
     coverage.push({ finder: f.finderId, lens: f.lens, status: "ok", stubs: stubs.length });
     pool.push(...stubs);
   });
@@ -252,7 +258,7 @@ ${JSON.stringify(pool, null, 2)}`;
 - Modify: `skills/codex-companion/workflows/code-review.mjs`
 - Test: extend `tests/codex-companion/test-panel-flow.sh`
 
-- [ ] **Step 1: Write the failing tests**: (a) dead scalpel (mock `die` ×2) with otherwise zero findings → `verdict: "interrupted"`, coverage names the mandate; (b) dead scalpel WITH a surviving CONFIRMED elsewhere → `verdict: "incorrect"` + coverage caveat (a confirmed defect is never suppressed); (c) dead sweep, findings present → `interrupted`; (d) all finders ok, zero stubs → `verdict: "correct"` with coverage note `all finders returned zero findings`; (e) verifier dead twice → `interrupted` + `pool` attached.
+- [ ] **Step 1: Write the failing tests**: (a) dead scalpel (mock `die` ×2) with otherwise zero findings → `verdict: "interrupted"`, coverage names the mandate; (b) dead scalpel WITH a surviving CONFIRMED elsewhere → `verdict: "incorrect"` + coverage caveat (a lost scalpel never suppresses a confirmed defect); (c) dead sweep WITH a surviving CONFIRMED elsewhere → `verdict: "interrupted"` AND the confirmed finding still present in `findings` (sweep loss is unconditional — this is the exact case the assembly must not leak as `incorrect`); (d) all finders ok, zero stubs (each returning the recognized no-findings rendering) → `verdict: "correct"` with the zero-findings coverage note; (e) verifier dead twice → `interrupted` + `pool` attached; (f) one finder returning BLANK output → treated as extraction-failed: coverage row `extraction-failed`, would-be-clean verdict `interrupted`.
 
 - [ ] **Step 2: Implement assembly.**
 
@@ -288,7 +294,13 @@ ${JSON.stringify(pool, null, 2)}`;
   if (verdict === "incorrect" && lostLenses.length > 0) {
     explanation += `; coverage partial: ${lostLenses.map((c) => c.finder).join(", ")}`;
   }
-  if (sweepDead && verdict !== "incorrect") { verdict = "interrupted"; }
+  if (sweepDead) {
+    // Sweep loss UNCONDITIONALLY forces interrupted (round-failure rule) —
+    // confirmed findings stay in `findings` as explicitly partial evidence.
+    verdict = "interrupted";
+    explanation = `the lens-free sweep did not complete — round is interrupted` +
+      (findings.length > 0 ? `; ${findings.length} confirmed finding(s) attached as partial evidence` : "");
+  }
   if (verdict === "correct" && coverage.every((c) => c.status === "ok") && pool.length === 0) {
     explanation += " (note: all finders returned zero findings — verify the diff target is what you intended)";
   }

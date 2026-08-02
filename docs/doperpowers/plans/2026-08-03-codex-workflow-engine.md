@@ -12,7 +12,7 @@
 
 - No new npm dependencies anywhere; node core modules only.
 - M0 is READ-ONLY: every worker turn uses `sandbox: "read-only"`; no `write` option exists.
-- Existing verb contracts (`review`, `adversarial-review`, `task`, `status`, `result`, `cancel`) are untouched except: (a) `cancel`/`status`/`result` gain workflow-job awareness, (b) `state.json` writes become atomic (tmp+rename) for all callers — byte-identical output, safer write.
+- Existing verb contracts (`review`, `adversarial-review`, `task`, `status`, `result`, `cancel`) are untouched except: (a) `cancel`/`status`/`result` gain workflow-job awareness, (b) `state.json` mutation becomes atomic (tmp+rename) AND serialized (lock inside `updateState`) for ALL writers — same outputs, no lost records; the review verb's target resolution is extracted into an exported function it keeps calling.
 - The engine never consults `CODEX_COMPANION_APP_SERVER_ENDPOINT`; every worker app-server is a direct child spawn with per-worker `-c` overrides.
 - Default `--max-concurrency` is 6, enforced at leaf worker spawns (`agent`/`review`), never in combinators.
 - Mock fidelity rule: the mock `codex` binary speaks the REAL JSON-RPC transport shape — derive every notification/response field from `lib/codex.mjs`'s `captureTurn` handlers (lines ~480–560) and `runAppServerTurn`/`runAppServerReview`, never from what the engine wants to consume.
@@ -76,8 +76,11 @@ tests/codex-companion/fixtures/                                      (scenario J
 // Mock codex app-server. Speaks the REAL JSON-RPC-over-stdio shapes
 // (derived from lib/codex.mjs captureTurn + app-server.mjs — see Step 1
 // comments). Controlled by CODEX_MOCK_DIR:
-//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText}... ] }
-//                  consumed in global order via counter file (mkdir lock)
+//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText|turnStatus}... ] }
+//                  consumed in global order via counter file (mkdir lock);
+//                  turnStatus: "failed" ⇒ emit turn/completed with the FAILED
+//                  status shape and NO error object (the false-green case)
+//   turns.jsonl    one line per turn/start|review/start request: {method, params, pid}
 //   spawn-<pid>.json   written on start: { argv, cwd }
 //   live/<pid>         existence = live server (removed on exit)
 //   peak               max simultaneous live/* observed at any turn/start
@@ -135,6 +138,8 @@ rl.on("line", (line) => {
   if (msg.method === "thread/name/set") return send({ id: msg.id, result: {} });
   if (msg.method === "turn/start" || msg.method === "review/start") {
     recordPeak();
+    fs.appendFileSync(path.join(MOCK, "turns.jsonl"),
+      JSON.stringify({ method: msg.method, params: msg.params, pid: process.pid }) + "\n");
     const b = nextTurnBehavior();
     if (b.die) process.exit(1);
     const finish = () => {
@@ -147,7 +152,8 @@ rl.on("line", (line) => {
         ? (b.reviewText ?? "# Codex Review\n\nNo findings.")
         : (b.finalRaw ?? b.finalMessage ?? "mock final message");
       send({ method: "item/completed", params: { threadId, item: { type: "agentMessage", text } } });
-      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed" } } });
+      const finalStatus = b.turnStatus ?? "completed";
+      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: finalStatus } } });
       const result = msg.method === "review/start"
         ? { reviewThreadId: threadId, turn: { id: turnId, status: "completed" } }
         : { turn: { id: turnId, status: "completed" } };
@@ -331,14 +337,53 @@ assert.deepEqual(acquireLease(dir), { ok: true });
 assert.equal(acquireLease(dir).ok, false);                                // same live pid holds it
 releaseLease(dir);
 assert.equal(acquireLease(dir).ok, true);
+releaseLease(dir);
 fs.writeFileSync(path.join(dir, "lease.json"), JSON.stringify({ pid: 999999, at: 0 }));
 assert.equal(acquireLease(dir).ok, true);                                 // dead-pid lease broken
+releaseLease(dir);
+
+// SIMULTANEOUS acquisition (the check-then-write race): two child
+// processes spin-wait on a barrier file, then both call acquireLease on
+// the same dir and print the result. Exactly ONE may win.
+import { spawnSync, spawn } from "node:child_process";
+const raceDir = fs.mkdtempSync(path.join(os.tmpdir(), "wfl-"));
+const barrier = path.join(raceDir, "go");
+const kid = `
+  import { acquireLease } from ${JSON.stringify(new URL("../../skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs", import.meta.url).href)};
+  import fs from "node:fs";
+  while (!fs.existsSync(process.argv[2])) {}
+  console.log(JSON.stringify(acquireLease(process.argv[1])));
+`;
+const kids = [1, 2].map(() => spawn(process.execPath, ["--input-type=module", "-e", kid, raceDir, barrier]));
+const outs = [];
+await Promise.all(kids.map(k => new Promise(res => { let o = ""; k.stdout.on("data", d => o += d); k.on("exit", () => { outs.push(o); res(); }); })));
+fs.writeFileSync(barrier, "");   // NOTE: write barrier BEFORE awaiting in real code — see step note
+const wins = outs.filter(o => JSON.parse(o).ok === true).length;
+assert.equal(wins, 1, `lease race: expected exactly 1 winner, got ${wins}`);
+
+// releaseLease ownership: a process that does NOT hold the lease must not remove it
+fs.writeFileSync(path.join(raceDir, "lease.json"), JSON.stringify({ pid: 999998, at: 0 }));
+releaseLease(raceDir);            // not ours (pid differs) → must be a no-op
+assert.ok(fs.existsSync(path.join(raceDir, "lease.json")), "releaseLease removed a lease it does not own");
+
+// CONTENT-aware fingerprint: same porcelain status, different bytes ⇒ different fp
+const repo = fs.mkdtempSync(path.join(os.tmpdir(), "wfr-"));
+spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+fs.writeFileSync(path.join(repo, "f.txt"), "one");
+spawnSync("git", ["add", "-A"], { cwd: repo });
+spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c"], { cwd: repo });
+fs.writeFileSync(path.join(repo, "f.txt"), "dirty-A");   // file now Modified
+const fpA = repoFingerprint(repo);
+fs.writeFileSync(path.join(repo, "f.txt"), "dirty-B");   // STILL just Modified in porcelain
+assert.notEqual(repoFingerprint(repo), fpA, "fingerprint blind to content changes in already-dirty files");
 
 const fp1 = repoFingerprint(process.cwd());
 assert.equal(fp1, repoFingerprint(process.cwd()));
 assert.equal(repoFingerprint(dir), "no-git");
 console.log("test-journal: ok");
 ```
+
+  (Step note: order the barrier write before awaiting the children in the actual test file; the snippet shows the assertions, the implementer arranges the async plumbing so both children are running before the barrier appears.)
 
 - [ ] **Step 2: Run to verify it fails.** Expected: `ERR_MODULE_NOT_FOUND` naming `journal.mjs`.
 
@@ -376,36 +421,66 @@ function leasePath(runDir) { return path.join(runDir, "lease.json"); }
 
 export function acquireLease(runDir) {
   const p = leasePath(runDir);
-  if (fs.existsSync(p)) {
-    let holder = null;
-    try { holder = JSON.parse(fs.readFileSync(p, "utf8")); } catch { holder = null; }
-    if (holder?.pid) {
-      let alive = false;
-      try { process.kill(holder.pid, 0); alive = true; } catch { alive = false; }
-      if (alive && holder.pid !== process.pid) return { ok: false, holderPid: holder.pid };
-      if (alive && holder.pid === process.pid) return { ok: false, holderPid: holder.pid };
+  // Atomic create ("wx") — the ONLY way in; never check-then-write.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(p, "wx");
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      fs.closeSync(fd);
+      return { ok: true };
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      let holder = null;
+      try { holder = JSON.parse(fs.readFileSync(p, "utf8")); } catch { holder = null; }
+      if (holder?.pid) {
+        try { process.kill(holder.pid, 0); return { ok: false, holderPid: holder.pid }; }
+        catch { /* dead holder */ }
+      }
+      // dead or unreadable holder: remove and try the atomic create once more
+      try { fs.rmSync(p, { force: true }); } catch {}
     }
   }
-  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  return { ok: true };
+  return { ok: false };
 }
 
 export function releaseLease(runDir) {
-  fs.rmSync(leasePath(runDir), { force: true });
+  // Ownership check: only the holder may release.
+  const p = leasePath(runDir);
+  try {
+    const holder = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (holder?.pid !== process.pid) return;
+  } catch { return; }
+  fs.rmSync(p, { force: true });
 }
 
-export function repoFingerprint(cwd) {
+export function repoFingerprint(cwd, extraPaths = []) {
+  // Content-aware: porcelain alone records paths+status, not bytes — a
+  // dirty file edited again between runs would slip through. Hash HEAD,
+  // the full content diff vs HEAD, every untracked file's blob hash, and
+  // any extra file identities the caller cares about (workflow script).
   try {
-    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
-    const status = execFileSync("git", ["status", "--porcelain"], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
-    return crypto.createHash("sha256").update(head + "\n" + status).digest("hex").slice(0, 16);
+    const run = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
+    const head = run(["rev-parse", "HEAD"]);
+    const diff = run(["diff", "HEAD"]);
+    const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
+    const untrackedHashes = untracked.map((f) => {
+      try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
+      catch { return f + ":unreadable"; }
+    });
+    const extras = extraPaths.map((p) => {
+      try { return p + ":" + crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12); }
+      catch { return p + ":unreadable"; }
+    });
+    return crypto.createHash("sha256")
+      .update([head, diff, untrackedHashes.join("\n"), extras.join("\n")].join("\x00"))
+      .digest("hex").slice(0, 16);
   } catch {
     return "no-git";
   }
 }
 ```
 
-  Note the same-pid re-acquire returns `ok: false` — a second `--resume` in the SAME process is a programming error surfaced loudly, and the cross-process case (the real one) compares pids naturally.
+  The engine (Task 5) passes `extraPaths: [scriptPath]` so editing the workflow script itself also refuses stale-cache resume. Same-pid re-acquire returns `ok: false` (loud surfacing of a double-resume programming error); the cross-process case compares pids naturally.
 
 - [ ] **Step 4: Run to verify it passes.** `node tests/codex-companion/test-journal.mjs` → `test-journal: ok`.
 
@@ -440,6 +515,8 @@ export function repoFingerprint(cwd) {
 ```
 
   In `codex.mjs`, change `withAppServer(cwd, fn)` → `withAppServer(cwd, fn, connect = null)`; when `connect` is set, skip the broker logic entirely: `client = await CodexAppServerClient.connect(cwd, { disableBroker: true, ...connect })` with no broker-retry wrapper. Thread `options.connect` through `runAppServerTurn` and `runAppServerReview`'s `withAppServer(...)` call sites. No other call site changes.
+
+  **Also in this task — export the review target resolver.** Read the review verb's target resolution (`codex-companion.mjs` ~358-420 and the target-building code it calls) and extract/export a pure function `resolveReviewTarget(cwd, {base, scope}) → target` in `codex.mjs` producing EXACTLY the object the verb sends as `review/start`'s `target` today (base wins; scope auto|working-tree|branch semantics unchanged). The verb's own path is refactored to call the same export (behavior-identical — verify by running the existing review-path tests). Extend `test-connect-overrides.mjs`: a `runAppServerReview(cwd, {target: resolveReviewTarget(...), connect})` call against the mock asserts the mock's `turns.jsonl` recorded the `review/start` request with that exact target object — a review that silently reviews the wrong thing must be impossible to miss.
 
 - [ ] **Step 4: Run to verify it passes**, then run the WHOLE existing test surface that touches these files: `tests/claude-code/run-skill-tests.sh` (regression: existing verbs untouched) and `bash tests/codex-companion/run-workflow-tests.sh`.
 
@@ -494,6 +571,9 @@ export default async function run({ agent }) {
   - happy: scenario = 6 ok turns + turn 2 (`boom`) configured `{die: true}` twice (engine retries once ⇒ two mock turns consumed ⇒ third scenario slot for it not needed — `par[1] === null`); `par[0]`, `par[2]` carry scenario texts; `piped` = `["<s1>|10|1?...", null]` — exactly: item 20's stage-2 throw ⇒ `piped[1] === null`, item 10's chain intact; `result.n === 3` (args passthrough); journal contains `started` and `finished` for every completed call and NO `finished` for the killed worker's attempts.
   - schema: scenario turn 1 returns `finalMessage: "{\"okk\":true}"` (valid JSON, wrong shape), turn 2 returns `finalMessage: "{\"ok\":true}"`; assert the hook resolves `{ok: true}`, the journal shows one `retry` event, and the SECOND mock turn's request was `thread/resume`-based (same thread repair — assert via mock spawn/threads: the repair turn reuses the same threadId; have the mock log turn/start params per call to `turns.jsonl` and assert both turns carry the same `threadId`).
   - cap: `maxConcurrency: 2`, 10 agents, scenario 10 slow turns (`hangMs: 150`); after run, mock `peak` file ≤ 2. RED expectation: with no semaphore, peak reaches ~10.
+  - **failed-status turn (the false-green case):** scenario turn `{turnStatus: "failed", finalMessage: "looks fine"}` twice → the agent call REJECTS (both attempts consumed), `parallel` absorbs it to `null`; assert the journal's `finished` record carries an error, never a result. RED expectation against the unfixed hook: resolves with "looks fine".
+  - **schema exhaustion is exactly two turns:** scenario `{finalMessage: '{"okk":true}'}`, `{finalMessage: '{"okkk":true}'}`, `{finalMessage: '{"ok":true}'}` — the call REJECTS and the mock `counter` shows exactly 2 turns consumed (a third valid response must never be reachable).
+  - **no stale worker pids:** after the retry case and the schema-repair case, assert `workers.json` is `[]` — every spawned pid (including first attempts and repair turns) was untracked.
 
 - [ ] **Step 2: Run to verify it fails.** Expected: `ERR_MODULE_NOT_FOUND` naming `engine.mjs`.
 
@@ -573,17 +653,18 @@ export async function runWorkflow(spec) {
       appendEvent(journalPath, { type: "started", key, kind, label });
       agents += 1;
       emit(`start ${kind}:${label ?? ""}`);
-      let spawnedPid = null;
-      const onSpawn = (pid) => { spawnedPid = pid; trackSpawn(pid); };
+      const callPids = [];                       // EVERY spawn of this call (retries + repair turns)
+      const onSpawn = (pid) => { callPids.push(pid); trackSpawn(pid); };
       try {
         const attempt = () => exec(onSpawn);
         let out;
         try {
           out = await attempt();
         } catch (e1) {
+          if (e1?.terminal) throw e1;            // schema-repair exhaustion etc: NEVER a third attempt
           appendEvent(journalPath, { type: "retry", key, error: String(e1?.message ?? e1) });
           emit(`retry ${kind}:${label ?? ""}`);
-          out = await attempt();               // one automatic retry, fresh turn
+          out = await attempt();                 // one automatic transport retry, fresh turn
         }
         appendEvent(journalPath, { type: "finished", key, result: out });
         emit(`done ${kind}:${label ?? ""}`);
@@ -593,10 +674,22 @@ export async function runWorkflow(spec) {
         emit(`fail ${kind}:${label ?? ""}`);
         throw err;
       } finally {
-        if (spawnedPid) untrack(spawnedPid);
+        for (const pid of callPids) untrack(pid);  // no stale pids: cancel must never signal a reused pid
         sem.release();
       }
     }
+
+    function assertTurnUsable(turn, what) {
+      // The runtime reports unsuccessful completed turns via status with
+      // error possibly null (see buildResultStatus in codex.mjs) — checking
+      // .error alone false-greens failed turns. Read buildResultStatus and
+      // gate on ITS success value, not on error presence.
+      if (turn.error) throw new Error(turn.error.message ?? `${what} failed`);
+      if (!isSuccessStatus(turn.status)) throw new Error(`${what} completed unsuccessfully (status ${JSON.stringify(turn.status)})`);
+    }
+    // isSuccessStatus: implement by reading buildResultStatus (codex.mjs) —
+    // whatever shape it returns for a clean completed turn is the ONLY
+    // success value; everything else throws.
 
     const hooks = {
       args: spec.args,
@@ -611,8 +704,11 @@ export async function runWorkflow(spec) {
             sandbox: "read-only", persistThread: true,
             outputSchema: opts.schema ?? null, connect
           });
-          if (turn.error) throw new Error(turn.error.message ?? "worker turn failed");
-          if (!opts.schema) return turn.finalMessage;
+          assertTurnUsable(turn, "agent turn");
+          if (!opts.schema) {
+            if (!turn.finalMessage?.trim()) throw new Error("agent turn returned no output");
+            return turn.finalMessage;
+          }
           let parsed = parseStructuredOutput(turn.finalMessage);
           let errors = parsed.parseError ? [parsed.parseError] : validateSchema(parsed.parsed, opts.schema);
           if (errors.length === 0) return parsed.parsed;
@@ -622,9 +718,14 @@ export async function runWorkflow(spec) {
             model: opts.model, effort: opts.effort, sandbox: "read-only",
             outputSchema: opts.schema, connect
           });
+          assertTurnUsable(repair, "schema repair turn");
           parsed = parseStructuredOutput(repair.finalMessage);
           errors = parsed.parseError ? [parsed.parseError] : validateSchema(parsed.parsed, opts.schema);
-          if (errors.length > 0) throw new Error(`schema validation failed after repair: ${errors.join("; ")}`);
+          if (errors.length > 0) {
+            throw Object.assign(
+              new Error(`schema validation failed after repair: ${errors.join("; ")}`),
+              { terminal: true });   // exactly two turns — the transport retry must NOT grant a third
+          }
           return parsed.parsed;
         }),
 
@@ -633,11 +734,19 @@ export async function runWorkflow(spec) {
           const overrides = [];
           if (opts.effort) overrides.push(`model_reasoning_effort=${opts.effort}`);
           if (opts.lens) overrides.push(`developer_instructions=${opts.lens}`);
+          // TARGET CONTRACT: runAppServerReview sends options.target to
+          // review/start verbatim — it has no base/scope params. Task 4
+          // exports resolveReviewTarget(cwd, {base, scope}) (extracted from
+          // the review verb's existing resolution code, same module) and the
+          // hook uses it; the mock test asserts the review/start request
+          // carried the resolved target (e.g. {type:"baseBranch", branch}).
+          const target = resolveReviewTarget(opts.cwd ?? spec.cwd, { base: opts.base, scope: opts.scope });
           const res = await runAppServerReview(opts.cwd ?? spec.cwd, {
-            model: opts.model, base: opts.base, scope: opts.scope,
+            model: opts.model, target,
             connect: { disableBroker: true, configOverrides: overrides, onSpawn }
           });
-          if (res.error) throw new Error(res.error.message ?? "review failed");
+          assertTurnUsable(res, "review");
+          if (!res.reviewText?.trim()) throw new Error("review returned no output");
           return { reviewText: res.reviewText, threadId: res.threadId, status: res.status };
         }),
 
@@ -672,7 +781,7 @@ function sanitize(opts) {
 }
 ```
 
-  NOTE for the implementer: `runAppServerReview`'s option names for target selection must be read from `codex.mjs:1002-1056` and the review verb's call site (`codex-companion.mjs` around line 358-420) — pass the SAME target object shape the review verb builds from `--base`/`--scope` (do not invent `base`/`scope` names if the primitive takes a `target`; adjust the hook to build the target with the exact existing helper, e.g. `collectReviewContext`/target builders, reusing the verb's own resolution functions by import).
+  Engine imports: `import { runAppServerTurn, runAppServerReview, parseStructuredOutput, resolveReviewTarget } from "../codex.mjs";` — `resolveReviewTarget` is the Task-4 export.
 
 - [ ] **Step 4: Run to verify it passes.** All three fixture tests green; re-run full `run-workflow-tests.sh`.
 
@@ -689,7 +798,9 @@ function sanitize(opts) {
 - Consumes: Task 5 `runWorkflow`; existing `runTrackedJob` (tracked-jobs.mjs:142), `parseArgs` (args.mjs), state helpers.
 - Produces: the CLI contract from the spec §1 (stdout JSON only; `[workflow]` stderr; one summary job; run dir under `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`).
 
-- [ ] **Step 1: state.mjs hardening.** In `saveState` (state.mjs:~114), replace the direct `writeFileSync(resolveStateFile(cwd), ...)` with write-temp-then-rename:
+- [ ] **Step 1: state.mjs hardening — atomic AND serialized for EVERY writer.** Locking only the workflow's own writes would still let the unlocked `task`/`review` paths overwrite a workflow record (lost load-mutate-write). Put both properties inside the shared mutation API so all writers get them:
+
+  In `saveState` (state.mjs:~114), replace the direct `writeFileSync(resolveStateFile(cwd), ...)` with write-temp-then-rename:
 
 ```js
   const target = resolveStateFile(cwd);
@@ -698,19 +809,36 @@ function sanitize(opts) {
   fs.renameSync(tmp, target);
 ```
 
-  Add an exported lock helper (used ONLY by the workflow path):
+  Wrap `updateState` itself (the single load-mutate-write choke point) in a lock:
 
 ```js
-export function withStateLock(cwd, fn) {
+function withStateLock(cwd, fn) {
+  ensureStateDir(cwd);                       // parent must exist BEFORE the lock — read the
+                                             // module for the real dir-ensure helper name
   const lockDir = `${resolveStateFile(cwd)}.lock`;
   const deadline = Date.now() + 5000;
   for (;;) {
     try { fs.mkdirSync(lockDir); break; }
-    catch { if (Date.now() > deadline) { try { fs.rmdirSync(lockDir); } catch {} } }
+    catch (err) {
+      if (err.code !== "EEXIST") throw err;  // ENOENT etc must propagate, never spin
+      if (Date.now() > deadline) throw new Error(`state lock timeout: ${lockDir} (stale lock?)`);
+      const buf = new SharedArrayBuffer(4);  // bounded sync backoff, ~15ms
+      Atomics.wait(new Int32Array(buf), 0, 0, 15);
+    }
   }
   try { return fn(); } finally { try { fs.rmdirSync(lockDir); } catch {} }
 }
+
+export function updateState(cwd, mutate) {
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveState(cwd, state);
+  });
+}
 ```
+
+  Every existing writer (`upsertJob`, progress updates) flows through `updateState`, so this is one change, all writers serialized, zero call-site edits. Verify no existing caller nests `updateState` inside `updateState` (grep; a nested call would deadlock — if one exists, refactor that caller to a single mutation).
 
 - [ ] **Step 2: Write the failing e2e test** `test-verb-e2e.sh` (sources `lib-mock.sh`): scenario 3 ok turns; run
   `node "$RUNTIME" workflow --script fixtures/fx-happy-small.mjs --args '{"n":1}' --cwd "$scratch/repo" > out.json 2> err.log`
@@ -720,13 +848,19 @@ export function withStateLock(cwd, fn) {
   - run dir exists under `$CLAUDE_PLUGIN_DATA/workflows/<runId>/` with `journal.jsonl`, `result.json`.
   - `node "$RUNTIME" status` shows the job with status success (workflow job registered + finalized).
   - **Overlap case:** launch two workflows concurrently (scenario with `hangMs`), wait both; `status` lists BOTH summary records (the lock+rename kept both).
+  - **Mixed-verb overlap case:** launch one slow workflow AND one plain `task` verb run concurrently (both against the mock); after both finish, `status` lists BOTH records — the legacy writer can no longer clobber the workflow record (this is the case the workflow-only lock could not fix).
+  - **Result case:** after a successful run, `node "$RUNTIME" result <job-id>` prints the run's stored outcome (per-job file intact) including the runDir path; after the SIGKILL case below, `result <job-id>` reports the failure rather than a phantom running job.
   - **Cancel case:** launch one with long `hangMs`, `kill -TERM` the verb pid; assert all mock `live/*` files disappear ≤ 2s and `status` shows the job `canceled`.
   - **Liveness case:** launch one, `kill -9` it; run `status`; assert the job is finalized `failed` (lazy repair), not stuck `running`.
 
 - [ ] **Step 3: Run to verify it fails.** Expected: `Unknown subcommand: workflow` (or the switch's default error) — record exact text.
 
-- [ ] **Step 4: Implement the verb.** In `codex-companion.mjs`: parse flags (`script` required, `args` JSON, `max-concurrency` int, `cwd`, `resume`, `json`); build runId (`wf-<Date.now().toString(36)>-<4 rand>` or reuse `generateJobId("wf")`); runDir = `path.join(dataRoot, "workflows", runId)` (reuse the existing CLAUDE_PLUGIN_DATA resolution the other verbs use — find it by reading how `state.mjs` resolves the data root); register the summary job via `withStateLock(cwd, () => upsertJob(...))` with `pid: process.pid` and `jobClass: "workflow"`; install `SIGTERM`/`SIGINT` handlers that read `workers.json`, `process.kill` each live pid, finalize the job `canceled` under the lock, and `process.exit(130)`; call `runWorkflow({scriptPath, args, cwd, maxConcurrency, runDir, resume, emit: (l) => process.stderr.write(`[workflow] ${l}\n`)})`; on success print exactly one JSON object `{runId, ...engineResult}` to stdout and finalize the job under the lock; on WorkflowError print the reason to stderr and exit 2 (job finalized `failed`).
-  In the `status`/`result` read path: for jobs with `jobClass === "workflow"` and `status === "running"`, probe `process.kill(pid, 0)`; on ESRCH finalize `failed` (under the lock) before rendering.
+- [ ] **Step 4: Implement the verb — via ONE workflow job-lifecycle helper.** First read `lib/tracked-jobs.mjs` and `lib/job-control.mjs` end to end and record: (a) the exact status vocabulary the read paths recognize (`completed`/`failed`/`cancelled` — note the spelling; use EXACTLY the canonical strings found, never invent `canceled` if the codebase reads `cancelled`), (b) how `result` locates per-job data (`readJobFile`/`writeJobFile` — the ledger row alone is NOT enough).
+
+  Write a small helper (in the verb module or `lib/workflow/job.mjs`): `workflowJobLifecycle(cwd, job)` exposing `register()`, `finalize(status, payload)` — each call updates BOTH the ledger row (through the now-locked `updateState`) AND the per-job file (`writeJobFile`) with `{runId, runDir, journalPath, resultPath, logFile}` metadata, using only canonical statuses. `runTrackedJob` is NOT reused for the workflow (its lifecycle assumptions differ); the helper is the single writer.
+
+  Then the verb: parse flags (`script` required, `args` JSON, `max-concurrency` int, `cwd`, `resume`); runId via `generateJobId("wf")`; runDir = `path.join(dataRoot, "workflows", runId)` (reuse the existing CLAUDE_PLUGIN_DATA resolution — read how `state.mjs` resolves the data root); `register()`; install `SIGTERM`/`SIGINT` handlers that read `workers.json`, `process.kill` each live pid, `finalize("cancelled", …)`, `process.exit(130)`; call `runWorkflow({scriptPath, args, cwd, maxConcurrency, runDir, resume, emit: (l) => process.stderr.write(`[workflow] ${l}\n`)})`; on success print exactly one JSON object `{runId, ...engineResult}` to stdout and `finalize("completed", …)`; on WorkflowError print the reason to stderr, `finalize("failed", …)`, exit 2.
+  In the `status`/`result` read path: for workflow-class jobs still `running`, probe `process.kill(pid, 0)`; on ESRCH `finalize("failed", …)` before rendering.
   In `cancel`: after the existing group-signal attempt, if the job is a workflow job, also read its runDir `workers.json` and signal each recorded pid (ESRCH tolerated).
 
 - [ ] **Step 5: Run to verify it passes**, plus the full runner and `scripts/lint-shell.sh`.

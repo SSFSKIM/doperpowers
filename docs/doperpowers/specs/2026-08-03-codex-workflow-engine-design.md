@@ -124,10 +124,12 @@ CODEX_COMPANION_SESSION_ID="<session>" \
   group, `detached: false`). The engine tracks live worker pids in the run
   directory and installs SIGTERM/SIGINT handlers: on signal, kill all live
   workers, finalize the job record (`canceled`), exit.
-- The run registers ONE summary job record. Workflow-path writes to the
-  shared ledger go through an **advisory lockfile + write-temp-then-rename**
-  (atomic replace), fixing the cross-run lost-record race for this verb
-  (existing verbs' behavior is untouched; their documented race stands).
+- The run registers ONE summary job record. Ledger mutation
+  (`updateState`) becomes **atomic (write-temp-then-rename) and
+  serialized (lock inside the shared mutation API) for ALL writers** —
+  a workflow-only lock could still lose records to the unlocked legacy
+  `task`/`review` writers (plan-review finding, 2026-08-03). Existing
+  verb CONTRACTS are unchanged; they just stop losing records.
 - Liveness repair: when `status`/`result` reads a workflow job whose
   recorded pid is dead but status is `running`, it finalizes the record as
   `failed` (journal path attached) instead of reporting a phantom run.
@@ -206,10 +208,12 @@ Per-run directory: `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`
 - **Run lease**: a lockfile (pid + timestamp) in the run directory; a
   second `--resume` of a leased, live run refuses. Dead-pid leases are
   broken automatically.
-- **Repo fingerprint**: HEAD sha + a hash of `git status --porcelain`
-  recorded at run start. `--resume` against a differing fingerprint
-  refuses (cached analysis of a changed tree is stale by definition);
-  re-running fresh is always available.
+- **Repo fingerprint — content-aware**: hash of HEAD + the full content
+  diff vs HEAD + untracked-file blob hashes + the workflow script's own
+  content, recorded at run start (porcelain status alone is blind to a
+  dirty file edited again between runs — plan-review finding).
+  `--resume` against a differing fingerprint refuses; re-running fresh
+  is always available.
 - `workers.json` — live worker pids (for cancel). `result.json` — the
   final stdout payload.
 
@@ -518,3 +522,13 @@ Pending — written at finish.
   mandates capped at two simple sentences. Two future variants noted
   in Out of scope (main-session verifier; spec-path context for the
   lens deriver) — explicitly deferred, proceed as-is.
+- 2026-08-03: v2.3 — plan-review adoption (codex adversarial-review of
+  the two implementation plans; 11/11 findings adopted): ledger
+  serialization moved INSIDE the shared state API for all writers;
+  fingerprint made content-aware (diff bytes + untracked blobs +
+  script identity); job lifecycle uses canonical statuses + per-job
+  files; lease acquisition made atomic (O_EXCL); turn success gated on
+  status, not error-presence; schema repair capped at exactly two
+  turns; review targets resolved via the verb's own exported resolver;
+  extraction gets a strict findings/clean/failed trichotomy; sweep
+  loss unconditionally interrupts. Plans updated in the same commit.
