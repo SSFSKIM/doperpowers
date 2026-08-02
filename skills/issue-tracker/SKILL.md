@@ -84,7 +84,7 @@ passes through `confident-ready` between `in-review` and `done`.
 | `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route); on an EPIC this is the recomposition/reconciliation claim (Epics below) | — |
 | `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
 | `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → implementer) | — |
-| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an implementer-queued or parked epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead) | optional |
+| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an implementer-queued epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead, and a PARKED epic is never pulled at all) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
@@ -132,9 +132,11 @@ land twice: the current note in the issue's `board:meta` body block, the audit
 trail as `[board]` comments.
 
 **Epics** (issues with sub-issues) ride their children: the first active
-child pulls the parent to its lane's in-flight state (`in-design` for an
-epic in the architect queue, `in-progress` otherwise), and it stays
-there while they run. An epic whose children are all terminal is never closed by
+child pulls a parent sitting in a lane QUEUE into that lane's in-flight
+state (`in-design` from the architect queue, `in-progress` from the
+implementer queue), and it stays there while they run. A parked epic is
+left parked — its park is somebody else's wake-queue entry (a human's
+question, a bound Architect's or scale reviewer's hold). An epic whose children are all terminal is never closed by
 bookkeeping: it RETURNS to `ready-for-architect` (`recomposition-due`)
 and an Architect closes it by verification — directly for non-code
 parents, via `in-review` with a closure package for code-bearing ones.

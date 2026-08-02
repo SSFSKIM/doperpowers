@@ -1052,7 +1052,6 @@ run board-transition.sh "$sc_t" in-design >/dev/null
 out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
 assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
 assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
-
 # ---- plan pin auto-clear (Finding B) -------------------------------------------
 # A superseded plan: pin is void by definition on two edges: any entry into
 # ready-for-architect (the design is being re-cut), and the Architect's own
@@ -1086,10 +1085,10 @@ run board-transition.sh "$pk_t" ready-for-implementer >/dev/null
 assert_contains "$(state "s['issues']['$pk_t']['body']")" "plan: docs/q.md@0123456789abcdef0123456789abcdef01234567" "a needs-human unpark does not void a still-valid plan pin"
 
 # ---- epic pull routing (Finding C) ----------------------------------------------
-# PULLABLE now includes ready-for-architect, but LEGAL["ready-for-architect"]
-# has no in-progress edge — the first active child of an epic parked in the
-# design queue must pull it to in-design (PRE_PARK's queue -> in-flight
-# mapping), never the illegal in-progress.
+# The pull walks DISPATCHABLE parents, but LEGAL["ready-for-architect"] has no
+# in-progress edge — the first active child of an epic sitting in the design
+# QUEUE must pull it to in-design (PRE_PARK's queue -> in-flight mapping),
+# never the illegal in-progress.
 echo "epic pull routing:"
 run board-register.sh "Design epic" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
 epic_c_t="$(state "s['next']-1")"
@@ -1100,41 +1099,43 @@ assert_contains "$out" "#$epic_c_t: ready-for-architect → in-design" "epic par
 assert_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-design" "epic label reflects the legal in-flight state"
 assert_not_contains "$(state "s['issues']['$epic_c_t']['labels']")" "status:in-progress" "epic never carries the illegal edge's label"
 
-# pull_epics is the board's own bookkeeping on an epic (never dispatched,
-# never gated) — it does not answer to LEGAL, the same latitude
-# recompose_epics already has. A deferred epic's active child still pulls it to in-progress
-# (PRE_PARK has no deferred entry, so the default applies) — but that must
-# stay pure bookkeeping: an ordinary worker/human transition straight from
-# deferred to in-progress stays illegal (LEGAL["deferred"] unchanged), so a
-# deferred TICKET itself cannot skip its queue and gate this way.
+# The pull walks lane QUEUES only. A PARKED epic (deferred here) is left
+# exactly where it is: a park is somebody else's live wake-queue entry, and
+# unparking it by bookkeeping would drop it out of that queue while its
+# owner waits. (Its own transition stays illegal for a worker/human too —
+# LEGAL["deferred"] has no in-progress edge — so nothing can skip the queue
+# and the gate this way.)
 run board-register.sh "Deferred epic" enhancement P1 --state deferred --body-file "$SPEC_BODY" >/dev/null
 epic_def_t="$(state "s['next']-1")"
 run board-register.sh "Deferred epic child" enhancement P2 --parent "$epic_def_t" --body-file "$SPEC_BODY" >/dev/null
 child_def_t="$(state "s['next']-1")"
 out="$(run board-transition.sh "$child_def_t" in-progress)"
-assert_contains "$out" "#$epic_def_t: deferred → in-progress" "a deferred epic's active child still pulls it to in-progress (board bookkeeping)"
-assert_contains "$(state "s['issues']['$epic_def_t']['labels']")" "status:in-progress" "deferred epic label reflects the pull"
+assert_not_contains "$out" "#$epic_def_t:" "a deferred epic's active child does not pull it out of the park"
+assert_contains "$(state "s['issues']['$epic_def_t']['labels']")" "status:deferred" "the deferred epic stays parked"
 run board-register.sh "Plain deferred ticket" enhancement P2 --state deferred --body-file "$SPEC_BODY" >/dev/null
 plain_def_t="$(state "s['next']-1")"
 assert_fails run board-transition.sh "$plain_def_t" in-progress   # LEGAL["deferred"] unchanged: no gate-skip for a worker/human
 
-# An epic bookkeeping write that UNPARKS the epic must not destroy what the
-# park owned. The note of a park is somebody ELSE's — a human's pending
-# question, a reconciling Architect's "waiting on children" — so both epic
-# writes fold it into their own instead of overwriting it.
+# A needs-human epic is a live relay-queue entry (the sweep's RELAY pass
+# selects on that state) and often has a bound worker waiting on the answer.
+# A child going active must not silently remove it from that queue — the
+# child transitions, the epic does not move, and its note survives intact.
 run board-register.sh "Parked epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
 epic_pk_t="$(state "s['next']-1")"
 run board-register.sh "Parked epic child" enhancement P2 --parent "$epic_pk_t" --body-file "$SPEC_BODY" >/dev/null
 child_pk_t="$(state "s['next']-1")"
 run board-transition.sh "$epic_pk_t" needs-human "Q: which flavor?" >/dev/null
 out="$(run board-transition.sh "$child_pk_t" in-progress)"
-assert_contains "$out" "#$epic_pk_t: needs-human → in-progress" "an active child pulls its parked epic in-flight"
-assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "(was: Q: which flavor?)" "the pull folds the park's own note into its bookkeeping note"
-# same discipline on the recomposition return, from a park it also unparks
-run board-transition.sh "$epic_pk_t" needs-human "Q2: still waiting on the human" >/dev/null
+assert_contains "$out" "#$child_pk_t: ready-for-implementer → in-progress" "the child of a needs-human epic still goes active"
+assert_not_contains "$out" "#$epic_pk_t:" "the pull reports no write on the parked epic"
+assert_contains "$(state "s['issues']['$epic_pk_t']['labels']")" "status:needs-human" "the epic stays in the human's wake queue"
+assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "note: Q: which flavor?" "the park's own note is untouched by the child's dispatch"
+# recompose_epics is the ONE bookkeeping write that still unparks an epic —
+# nothing but a recomposition verdict can close it — and it folds the park's
+# note into its own instead of overwriting it.
 out="$(run board-transition.sh "$child_pk_t" "done")"
 assert_contains "$out" "#$epic_pk_t: needs-human → ready-for-architect" "the last child's landing returns the parked epic for recomposition"
-assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "recomposition-due: all children terminal (was: Q2: still waiting on the human)" "the recomposition return preserves the park's note too"
+assert_contains "$(state "s['issues']['$epic_pk_t']['body']")" "recomposition-due: all children terminal (was: Q: which flavor?)" "the recomposition return preserves the park's note"
 # an IN-FLIGHT epic's note is the board's own previous line — simply replaced
 assert_not_contains "$(state "s['issues']['$epic_c_t']['body']")" "(was:" "an unparked epic's pull note carries no fold"
 

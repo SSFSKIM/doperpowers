@@ -184,9 +184,11 @@ lineage.
    parent's living spec, flag affected in-flight children on their
    tickets, then RELEASE the epic with
    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-info "reconciled: <one-line summary> — waiting on children"
-   — the named release exit: legal from in-design, PULLABLE (the next
-   active child pulls the epic back in-flight), frees your architect
+   — the named release exit: legal from in-design, frees your architect
    slot, and the sweep's RECOVER pass never force-parks a parked ticket.
+   The park holds until someone answers it or the last child lands (the
+   recomposition return is the one bookkeeping write that unparks an
+   epic) — a sibling going active will NOT pull it back in-flight.
    You do NOT close it, and you never end your turn with the epic still
    in in-design.
 3. **Recomposition-due claims** (all children terminal): verify the
