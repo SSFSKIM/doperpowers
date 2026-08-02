@@ -24,6 +24,18 @@ claim, not a design claim — read **Recomposition claims** below before
 you begin. The Gate and its pass write into `in-design` still come
 first; everything after them differs.
 
+A `reconciliation-due:` note binds whether or not the ticket has
+children: the child that proposed may have been reparented or closed
+away, leaving an ordinary leaf carrying the note. ANY claim on a ticket
+bearing it retrieves and dispositions the referenced `[parent-impact]`
+proposal(s) first — step 1 of **Recomposition claims**, marking duty
+included — and then continues into ordinary design of the ticket with
+those findings folded in, or parks/releases per the verdict when
+reconciliation reshapes the ticket's own scope. The sweep wrote its
+dedupe marker when it returned you the ticket, so a claim that reads the
+note as inapplicable leaves the proposal unreconciled with nothing left
+to re-raise it.
+
 Toolkit:
 
 - board scripts: {{BOARD_SCRIPTS}}
@@ -207,6 +219,14 @@ lineage.
    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done "<evidence>"
    (or wontfix). This is the scoped terminal-authority exception: epics
    only, recomposition claims only; you never close a leaf.
+   A gap you turned into a CORRECTIVE CHILD instead — from this verify or
+   from the lineage check — has no verdict to write yet: take the same
+   release exit item 2 names,
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-info "corrective child #<n> registered — waiting on children"
+   The child going active pulls the epic back for the next cycle;
+   `in-design` is never pulled, so an epic left there waits on a child
+   nobody will hand it, and the sweep force-parks your finished session
+   tick after tick instead.
 4. **Code-bearing integration parent** (two-plus children touched one
    executable surface, cross-child invariants, multi-repo composition,
    or the roadmap marks review required): assemble the closure package

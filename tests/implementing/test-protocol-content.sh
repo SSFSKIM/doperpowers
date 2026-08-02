@@ -309,6 +309,24 @@ assert_contains "$arch" "a cattle clone fetches the plan's sha from" \
     "the handoff states why a pinned plan needs its branch recorded"
 assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
 assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
+# R9-O1: the corrective-child branch needs the SAME release. PULL_FROM excludes
+# in-design (correctly — an unclaimed reconciliation return must stay readable),
+# so an epic left in in-design after registering a corrective child is waiting
+# on a pull that can never arrive, and the sweep force-parks the finished
+# Architect every tick.
+assert_contains "$arch" 'needs-info "corrective child #<n> registered — waiting on children"' \
+    "a registered corrective child releases the epic to the pullable park"
+assert_contains "$arch" "is never pulled, so an epic left there waits on a child" \
+    "...and the protocol says why in-design is not a waiting state"
+# R9-O2: the reconciliation-due note is note-scoped, not epic-scoped. A proposer
+# reparented away from its former parent leaves that parent CHILDLESS while the
+# sweep still returns it with the note and writes the dedupe marker — a claim
+# that runs ordinary leaf design never retrieves the proposal, and the marker
+# blocks any retry.
+assert_contains "$arch" "binds whether or not the ticket has" \
+    "reconciliation-due handling does not depend on the ticket still having children"
+assert_contains "$arch" "continues into ordinary design of the ticket with" \
+    "...and a childless reconciliation claim folds the findings into ordinary design"
 # Scale-review variant (QAgent).
 assert_contains "$review" "scale review" "review protocol names the scale-review variant"
 assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"
