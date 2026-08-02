@@ -226,6 +226,14 @@ json.dump(m, open(p,"w"), indent=2)
 PY
 STUB
 chmod +x "$STUB_BOARD/board-bind.sh"
+# Board WRITES from this dispatcher (the scale-review outage escalation) go
+# through board-transition.sh, the same $BOARD_SCRIPTS convention board-bind
+# uses; the issue-tracker suite owns that script's own semantics.
+cat > "$STUB_BOARD/board-transition.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "board-transition:$*" >> "$SPAWN_LOG"
+STUB
+chmod +x "$STUB_BOARD/board-transition.sh"
 # ...but the E2 scale-review branch reads the BOARD itself (`PYTHONPATH=
 # $BOARD_SCRIPTS python3 -c 'import _board'`), so the real module is copied
 # in beside the stub: board-bind stays stubbed, the snapshot is genuine and
@@ -1513,6 +1521,57 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
     "the fallback worktree sits at the FRESH default-branch head (where the merged children are)"
 GONE_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$GONE_PROMPT" "NO aggregate branch range" "the fallback prompt still routes the worker to the package's per-child ranges"
+
+# ---- a capped scale review escalates to the human instead of stranding --------
+# The 3-consecutive-failure cap is permanent on the PR path because an
+# explicit PR event can always re-dispatch. Scale reviews are sweep-only, so
+# a transient engine outage would skip the epic forever: same closure
+# package, same cap, every tick. At the cap the sweep retires the failed
+# reviewer and parks the epic needs-human; answering returns it to in-review
+# and the next sweep dispatches fresh.
+echo "scale review outage escalation:"
+reset_state
+PKG="$PKG" python3 - <<'PY'
+import json, os
+meta = "\n\n<!-- board:meta\npr: %s\n-->\n" % os.environ["PKG"]
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Epic acceptance." + meta, "parent": None},
+    {"number": 22, "state": "CLOSED", "labels": [], "body": "child a", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+# three consecutive ENGINE-UNAVAILABLE reviewers, all stamped with the
+# CURRENT closure package (so the superseded-reviewer path cannot fire and
+# quietly re-dispatch for the wrong reason)
+PKG="$PKG" python3 - <<'PY'
+import json, os
+for i in (1, 2, 3):
+    u = "feed000%d-0000-4000-8000-000000000000" % i
+    json.dump({"uuid": u, "current": u, "name": "review-epic-20", "engine": "codex",
+               "status": "idle", "closure_package": os.environ["PKG"],
+               "updated": "2026-07-0%dT00:00:00Z" % i},
+              open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+    with open(os.path.join(os.environ["DAEMON_HOME"], u + ".reply.txt"), "w") as f:
+        f.write("trail posted; engine down.\nENGINE-UNAVAILABLE\n")
+PY
+OUT_CAPEPIC="$("$DISPATCH" --sweep 2>&1 || true)"
+CAP_LOG="$(cat "$SPAWN_LOG")"
+assert_contains "$CAP_LOG" "retire:feed0003" "the capped scale review retires its latest failed reviewer"
+assert_contains "$CAP_LOG" "board-transition:20 needs-human" "the capped scale review parks the epic on the human"
+assert_contains "$CAP_LOG" "answering returns the epic to review" "the park note tells the human what their answer does"
+assert_not_contains "$CAP_LOG" "spawn:--no-wait review-epic-20" "the capped epic spawns no fourth reviewer"
+assert_contains "$OUT_CAPEPIC" "parked needs-human" "the sweep reports the escalation it performed"
+
+# the human answers: the epic returns to in-review (its pre-park target) and
+# the retired metas are gone — the next sweep dispatches fresh, with no
+# special-case return logic anywhere.
+reset_state
+rm -f "$DAEMON_HOME"/*.reply.txt
+OUT_RETURN="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
+assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a fresh dispatch does not re-park the epic"
+
 rm -f "$MOCK_DIR/board-issues.json"
 
 echo

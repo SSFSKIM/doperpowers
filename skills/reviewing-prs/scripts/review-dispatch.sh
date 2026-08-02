@@ -76,7 +76,10 @@
 # status=error (the worker died; a pre-first-turn gateway refusal leaves no
 # reply to carry any marker) → retire + respawn (sweep too, capped at 3
 # consecutive failed reviewers per PR — beyond that only an explicit PR
-# event re-dispatches).
+# event re-dispatches). A scale review has no such event: at the cap the
+# sweep retires the failed reviewer and parks the EPIC needs-human, and the
+# human's answer is what returns it to in-review for a fresh dispatch
+# (sweep_epic).
 #
 # Stale reviewer, any route off in-review: a reviewer bound to a ticket
 # whose board state is no longer in-review (ready-for-architect, parked on
@@ -860,6 +863,25 @@ sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
     dispatch_epic "$@"
     return
   fi
+  # The 3-consecutive-failure cap is PERMANENT on the PR path because an
+  # explicit PR event can always re-dispatch. A scale review is sweep-only:
+  # no event exists, so a capped epic would sit unreviewed forever with an
+  # unchanged closure package. Escalate to the human instead — retire the
+  # last failed reviewer and park the epic. The park is self-limiting (a
+  # parked epic leaves the in-review sweep list, so this fires once), and
+  # answering it returns the epic to in-review via the pre-park path, where
+  # the retired meta reads as "dispatch" and a fresh reviewer goes out.
+  case "$verdict" in
+    "skip outage/dead-worker failure persists"*)
+      [ -n "$uuid" ] && _retire "$uuid"
+      if "$BOARD_SCRIPTS/board-transition.sh" "$etid" needs-human \
+        "scale review: the review engine was unavailable on 3 consecutive attempts — answering returns the epic to review"; then
+        echo "epic #$etid: review engine unavailable 3 consecutive attempts — reviewer $uuid retired and the epic parked needs-human"
+      else
+        echo "epic #$etid: outage cap reached but the needs-human park FAILED — the epic stays in-review" >&2
+      fi
+      return ;;
+  esac
   echo "epic #$etid: $verdict"
 }
 
