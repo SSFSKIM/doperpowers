@@ -186,6 +186,20 @@ sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 
 _retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 
+# Retire a meta that is being replaced BECAUSE IT FAILED, stamping why before
+# the retire lands. daemon-retire.sh is daemon-owned and writes status=retired
+# over whatever terminal status the failure left, which is the only evidence
+# _outage_streak had — so a dead-worker cycle (finalize error → respawn →
+# retire) erased its own failure and the streak reset every tick, leaving the
+# 3-consecutive cap unreachable for exactly the failure class it exists for.
+# Only failure retirements carry the stamp; a superseded reviewer (a new
+# closure package) and a stale-ticket retirement carry none, so a
+# non-failure retirement still breaks the streak and cannot inflate the cap.
+_retire_failed() {  # <uuid>
+  _stamp_meta "$1" retired_from failure 2>/dev/null || true
+  _retire "$1"
+}
+
 # One field of daemon <1>'s registry meta (empty when absent).
 _meta_field() {  # <uuid> <key>
   DAEMON_HOME="$DAEMON_HOME" M_UUID="$1" M_KEY="$2" python3 - <<'PY'
@@ -699,12 +713,16 @@ PY
 }
 
 # Consecutive FAILED reviewers for worker name <1>, newest first: a reply carrying the
-# ENGINE-UNAVAILABLE marker (engine outage) or a turn finalized status=error
+# ENGINE-UNAVAILABLE marker (engine outage), a turn finalized status=error
 # (dead worker — e.g. the gateway refused its first turn, so no reply exists
-# to carry any marker). One shared streak, so interleaved failure kinds don't
-# reset the count; the sweep's cap reads it so neither a dead engine nor a
-# dead gateway can make the cron respawn a PR forever. Any cleanly finished
-# reviewer breaks the streak.
+# to carry any marker), or a retirement STAMPED as a failure one
+# (_retire_failed — daemon-retire overwrites the terminal status, and without
+# the stamp a dead-worker cycle erased the very evidence of itself and the
+# streak never reached the cap). One shared streak, so interleaved failure
+# kinds don't reset the count; the sweep's cap reads it so neither a dead
+# engine nor a dead gateway can make the cron respawn forever. Any cleanly
+# finished reviewer breaks the streak — as does an UNSTAMPED retirement (a
+# superseded reviewer, a stale-ticket cleanup), which is not a failure.
 _outage_streak() {
   DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
@@ -719,15 +737,17 @@ for p in glob.glob(os.path.join(home, "*.json")):
         continue
     if m.get("name") == name:
         rows.append((str(m.get("updated") or m.get("created") or ""),
-                     m.get("uuid") or "", str(m.get("status") or "")))
+                     m.get("uuid") or "", str(m.get("status") or ""),
+                     str(m.get("retired_from") or "")))
 rows.sort(reverse=True)
 streak = 0
-for _, uuid, status in rows:
+for _, uuid, status, retired_from in rows:
     try:
         lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
     except Exception:
         lines = None
-    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error":
+    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error" \
+            or (status == "retired" and retired_from):
         streak += 1
     else:
         break
@@ -832,7 +852,7 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
   fi
   case "$verdict" in
     dispatch)  dispatch_one "$1" "$2" ;;
-    respawn\ *) _retire "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
+    respawn\ *) _retire_failed "${verdict#respawn }"; dispatch_one "$1" "$2" ;;
     *)         echo "#$1: $verdict" ;;
   esac
 }
@@ -859,7 +879,7 @@ sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
   verdict="$(_decide "review-epic-$etid" sweep 0)"
   case "$verdict" in
     dispatch)   dispatch_epic "$@"; return ;;
-    respawn\ *) _retire "${verdict#respawn }"; dispatch_epic "$@"; return ;;
+    respawn\ *) _retire_failed "${verdict#respawn }"; dispatch_epic "$@"; return ;;
     "skip active reviewer") echo "epic #$etid: $verdict"; return ;;
   esac
   # Every remaining verdict means a NON-live reviewer meta is on file and
@@ -889,7 +909,7 @@ sweep_epic() {  # $1=epic-ticket $2=closure-package $3=integration-branch
   # reuse the epic's recorded closure package.
   case "$verdict" in
     "skip outage/dead-worker failure persists"*)
-      [ -n "$uuid" ] && _retire "$uuid"
+      [ -n "$uuid" ] && _retire_failed "$uuid"
       if "$BOARD_SCRIPTS/board-transition.sh" "$etid" needs-human \
         "scale review: the review engine was unavailable on 3 consecutive attempts; this reviewer was retired, so there is no session to resume — reply on this ticket, then run board-transition.sh $etid in-review (no --pr needed) and the next sweep dispatches a fresh reviewer"; then
         echo "epic #$etid: review engine unavailable 3 consecutive attempts — reviewer $uuid retired and the epic parked needs-human"

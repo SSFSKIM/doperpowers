@@ -31,6 +31,9 @@ assert_not_contains() {
     if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
+assert_file_exists() {
+    if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
+}
 
 # ---- environment --------------------------------------------------------------
 export HOME="$TEST_ROOT/home"; mkdir -p "$HOME"
@@ -75,11 +78,14 @@ fi
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
 n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
 uuid="$(printf 'aaaa%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" SPAWN_N="$n" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
 json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
-           "status": "working", "updated": "2026-07-08T00:00:00Z"},
+           "status": "working",
+           # monotonic per spawn: a worker spawned after a retire must sort
+           # NEWER than it, as it does in production (both stamp wall clock)
+           "updated": "2026-07-08T00:%02d:00Z" % int(os.environ.get("SPAWN_N") or 0)},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 # Simulate the worker's first protocol action: wait for the dispatcher-owned
@@ -140,7 +146,30 @@ echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
 STUB
 cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
 #!/usr/bin/env bash
+# Faithful to the real daemon-retire.sh: mark the meta retired and bump
+# `updated`. A log-only stub let a "retired" failure keep its status=error,
+# which is precisely the evidence the real one destroys.
 echo "retire:$1" >> "$SPAWN_LOG"
+python3 - "$1" <<'PY'
+import glob, json, os, sys
+q = sys.argv[1]
+for path in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if path.endswith(".reply.json"):
+        continue
+    base = os.path.basename(path)[:-5]
+    if base != q and not base.startswith(q):
+        continue
+    try:
+        m = json.load(open(path))
+    except Exception:
+        continue
+    m["status"] = "retired"
+    # +1s on its own clock: newer than the worker's last activity, older than
+    # any worker spawned after it (production stamps wall clock for both)
+    u = str(m.get("updated") or "2026-07-08T00:00:00Z")
+    m["updated"] = u[:-2] + "%02dZ" % min(59, int(u[-3:-1]) + 1)
+    json.dump(m, open(path, "w"), indent=2)
+PY
 STUB
 # Faithful stand-in for daemon-finalize.sh: same contract (noop/live/absent/
 # idle/error on stdout), driven by the registry meta + the mock agents view;
@@ -504,7 +533,9 @@ echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
-assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "dispatch finalized the meta through daemon-finalize"
+# The retire that follows overwrites status with `retired` (as the real
+# daemon-retire does), so finalize's own durable evidence is its reply file.
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch finalized the meta through daemon-finalize (reply recorded)"
 
 # The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
 # so the sweep's outage retry works on the one-harness lifecycle.
@@ -533,7 +564,7 @@ echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished reviewer (state=working, status=idle) is finalized + retired"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "lingering finished reviewer re-dispatches on an explicit event"
-assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "idle"' "lingering finished reviewer's meta finalized idle"
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "lingering finished reviewer was finalized (reply recorded)"
 
 # ...and a genuinely mid-turn reviewer (status=busy) still skips as active.
 reset_state; seed_reviewer working
@@ -758,7 +789,8 @@ assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"status": "error"' "sweep finalized the errored session through daemon-finalize"
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep finalized the errored session through daemon-finalize (reply recorded)"
+assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"retired_from": "failure"' "and its retirement is stamped as a FAILURE one, so the streak can still see it"
 assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
 
 # dead workers share the outage cap: 3 consecutive errored reviewers (empty
@@ -1631,6 +1663,77 @@ rm -f "$DAEMON_HOME"/*.reply.txt
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
 assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a fresh dispatch does not re-park the epic"
 
+# ---- dead-worker cycles must reach the scale cap ------------------------------
+# A reviewer that dies pre-reply finalizes `error`; the respawn retires it, and
+# daemon-retire overwrites that status with `retired` — erasing the only
+# evidence _outage_streak had. The streak reset every tick, the cap was
+# unreachable, and the sweep respawned a doomed reviewer forever, so F4's
+# escalation could never fire for exactly the failure class it exists for.
+# Failure retirements are stamped now; supersessions are not.
+echo "scale cap via dead-worker cycles:"
+reset_state
+PKG="$PKG" python3 - <<'PY'
+import json, os
+meta = "\n\n<!-- board:meta\npr: %s\n-->\n" % os.environ["PKG"]
+issues = [
+    {"number": 20, "state": "OPEN", "labels": ["status:in-review"],
+     "body": "Epic acceptance." + meta, "parent": None},
+    {"number": 22, "state": "CLOSED", "labels": [], "body": "child a", "parent": 20},
+]
+json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
+PY
+# every live review-epic-20 session reports state=error, so each cycle is a
+# dead worker: finalize error → respawn → retire (stamped) → fresh spawn
+fail_all_epic_reviewers() {
+    python3 - <<'PY' > "$MOCK_DIR/agents.json"
+import glob, json, os
+rows = []
+for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("name") == "review-epic-20" and m.get("status") == "working":
+        rows.append({"id": "e", "sessionId": m["current"], "state": "error"})
+print(json.dumps(rows))
+PY
+}
+"$DISPATCH" --sweep >/dev/null 2>&1 || true      # cycle 0: first reviewer spawns
+CAP_SPAWNS=0
+for _cycle in 1 2 3; do
+    fail_all_epic_reviewers
+    : > "$SPAWN_LOG"
+    OUT_CYCLE="$("$DISPATCH" --sweep 2>&1 || true)"
+    grep -q 'spawn:--no-wait review-epic-20' "$SPAWN_LOG" && CAP_SPAWNS=$((CAP_SPAWNS + 1))
+done
+assert_equals "$CAP_SPAWNS" "2" "the third dead-worker cycle stops respawning (2 retries, then the cap)"
+assert_contains "$OUT_CYCLE" "parked needs-human" "and the capped epic escalates to the human instead of looping forever"
+assert_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "the park goes through the board, as F4 defined it"
+
+# A SUPERSEDED retirement is not a failure and must break the streak, or a
+# long-lived epic would accumulate its way to a false cap.
+reset_state
+PKG="$PKG" python3 - <<'PY'
+import json, os
+home = os.environ["DAEMON_HOME"]
+def meta(uuid, status, updated, retired_from=None):
+    m = {"uuid": uuid, "current": uuid, "name": "review-epic-20",
+         "status": status, "updated": updated}
+    if retired_from:
+        m["retired_from"] = retired_from
+    json.dump(m, open(os.path.join(home, uuid + ".json"), "w"), indent=2)
+    open(os.path.join(home, uuid + ".reply.txt"), "w").write("\n")
+meta("aaa10001-0000-4000-8000-000000000000", "retired", "2026-07-01T00:00:00Z", "failure")
+meta("aaa10002-0000-4000-8000-000000000000", "retired", "2026-07-02T00:00:00Z")   # superseded
+meta("aaa10003-0000-4000-8000-000000000000", "retired", "2026-07-03T00:00:00Z", "failure")
+meta("aaa10004-0000-4000-8000-000000000000", "error",   "2026-07-04T00:00:00Z")
+PY
+OUT_SUPER="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an unstamped (superseded) retirement breaks the streak — no false cap"
+assert_not_contains "$OUT_SUPER" "parked needs-human" "so the epic is not escalated on a streak it never had"
+
 # ---- a scale reviewer whose epic left in-review gets finalized + retired ------
 # The in-review listing above cannot see this reviewer (its epic moved on when
 # a defect became a corrective child), and board-sweep's pass_cancel skips
@@ -1659,8 +1762,10 @@ PY
 echo '[{"id": "dead0001", "sessionId": "dead0001-0000-4000-8000-000000000000", "state": "done"}]' \
     > "$MOCK_DIR/agents.json"
 OUT_STALE="$("$DISPATCH" --sweep 2>&1 || true)"
-assert_contains "$(cat "$DAEMON_HOME/dead0001-0000-4000-8000-000000000000.json")" '"status": "idle"' \
-    "the finished reviewer of an out-of-review epic is finalized"
+assert_file_exists "$DAEMON_HOME/dead0001-0000-4000-8000-000000000000.reply.txt" \
+    "the finished reviewer of an out-of-review epic is finalized (reply recorded)"
+assert_not_contains "$(cat "$DAEMON_HOME/dead0001-0000-4000-8000-000000000000.json")" "retired_from" \
+    "a stale-ticket retirement is NOT a failure — it must break the streak, not extend it"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:dead0001" "and retired, releasing the ticket it still owned"
 assert_contains "$OUT_STALE" "the epic has left in-review" "the sweep names why it retired the reviewer"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an out-of-review epic is never re-dispatched by this pass"
