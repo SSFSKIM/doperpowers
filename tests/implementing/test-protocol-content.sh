@@ -297,6 +297,9 @@ assert_contains "$review" "artifact that cannot exist is never a finding" \
 assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
     "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
+# A real plan pin is only reclaimable from a recorded ref (cattle clone).
+assert_contains "$arch" "a cattle clone fetches the plan's sha from" \
+    "the handoff states why a pinned plan needs its branch recorded"
 assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
 assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
 # Scale-review variant (QAgent).

@@ -121,7 +121,21 @@ def main():
     if argv[:2] == ["issue", "view"]:
         it = issue(s, argv[2])
         if opt(argv, "--json") == "comments":
-            print(json.dumps({"comments": [{"body": c} for c in it["comments"]]}))
+            # Real gh serves each comment as an object carrying
+            # authorAssociation, and the board's comment-controlled reads
+            # (convergence counting, the sweep's IMPACT scans) key on it.
+            # A comment stored as a bare string is the board's own write —
+            # the token identity, i.e. OWNER; a test seeds a dict directly to
+            # play any other author.
+            out = []
+            for c in it["comments"]:
+                if isinstance(c, dict):
+                    c = dict(c)
+                    c.setdefault("authorAssociation", "OWNER")
+                    out.append(c)
+                else:
+                    out.append({"body": c, "authorAssociation": "OWNER"})
+            print(json.dumps({"comments": out}))
             return
         die("unhandled issue view fields: %s" % " ".join(argv))
 

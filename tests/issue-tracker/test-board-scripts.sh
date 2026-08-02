@@ -1077,7 +1077,7 @@ echo "plan pin auto-clear:"
 run board-register.sh "Plan clear probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
 pc_t="$(state "s['next']-1")"
 run board-transition.sh "$pc_t" in-design >/dev/null
-run board-transition.sh "$pc_t" ready-for-implementer "plan ready" --plan "docs/p.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$pc_t" ready-for-implementer "plan ready" --branch tick/plan-clear --plan "docs/p.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
 assert_contains "$(state "s['issues']['$pc_t']['body']")" "plan: docs/p.md@0123456789abcdef0123456789abcdef01234567" "pin recorded before the escalation"
 run board-transition.sh "$pc_t" in-progress >/dev/null
 run board-transition.sh "$pc_t" ready-for-architect "plan is blocked" >/dev/null
@@ -1091,7 +1091,7 @@ assert_not_contains "$(state "s['issues']['$pc_t']['body']")" "plan:" "decompose
 run board-register.sh "Plan keep probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
 pk_t="$(state "s['next']-1")"
 run board-transition.sh "$pk_t" in-design >/dev/null
-run board-transition.sh "$pk_t" ready-for-implementer "plan ready" --plan "docs/q.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$pk_t" ready-for-implementer "plan ready" --branch tick/plan-keep --plan "docs/q.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
 run board-transition.sh "$pk_t" needs-human "unrelated human question" >/dev/null
 run board-transition.sh "$pk_t" ready-for-implementer >/dev/null
 assert_contains "$(state "s['issues']['$pk_t']['body']")" "plan: docs/q.md@0123456789abcdef0123456789abcdef01234567" "a needs-human unpark does not void a still-valid plan pin"
@@ -1290,7 +1290,7 @@ cr_t="$(state "s['next']-1")"
 run board-transition.sh "$cr_t" in-progress >/dev/null
 run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A" >/dev/null                    # 1st traversal
 run board-transition.sh "$cr_t" in-design >/dev/null
-run board-transition.sh "$cr_t" ready-for-implementer "plan ready" --plan "docs/plan.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
+run board-transition.sh "$cr_t" ready-for-implementer "plan ready" --branch tick/conv-reset --plan "docs/plan.md@0123456789abcdef0123456789abcdef01234567" >/dev/null
 run board-transition.sh "$cr_t" in-progress >/dev/null
 out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A again")"                # 2nd traversal
 assert_contains "$out" "#$cr_t: in-progress → needs-human" "2nd traversal converts (unreset baseline)"
@@ -1303,6 +1303,67 @@ assert_contains "$(state "s['issues']['$cr_t']['comments'][-2]")" "[answers]" "-
 out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A still")"                # 3rd traversal
 assert_contains "$out" "#$cr_t: in-progress → ready-for-architect" "3rd traversal after a --posted relay does NOT convert (reset fired)"
 unset DAEMON_SCRIPTS STUB_STATE
+
+# The counter is comment-CONTROLLED board behavior: on a public consumer repo
+# an outsider could pre-seed an edge marker (forcing the next legitimate
+# traversal into a needs-human park) or post [answers] (buying unbounded
+# bounces). Only repo-side authors count or reset — every board and worker
+# write is the token identity, i.e. OWNER.
+echo "convergence author trust:"
+seed_comment() {  # <ticket> <authorAssociation> <body>
+    T_N="$1" T_ASSOC="$2" T_BODY="$3" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+s["issues"][os.environ["T_N"]]["comments"].append(
+    {"body": os.environ["T_BODY"], "authorAssociation": os.environ["T_ASSOC"]})
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+run board-register.sh "Untrusted marker probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ut_t="$(state "s['next']-1")"
+seed_comment "$ut_t" NONE "[board] ready-for-implementer → ready-for-architect: pre-seeded by a stranger"
+out="$(run board-transition.sh "$ut_t" ready-for-architect "gate: plan-need")"
+assert_contains "$out" "#$ut_t: ready-for-implementer → ready-for-architect" "an outsider's pre-seeded edge marker is not counted as a traversal"
+assert_not_contains "$(state "s['issues']['$ut_t']['labels']")" "status:needs-human" "so the FIRST legitimate traversal is not converted into a park"
+
+run board-register.sh "Untrusted answers probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ua_t="$(state "s['next']-1")"
+run board-transition.sh "$ua_t" ready-for-architect "gate: plan-need" >/dev/null
+run board-transition.sh "$ua_t" in-design >/dev/null
+run board-transition.sh "$ua_t" ready-for-implementer "plan cut" --plan pre-spec >/dev/null
+seed_comment "$ua_t" NONE "[answers] go ahead, bounce it as often as you like"
+out="$(run board-transition.sh "$ua_t" ready-for-architect "second time")"
+assert_contains "$out" "#$ua_t: ready-for-implementer → needs-human" "an outsider's [answers] does not reset the count"
+
+# ---- a real plan pin needs a branch the sha is reachable from -----------------
+# The pin authorizes gate-free PLAN-EXECUTION, and the worker starts from a
+# fresh cattle clone: with no recorded ref there is nothing to fetch the sha
+# from, so the pin cannot serve the reclaim contract it exists for.
+echo "plan pin reachability:"
+PIN="docs/plans/reach.md@0123456789abcdef0123456789abcdef01234567"
+run board-register.sh "Pin reachability probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pr1_t="$(state "s['next']-1")"
+run board-transition.sh "$pr1_t" in-design >/dev/null
+pin_err="$(run board-transition.sh "$pr1_t" ready-for-implementer "plan ready" --plan "$PIN" 2>&1 || true)"
+assert_contains "$pin_err" "needs a recorded branch the sha is reachable" "a pinned plan with no branch anywhere is refused"
+assert_contains "$(state "s['issues']['$pr1_t']['labels']")" "status:in-design" "the refused handoff wrote nothing"
+out="$(run board-transition.sh "$pr1_t" ready-for-implementer "plan ready" --branch tick/reach --plan "$PIN")"
+assert_contains "$out" "#$pr1_t: in-design → ready-for-implementer" "the same handoff passes with --branch"
+# a branch already in meta satisfies it — the ref is recorded either way
+run board-register.sh "Pin with prior branch" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pr2_t="$(state "s['next']-1")"
+run board-transition.sh "$pr2_t" in-design "claimed" --branch tick/earlier >/dev/null
+out="$(run board-transition.sh "$pr2_t" ready-for-implementer "plan ready" --plan "$PIN")"
+assert_contains "$out" "#$pr2_t: in-design → ready-for-implementer" "a branch: already in meta satisfies the pin's reachability"
+# pre-spec names no revision — the issue body IS the plan, so no branch is owed
+run board-register.sh "Pre-spec needs no branch" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+pr3_t="$(state "s['next']-1")"
+run board-transition.sh "$pr3_t" in-design >/dev/null
+out="$(run board-transition.sh "$pr3_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
+assert_contains "$out" "#$pr3_t: in-design → ready-for-implementer" "the pre-spec sentinel still needs no branch"
 
 # ---- in-design orphan (board-reconcile) ----------------------------------------
 # The missing-daemon check must cover the Architect's in-flight state too,
@@ -1359,10 +1420,10 @@ assert_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board-epic]"
 # board-list must show an operator what the dispatcher will actually claim:
 # a recomposition-due epic is eligible, and the epic tag alone hid that.
 list_rc="$(run board-list.sh)"
-assert_contains "$(grep -F "#$rc_e " <<<"$list_rc" || true)" "[epic ELIGIBLE]" "a recomposition-due epic lists as eligible"
+assert_contains "$(grep -E "^#$rc_e " <<<"$list_rc" || true)" "[epic ELIGIBLE]" "a recomposition-due epic lists as eligible"
 # same predicate, one surface over: the map's fallback table
 map_rc="$(run board-map.sh)"
-assert_contains "$(grep -F "#$rc_e " <<<"$map_rc" || true)" "ready-for-architect · ELIGIBLE" "the map marks the recomposition-due epic eligible too"
+assert_contains "$(grep -F "| #$rc_e |" <<<"$map_rc" || true)" "ready-for-architect · ELIGIBLE" "the map marks the recomposition-due epic eligible too"
 assert_not_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board] in-progress → ready-for-architect:" "return never writes the convergence-counted format"
 # second cycle: corrective child, land it, return fires again w/o needs-human conversion
 run board-register.sh "Recomp gap child" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
@@ -1377,8 +1438,8 @@ assert_not_contains "$(state "s['issues']['$rc_e']['labels']")" "status:needs-hu
 # Architect recomposition verdict paths (epic-guarded edges)
 run board-transition.sh "$rc_e" in-design >/dev/null           # Architect claims
 list_rc2="$(run board-list.sh)"
-assert_contains "$(grep -F "#$rc_e " <<<"$list_rc2" || true)" "[epic]" "a claimed (in-design) epic still lists its epic tag"
-assert_not_contains "$(grep -F "#$rc_e " <<<"$list_rc2" || true)" "ELIGIBLE" "an in-design epic is not eligible — nothing dispatches it"
+assert_contains "$(grep -E "^#$rc_e " <<<"$list_rc2" || true)" "[epic]" "a claimed (in-design) epic still lists its epic tag"
+assert_not_contains "$(grep -E "^#$rc_e " <<<"$list_rc2" || true)" "ELIGIBLE" "an in-design epic is not eligible — nothing dispatches it"
 out="$(run board-transition.sh "$rc_e" "done")"
 assert_contains "$out" "#$rc_e: in-design → done" "recomposition Architect closes a non-code epic from in-design"
 assert_equals "$(state "s['issues']['$rc_e']['stateReason']")" "COMPLETED" "epic closed as completed"
@@ -1409,9 +1470,9 @@ ce_x="$(state "s['next']-1")"
 # no recomposition claim, and there is no reconciliation-due note either. Both
 # operator surfaces must agree with the dispatcher, not with a blocker check.
 map_ce="$(run board-map.sh)"
-assert_not_contains "$(grep -F "#$ce_e " <<<"$map_ce" || true)" "ELIGIBLE" "the map does not mark an epic with a live corrective child eligible"
+assert_not_contains "$(grep -F "| #$ce_e |" <<<"$map_ce" || true)" "ELIGIBLE" "the map does not mark an epic with a live corrective child eligible"
 list_ce="$(run board-list.sh)"
-assert_not_contains "$(grep -F "#$ce_e " <<<"$list_ce" || true)" "ELIGIBLE" "nor does board-list"
+assert_not_contains "$(grep -E "^#$ce_e " <<<"$list_ce" || true)" "ELIGIBLE" "nor does board-list"
 out="$(run board-transition.sh "$ce_x" in-progress)"
 assert_contains "$out" "#$ce_e: ready-for-architect → in-design" "the corrective child pulls the waiting epic back in-flight"
 # The verdict edges are RECOMPOSITION edges: an epic holding a reconciliation

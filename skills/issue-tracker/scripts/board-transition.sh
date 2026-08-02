@@ -128,15 +128,24 @@ if (cur, to) in B.CONVERGENCE_EDGES:
     # did not exist during the first — is rewritten into a needs-human park.
     # The prefix is written only by epic bookkeeping (apply_state's
     # bookkeeping branch), so it never appears on a leaf.
+    #
+    # This count is comment-CONTROLLED board behavior, same class as the
+    # sweep's IMPACT scans: on a public consumer repo an outsider could
+    # pre-seed an edge marker (forcing the next legitimate traversal into a
+    # needs-human park) or post [answers] (buying unbounded bounces). So only
+    # repo-side authors count or reset — every board and worker write is the
+    # token identity, i.e. OWNER. A comment that is not an object carries no
+    # association at all and is therefore untrusted.
     import json as _json
+    TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
     comments = _json.loads(B.gh(["issue", "view", tid, "-R", B.repo(),
                                  "--json", "comments"])).get("comments") or []
     marker = "[board] %s → %s:" % (cur, to)
     count = 0
     for c in comments:
-        # real gh (and the Step-3 mock handler) serve [{"body": ...}];
-        # tolerate plain strings defensively
-        body = ((c.get("body") if isinstance(c, dict) else c) or "").lstrip()
+        if not isinstance(c, dict) or (c.get("authorAssociation") or "") not in TRUSTED:
+            continue
+        body = (c.get("body") or "").lstrip()
         if body.startswith("[answers]"):
             count = 0
         elif body.startswith("[board-epic] ready-for-architect:"):
@@ -181,8 +190,18 @@ if env["T_PLAN"]:
     if cur != "in-design" or to != "ready-for-implementer":
         B.die("--plan rides the Architect handoff edge (in-design → "
               "ready-for-implementer) only")
-    if env["T_PLAN"] != "pre-spec" and not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
-        B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")
+    if env["T_PLAN"] != "pre-spec":
+        if not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
+            B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")
+        # A real pin authorizes gate-free PLAN-EXECUTION, and the worker that
+        # executes it starts from a fresh cattle clone: without a recorded ref
+        # the sha is reachable from, there is nothing to fetch and the pin
+        # cannot serve the reclaim contract it exists for. `pre-spec` is
+        # exempt — it names no revision, the issue body IS the plan.
+        if not env["T_BRANCH"] and not n.get("branch"):
+            B.die("a pinned plan needs a recorded branch the sha is reachable "
+                  "from; pass --branch (the default branch is fine if the plan "
+                  "landed there)")
 if to in B.DISPATCHABLE and "(pre-spec: fill in)" in (n.get("body") or ""):
     B.die("#%s is still a pre-spec skeleton — fill the body (gh issue edit "
           "%s --body-file <spec>) before a dispatchable lane state" % (tid, tid))

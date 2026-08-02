@@ -110,7 +110,10 @@ scope in one transition:
 The `plan:` pin is machine-read — "plan attached" downstream means the
 meta field, never note prose — and names the immutable revision the
 review loop audits against (your Implementer's living-plan updates on
-the branch are divergence evidence, not the contract). This transition
+the branch are divergence evidence, not the contract). `--branch` is not
+optional beside a real pin: a cattle clone fetches the plan's sha from
+the recorded ref and has nowhere else to look, so the transition refuses
+a pin with no branch (name the default branch if the plan landed there). This transition
 ends your scope and releases your binding: do not wait, poll, or touch
 downstream work.
 
