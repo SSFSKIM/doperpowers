@@ -1,6 +1,6 @@
 # Codex Workflow Engine — Design
 
-**Status:** Approved design, pre-implementation
+**Status:** v2 — revised after independent adversarial review (codex sol/xhigh, 2026-08-03); panel finder substrate awaiting owner confirmation (see Open Questions)
 **Branch:** `codex-workflow-engine` (off `main` @ 6765c24, post-PR #42)
 **Owner consumers:** interactive Claude sessions, headless daemon workers (QAgent lineage), any harness that can run Bash
 
@@ -11,47 +11,75 @@ branch. The rounds conflated two different jobs: discovery breadth on a fixed
 diff (parallelizable — single-pass review has limited recall, which is why
 findings kept surfacing on unchanged code across rounds) and regression
 checking after fixes (inherently serial). Discovery deserves a parallel
-multi-agent pass.
+multi-agent pass — and this repo has already proven the premise: the
+multilens engine work (`docs/doperpowers/execplans/2026-07-28-multilens-review-engine.md`,
+shipped v7.25.0) showed seven differently-configured single reviews of one
+large PR each found a different 8–10 of 13 confirmed defects whose union was
+all 13.
 
 More generally: Claude Code's Dynamic Workflow primitive (deterministic
 orchestration fanning out model workers) has no counterpart on the Codex
 runtime. This spec adds one to the vendored codex-companion runtime — a
-general `workflow` verb that executes a JS orchestration script whose workers
-are codex threads — with a multi-lens code-review workflow as the first
-consumer and acceptance test.
+general `workflow` verb that executes a JS orchestration script whose
+workers are codex threads — with a multi-lens code-review panel workflow as
+the first consumer and acceptance case.
 
 What the codex-native engine buys over orchestrating N codex processes from
 the Claude side:
 
 1. **One detached process** — the whole fan-out has one pid, one stdout, one
    job record. This structurally dissolves the harness-background-kill and
-   state-root-race failure modes observed all through the E2 campaign,
-   instead of working around them per-invocation.
+   state-root-race failure modes observed all through the E2 campaign.
 2. **Headless** — a daemon worker or cron job invokes a full
    find→verify→synthesize review as one command, with no Claude
    orchestration loop spending tokens on bookkeeping.
 3. **Harness-independent** — doperpowers is a multi-harness plugin; a
    Bash-invocable engine works identically from every harness.
 
-## Grounding (verified against the vendored runtime, 2026-08-03)
+## Grounding (verified against the vendored runtime and repo history, 2026-08-03)
 
 - `runAppServerTurn(cwd, {prompt, model, effort, outputSchema,
-  resumeThreadId, sandbox, ...})` (`runtime/scripts/lib/codex.mjs:1095`)
-  already is the worker primitive: one call = one thread turn, per-call
-  model/effort, `{finalMessage, threadId, status}` out.
-- Schema-forced output is production-proven: `outputSchema` rides
-  `turn/start` (codex.mjs:1141) and the `adversarial-review` verb already
-  passes `REVIEW_SCHEMA` (`codex-companion.mjs:415`), with
-  `parseStructuredOutput` exposing `parseError` for retry.
+  resumeThreadId, sandbox, ...})` (`runtime/scripts/lib/codex.mjs:1095`) is
+  the worker primitive: one call = one thread turn, per-call model/effort,
+  `{finalMessage, threadId, status}` out. `outputSchema` rides `turn/start`
+  and is production-proven by `adversarial-review`.
+- `parseStructuredOutput` (codex.mjs:1188) does **JSON.parse only — no
+  schema validation**. The engine must validate structurally itself.
+- `runAppServerTurn` cannot continue a turn that died mid-turn: resuming a
+  persisted thread always starts a NEW `turn/start` (codex.mjs:1104-1141);
+  new threads are ephemeral unless `persistThread` is set. Retry semantics
+  must be "new turn", never "continue turn".
 - Native review is a distinct protocol method (`review/start`,
-  codex.mjs:1026) — non-steerable, needs its own hook.
-- Concurrency: each `withAppServer` call spawns its own `codex app-server`
-  process; N workers = N independent processes.
-- The shared job ledger (`state.json`) is an unlocked read-modify-write —
-  parallel writers lose records (documented in references/reviews.md). The
-  engine therefore keeps per-run state in its own directory.
+  codex.mjs:1026) returning **rendered `reviewText`**, not structured
+  findings. It has no per-request effort field — effort (and any other
+  config) must be set on the serving app-server process
+  (references/reviews.md:31). It IS steerable via the
+  `-c developer_instructions=...` config override — verified live
+  2026-07-12 and shipped in `reviewing-prs`' lens transport
+  (`CODEX_REVIEW_LENS_FILE`, multilens execplan Milestone 2). The
+  "non-steerable" note in references/reviews.md refers only to positional
+  focus text.
+- `withAppServer` consults/creates a broker when configured
+  (app-server.mjs:335) — per-worker isolation requires explicit direct
+  spawn. `scripts/with-effort.mjs` demonstrates the mechanism: spawn
+  `codex -c key=value … app-server` per connection.
+- The shared job ledger (`state.json`) is an unlocked
+  load-mutate-`writeFileSync` (state.mjs:118-129) — ANY two concurrent
+  top-level runs can lose each other's records, not just intra-run
+  workers. Cancellation signals the process group of the recorded pid
+  (process.mjs:100) and assumes the record-holder is a group leader; dead
+  sessions remain `running` forever (references/jobs.md).
+- Review-quality evidence base: `tests/review-bench/` (the X1 benchmark —
+  5 seeded truth-set cases with false-positive baits, 3 real-PR cases, a
+  predeclared non-regression bar) and the multilens results: native codex
+  review at sol/xhigh beat every Claude-side cell (10/13 vs 8/13 → argus
+  engine discarded by owner 2026-07-28); a lensed run is a **scalpel, not
+  a sweep** (the authz lens returned exactly 1 finding — the F3 defect
+  both plain runs missed — vs the sweep's 10; lenses redirect the whole
+  attention budget). Shipped doctrine: one lens-free sweep + diff-derived
+  scalpel lenses.
 
-## Design
+## Design — the engine
 
 ### 1. CLI contract
 
@@ -66,27 +94,45 @@ CODEX_COMPANION_SESSION_ID="<session>" \
 ```
 
 - **stdout**: the script's return value, JSON-serialized, plus run metadata
-  (`{runId, result, agents: <count>, durationMs}`). Written once, after the
-  run completes — same read contract as every other work verb.
-- **stderr**: streamed progress — one line per worker lifecycle event
-  (spawn, turn complete, retry, failure) prefixed `[workflow]`. Callers
-  redirect it (`2> scratch.events.log`) exactly as with `review`/`task`.
-- **Job record**: the run registers ONE summary job in the existing ledger
-  at start and finalizes it at exit, so `status`/`result`/`cancel` work
-  unchanged. Individual workers never touch the shared ledger.
-- The verb always spawns per-worker app-servers on the direct path;
-  `CODEX_COMPANION_APP_SERVER_ENDPOINT` is not consulted (harmless if set).
-  Worker processes are children of the run process: killing the run (or
-  `cancel <job-id>`) reaps the whole panel.
-- `--max-concurrency` default **6** (fits the first consumer's panel; each
-  worker is its own app-server process). No token budget; concurrency and
-  the script's own structure are the cost controls.
+  (`{runId, result, agents, durationMs, coverage}`). Written once, after
+  the run completes.
+- **stderr**: streamed progress — one `[workflow]` line per worker
+  lifecycle event (spawn, turn complete, retry, failure). Callers redirect
+  it (`2> scratch.events.log`).
+- **M0 is read-only**: no `write` option exists. Every worker turn runs
+  `sandbox: "read-only"`; native-review workers are read-only by nature.
+  Write-capable steps are deferred until replay/idempotency semantics
+  exist (see Out of scope) — this is what makes journal replay sound.
+- The verb never consults `CODEX_COMPANION_APP_SERVER_ENDPOINT`: every
+  worker gets its own directly-spawned `codex app-server` child with
+  per-worker `-c` overrides (the with-effort.mjs mechanism, in-process).
+- `--max-concurrency` default **6**; the semaphore guards **leaf worker
+  spawns** (`agent`/`review` acquisitions), not combinators — a script
+  calling bare `Promise.all` over 10 `agent()`s still never exceeds the
+  cap.
 
-### 2. Script contract
+### 2. Process ownership, jobs, cancel
 
-A workflow script is a plain ESM module. Hooks arrive as an explicit context
-argument — no injected globals, no VM sandboxing; a script is trusted code
-from the skill bundle or authored by the orchestrating agent:
+- Worker app-servers are direct children of the run process (same process
+  group, `detached: false`). The engine tracks live worker pids in the run
+  directory and installs SIGTERM/SIGINT handlers: on signal, kill all live
+  workers, finalize the job record (`canceled`), exit.
+- The run registers ONE summary job record. Workflow-path writes to the
+  shared ledger go through an **advisory lockfile + write-temp-then-rename**
+  (atomic replace), fixing the cross-run lost-record race for this verb
+  (existing verbs' behavior is untouched; their documented race stands).
+- Liveness repair: when `status`/`result` reads a workflow job whose
+  recorded pid is dead but status is `running`, it finalizes the record as
+  `failed` (journal path attached) instead of reporting a phantom run.
+  `cancel` keeps its group-signal path and additionally kills the tracked
+  worker pids from the run directory, so it works even when the run
+  process is not a group leader.
+
+### 3. Script contract
+
+A workflow script is a plain ESM module. Hooks arrive as an explicit
+context argument — no injected globals, no VM sandboxing; a script is
+trusted code from the skill bundle or authored by the orchestrating agent:
 
 ```js
 export const meta = { name: "code-review", description: "…" }; // optional
@@ -97,229 +143,322 @@ export default async function run({ agent, review, parallel, pipeline, log, args
 }
 ```
 
-Shipped workflows live in `skills/codex-companion/workflows/*.mjs` and are
+Shipped workflows live in `skills/codex-companion/workflows/*.mjs`,
 addressed by path only — no name registry.
 
-### 3. Hook semantics
+### 4. Hook semantics
 
-- `agent(prompt, opts)` → one codex thread turn (`runAppServerTurn`).
-  - `opts`: `{model, effort, schema, write, label, cwd}`. Effort passes
-    through to `turn/start` (the task path's native effort field — no
-    with-effort wrapper needed).
-  - `schema` (a JSON-schema object): sets `outputSchema`; the engine parses
-    the final message. **On parse/validation failure it retries once by
-    resuming the same thread** with a repair prompt naming the error and
-    demanding JSON-only re-emission. A second failure rejects.
-  - Read-only sandbox unless `write: true`. Caveat documented: concurrent
-    writers share one working tree; per-worker worktree isolation is a
-    later milestone.
-  - Returns the parsed object (with schema) or the final message string.
-    Hard worker failure (spawn error, turn error, double schema failure)
-    **rejects**; combinators below define how rejection is absorbed.
-- `review({base, scope, model, effort, cwd})` → the native non-steerable
-  reviewer via `review/start`, returning the structured findings payload
-  the existing `review` verb produces. Same target-selection semantics as
-  the `review` verb (`base` wins; `scope` auto|working-tree|branch).
-- `parallel(thunks)` → runs thunks under the global semaphore; **barrier**;
-  a rejected thunk resolves to `null` in the result array — the call itself
-  never rejects.
-- `pipeline(items, ...stages)` → per-item stage chains with **no barrier**
-  between stages; a stage that throws nulls that item and skips its
-  remaining stages. Each stage callback receives
-  `(prevResult, originalItem, index)`.
-- `log(msg)` → a `[workflow]` stderr line + journal entry.
+- `agent(prompt, opts)` → one read-only codex thread turn
+  (`runAppServerTurn` against the worker's private app-server).
+  - `opts`: `{model, effort, schema, label, cwd}`. Effort rides
+    `turn/start` natively.
+  - `schema`: sets `outputSchema` AND the engine validates the parsed
+    result against the schema structurally (a minimal validator for the
+    subset used: `type`, `properties`, `required`, `items`, `enum`) —
+    `parseStructuredOutput` alone accepts any syntactically-valid JSON.
+    On parse OR validation failure: one repair retry as a **new turn on
+    the same thread** naming the error and demanding JSON-only
+    re-emission (fresh thread if the thread died). Second failure
+    rejects.
+  - Returns the validated object (with schema) or the final message
+    string. Hard failure rejects; combinators define absorption.
+- `review(opts)` → one native review via a private app-server spawned
+  with per-worker config overrides:
+  `{base, scope, model, effort, lens, cwd}` — `effort` becomes
+  `-c model_reasoning_effort=…`, `lens` becomes
+  `-c developer_instructions=…` on the spawn argv (no shell — argv-array
+  spawn, injection-safe by construction). Returns the RAW result:
+  `{reviewText, threadId, status}`. **Normalization of review text into
+  findings is explicitly not the engine's job** — it belongs to the
+  calling script.
+- `parallel(thunks)` → runs thunks; **barrier**; a rejected thunk resolves
+  to `null` in the result array — the call itself never rejects.
+- `pipeline(items, ...stages)` → per-item stage chains, **no barrier**;
+  a throwing stage nulls that item and skips its remaining stages. Stage
+  callbacks receive `(prevResult, originalItem, index)`.
+- `log(msg)` → `[workflow]` stderr line + journal event.
 - `args` → the `--args` JSON, verbatim.
 
-Semantics deliberately mirror Claude Code's Workflow tool so the mental
-model transfers between harnesses.
+Semantics mirror Claude Code's Workflow tool so the mental model transfers.
 
-### 4. Run state, journal, resume
+### 5. Run state, journal, resume
 
 Per-run directory: `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`
 
-- `journal.jsonl` — one entry per hook call: monotonic call index, hook
-  kind, SHA-256 of the prompt+opts, codex thread id, outcome (result or
-  error), timestamps.
-- `agent-<index>.events.log` — per-worker streamed progress.
-- `result.json` — the final stdout payload.
-
-Resume (`--resume <run-id> --script <path>`): replay the longest journal
-prefix whose (call order, prompt hash) match; cached calls return their
-recorded results instantly; execution goes live at the first mismatch or
-first unfinished call. Because the journal records thread ids, a resumed
-run can also *continue* a thread that died mid-turn rather than restarting
-it — codex-native resume the Claude-side Workflow cannot do. Determinism is
-guidance, not enforcement: scripts that vary prompts across runs simply get
-less cache benefit.
-
-### 5. Failure semantics (engine-level)
-
-- Worker turn failure → one automatic retry (fresh turn on the same thread
-  when the thread survives, fresh thread otherwise), then rejection into
-  the combinator rules above.
-- Run-level crash → the summary job record is finalized as failed with the
-  journal path; `--resume` picks up from the journal.
-- The engine never interprets worker output beyond schema parsing — result
-  semantics (including coverage accounting) belong to the script.
+- `journal.jsonl` — **event-sourced**, torn-tail tolerant: a `started`
+  record when a hook call dispatches (kind, cache key, thread id once
+  known) and a `finished` record on settle (result or error). A torn or
+  missing final line invalidates only that record, never the file.
+- **Cache identity is content-keyed, not order-keyed**: cache key =
+  `(hook kind, label, SHA-256 of prompt+opts, occurrence #)` where
+  occurrence # disambiguates deliberate repeats. Parallel calls may
+  finish in any order; resume replays every `finished` record whose key
+  matches and re-runs everything else. A `started`-without-`finished`
+  call re-runs as a fresh turn (the recorded thread id is context, never
+  a mid-turn continuation — the protocol has none).
+- **Run lease**: a lockfile (pid + timestamp) in the run directory; a
+  second `--resume` of a leased, live run refuses. Dead-pid leases are
+  broken automatically.
+- **Repo fingerprint**: HEAD sha + a hash of `git status --porcelain`
+  recorded at run start. `--resume` against a differing fingerprint
+  refuses (cached analysis of a changed tree is stale by definition);
+  re-running fresh is always available.
+- `workers.json` — live worker pids (for cancel). `result.json` — the
+  final stdout payload.
 
 ## First consumer: `workflows/code-review.mjs`
 
-The multi-lens review panel, deliberately simpler than the argus-review
-multi-agent ladder (that protocol's grouping mechanics, refuter votes, and
-diff-proportional fleet sizing are dropped by owner decision — one strong
-verifier replaces them).
+A multi-lens review panel packaging the doctrine the multilens work
+validated — one lens-free sweep + scalpel lenses, native reviewer as the
+engine — as a single workflow run. Deliberately simpler than the discarded
+argus ladder: no mechanical grouping, no refuter votes, no effort ladder;
+one strong verifier judges the pool.
 
-**Args:** `{ base }` required (review target: merge-base diff against the
-ref, same semantics as `review --base`); optional `{ cwd, finderModel,
-finderEffort, verifierModel, verifierEffort }`.
+**Args:** `{ base }` required (merge-base diff target, `review --base`
+semantics); optional `{ cwd, finderModel, finderEffort, verifierModel,
+verifierEffort, lenses }`.
 
-**Fixed shape — 6 finders + 1 verifier:**
+**Shape — 6 finders + 1 verifier** (models fixed by owner: finders
+gpt-5.6-sol/xhigh, verifier gpt-5.6-sol/high):
 
-1. **Five lens finders** — parallel schema-forced `agent()` turns at
-   **gpt-5.6-sol / xhigh**, read-only, one lens each. Lens scopes (texts
-   adapted at implementation from argus-review's L1–L5, which this owner
-   authored):
-   - L1 changed-logic accuracy (defects inside the changed code itself)
-   - L2 cross-file contract impact (breakage at callers/callees/readers)
-   - L3 removed & moved behavior (guarantees deleted code used to provide)
-   - L4 security surface (injection sinks, authz gaps, secrets, TOCTOU)
-   - L5 performance & resources (complexity blowups, leaks, hot-path I/O)
+1. **Lens derivation** (cheap, sol/medium `agent()` turn): reads the diff
+   stat and summary, writes **five diff-derived structural scalpel
+   mandates** — concrete focus statements anchored on this diff's actual
+   surfaces ("authorization and actor-identity assumptions in the changed
+   API routes"), not generic taxonomy labels. The derivation prompt names
+   the five defect families from the X1 taxonomy (changed-logic accuracy,
+   cross-file contract impact, removed/moved behavior, security surface,
+   performance/resources) as coverage inspiration, but the mandates must
+   be diff-specific. Callers may bypass derivation by passing `lenses`
+   explicitly. *Rationale: the lens-as-scalpel evidence — a lens
+   redirects the run's whole attention budget, so a taxonomy family
+   irrelevant to this diff would waste an entire finder.* (Owner
+   confirmation pending — see Open Questions.)
+2. **Six parallel finders**: one lens-free `review({base})` sweep + five
+   `review({base, lens})` scalpels, all native codex review at
+   sol/xhigh (per-worker app-server config). Native review is the
+   benchmark-winning engine; scalpels ride `developer_instructions`
+   exactly as `reviewing-prs` ships today.
+3. **Mechanical candidate extraction** (script code, no model): parse
+   each finder's `reviewText` into candidate stubs
+   (`[P#] title — path:lines` + body), assigning stable ids
+   (`<finder>#<n>`). Extraction failure guard: a text containing `[P`
+   markers that yields zero stubs marks that finder **extraction-failed**
+   (treated as a dead finder for coverage purposes) — a formatting drift
+   can never silently become an empty pool.
+4. **One verifier** — a single `agent()` turn at sol/high with a findings
+   schema, receiving every stub (source-labeled) and free to re-read the
+   diff in-repo. Returns, per candidate id:
+   `{ id, verdict: "CONFIRMED"|"REFUTED", duplicateOf?, priority, comment }`.
+   Verifier verdicts are binding — the script never re-judges.
+   **Mechanically validated postconditions** (violation → one repair
+   retry → else the run reports `interrupted`):
+   - exact-set coverage: every input candidate id appears exactly once,
+     no extras;
+   - the `duplicateOf` graph is acyclic, targets existing candidate ids,
+     and never targets a REFUTED entry.
 
-   Finder output schema: `{ findings: [{ title, priority: "P0"|"P1"|"P2"|"P3",
-   file, startLine, endLine, body }] }` — `body` carries evidence and the
-   concrete failure scenario.
-2. **One overall sweep** — the native `review({base})` holistic reviewer at
-   **gpt-5.6-sol / xhigh** (served via a per-worker app-server configured at
-   that effort), running in the same parallel wave. Its findings join the
-   candidate pool. Rationale: codex's native reviewer *is* the
-   general-purpose sweep; steering it is neither possible nor needed.
-3. **One verifier** — a single `agent()` turn at **gpt-5.6-sol / high**
-   receiving every candidate from all six finders (source-labeled), with
-   the full diff context available to it in-repo. For each candidate it
-   returns `{ id, verdict: "CONFIRMED"|"REFUTED", duplicateOf?, comment }`.
-   One model seeing the whole pool replaces argus's mechanical grouping:
-   it dedups (`duplicateOf`), confirms with a reconstructed trigger, or
-   refutes with the reason. Verifier verdicts are binding — the script
-   never re-judges.
+**Assembly (deterministic script code):**
 
-**Assembly (deterministic, in script code):**
+- Keep CONFIRMED, collapse duplicates onto their primary formulation,
+  order P0 → P3.
+- Verdict: `incorrect` iff ≥1 CONFIRMED survives; else `correct`; either
+  degrades to `interrupted` under the coverage rules below.
+- Output: findings entries (`[P#] title — path:lines` + verifier comment),
+  verdict, explanation, and a coverage section naming every finder with
+  its status and stub count (an all-clean run on a real diff where all six
+  finders returned zero stubs is reported as suspicious in the coverage
+  section, though not blocked).
 
-- Keep CONFIRMED, collapse duplicates onto the primary formulation, order
-  P0 → P3.
-- Verdict: `incorrect` iff ≥ 1 CONFIRMED finding survives; else `correct`.
-- Output object carries `## Findings`-shaped entries plus the verdict,
-  explanation (decisive findings or their absence), and a coverage section.
+**Coverage honesty:**
 
-**Coverage honesty (script-level, inherited from the campaign's lesson):**
+- A finder (sweep or scalpel) dead or extraction-failed after the
+  engine's retry → the run proceeds, the output names the lost lens, and
+  a would-be-clean verdict reports `interrupted`, never `correct`. The
+  sweep dying is always `interrupted` (mirrors reviewing-prs'
+  sweep-failure = round-failure rule).
+- The verifier dead or postcondition-invalid after retry → `interrupted`
+  with the raw stub pool attached; unverified candidates are never
+  published as findings and never silently dropped.
 
-- A lens finder or the sweep dead after the engine's retry → the run
-  proceeds, but the output names the lost lens ("L4 did not complete —
-  coverage is partial") and a clean verdict is downgraded to
-  `interrupted` — lost coverage never launders into a confident pass.
-- The verifier dead after retry → the run reports `interrupted` with the
-  raw candidate pool attached; unverified candidates are never published
-  as findings and never silently dropped.
+**Pool bound:** native review self-caps per run (≈10 findings), so six
+finders bound the pool structurally (≈60 worst case) — within one
+sol/high context. No sharding in M0; revisit with data.
 
 ## Acceptance
 
-Behavior-phrased; commands assume the skill base dir and env contract from
-SKILL.md.
+Behavior-phrased; engine cases run against a **transport-faithful mock**
+(see Testing).
 
-1. **Engine, mocked**: with the app-server mocked at the transport level, a
-   test script exercising `agent` (with and without schema), `review`,
-   `parallel` (including one rejecting thunk → `null`), and `pipeline`
-   (including one throwing stage → nulled item) — invoked via
-   `… workflow --script tests/…/fixture.mjs --args '{"n":3}'` — exits 0,
-   prints the script's return value as JSON on stdout, streams `[workflow]`
-   lines on stderr only, and writes `journal.jsonl` + `result.json` under
-   the run directory.
-2. **Schema repair**: a mocked worker whose first final message violates the
-   schema and whose second (same thread, repair prompt observed) is valid →
-   `agent()` resolves with the parsed object; journal shows one retry.
-3. **Resume**: kill a mocked run after its second `agent()` completes;
-   `… workflow --resume <run-id> --script <same>` re-executes only calls
-   ≥ 3 (journal prefix served from cache, verified by mock invocation
-   counts).
-4. **Concurrency cap**: a script issuing 10 parallel agents under
-   `--max-concurrency 2` never has more than 2 live mock app-servers
-   (mock asserts peak concurrency).
-5. **Panel, live (the A/B)**: `… workflow --script
-   skills/codex-companion/workflows/code-review.mjs --args
-   '{"base":"e0b1835"}'` run against this repo (the exact E2 diff the
-   15-round campaign exhausted) completes with 6 finder workers + 1
-   verifier in the journal and produces the Findings/Verdict contract.
-   Panel output is compared against the campaign's adjudicated findings
-   ledger (`.doperpowers/sdd/2026-08-01-e2-interim-slice/progress.md`) —
-   recall against known-real findings and any novel confirmed finding are
-   recorded in this spec's Surprises section. This is the eval evidence
-   the repo requires for behavior-shaping content.
-6. **Coverage honesty, mocked**: kill one mocked lens finder twice → output
-   names the lens and a would-be-clean verdict reports `interrupted`, not
-   `correct`.
+1. **Engine happy path**: a fixture script exercising `agent` (with and
+   without schema), `review`, `parallel` (one rejecting thunk → `null`),
+   and `pipeline` (one throwing stage → nulled item) exits 0, prints the
+   script's return JSON on stdout only, streams `[workflow]` lines on
+   stderr only, and leaves `journal.jsonl` + `result.json` in the run dir.
+2. **Schema repair, both failure shapes**: (a) malformed JSON, (b)
+   **syntactically valid JSON violating the schema** (missing required
+   key) — each triggers exactly one same-thread repair turn (mock asserts
+   the repair prompt), then resolves; a third shape (repair also invalid)
+   rejects.
+3. **Resume, adversarial**: kill a run with calls A,B,C in flight where C
+   `finished`, A `finished`, B has `started` only, and the journal's last
+   line is torn. `--resume` serves A and C from cache (mock invocation
+   counts prove it), re-runs B fresh, ignores the torn line. A second
+   concurrent `--resume` while the first holds the lease refuses. A
+   `--resume` after a commit touching the tree refuses on fingerprint
+   mismatch.
+4. **Concurrency cap at the leaf**: a script issuing 10 agents via bare
+   `Promise.all` under `--max-concurrency 2` never has more than 2 live
+   mock app-servers (mock asserts peak concurrency).
+5. **Cancel and liveness**: SIGTERM to a running workflow kills all live
+   mock worker processes and finalizes the job `canceled`; SIGKILL to the
+   run followed by `status` shows the job lazily finalized `failed`, and
+   two overlapping workflow runs both keep their summary records (lock +
+   atomic replace).
+6. **Verifier postconditions**: a mocked verifier response omitting one
+   candidate id (or adding a phantom id, or a cyclic `duplicateOf`)
+   triggers the repair retry; persistent violation yields `interrupted`
+   with the stub pool attached — never a `correct` verdict.
+7. **Coverage honesty**: one mocked lens finder dead twice → output names
+   the lens and a would-be-clean verdict reports `interrupted`; mocked
+   sweep dead → always `interrupted`.
+8. **Panel quality gate (live, the X1 bench)**: run the panel workflow as
+   an engine over `tests/review-bench/cases/seeded/case1..case5`
+   (adapter analogous to run-case.sh's codex engine). Bar, predeclared
+   per X1: **seeded recall ≥ the recorded single-codex baseline, and FP
+   growth ≤ +1 across the whole seeded set** (baits count as FPs).
+   Comparative evidence on `cases/real/` (esp. PR752: does the panel
+   union approach the known 13-defect union?) is recorded in this spec's
+   Surprises section. This is the eval evidence the repo requires for
+   behavior-shaping content; the panel does not become a recommended
+   engine anywhere until it passes.
+
+An optional shakedown against the E2 diff may run for anecdote, pinned at
+a frozen checkout (`3742a0f`, base `e0b1835`) — it is NOT an acceptance
+gate: the E2 ledger records defects fixed across moving heads, not a
+truth set for one frozen diff.
 
 ## Testing strategy
 
-- Engine unit/integration tests live at `tests/codex-companion/` with a
-  `run-workflow-tests.sh` runner (node test scripts + a mock `codex`
-  app-server binary on PATH). Per the mock-fidelity lesson: the mock speaks
-  the real JSON-RPC transport shape (initialization, `turn/start`
-  streaming notifications, interleaved events, a schema-violating final
-  message case) — never the parsed shape the engine wants.
+- Engine tests live at `tests/codex-companion/` with a
+  `run-workflow-tests.sh` runner. The mock is a fake `codex` binary on
+  PATH speaking the **real JSON-RPC transport shape** — initialization
+  handshake, `turn/start`/`review/start` streaming notifications,
+  interleaved events, torn output, schema-violating-but-valid-JSON final
+  messages (per the mock-fidelity lesson: mock the awkward raw transport,
+  never the parsed shape the caller wants).
 - Every new assert must fail against the parent commit with a naming
   signature (test-discrimination discipline).
-- The live A/B (acceptance 5) is run once during implementation and its
-  transcript kept under `docs/doperpowers/specs/` evidence or the spec's
-  Surprises section.
+- The X1 run (acceptance 8) executes once during implementation; scores
+  and adjudication land in `tests/review-bench/results/<run-id>/` like
+  every prior bench run.
 
 ## Out of scope (M0)
 
-- Token budget accounting, nested `workflow()`, per-agent git-worktree
-  isolation, a workflow name registry, phase-grouped progress UI.
-- Any change to existing verbs (`review`, `adversarial-review`, `task`,
-  jobs) beyond registering the new verb; their contracts are untouched.
+- `write: true` workers and any replay of side-effectful steps (needs
+  idempotency semantics first); per-agent worktree isolation; a frozen
+  workflow-level snapshot worktree (fingerprint-refusal covers
+  correctness; snapshotting is convenience — revisit if refusals annoy).
+- Token budget accounting, nested `workflow()`, name registry,
+  phase-grouped progress UI.
+- Changes to existing verbs beyond the new verb registration and the
+  workflow-scoped ledger locking; `review`/`adversarial-review`/`task`
+  contracts are untouched.
+- Wiring `reviewing-prs` to this workflow (its shell-based 1–4 fan-out
+  stands; convergence is a natural M2 once the panel passes X1).
 - Fix-wave orchestration: the panel reviews; fixing remains the calling
-  session's loop. (The serial fix→re-review cycle is intentionally NOT
-  replaced — parallelism replaces discovery breadth only.)
+  session's loop. Parallelism replaces discovery breadth only — the
+  serial fix→re-review cycle is intentionally kept.
+
+## Open Questions (owner)
+
+1. **Finder substrate + lens source.** Owner's original instruction:
+   five FIXED taxonomy lenses (argus L1–L5) as schema-forced task turns.
+   This spec's recommendation, per the repo's own shipped evidence:
+   five DIFF-DERIVED scalpel mandates riding steered NATIVE review
+   (`developer_instructions`), because (a) native review outperformed
+   every prompted-agent configuration on the real-PR benchmark, and
+   (b) a lens consumes its finder's whole attention budget, so a
+   taxonomy family irrelevant to the diff wastes a sol/xhigh run.
+   Reverting to fixed L1–L5 texts (still on native review) is a
+   one-line change in the workflow script; reverting to schema-forced
+   task-turn finders is also supported by the engine (`agent()` with the
+   finder schema) but contradicts the benchmark. Decision needed before
+   the panel script is written; the engine is unaffected either way.
+2. (Noted, defaulted per owner) Verifier stays ONE model at sol/high, no
+   refuter vote — the mechanical exact-set postconditions close the
+   silent-laundering hole; a P0/P1 second-vote option and verifier-effort
+   escalation remain script-level knobs if X1 results argue for them.
 
 ## Decision Log
 
 - **Codex-native engine over Claude-side orchestration** (Workflow-tool
   hybrid with thin Claude subagents shelling to codex, or hand-launched
-  parallel Bash). Rejected: N detached processes + pollers reintroduce the
-  harness-kill and state-root races the campaign fought; not headless; not
-  harness-independent. The one-process property is the point.
+  parallel Bash). Rejected: N detached processes + pollers reintroduce
+  the harness-kill and state-root races the campaign fought; not
+  headless; not harness-independent.
 - **General engine first, code-review as first consumer** — over
-  code-review-first-extract-later (orchestration born entangled with
-  review semantics) and over full Workflow parity (budget/nesting/
-  worktrees have no consumer yet). Owner choice, 2026-08-03.
-- **Panel simplified away from the argus ladder** (owner decision,
-  2026-08-03): fixed 5-lens + native-sweep finder wave at sol/xhigh, ONE
-  verifier at sol/high judging the whole pool — replacing argus's
-  mechanical line-range grouping, packed verifier waves, and 2-refuter
-  adversarial votes. Rationale: one strong model over the full candidate
-  pool dedups and judges better than mechanical partitioning, at a
-  fraction of the machinery; quota is explicitly not a concern.
-- **Native `review` as the overall sweep** — over a sixth prompted
-  "holistic lens" agent. The native reviewer is codex's own tuned
-  general-purpose pass; a prompted imitation adds steering surface for no
-  recall gain.
-- **Explicit context parameter over injected globals/VM** — scripts are
-  trusted bundle/agent-authored code; explicit `{agent, …}` is testable
-  with a fake context and needs no sandbox machinery.
-- **Schema repair by same-thread resume** — over respawn-with-stricter
-  prompt. The thread already holds the analysis; a repair turn re-emits
-  cheaply. Codex-native advantage; falls back to fresh thread when the
-  thread died.
-- **Per-run state directory** — over the shared `state.json` ledger, whose
-  unlocked read-modify-write is a documented race under parallelism. One
-  summary job record keeps `status`/`result`/`cancel` working.
-- **Default `--max-concurrency` 6** — sized to the first consumer's panel;
-  each worker is a full app-server process. Tunable; revisit with data
-  from the A/B run.
+  code-review-first-extract-later and over full Workflow parity
+  (budget/nesting/worktrees have no consumer yet). Owner, 2026-08-03.
+- **Panel simplified away from the argus ladder** (owner, 2026-08-03):
+  finder wave + ONE verifier, replacing mechanical grouping, packed
+  verifier waves, and refuter votes.
+- **M0 is read-only** (spec-review adoption, 2026-08-03): `write: true`
+  dropped from M0 entirely — journal replay of side-effectful steps is
+  unsound without idempotency semantics, and the first consumer never
+  writes. Supersedes v1's write-passthrough-with-caveat.
+- **Event-sourced, content-keyed journal; no mid-turn continuation**
+  (spec-review adoption): v1's call-order prefix replay breaks under
+  parallel completion order; v1's "continue a half-dead worker" claim is
+  unsupported by the protocol (thread resume always starts a new turn).
+  Replaced with started/finished events, content-keyed cache, run lease,
+  repo fingerprint.
+- **Native `review()` returns raw text; per-worker config-spawned
+  app-servers** (spec-review adoption): `review/start` yields rendered
+  `reviewText` with no effort field — v1's structured-payload +
+  `effort` param claims were wrong. Effort and lens ride `-c` overrides
+  on a directly-spawned per-worker app-server (with-effort.mjs
+  mechanism); normalization moved to the script (extraction stubs +
+  verifier).
+- **Workflow-scoped ledger locking + liveness repair** (spec-review
+  adoption): per-run state alone does not fix the cross-run `state.json`
+  lost-record race, and cancel/status needed real process ownership
+  (tracked worker pids, signal handlers, dead-pid finalization).
+- **Engine-side schema validation** (spec-review adoption):
+  `parseStructuredOutput` is JSON.parse-only; a syntactically-valid
+  wrong shape would silently pass. Minimal structural validator added to
+  the `agent()` contract and to acceptance.
+- **X1 review-bench as the panel's quality gate** (spec-review adoption):
+  v1's E2-ledger A/B could not reject a bad panel (no threshold; ledger
+  is not a truth set for a frozen diff; unfrozen HEAD would include this
+  work itself). Replaced with the existing seeded-recall + FP bar.
+- **Diff-derived scalpel lenses on steered native review**
+  (spec-review + multilens-evidence adoption; OWNER CONFIRMATION
+  PENDING): supersedes v1's fixed L1–L5 schema-turn finders. Grounds:
+  10/13-vs-8/13 native-review benchmark win; lens-as-scalpel
+  attention-budget evidence; `developer_instructions` steering already
+  shipped in reviewing-prs.
+- **Native `review` as the overall sweep** — the native reviewer is
+  codex's tuned general pass; a prompted imitation adds steering surface
+  for no recall gain. (Unchanged from v1, now with benchmark grounding.)
+- **Explicit context parameter over injected globals/VM** — trusted
+  scripts; testable with a fake context. (Unchanged.)
+- **Per-run state directory** — the durable artifact boundary.
+  (Unchanged; no longer claimed to solve the shared-ledger race, which
+  the locking decision above addresses.)
+- **Default `--max-concurrency` 6, enforced at leaf spawns** — sized to
+  the panel; revisit with A/B data. (Sharpened: leaf-level enforcement.)
 
 ## Surprises & Discoveries
 
-(accumulates during implementation)
+- (2026-08-03, spec review) The independent critic surfaced that this
+  repo had ALREADY run the core experiment: `tests/review-bench/` (X1)
+  and the 2026-07-28 multilens execplan — native-review superiority,
+  argus discarded, lens-as-scalpel, `developer_instructions` steering.
+  The v1 spec was written blind to all of it (session context had been
+  compacted past it). Lesson reinforced: the look-outside pass before
+  locking a design must include *this repo's own* specs/execplans/bench
+  results, not just external prior art.
 
 ## Outcomes & Retrospective
 
@@ -327,6 +466,14 @@ Pending — written at finish.
 
 ## Revision Notes
 
-- 2026-08-03: Initial version, from the brainstorming round following the
-  E2 15-round serial campaign. Panel shape fixed by owner (5 lenses +
-  native sweep at sol/xhigh; single verifier at sol/high).
+- 2026-08-03: v1 — initial design from the brainstorming round following
+  the E2 15-round serial campaign.
+- 2026-08-03: v2 — adversarial spec review (codex sol/xhigh) adjudicated:
+  5 findings adopted (resume model rebuilt event-sourced; native-review
+  hook contract corrected to raw-text + config-spawned servers; ledger
+  locking + process ownership added; verifier postconditions added; X1
+  bench replaces the E2-ledger A/B as the quality gate; M0 restricted to
+  read-only). Panel finder substrate revised to diff-derived scalpels on
+  steered native review per repo evidence — flagged for owner
+  confirmation (Open Question 1). Acceptance rewritten so every case
+  discriminates (false-green table addressed).
