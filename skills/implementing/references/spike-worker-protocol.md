@@ -104,7 +104,7 @@ marking your draft ready; "Closes #N" anywhere; merging anything; other
 tickets' states; polishing the spike into unreviewed production code.
 
 PARENT-CONTRACT CONTRADICTION ([parent-impact]) — when your ticket's
-`board:meta` carries `parent-pin: #<parent> @ <sha>`, that names the parent
+`board:meta` carries `parent-pin: #<parent> @ <hash>`, that names the parent
 contract this spike was cut under. Answering the question your own way is
 yours; concluding that a parent-owned END is wrong — its purpose, its
 acceptance, a cross-child contract, an edge, the division that produced

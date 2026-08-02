@@ -152,7 +152,7 @@ ignores engine:* labels by design (plan authorship is never
 label-routed) — a route question is not yours to answer.
 
 **Parent-contract contradiction ([parent-impact]).** Your ticket can itself
-be a CHILD: `parent-pin: #<parent> @ <sha>` in its `board:meta` names the
+be a CHILD: `parent-pin: #<parent> @ <hash>` in its `board:meta` names the
 parent contract this design inherited. Designing freely INSIDE that
 contract is the job; concluding that a parent-owned END is wrong — its
 purpose, its acceptance, a cross-child contract, an edge, the division that
@@ -188,8 +188,13 @@ of child acceptances — and it starts from the children's contract
 lineage.
 
 1. **Lineage check first:** for every child, compare its `parent-pin:`
-   meta (the parent revision it executed) against the parent's current
-   revision; every material change is incorporated, explicitly
+   meta — `#<parent> @ <hash>`, where the hash is the first 12 hex of
+   sha256 over the parent's issue BODY as that child received it —
+   against the parent's body today:
+   gh issue view {{ISSUE_NUMBER}} -R {{REPO}} --json body | python3 -c "import hashlib,json,sys; print(hashlib.sha256(json.load(sys.stdin)['body'].encode()).hexdigest()[:12])"
+   Equal hashes mean the child executed the contract you are holding and
+   there is nothing to reconcile from the pin. Otherwise read what
+   changed; every material change is incorporated, explicitly
    irrelevant (say why), or becomes a corrective child. Read ALL
    `[parent-impact]` proposals on every child since its pin —
    marked consumed or not — and give each the same disposition; the

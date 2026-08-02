@@ -272,13 +272,20 @@ done
 # reviews a child, it never owns one).
 for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE"; do
     _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
-    assert_contains "$_body" "parent-pin: #<parent> @ <sha>" "$_name: the inherited parent contract is read from the parent-pin meta"
+    assert_contains "$_body" "parent-pin: #<parent> @ <hash>" "$_name: the inherited parent contract is read from the parent-pin meta (a hash of the parent BODY, not a repo sha)"
     assert_contains "$_body" '[parent-impact] #<parent> <affected clauses>:' "$_name: the proposal is one marker comment on the worker's OWN ticket"
     assert_contains "$_body" "never edit or transition the parent" "$_name: a child proposes upward, it never writes its parent"
 done
 # Recomposition protocol (Architect).
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
+# T1: the check is only performable if the pin names a revision of the thing
+# it claims to pin. It named the repo HEAD sha, which a body edit does not
+# move — so the protocol has to say what the pin IS and how to recompute it.
+assert_contains "$arch" "sha256 over the parent's issue BODY" \
+    "the lineage check names what the pin hashes (the parent's issue body)"
+assert_contains "$arch" "hashlib.sha256(json.load(sys.stdin)['body'].encode()).hexdigest()[:12]" \
+    "...and gives the exact command that reproduces the stamped hash"
 assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
 # ...and the claim CLOSES the loop it opened: the sweep leaves proposals
 # unmarked while an Architect holds the claim, so an unmarked one re-triggers

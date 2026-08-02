@@ -125,7 +125,8 @@ outward-facing batch action — do not touch the board before approval.
 ## Upward Revision
 
 Children read the parent's current state at dispatch — the dispatch
-machinery stamps `parent-pin:` (parent + repo revision) into the child
+machinery stamps `parent-pin:` (the parent, plus a hash of the parent's
+body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
 revises its own means freely; discovery that touches a parent-owned
 end — purpose, acceptance, a cross-child contract, an edge, the

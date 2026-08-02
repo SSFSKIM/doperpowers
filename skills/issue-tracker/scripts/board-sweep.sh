@@ -511,9 +511,16 @@ for tid in sorted(tickets, key=int):
             continue
         tstate = tickets[target]["state"]
         if tstate in B.TERMINAL:
+            # SETTLED, not pending. Terminal is the one unclaimable state that
+            # never resolves on its own, so counting it as owing pinned
+            # pending=true forever: this child and its target were re-read and
+            # re-logged every tick, for a reconciliation that can never
+            # happen. Deliberate corner — if a human reopens a wontfixed
+            # parent, re-raising the impact is theirs. Nothing is destroyed:
+            # the [parent-impact] comment stays on the child, so any later
+            # recomposition's lineage check still finds it.
             print("[sweep] IMPACT: #%s names parent #%s, which is %s — nothing "
                   "to reconcile; left unmarked" % (tid, target, tstate))
-            undispositioned += 1
             continue
         # Parked, or already in the architect lane: skip UNMARKED and re-see it
         # next tick. Both are transient and say nothing, so neither logs.

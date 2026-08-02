@@ -1518,8 +1518,23 @@ run board-transition.sh "$pull_e" ready-for-architect "gate: recomposition" >/de
 run board-transition.sh "$pull_c" in-progress >/dev/null        # pulls the parent to in-design
 assert_contains "$(state "s['issues']['$pull_e']['labels']")" "status:in-design" "the child's activation pulled the parent to in-design"
 out="$(run board-reconcile.sh)"
-assert_contains "$out" "pulled    #$pull_e: in-design with 1 live child" "a pulled epic reports as bookkeeping, not as an orphan"
+assert_contains "$out" "pulled    #$pull_e: in-design by the epic pull" "a pulled epic reports as bookkeeping, not as an orphan"
 assert_not_contains "$out" "orphaned  #$pull_e" "...and never asks the operator to respawn a worker onto it"
+# The discriminant is the note the PULL wrote, not "has live children". An
+# Architect actively RECONCILING an epic sits in in-design WITH live children
+# by definition, so a children-only test hid exactly the stranded claim this
+# report exists to surface. Same board shape as above, different note.
+PULL_E="$pull_e" python3 - <<'NOTE'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+s = json.load(open(p))
+it = s["issues"][os.environ["PULL_E"]]
+it["body"] = it["body"].replace("note: epic: child", "note: reconciled: waiting on child")
+json.dump(s, open(p, "w"))
+NOTE
+out="$(run board-reconcile.sh)"
+assert_contains "$out" "orphaned  #$pull_e: in-design" "an in-design epic with live children but no pull note is a stranded claim, and is warned about"
+assert_not_contains "$out" "pulled    #$pull_e" "...and is not written off as bookkeeping"
 # all children terminal: this IS a recomposition claim that should have a
 # live Architect, so the warning comes back
 run board-transition.sh "$pull_c" "done" >/dev/null             # epic → ready-for-architect

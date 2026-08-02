@@ -176,7 +176,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model pin_sha
+  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -240,9 +240,18 @@ dispatch_one() {
   fi
 
   # E2 parent-pin: stamp the inherited-contract pin BEFORE the worker is
-  # released. The parent's spec keeps moving between the cut and the
-  # dispatch, so the repo HEAD sha pins what this child actually read — and
-  # the write is a full-body read-modify-write, so it must land while this
+  # released. The parent's contract keeps moving between the cut and the
+  # dispatch, so the pin has to say which REVISION OF THE CONTRACT this child
+  # inherited — and the contract is the parent's ISSUE BODY. It was the repo
+  # HEAD sha, which answers a different question entirely: a body edit does
+  # not move HEAD and an unrelated commit does, so the pin changed when the
+  # contract had not and held still when it had. The recomposing Architect's
+  # lineage check (doperpowers:architecting, "compare its parent-pin against
+  # the parent's current revision") could not be performed at all.
+  # sha256 of the parent's body, first 12 hex — immutable, comparable by
+  # re-hashing the body today, and still `#<n> @ <hex>` so the M1/N1 lineage
+  # parsing (which reads the `#<n>` head) is untouched.
+  # The write is a full-body read-modify-write, so it must land while this
   # dispatcher is still the only writer. Stamped after the spawn it raced
   # the worker two ways: a fast worker could read its ticket before the pin
   # existed, and the RMW could overwrite the worker's OWN first board write
@@ -262,22 +271,26 @@ dispatch_one() {
   # accumulation tracks lineage, not attempts. No expiry: a pin retires when
   # the board forgets the ticket.
   if [ -n "${T_PARENT:-}" ]; then
-    pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
+    T_N="$n" T_PARENT="$T_PARENT" \
     PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
       || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
+import hashlib
 import os
 import _board as B
 env = os.environ
 tickets = B.snapshot()
 tid = B.resolve(env["T_N"], tickets)
 node = tickets[tid]
+parent = env["T_PARENT"]
+pbody = (tickets.get(parent) or {}).get("body") or ""
+pin = "#%s @ %s" % (
+    parent, hashlib.sha256(pbody.encode("utf-8")).hexdigest()[:12])
 recorded = B.parse_meta(node["body"]).get("parent-pin") or ""
-mine = env["T_PIN"].split("@")[0].strip()
+mine = pin.split("@")[0].strip()
 kept = [e.strip() for e in recorded.split(";")
         if e.strip() and e.split("@")[0].strip() != mine]
 B.update_meta(tid, node,
-              **{"parent-pin": "; ".join(kept + [env["T_PIN"]])})
+              **{"parent-pin": "; ".join(kept + [pin])})
 PY
   fi
 

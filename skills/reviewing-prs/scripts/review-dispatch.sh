@@ -858,6 +858,9 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
     m="$(_reviewer_meta "review-pr-$pr")"
     [ -n "$m" ] && _retire "${m%%|*}"
     case "$stale" in
+      closed)
+        echo "#$pr: skip — primary ticket #$tid is CLOSED (terminal); nothing to review against"
+        return ;;
       conflict*)
         # Off-machine, not parked: two or more status labels. board-lint
         # names it and board-transition repairs it; nothing here should bind
@@ -1024,14 +1027,30 @@ for p in json.load(sys.stdin):
         # what to repair rather than a puzzling "not in-review".
         stale=""
         if [ -n "$issue" ]; then
-          stale="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
+          # STATE, not just labels. A done/wontfix ticket is CLOSED and the
+          # terminal write strips its status label, so a labels-only lookup
+          # printed nothing — indistinguishable from "in-review" — and a
+          # reviewer spawned onto a finished ticket. A lookup that FAILS is a
+          # different thing from a lookup that succeeds and finds no state:
+          # the first keeps the deliberate fail-open (an API blip must not
+          # stall review), the second is stale. So a parse failure exits
+          # NON-ZERO here and the caller's `|| stale=""` restores fail-open,
+          # while a clean read of a CLOSED ticket names itself. An OPEN issue
+          # with no status label stays fail-open on purpose: that is an
+          # untracked issue a PR merely references, not a board ticket, and
+          # blocking review on it would be the wrong direction.
+          stale="$(gh issue view "$issue" -R "$BOARD_REPO" --json labels,state 2>/dev/null | python3 -c '
 import json, sys
 try:
-    labels = [l.get("name") for l in json.load(sys.stdin).get("labels") or []]
+    d = json.load(sys.stdin)
+    labels = [l.get("name") for l in d.get("labels") or []]
+    state = (d.get("state") or "").upper()
 except Exception:
-    labels = []
+    sys.exit(1)
 status = [l[len("status:"):] for l in labels if l.startswith("status:")]
-if len(status) > 1:
+if state == "CLOSED":
+    print("closed")
+elif len(status) > 1:
     print("conflict(%s)" % ",".join(sorted(status)))
 elif status and status[0] != "in-review":
     print(status[0])')" || stale=""

@@ -303,7 +303,7 @@ case "${1:-} ${2:-}" in
     case "$*" in
       *"--json url"*)  N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["url"])' ;;
       *"--json body"*) N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["body"])' ;;
-      *"--json labels"*) N="$3" python3 -c 'import json,os;d=json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"));print(json.dumps({"labels": d.get("labels") or []}))' ;;
+      *"--json labels"*) N="$3" python3 -c 'import json,os;d=json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"));print(json.dumps({"labels": d.get("labels") or [], "state": d.get("state","OPEN")}))' ;;
       *) echo "mock gh: unhandled issue view: $*" >&2; exit 1 ;;
     esac ;;
   "issue list") cat "$MOCK_DIR/techdebt-number.txt" ;;
@@ -677,6 +677,34 @@ d = json.load(open(p)); d.pop("labels", None)
 json.dump(d, open(p, "w"))'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "an untracked ticket still fails open, as before"
+# ...but a CLOSED linked ticket is not untracked, it is FINISHED. A done or
+# wontfix write closes the issue AND strips its status label, so a
+# labels-only lookup said nothing and run_for read that silence as
+# "in-review" — a reviewer spawned onto a terminal ticket. State is what
+# distinguishes the two zero-label cases.
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d.pop("labels", None); d["state"] = "CLOSED"
+json.dump(d, open(p, "w"))'
+out="$("$DISPATCH" --sweep)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "a CLOSED primary ticket binds no reviewer"
+assert_contains "$out" "primary ticket #7 is CLOSED" "the sweep names the terminal ticket it skips"
+# A lookup that FAILS is still fail-open — an API blip or a malformed
+# response must not stall review. Only a lookup that SUCCEEDS and reports a
+# terminal ticket is stale.
+reset_state
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d["labels"] = "not-a-list"
+json.dump(d, open(p, "w"))'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a malformed status lookup still fails open"
+# leave the fixture as the blocks below expect it: OPEN, no labels
+N=7 python3 -c 'import json,os
+p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
+d = json.load(open(p)); d.pop("labels", None); d["state"] = "OPEN"
+json.dump(d, open(p, "w"))'
 
 # ---- sweep skips a PR whose primary ticket has left in-review (any route) -------
 # Finding 2 (independent review, E1 lane-split dispatch fix): a reviewer only

@@ -73,16 +73,19 @@ for t, n in by_id(tickets.items()):
         # (PRE_PARK) purely as bookkeeping — "the parent waits again" — so
         # telling the operator to respawn and bind a worker onto it invents
         # work and would put a second Architect on a live epic. The
-        # discriminant is the children: any non-terminal child means they are
-        # the ones working, and the epic is just parked in-flight. All
-        # children terminal is the other shape — a recomposition claim that
-        # SHOULD have a live Architect — and keeps the warning, as does any
-        # childless in-design ticket (an ordinary leaf design).
-        kids = B.children(tickets, t)
-        if n["state"] == "in-design" and any(
-                tickets[k]["state"] not in B.TERMINAL for k in kids):
-            print("pulled    #%s: in-design with %d live child(ren) — bookkeeping, no worker expected"
-                  % (t, sum(1 for k in kids if tickets[k]["state"] not in B.TERMINAL)))
+        # discriminant is the NOTE THE PULL ITSELF WROTE — `epic: child #<n>
+        # active` (_board._epic_note, which may append the folded park note
+        # after it). "Has live children" was the first attempt and it is
+        # wrong in the direction that matters: an Architect actively
+        # RECONCILING an epic sits in in-design WITH live children by
+        # definition, so losing that binding produced a stranded claim this
+        # report then declined to mention. Only the board's own pull note
+        # says "no worker was ever expected here"; every other note — a
+        # reconciliation fold, a claim line — leaves the warning standing.
+        if n["state"] == "in-design" \
+           and (n.get("note") or "").startswith("epic: child #"):
+            print("pulled    #%s: in-design by the epic pull (%s) — bookkeeping, no worker expected"
+                  % (t, " ".join((n.get("note") or "").split())))
             continue
         print("orphaned  #%s: %s but no bound daemon — respawn + board-bind, or transition" % (t, n["state"]))
     elif m.get("status") in ("error", "retired"):

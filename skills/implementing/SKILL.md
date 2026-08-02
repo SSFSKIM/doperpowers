@@ -185,7 +185,7 @@ note); other tickets' states (a cross-ticket observation is a comment on
 that ticket, nothing more); scope beyond the ticket.
 
 **Parent-contract contradiction ([parent-impact]).** When your ticket's
-`board:meta` carries `parent-pin: #<parent> @ <sha>`, that names the parent
+`board:meta` carries `parent-pin: #<parent> @ <hash>`, that names the parent
 contract this dispatch inherited — the ends your work serves. Your own
 MEANS stay yours to revise freely. A discovery that CONTRADICTS a
 parent-owned END — its purpose, its acceptance, a cross-child contract, an

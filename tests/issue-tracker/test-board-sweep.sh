@@ -740,6 +740,18 @@ out="$(run_sweep)"
 assert_equals "$(issue_labels 29)" "" "a closed parent is never re-labelled by a late proposal"
 assert_equals "$(comment_count 29 "[board-epic]")" "0" "a closed parent gets no bookkeeping comment"
 assert_contains "$out" "names parent #29, which is done" "the pass says why it left that proposal unmarked"
+# ...and it says so ONCE. Terminal is the single unclaimable state that never
+# resolves on its own, so counting it as owing pinned pending=true forever and
+# the pass re-read and re-logged this child every tick, for a reconciliation
+# that can never happen. It settles instead: a deliberate corner — reopening a
+# wontfixed parent means re-raising the impact by hand — and nothing is lost,
+# the [parent-impact] comment stays on the child for any later lineage check.
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(grep -cx "30" "$COMMENT_READ_LOG" || true)" "0" \
+    "a proposal naming a TERMINAL target settles — the child is not re-read next tick"
+assert_not_contains "$out" "names parent #29, which is done" "...and is not re-logged every tick"
+assert_equals "$(issue_labels 29)" "" "the closed parent is still never touched"
 
 # A PARKED parent belongs to whoever holds the park: unparking it would
 # destroy the question note AND drop the ticket out of `status:needs-human`,

@@ -430,11 +430,24 @@ print(json.load(open(os.environ['MOCK_GH_STATE']))['issues'][os.environ['MB_N']]
 }
 
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"; : > "$MOCK_GH_LOG"
-HEAD_SHA="$(git -C "$CLONE" rev-parse HEAD)"
+# The pin names the revision of the CONTRACT the child inherited, and the
+# contract is the parent's issue BODY. It used to be the repo HEAD sha, which
+# answers a different question: a body edit leaves HEAD alone and an unrelated
+# commit moves it, so the Architect's lineage check ("compare the pin against
+# the parent's current revision") could not be carried out at all.
+body_hash() {  # <ticket> — the hash the stamp must produce for that parent
+    BH_N="$1" python3 -c "
+import hashlib, json, os
+s = json.load(open(os.environ['MOCK_GH_STATE']))
+print(hashlib.sha256(s['issues'][os.environ['BH_N']]['body'].encode()).hexdigest()[:12])"
+}
+PIN11="$(body_hash 11)"
 out="$(run 10)"
 assert_contains "$out" "dispatched #10" "a child of an epic dispatches on the implement lane"
-assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $HEAD_SHA" \
-  "dispatch stamps parent-pin (parent + repo HEAD sha) into the child meta"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11" \
+  "dispatch stamps parent-pin (parent + a hash of the PARENT BODY) into the child meta"
+assert_not_contains "$(mock_issue_body 10)" "$(git -C "$CLONE" rev-parse HEAD)" \
+  "...and never the repo HEAD sha, which no body edit moves"
 # ORDERING, not just presence: the stamp is a full-body read-modify-write, so
 # it has to land while this dispatcher is still the only writer. After the
 # spawn it raced the worker — a fast worker reads a ticket with no pin, and
@@ -470,8 +483,25 @@ assert_not_contains "$(mock_issue_body 1)" "parent-pin:" \
 # attempts.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
 out="$(run 10)"
-assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $HEAD_SHA" "same-parent redispatch keeps a single entry"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11" "same-parent redispatch keeps a single entry"
 assert_not_contains "$(mock_issue_body 10)" ";" "...refreshed in place, not appended"
+# An EDIT to the parent contract moves the pin; a repo commit does not. This
+# is the whole point of the change and neither half is observable alone.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["11"]["body"] = "body of #11 - acceptance clause rewritten"
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+PIN11_EDITED="$(body_hash 11)"
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11_EDITED" "editing the parent body moves the pin"
+assert_not_contains "$(mock_issue_body 10)" "$PIN11" "...to a different hash than the one the child first inherited"
+(cd "$CLONE" && git commit -q --allow-empty -m "unrelated commit that must not move the pin")
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11_EDITED" "a repo commit with no body edit leaves the pin where it was"
 python3 - <<'PY'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
@@ -480,7 +510,7 @@ json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
 out="$(run 10)"
-assert_contains "$(mock_issue_body 10)" "#11 @ $HEAD_SHA; #12 @ $HEAD_SHA" \
+assert_contains "$(mock_issue_body 10)" "#11 @ $PIN11_EDITED; #12 @ $(body_hash 12)" \
   "a redispatch under a NEW parent appends, preserving the old lineage entry"
 python3 - <<'PY'
 import json, os
