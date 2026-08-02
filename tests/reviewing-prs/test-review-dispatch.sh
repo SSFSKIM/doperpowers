@@ -1568,7 +1568,7 @@ assert_contains "$OUT_CAPEPIC" "parked needs-human" "the sweep reports the escal
 # special-case return logic anywhere.
 reset_state
 rm -f "$DAEMON_HOME"/*.reply.txt
-OUT_RETURN="$("$DISPATCH" --sweep 2>&1 || true)"
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
 assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a fresh dispatch does not re-park the epic"
 
