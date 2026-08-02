@@ -51,6 +51,22 @@ export HOME="$TEST_ROOT/home"; mkdir -p "$HOME"
 export DAEMON_HOME="$TEST_ROOT/registry"; mkdir -p "$DAEMON_HOME"
 export BOARD_REPO="test/repo"
 export MOCK_GH_STATE="$TEST_ROOT/gh-state.json"
+# Plan pins are verified against the remote (N3): the mock serves
+# repos/<repo>/compare and /contents from this file. Seed it with the shapes
+# the suite's own pinned handoffs use; individual cases override it.
+export MOCK_GH_REFS="$TEST_ROOT/gh-refs.json"
+SHA40="0123456789abcdef0123456789abcdef01234567"
+python3 - <<'REFS'
+import json, os
+sha = "0123456789abcdef0123456789abcdef01234567"
+json.dump({"compare": {"%s...%s" % (b, sha): "identical"
+                       for b in ("tick/plan-probe", "tick/plan-clear", "tick/plan-keep",
+                                 "tick/conv-reset", "tick/reach", "tick/earlier")},
+           "contents": ["%s@%s" % (p, sha) for p in
+                        ("docs/plans/x.md", "docs/p.md", "docs/q.md", "docs/plan.md",
+                         "docs/plans/reach.md", "docs/sneaky.md")]},
+          open(os.environ["MOCK_GH_REFS"], "w"))
+REFS
 export MOCK_GH_LOG="$TEST_ROOT/gh-log.jsonl"
 export PATH="$SCRIPT_DIR/mock-gh:$PATH"
 WORK="$TEST_ROOT/work"
@@ -1381,6 +1397,78 @@ pr3_t="$(state "s['next']-1")"
 run board-transition.sh "$pr3_t" in-design >/dev/null
 out="$(run board-transition.sh "$pr3_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
 assert_contains "$out" "#$pr3_t: in-design → ready-for-implementer" "the pre-spec sentinel still needs no branch"
+
+# A recorded branch is not a FETCHABLE artifact. A mistyped or unpushed sha,
+# or one whose tree lacks the named path, still minted gate-free
+# PLAN-EXECUTION against something no cattle clone can fetch — the worker
+# would discover it only after the gate was already skipped. Both checks are
+# remote and both fail CLOSED, API errors included.
+echo "plan pin verification:"
+mk_probe() {  # -> a fresh ticket sitting in in-design
+    run board-register.sh "$1" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+    probe_t="$(state "s['next']-1")"
+    run board-transition.sh "$probe_t" in-design >/dev/null
+}
+mk_probe "Pin off-branch probe"
+off_t="$probe_t"
+err="$(run board-transition.sh "$off_t" ready-for-implementer "plan ready" --branch tick/nowhere --plan "docs/plans/reach.md@$SHA40" 2>&1 || true)"
+assert_contains "$err" "cannot verify the plan pin against branch tick/nowhere" "an unverifiable branch/sha pair is refused"
+assert_contains "$(state "s['issues']['$off_t']['labels']")" "status:in-design" "the refused handoff wrote nothing"
+
+# the sha resolves but is NOT an ancestor of the branch (ahead/diverged)
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p))
+sha = "0123456789abcdef0123456789abcdef01234567"
+refs["compare"]["tick/diverged...%s" % sha] = "diverged"
+json.dump(refs, open(p, "w"))
+REFS
+mk_probe "Pin diverged probe"
+div_t="$probe_t"
+err="$(run board-transition.sh "$div_t" ready-for-implementer "plan ready" --branch tick/diverged --plan "docs/plans/reach.md@$SHA40" 2>&1 || true)"
+assert_contains "$err" "is not on branch tick/diverged (compare says diverged)" "a sha that is not on the branch is refused"
+
+# the sha is on the branch, but the tree has no such path
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p))
+sha = "0123456789abcdef0123456789abcdef01234567"
+refs["compare"]["tick/reach...%s" % sha] = "identical"
+json.dump(refs, open(p, "w"))
+REFS
+mk_probe "Pin missing-path probe"
+mp_t="$probe_t"
+err="$(run board-transition.sh "$mp_t" ready-for-implementer "plan ready" --branch tick/reach --plan "docs/plans/absent.md@$SHA40" 2>&1 || true)"
+assert_contains "$err" "does not exist at 0123456789ab" "a path absent at the pinned sha is refused"
+assert_contains "$(state "s['issues']['$mp_t']['labels']")" "status:in-design" "that refusal wrote nothing either"
+
+# an API error is not a pass: an unverifiable pin is not a pin
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p))
+refs["fail"] = ["/compare/tick/flaky"]
+json.dump(refs, open(p, "w"))
+REFS
+mk_probe "Pin API-error probe"
+api_t="$probe_t"
+err="$(run board-transition.sh "$api_t" ready-for-implementer "plan ready" --branch tick/flaky --plan "docs/plans/reach.md@$SHA40" 2>&1 || true)"
+assert_contains "$err" "the pin is refused until it verifies" "an API error fails CLOSED"
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p)); refs.pop("fail", None)
+json.dump(refs, open(p, "w"))
+REFS
+
+# ...and a pin that verifies on both counts still passes
+mk_probe "Pin good probe"
+good_t="$probe_t"
+out="$(run board-transition.sh "$good_t" ready-for-implementer "plan ready" --branch tick/reach --plan "docs/plans/reach.md@$SHA40")"
+assert_contains "$out" "#$good_t: in-design → ready-for-implementer" "a pin that verifies on both counts passes"
+assert_contains "$(state "s['issues']['$good_t']['body']")" "plan: docs/plans/reach.md@$SHA40" "and is recorded"
 
 # ---- in-design orphan (board-reconcile) ----------------------------------------
 # The missing-daemon check must cover the Architect's in-flight state too,

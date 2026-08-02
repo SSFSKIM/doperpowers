@@ -139,6 +139,40 @@ def main():
             return
         die("unhandled issue view fields: %s" % " ".join(argv))
 
+    # REST endpoints the board verifies a plan pin against. Both are driven by
+    # $MOCK_GH_REFS (JSON): {"compare": {"<branch>...<sha>": "identical"},
+    # "contents": ["<path>@<sha>", ...], "fail": ["<substring>", ...]}.
+    # A path in "fail" makes the call exit non-zero, standing in for an API
+    # error; anything not listed is a 404, as the real API returns.
+    if argv[:1] == ["api"] and len(argv) > 1 and argv[1] != "graphql":
+        path = argv[1]
+        try:
+            with open(os.environ["MOCK_GH_REFS"]) as f:
+                refs = json.load(f)
+        except (KeyError, OSError, ValueError):
+            refs = {}
+        for frag in refs.get("fail") or []:
+            if frag in path:
+                sys.stderr.write("gh: mock API failure for %s\n" % path)
+                sys.exit(1)
+        if path.startswith("repos/") and "/compare/" in path:
+            key = path.split("/compare/", 1)[1]
+            status = (refs.get("compare") or {}).get(key)
+            if status is None:
+                sys.stderr.write("gh: Not Found (%s)\n" % path)
+                sys.exit(1)
+            print(json.dumps({"status": status}))
+            return
+        if path.startswith("repos/") and "/contents/" in path:
+            rest = path.split("/contents/", 1)[1]
+            fpath, _, ref = rest.partition("?ref=")
+            if ("%s@%s" % (fpath, ref)) in (refs.get("contents") or []):
+                print(json.dumps({"path": fpath, "sha": ref}))
+                return
+            sys.stderr.write("gh: Not Found (%s)\n" % path)
+            sys.exit(1)
+        die("unhandled api path: %s" % path)
+
     if argv[:2] == ["api", "graphql"]:
         fields = {}
         for flag in ("-f", "-F"):

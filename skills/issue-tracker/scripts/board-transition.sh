@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
 done
 
 T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _py - <<'PY'
+import json as _json_
 import os
 import _board as B
 
@@ -208,10 +209,44 @@ if env["T_PLAN"]:
         # the sha is reachable from, there is nothing to fetch and the pin
         # cannot serve the reclaim contract it exists for. `pre-spec` is
         # exempt — it names no revision, the issue body IS the plan.
-        if not env["T_BRANCH"] and not n.get("branch"):
+        pin_branch = env["T_BRANCH"] or n.get("branch")
+        if not pin_branch:
             B.die("a pinned plan needs a recorded branch the sha is reachable "
                   "from; pass --branch (the default branch is fine if the plan "
                   "landed there)")
+        # ...and "recorded" is not "fetchable". A mistyped or unpushed sha, or
+        # one whose tree lacks the named path, still minted gate-free
+        # PLAN-EXECUTION against an artifact no cattle clone can fetch — the
+        # worker would discover it only after the gate was already skipped.
+        # Verify against the remote before writing any state, and fail CLOSED
+        # on a verification failure AND on an API error: an unverifiable pin
+        # is not a pin. The Architect pushes and retries.
+        import subprocess as _sp
+        pin_path, pin_sha = env["T_PLAN"].rsplit("@", 1)
+
+        def _api(path):
+            r = _sp.run(["gh", "api", path], capture_output=True, text=True)
+            return r.returncode, r.stdout, r.stderr.strip()
+
+        rc, out, err = _api("repos/%s/compare/%s...%s" % (B.repo(), pin_branch, pin_sha))
+        if rc != 0:
+            B.die("cannot verify the plan pin against branch %s: %s\n"
+                  "  the pin is refused until it verifies — push the branch "
+                  "(and the commit) and retry" % (pin_branch, err or "gh api failed"))
+        try:
+            status = (_json_.loads(out) or {}).get("status") or ""
+        except ValueError:
+            status = ""
+        if status not in ("identical", "behind"):
+            B.die("plan sha %s is not on branch %s (compare says %s) — a "
+                  "PLAN-EXECUTION worker fetches the sha from that branch and "
+                  "would find nothing; push the commit to it and retry"
+                  % (pin_sha[:12], pin_branch, status or "nothing"))
+        rc, _out, err = _api("repos/%s/contents/%s?ref=%s" % (B.repo(), pin_path, pin_sha))
+        if rc != 0:
+            B.die("the plan path %s does not exist at %s (%s) — the pin names "
+                  "an artifact the worker cannot read; fix the path or the sha "
+                  "and retry" % (pin_path, pin_sha[:12], err or "gh api failed"))
 if to in B.DISPATCHABLE and "(pre-spec: fill in)" in (n.get("body") or ""):
     B.die("#%s is still a pre-spec skeleton — fill the body (gh issue edit "
           "%s --body-file <spec>) before a dispatchable lane state" % (tid, tid))
