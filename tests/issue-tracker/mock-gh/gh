@@ -187,6 +187,7 @@ def main():
             out = []
             for i, c in enumerate(comment_objs(issue(s, m_c.group(1)))):
                 out.append({"id": c.get("id", i + 1), "body": c.get("body") or "",
+                            "created_at": c.get("createdAt") or "",
                             "author_association": c.get("authorAssociation")})
             print(json.dumps(out))
             return

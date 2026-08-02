@@ -599,14 +599,19 @@ pass_relay() {
     tx="$(_transcript "$current")"
     [ -n "$tx" ] || continue
     turn_end="$(_mtime_iso "$tx")" || continue
-    verdict="$(gh issue view "$tk" -R "$BOARD_REPO" --json comments 2>/dev/null | \
-      T_TURN_END="$turn_end" T_UUID="$uuid" python3 -c '
+    verdict="$(PYTHONPATH="$BOARD_SCRIPTS" T_TK="$tk" T_TURN_END="$turn_end" \
+      T_UUID="$uuid" python3 -c '
 import json, os, sys
+import _board as B
 TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
-try:
-    comments = json.load(sys.stdin).get("comments") or []
-except Exception:
-    comments = []
+# Paginated, like the other comment-controlled reads. This one selects the
+# NEWEST trusted comment, so a page cap hits it hardest: the newest comments
+# are exactly what a first-page read hides, and the answer is then missed
+# outright or an older comment is taken for the newest and relayed verbatim
+# into a live session. A read that fails at all exits non-zero here (B.gh
+# dies), which the caller turns into "no relay" — the same silence the old
+# suppressed-stderr read produced.
+comments = B.comments(os.environ["T_TK"])
 # The candidate is the newest TRUSTED comment. This is the widest of the
 # board comment-controlled reads: what it selects is relayed VERBATIM into a
 # live worker session, and on a public consumer repo anyone can comment. An
@@ -630,7 +635,7 @@ home = os.environ["DAEMON_HOME"]
 meta = json.load(open(os.path.join(home, os.environ["T_UUID"] + ".json")))
 if str(meta.get("relayed_comment") or "") == str(cand.get("id") or ""):
     sys.exit(0)
-print(cand.get("id") or "")')" || verdict=""
+print(cand.get("id") or "")' 2>/dev/null)" || verdict=""
     cid="$verdict"
     [ -n "$cid" ] || continue
     _meta_put "$uuid" relayed_comment "$cid" \

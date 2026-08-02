@@ -485,6 +485,7 @@ def comments(num):
                          "--paginate"]) or "[]")
     return [{"id": c.get("id"),
              "body": c.get("body") or "",
+             "createdAt": c.get("created_at") or "",
              "authorAssociation": c.get("author_association") or ""}
             for c in raw if isinstance(c, dict)]
 

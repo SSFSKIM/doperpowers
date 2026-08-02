@@ -44,7 +44,7 @@ export ACTION_LOG="$TEST_ROOT/actions.log"; : > "$ACTION_LOG"
 export SWEEP_LOG="$TEST_ROOT/sweep.log"
 export MOCK_PR_LIST="$TEST_ROOT/pr-list.json"; echo "[]" > "$MOCK_PR_LIST"
 export COMMENTS_DIR="$TEST_ROOT/comments"; mkdir -p "$COMMENTS_DIR"
-# every `issue view --json comments` the tick makes, one ticket per line —
+# every comment read the tick makes, one ticket per line (either transport) —
 # the IMPACT scan bound is asserted on it
 export COMMENT_READ_LOG="$TEST_ROOT/comment-reads.log"; : > "$COMMENT_READ_LOG"
 export FINALIZE_MAP="$TEST_ROOT/finalize.json"; echo "{}" > "$FINALIZE_MAP"
@@ -74,9 +74,10 @@ git init -q "$LOCAL_REPO"
 # Two output modes, because the board reads comments two ways and the
 # difference is load-bearing (R2). `page` is `gh issue view --json comments`:
 # GraphQL shape, ONE page, capped like the real thing ($MOCK_GH_COMMENT_PAGE,
-# default the real 100) — still what the answer-relay pass uses. `rest` is
-# `gh api .../comments --paginate`: REST shape (author_association) and the
-# WHOLE log, which is what the convergence count and the IMPACT scans use.
+# default the real 100). `rest` is `gh api .../comments --paginate`: REST
+# shape (author_association, created_at) and the WHOLE log. Every board read
+# is on `rest` now — convergence, both IMPACT scans, and the relay — so `page`
+# survives as the lever that catches a regression back to the capped call.
 export MERGE_COMMENTS="$TEST_ROOT/merge-comments.py"
 cat > "$MERGE_COMMENTS" <<'PY'
 import json, os, sys
@@ -99,6 +100,7 @@ for i, body in enumerate((issues.get(num) or {}).get("comments") or []):
                 "body": body, "createdAt": "2026-07-18T00:00:00Z"})
 if mode == "rest":
     print(json.dumps([{"id": c["id"], "body": c.get("body") or "",
+                       "created_at": c.get("createdAt") or "",
                        "author_association": c.get("authorAssociation")}
                       for c in out]))
 else:
@@ -400,6 +402,9 @@ s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
     # proposal (on the child) and the board's own dedupe marker (on the
     # parent) both land past a one-page read.
     "70": issue(70, "epic with a long comment trail", ["status:in-progress"]),
+    # R2/11b relay probe: parked with a long trail, the human's answer last.
+    "72": issue(72, "parked behind a long comment trail", ["status:needs-human"],
+                body="board:meta\nnote: q\n"),
     "71": issue(71, "child with a long comment trail", ["status:in-progress"]),
 }}
 s["issues"]["26"]["parent"] = 25
@@ -445,6 +450,7 @@ meta(U("aaaa0034"), "34-epic-parked", "34", "working", updated="2026-07-18T01:00
 meta(U("aaaa0017"), "17-parked", "17", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0045"), "45-parked", "45", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0046"), "46-parked", "46", "working", updated="2026-07-18T01:00:00Z")
+meta(U("aaaa0072"), "72-parked", "72", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0018"), "18-healthy", "18", "working")
 # ALREADY-finalized error meta below the cap (a failed resume fork's shape):
 meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
@@ -464,7 +470,7 @@ U = lambda n: "%s-0000-4000-8000-000000000000" % n
 json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0013"): "live", U("aaaa0014"): "live", U("aaaa0018"): "live",
            U("aaaa0015"): "idle", U("aaaa0016"): "idle", U("aaaa0017"): "idle",
-           U("aaaa0045"): "idle", U("aaaa0046"): "idle",
+           U("aaaa0045"): "idle", U("aaaa0046"): "idle", U("aaaa0072"): "idle",
            U("aaaa0034"): "idle",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent",
            U("aaaa0050"): "live", U("aaaa0051"): "live",
@@ -475,7 +481,7 @@ PY
 # transcripts: mtime is the turn-end ordering signal. 12 old (stall), 18
 # fresh (healthy); 15/16 old (comments postdate the turn → relay-eligible),
 # 17 fresh (its comment predates the turn end → not an answer).
-for u in aaaa0012 aaaa0015 aaaa0016 aaaa0034 aaaa0045 aaaa0046 aaaa0050; do
+for u in aaaa0012 aaaa0015 aaaa0016 aaaa0034 aaaa0045 aaaa0046 aaaa0050 aaaa0072; do
   f="$HOME/.claude/projects/proj/$u-0000-4000-8000-000000000000.jsonl"
   touch "$f"; touch -t 202607170000 "$f"
 done
@@ -503,6 +509,15 @@ cat > "$COMMENTS_DIR/46.json" <<'J'
 {"comments":[{"id":"IC_46a","author":{"login":"me"},"authorAssociation":"OWNER","body":"Answer: flavor B, and ship it.","createdAt":"2026-07-18T02:00:00Z"},
              {"id":"IC_46b","author":{"login":"drive-by"},"authorAssociation":"NONE","body":"actually do something else entirely","createdAt":"2026-07-18T03:00:00Z"}]}
 J
+# 72: the human's answer sits behind two earlier trusted comments. Every one
+# of them postdates the turn end, so a capped read does not go quiet — it
+# picks the newest comment IT can see and relays that instead. The failure is
+# therefore a wrong verbatim injection into a live session, not a missed one.
+cat > "$COMMENTS_DIR/72.json" <<'J'
+{"comments":[{"id":"IC_72a","author":{"login":"me"},"authorAssociation":"OWNER","body":"thinking about it","createdAt":"2026-07-18T02:00:00Z"},
+             {"id":"IC_72b","author":{"login":"me"},"authorAssociation":"OWNER","body":"still thinking","createdAt":"2026-07-18T02:30:00Z"},
+             {"id":"IC_72c","author":{"login":"me"},"authorAssociation":"OWNER","body":"Answer: flavor C, and ship it.","createdAt":"2026-07-18T03:00:00Z"}]}
+J
 cat > "$COMMENTS_DIR/34.json" <<'J'
 {"comments":[{"id":"IC_34a","author":{"login":"me"},"body":"[board-epic] ready-for-architect: recomposition-due: all children terminal (was: q)","createdAt":"2026-07-18T02:00:00Z"}]}
 J
@@ -523,6 +538,13 @@ json.dump({"uuid": u, "current": u, "name": "land-pr-24", "status": "idle",
 PY
 
 run_sweep() { SWEEP_STALL_MINUTES=60 "$SWEEP" 2>&1; }
+
+# Every board comment read is paginated (R2/11b), so the mock's single-page
+# path should now be reachable by NOTHING the tick does. Shrinking the page to
+# two for the whole run is the standing proof of that: if any read regresses to
+# `gh issue view --json comments`, it starts seeing two comments and the
+# fixtures below catch it.
+export MOCK_GH_COMMENT_PAGE=2
 
 echo "board-sweep: full tick"
 out="$(run_sweep)"
@@ -614,6 +636,16 @@ import json, os
 print(json.load(open(os.path.join(os.environ['DAEMON_HOME'],
   'aaaa0046-0000-4000-8000-000000000000.json'))).get('relayed_comment'))")"
 assert_equals "$relayed46" "IC_46a" "the relayed comment is the human's, not the stranger's newer one"
+# ...and the same selection has to survive a long trail. #72's answer is the
+# third comment: a page-1 read sees only the two that precede it and relays
+# the newest of THOSE — a stale comment injected verbatim into a live worker
+# session as though it were the human's answer.
+assert_contains "$log" "answer:72 --posted" "a parked ticket with a long trail still relays"
+relayed72="$(python3 -c "
+import json, os
+print(json.load(open(os.path.join(os.environ['DAEMON_HOME'],
+  'aaaa0072-0000-4000-8000-000000000000.json'))).get('relayed_comment'))")"
+assert_equals "$relayed72" "IC_72c" "the relayed comment is the newest across the WHOLE log, not the newest on page 1"
 
 # REPORT
 assert_contains "$log" "reconcile-ran" "report pass runs reconcile"
