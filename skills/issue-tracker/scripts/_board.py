@@ -687,15 +687,43 @@ def recompose_epics(tickets, p, lines):
     cycle, on the in-review entry, alongside the package.
 
     The reconciliation return (the sweep's IMPACT pass) deliberately clears
-    NEITHER — that is not a recomposition cycle."""
+    NEITHER — that is not a recomposition cycle.
+
+    An epic ALREADY sitting in ready-for-architect still gets the
+    bookkeeping; only the state write is skipped (it is already there, and
+    apply_state's label swap degenerates to nothing anyway). It used to be
+    skipped whole, back when the return was purely a state change and the
+    guard was mere observability. It is not that any more: the return now
+    carries CYCLE-SCOPED writes, and a corrective child landing before an
+    Architect claims the queued epic — the scale-review corrective return, or
+    an unclaimed reconciliation return — is exactly a new cycle. Skipping it
+    left the previous cycle's integration `branch` (and package) live into the
+    next one, and dropped the `[board-epic] ready-for-architect:` comment that
+    resets the convergence count, so the NEXT legitimate corrective-child
+    escalation read as a second traversal and was parked needs-human."""
     while p and p in tickets:
-        if recomposition_ready(tickets, p) \
-           and tickets[p]["state"] != "ready-for-architect":
-            lines.append(apply_state(
-                tickets, p, "ready-for-architect",
-                _epic_note(tickets[p], "recomposition-due: all children terminal"),
-                extra_meta={"pr": None, "branch": None},
-                bookkeeping=True))
+        if not recomposition_ready(tickets, p):
+            break
+        n = tickets[p]
+        queued = n["state"] == "ready-for-architect"
+        meta = parse_meta(n["body"])
+        # Idempotence discriminator: this cycle's bookkeeping has already run
+        # when the note is the recomposition-due one AND both cycle-scoped
+        # metas are clear. Anything else — a reviewer's note, a surviving pr
+        # or branch — means the writes are still owed. Re-running a `done`
+        # transition on an already-terminal child (the finalize path) hits
+        # this and stays silent.
+        if queued and (n.get("note") or "").startswith("recomposition-due:") \
+           and not meta.get("pr") and not meta.get("branch"):
+            break
+        line = apply_state(
+            tickets, p, "ready-for-architect",
+            _epic_note(n, "recomposition-due: all children terminal"),
+            extra_meta={"pr": None, "branch": None},
+            bookkeeping=True)
+        lines.append(
+            "#%s: already ready-for-architect — recomposition bookkeeping "
+            "refreshed (new cycle)" % p if queued else line)
         # the chain walk ends here: an ancestor can only become ready when
         # THIS epic reaches terminal via its own recomposition verdict
         break

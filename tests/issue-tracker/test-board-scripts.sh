@@ -1497,6 +1497,48 @@ assert_contains "$out" "#$ce_e: in-review → done" "clean scale review closes t
 # it), so honoring the meta on ANY entry pointed the board at a superseded PR
 # — or, on an epic, at the previous cycle's closure package. Only the park
 # return whose pre-park: records in-review may ride the recorded value.
+# ---- recomposition bookkeeping on an ALREADY-queued epic ----------------------
+# The return carries cycle-scoped writes now — clearing pr/branch and emitting
+# the [board-epic] comment that resets the convergence count — so a corrective
+# child landing BEFORE an Architect claims the queued epic is a new cycle that
+# still owes all three. Only the state write is skipped.
+echo "recomposition bookkeeping (queued epic):"
+run board-register.sh "Queued cycle epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+qc_e="$(state "s['next']-1")"
+run board-register.sh "Queued cycle child" enhancement P2 --parent "$qc_e" --body-file "$SPEC_BODY" >/dev/null
+qc_c="$(state "s['next']-1")"
+run board-transition.sh "$qc_c" in-progress >/dev/null
+run board-transition.sh "$qc_c" "done" >/dev/null                  # epic → ready-for-architect
+run board-transition.sh "$qc_e" in-design >/dev/null
+run board-transition.sh "$qc_e" in-review --pr "https://github.com/o/r/issues/$qc_e#pkg-a" --branch epic/cycle-a >/dev/null
+run board-transition.sh "$qc_e" ready-for-architect "scale review: corrective child" >/dev/null
+run board-register.sh "Queued cycle corrective" bug P1 --parent "$qc_e" --body-file "$SPEC_BODY" >/dev/null
+qc_x="$(state "s['next']-1")"
+# The corrective child reaches terminal without any Architect ever claiming
+# the epic — it is closed straight from the queue (wontfix needs no active
+# turn, so no pull moves the epic), leaving it in ready-for-architect with
+# the reviewer's note still on it.
+assert_contains "$(state "s['issues']['$qc_e']['labels']")" "status:ready-for-architect" "the epic is still queued, unclaimed"
+before_marks="$(state "sum(1 for c in s['issues']['$qc_e']['comments'] if '[board-epic] ready-for-architect:' in str(c))")"
+out="$(run board-transition.sh "$qc_x" wontfix "not needed after all")"
+assert_contains "$out" "#$qc_e: already ready-for-architect — recomposition bookkeeping refreshed" "the queued epic's bookkeeping still runs, and says so"
+assert_contains "$(state "s['issues']['$qc_e']['labels']")" "status:ready-for-architect" "the state write is the only thing skipped"
+assert_not_contains "$(state "s['issues']['$qc_e']['body']")" "branch: epic/cycle-a" "the previous cycle's integration ref is cleared"
+assert_not_contains "$(state "s['issues']['$qc_e']['body']")" "pkg-a" "and its closure package with it"
+assert_contains "$(state "s['issues']['$qc_e']['body']")" "note: recomposition-due: all children terminal" "the reviewer's note gives way to the recomposition-due one"
+after_marks="$(state "sum(1 for c in s['issues']['$qc_e']['comments'] if '[board-epic] ready-for-architect:' in str(c))")"
+assert_equals "$after_marks" "$((before_marks + 1))" "the cycle-reset comment is emitted"
+# idempotence: everything is already folded and cleared, so a re-run is silent
+out="$(run board-transition.sh "$qc_x" wontfix "still not needed")"
+assert_not_contains "$out" "recomposition bookkeeping refreshed" "a re-run with the bookkeeping already done writes nothing"
+assert_equals "$(state "sum(1 for c in s['issues']['$qc_e']['comments'] if '[board-epic] ready-for-architect:' in str(c))")" "$after_marks" "...and posts no second cycle-reset comment"
+# the reset this path emitted is a real convergence boundary
+run board-transition.sh "$qc_e" in-design >/dev/null
+run board-transition.sh "$qc_e" in-review --pr "https://github.com/o/r/issues/$qc_e#pkg-b" >/dev/null
+out="$(run board-transition.sh "$qc_e" ready-for-architect "scale review: a different defect")"
+assert_contains "$out" "#$qc_e: in-review → ready-for-architect" "the escalation after this path's reset is not a mechanical bounce"
+assert_not_contains "$(state "s['issues']['$qc_e']['labels']")" "status:needs-human" "so no spurious needs-human park"
+
 echo "in-review entry guard:"
 run board-register.sh "Stale PR probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
 sp_t="$(state "s['next']-1")"
