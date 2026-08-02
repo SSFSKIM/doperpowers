@@ -1052,6 +1052,18 @@ run board-transition.sh "$sc_t" in-design >/dev/null
 out="$(run board-transition.sh "$sc_t" ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec)"
 assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down-shortcircuit sentinel recorded"
 assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
+# The EDGE, not the destination: every other legal promotion INTO
+# ready-for-implementer (a park return) would otherwise mint a plan pin,
+# and a pin is what makes the implementer skip its gate (PLAN-EXECUTION).
+run board-register.sh "Park-return plan probe" enhancement P2 --state needs-info \
+  --note "waiting on a spec detail" --body-file "$SPEC_BODY" >/dev/null
+pr_t="$(state "s['next']-1")"
+plan_err="$(run board-transition.sh "$pr_t" ready-for-implementer "unparked" \
+  --plan "docs/sneaky.md@0123456789abcdef0123456789abcdef01234567" 2>&1 || true)"
+assert_contains "$plan_err" "in-design → ready-for-implementer" "the refusal names the full edge, not just the destination"
+assert_contains "$(state "s['issues']['$pr_t']['labels']")" "status:needs-info" "the refused park return wrote nothing"
+assert_not_contains "$(state "s['issues']['$pr_t']['body']")" "plan:" "a park return can never mint a plan pin"
+
 # ---- plan pin auto-clear (Finding B) -------------------------------------------
 # A superseded plan: pin is void by definition on two edges: any entry into
 # ready-for-architect (the design is being re-cut), and the Architect's own

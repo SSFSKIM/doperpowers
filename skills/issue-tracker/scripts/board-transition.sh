@@ -147,8 +147,15 @@ if to == "in-review" and not env["T_PR"] and not n.get("pr"):
           "epic: the closure-package URL)")
 if env["T_PLAN"]:
     import re as _re
-    if to != "ready-for-implementer":
-        B.die("--plan rides the Architect handoff edge (→ ready-for-implementer) only")
+    # The EDGE, not just the destination: a plan pin authorizes gate-free
+    # PLAN-EXECUTION, and only an Architect finishing a design pass may mint
+    # one. Every other legal promotion into ready-for-implementer (a park
+    # return from needs-info/needs-human/interactive-preferred/deferred)
+    # would otherwise mint one too — and there is no legitimate re-supply
+    # case, since plan meta survives park round-trips untouched.
+    if cur != "in-design" or to != "ready-for-implementer":
+        B.die("--plan rides the Architect handoff edge (in-design → "
+              "ready-for-implementer) only")
     if env["T_PLAN"] != "pre-spec" and not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
         B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")
 if to in B.DISPATCHABLE and "(pre-spec: fill in)" in (n.get("body") or ""):
@@ -170,9 +177,9 @@ elif to == "ready-for-architect" or (cur == "in-design" and to == "ready-for-imp
     # unrelated `pre-spec` ruling value caused two defects on this branch,
     # so this clears the field outright rather than keying on "has a pin").
     # Entry into ready-for-architect always means the plan is being
-    # re-cut (T_PLAN can only be set when to == ready-for-implementer —
-    # validated above — so this branch never collides with a fresh pin
-    # write). The Architect's own decompose exit
+    # re-cut (T_PLAN can only be set on the in-design →
+    # ready-for-implementer edge — validated above — so this branch never
+    # collides with a fresh pin write). The Architect's own decompose exit
     # (in-design -> ready-for-implementer with no --plan) is a positive
     # "no plan" statement — a pin surviving it is stale by construction.
     # Deliberately NOT extended to other edges into ready-for-implementer:
