@@ -623,7 +623,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
  */
 async function withAppServer(cwd, fn, connect = null) {
   if (connect) {
-    const ownClient = await CodexAppServerClient.connect(cwd, { disableBroker: true, ...connect });
+    // disableBroker LAST: a connect option always means a private direct
+    // spawn — a caller's disableBroker:false would otherwise route to the
+    // broker and silently drop configOverrides and onSpawn.
+    const ownClient = await CodexAppServerClient.connect(cwd, { ...connect, disableBroker: true });
     try {
       return await fn(ownClient);
     } finally {
