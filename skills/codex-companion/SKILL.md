@@ -13,12 +13,21 @@ Every invocation follows one shape — `<skill-base>` is this skill's base
 directory, printed when the skill loads:
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
     CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" <verb> [flags…]
 
 `CLAUDE_PLUGIN_DATA` goes on every verb: it pins where job state and
 resumable threads live — unset, the runtime falls back to a purgeable
 tmpdir, and a leftover OpenAI-plugin hook can silently redirect it.
+`CODEX_COMPANION_SESSION_ID` also goes on every verb: it stamps this
+session's jobs and scopes listings, no-id `result`, `--resume-last`,
+and the running-task gate to them. Without it, parallel sessions in the
+same workspace share one job namespace — a session gets "Task … is
+still running" off a neighbor's task (or a killed session's record,
+which stays `running` forever), and no-id reads land on whichever job
+is newest workspace-wide. An explicit job id still reaches any
+session's job.
 `CODEX_COMPANION_APP_SERVER_ENDPOINT` goes on `review`,
 `adversarial-review`, and `task` only — those verbs otherwise spawn a
 detached broker + codex process pair that outlives the session (upstream

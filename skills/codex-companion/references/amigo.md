@@ -9,6 +9,7 @@ executor you steer mid-task. Prints Codex's final response; records a job
 (see references/jobs.md).
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
     CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" task \
       [--write] [--resume-last|--fresh] \
@@ -39,9 +40,14 @@ progress doesn't multiply what you read back.
 The multi-turn loop: run once, read the answer, continue the same thread
 with `--resume-last` and a follow-up prompt — challenge its critique,
 narrow its focus, ask it to apply the fix it proposed (add `--write` on
-the resumed turn). `--resume-last` picks the most recent task thread in
-this workspace (`--resume` is an accepted synonym); `--fresh` forces a new
-thread when the request merely sounds like a follow-up.
+the resumed turn). `--resume-last` picks this session's most recent task
+thread (`--resume` is an accepted synonym) — session-scoped by the
+`CODEX_COMPANION_SESSION_ID` prefix, so parallel sessions in the same
+workspace can't grab each other's threads or trip over each other's
+running tasks; to continue *another* session's thread, take the Codex
+session id that `result <job-id>` prints and open it with
+`codex resume <id>` (there is no per-thread flag on `task`). `--fresh`
+forces a new thread when the request merely sounds like a follow-up.
 
 ## As design critic
 

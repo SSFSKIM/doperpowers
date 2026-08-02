@@ -9,6 +9,7 @@ codex plugin installed also inherit ITS `CLAUDE_PLUGIN_DATA` from a hook;
 the explicit prefix wins over both.
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
+    CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" status [job-id] [--all] [--json]
     …                                                          result [job-id] [--json]
     …                                                          cancel [job-id] [--json]
@@ -20,7 +21,7 @@ only. Left off those, the first run spawns a detached broker +
 upstream reaped these with a SessionEnd hook this bundle doesn't have;
 with it, each call fails over to a per-call direct app-server that dies
 with it. The job verbs above never spawn a broker and take only the
-state-root env; `setup`'s auth probe would actually misread the dead
+state-root and session envs; `setup`'s auth probe would actually misread the dead
 endpoint as an auth failure. If leaked pairs accumulate anyway (from
 running work verbs without the kill-switch), find them with
 `ps -axo pid,command | grep app-server-broker`, kill the pids, and
@@ -40,10 +41,16 @@ read on completion is the verdict rather than the full progress stream
 (the job log records that anyway). That
 wakes this session on completion, so don't poll `status` in a loop; it
 exists for mid-flight peeks at long runs and for picking up jobs from a
-different session. Without a job id, `status`/`result` default to the
-most recent job in this workspace (job records carry a Claude session id
-only when `CODEX_COMPANION_SESSION_ID` is set in the environment; absent
-that, listings are workspace-wide — fine for a single-user machine).
+different session. Without a job id, `status`/`result` default to this
+session's most recent job — that scoping comes from the
+`CODEX_COMPANION_SESSION_ID` prefix at job-creation time, so it only
+separates jobs that were created with it. In parallel-session work
+prefer an explicit job id when reading results: it is unambiguous under
+concurrency, and it is also the one lookup that deliberately crosses
+sessions — which is how a different session's job gets picked up. A job
+whose session died stays `running` in the listing until `cancel`led;
+under session scoping it at least no longer blocks other sessions'
+`--resume-last`.
 
 `result` also prints the Codex session id of a finished job when
 available, so the run can be reopened directly in Codex with
