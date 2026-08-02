@@ -22,8 +22,9 @@
 #   --stop     stop the --serve server.
 #
 # Reading BOARD.html: dependencies flow left→right (a blocker sits left of its
-# dependents). Card color = state; ELIGIBLE (a dispatchable lane state + all
-# blockers done, not an epic) glows blue; in-progress pulses green. An amber
+# dependents). Card color = state; ELIGIBLE (what the dispatcher will claim:
+# a leaf in a dispatchable lane state with every blocker done, or an epic on
+# its recomposition/reconciliation claim) glows blue; in-progress pulses green. An amber
 # arrow is an ACTIVE block (green while its blocker is itself being worked), a
 # dim dashed one a satisfied dependency; labeled dashed lines carry
 # spawned/relates lineage; each epic is a labeled box around its members
@@ -89,11 +90,16 @@ order = sorted(tickets, key=num)
 epics = {n["parent"] for n in tickets.values() if n.get("parent")}
 
 def state_label(tid, n):
+    # The authoritative predicate, not a re-derivation of it: an epic is
+    # eligible only on its own E2 carve-out (a recomposition or
+    # reconciliation claim in ready-for-architect), and a blocker check alone
+    # printed ELIGIBLE for epics the dispatcher would never claim.
+    if B.eligible(tickets, tid):
+        return n["state"] + " · ELIGIBLE"
     if n["state"] in B.DISPATCHABLE:
         unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
         if unmet:
             return n["state"] + " · waiting: " + ",".join("#%s" % b for b in unmet)
-        return n["state"] + " · ELIGIBLE"
     return n["state"]
 
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")

@@ -1360,6 +1360,9 @@ assert_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board-epic]"
 # a recomposition-due epic is eligible, and the epic tag alone hid that.
 list_rc="$(run board-list.sh)"
 assert_contains "$(grep -F "#$rc_e " <<<"$list_rc" || true)" "[epic ELIGIBLE]" "a recomposition-due epic lists as eligible"
+# same predicate, one surface over: the map's fallback table
+map_rc="$(run board-map.sh)"
+assert_contains "$(grep -F "#$rc_e " <<<"$map_rc" || true)" "ready-for-architect · ELIGIBLE" "the map marks the recomposition-due epic eligible too"
 assert_not_contains "$(state "s['issues']['$rc_e']['comments'][-1]")" "[board] in-progress → ready-for-architect:" "return never writes the convergence-counted format"
 # second cycle: corrective child, land it, return fires again w/o needs-human conversion
 run board-register.sh "Recomp gap child" enhancement P2 --parent "$rc_e" --body-file "$SPEC_BODY" >/dev/null
@@ -1402,6 +1405,13 @@ assert_contains "$out" "#$ce_e: in-design → in-review" "code-bearing epic ente
 run board-transition.sh "$ce_e" ready-for-architect "scale review: corrective child" >/dev/null
 run board-register.sh "Corrective child" bug P1 --parent "$ce_e" --body-file "$SPEC_BODY" >/dev/null
 ce_x="$(state "s['next']-1")"
+# ready-for-architect but NOT eligible: a nonterminal corrective child means
+# no recomposition claim, and there is no reconciliation-due note either. Both
+# operator surfaces must agree with the dispatcher, not with a blocker check.
+map_ce="$(run board-map.sh)"
+assert_not_contains "$(grep -F "#$ce_e " <<<"$map_ce" || true)" "ELIGIBLE" "the map does not mark an epic with a live corrective child eligible"
+list_ce="$(run board-list.sh)"
+assert_not_contains "$(grep -F "#$ce_e " <<<"$list_ce" || true)" "ELIGIBLE" "nor does board-list"
 out="$(run board-transition.sh "$ce_x" in-progress)"
 assert_contains "$out" "#$ce_e: ready-for-architect → in-design" "the corrective child pulls the waiting epic back in-flight"
 # The verdict edges are RECOMPOSITION edges: an epic holding a reconciliation
@@ -1417,6 +1427,33 @@ out="$(run board-transition.sh "$ce_e" in-review --pr "https://github.com/o/r/is
 assert_contains "$out" "#$ce_e: in-design → in-review" "a fresh closure package re-enters scale review"
 out="$(run board-transition.sh "$ce_e" "done")"
 assert_contains "$out" "#$ce_e: in-review → done" "clean scale review closes the epic"
+
+echo "board-migrate-gh (retired v6 state):"
+# A legacy ticket in the RETIRED v6 queue state, migrated on its own board so
+# the numbering above is untouched. v9 split ready-for-agent into the two lane
+# queues and dropped its label, so passing it straight to set_state_label
+# leaves the issue in `conflict`. It must land in ready-for-implementer — the
+# disposition board-lint.sh's FIX text prescribes for the same legacy label.
+run board-register.sh "Legacy agent-queue ticket" enhancement P2 \
+  --state needs-human --note "parked before the migration" >/dev/null
+legacy_rfa="$(state "s['next']-1")"
+cat > "$LEGACY/board-v6.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Legacy agent-queue ticket", "md": "tickets/T3.md",
+         "state": "ready-for-agent", "category": "enhancement", "note": null,
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": null, "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $legacy_rfa}
+}}
+J
+printf -- '---\nid: T3\n---\n# T3\n' > "$LEGACY/tickets/T3.md"
+out="$(run board-migrate-gh.sh --board "$LEGACY/board-v6.json" --apply)"
+assert_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:ready-for-implementer" \
+  "the retired ready-for-agent state migrates into the implementer queue"
+assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:ready-for-agent" \
+  "no issue is ever labelled with the retired state"
+assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:needs-human" \
+  "the superseded label is swapped out, not left alongside (that would read as conflict)"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
