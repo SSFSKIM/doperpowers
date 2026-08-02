@@ -431,7 +431,20 @@ STATE_PATH = os.path.join(os.environ["DAEMON_HOME"], "impact-scan.json")
 try:
     with open(STATE_PATH) as f:
         _loaded = json.load(f)
-    scan_state = dict(_loaded["children"]) if _loaded.get("version") == 1 else {}
+    # SHAPE, not just syntax. A file holding well-formed JSON of the wrong
+    # shape (`[]`, `null`, a bare string) made `.get` raise AttributeError
+    # OUTSIDE this catch: the body died before the atomic rewrite, so the bad
+    # file survived and every later pass died at the same line — reconciliation
+    # permanently dead until a human deleted the file, the exact opposite of
+    # the documented full-rescan-on-corruption. Anything that is not the
+    # documented shape is discarded like a parse failure. Per-entry values are
+    # filtered the same way (`prior.get` below would raise on a non-dict);
+    # a dropped entry costs that one child a rescan.
+    if not isinstance(_loaded, dict) or _loaded.get("version") != 1 \
+       or not isinstance(_loaded.get("children"), dict):
+        raise ValueError("scan state is not the documented shape")
+    scan_state = {k: v for k, v in _loaded["children"].items()
+                  if isinstance(v, dict)}
 except (OSError, ValueError, KeyError, TypeError):
     scan_state = {}          # missing or corrupt: rescan everything
 next_state = {}

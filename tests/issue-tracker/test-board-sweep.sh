@@ -843,6 +843,26 @@ printf 'not json at all' > "$DAEMON_HOME/impact-scan.json"
 : > "$COMMENT_READ_LOG"
 out="$(run_sweep)"
 assert_equals "$(reads_for $SETTLED)" "1" "and so does a corrupt one"
+# WELL-FORMED JSON of the wrong SHAPE is the nastier corruption: it parses, so
+# the parse guard let it through, and `.get` on a list/None raised
+# AttributeError outside the catch — the pass died before its atomic rewrite,
+# leaving the bad file in place for the next pass to die on identically.
+# Reconciliation stayed dead until a human deleted the file. Each bad shape
+# must rescan AND leave a valid state file behind.
+for _shape in '[]' 'null' '"a string"' '{"version": 1, "children": []}' '{"version": 1}'; do
+    printf '%s' "$_shape" > "$DAEMON_HOME/impact-scan.json"
+    : > "$COMMENT_READ_LOG"
+    out="$(run_sweep)"
+    assert_equals "$(reads_for $SETTLED)" "1" "shape-corrupt state ($_shape) means a full rescan"
+    assert_contains "$(cat "$DAEMON_HOME/impact-scan.json")" '"version": 1' \
+        "...and the pass survives to rewrite it, so the next tick is not dead too"
+done
+# a single malformed ENTRY costs that child a rescan, not the whole pass
+printf '%s' '{"version": 1, "children": {"'"$SETTLED"'": "not a record"}}' \
+    > "$DAEMON_HOME/impact-scan.json"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(reads_for $SETTLED)" "1" "a non-dict entry rescans that child instead of killing the pass"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

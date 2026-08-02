@@ -266,12 +266,14 @@
     return "M" + x1 + "," + y1 + " C" + (x1 + dx) + "," + y1 + " " + (x2 - dx) + "," + y2 + " " + x2 + "," + y2;
   }
   // An unmet dependency edge is amber (a stalled path) — unless its blocker is
-  // actively being worked (in-progress / in-review), then it reads green so the
-  // eye can trace the moving critical path (the agent-harness edge idiom).
+  // actively being worked, then it reads green so the eye can trace the moving
+  // critical path (the agent-harness edge idiom). "Actively worked" is
+  // _board.ACTIVE: in-design counts, an Architect mid-design is not a stall.
   function edgeClass(e) {
     if (e.kind === "block-active") {
       var s = nodeById[e.from];   // the real blocker, not the epic it may collapse into
-      return (s && (s.cls === "s_prog" || s.cls === "s_rev")) ? "block-live" : "block-wait";
+      return (s && (s.cls === "s_design" || s.cls === "s_prog" || s.cls === "s_rev"))
+        ? "block-live" : "block-wait";
     }
     return e.kind;   // block-done / spawned / relates map straight to CSS
   }
@@ -549,7 +551,10 @@
     var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, needh: 0, info: 0, cand: 0 };
     BOARD.nodes.forEach(function (n) {
       if (n.state === "done") c.done++;
-      else if (n.state === "in-progress") c.prog++;
+      // "running" is _board.ACTIVE minus review: an Architect mid-design is a
+      // worker in flight, and leaving in-design out made the header under-report
+      // the running fleet by exactly the architect lane.
+      else if (n.state === "in-progress" || n.state === "in-design") c.prog++;
       else if (n.state === "in-review") c.rev++;
       else if (n.state === "needs-human") c.needh++;
       else if (n.state === "needs-info") c.info++;

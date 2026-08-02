@@ -58,24 +58,11 @@ cur = n["state"]
 
 if to not in B.STATES:
     B.die("unknown state: %s" % to)
-# Same ban as board-register.sh (Finding A): a LEAF spike has no legal exit
-# from ready-for-architect (LEGAL["ready-for-architect"] has no
-# in-progress edge, and the spike protocol's gate-pass write IS
-# in-progress regardless of which lane queue dispatched it). Close every
-# entry into the state, not just the birth one.
-#
-# Leaf-hood is the discriminant, not the label. A spike that DECOMPOSED is
-# an epic, and an epic in ready-for-architect is a recomposition or
-# reconciliation claim dispatched to an ARCHITECT — the dispatcher routes it
-# that way on epic-hood, over its category — so the spike protocol and its
-# in-progress write never enter the picture. Banning the edge by category
-# alone rejected such an epic's scale-defect route (in-review →
-# ready-for-architect) and left the parent mislabeled in-review with nothing
-# able to move it.
-if to == "ready-for-architect" and n["category"] == "spike" \
-   and tid not in B.epics(tickets):
-    B.die("#%s is a leaf spike — it has no legal exit from "
-          "ready-for-architect; it stays in its current lane" % tid)
+# (Every entry into ready-for-architect used to be closed to a LEAF spike,
+# mirroring board-register.sh's birth ban — the spike protocol's gate-pass
+# write is `in-progress`, which LEGAL["ready-for-architect"] does not have.
+# Dispatch routes that queue on STATE now, so a spike there gets an ARCHITECT
+# and exits via `in-design`; the ban is gone from both scripts.)
 # E2 epic guard: the in-design → done / in-review edges exist ONLY for a
 # RECOMPOSITION claim (the scoped terminal-authority exception) — an epic
 # whose children are all terminal. A leaf Architect never closes or reviews

@@ -1034,22 +1034,26 @@ impl_t="${out%% *}"
 assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
 assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
 
-# ---- spike / ready-for-architect ban (Finding A) -------------------------------
-# A spike has no legal exit from ready-for-architect (the spike protocol's
-# gate-pass write is `in-progress`, and LEGAL["ready-for-architect"] has none)
-# — banned at both the source (registration) and every transition into it.
-echo "spike/architect-lane ban:"
-assert_fails run board-register.sh "Spike arch birth" spike P2 --state ready-for-architect --body-file "$SPEC_BODY"
-spike_ban_t="$(run board-register.sh "Spike transition ban probe" spike P2 --body-file "$SPEC_BODY" | awk '{print $1}')"
+# ---- spike / ready-for-architect: the ban is RETIRED ---------------------------
+# Finding A banned a leaf spike from this queue at both the source
+# (registration) and every transition into it, because role resolution was
+# category-first: the spike protocol dispatched from either lane queue and its
+# gate-pass write (`in-progress`) has no LEGAL edge from ready-for-architect.
+# implement-dispatch.sh now routes that queue on STATE, so the ticket gets an
+# ARCHITECT and its exit is `in-design`. Both gates are gone and these two
+# asserts are the old refusals INVERTED — a design-first leaf spike is a
+# supported route.
+echo "spike/architect-lane (ban retired):"
+spike_birth_t="$(run board-register.sh "Spike arch birth" spike P2 --state ready-for-architect --body-file "$SPEC_BODY" | awk '{print $1}')"
+assert_contains "$(state "s['issues']['$spike_birth_t']['labels']")" "status:ready-for-architect" "a leaf spike may be BORN into the architect queue"
+run board-transition.sh "$spike_birth_t" in-design >/dev/null
+assert_contains "$(state "s['issues']['$spike_birth_t']['labels']")" "status:in-design" "...and its architect-lane exit is legal"
+spike_ban_t="$(run board-register.sh "Spike transition probe" spike P2 --body-file "$SPEC_BODY" | awk '{print $1}')"
 run board-transition.sh "$spike_ban_t" in-progress >/dev/null
-assert_fails run board-transition.sh "$spike_ban_t" ready-for-architect "blocked: needs a plan"
-assert_contains "$(state "s['issues']['$spike_ban_t']['labels']")" "status:in-progress" "spike stays in its lane after the refused transition"
-# ...but leaf-hood is the discriminant, not the label. A spike that DECOMPOSED
-# is an epic, and an epic in ready-for-architect is an Architect's
-# recomposition claim — the dispatcher routes it on epic-hood over category,
-# so the spike protocol's illegal in-progress write never enters the picture.
-# Banning by category alone rejected such an epic's scale-defect route and
-# left the parent mislabeled in-review with nothing able to move it.
+run board-transition.sh "$spike_ban_t" ready-for-architect "needs design first" >/dev/null
+assert_contains "$(state "s['issues']['$spike_ban_t']['labels']")" "status:ready-for-architect" "a leaf spike may be TRANSITIONED into the architect queue"
+# The spike EPIC case that motivated the ban's leaf-hood carve-out still works,
+# now for the general reason rather than a special one: the state decides.
 run board-register.sh "Spike that decomposed" spike P1 --body-file "$SPEC_BODY" >/dev/null
 spike_epic_t="$(state "s['next']-1")"
 run board-register.sh "Spike epic child" enhancement P2 --parent "$spike_epic_t" --body-file "$SPEC_BODY" >/dev/null

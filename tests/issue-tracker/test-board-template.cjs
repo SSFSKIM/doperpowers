@@ -61,7 +61,12 @@ const payload = {
     { id: "#5", state: "in-design", eligible: false, cls: "s_design", label: "designing",
       title: "lane split probe", close_candidate: true, blocked_by: [], relates_to: [], prs: [], x: 480, y: 0 },
   ],
-  edges: [], epics: [],
+  // #2 is blocked by #5 (the in-design ticket) and by #4 (done). The first is
+  // the telemetry probe: an Architect mid-design is _board.ACTIVE, so that
+  // dependency is a MOVING path, not an amber stall.
+  edges: [{ from: "#5", to: "#2", kind: "block-active" },
+          { from: "#4", to: "#2", kind: "block-done" }],
+  epics: [],
 };
 ids["board-data"] = { textContent: JSON.stringify(payload) };
 
@@ -95,6 +100,24 @@ function expect(desc, cond) {
   console.log("  [" + (cond ? "PASS" : "FAIL") + "] " + desc);
   if (!cond) failures++;
 }
+
+// ---- lane-split telemetry (M6 left these two behind the column exemption) --
+// The header's "running" tally and the blocker-edge color both encode "a worker
+// is on this", and both read that off the state list. _board.ACTIVE is
+// (in-design, in-progress, in-review), so an in-design ticket is running and
+// its blocked edge is live — #5 is the only in-design node and #3 the only
+// in-progress one, so "2 running" is exactly the fix.
+expect("header counts the Architect lane as running",
+  ids.hcounts.textContent.indexOf("2 running") === 0);
+function edgeClasses() {   // graph view: every rendered <path class="gedge ...">
+  return ids.cy.children[0].children[0].children
+    .filter((e) => e.tag === "path" && String(e.attrs["class"] || "").startsWith("gedge"))
+    .map((e) => e.attrs["class"]);
+}
+const gedges = edgeClasses();
+expect("an in-design blocker draws a LIVE edge, not an idle amber wait",
+  gedges.some((c) => c.indexOf("block-live") >= 0) &&
+  !gedges.some((c) => c.indexOf("block-wait") >= 0));
 
 ids.vkanban.onclick();                       // switch to kanban (done hidden by default)
 let cols = columns();

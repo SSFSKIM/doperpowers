@@ -212,9 +212,12 @@ pick by repo visibility:
    the worker opens its protocol from the dispatcher-pinned file the
    bootstrap names, then reads its own ticket and the repo's
    `.doperpowers/repo-facts.md` itself). Substitute every
-   `{{PLACEHOLDER}}`: `ROLE` = `SPIKE` when the ticket's category is
-   `spike` (state-free — category outranks lane), `ARCHITECT` when the
-   state is `ready-for-architect`, else `IMPLEMENT`; `PROTOCOL_FILE` =
+   `{{PLACEHOLDER}}`: `ROLE` = `ARCHITECT` when the state is
+   `ready-for-architect` (that queue routes on STATE, and the state
+   outranks category — every legal exit from it is an architect-lane
+   exit), `SPIKE` when the category is `spike` (category selects a
+   protocol only WITHIN the implement lane), else `IMPLEMENT`;
+   `PROTOCOL_FILE` =
    the lane's protocol (spike → doperpowers:implementing
    `references/spike-worker-protocol.md`; architect →
    doperpowers:architecting `SKILL.md`; else doperpowers:implementing
