@@ -277,6 +277,16 @@ for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE"; do
     assert_contains "$_body" "never edit or transition the parent" "$_name: a child proposes upward, it never writes its parent"
 done
 # Recomposition protocol (Architect).
+# The council's plan-review step named doperpowers:plan-reviewer, an agent
+# deleted when plan review moved to the codex adversarial-review route — a
+# live instruction pointing at nothing. It now names the same mechanism
+# writing-plans prescribes, so the two cannot drift apart again.
+assert_not_contains "$arch" "plan-reviewer" \
+    "the council never dispatches the deleted plan-reviewer agent"
+assert_contains "$arch" "doperpowers:codex-companion's \`adversarial-review\` verb" \
+    "the plan gets the independent review writing-plans prescribes, by its real mechanism"
+assert_contains "$arch" "buildable by an engineer with" \
+    "...focused on the same bar (same voice as writing-plans, not a bespoke variant)"
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
 # T1: the check is only performable if the pin names a revision of the thing

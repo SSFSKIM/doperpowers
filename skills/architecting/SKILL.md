@@ -88,9 +88,14 @@ parks carry the quality machinery.
     zero-context session executes it), end.
   - Spec → Impl Plan shape (large/novel/high-stakes): the council —
     dispatch doperpowers:critique on the matured design and debate to
-    convergence; run the spec-review pass; dispatch
-    doperpowers:plan-reviewer on the implementation plan. All existing
-    machinery, reused.
+    convergence; run the spec-review pass; then give the implementation
+    plan the same independent review doperpowers:writing-plans
+    prescribes — doperpowers:codex-companion's `adversarial-review` verb
+    (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper) in
+    a background Bash, focused on whether the plan is complete,
+    spec-aligned, well-decomposed, and buildable by an engineer with
+    zero context. Evaluate its findings rather than accepting them
+    wholesale. All existing machinery, reused.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
   suffices as the plan:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec
