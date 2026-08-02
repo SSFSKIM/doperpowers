@@ -24,6 +24,16 @@ def save(s):
     with open(STATE, "w") as f:
         json.dump(s, f, indent=1)
 
+def touch(it):
+    """Bump updatedAt the way GitHub does on any write to the issue —
+    comments included. The sweep's IMPACT pass uses it as a scan cursor, so a
+    mock that never moved it would make every cursor test vacuous."""
+    n = int(it.get("_touch") or 0) + 1
+    it["_touch"] = n
+    it["updatedAt"] = "2026-07-18T%02d:%02d:%02dZ" % (
+        (n // 3600) % 24, (n // 60) % 60, n % 60)
+
+
 def log(argv):
     if LOG:
         with open(LOG, "a") as f:
@@ -50,6 +60,21 @@ def issue(s, num):
     if not it:
         die("no issue #%s" % num)
     return it
+
+def comment_objs(it):
+    """Stored comments as API objects. A bare string is the board's own write
+    (the token identity, i.e. OWNER); a test seeds a dict to play any other
+    author or to pin an id."""
+    out = []
+    for c in it["comments"]:
+        if isinstance(c, dict):
+            c = dict(c)
+            c.setdefault("authorAssociation", "OWNER")
+        else:
+            c = {"body": c, "authorAssociation": "OWNER"}
+        out.append(c)
+    return out
+
 
 def by_id(s, gid):
     for it in s["issues"].values():
@@ -102,11 +127,13 @@ def main():
                 it["labels"].append(l)
         if opt(argv, "--body-file") == "-":
             it["body"] = sys.stdin.read()
+        touch(it)
         save(s)
         return
 
     if argv[:2] == ["issue", "close"]:
         it = issue(s, argv[2])
+        touch(it)
         it["state"] = "CLOSED"
         it["stateReason"] = "NOT_PLANNED" if opt(argv, "--reason") == "not planned" else "COMPLETED"
         save(s)
@@ -115,8 +142,94 @@ def main():
     if argv[:2] == ["issue", "comment"]:
         it = issue(s, argv[2])
         it["comments"].append(sys.stdin.read() if opt(argv, "--body-file") == "-" else (opt(argv, "--body") or ""))
+        touch(it)
         save(s)
         return
+
+    if argv[:2] == ["issue", "view"]:
+        it = issue(s, argv[2])
+        if opt(argv, "--json") == "comments":
+            # Real gh serves each comment as an object carrying
+            # authorAssociation, and the board's comment-controlled reads
+            # (convergence counting, the sweep's IMPACT scans) key on it.
+            # A comment stored as a bare string is the board's own write —
+            # the token identity, i.e. OWNER; a test seeds a dict directly to
+            # play any other author.
+            #
+            # TRUNCATED AT ONE PAGE, like the real thing: this path is a
+            # capped GraphQL fetch, not a paginated one. Modelling the cap is
+            # what lets a test tell a page-1 reader from a paginated one; the
+            # default is the real 100 and $MOCK_GH_COMMENT_PAGE shrinks it so
+            # a fixture need not seed a hundred comments to prove the point.
+            page = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
+            print(json.dumps({"comments": comment_objs(it)[:page]}))
+            return
+        die("unhandled issue view fields: %s" % " ".join(argv))
+
+    # REST endpoints the board verifies a plan pin against. Both are driven by
+    # $MOCK_GH_REFS (JSON): {"compare": {"<branch>...<sha>": "identical"},
+    # "contents": ["<path>@<sha>", ...], "fail": ["<substring>", ...]}.
+    # A path in "fail" makes the call exit non-zero, standing in for an API
+    # error; anything not listed is a 404, as the real API returns.
+    if argv[:1] == ["api"] and len(argv) > 1 and argv[1] != "graphql":
+        path = argv[1]
+        # repos/<owner>/<repo>/issues/<n>/comments — the paginated read the
+        # board's comment-controlled scans use. `--paginate` makes real gh
+        # concatenate every page into one JSON array, so the mock serves the
+        # whole log here and the `issue view` path above stays capped: the two
+        # differ by exactly the bug this endpoint exists to fix. REST field
+        # names differ from the GraphQL ones (`author_association`), which is
+        # why _board.comments() normalizes.
+        m_c = re.match(r"^repos/[^/]+/[^/]+/issues/([0-9]+)/comments$", path)
+        if m_c:
+            if "--paginate" not in argv:
+                die("issue comments read must be --paginate (page 1 is a bug)")
+            out = []
+            for i, c in enumerate(comment_objs(issue(s, m_c.group(1)))):
+                out.append({"id": c.get("id", i + 1), "body": c.get("body") or "",
+                            "created_at": c.get("createdAt") or "",
+                            "author_association": c.get("authorAssociation")})
+            # REAL PAGINATION, both shapes. Bare --paginate streams each page
+            # as its own top-level array, concatenated — several JSON documents
+            # in one stream, which a single json.loads rejects once a second
+            # page exists. --slurp wraps them into one outer array instead.
+            # Serving only the slurped shape (or one array either way) would
+            # make every multi-page fixture vacuous: the decode path that
+            # actually broke is the one between these two shapes.
+            page = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
+            pages = [out[i:i + page] for i in range(0, len(out), page)] or [[]]
+            if "--slurp" in argv:
+                print(json.dumps(pages))
+            else:
+                for p in pages:
+                    print(json.dumps(p))
+            return
+        try:
+            with open(os.environ["MOCK_GH_REFS"]) as f:
+                refs = json.load(f)
+        except (KeyError, OSError, ValueError):
+            refs = {}
+        for frag in refs.get("fail") or []:
+            if frag in path:
+                sys.stderr.write("gh: mock API failure for %s\n" % path)
+                sys.exit(1)
+        if path.startswith("repos/") and "/compare/" in path:
+            key = path.split("/compare/", 1)[1]
+            status = (refs.get("compare") or {}).get(key)
+            if status is None:
+                sys.stderr.write("gh: Not Found (%s)\n" % path)
+                sys.exit(1)
+            print(json.dumps({"status": status}))
+            return
+        if path.startswith("repos/") and "/contents/" in path:
+            rest = path.split("/contents/", 1)[1]
+            fpath, _, ref = rest.partition("?ref=")
+            if ("%s@%s" % (fpath, ref)) in (refs.get("contents") or []):
+                print(json.dumps({"path": fpath, "sha": ref}))
+                return
+            sys.stderr.write("gh: Not Found (%s)\n" % path)
+            sys.exit(1)
+        die("unhandled api path: %s" % path)
 
     if argv[:2] == ["api", "graphql"]:
         fields = {}

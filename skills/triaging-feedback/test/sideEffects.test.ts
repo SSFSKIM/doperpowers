@@ -20,12 +20,12 @@ describe('sideEffects', () => {
     expect(content).toContain(`${MARKER}f9`);
   });
 
-  it('registerTicket registers ready-for-agent without a --note flag', async () => {
+  it('registerTicket registers ready-for-implementer without a --note flag', async () => {
     const sh = vi.fn().mockResolvedValue('9 https://github.com/o/r/issues/9');
     const se = makeSideEffects(cfg, sh, vi.fn().mockReturnValue('/tmp/x/t.md'), vi.fn());
-    await se.registerTicket({ feedbackId: 'f2', title: 't', category: 'bug', priority: 'P2', body: 'b', state: 'ready-for-agent' });
+    await se.registerTicket({ feedbackId: 'f2', title: 't', category: 'bug', priority: 'P2', body: 'b', state: 'ready-for-implementer' });
     const [, args] = sh.mock.calls[0];
-    expect(args).toEqual(expect.arrayContaining(['--state', 'ready-for-agent']));
+    expect(args).toEqual(expect.arrayContaining(['--state', 'ready-for-implementer']));
     expect(args).not.toContain('--note');
   });
 
@@ -33,7 +33,7 @@ describe('sideEffects', () => {
     const sh = vi.fn().mockRejectedValue(new Error('gh down'));
     const removeTmp = vi.fn();
     const se = makeSideEffects(cfg, sh, vi.fn().mockReturnValue('/tmp/x/t.md'), removeTmp);
-    await expect(se.registerTicket({ feedbackId: 'f3', title: 't', category: 'bug', priority: 'P2', body: 'b', state: 'ready-for-agent' })).rejects.toThrow('gh down');
+    await expect(se.registerTicket({ feedbackId: 'f3', title: 't', category: 'bug', priority: 'P2', body: 'b', state: 'ready-for-implementer' })).rejects.toThrow('gh down');
     expect(removeTmp).toHaveBeenCalledWith('/tmp/x/t.md');
   });
 

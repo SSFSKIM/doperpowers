@@ -15,7 +15,7 @@ function verdict(over: Over = {}): Verdict {
     ticket: {
       title: '오늘 카드 버튼 무반응',
       body: '## 증상\n버튼이 안 눌림\n\n## 진단\ncomponents/today/Card.tsx:42\n\n## 제안 수정 방향\n핸들러 연결\n\n## 스코프 추정\n1파일\n\n## 불명확한 점\n없음',
-      state: 'ready-for-agent',
+      state: 'ready-for-implementer',
       ...(over.ticket ?? {}),
     },
   } as Verdict;
@@ -73,11 +73,11 @@ describe('extractFileCitations', () => {
 });
 
 describe('routeTicket', () => {
-  it('honors ready-for-agent for a cited, benign bug (user trust)', () => {
-    expect(routeTicket('user', 'bug', verdict(), RAW)).toEqual({ state: 'ready-for-agent', note: undefined });
+  it('honors ready-for-implementer for a cited, benign bug (user trust)', () => {
+    expect(routeTicket('user', 'bug', verdict(), RAW)).toEqual({ state: 'ready-for-implementer', note: undefined });
   });
 
-  it('user: row category idea → forced needs-human even if the worker recommends ready-for-agent', () => {
+  it('user: row category idea → forced needs-human even if the worker recommends ready-for-implementer', () => {
     expect(routeTicket('user', 'idea', verdict(), RAW).state).toBe('needs-human');
   });
 
@@ -87,8 +87,8 @@ describe('routeTicket', () => {
     expect(r.note).toBeTruthy();
   });
 
-  it('developer: idea can be born ready-for-agent (no category forcing, no bug-only rule)', () => {
-    expect(routeTicket('developer', 'idea', verdict({ resolved_category: 'idea' }), RAW)).toEqual({ state: 'ready-for-agent', note: undefined });
+  it('developer: idea can be born ready-for-implementer (no category forcing, no bug-only rule)', () => {
+    expect(routeTicket('developer', 'idea', verdict({ resolved_category: 'idea' }), RAW)).toEqual({ state: 'ready-for-implementer', note: undefined });
   });
 
   it('developer: still demoted on risk-surface citation — risk rules are trust-independent', () => {
@@ -114,43 +114,43 @@ describe('routeTicket', () => {
     expect(r.note).toBeTruthy();
   });
 
-  it('user: demotes ready-for-agent when resolved category is not bug', () => {
+  it('user: demotes ready-for-implementer when resolved category is not bug', () => {
     const r = routeTicket('user', 'other', verdict({ resolved_category: 'other' }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('bug');
   });
 
-  it('demotes ready-for-agent when root_cause has no citation at all', () => {
+  it('demotes ready-for-implementer when root_cause has no citation at all', () => {
     const r = routeTicket('user', 'bug', verdict({ root_cause: '어딘가 잘못됨' }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('인용');
   });
 
-  it('demotes ready-for-agent when the only citation is a non-file token (unknown:12) — R2 hardening', () => {
+  it('demotes ready-for-implementer when the only citation is a non-file token (unknown:12) — R2 hardening', () => {
     const r = routeTicket('user', 'bug', verdict({ root_cause: 'unknown:12 근처로 추정' }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('인용');
   });
 
-  it('demotes ready-for-agent when a cited path touches a risk surface (root_cause)', () => {
+  it('demotes ready-for-implementer when a cited path touches a risk surface (root_cause)', () => {
     const r = routeTicket('user', 'bug', verdict({ root_cause: 'lib/auth.ts:7 세션 체크 누락' }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('lib/auth.ts');
   });
 
-  it('demotes ready-for-agent when the authored ticket body mentions a risk surface path', () => {
+  it('demotes ready-for-implementer when the authored ticket body mentions a risk surface path', () => {
     const r = routeTicket('user', 'bug', verdict({ ticket: { body: '## 제안 수정 방향\nsql/p90_fix.sql 마이그레이션 추가' } }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('sql/p90_fix.sql');
   });
 
-  it('demotes ready-for-agent when the fix description mentions a risk SYMBOL without any risk path — R3 hardening', () => {
+  it('demotes ready-for-implementer when the fix description mentions a risk SYMBOL without any risk path — R3 hardening', () => {
     const r = routeTicket('user', 'bug', verdict({ ticket: { body: '## 제안 수정 방향\ncomponents/wrapper.tsx에서 assertStudentAccess 호출을 우회' } }), RAW);
     expect(r.state).toBe('needs-human');
     expect(r.note).toContain('assertStudentAccess');
   });
 
-  // ── 내용 린트 (ready-for-agent 전용) ──
+  // ── 내용 린트 (ready-for-implementer 전용) ──
 
   it('lint: demotes when required sections are missing from the authored body', () => {
     const r = routeTicket('user', 'bug', verdict({ ticket: { body: '## 증상\n버튼 무반응\n\n## 진단\ncomponents/today/Card.tsx:42' } }), RAW);

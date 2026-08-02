@@ -20,12 +20,13 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `SKILL.md` (the skill root) | the Implement Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
-| `references/worker-bootstrap.md` | the spawn bootstrap for BOTH lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
+| `../architecting/SKILL.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; ends at the plan, never touches implementation code |
+| `references/worker-bootstrap.md` | the spawn bootstrap shared by ALL THREE lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE/ARCHITECT), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
 | The Ticket Gate | the pre-code pass/park verdict (below; check definitions in issue-tracker's `references/ticket-gate.md`) |
 | board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
-| `scripts/` | empty this phase — the auto-attach trigger (`implement-dispatch.sh` + workflow template) lands here next phase |
+| `scripts/implement-dispatch.sh` | the mechanical dispatch ritual, automated: `<n>` triggered mode, `--sweep` catch-up; `board-sweep.sh` invokes the sweep mode on a timer |
 
 ## The Ticket Gate
 
@@ -53,23 +54,31 @@ Children via `board-register.sh --parent <original>`; sibling ordering via
 `--blocked-by` (a chain IS serialization — serial vs parallel is a
 dependency shape, not a policy branch). `--spawned-by` stays reserved for
 scope-outs/follow-ups discovered during work. Each child is gate-triaged
-honestly at registration (`ready-for-agent` only if the worker believes it
-passes the gate). Register only children specifiable as self-contained
-pre-specs NOW; contingent phases live as a `## Roadmap` section in the
+honestly at registration (a dispatchable lane state (the birth rule:
+design-heavy children → `ready-for-architect`, else `ready-for-implementer`)
+only if the worker believes it passes the gate). Register only children
+specifiable as self-contained pre-specs NOW; contingent phases live as a
+`## Roadmap` section in the
 parent body — the worker finishing phase K registers phase K+1 at PR time.
-The parent becomes an epic (never dispatched; the sweeps move it). The
+The parent becomes an epic — never dispatched for IMPLEMENTATION; the
+sweeps move it, and it returns to `ready-for-architect` for an Architect's
+recomposition claim once every child is terminal. The
 decomposing worker writes no code. Recursion is emergent: each child's
 worker re-runs the same gate; no depth machinery exists.
 
 ## Execution — two modes on gate pass
 
-- **Direct** — the pre-spec is the plan: evidence-first execution
+- **DIRECT** — the pre-spec is the plan: evidence-first execution
   (testable logic → TDD; UI → build + verify rendered behavior;
   config/docs → the relevant check passes), commit, PR.
-- **ExecPlan** — doperpowers:execplan when the work needs the document to
-  survive context death: multiple sequenced milestones, or big-but-atomic
-  work that cannot land halfway. The gate already served as execplan's
-  grill.
+- **PLAN-EXECUTION** — the ticket carries a `plan:` pin an Architect
+  worker authored (doperpowers:architecting); the Implementer opens the
+  plan at its pinned revision and executes it to the letter (absorbing
+  codebase divergence on the branch, never re-litigating the design), and
+  runs no gate. The Implementer authors no plan document, ever — plan
+  AUTHORSHIP belongs to the architect lane; work that turns out to need
+  one escalates via the gate's plan-need check (→ `ready-for-architect`)
+  instead of self-authoring.
 
 There is no in-daemon execspec mode: work that wants a living spec with a
 human at the gates is precisely `interactive-preferred`.
@@ -179,18 +188,30 @@ proposals, registration and comments are the only channels.
 
 ## Edge cases
 
-- **Dispatched onto an epic** — refuse: epics are never dispatched; end the
-  turn naming the mistake (the sweep owns epic states).
+- **Dispatched onto an epic** — refuse IF the role is IMPLEMENT or SPIKE:
+  epics are never dispatched for implementation; end the turn naming the
+  mistake (the sweep owns epic states). An ARCHITECT dispatch onto an epic
+  in `ready-for-architect` is NOT that mistake — it is the recomposition or
+  reconciliation claim (see architecting), the one way an epic is
+  dispatchable at all, and the dispatcher routes it there on epic-hood over
+  the ticket's own category.
 - **needs-human answered** — preferred path: the wake ritual relays the
   answers to the still-bound session (issue-tracker's `board-answer.sh` —
   park = pause, not death); the resumed worker re-states its gate verdict
-  against the answers before proceeding. Fallback (no/dead session, or
-  scope-reshaping answers): flip back to `ready-for-agent`; the next
-  dispatch re-runs the gate with the comments as ticket content. Either
-  way, answers belong in the body/comments, not in chat.
+  against the answers before proceeding (PLAN-EXECUTION, which ran no
+  gate, restates plan-execution status instead). Fallback (no/dead
+  session, or scope-reshaping answers): flip back to `ready-for-implementer`,
+  or `ready-for-architect` when the answers invalidate a standing plan
+  (that edge clears any `plan:` pin automatically — entering the lane
+  means the design is being re-cut); the next dispatch re-runs the gate
+  with the comments as ticket content, gate-free instead for a
+  still-valid `plan:` pin (PLAN-EXECUTION). Either way, answers belong in
+  the body/comments, not in chat.
 - **Worker dies mid-build** — `board-reconcile.sh` flags the orphaned
-  `in-progress` ticket; respawn re-runs the gate from fresh context (prior
-  `[gate]` comments are context, not inherited trust).
+  `in-progress` (or, for an Architect, `in-design`) ticket; respawn
+  re-runs the gate from fresh context — gate-free for a `plan:`-pinned
+  ticket, same as any PLAN-EXECUTION dispatch (prior `[gate]` comments
+  are context, not inherited trust).
 - **Gate-fail discovered mid-build** (a taste fork surfaces only once code
   exists) — same protocol, late: park (`in-progress → needs-human` /
   `interactive-preferred` are legal), commit WIP to the branch, state the

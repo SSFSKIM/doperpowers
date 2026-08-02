@@ -35,7 +35,7 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
    - `기타`(other) → 본문에서 실제 분류를 추론한 뒤 위 규칙을 그대로 적용.
 
    신뢰 수준이 `developer`면 이 강제는 없습니다: 아이디어·개선 요청도
-   well-defined + well-scoped로 저작할 수 있으면 `ready-for-agent`를 추천해도
+   well-defined + well-scoped로 저작할 수 있으면 `ready-for-implementer`를 추천해도
    됩니다(리스크 표면·인용 요구는 동일).
 3. **DIAGNOSE (read-only 샌드박스)** — 실제 코드베이스를 근거로 증상을
    재현하고 근본 원인을 `file:line` 인용과 함께 특정합니다. 인용은 반드시
@@ -57,7 +57,7 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
      함. *well-scoped* — 대략 ExecPlan 1–2개 분량. 이 기준을 티켓이 통과할
      수 있게 쓰는 것이 당신의 품질 목표입니다.
 5. **DECIDE — birth state 추천**:
-   - `ready-for-agent` — **전부** 만족할 때만: 근본 원인/대상이 실제 파일
+   - `ready-for-implementer` — **전부** 만족할 때만: 근본 원인/대상이 실제 파일
      경로의 `file:line`으로 grounding됐고, 티켓이 위 게이트(well-defined +
      well-scoped)를 정직하게 통과하고, 아래 **리스크 표면**에 하나도 닿지
      않을 때. 신뢰 수준 `user`에서는 추가로 최종 분류가 `bug`여야 합니다.
@@ -67,11 +67,16 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
      제품/취향 갈림길, 리스크 표면 접촉, 우선순위 재고 필요. `note`에
      **사람이 무엇을 결정해야 하는지**를 질문 목록으로, 가능하면 각각
      추천 답과 함께 적으십시오.
+   - **설계가 앞서야 하는 항목도 `needs-human`입니다.** 요구가 명확해도
+     선행 설계(아키텍처 판단, 새 설계 저작)가 필요하면 여기로 보내십시오.
+     이 프로토콜은 `ready-for-architect`로 티켓을 낳지 않습니다 — 아키텍트
+     레인에 넣을지는 사람이 결정합니다. `ready-for-implementer`로 보내면
+     구현 워커가 집어 게이트에서 다시 아키텍트 레인으로 튕겨낼 뿐입니다.
    - `needs-info` — 사람 고유의 판단은 아니지만 상당한 규모의 조사가
      따로 필요할 때(드물어야 정상). `note`에 무엇을 조사해야 하는지.
    - park 상태(`needs-human`/`needs-info`)는 `note`가 필수입니다.
 
-## 리스크 표면 (닿으면 ready-for-agent 금지 → needs-human)
+## 리스크 표면 (닿으면 ready-for-implementer 금지 → needs-human)
 
 진단이 아래 영역을 원인으로 지목하거나 수정이 아래를 건드려야 한다면, 신뢰
 수준과 무관하게 티켓은 반드시 `needs-human`입니다. 디스패처가 인용 경로와
@@ -104,7 +109,7 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
   "ticket": {
     "title": "문제를 요약하는 한 문장 (원문 복사 금지)",
     "body": "## 증상\n…\n\n## 진단\n… (file:line)\n\n## 제안 수정 방향\n…\n\n## 스코프 추정\n…\n\n## 불명확한 점\n…",
-    "state": "ready-for-agent|needs-human|needs-info",
+    "state": "ready-for-implementer|needs-human|needs-info",
     "note": "park 상태일 때 필수 — 사람이 결정/조사할 것"
   },
   "duplicate_of": 12,
@@ -114,7 +119,7 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
 ```
 
 `ticket.body`의 5개 섹션(증상/진단/제안 수정 방향/스코프 추정/불명확한 점)은
-`ready-for-agent` 티켓의 **필수 형식**입니다 — 디스패처가 검사하고, 누락 시
+`ready-for-implementer` 티켓의 **필수 형식**입니다 — 디스패처가 검사하고, 누락 시
 needs-human으로 강등됩니다. `duplicate_of`/`related`는 해당할 때만 넣는 선택
 필드입니다(위 보드 스냅샷의 번호만 유효).
 

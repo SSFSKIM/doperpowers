@@ -3,7 +3,10 @@
 #
 # Usage: board-list.sh [state]
 #
-# Eligible = ready-for-agent + every blocked_by ticket done + not an epic.
+# Eligible = a dispatchable lane state (ready-for-architect /
+# ready-for-implementer) + every blocked_by ticket done — for a LEAF. An
+# epic is eligible only on its own carve-out (ready-for-architect with a
+# recomposition or reconciliation claim); both come from B.eligible.
 # Tags: epic | ELIGIBLE | waiting:<numbers> | STUCK(wontfix blocker)
 # Rows print in dispatch order: priority first (P0 on top, unprioritized
 # last), issue number as tiebreaker — the top ELIGIBLE row is the next pick.
@@ -35,7 +38,13 @@ for tid in sorted(tickets, key=rank):
     tags = []
     if tid in epics:
         tags.append("epic")
-    elif n["state"] == "ready-for-agent":
+        # An epic is dispatchable too — E2: awaiting recomposition or
+        # reconciliation in ready-for-architect — and the dispatcher WILL
+        # claim it. The predicate that decides that is B.eligible, so ask
+        # it rather than re-deriving the carve-out here.
+        if B.eligible(tickets, tid):
+            tags.append("ELIGIBLE")
+    elif n["state"] in B.DISPATCHABLE:
         blockers = [b for b in n["blocked_by"]
                     if tickets.get(b, {}).get("state") != "done"]
         if not blockers:

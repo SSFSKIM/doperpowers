@@ -5,7 +5,7 @@ const goodObj = {
   feedback_id: 'f1',
   resolved_category: 'bug',
   root_cause: 'foo.ts:12 널 참조',
-  ticket: { title: '오늘 화면 카드 널 참조 크래시', body: '## 증상\n…\n## 진단\nfoo.ts:12', state: 'ready-for-agent' },
+  ticket: { title: '오늘 화면 카드 널 참조 크래시', body: '## 증상\n…\n## 진단\nfoo.ts:12', state: 'ready-for-implementer' },
   confidence: 'high',
 };
 const fence = (o: unknown) => 'blah\n```json\n' + JSON.stringify(o) + '\n```\nend';
@@ -16,7 +16,7 @@ describe('parseVerdict', () => {
     expect(v?.feedback_id).toBe('f1');
     expect(v?.resolved_category).toBe('bug');
     expect(v?.ticket.title).toBe('오늘 화면 카드 널 참조 크래시');
-    expect(v?.ticket.state).toBe('ready-for-agent');
+    expect(v?.ticket.state).toBe('ready-for-implementer');
     expect(v?.ticket.note).toBeUndefined();
   });
   it('keeps a park note when present, drops a blank one', () => {

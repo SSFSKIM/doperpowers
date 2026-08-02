@@ -9,6 +9,7 @@
 #
 # stdlib only. Every GitHub call shells out to `gh` (the toolkit's one
 # external requirement) — tests substitute a PATH-shimmed mock `gh`.
+import hashlib
 import json
 import os
 import re
@@ -16,8 +17,10 @@ import subprocess
 import sys
 from typing import NoReturn
 
-# ── state vocabulary (v8: blocked retired into needs-human; the park trio) ──
-OPEN_STATES = ("ready-for-agent", "in-progress", "needs-human", "needs-info",
+# ── state vocabulary (v9: the E1 lane split — the single pre-v9 agent queue
+#    split into ready-for-architect / in-design / ready-for-implementer) ──
+OPEN_STATES = ("ready-for-architect", "in-design", "ready-for-implementer",
+               "in-progress", "needs-human", "needs-info",
                "interactive-preferred", "in-review", "confident-ready",
                "deferred")
 TERMINAL = ("done", "wontfix")
@@ -25,43 +28,113 @@ STATES = OPEN_STATES + TERMINAL
 # Actively-worked states: a close_candidate in one of these is normal
 # mid-flight shape (part-1 PR merged, part 2 coming) — surfaces that nag or
 # relocate (lint WARN, kanban column) skip them; passive displays still mark.
-ACTIVE = ("in-progress", "in-review")
-BIRTH = ("ready-for-agent", "needs-info", "needs-human",
-         "interactive-preferred", "deferred")
-# Park discriminant — WHO UNPARKS IT: the human as themselves (a decision or
-# a real-world input) → needs-human; knowledge work anyone could do →
-# needs-info; ongoing steering, not one answer → interactive-preferred.
+ACTIVE = ("in-design", "in-progress", "in-review")
+# The two dispatchable lane queues — the eligibility predicate, slot
+# accounting, and every ELIGIBLE display key off this tuple.
+DISPATCHABLE = ("ready-for-architect", "ready-for-implementer")
+BIRTH = ("ready-for-architect", "ready-for-implementer", "needs-info",
+         "needs-human", "interactive-preferred", "deferred")
+# Park discriminant — WHO UNPARKS IT (three addresses): the human as
+# themselves (a decision or a real-world input) → needs-human; knowledge
+# work anyone could do → needs-info; missing/broken design an AGENT can
+# author → ready-for-architect. Ongoing steering → interactive-preferred.
 NOTE_REQUIRED = ("needs-human", "needs-info", "interactive-preferred", "wontfix")
-PULLABLE = ("ready-for-agent", "needs-info", "needs-human",
-            "interactive-preferred", "deferred")
+# Edge-keyed note requirement (E1 transitions 2/4/5 + the QAgent edge):
+# these lane-crossing edges enter states that are note-free at birth, so
+# the state-keyed NOTE_REQUIRED cannot express them.
+EDGE_NOTE_REQUIRED = {
+    ("in-design", "ready-for-implementer"),
+    ("ready-for-implementer", "ready-for-architect"),
+    ("in-progress", "ready-for-architect"),
+    ("in-review", "ready-for-architect"),
+}
+# Convergence-counted escalation edges: a SECOND traversal of the same
+# edge on one ticket converts to a needs-human park (board-transition
+# enforces; count resets at the last [answers] comment).
+CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer")}
+# Park-return targets (E1 transition 7): written into pre-park: meta at
+# needs-human park time; board-answer returns the ticket there. Always an
+# IN-FLIGHT state — returning to a dispatchable queue would race the sweep
+# onto a second worker.
+PRE_PARK = {
+    "ready-for-architect": "in-design",
+    "in-design": "in-design",
+    "ready-for-implementer": "in-progress",
+    "in-progress": "in-progress",
+    "in-review": "in-review",
+}
+# Park states — the ones whose exit is somebody ELSE's action (a human
+# decision, an information hunt, ongoing steering, a deliberate defer).
+# BIRTH above is the other longhand twin of this tuple — a park state added
+# here almost always belongs there too.
+PARKED = ("needs-info", "needs-human", "interactive-preferred", "deferred")
+# What an active child may pull its parent epic out of. The two lane queues,
+# plus exactly one park — and the discriminant is the E2 park contract, not
+# "epics have no workers" (they do: recomposition claims and scale reviewers
+# bind to epics and park them).
+#   needs-human            the session-resume contract — a bound worker waits
+#                          on the answer, and the sweep's RELAY pass selects
+#                          on THIS state to find it. Unparking would delete
+#                          the human's question and drop the epic out of that
+#                          queue while its worker sits idle.
+#   interactive-preferred  a claim on the human's live attention.
+#   deferred               a deliberate "not now" decision.
+#   needs-info             fold-and-recut: NO bound worker and no relay
+#                          entry by contract. On an epic it is the reconciling
+#                          Architect's release exit ("reconciled: … — waiting
+#                          on children"), and a child going active is
+#                          literally the information whose absence that park
+#                          names. The pull IS the wake.
+# The other bookkeeping unpark is recompose_epics, which wakes a parked epic
+# of ANY kind when its last child lands — nothing but a recomposition verdict
+# can close an epic, so no one else ever would. Both preserve what the park
+# owned by folding its note into their own (see _epic_note).
+PULL_FROM = DISPATCHABLE + ("needs-info",)
 LEGAL = {
-    "ready-for-agent": {"in-progress", "needs-info", "needs-human",
-                        "interactive-preferred", "wontfix", "deferred"},
-    "in-progress":     {"needs-info", "needs-human", "interactive-preferred",
-                        "in-review", "done", "wontfix", "deferred"},
-    "needs-info":      {"ready-for-agent", "in-progress", "needs-human",
-                        "interactive-preferred", "wontfix", "deferred"},
+    "ready-for-architect":   {"in-design", "needs-info", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
+    # in-design: the Architect's in-flight state. Exit = transition 2/3
+    # (plan handoff / down-shortcircuit / decompose-epic) or a park.
+    # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
+    # terminal-authority exception; board-transition enforces the guard).
+    "in-design":             {"ready-for-implementer", "needs-info",
+                              "needs-human", "interactive-preferred",
+                              "wontfix", "deferred", "done", "in-review"},
+    "ready-for-implementer": {"in-progress", "ready-for-architect",
+                              "needs-info", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
+    "in-progress":           {"ready-for-architect", "needs-info",
+                              "needs-human", "interactive-preferred",
+                              "in-review", "done", "wontfix", "deferred"},
+    "needs-info":            {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "needs-human",
+                              "interactive-preferred", "wontfix", "deferred"},
     # done from needs-human: the spike handoff — a finished spike parks
     # needs-human "findings ready" and the human closes it after reading
     # (done is the manual flip for non-PR work). Human-only in practice:
     # worker doctrine forbids terminal states.
-    "needs-human":     {"ready-for-agent", "in-progress", "needs-info",
-                        "interactive-preferred", "done", "wontfix", "deferred"},
-    "interactive-preferred": {"ready-for-agent", "in-progress", "needs-info",
-                        "needs-human", "wontfix", "deferred"},
-    # needs-human reachable from in-review: the reviewing-prs review loop's
-    # impasse/precondition escalations (protocol safety valve) — all its
-    # parks route to needs-human. needs-info stays reachable here too, as a
-    # human/legacy affordance; the review worker itself no longer writes it.
-    "in-review":       {"in-progress", "confident-ready", "done", "wontfix",
-                        "deferred", "needs-info", "needs-human"},
+    # in-design / in-review from needs-human: the pre-park returns
+    # (board-answer reads pre-park: meta — E1 transition 7).
+    "needs-human":           {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "in-design", "in-review",
+                              "needs-info", "interactive-preferred",
+                              "done", "wontfix", "deferred"},
+    "interactive-preferred": {"ready-for-architect", "ready-for-implementer",
+                              "in-progress", "needs-info", "needs-human",
+                              "wontfix", "deferred"},
+    # ready-for-architect from in-review: the QAgent's design-gap
+    # escalation (E1 third address; convergence-counted).
+    "in-review":             {"in-progress", "ready-for-architect",
+                              "confident-ready", "done", "wontfix",
+                              "deferred", "needs-info", "needs-human"},
     # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
     # Reachable ONLY from in-review (a review verdict presupposes an open PR);
     # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
     # merged SHOULD surface as a close candidate (the finalize cue).
     "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
-    "deferred":        {"ready-for-agent", "needs-info", "needs-human",
-                        "interactive-preferred", "wontfix"},
+    "deferred":        {"ready-for-architect", "ready-for-implementer",
+                        "needs-info", "needs-human", "interactive-preferred",
+                        "wontfix"},
     "done":            set(),   # terminal
     "wontfix":         set(),   # terminal
 }
@@ -72,7 +145,9 @@ CONFLICT = "conflict"     # open, two+ status:* labels
 
 STATUS_PREFIX = "status:"
 STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
-    "ready-for-agent": "0e8a16",
+    "ready-for-architect": "006b75",
+    "in-design":           "bfd4f2",
+    "ready-for-implementer": "0e8a16",
     "in-progress":     "1d76db",
     "in-review":       "5319e7",
     "confident-ready": "008672",
@@ -97,13 +172,16 @@ PRIORITY_COLORS = {  # ensure_labels palette (hex, no '#')
 }
 
 # Categories: bug/enhancement are GitHub defaults; spike (the exploration
-# lane — deliverable is findings, never a merge) is board-managed, so
-# ensure_labels creates it.
-CATEGORIES = ("bug", "enhancement", "spike")
+# lane — deliverable is findings, never a merge) and env-issue (E2:
+# environmental friction, fire-and-continue registration) are
+# board-managed, so ensure_labels creates them.
+CATEGORIES = ("bug", "enhancement", "spike", "env-issue")
 SPIKE_COLOR = "f9d0c4"
+ENV_ISSUE_COLOR = "e4a0f7"
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
-META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "note")
+META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
+             "parent-pin", "note")
 
 
 def die(msg) -> NoReturn:
@@ -166,10 +244,29 @@ def parse_meta(body):
     return meta
 
 
+def strip_meta(body):
+    """The body WITHOUT its trailing board:meta block — the ticket's own text,
+    with the board's bookkeeping removed."""
+    return META_RE.sub("", body or "").rstrip("\n")
+
+
+def contract_hash(body):
+    """The id a `parent-pin:` names: sha256/12 over the ticket's text with
+    board:meta STRIPPED.
+
+    The meta block is the board writing to itself, and it moves constantly —
+    recompose_epics clears `pr:`/`branch:` on every recomposition cycle alone.
+    Hashing the whole body therefore reported "the parent contract changed" at
+    every cycle, and an Architect who adjudicates a fake diff every time soon
+    stops reading the real one. What a child inherits is the contract text, so
+    that is what the pin identifies."""
+    return hashlib.sha256(strip_meta(body).encode("utf-8")).hexdigest()[:12]
+
+
 def render_body(body, meta):
     """Body with its meta block replaced by `meta` (dropped when meta is empty).
     Everything outside the block is preserved byte-for-byte."""
-    base = META_RE.sub("", body or "").rstrip("\n")
+    base = strip_meta(body)
     meta = {k: v for k, v in meta.items() if v}
     if not meta:
         return base + ("\n" if base else "")
@@ -309,6 +406,10 @@ def snapshot(refresh=False):
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
                 "created": it["createdAt"][:10],
                 "updated": it["updatedAt"][:10],
+                # Full precision alongside the display date: the sweep's
+                # IMPACT pass uses it as a per-child scan cursor, and a
+                # day-granular value would stall every re-read within a day.
+                "updated_at": it["updatedAt"],
                 "url": it["url"],
                 "body": it["body"] or "",
             }
@@ -342,6 +443,9 @@ def ensure_labels():
     want += [("spike", SPIKE_COLOR,
               "issue-tracker board category: exploration spike — "
               "deliverable is findings, never a merge")]
+    want += [("env-issue", ENV_ISSUE_COLOR,
+              "issue-tracker board category: environmental friction — "
+              "fire-and-continue report; default birth needs-human")]
     for name, color, desc in want:
         if name not in have:
             gh(["label", "create", name, "-R", repo(), "--color", color,
@@ -380,6 +484,40 @@ def close(num, state):
 
 def comment(num, text):
     gh(["issue", "comment", num, "-R", repo(), "--body-file", "-"], input_text=text)
+
+
+def comments(num):
+    """EVERY comment on issue <num>, oldest first, normalized to the field
+    names the board's comment-controlled scans use: id, body,
+    authorAssociation.
+
+    REST + `--paginate`, never `gh issue view --json comments`: that serves a
+    SINGLE page, and three scans read it as the whole log — the convergence
+    count here, and the sweep's IMPACT proposal and dedupe-marker reads. Past
+    ~100 comments a truncated read silently drops traversals (extra bounces
+    the convergence rule exists to stop), proposals, and markers. The IMPACT
+    pass makes it permanent: its cursor would persist seen=<updatedAt> for a
+    child whose proposal it never reached, so nothing brings that child back.
+    A failed page is not a short read — gh() dies on non-zero exit, which
+    kills the pass before any cursor write, so a cursor only ever records a
+    COMPLETE read.
+
+    `--slurp` is not optional. Bare `--paginate` streams each page as its own
+    top-level array, concatenated — valid JSON documents back to back, which
+    json.loads rejects with "Extra data" the moment a second page exists. That
+    fails on precisely the long trails this read was written for. --slurp wraps
+    the pages in one outer array instead, so the result is a list of
+    page-lists and flattening it one level yields the log. (gh >= 2.53; an
+    older gh rejects the flag outright, and gh() surfaces that stderr rather
+    than half-reading.)"""
+    pages = json.loads(gh(["api", "repos/%s/issues/%s/comments" % (repo(), num),
+                           "--paginate", "--slurp"]) or "[]")
+    raw = [c for page in pages for c in (page or [])]
+    return [{"id": c.get("id"),
+             "body": c.get("body") or "",
+             "createdAt": c.get("created_at") or "",
+             "authorAssociation": c.get("author_association") or ""}
+            for c in raw if isinstance(c, dict)]
 
 
 def set_body(num, body):
@@ -440,7 +578,19 @@ def epics(tickets):
 
 def eligible(tickets, tid):
     n = tickets[tid]
-    if tid in epics(tickets) or n["state"] != "ready-for-agent":
+    if tid in epics(tickets):
+        # E2 carve-out: dispatchable epic states are exactly
+        # ready-for-architect awaiting recomposition (children all
+        # terminal — a queued corrective child must pull the epic back out
+        # of the dispatch pool before an Architect claims a moving target)
+        # or awaiting reconciliation (the sweep's reconciliation-due
+        # return — children may still be active).
+        if n["state"] != "ready-for-architect":
+            return False
+        if not recomposition_ready(tickets, tid) \
+           and not (n.get("note") or "").startswith("reconciliation-due:"):
+            return False
+    elif n["state"] not in DISPATCHABLE:
         return False
     return all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"])
 
@@ -455,7 +605,7 @@ def ancestors(tickets, t):
 
 
 # ── the transition core (state write + note + sweeps) ────────────────────
-def apply_state(tickets, tid, to, why, extra_meta=None):
+def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     """Write one state change to GitHub + the in-memory snapshot; return the
     human line. Notes ride the meta block (current) and a comment (audit);
     extra_meta lets the caller fold branch/pr into the same body write."""
@@ -471,39 +621,177 @@ def apply_state(tickets, tid, to, why, extra_meta=None):
     updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
-        comment(tid, "[board] %s: %s" % (to, why))
+        if bookkeeping:
+            # Board bookkeeping on an epic (the recomposition/reconciliation
+            # return): the marker is deliberately NOT the "[board] from → to:"
+            # format — the convergence counter greps that format, and a
+            # mechanical return must never count as a worker escalation
+            # traversal. pull_epics writes plain "[board] <to>:" comments
+            # instead: no pull edge is a convergence edge, so it needs no
+            # exemption from the counter.
+            comment(tid, "[board-epic] %s: %s" % (to, why))
+        elif (old, to) in CONVERGENCE_EDGES:
+            comment(tid, "[board] %s → %s: %s" % (old, to, why))
+        else:
+            comment(tid, "[board] %s: %s" % (to, why))
     n["state"], n["status_labels"] = to, ([] if to in TERMINAL else [to])
     n["note"] = why or None
     return "#%s: %s → %s" % (tid, old, to)
 
 
+def _epic_note(node, why):
+    """Bookkeeping note for an epic write that UNPARKS the epic — the park's
+    own note (a human's pending question, the reconciling Architect's
+    'waiting on children' line) is folded in rather than overwritten. Only
+    a park's note is somebody else's; an in-flight epic's note is the
+    board's own previous bookkeeping line and is simply replaced."""
+    old = node.get("note")
+    if node["state"] in PARKED and old:
+        return "%s (was: %s)" % (why, old)
+    return why
+
+
 def pull_epics(tickets, tid, lines):
-    """First active child pulls its parent chain to in-progress."""
+    """First active child pulls its parent chain out of PULL_FROM into its
+    lane's in-flight state — PRE_PARK's queue -> in-flight mapping, reused
+    rather than a second table (ready-for-architect -> in-design;
+    ready-for-implementer and the one pullable park have no PRE_PARK entry
+    and default to in-progress, their existing in-flight state). Writing
+    straight to "in-progress" regardless of the parent's queue used to
+    strand a ready-for-architect epic outside every state its own lane's
+    happy path or park returns ever produce.
+
+    The walk stops at every OTHER park (see PULL_FROM for the contract that
+    discriminates them), exactly as pass_impact's UNCLAIMABLE skip does:
+    those parks own a bound session or a claim on the human, and unparking
+    one would delete its note and drop the epic out of the queue its owner
+    is waiting in. Such an ancestor is woken by whoever owns the park, or
+    by recompose_epics when the last child lands; never by a sibling going
+    active.
+
+    This is the board's own bookkeeping on an epic — never dispatched,
+    never gated — the same latitude recompose_epics already has for its
+    epic-return writes; it does not answer to LEGAL, which governs what a
+    WORKER or human may transition to by hand. (An earlier version of this
+    fix asserted `to in LEGAL[pstate]` and, to satisfy that, added
+    deferred -> in-progress to LEGAL itself — which silently legalized a
+    human/worker skipping the queue and the gate on a deferred ticket.
+    That was the wrong invariant to assert; reverted.) The real invariant
+    is structural, not legal: an epic pull only ever lands on an in-flight
+    state (ACTIVE), never a queue or park — asserted below so a future
+    PULL_FROM addition whose PRE_PARK-or-default target resolves outside
+    ACTIVE fails loud instead of silently routing an epic somewhere
+    nonsensical.
+    """
     p = tickets[tid].get("parent")
-    while p and p in tickets and tickets[p]["state"] in PULLABLE:
-        lines.append(apply_state(tickets, p, "in-progress", "epic: child #%s active" % tid))
+    while p and p in tickets and tickets[p]["state"] in PULL_FROM:
+        pstate = tickets[p]["state"]
+        if pstate == "ready-for-architect" \
+           and (tickets[p].get("note") or "").startswith("reconciliation-due:"):
+            # An UNCLAIMED reconciliation return (the sweep's IMPACT pass put
+            # the epic here; the [board-epic] reconcile: marker already says
+            # the proposal is consumed, but no Architect has read it yet).
+            # Pulling it lands the epic in in-design — out of the lane queue
+            # and out of the dispatch pool — so nobody would read that proposal,
+            # and every later proposal on this epic would defer to final
+            # recomposition. The gate is the NOTE, not the state: a
+            # recomposition-due epic (all children terminal) IS pulled back by
+            # a corrective child, deliberately. The walk stops here for the
+            # same reason it stops on any unpullable parent — an ancestor is
+            # pulled by its own child going active, not through a parent that
+            # stayed put.
+            break
+        to = PRE_PARK.get(pstate, "in-progress")
+        assert to in ACTIVE, (
+            "pull_epics: %s -> %s is not an in-flight state (PRE_PARK "
+            "drifted out of sync with ACTIVE for a PULL_FROM state)" % (pstate, to))
+        lines.append(apply_state(
+            tickets, p, to, _epic_note(tickets[p], "epic: child #%s active" % tid)))
         p = tickets[p].get("parent")
 
 
-def close_epics(tickets, p, lines):
-    """An epic closes when every child is terminal and at least one is done
-    (an all-wontfix epic stays a human call)."""
+def recomposition_ready(tickets, tid):
+    """An epic whose every child is terminal awaits recomposition — E2:
+    'required' = every child (no optionality machinery), and the old
+    at-least-one-done guard is retired: an all-wontfix epic also wakes an
+    Architect, whose verdict (done / wontfix / needs-human) replaces the
+    guard's silent stall."""
+    n = tickets.get(tid)
+    if n is None or n["state"] in TERMINAL:
+        return False
+    kids = children(tickets, tid)
+    return bool(kids) and all(tickets[k]["state"] in TERMINAL for k in kids)
+
+
+def recompose_epics(tickets, p, lines):
+    """E2 replaces the mechanical epic auto-close: a parent is closed by an
+    Architect's VERIFICATION against its own acceptance (recomposition),
+    never by child bookkeeping. When the last child lands, the epic
+    returns to ready-for-architect — the one state where epics are
+    dispatchable — with the recomposition-due note. Bookkeeping latitude:
+    exempt from LEGAL and from convergence counting ([board-epic] marker).
+
+    The return also CLEARS the `pr` AND `branch` meta. Both describe the
+    composition, and a composition that just changed voids both: `pr` holds
+    the recomposition closure package, `branch` the integration ref that
+    package's aggregate range is read from. Leaving `pr` let an Architect
+    re-enter in-review without --pr (the gate accepts the stale value) and
+    the scale-review sweep, which dedupes on exact package equality, would
+    read the epic as already reviewed forever. Leaving `branch` let a scale
+    reviewer check out a ref from an earlier cycle — or a leftover from a
+    plan handoff or park that was never an integration branch at all — and
+    review the wrong diff entirely. Clearing it makes provenance structural:
+    any `branch` present at scale dispatch was supplied by the Architect THIS
+    cycle, on the in-review entry, alongside the package.
+
+    The reconciliation return (the sweep's IMPACT pass) deliberately clears
+    NEITHER — that is not a recomposition cycle.
+
+    An epic ALREADY sitting in ready-for-architect still gets the
+    bookkeeping; only the state write is skipped (it is already there, and
+    apply_state's label swap degenerates to nothing anyway). It used to be
+    skipped whole, back when the return was purely a state change and the
+    guard was mere observability. It is not that any more: the return now
+    carries CYCLE-SCOPED writes, and a corrective child landing before an
+    Architect claims the queued epic — the scale-review corrective return, or
+    an unclaimed reconciliation return — is exactly a new cycle. Skipping it
+    left the previous cycle's integration `branch` (and package) live into the
+    next one, and dropped the `[board-epic] ready-for-architect:` comment that
+    resets the convergence count, so the NEXT legitimate corrective-child
+    escalation read as a second traversal and was parked needs-human."""
     while p and p in tickets:
-        kids = children(tickets, p)
-        if kids and tickets[p]["state"] not in TERMINAL \
-           and all(tickets[k]["state"] in TERMINAL for k in kids) \
-           and any(tickets[k]["state"] == "done" for k in kids):
-            lines.append(apply_state(tickets, p, "done", "epic: all children terminal"))
-            p = tickets[p].get("parent")
-        else:
+        if not recomposition_ready(tickets, p):
             break
+        n = tickets[p]
+        queued = n["state"] == "ready-for-architect"
+        meta = parse_meta(n["body"])
+        # Idempotence discriminator: this cycle's bookkeeping has already run
+        # when the note is the recomposition-due one AND both cycle-scoped
+        # metas are clear. Anything else — a reviewer's note, a surviving pr
+        # or branch — means the writes are still owed. Re-running a `done`
+        # transition on an already-terminal child (the finalize path) hits
+        # this and stays silent.
+        if queued and (n.get("note") or "").startswith("recomposition-due:") \
+           and not meta.get("pr") and not meta.get("branch"):
+            break
+        line = apply_state(
+            tickets, p, "ready-for-architect",
+            _epic_note(n, "recomposition-due: all children terminal"),
+            extra_meta={"pr": None, "branch": None},
+            bookkeeping=True)
+        lines.append(
+            "#%s: already ready-for-architect — recomposition bookkeeping "
+            "refreshed (new cycle)" % p if queued else line)
+        # the chain walk ends here: an ancestor can only become ready when
+        # THIS epic reaches terminal via its own recomposition verdict
+        break
 
 
 def newly_eligible(tickets, done_tid):
     out = []
     for t in sorted(tickets, key=int):
         n = tickets[t]
-        if n["state"] == "ready-for-agent" and done_tid in n["blocked_by"] \
+        if n["state"] in DISPATCHABLE and done_tid in n["blocked_by"] \
            and all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"]):
             out.append("now eligible: #%s  %s" % (t, " ".join(n["title"].split())))
     return out

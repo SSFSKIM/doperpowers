@@ -26,7 +26,7 @@ Both tracks enforce the same non-negotiables — design before code, tests befor
 The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks small enough for an unsupervised junior to follow (`writing-plans`), then executes each one through a fresh subagent with two-stage review — spec compliance, then code quality (`subagent-driven-development`). You approve each gate.
 
 **Autonomous** — for work that's already well-scoped.
-A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`implementing-tickets`), a review loop lands the PRs (`reviewing-prs`), and durable background sessions keep it all running (`orchestrating-daemons`). Product feedback can even feed the board directly (`triaging-feedback`).
+A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`implementing`), a review loop lands the PRs (`reviewing-prs`), and durable background sessions keep it all running (`orchestrating-daemons`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 
@@ -84,7 +84,7 @@ Twenty-one skills, grouped by what they're for. Each one auto-triggers from its 
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues
-- `implementing-tickets` — dispatch workers onto tickets, gate before building
+- `implementing` — dispatch workers onto tickets, gate before building
 - `reviewing-prs` — the autonomous PR-review and self-merge loop
 - `orchestrating-daemons` — durable background sessions that survive the session ending
 - `triaging-feedback` — turn product feedback into grounded board tickets

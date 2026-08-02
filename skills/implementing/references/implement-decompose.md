@@ -19,8 +19,9 @@ only the PROCEDURE and grants no authority beyond your prompt's.
    pre-spec bar: a fresh-context worker can start from the body alone.
 
 3. Gate-triage each child HONESTLY per the doperpowers:issue-tracker
-   ticket contract and park discriminant — `ready-for-agent` only if YOU
-   believe it passes the Ticket Gate
+   ticket contract and park discriminant — a dispatchable lane state (the
+   birth rule: design-heavy children → `ready-for-architect`, else
+   `ready-for-implementer`) only if YOU believe it passes the Ticket Gate
    (`<BOARD_SCRIPTS>/../references/ticket-gate.md`).
 
 4. Register only children you can spec self-contained NOW. Contingent
@@ -28,8 +29,9 @@ only the PROCEDURE and grants no authority beyond your prompt's.
    worker finishing phase K registers phase K+1 at PR time.
 
 5. Update the parent: the roadmap plus a Decision log entry saying why
-   this cut. The parent becomes an epic (never dispatched; the sweeps move
-   it).
+   this cut. The parent becomes an epic — never dispatched for
+   implementation; the sweeps move it, and once every child is terminal it
+   returns to `ready-for-architect` for an Architect's recomposition claim.
 
 6. End your turn. The decomposing worker writes NO code — recursion is
    emergent: each child's worker re-runs the same gate from fresh context

@@ -2,11 +2,18 @@
 
 `doperpowers` is a two-track software-development methodology for coding agents:
 a human-gated controlled track (brainstorm → plan → subagent-driven-TDD → review)
-plus an autonomous board loop (`issue-tracker`, `implementing-tickets`,
+plus an autonomous board loop (`issue-tracker`, `architecting`, `implementing`,
 `reviewing-prs`, `orchestrating-daemons`) for well-scoped, unattended work.
 
 It ships as its own Claude Code plugin from a self-hosted marketplace in this repo,
 so it installs **side by side** with any other skills marketplace you use.
+
+## Prerequisites
+
+- **GitHub CLI ≥ 2.53** for the board loop. The board reads issue comments with
+  `gh api --paginate --slurp`; `--slurp` landed in 2.53, and an older CLI
+  rejects the flag outright (loudly, not silently). Nothing else in the plugin
+  needs it. Check with `gh --version`.
 
 ## Claude Code
 

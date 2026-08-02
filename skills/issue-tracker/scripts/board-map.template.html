@@ -62,6 +62,7 @@
   .node-tokenbar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: transparent; }
   .s_done { --bd: #16a34a; --bgc: rgba(22,163,74,.07);  --tx: #86efac; --glow: rgba(22,163,74,.18); }
   .s_prog { --bd: #00d68f; --bgc: rgba(0,214,143,.08);  --tx: #6ee7b7; --glow: rgba(0,214,143,.30); }
+  .s_design { --bd: #bfd4f2; --bgc: rgba(191,212,242,.09); --tx: #dbe7f9; --glow: rgba(191,212,242,.28); }
   .s_rev  { --bd: #a855f7; --bgc: rgba(168,85,247,.09); --tx: #d8b4fe; --glow: rgba(168,85,247,.22); }
   .s_cready { --bd: #14b8a6; --bgc: rgba(20,184,166,.09); --tx: #5eead4; --glow: rgba(20,184,166,.22); }
   .s_elig { --bd: #3b82f6; --bgc: rgba(59,130,246,.09); --tx: #93c5fd; --glow: rgba(59,130,246,.32); }
@@ -197,7 +198,8 @@
     // states beyond the machine's own (conflict/untracked, or anything a
     // future label adds). Give every state present a column rather than
     // silently dropping its tickets.
-    KB_STATES = ["ready-for-agent", "in-progress", "in-review", "confident-ready",
+    KB_STATES = ["ready-for-architect", "in-design", "ready-for-implementer",
+                 "in-progress", "in-review", "confident-ready",
                  "close-candidate", "needs-human", "needs-info",
                  "interactive-preferred", "deferred",
                  "conflict", "untracked", "done", "wontfix"];
@@ -209,14 +211,15 @@
 
   // state class -> the short badge shown on the card (the full label goes to detail).
   var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_cready: "confident",
-                s_elig: "ELIGIBLE",
+                s_elig: "ELIGIBLE", s_design: "designing",
                 s_wait: "waiting", s_needh: "needs-human", s_info: "needs-info",
                 s_ipref: "interactive", s_def: "deferred", s_wf: "wontfix",
                 s_conflict: "CONFLICT", s_untracked: "untracked" };
   // state name (chip vocabulary) -> palette class, for coloring the filter chips.
   var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
                     "confident-ready": "s_cready",
-                    "ready-for-agent": "s_elig", "needs-human": "s_needh",
+                    "ready-for-architect": "s_elig", "in-design": "s_design",
+                    "ready-for-implementer": "s_elig", "needs-human": "s_needh",
                     "needs-info": "s_info", "interactive-preferred": "s_ipref",
                     "deferred": "s_def", "wontfix": "s_wf",
                     "conflict": "s_conflict", "untracked": "s_untracked",
@@ -263,12 +266,14 @@
     return "M" + x1 + "," + y1 + " C" + (x1 + dx) + "," + y1 + " " + (x2 - dx) + "," + y2 + " " + x2 + "," + y2;
   }
   // An unmet dependency edge is amber (a stalled path) — unless its blocker is
-  // actively being worked (in-progress / in-review), then it reads green so the
-  // eye can trace the moving critical path (the agent-harness edge idiom).
+  // actively being worked, then it reads green so the eye can trace the moving
+  // critical path (the agent-harness edge idiom). "Actively worked" is
+  // _board.ACTIVE: in-design counts, an Architect mid-design is not a stall.
   function edgeClass(e) {
     if (e.kind === "block-active") {
       var s = nodeById[e.from];   // the real blocker, not the epic it may collapse into
-      return (s && (s.cls === "s_prog" || s.cls === "s_rev")) ? "block-live" : "block-wait";
+      return (s && (s.cls === "s_design" || s.cls === "s_prog" || s.cls === "s_rev"))
+        ? "block-live" : "block-wait";
     }
     return e.kind;   // block-done / spawned / relates map straight to CSS
   }
@@ -371,10 +376,15 @@
   // where a merged part-1 PR is normal mid-flight shape: those stay put and
   // only carry the CLOSE? mark on the card.
   function colOf(n) {
-    return n.close_candidate && n.state !== "in-progress" && n.state !== "in-review"
+    // The close-candidate relocation skips ACTIVE states (_board.ACTIVE):
+    // a merged linked PR on a ticket someone is still working is ordinary
+    // mid-flight shape, not a close cue. in-design is the architect lane's
+    // in-flight state and belongs here with the other two.
+    return n.close_candidate && n.state !== "in-design"
+      && n.state !== "in-progress" && n.state !== "in-review"
       ? "close-candidate" : n.state;
   }
-  var KB_CORE = { "ready-for-agent": 1, "in-progress": 1, "in-review": 1, "done": 1 };
+  var KB_CORE = { "ready-for-architect": 1, "ready-for-implementer": 1, "in-progress": 1, "in-review": 1, "done": 1 };
   function kbCard(n) {
     var card = el("div", null, "node " + n.cls);
     var head = el("div", null, "node-head");
@@ -409,10 +419,10 @@
       if (!items.length && !KB_CORE[s]) return;     // paused/terminal columns only when populated
       // Column order = dispatch order: priority rank (P0 first, unprioritized
       // last — explicit rank, null vs string comparison coerces), id tiebreak;
-      // in ready-for-agent, dispatchables still float above the rest.
+      // in a dispatchable lane column, eligible tickets still float above the rest.
       function prioRank(n) { var i = ["P0", "P1", "P2", "P3"].indexOf(n.priority); return i < 0 ? 4 : i; }
       items = items.slice().sort(function (a, b) {
-        if (s === "ready-for-agent" && a.eligible !== b.eligible) return b.eligible ? 1 : -1;
+        if ((s === "ready-for-architect" || s === "ready-for-implementer") && a.eligible !== b.eligible) return b.eligible ? 1 : -1;
         if (prioRank(a) !== prioRank(b)) return prioRank(a) - prioRank(b);
         return parseInt(a.id.slice(1), 10) - parseInt(b.id.slice(1), 10);
       });
@@ -420,7 +430,7 @@
       var head = el("div", null, "kbhead");
       head.appendChild(el("span", s));
       var elig = items.filter(function (n) { return n.eligible; }).length;
-      head.appendChild(el("span", items.length + (s === "ready-for-agent" && elig ? " · " + elig + " eligible" : ""), "kbcount"));
+      head.appendChild(el("span", items.length + ((s === "ready-for-architect" || s === "ready-for-implementer") && elig ? " · " + elig + " eligible" : ""), "kbcount"));
       col.appendChild(head);
       items.forEach(function (n) { col.appendChild(kbCard(n)); });
       kb.appendChild(col);
@@ -541,7 +551,10 @@
     var total = BOARD.nodes.length, c = { done: 0, prog: 0, rev: 0, elig: 0, needh: 0, info: 0, cand: 0 };
     BOARD.nodes.forEach(function (n) {
       if (n.state === "done") c.done++;
-      else if (n.state === "in-progress") c.prog++;
+      // "running" is _board.ACTIVE minus review: an Architect mid-design is a
+      // worker in flight, and leaving in-design out made the header under-report
+      // the running fleet by exactly the architect lane.
+      else if (n.state === "in-progress" || n.state === "in-design") c.prog++;
       else if (n.state === "in-review") c.rev++;
       else if (n.state === "needs-human") c.needh++;
       else if (n.state === "needs-info") c.info++;

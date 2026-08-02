@@ -726,13 +726,136 @@ route independently.
   neutral state rules survived contact with reality; cross-roadmap
   timing promises did not.
   Evidence: board state 2026-07-31; the amended sequencing paragraph.
+- Discovery: the two `plan:` pin values are not one concept with two
+  spellings. A real `<path>@<sha>` pin is an AUTHORIZATION EVENT — it
+  routes the Implementer to PLAN-EXECUTION, which posts no `[gate] pass`,
+  so the Architect's handoff comment becomes the review loop's timestamp
+  anchor. The `pre-spec` sentinel is a PLAN-NEED RULING — the ticket
+  still runs DIRECT, still gates, still posts a real `[gate] pass`. Two
+  rules written during implementation keyed on "carries a `plan:` pin"
+  and were silently wrong for the sentinel case. Any future rule reading
+  the pin must say which of the two it means.
+  Evidence: Task 15 review; skills/implementing/SKILL.md Mode Selection
+  and Verdict; plan revision d004728.
+- Discovery: the retrospective's own lesson — "generalizing a hardcode
+  means owning its accidental guarantees" — recurred during
+  implementation, twice, in the same shape. The park-return target was
+  hardcoded `in-progress`, which happens to be the one in-flight state
+  with no entry precondition; generalizing it via `PRE_PARK` routed
+  review-loop parks back to `in-review`, whose PR gate then rejected
+  every answer relay. The convergence reset was keyed to an `[answers]`
+  comment that only the inline-answer path posts; generalizing the relay
+  to the sweep's `--posted` path meant the reset marker stopped being
+  written. Neither was caught by a task-scoped review — both spanned a
+  script boundary — and both were found by the whole-branch pass. The
+  lesson generalizes further than the spec applied it: when a constant
+  becomes a lookup, enumerate what the constant's VALUE guaranteed, not
+  just what the lookup must now return.
+  Evidence: whole-branch review findings C1 and I1; commits 4f1111e,
+  21435dd, and their before/after reproductions.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped as v7.30.0 (17 planned tasks plus a review-driven fix pass;
+implementation plan `docs/doperpowers/plans/2026-07-31-implement-lane-split.md`).
+
+**Against the purpose.** The state-machine half of the goal landed whole.
+`ready-for-agent` is gone rather than aliased; `ready-for-architect`,
+`in-design`, and `ready-for-implementer` carry the relay; the `plan:` pin
+routes an Implementer to PLAN-EXECUTION or DIRECT without the dispatcher
+making a judgment call; and a design gap discovered downstream now has a
+named address — the Implementer's gate, the Implementer mid-build, and the
+review loop can each hand a ticket back to the architect lane instead of
+leaking it into `needs-human`. The convergence rule bounds that with no
+new bookkeeping: the comment log is the counter.
+
+**The model economics are enforced on both sides.** The architect route
+hard-pins `${ARCHITECT_MODEL:-fable}` and ignores `engine:*` labels, so
+"every dispatched plan is Fable-authored" is structural. The implement and
+spike routes pin `${IMPLEMENT_MODEL:-opus}` on the plain-Claude route.
+That second pin was raised at review time as the branch's one unclosed
+half — the route had inherited the operator's session model since #35, so
+an operator running the frontier model by default would silently pay
+frontier rates on both lanes and re-fuse the two economies this split
+exists to separate. The human resolved it in favor of the pin, and it
+landed with the branch: both lanes now pin rather than inherit, and
+acceptance criterion 2's "spawns an Opus worker" is a property of the
+dispatcher rather than an operational convention.
+
+**What the branch could not prove.** Four of the eight acceptance criteria
+are only partially verified. Dispatch wiring — which role, which model,
+which protocol file — and the protocol text a worker reads are provable
+statically, and are proven. A dispatched worker's actual runtime behavior
+is not, and no test here substitutes for the first live architect
+dispatch. Criterion 5 (the QAgent model pin and the fix-wave agent) is
+deferred to a follow-up by design.
+
+**Lessons.**
+
+1. *Generalizing a hardcode means owning its accidental guarantees* — the
+   v1.2 round's own lesson, which then recurred twice during
+   implementation, in the same shape, undetected by task-scoped review.
+   The park-return target and the convergence reset were both constants
+   whose specific values had silently satisfied a precondition elsewhere;
+   turning each into a lookup broke the precondition. Both defects spanned
+   a script boundary, which is exactly what a per-task reviewer cannot
+   see. The sharper form of the lesson: when a constant becomes a lookup,
+   enumerate what the constant's VALUE guaranteed, not just what the
+   lookup must now return.
+2. *A whole-branch review is not a formality when the change is a state
+   machine — and one whole-branch review is not enough.* Every task passed
+   its own review; the first merge blocker was found only by the pass that
+   read all 33 commits at once. Then an independent second review found
+   seven more, three of them the same class the first pass had explicitly
+   cleared — it reported "every prose-instructed edge legal, no trapped
+   states" while a spike in the architect lane had no legal move, the
+   epic pull wrote a forbidden edge, and a resumed Architect landed in a
+   state its protocol cannot exit. A reviewer's clean bill on a state
+   machine is a hypothesis, not evidence. The cheapest way to test it is
+   a reviewer that shares none of the first one's framing.
+3. *An escalation is only as real as its return path.* Every new
+   escalation edge in this design was checked for legality and for
+   convergence, and one was never checked for RESUMPTION: the review
+   loop's hand-off to the architect lane had no mechanism that could ever
+   bring a reviewer back, so it silently converted "park for the human"
+   into "abandon the PR". Adding a state transition is not the same as
+   adding a state to the machine — the new state needs an owner, an exit,
+   and something that fires the exit.
+4. *Two spellings of one field are two concepts.* The `plan:` pin's real-
+   SHA and `pre-spec` values look like variants and are not: one is an
+   authorization event, the other a plan-need ruling. Two rules written
+   during implementation keyed on "has a pin" and were wrong for the
+   sentinel. Recorded in Surprises; any future rule reading the pin must
+   say which value it means.
+5. *Prose that instructs a worker needs the same pinning as code.* The
+   new review-loop rules shipped unpinned until the acceptance pass caught
+   it, while the equivalent implementing and architecting text had
+   assertions from the start. In this repo a protocol sentence is
+   behavior, so an unpinned one is untested behavior.
 
 ## Revision Notes
 
+- 2026-07-31: v1.3.3, the implement lane pins its model. The plain-Claude
+  implement/spike route now pins `${IMPLEMENT_MODEL:-opus}` instead of
+  inheriting the operator's session model (the posture #35 set when it
+  flipped that route off the clodex gateway). Raised by the whole-branch
+  review as the branch's one unenforced half — the split's whole argument
+  is asymmetric model routing, and only the architect side was structural
+  — and resolved by the human in favor of symmetry with
+  `${ARCHITECT_MODEL:-fable}`. The codex route's own default (`fable`,
+  the gateway alias) is unchanged, and `IMPLEMENT_MODEL` still overrides
+  both. Acceptance criterion 2 becomes statically verifiable.
+- 2026-07-31: v1.3.2, implementation-pass corrections (all found by
+  review during execution, all landed on the branch): transition 6's
+  convergence note no longer promises "both sides' positions" — it
+  carries this traversal's position plus a pointer to the comment trail,
+  because the mechanical substitution only ever had one; the reset now
+  also fires on the sweep's relay path, where `--posted` previously
+  posted no `[answers]` marker at all and a human-authorized
+  re-traversal therefore re-converted to `needs-human` (a livelock);
+  transition 7's `needs-human → in-review` return is legal without
+  re-supplying `--pr`, since generalizing the old hardcoded `in-progress`
+  return had silently inherited that state's freedom from the PR gate.
 - 2026-07-31: v1.3.1, planning-pass drift fixes (implementation plan =
   `docs/doperpowers/plans/2026-07-31-implement-lane-split.md`, lands as
   v7.30.0): board-lint gains vocabulary only — edge-note enforcement is

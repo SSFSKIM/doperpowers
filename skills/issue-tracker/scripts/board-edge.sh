@@ -13,7 +13,7 @@
 # cycles, and ancestor-epic blockers (a guaranteed deadlock). Membership
 # changes re-derive epic states, so it runs the same sweeps as
 # board-transition: an in-progress child pulls its new epic chain, and an
-# epic whose last active child leaves may close.
+# epic whose last active child leaves may return for recomposition.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -78,7 +78,7 @@ elif op == "unblock":
     B.remove_blocked_by(n, tickets[ref])
     n["blocked_by"].remove(ref)
     lines.append("#%s: blocked_by -= #%s" % (tid, ref))
-    if n["state"] == "ready-for-agent" and tid not in B.epics(tickets) \
+    if n["state"] in B.DISPATCHABLE and tid not in B.epics(tickets) \
        and all(tickets.get(b, {}).get("state") == "done" for b in n["blocked_by"]):
         lines.append("now eligible: #%s  %s" % (tid, " ".join(n["title"].split())))
 
@@ -93,12 +93,12 @@ elif op == "parent":
     B.add_sub_issue(tickets[ref], n, replace=bool(old))
     n["parent"] = ref
     lines.append("#%s: parent = #%s (was %s)" % (tid, ref, ("#%s" % old) if old else "none"))
-    if n["state"] == "in-progress":
+    if n["state"] in B.ACTIVE:
         B.pull_epics(tickets, tid, lines)
     if n["state"] in B.TERMINAL:
-        B.close_epics(tickets, ref, lines)
+        B.recompose_epics(tickets, ref, lines)
     if old:
-        B.close_epics(tickets, old, lines)
+        B.recompose_epics(tickets, old, lines)
 
 elif op == "orphan":
     old = n.get("parent")
@@ -107,7 +107,7 @@ elif op == "orphan":
     B.remove_sub_issue(tickets[old], n)
     n["parent"] = None
     lines.append("#%s: parent cleared (was #%s)" % (tid, old))
-    B.close_epics(tickets, old, lines)
+    B.recompose_epics(tickets, old, lines)
 
 for ln in lines:
     print(ln)

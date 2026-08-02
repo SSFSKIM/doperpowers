@@ -7,20 +7,24 @@
 #                     [--body-file F]
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
-#             findings comment, never a merge — see doperpowers:implementing-tickets)
+#             findings comment, never a merge — see doperpowers:implementing)
+#             | env-issue (environmental friction report — E2: defaults to
+#             needs-human unless the registrar names an agent-executable
+#             repair path via an explicit --state)
 #   priority  P0 (drop everything) | P1 | P2 | P3 (someday) — required; becomes
 #             the managed priority:* label (change later: board-priority.sh)
-#   --state   birth state: ready-for-agent (default) | needs-human | needs-info
-#             | interactive-preferred | deferred (the three park states require --note)
+#   --state   birth state: ready-for-implementer (default) | ready-for-architect
+#             | needs-human | needs-info | interactive-preferred | deferred
+#             (the three park states require --note)
 #   --parent / --blocked-by take issue numbers; edges are created as native
 #   sub-issue / dependency relations. --spawned-by is provenance (board:meta).
 #   --body-file seeds the issue body (else a pre-spec skeleton is used).
 #
-# A pre-spec skeleton is never implementable: explicit `--state
-# ready-for-agent` without a real body is refused, and a DEFAULT birth with
-# the skeleton demotes to needs-info (with a spec-pending note). Fill the
-# body, then board-transition.sh to ready-for-agent — the transition
-# re-checks the body.
+# A pre-spec skeleton is never implementable: explicit birth into a
+# dispatchable lane state without a real body is refused, and a DEFAULT birth
+# with the skeleton demotes to needs-info (with a spec-pending note). Fill the
+# body, then board-transition.sh to its lane state — the transition re-checks
+# the body.
 #
 # Prints "<number> <url>" — then YOU flesh out the pre-spec body:
 #   gh issue edit <number> --body-file <file>
@@ -32,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 3 ] || { usage_from_header "$0" >&2; exit 2; }
 title="$1" category="$2" priority="$3"
 shift 3
-state="ready-for-agent" state_explicit=0 note="" parent="" blocked_by="" spawned_by="" body_file=""
+state="ready-for-implementer" state_explicit=0 note="" parent="" blocked_by="" spawned_by="" body_file=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --state) _need_arg "$1" "${2:-}"; state="$2"; state_explicit=1; shift 2 ;;
@@ -70,6 +74,22 @@ if state not in B.BIRTH:
     B.die("birth state must be one of: %s" % ", ".join(B.BIRTH))
 if state in B.NOTE_REQUIRED and not note:
     B.die("--note is required for state %s" % state)
+# (A spike born ready-for-architect used to be refused here: role resolution
+# was category-first, so the spike protocol dispatched from either lane queue
+# and its gate-pass write — `in-progress` — had no LEGAL edge from the
+# architect queue. implement-dispatch.sh now routes that queue on STATE, so
+# such a ticket gets an ARCHITECT whose exit is `in-design`. A design-first
+# spike is a supported route and the ban is gone.)
+# E2 birth rule (inverted for this category only): environmental friction
+# that an authorized agent could reach would typically already be solved —
+# unsure defaults to the human, not the implement queue. An explicit
+# --state is the registrar's positive claim of a named repair path.
+if category == "env-issue" and env["T_STATE_EXPLICIT"] != "1":
+    state = "needs-human"
+    if not note:
+        B.die("an env-issue defaults to needs-human and requires --note "
+              "naming the requested intervention (or pass an explicit "
+              "--state with a named agent repair path)")
 
 tickets = B.snapshot()
 parent = B.resolve(env["T_PARENT"], tickets) if env["T_PARENT"] else None
@@ -94,19 +114,19 @@ if env["T_BODY_FILE"]:
 else:
     body = PRE_SPEC
 
-# A pre-spec skeleton is never implementable: born ready-for-agent, it is
-# dispatchable to an implementer before any spec exists (observed live:
-# ticket registered + auto-dispatched within 45 seconds, spec never written,
-# the implementer decided the security contract itself). Explicit
-# ready-for-agent refuses a skeleton; the default demotes to needs-info.
-if state == "ready-for-agent" and "(pre-spec: fill in)" in body:
+# A pre-spec skeleton is never implementable: born into a dispatchable lane
+# state, it is dispatchable before any spec exists (observed live: ticket
+# registered + auto-dispatched within 45 seconds, spec never written, the
+# implementer decided the security contract itself). Explicit birth into a
+# dispatchable lane state refuses a skeleton; the default demotes to needs-info.
+if state in ("ready-for-architect", "ready-for-implementer") and "(pre-spec: fill in)" in body:
     if env["T_STATE_EXPLICIT"] == "1":
-        B.die("a pre-spec skeleton cannot be born ready-for-agent — pass "
+        B.die("a pre-spec skeleton cannot be born into a dispatchable lane state — pass "
               "--body-file with the spec, or birth it needs-info/needs-human")
     state = "needs-info"
     if not note:
         note = ("pre-spec skeleton — fill the body, then "
-                "board-transition.sh to ready-for-agent")
+                "board-transition.sh to its lane state")
 meta = {}
 if spawned:
     meta["spawned-by"] = "#%s" % spawned

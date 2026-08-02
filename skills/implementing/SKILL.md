@@ -1,6 +1,6 @@
 ---
-name: implementing-tickets
-description: Use when dispatched as an implement worker onto a board ticket (including the spike lane), or when operating or setting up the autonomous implement loop — the inverse of doperpowers:reviewing-prs.
+name: implementing
+description: Use when dispatched as an IMPLEMENT worker onto a board ticket (including the spike lane) — plan-execution or DIRECT mode; plan authorship belongs to doperpowers:architecting. Also when operating or setting up the autonomous implement loop — the inverse of doperpowers:reviewing-prs.
 ---
 # Implement Worker Protocol
 
@@ -23,6 +23,21 @@ Toolkit:
 
 - board scripts: {{BOARD_SCRIPTS}}
 
+## Mode Selection
+
+MODE SELECTION — read your ticket's `board:meta` block first. The
+`plan:` field decides your mode — machine-read, never note prose:
+
+- `plan: <path>@<sha>` → **PLAN-EXECUTION**: an Architect authored your
+  plan at that immutable revision on the recorded branch. NO intake
+  gate — the Architect's phase carried the quality machinery (council,
+  spec/plan review); you do not re-run the gate or re-judge the design.
+- `plan: pre-spec` → **DIRECT**, with the plan-need ruling inherited:
+  the Architect explicitly ruled the pre-spec suffices. Run the gate,
+  but its plan-need check is bound by that ruling — you may still park
+  for unrelated reasons.
+- no `plan:` → **DIRECT** with the full gate below.
+
 ## The Gate
 
 THE GATE comes before everything. Do not write code until the ticket
@@ -37,6 +52,13 @@ run both checks against the ticket:
   {{BOARD_SCRIPTS}}/../references/ticket-gate.md
 Check-2 outcomes are yours to execute:
 
+- Plan-need (DIRECT only; a `pre-spec` ruling binds this check) — the
+  work needs a plan another session could execute: multiple sequenced
+  milestones, work that must survive context death, or missing design
+  decisions that are AGENT-answerable →
+  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-architect "<what needs designing and why>"
+  and end your turn. Design gaps route to the architect lane — never to
+  needs-human (the human address is for decisions only a human can make).
 - Too big, and the remainder CAN be written down as self-contained child
 pre-specs right now → DECOMPOSE: open the decomposition procedure — read
 this file and
@@ -58,12 +80,18 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
 then a one-line gate comment:
 gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line>"
+In PLAN-EXECUTION mode the verdict differs: your first board write is
+{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress "plan-execution: <plan path>@<sha>"
+and you post NO `[gate]` comment — the design was authorized at the
+Architect's handoff, and re-litigating it is the exact thing this mode
+removes.
 - Fail → the park state itself, with the required note. The park
 discriminant — WHO UNPARKS IT — and the full state vocabulary are owned
 by doperpowers:issue-tracker, the board schema's single home: open that
 skill and classify the park against it before writing anything. In
 particular, waiting on other tickets is never a park state there —
-dependencies are edges, and the ticket goes back to ready-for-agent.
+dependencies are edges, and the ticket goes back to
+`ready-for-implementer`.
 Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
 comment (what you read, what you learned, where the answers will land) —
 it prices the fresh-dispatch fallback cheaply while you are still
@@ -96,14 +124,17 @@ is assertable without theater.
 Modes:
 - DIRECT: the pre-spec is the plan — evidence discipline above, commit
 frequently, open the PR.
-- EXECPLAN: the work needs the document to survive context death —
-multiple sequenced milestones, OR big-but-atomic work that cannot land
-halfway → doperpowers:execplan (the gate already served as its grill;
-author the ExecPlan from ticket + gate findings, execute to the letter).
-Subagents (research, exploration, parallel fan-out) are yours to use as
-the work warrants. writing-plans and subagent-driven-development are
-interactive-session skills — never a daemon worker's; you execute your
-own plan in this session.
+- PLAN-EXECUTION: open the plan at its pinned revision and execute it to
+  the letter, evidence discipline unchanged. The plan on the branch is a
+  LIVING document: when the codebase reveals divergence, absorb it —
+  record what changed and why in the plan's Surprises/Revision Notes on
+  your branch, adapt, and drive to the end. Only a GENUINELY blocked
+  plan (not merely divergent) returns to its author — see Mid-build
+  below. You author no plan document, ever: writing-plans,
+  subagent-driven-development, and execplan authoring are other scopes'
+  skills — plan AUTHORSHIP belongs to the architect lane
+  (doperpowers:architecting); when work needs a plan, escalate, never
+  self-author.
 
 Pre-PR self-review: one independent review pass before opening the PR (and fixing findings) is fine judgment — scale it to the change, and a small diff needs none: skip reviewing yourself and let the reviewer see it all. Do not run review-fix LOOPS: the loop  
 is the review worker's, and it attaches to every non-draft PR you open  
@@ -121,24 +152,65 @@ park with the same discriminant (required note), and
 end your turn. A park is a pause, not a death — your session stays bound
 to the ticket, and answers usually arrive as a resume.
 
+A plan that proves GENUINELY blocked mid-execution (wrong about the
+codebase in a way you cannot absorb, not merely divergent) is a return,
+not a needs-human park:
+{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-architect "<why the plan is blocked>" --branch <branch>
+with WIP committed AND pushed on the branch first, plus the standard
+orientation summary comment. This ends your scope (no bound pause — a
+fresh Architect picks it up). The board enforces convergence: a second
+traversal of the same edge parks needs-human mechanically — if your
+return comes back unchanged and you still disagree, the machinery sends
+the disagreement to the human; never bounce a third time yourself.
+
 ## If Resumed With Answers
 
 IF RESUMED WITH ANSWERS (your park was answered): the answers live on the
 ticket — treat them as ticket content. Re-state your gate verdict against
-them in ONE paragraph as a ticket comment ("[gate] re-pass — <one line>",
-or a fresh park if the answers reshape the work's scope), then proceed.
+them in ONE paragraph as a ticket comment ("[gate] re-pass — <one line>";
+PLAN-EXECUTION, which ran no gate, restates plan-execution status instead),
+or a fresh park if the answers reshape the work's scope, then proceed.
 Never build on momentum past an answer that changed the work's shape.
 
 ## Authority
 
 YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh
-(never raw gh for status labels); registering decomposition children
-(--parent {{ISSUE_NUMBER}}) and follow-up tickets (--spawned-by
-{{ISSUE_NUMBER}}) directly. NEVER: terminal states (done arrives by merge —
+(never raw gh for status labels), including the architect-lane
+escalations (`ready-for-architect` at gate time or as a mid-build
+return); registering decomposition children (--parent {{ISSUE_NUMBER}})
+and follow-up tickets (--spawned-by {{ISSUE_NUMBER}}) directly. NEVER: terminal states (done arrives by merge —
 your PR body MUST say "Closes #{{ISSUE_NUMBER}}"; wontfix is the human's
 call — to recommend it, park needs-human with the recommendation as the
 note); other tickets' states (a cross-ticket observation is a comment on
 that ticket, nothing more); scope beyond the ticket.
+
+**Parent-contract contradiction ([parent-impact]).** When your ticket's
+`board:meta` carries `parent-pin: #<parent> @ <hash>`, that names the parent
+contract this dispatch inherited — the ends your work serves. Your own
+MEANS stay yours to revise freely. A discovery that CONTRADICTS a
+parent-owned END — its purpose, its acceptance, a cross-child contract, an
+edge between children, the division itself — is neither yours to fix nor
+yours to write: post ONE comment on YOUR OWN ticket,
+`[parent-impact] #<parent> <affected clauses>: <the evidence, and the
+parent change you propose>`. The board sweep returns the parent for
+reconciliation and an Architect judges it. Fire-and-continue:
+never edit or transition the parent, never wait for the outcome — keep
+building under the contract you have.
+
+**Environmental friction (env-issue).** Non-blocking environmental
+friction you routed around (missing tool in the image, flaky registry,
+broken fixture) MAY be filed as its own ticket — search the board first,
+then
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
+State the friction, what you attempted, why your permissions cannot
+resolve it, the intervention requested, and a check that proves
+resolution. Default birth is needs-human; pass an explicit --state only
+when you can name a concrete repair path some authorized agent can
+execute. Filing is fire-and-continue:
+never park, transition, or otherwise interrupt your own ticket to report
+non-blocking friction — a genuinely blocking failure stays what it is
+today, a park on your own ticket. This is opt-in authority, not a duty;
+subagents never write the board.
 
 ## Closing Artifact
 

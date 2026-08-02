@@ -4,10 +4,11 @@
 # Usage: board-reconcile.sh
 #
 # Lists the human wake queue (parked tickets: needs-human / needs-info /
-# interactive-preferred), flags in-progress tickets with no live bound
-# daemon, lists dispatchable tickets, and finishes with a board-lint pass.
+# interactive-preferred), flags in-progress/in-design tickets with no live
+# bound daemon, lists dispatchable tickets, and finishes with a board-lint
+# pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
-# register child/follow-up tickets directly (doperpowers:implementing-tickets).
+# register child/follow-up tickets directly (doperpowers:implementing).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -56,13 +57,37 @@ for t, n in by_id(tickets.items()):
         note = " ".join((n.get("note") or "(no note — lint FAILs this)").split())
         print("parked    #%s: %s — %s" % (t, n["state"], note))
 
-# 2. in-progress tickets with a missing or terminal daemon.
+# 2. in-progress/in-design tickets with a missing or terminal daemon — the
+#    two in-flight worker states board-sweep.sh's RECOVER pass covers. An
+#    orphaned in-design ticket is mid-design work with nothing local to
+#    show for it (the plan lives only in the dead worker's context until
+#    its next park/handoff) — the pipeline's most expensive in-flight
+#    asset, so it must surface here exactly like an orphaned implementer.
 for t, n in by_id(tickets.items()):
-    if n["state"] != "in-progress":
+    if n["state"] not in ("in-progress", "in-design"):
         continue
     m = bound.get(t)
     if m is None:
-        print("orphaned  #%s: in-progress but no bound daemon — respawn + board-bind, or transition" % t)
+        # A PULLED epic has no daemon by design and is not orphaned. A
+        # corrective child going active drags its queued parent to in-design
+        # (PRE_PARK) purely as bookkeeping — "the parent waits again" — so
+        # telling the operator to respawn and bind a worker onto it invents
+        # work and would put a second Architect on a live epic. The
+        # discriminant is the NOTE THE PULL ITSELF WROTE — `epic: child #<n>
+        # active` (_board._epic_note, which may append the folded park note
+        # after it). "Has live children" was the first attempt and it is
+        # wrong in the direction that matters: an Architect actively
+        # RECONCILING an epic sits in in-design WITH live children by
+        # definition, so losing that binding produced a stranded claim this
+        # report then declined to mention. Only the board's own pull note
+        # says "no worker was ever expected here"; every other note — a
+        # reconciliation fold, a claim line — leaves the warning standing.
+        if n["state"] == "in-design" \
+           and (n.get("note") or "").startswith("epic: child #"):
+            print("pulled    #%s: in-design by the epic pull (%s) — bookkeeping, no worker expected"
+                  % (t, " ".join((n.get("note") or "").split())))
+            continue
+        print("orphaned  #%s: %s but no bound daemon — respawn + board-bind, or transition" % (t, n["state"]))
     elif m.get("status") in ("error", "retired"):
         print("anomaly   #%s: bound daemon %s status=%s" % (t, m["_uuid"][:8], m["status"]))
 

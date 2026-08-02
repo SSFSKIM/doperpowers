@@ -32,8 +32,11 @@ assert_not_contains() {
 }
 assert_before() {
     local first second
-    first="$(grep -nF -- "$2" "$1" 2>/dev/null | cut -d: -f1 | head -1)"
-    second="$(grep -nF -- "$3" "$1" 2>/dev/null | cut -d: -f1 | head -1)"
+    # `|| true`: under `set -euo pipefail` a missing needle makes the whole
+    # pipeline non-zero, and the assignment would abort the suite silently
+    # instead of reporting the failed assertion.
+    first="$(grep -nF -- "$2" "$1" 2>/dev/null | cut -d: -f1 | head -1 || true)"
+    second="$(grep -nF -- "$3" "$1" 2>/dev/null | cut -d: -f1 | head -1 || true)"
     if [[ -n "$first" && -n "$second" && "$first" -lt "$second" ]]; then
         pass "$4"
     else
@@ -60,13 +63,14 @@ TRIAGE
 FIX WAVES
 RE-REVIEW
 ESCALATE
+Scale review (recomposition epics)
 AUTHORITY
 REVIEW TRAIL"
 got_headings="$(grep '^## ' "$SKILL" 2>/dev/null | sed 's/^## //' || true)"
 if [[ "$got_headings" == "$want_headings" ]]; then
-    pass "the eleven protocol sections exist in order"
+    pass "the twelve protocol sections exist in order"
 else
-    fail "the eleven protocol sections exist in order"
+    fail "the twelve protocol sections exist in order"
     echo "    expected:"; printf '      %s\n' $want_headings
     echo "    actual:";   printf '      %s\n' $got_headings
 fi
@@ -106,8 +110,22 @@ assert_contains "$SKILL" "BINDING BARRIER" "worker cannot start review before ex
 assert_contains "$SKILL" "{{BIND_READY_FILE}}" "worker barrier uses the dispatcher-owned ready file"
 assert_contains "$SKILL" "regular file with mode 0600" "barrier validates the hidden ledger artifact"
 assert_contains "$SKILL" "write the acknowledgement" "worker acks the barrier before ORIENT"
+# The barrier's expected identity must be satisfiable in BOTH variants: a
+# scale worker is review-epic-<n> with no PR number at all, so a hardcoded
+# review-pr-{{PR_NUMBER}} could never be verified or acked.
+assert_contains "$SKILL" 'registry meta is this `{{WORKER_NAME}}` worker' "the barrier's expected identity is the dispatcher-bound worker name"
+assert_not_contains "$SKILL" 'meta is this `review-pr-{{PR_NUMBER}}` worker' "the barrier no longer hardcodes the PR-variant identity"
 assert_before "$SKILL" "BINDING BARRIER" "## ORIENT" "binding barrier precedes every review action"
 assert_contains "$SKILL" "board-answer" "active early park distinguishes notification from resume"
+
+echo "runtime skill — E1 architect-lane rules (plan pin, PLAN-EXECUTION mode, ready-for-architect escalation):"
+assert_contains "$SKILL" "resolve that path at exactly that SHA, never" "the plan: pin joins the spec hierarchy, resolved at its exact SHA, never the branch tip"
+assert_contains "$SKILL" "ran in PLAN-EXECUTION mode, which posts none." "a real plan: revision pin means no implementer [gate] pass exists (PLAN-EXECUTION mode)"
+assert_contains "$SKILL" "carries a real \`[gate] pass\` — anchor on it as usual." "a plan: pre-spec ticket ran DIRECT and keeps a real [gate] pass to anchor on"
+assert_contains "$SKILL" "Architect handoff comment (the \`plan:\` pin's authorization — see the" "the missing-Validation-Evidence-section rule admits the Architect handoff comment alongside [gate] pass"
+assert_contains "$SKILL" "defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to" "RE-REVIEW's seam-clustered impasse routes to ready-for-architect, not needs-human"
+assert_contains "$SKILL" "cap) or was just routed to ready-for-architect (the seam-clustered" "ESCALATE's PARKED tier covers a ticket just routed to ready-for-architect"
+assert_contains "$SKILL" "a finding that is missing DESIGN (not just missing work) passes" "TOO BIG registration births a design-missing finding on the architect lane"
 
 echo "runtime skill — escalation and dead ends:"
 assert_contains "$SKILL" "SELF-MERGE tier requires ALL" "merge authority lives in the runtime skill"
@@ -131,7 +149,7 @@ assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 
 echo "runtime skill — placeholder set:"
-want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -239,6 +257,12 @@ assert_not_contains "$MANUAL" "works the batch sequentially" "wave-work organiza
 assert_not_contains "$MANUAL" "below the engine's critical/high class" "manual routes findings by the worker's judgment, not a severity class"
 assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail-safe order, not shell packaging"
 
+echo "runtime skill — E2 scale-review variant (recomposition epics):"
+assert_contains "$SKILL" 'A `review-epic-<n>` dispatch is the E2 scale review' "the scale section is keyed to the dispatcher's worker name"
+assert_contains "$SKILL" "no fix waves and no merge step" "the scale variant drops the wave/merge machinery"
+assert_contains "$SKILL" "never grants \`confident-ready\`" "a scale run never takes the ESCALATE tier ladder"
+assert_before "$SKILL" "REVIEW_MODE\` binding reads \`scale\`" "## ORIENT" "the mode fork is announced before the PR-shaped flow begins"
+
 echo "worker bootstrap:"
 assert_file "$BOOTSTRAP" "worker bootstrap exists"
 assert_contains "$BOOTSTRAP" "Use doperpowers:reviewing-prs" "bootstrap names the runtime skill"
@@ -252,7 +276,13 @@ assert_not_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "no inlined ticket body (the w
 assert_not_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "no engine-block binding (engine text lives in the skill)"
 assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies the BASE-ref risk-surface snapshot"
 assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies the BASE-ref repo-facts snapshot"
-want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{RISK_MANIFEST}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}}"
+assert_contains "$BOOTSTRAP" '`REVIEW_MODE`: {{REVIEW_MODE}}' "bootstrap binds the review variant (pr | scale)"
+assert_contains "$BOOTSTRAP" '`CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}' "bootstrap binds the scale reviewer's entry artifact"
+assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds the registry identity both variants' barriers verify"
+assert_contains "$BOOTSTRAP" "SCALE REVIEWER of recomposition epic" "bootstrap carries the scale variant's own opening"
+assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
+assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
+want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

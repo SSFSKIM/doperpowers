@@ -101,11 +101,19 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
     # v8: the legacy v6 vocabulary carried `blocked`; it lands as needs-human.
     if want == "blocked":
         want = "needs-human"
+    # v9 (E1): `ready-for-agent` was split into the two lane queues, and its
+    # label no longer exists — set_state_label would leave the issue in
+    # `conflict`. It lands as ready-for-implementer, the disposition
+    # board-lint.sh's FIX text prescribes for the same legacy label (the
+    # architect lane is a per-ticket judgment the human makes afterwards,
+    # per the birth rule — a mechanical migration cannot make it).
+    if want == "ready-for-agent":
+        want = "ready-for-implementer"
     ref = "%s→#%s" % (tid, num)
 
     # state
     if gn is None:
-        if want != "ready-for-agent":
+        if want != "ready-for-implementer":   # the birth default needs no relabel
             act("%s: label new issue status:%s" % (ref, want),
                 None)   # applied below only in apply mode via gn refetch — dry-run new issues skip
     else:
@@ -125,8 +133,13 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
             # never downgrade an issue GitHub says is further along. Paused board
             # states (deferred/needs-human/needs-info) are deliberate decisions
             # and still win.
-            HAPPY = {"ready-for-agent": 0, "in-progress": 1, "in-review": 2}
-            if want in HAPPY and have in HAPPY and HAPPY[have] > HAPPY[want]:
+            # Both v9 lane queues share rank 0, and the comparison is >=: a
+            # same-rank difference IS the lane split, which the legacy board
+            # predates and cannot express, so GitHub's lane wins. (Equal
+            # states never reach here — the branch above requires have != want.)
+            HAPPY = {"ready-for-architect": 0, "ready-for-implementer": 0,
+                     "in-design": 1, "in-progress": 1, "in-review": 2}
+            if want in HAPPY and have in HAPPY and HAPPY[have] >= HAPPY[want]:
                 print("note  %s: GitHub is further along (%s > board %s) — GitHub wins, label kept"
                       % (ref, have, want))
             else:

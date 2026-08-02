@@ -7,14 +7,17 @@
 #
 # The wake ritual's needs-human path: park = pause, not death. The answers
 # land on the TICKET first (the ticket is the record), the ticket returns to
-# in-progress, and the bound session is resumed with the answers relayed
-# verbatim — the worker keeps its orientation and re-states its gate verdict
-# before proceeding. No judge is reintroduced: the relay is mechanical, the
-# human is the author, the ticket is the record.
+# its parking lane's in-flight state (pre-park: meta; when absent, the bound
+# worker's own lane from its registry meta — in-design for an Architect,
+# in-progress otherwise), and the bound session is resumed with the answers
+# relayed verbatim — the worker keeps its orientation and re-states its gate
+# verdict before proceeding. No judge is reintroduced: the relay is
+# mechanical, the human is the author, the ticket is the record.
 #
 # Fresh-dispatch fallback (this script refuses; do it by hand): no bound
 # session, a dead/retired session, or answers that reshape the ticket's scope
-# → comment the answers, then `board-transition.sh <n> ready-for-agent`.
+# → comment the answers, then `board-transition.sh <n> ready-for-implementer
+# (or ready-for-architect per the park discriminant)`.
 #
 # NEVER RUN IN THE FOREGROUND — the resume blocks for the worker's whole turn
 # (same rule as daemon-resume.sh / codex-resume.sh): Monitor or background
@@ -71,7 +74,8 @@ state = tickets[tid]["state"]
 if state != "needs-human":
     B.die("#%s is %s, not needs-human — board-answer relays needs-human parks only\n"
           "  (interactive-preferred -> attach/brainstorm; needs-info -> fold the "
-          "research into the body, then ready-for-agent)" % (tid, state))
+          "research into the body, then ready-for-implementer (or "
+          "ready-for-architect per the park discriminant))" % (tid, state))
 meta = None
 for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
     try:
@@ -84,7 +88,8 @@ for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
         break
 if meta is None:
     B.die("#%s has no bound session — fresh dispatch instead: comment the answers, "
-          "then board-transition.sh %s ready-for-agent" % (tid, tid))
+          "then board-transition.sh %s ready-for-implementer (or ready-for-architect "
+          "per the park discriminant)" % (tid, tid))
 status = meta.get("status") or ""
 if status in ("working", "blocked"):
     B.die("#%s's bound session %s is mid-turn (status=%s) — nothing is waiting "
@@ -96,15 +101,39 @@ if status not in ("idle", "awaiting-human"):
           (tid, meta.get("uuid", "?"), status or "unknown"))
 if env["T_ANSWERS"]:
     B.comment(tid, "[answers] " + env["T_ANSWERS"])
-print("%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
-                          meta.get("status", "?"), meta.get("updated", "?")))
+else:
+    # --posted: the human already commented on the ticket by hand — post a
+    # marker anyway. The convergence rule (board-transition.sh) resets its
+    # escalation count at the last comment starting with "[answers]"; with
+    # no marker here that reset never fires on the sweep's relay path, and
+    # a resumed worker's authorized retry of the same edge gets bounced
+    # right back to needs-human (the exact bounce the human just answered).
+    B.comment(tid, "[answers] relayed — see the human's comment on the "
+                   "ticket (gh issue view %s --comments)" % tid)
+pre_park = B.parse_meta(tickets[tid]["body"]).get("pre-park")
+if pre_park:
+    ret = pre_park
+else:
+    # No recorded pre-park: the park entered needs-human from a state
+    # PRE_PARK doesn't cover (needs-info / interactive-preferred /
+    # deferred — see _board.py's PRE_PARK). Fall back on the BOUND
+    # WORKER's own lane, persisted into the registry meta at spawn time
+    # (implement-dispatch.sh), rather than hardcoding in-progress: an
+    # Architect resumed there would land in a state its protocol cannot
+    # exit (LEGAL["in-progress"] has no ready-for-implementer edge).
+    # Workers bound before this fix (or spawned by any other route) carry
+    # no role — for those, in-progress stays the fallback, matching prior
+    # behavior; it was only ever wrong for the architect lane.
+    ret = "in-design" if (meta.get("role") or "").upper() == "ARCHITECT" else "in-progress"
+print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
+                              meta.get("status", "?"), meta.get("updated", "?"), ret))
 PY
 )"
-IFS=$'\t' read -r uuid engine status updated <<<"$info"
+IFS=$'\t' read -r uuid engine status updated ret <<<"$info"
 [ -n "$uuid" ] || die "binding lookup failed"
-echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated)"
+echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated, return=$ret)"
 
-"$SCRIPT_DIR/board-transition.sh" "$tid" in-progress \
+"$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
   "answers relayed — resuming bound session ${uuid:0:8}"
 
 if [ -n "$posted" ]; then
@@ -115,9 +144,10 @@ fi
 relay="Your needs-human park on ticket #$tid was answered by the human. The answers
 live on the ticket — the ticket remains the record. Re-state your gate
 verdict against them in ONE paragraph as a ticket comment (\"[gate] re-pass —
-<one line>\", or a fresh park if the answers reshape the work's scope), then
-proceed under your original protocol. Never build on momentum past an answer
-that changed the work's shape.
+<one line>\" — PLAN-EXECUTION, which ran no gate, restates plan-execution
+status instead), or a fresh park if the answers reshape the work's scope,
+then proceed under your original protocol. Never build on momentum past an
+answer that changed the work's shape.
 
 ---- answers (verbatim from the ticket) ----
 $block"

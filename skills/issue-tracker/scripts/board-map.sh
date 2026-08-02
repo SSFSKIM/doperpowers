@@ -22,11 +22,13 @@
 #   --stop     stop the --serve server.
 #
 # Reading BOARD.html: dependencies flow left→right (a blocker sits left of its
-# dependents). Card color = state; ELIGIBLE (ready-for-agent + all blockers done,
-# not an epic) glows blue; in-progress pulses green. An amber arrow is an ACTIVE
-# block (green while its blocker is itself being worked), a dim dashed one a
-# satisfied dependency; labeled dashed lines carry spawned/relates lineage; each
-# epic is a labeled box around its members (click the epic's card to collapse).
+# dependents). Card color = state; ELIGIBLE (what the dispatcher will claim:
+# a leaf in a dispatchable lane state with every blocker done, or an epic on
+# its recomposition/reconciliation claim) glows blue; in-progress pulses green. An amber
+# arrow is an ACTIVE block (green while its blocker is itself being worked), a
+# dim dashed one a satisfied dependency; labeled dashed lines carry
+# spawned/relates lineage; each epic is a labeled box around its members
+# (click the epic's card to collapse).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -87,15 +89,17 @@ def num(t): return int(t)
 order = sorted(tickets, key=num)
 epics = {n["parent"] for n in tickets.values() if n.get("parent")}
 
-def eligible(tid, n):
-    if tid in epics or n["state"] != "ready-for-agent":
-        return False
-    return all(tickets.get(b, {}).get("state") == "done" for b in n.get("blocked_by", []))
-
 def state_label(tid, n):
-    if n["state"] == "ready-for-agent":
+    # The authoritative predicate, not a re-derivation of it: an epic is
+    # eligible only on its own E2 carve-out (a recomposition or
+    # reconciliation claim in ready-for-architect), and a blocker check alone
+    # printed ELIGIBLE for epics the dispatcher would never claim.
+    if B.eligible(tickets, tid):
+        return n["state"] + " · ELIGIBLE"
+    if n["state"] in B.DISPATCHABLE:
         unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
-        return ("waiting: " + ",".join("#%s" % b for b in unmet)) if unmet else "ELIGIBLE"
+        if unmet:
+            return n["state"] + " · waiting: " + ",".join("#%s" % b for b in unmet)
     return n["state"]
 
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
@@ -133,8 +137,10 @@ CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
          "deferred": "s_def", "wontfix": "s_wf",
          "conflict": "s_conflict", "untracked": "s_untracked"}
 def cls(tid, n):
-    if n["state"] == "ready-for-agent":
-        return "s_elig" if eligible(tid, n) else "s_wait"
+    if n["state"] == "in-design":
+        return "s_design"
+    if n["state"] in B.DISPATCHABLE:
+        return "s_elig" if B.eligible(tickets, tid) else "s_wait"
     return CLASS.get(n["state"], "s_wait")
 
 # Longest-path layering over blocked_by (blockers above dependents); memoized,
@@ -411,7 +417,7 @@ nodes = []
 for t in order:
     n = tickets[t]; x, y = pos[t]
     nodes.append({
-        "id": did(t), "state": n["state"], "eligible": eligible(t, n),
+        "id": did(t), "state": n["state"], "eligible": B.eligible(tickets, t),
         "cls": cls(t, n), "label": state_label(t, n),
         "title": " ".join(str(n["title"]).split()),
         "category": n.get("category"), "note": n.get("note"),

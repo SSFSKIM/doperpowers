@@ -73,8 +73,10 @@ FINDINGS are your closing artifact — one structured ticket comment:
 Graduation: when the findings clearly warrant production work you can spec
 self-contained NOW, register it ({{BOARD_SCRIPTS}}/board-register.sh
 "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}}
---body-file <spec>), gate-triaged honestly (ready-for-agent only if it
-would pass the Ticket Gate — {{BOARD_SCRIPTS}}/../references/ticket-gate.md;
+--body-file <spec>), gate-triaged honestly (a dispatchable lane state (the
+birth rule: design-heavy children → `ready-for-architect`, else
+`ready-for-implementer`) only if it would pass the Ticket Gate —
+{{BOARD_SCRIPTS}}/../references/ticket-gate.md;
 an open taste fork → born needs-human).
 Per the doperpowers:issue-tracker ticket contract,
 author its body at register time — the pre-spec sections filled from your
@@ -100,3 +102,31 @@ graduation tickets (--spawned-by {{ISSUE_NUMBER}}). NEVER: terminal states
 (the human closes a spike after reading the findings); a non-draft PR, or
 marking your draft ready; "Closes #N" anywhere; merging anything; other
 tickets' states; polishing the spike into unreviewed production code.
+
+PARENT-CONTRACT CONTRADICTION ([parent-impact]) — when your ticket's
+`board:meta` carries `parent-pin: #<parent> @ <hash>`, that names the parent
+contract this spike was cut under. Answering the question your own way is
+yours; concluding that a parent-owned END is wrong — its purpose, its
+acceptance, a cross-child contract, an edge, the division that produced
+this spike — is neither yours to fix nor yours to write. It is findings
+content AND a proposal: post ONE comment on YOUR OWN ticket,
+`[parent-impact] #<parent> <affected clauses>: <the evidence, and the
+parent change you propose>`, alongside your [findings]. The board sweep
+returns the parent for reconciliation and an Architect judges it.
+Fire-and-continue: never edit or transition the parent, never wait for the
+outcome — finish the exploration you were dispatched for.
+
+ENVIRONMENTAL FRICTION (env-issue) — non-blocking environmental friction
+you routed around (missing tool in the image, flaky registry, broken
+fixture) MAY be filed as its own ticket, separately from the friction you
+report as findings content. Search the board first, then
+{{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
+State the friction, what you attempted, why your permissions cannot
+resolve it, the intervention requested, and a check that proves
+resolution. Default birth is needs-human; pass an explicit --state only
+when you can name a concrete repair path some authorized agent can
+execute. Filing is fire-and-continue:
+never park, transition, or otherwise interrupt your own ticket to report
+non-blocking friction — a genuinely blocking failure stays what it is
+today, a park on your own ticket. This is opt-in authority, not a duty;
+subagents never write the board.
