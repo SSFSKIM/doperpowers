@@ -1,0 +1,226 @@
+#!/usr/bin/env node
+// Mock codex app-server. Speaks the REAL JSON-RPC-over-stdio shapes
+// (derived from lib/codex.mjs captureTurn + app-server.mjs — see the
+// PROTOCOL notes below). Controlled by CODEX_MOCK_DIR:
+//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText|turnStatus}... ] }
+//                  consumed in global order via counter file (mkdir lock);
+//                  turnStatus: "failed" ⇒ emit turn/completed with the FAILED
+//                  status shape and NO error object (the false-green case)
+//   turns.jsonl    one line per turn/start|review/start request: {method, params, pid}
+//   spawn-<pid>.json   written on start: { argv, cwd }
+//   live/<pid>         existence = live server (removed on exit)
+//   peak               max simultaneous live/* observed at any turn/start
+//
+// ---------------------------------------------------------------------------
+// PROTOCOL — field paths the runtime's own client code reads. Every emission
+// below is pinned to one of these; change a name here and the runtime goes
+// blind, which is exactly what the discrimination check proves.
+//
+// Availability probe — lib/codex.mjs:886 getCodexAvailability():
+//   binaryAvailable("codex", ["--version"])        → must exit 0
+//   binaryAvailable("codex", ["app-server","--help"]) → must exit 0
+//   Both run before any connection; failing either makes every runAppServerTurn/
+//   runAppServerReview throw "Codex CLI is not installed".
+//
+// Handshake — lib/app-server.mjs:189-230 SpawnedCodexAppServerClient.initialize():
+//   → request  {id, method:"initialize", params:{clientInfo, capabilities}}
+//   ← response {id, result:{...}}            (result body unused; must not be an error)
+//   → notify   {method:"initialized", params:{}}   (no response expected)
+//   Framing (app-server.mjs:118-154): one JSON object per line. A message with
+//   BOTH id and method is treated as a server→client request; a response must
+//   carry id + result (or id + error); a notification must carry method + NO id.
+//
+// Threads — lib/codex.mjs:732-752 startThread()/resumeThread():
+//   thread/start   params {cwd, model, approvalPolicy, sandbox, serviceName, ephemeral}
+//                  ← result.thread.id          (the ONLY field read)
+//   thread/name/set params {threadId, name}    ← result ignored; an error whose
+//                  message contains "unknown variant"/"unknown method" is tolerated,
+//                  anything else is rethrown — so answer it with a result.
+//   thread/resume  params {threadId, cwd, ...} ← result.thread.id
+//
+// turn/start — lib/codex.mjs:1132-1144 + captureTurn 584-611:
+//   params {threadId, input:[{type:"text",text,text_elements:[]}], model, effort, outputSchema}
+//   ← result.turn.id      → state.turnId, and state.threadTurnIds[threadId] = it.
+//                           EVERY subsequent notification for this turn must
+//                           carry this same turn id or belongsToTurn() (codex.mjs:396)
+//                           drops it.
+//   ← result.turn.status  → if present and !== "inProgress", completeTurn() fires
+//                           straight off the response. The real server answers
+//                           "inProgress" and streams the outcome, so the mock does too.
+//
+// review/start — lib/codex.mjs:1022-1042:
+//   params {threadId, delivery, target}
+//   ← result.reviewThreadId → added to state.threadIds; when delivery === "detached"
+//                             it also BECOMES state.threadId (so the review turn's
+//                             notifications must then be emitted on that thread).
+//   ← result.turn.id        → same as turn/start.
+//
+// Notifications — lib/codex.mjs:490-556 applyTurnNotification():
+//   thread/started      params.thread.id, params.thread.name, .agentNickname, .agentRole
+//   thread/name/updated params.threadId, params.threadName
+//   turn/started        params.threadId, params.turn.id
+//   item/started        params.item (+ params.threadId); routing/turn id via
+//   item/completed      params.turnId (preferred) then params.turn.id — codex.mjs:116-124
+//   turn/completed      params.threadId, params.turn.status →
+//                       completeTurn(state, params.turn); buildResultStatus()
+//                       (codex.mjs:754) is `finalTurn.status === "completed" ? 0 : 1`,
+//                       so a "failed" turn carrying NO error object is the
+//                       false-green case: result.error is null, only .status says no.
+//   error               params.error.message → state.error
+//
+// Items — lib/codex.mjs:406-487 recordItem():
+//   agentMessage     {type:"agentMessage", id, text, phase}
+//                    → state.lastAgentMessage = item.text (⇒ runAppServerTurn's
+//                      result.finalMessage). phase === "final_answer" on a
+//                      completed item sets finalAnswerSeen (drives the inferred-
+//                      completion path), so the final message carries it.
+//   exitedReviewMode {type:"exitedReviewMode", id, review}
+//                    → state.reviewText = item.review (⇒ runAppServerReview's
+//                      result.reviewText). NOT an agentMessage — a review whose
+//                      text arrives as an agentMessage yields reviewText "".
+//   enteredReviewMode{type:"enteredReviewMode", id, review}  (progress only)
+// ---------------------------------------------------------------------------
+import fs from "node:fs";
+import path from "node:path";
+import readline from "node:readline";
+
+const args = process.argv.slice(2);
+
+// Answer the availability probes before anything else: they run without any
+// scenario in play, and getCodexAvailability() gates every runtime entry point.
+if (args.includes("--version")) {
+  console.log("codex-cli mock");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log("mock app-server help");
+  process.exit(0);
+}
+
+const MOCK = process.env.CODEX_MOCK_DIR;
+if (!MOCK) { console.error("CODEX_MOCK_DIR unset"); process.exit(2); }
+if (args[args.length - 1] !== "app-server") { console.error("mock: only app-server mode"); process.exit(2); }
+
+fs.mkdirSync(path.join(MOCK, "live"), { recursive: true });
+fs.writeFileSync(path.join(MOCK, `spawn-${process.pid}.json`),
+  JSON.stringify({ argv: args, cwd: process.cwd() }));
+const liveFile = path.join(MOCK, "live", String(process.pid));
+fs.writeFileSync(liveFile, "");
+function cleanup() { try { fs.rmSync(liveFile, { force: true }); } catch { /* already gone */ } }
+process.on("exit", cleanup);
+process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+process.on("SIGINT", () => { cleanup(); process.exit(0); });
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function nextTurnBehavior() {
+  // global sequential counter under a mkdir lock
+  const lockDir = path.join(MOCK, "counter.lock");
+  let held = false;
+  for (let i = 0; i < 2000 && !held; i++) {
+    try { fs.mkdirSync(lockDir); held = true; } catch { sleepMs(2); }
+  }
+  try {
+    const cFile = path.join(MOCK, "counter");
+    const n = fs.existsSync(cFile) ? Number(fs.readFileSync(cFile, "utf8")) : 0;
+    fs.writeFileSync(cFile, String(n + 1));
+    const scenario = JSON.parse(fs.readFileSync(path.join(MOCK, "scenario.json"), "utf8"));
+    return scenario.turns[Math.min(n, scenario.turns.length - 1)] ?? {};
+  } finally { if (held) fs.rmdirSync(lockDir); }
+}
+
+function recordPeak() {
+  const live = fs.readdirSync(path.join(MOCK, "live")).length;
+  const peakFile = path.join(MOCK, "peak");
+  const prev = fs.existsSync(peakFile) ? Number(fs.readFileSync(peakFile, "utf8")) : 0;
+  if (live > prev) fs.writeFileSync(peakFile, String(live));
+}
+
+const turn = (id, status) => ({ id, status, items: [], error: null });
+
+let threadSeq = 0;
+let turnSeq = 0;
+const send = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") return send({ id: msg.id, result: { userAgent: "codex-mock-app-server" } });
+  if (msg.method === "initialized") return;
+  if (msg.method === "thread/start" || msg.method === "thread/resume") {
+    const id = msg.method === "thread/resume" ? msg.params.threadId : `t-${process.pid}-${++threadSeq}`;
+    return send({ id: msg.id, result: { thread: { id, name: null, cwd: msg.params?.cwd ?? process.cwd() } } });
+  }
+  if (msg.method === "thread/name/set") return send({ id: msg.id, result: {} });
+  if (msg.method === "turn/start" || msg.method === "review/start") {
+    recordPeak();
+    fs.appendFileSync(path.join(MOCK, "turns.jsonl"),
+      JSON.stringify({ method: msg.method, params: msg.params, pid: process.pid }) + "\n");
+    const b = nextTurnBehavior();
+    if (b.die) process.exit(1);
+
+    const isReview = msg.method === "review/start";
+    const sourceThreadId = msg.params.threadId;
+    // delivery "detached" moves the review onto its own thread, which the client
+    // then adopts as state.threadId (codex.mjs:1033-1040).
+    const threadId = isReview && msg.params.delivery === "detached"
+      ? `${sourceThreadId}-review`
+      : sourceThreadId;
+    const turnId = `turn-${threadId}-${++turnSeq}`;
+
+    // The real server answers immediately with an in-progress turn and streams
+    // the outcome as notifications.
+    send({
+      id: msg.id,
+      result: isReview
+        ? { turn: turn(turnId, "inProgress"), reviewThreadId: threadId }
+        : { turn: turn(turnId, "inProgress") }
+    });
+    if (threadId !== sourceThreadId) {
+      send({ method: "thread/started", params: { thread: { id: threadId, name: null } } });
+    }
+
+    const finish = () => {
+      send({ method: "turn/started", params: { threadId, turn: turn(turnId, "inProgress") } });
+      if (isReview) {
+        send({
+          method: "item/started",
+          params: { threadId, turnId, item: { type: "enteredReviewMode", id: `review_${turnId}`, review: "current changes" } }
+        });
+        send({
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId,
+            item: {
+              type: "exitedReviewMode",
+              id: `review_${turnId}`,
+              review: b.reviewText ?? "# Codex Review\n\nNo findings."
+            }
+          }
+        });
+      } else {
+        send({
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId,
+            item: {
+              type: "agentMessage",
+              id: `msg_${turnId}`,
+              text: b.finalRaw ?? b.finalMessage ?? "mock final message",
+              phase: "final_answer"
+            }
+          }
+        });
+      }
+      // turnStatus "failed" ships the FAILED status with error still null — the
+      // engine that only checks turn.error will false-green on it.
+      send({ method: "turn/completed", params: { threadId, turn: turn(turnId, b.turnStatus ?? "completed") } });
+    };
+    if (b.hangMs) setTimeout(finish, b.hangMs); else finish();
+    return;
+  }
+  send({ id: msg.id, error: { code: -32601, message: `mock: unsupported ${msg.method}` } });
+});
