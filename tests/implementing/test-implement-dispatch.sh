@@ -81,6 +81,9 @@ flag=""; [ "${1:-}" = "--no-wait" ] && { flag="--no-wait"; shift; }
 name="$1"; task="$2"
 echo "spawn:$flag $name wt=${4:-} model=${5:-}" >> "$SPAWN_LOG"
 echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
+# also into the gh log, so board writes and the release of the worker share
+# ONE ordered stream (the parent-pin stamp must precede this line)
+[ -z "${MOCK_GH_LOG:-}" ] || printf '["spawn", "%s"]\n' "$name" >> "$MOCK_GH_LOG"
 if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
   echo "stub daemon-spawn: simulated failure for $name" >&2
   exit 1
@@ -394,12 +397,35 @@ import json, os
 print(json.load(open(os.environ['MOCK_GH_STATE']))['issues'][os.environ['MB_N']]['body'])"
 }
 
-rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"; : > "$MOCK_GH_LOG"
 HEAD_SHA="$(git -C "$CLONE" rev-parse HEAD)"
 out="$(run 10)"
 assert_contains "$out" "dispatched #10" "a child of an epic dispatches on the implement lane"
 assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $HEAD_SHA" \
   "dispatch stamps parent-pin (parent + repo HEAD sha) into the child meta"
+# ORDERING, not just presence: the stamp is a full-body read-modify-write, so
+# it has to land while this dispatcher is still the only writer. After the
+# spawn it raced the worker — a fast worker reads a ticket with no pin, and
+# the RMW can overwrite the worker's own first board write.
+PIN_ORDER="$(python3 - <<'PY'
+import json, os
+pin = spawn = None
+for i, line in enumerate(open(os.environ["MOCK_GH_LOG"])):
+    try:
+        a = json.loads(line)
+    except Exception:
+        continue
+    if spawn is None and a[:1] == ["spawn"]:
+        spawn = i
+    if pin is None and a[:3] == ["issue", "edit", "10"] and "--body-file" in a:
+        pin = i
+print("pin=%s spawn=%s %s" % (pin, spawn,
+      "STAMP-BEFORE-SPAWN" if (pin is not None and spawn is not None and pin < spawn)
+      else "OUT-OF-ORDER"))
+PY
+)"
+assert_contains "$PIN_ORDER" "STAMP-BEFORE-SPAWN" \
+  "the parent-pin body write lands BEFORE the worker is released"
 assert_contains "$(mock_issue_body 10)" "body of #10" \
   "the stamp preserves the ticket body outside the meta block"
 assert_not_contains "$(mock_issue_body 1)" "parent-pin:" \

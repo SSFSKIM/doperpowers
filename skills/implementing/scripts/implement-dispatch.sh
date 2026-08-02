@@ -217,6 +217,31 @@ dispatch_one() {
     [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
   fi
 
+  # E2 parent-pin: stamp the inherited-contract pin BEFORE the worker is
+  # released. The parent's spec keeps moving between the cut and the
+  # dispatch, so the repo HEAD sha pins what this child actually read — and
+  # the write is a full-body read-modify-write, so it must land while this
+  # dispatcher is still the only writer. Stamped after the spawn it raced
+  # the worker two ways: a fast worker could read its ticket before the pin
+  # existed, and the RMW could overwrite the worker's OWN first board write
+  # (its note, its pre-park meta). Everything the stamp needs is resolved
+  # above; nothing in it wants the worker's name or uuid. Non-fatal like the
+  # role write below — a missing pin costs the parent-impact reconcile its
+  # lineage check on THIS child, nothing more.
+  if [ -n "${T_PARENT:-}" ]; then
+    pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
+    PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
+      || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
+import os
+import _board as B
+env = os.environ
+tickets = B.snapshot()
+tid = B.resolve(env["T_N"], tickets)
+B.update_meta(tid, tickets[tid], **{"parent-pin": env["T_PIN"]})
+PY
+  fi
+
   # The prompt carries bindings only — the worker reads its ticket (and the
   # repo's .doperpowers/repo-facts.md, if any) from gh / its own worktree.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
@@ -302,25 +327,6 @@ finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
 PY
-
-  # E2 parent-pin: stamp the inherited-contract pin at DISPATCH time. The
-  # parent's spec keeps moving between the cut and the dispatch, so the repo
-  # HEAD sha pins what this child actually read. Non-fatal like the role
-  # write — a missing pin costs the parent-impact reconcile its lineage
-  # check on THIS child, nothing more.
-  if [ -n "${T_PARENT:-}" ]; then
-    pin_sha="$(git -C "$LOCAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-    T_N="$n" T_PIN="#$T_PARENT @ $pin_sha" \
-    PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
-      || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
-import os
-import _board as B
-env = os.environ
-tickets = B.snapshot()
-tid = B.resolve(env["T_N"], tickets)
-B.update_meta(tid, tickets[tid], **{"parent-pin": env["T_PIN"]})
-PY
-  fi
 
   echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
 }
