@@ -203,10 +203,9 @@ After saving the plan, offer execution choice:
 
 **Which approach?"**
 
-While waiting for the response, dispatch the `doperpowers:plan-reviewer` agent. The prompt is two lines:
+While waiting for the response, run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper), in a background Bash, with the focus text:
 
-> **Plan to review:** [PLAN_FILE_PATH]
-> **Spec for reference:** [SPEC_FILE_PATH]
+> Review the implementation plan at [PLAN_FILE_PATH] against its spec at [SPEC_FILE_PATH]. Verify the implementation architecture is sound and the plan is complete, spec-aligned, well-decomposed, and buildable by an engineer with zero context.
 
 Evaluate its findings rather than accepting them wholesale; fix what survives and move on.
 

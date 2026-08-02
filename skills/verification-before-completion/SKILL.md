@@ -1,52 +1,37 @@
 ---
 name: verification-before-completion
-description: Use when about to claim work is complete, fixed, or passing — before committing, creating PRs, or expressing any success. Evidence before assertions, always.
+description: Use when about to claim work is complete, fixed, or passing — before committing, creating PRs, or expressing any success.
 ---
 
 # Verification Before Completion
 
-## Overview
+A completion claim is a factual report — it is honest only if evidence
+backs it. This covers every expression of success, not just the literal
+words: "should work now" and "great, that fixes it" are claims too.
 
-Claiming work is complete without verification is dishonesty, not efficiency.
+**Core principle:** before stating success, ask what would prove it, run
+that, and read the output. Then speak.
 
-**Core principle:** Evidence before claims, always.
+Two judgments calibrate the work:
 
-**Violating the letter of this rule is violating the spirit of this rule.**
+- **Freshness.** Evidence is fresh while nothing relevant has changed
+  since it was produced. A test run from before your last edit proves
+  nothing about the current state; a run nothing has invalidated needs
+  no ritual re-run.
+- **Scope.** Match verification to the claim. A one-line fix is proven
+  by its covering tests; "the branch is ready" is proven by the whole
+  suite. Claim only what your evidence covers.
 
-## The Iron Law
+## What counts as evidence
 
-```
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-```
+| Claim | Evidence | Commonly mistaken for evidence |
+|-------|----------|-------------------------------|
+| Tests pass | fresh run, zero failures | an earlier run, "should pass" |
+| Bug fixed | the original symptom re-tested | code changed, fix assumed |
+| Regression test works | red-green: revert the fix → test fails; restore → passes | the test passing once |
+| Subagent finished | the diff / the artifact itself | the agent's "success" report |
+| Requirements met | the plan or spec walked item by item | tests passing |
 
-If you haven't run the verification command in this message, you cannot claim
-it passes. This applies to any wording that implies success — exact phrases,
-paraphrases, and expressions of satisfaction alike.
-
-## The Gate Function
-
-```
-BEFORE claiming any status or expressing satisfaction:
-
-1. IDENTIFY: What command proves this claim?
-2. RUN: Execute the FULL command (fresh, complete)
-3. READ: Full output, check exit code, count failures
-4. VERIFY: Does output confirm the claim?
-   - If NO: State actual status with evidence
-   - If YES: State claim WITH evidence
-5. ONLY THEN: Make the claim
-```
-
-## What Each Claim Requires
-
-| Claim | Requires | Not sufficient |
-|-------|----------|----------------|
-| Tests pass | Test command output: 0 failures | Previous run, "should pass" |
-| Linter clean | Linter output: 0 errors | Partial check, extrapolation |
-| Build succeeds | Build command: exit 0 | Linter passing, logs look good |
-| Bug fixed | Test original symptom: passes | Code changed, assumed fixed |
-| Regression test works | Red-green verified: test passes → revert the fix → test MUST FAIL → restore → passes | Test passes once |
-| Agent completed | VCS diff shows the changes | Agent reports "success" |
-| Requirements met | Line-by-line checklist against the plan/spec | Tests passing |
-
-Run the command. Read the output. THEN claim the result.
+When verification fails, report the actual state with the output. A
+truthful "not done yet" costs a turn; a false "done" costs the trust the
+next claim needs.
