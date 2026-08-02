@@ -99,6 +99,7 @@ q("T_STATE", n["state"])
 q("T_ELIGIBLE", 1 if B.eligible(tickets, tid) else 0)
 q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
 q("T_PARENT", n.get("parent") or "")
+q("T_IS_EPIC", 1 if tid in B.epics(tickets) else 0)
 eng = "claude" if "engine:claude" in n["labels"] else ("codex" if "engine:codex" in n["labels"] else "")
 q("T_ENGINE_LABEL", eng)
 import re
@@ -187,9 +188,21 @@ dispatch_one() {
     return 0
   fi
 
-  if [ "$T_CATEGORY" = "spike" ]; then
-    # category precedence is state-free: a spike dispatches on the spike
-    # protocol from EITHER lane queue
+  if [ "$T_STATE" = "ready-for-architect" ] && [ "${T_IS_EPIC:-0}" = "1" ]; then
+    # EPIC-HOOD OUTRANKS CATEGORY here, and only here. An epic in the
+    # architect queue is a recomposition or reconciliation claim — the ONLY
+    # way an epic is dispatchable at all (B.eligible's carve-out) — and that
+    # claim is the Architect's work whatever the parent's own category says.
+    # A spike that decomposed keeps its spike label and reaches this state by
+    # the recomposition return, and the spike protocol's first board write
+    # (ready-for-architect → in-progress) has no LEGAL edge: the worker
+    # hard-failed, the sweep re-dispatched into the same failure, and the
+    # architect slot burned every tick.
+    lane="architect"; role="ARCHITECT"; protocol_file="$ARCHITECT_PROTOCOL"
+    decompose="$DECOMPOSE_DOC"
+  elif [ "$T_CATEGORY" = "spike" ]; then
+    # category precedence is state-free for a LEAF: a spike dispatches on the
+    # spike protocol from EITHER lane queue
     lane="implement"; role="SPIKE"; protocol_file="$SPIKE_PROTOCOL"
     decompose="(none — spike lane)"
   elif [ "$T_STATE" = "ready-for-architect" ]; then

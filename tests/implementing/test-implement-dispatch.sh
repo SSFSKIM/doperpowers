@@ -435,6 +435,39 @@ out="$(run 12)"
 assert_contains "$out" "dispatched #12" "recomposition-ready epic dispatches"
 assert_contains "$out" "role=ARCHITECT" \
   "recomposition-ready epic in ready-for-architect dispatches an Architect"
+
+# EPIC-HOOD OUTRANKS CATEGORY in the architect queue. A spike that decomposed
+# keeps its spike label and returns here for recomposition; routed on category
+# it would open the spike protocol, whose first board write
+# (ready-for-architect → in-progress) has no LEGAL edge — the worker hard-fails
+# and the sweep re-dispatches into the same failure every tick.
+python3 - <<'PY'
+import json, os
+def issue(num, title, labels, parent=None, state="OPEN", reason=None):
+    return {"number": num, "id": "ID_%d" % num, "title": title,
+            "body": "body of #%d" % num,
+            "state": state, "stateReason": reason, "labels": labels,
+            "assignees": [], "parent": parent, "blockedBy": [],
+            "closesPRs": [], "xrefPRs": [], "comments": [],
+            "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
+            "url": "https://github.com/test/repo/issues/%d" % num}
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["14"] = issue(14, "Spike that decomposed",
+                          ["status:ready-for-architect", "priority:P1", "spike"])
+s["issues"]["15"] = issue(15, "Its landed child", [], parent=14,
+                          state="CLOSED", reason="COMPLETED")
+s["next"] = 16
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 14)"
+assert_contains "$out" "dispatched #14" "a recomposed spike EPIC dispatches"
+assert_contains "$out" "role=ARCHITECT" "...as an Architect claim, not on its spike category"
+PROMPT14="$PROMPT_DIR/14-spike-that-decomposed.prompt"
+assert_file_contains "$PROMPT14" "ARCHITECT worker for ticket #14" "the recomposed spike opens the architect protocol"
+assert_file_not_contains "$PROMPT14" "spike-worker-protocol.md" "never the spike protocol, whose first write is an illegal edge here"
+# a spike that never decomposed is untouched — #3 above is a leaf spike
+assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "a leaf spike still routes SPIKE"
 assert_not_contains "$(mock_issue_body 12)" "parent-pin:" \
   "a parentless epic gets no stamp"
 
