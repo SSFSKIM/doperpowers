@@ -9,6 +9,7 @@
 #
 # stdlib only. Every GitHub call shells out to `gh` (the toolkit's one
 # external requirement) — tests substitute a PATH-shimmed mock `gh`.
+import hashlib
 import json
 import os
 import re
@@ -243,10 +244,29 @@ def parse_meta(body):
     return meta
 
 
+def strip_meta(body):
+    """The body WITHOUT its trailing board:meta block — the ticket's own text,
+    with the board's bookkeeping removed."""
+    return META_RE.sub("", body or "").rstrip("\n")
+
+
+def contract_hash(body):
+    """The id a `parent-pin:` names: sha256/12 over the ticket's text with
+    board:meta STRIPPED.
+
+    The meta block is the board writing to itself, and it moves constantly —
+    recompose_epics clears `pr:`/`branch:` on every recomposition cycle alone.
+    Hashing the whole body therefore reported "the parent contract changed" at
+    every cycle, and an Architect who adjudicates a fake diff every time soon
+    stops reading the real one. What a child inherits is the contract text, so
+    that is what the pin identifies."""
+    return hashlib.sha256(strip_meta(body).encode("utf-8")).hexdigest()[:12]
+
+
 def render_body(body, meta):
     """Body with its meta block replaced by `meta` (dropped when meta is empty).
     Everything outside the block is preserved byte-for-byte."""
-    base = META_RE.sub("", body or "").rstrip("\n")
+    base = strip_meta(body)
     meta = {k: v for k, v in meta.items() if v}
     if not meta:
         return base + ("\n" if base else "")

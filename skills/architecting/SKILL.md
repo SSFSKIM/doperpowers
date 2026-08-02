@@ -188,10 +188,11 @@ of child acceptances — and it starts from the children's contract
 lineage.
 
 1. **Lineage check first:** for every child, compare its `parent-pin:`
-   meta — `#<parent> @ <hash>`, where the hash is the first 12 hex of
-   sha256 over the parent's issue BODY as that child received it —
-   against the parent's body today:
-   gh issue view {{ISSUE_NUMBER}} -R {{REPO}} --json body | python3 -c "import hashlib,json,sys; print(hashlib.sha256(json.load(sys.stdin)['body'].encode()).hexdigest()[:12])"
+   meta — `#<parent> @ <hash>`, the id of the parent CONTRACT that child
+   received (sha256/12 over the parent's issue body with its `board:meta`
+   bookkeeping stripped, so the board's own writes never read as a
+   contract change) — against your contract today:
+   gh issue view {{ISSUE_NUMBER}} -R {{REPO}} --json body | PYTHONPATH={{BOARD_SCRIPTS}} python3 -c "import json,sys,_board as B; print(B.contract_hash(json.load(sys.stdin)['body']))"
    Equal hashes mean the child executed the contract you are holding and
    there is nothing to reconcile from the pin. Otherwise read what
    changed; every material change is incorporated, explicitly

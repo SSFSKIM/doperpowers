@@ -248,9 +248,12 @@ dispatch_one() {
   # contract had not and held still when it had. The recomposing Architect's
   # lineage check (doperpowers:architecting, "compare its parent-pin against
   # the parent's current revision") could not be performed at all.
-  # sha256 of the parent's body, first 12 hex — immutable, comparable by
-  # re-hashing the body today, and still `#<n> @ <hex>` so the M1/N1 lineage
-  # parsing (which reads the `#<n>` head) is untouched.
+  # B.contract_hash: sha256/12 over the parent's body with its board:meta
+  # block STRIPPED — immutable, comparable by re-hashing the body today, and
+  # still `#<n> @ <hex>` so the M1/N1 lineage parsing (which reads the `#<n>`
+  # head) is untouched. Stripping matters: recompose_epics clears pr:/branch:
+  # every recomposition cycle, so a whole-body hash announced a changed
+  # contract every cycle and trained the reader to ignore the signal.
   # The write is a full-body read-modify-write, so it must land while this
   # dispatcher is still the only writer. Stamped after the spawn it raced
   # the worker two ways: a fast worker could read its ticket before the pin
@@ -274,7 +277,6 @@ dispatch_one() {
     T_N="$n" T_PARENT="$T_PARENT" \
     PYTHONPATH="$BOARD_SCRIPTS" python3 - <<'PY' \
       || echo "#$n: parent-pin meta write failed (non-fatal)" >&2
-import hashlib
 import os
 import _board as B
 env = os.environ
@@ -283,8 +285,7 @@ tid = B.resolve(env["T_N"], tickets)
 node = tickets[tid]
 parent = env["T_PARENT"]
 pbody = (tickets.get(parent) or {}).get("body") or ""
-pin = "#%s @ %s" % (
-    parent, hashlib.sha256(pbody.encode("utf-8")).hexdigest()[:12])
+pin = "#%s @ %s" % (parent, B.contract_hash(pbody))
 recorded = B.parse_meta(node["body"]).get("parent-pin") or ""
 mine = pin.split("@")[0].strip()
 kept = [e.strip() for e in recorded.split(";")

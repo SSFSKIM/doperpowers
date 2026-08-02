@@ -282,10 +282,12 @@ assert_contains "$arch" "lineage" "recomposition includes the contract-lineage c
 # T1: the check is only performable if the pin names a revision of the thing
 # it claims to pin. It named the repo HEAD sha, which a body edit does not
 # move — so the protocol has to say what the pin IS and how to recompute it.
-assert_contains "$arch" "sha256 over the parent's issue BODY" \
-    "the lineage check names what the pin hashes (the parent's issue body)"
-assert_contains "$arch" "hashlib.sha256(json.load(sys.stdin)['body'].encode()).hexdigest()[:12]" \
-    "...and gives the exact command that reproduces the stamped hash"
+assert_contains "$arch" "with its \`board:meta\`" \
+    "the lineage check says the pin covers the contract text, not the board's own bookkeeping"
+assert_contains "$arch" "print(B.contract_hash(json.load(sys.stdin)['body']))" \
+    "...and reproduces the stamp by calling the SAME helper the dispatcher calls"
+assert_not_contains "$arch" "hashlib.sha256" \
+    "...never a hand-rolled hash the stamp could drift from"
 assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
 # ...and the claim CLOSES the loop it opened: the sweep leaves proposals
 # unmarked while an Architect holds the claim, so an unmarked one re-triggers

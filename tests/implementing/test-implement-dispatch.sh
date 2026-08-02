@@ -435,13 +435,30 @@ rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"; : > "$MOC
 # answers a different question: a body edit leaves HEAD alone and an unrelated
 # commit moves it, so the Architect's lineage check ("compare the pin against
 # the parent's current revision") could not be carried out at all.
+# The expectation comes from _board.contract_hash itself — the SAME function
+# the stamp calls and the same one the architecting protocol's documented
+# command calls. Re-implementing the hash here would let the two drift and
+# still pass.
 body_hash() {  # <ticket> — the hash the stamp must produce for that parent
-    BH_N="$1" python3 -c "
-import hashlib, json, os
+    BH_N="$1" PYTHONPATH="$BOARD_SCRIPTS" python3 -c "
+import json, os, _board as B
 s = json.load(open(os.environ['MOCK_GH_STATE']))
-print(hashlib.sha256(s['issues'][os.environ['BH_N']]['body'].encode()).hexdigest()[:12])"
+print(B.contract_hash(s['issues'][os.environ['BH_N']]['body']))" 2>/dev/null || true
+}
+# The INVARIANCE asserts read the pin the dispatcher actually wrote, not a
+# recomputed expectation: an expectation helper that stops working reports
+# nothing and every "still the same" assert passes vacuously.
+pin_of() {  # <child ticket> — the hash out of its parent-pin meta
+    mock_issue_body "$1" | sed -n 's/.*parent-pin: #[0-9]* @ \([0-9a-f]*\).*/\1/p' | tail -1
 }
 PIN11="$(body_hash 11)"
+# The helper must actually answer — if it stops existing, every "the pin is
+# still X" assert below would compare against an empty string and pass.
+case "$PIN11" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+    pass "_board.contract_hash answers with a 12-hex contract id" ;;
+  *) fail "_board.contract_hash answers with a 12-hex contract id (got '$PIN11')" ;;
+esac
 out="$(run 10)"
 assert_contains "$out" "dispatched #10" "a child of an epic dispatches on the implement lane"
 assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11" \
@@ -502,6 +519,40 @@ assert_not_contains "$(mock_issue_body 10)" "$PIN11" "...to a different hash tha
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
 out="$(run 10)"
 assert_contains "$(mock_issue_body 10)" "parent-pin: #11 @ $PIN11_EDITED" "a repo commit with no body edit leaves the pin where it was"
+# The board writes to the parent's OWN body constantly — recompose_epics
+# clears pr:/branch: on every recomposition cycle alone. Hashing the whole
+# body announced a changed contract every cycle, so the Architect adjudicated
+# a fake diff each time and learned to discount the signal. The hash covers
+# the contract text only; board:meta is stripped.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+it = s["issues"]["11"]
+it["body"] = it["body"] + "\n\n<!-- board:meta\npr: https://github.com/o/r/pull/9\nbranch: epic/int-1\n-->\n"
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+PIN_BEFORE_META="$(pin_of 10)"
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(pin_of 10)" "$PIN_BEFORE_META" "gaining a board:meta block does not move the pin"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+it = s["issues"]["11"]
+it["body"] = it["body"].replace("pr: https://github.com/o/r/pull/9\nbranch: epic/int-1", "note: reconciled")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"
+out="$(run 10)"
+assert_contains "$(pin_of 10)" "$PIN_BEFORE_META" "...and neither does a recomposition cycle rewriting that block"
+# The command the architecting protocol documents must produce the STAMP.
+# Two implementations of one hash is how a lineage check quietly stops
+# working, so the protocol calls the same helper the dispatcher does.
+DOC_HASH="$(MOCK_GH_STATE="$MOCK_GH_STATE" python3 -c "
+import json, os
+print(json.dumps({'body': json.load(open(os.environ['MOCK_GH_STATE']))['issues']['11']['body']}))" \
+  | PYTHONPATH="$BOARD_SCRIPTS" python3 -c "import json,sys,_board as B; print(B.contract_hash(json.load(sys.stdin)['body']))")"
+assert_contains "$DOC_HASH" "$PIN11_EDITED" "the protocol's documented command reproduces the stamped pin exactly"
 python3 - <<'PY'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
