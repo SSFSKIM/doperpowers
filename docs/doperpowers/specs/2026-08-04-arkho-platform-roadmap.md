@@ -100,18 +100,29 @@ vocabulary — is already shipped and live.
     + reset, epic guards), park/answer (lane-mapped returns,
     first-accepted-wins), register (dedup + API-side birth
     classification, env-issue rule), comment, timeline, decision-park
-    read. A run's bearer token cannot write another ticket's state.
+    read. A run's bearer token cannot write another ticket's state;
+    human-authored writes (answers, adjudications) authenticate through
+    X2's human-principal path — `actor_kind='human'` is
+    credential-derived, never caller-asserted.
   - **G3 (lifecycle automation):** reconciler/dispatcher process:
-    recomposition-due and reconcile returns, epic pull, stale-lease
-    reclaim opening a successor run with `predecessor_run` set.
+    recomposition-due and reconcile returns, epic pull, and a reclaim
+    that is **liveness-source-aware (X6)**: a live worker whose binding
+    names no sessionStore feed (a local plugin session) is never
+    reclaimed while its lease is renewed or its run keeps writing; a
+    dead run is reclaimed with a successor run carrying
+    `predecessor_run`.
   - **G4 (deployed + readable):** a deployed instance is reachable;
     `TimelineReader` serves merged reads (the sessionStore/activity
     union renders when such data exists — its absence is a legal,
     honest state).
+  - Forward seams owned here: the board-side ingest halves of the two
+    external projections — T5 decision-park mirroring and T11 activity
+    (schema + roles land with G1; each ingest wire is co-designed when
+    its external lands).
 - **Edges:** blocked-by: — (dispatchable at materialization);
   blocks: A2, A3, A4, A6.
 - **Contracts:** X1 (owner), X2 (owner), X3 (owner), X4 (outbox schema
-  owner).
+  owner), X6 (owner — API semantics).
 - **Required:** yes (all gates).
 - **Status:** not-dispatched (dispatchable now, post-materialization).
 
@@ -127,11 +138,17 @@ vocabulary — is already shipped and live.
   gate verdict → transitions → park/answer relay → epic
   recomposition → terminal — against a live A1 instance, with worker
   transcripts indistinguishable from GH-board runs modulo transport.
-  Board binding is per-repo configuration: gh mode remains fully
-  supported (X5 — consumer repos like ida-solution never require a
-  Postgres service).
-- **Edges:** blocked-by: A1.G2; blocks: A5.
-- **Contracts:** X1 (consumer), X5 (owner).
+  An answered `needs-human` park physically resumes the bound worker —
+  A2's ported sweep/relay is the wake mechanism for plugin workers, and
+  its dispatch automation renews the run lease for sessions with no
+  sessionStore feed (X6). Board binding is per-repo configuration: gh
+  mode remains fully supported (X5 — consumer repos like ida-solution
+  never require a Postgres service).
+- **Edges:** blocked-by: A1.G2 (start); completion additionally
+  exercises A1.G3 (the epic-recomposition drill needs the reconciler);
+  blocks: A5 and A3.G3's completion.
+- **Contracts:** X1 (consumer), X5 (owner), X6 (local-worker mechanics
+  owner).
 - **Required:** yes.
 - **Status:** not-dispatched (blocked-by A1).
 
@@ -156,8 +173,12 @@ vocabulary — is already shipped and live.
     evaluable when `external:cc-harness-T5` lands; until then the
     queue serves the board species only.
 - **Edges:** blocked-by: A1.G2 (G2/G3 additionally exercise A1.G4);
-  conditional-on (G3-sdk only): external:cc-harness-T5.
-- **Contracts:** X1 (consumer), X3 (consumer).
+  G3's completion blocked-by A2 (a visible resume needs a real bound
+  worker); conditional-on (G3-sdk only): external:cc-harness-T5;
+  blocks: A6.
+- **Contracts:** X1 (consumer), X3 (consumer), X2 (front-door owner —
+  the mechanism that produces the human credential, per its contract),
+  X6 (submitter).
 - **Required:** G1–G3 yes; G3-sdk conditional.
 - **Status:** not-dispatched (blocked-by A1).
 
@@ -196,7 +217,8 @@ vocabulary — is already shipped and live.
     the doperpowers board; becomes evaluable when the human triggers
     it. Not required for E3 closure (Parent-Level Acceptance 5).
 - **Edges:** blocked-by: A2, A4.
-- **Contracts:** X1, X4, X5 (consumer).
+- **Contracts:** X1, X4, X5 (consumer), X6 (its G1 drills run on the
+  signal plane).
 - **Required:** G1 yes; G2 conditional (human-triggered).
 - **Status:** not-dispatched (blocked-by A2, A4).
 
@@ -215,11 +237,14 @@ vocabulary — is already shipped and live.
   per identity against the run table (only the current run's
   thread/pod is reachable; X2 tokens verified at the gateway); the
   worker protocol never requires the terminal.
-- **Edges:** blocked-by: A1; external:cc-harness-M2 (control-surface
-  wire methods) and external:swarm-runtime (appserver-born worker
-  sessions to attach to — sessions must run under `ccx serve`;
-  `thread/attach` adoption is M3 and NOT assumed). deliberately-late.
-- **Contracts:** X1 (run-table authz read), X2 (consumer).
+- **Edges:** blocked-by: A1 and A3 (the terminal-launch action lives
+  in A3's ticket view — an A3↔A6 integration seam delivered at A6
+  time); external:cc-harness-M2 (control-surface wire methods) and
+  external:swarm-runtime (appserver-born worker sessions to attach
+  to — sessions must run under `ccx serve`; `thread/attach` adoption
+  is M3 and NOT assumed). deliberately-late.
+- **Contracts:** X1 (run-table authz read), X2 (consumer), X6 (reads
+  run liveness).
 - **Required:** yes (it completes Parent-Level Acceptance 1's terminal
   clause) — but last, and its external edges are start-time gates.
 - **Status:** not-dispatched (waiting-external + deliberately late).
@@ -240,7 +265,9 @@ vocabulary — is already shipped and live.
 ## Cross-Child Contracts
 
 - **X1 — The board API contract.** Owner: A1 (content delivered by
-  A1.G2, versioned in the Arkho repo). Binds A2, A3, A4, A5, A6, A7.
+  A1.G2, versioned in the Arkho repo). Binds A2, A3, A5, A6, A7 —
+  NOT A4, which consumes the outbox directly through its DB role
+  (X4), never the API.
   Authority clauses fixed here: the API is worker-protocol-complete
   against E1 v1.3.3 + E2 v2.x (every legal state-machine operation
   expressible — the upstream canon, not re-litigable by any child);
@@ -248,10 +275,17 @@ vocabulary — is already shipped and live.
   cannot write); the event log is append-only by privilege. Written to
   outlive this unit — promotion to root canon is a closing-time
   action.
-- **X2 — One token issuer.** Owner: A1. Binds A2 (per-run bearer
-  workers hold) and A6 (the gateway verifies the same issuer's
-  tokens for terminal authz). Token mechanism (hash-stored bearer vs
-  short-lived JWT) is A1's delivery, decided at A1's plan time.
+- **X2 — One identity issuer, three principal classes.** Owner: A1
+  (the credential contract: per-run bearers, human principals, and
+  gateway verification — how the API derives `actor_kind` from each
+  class). Binds A2 (workers hold per-run bearers), A3 (owns the
+  front-door MECHANISM that produces the human credential — the
+  Cloudflare Access precedent — but never its contract), and A6
+  (verifies the same issuer for terminal authz). Human-authored
+  events are semantically load-bearing (convergence reset, answer
+  authority, epic adjudication), so the human-principal path is part
+  of A1.G2, not deferred to A3. Token mechanism (hash-stored bearer
+  vs short-lived JWT) is A1's delivery, decided at A1's plan time.
 - **X3 — TimelineReader.** Owner: A1; consumer: A3. A logical
   interface, never raw cross-schema SQL: per-source order only;
   source-local cursor + observed-at + optional source time on every
@@ -269,20 +303,38 @@ vocabulary — is already shipped and live.
   per-repo configuration; gh mode remains a supported first-class
   substrate (the marketplace/zero-dependency identity — consumer
   repos never require a Postgres service).
+- **X6 — The session signal plane: liveness + answer-wake.** Owner:
+  A1 for API semantics, A2 for local-worker mechanics. The r2 draft
+  derives run liveness solely from the cc-harness sessionStore
+  (`ccs_sessions.mtime`) — a feed pre-cluster plugin workers do not
+  produce, so as drafted every A2-bound worker would be reclaimed at
+  lease expiry mid-work. A1 makes the liveness source pluggable: the
+  sessionStore join when the binding names a store; an
+  automation-renewed lease otherwise; any authenticated write from
+  the run counts as life (all reconcilable with E2's zero-new-duties
+  — renewal is dispatch automation, never worker prose). The same
+  plane carries the wake: A1's answer endpoint emits the signal
+  (answer event + NOTIFY), A2's relay resumes the bound session, A3
+  merely submits. Binds A5 (its G1 drills run entirely on this
+  plane) and A6 (terminal authz reads the same run liveness).
+  Recorded in the r2 draft as open item 8.
 
 ## Ordering & Dependency Map
 
 ```
-A1 ──┬──► A2 (doperpowers repo) ──┬──► A5 (flip: Arkho board required;
-     ├──► A3 (web UI)             │        doperpowers board human-triggered)
-     ├──► A4 (GH mirror) ─────────┘
-     └──► A6 (terminal gateway)  ◄─ external: cc-harness M2, swarm runtime
-                                      (deliberately late)
+A1 ──┬──► A2 (doperpowers repo; completion exercises A1.G3) ──┬──► A5
+     ├──► A3 (web UI; G3 completes against A2's bound worker) ┤ (flip: Arkho
+     ├──► A4 (GH mirror) ─────────────────────────────────────┘  board req'd;
+     │                                                           dp board
+     └──► A6 (terminal gateway) ◄── also blocked-by A3;          human-trig.)
+              external: cc-harness M2, swarm runtime (deliberately late)
 A3 + A6 ──► A7 (phase native — conditional, own decomposing run)
 ```
 
-A2/A3/A4 run in parallel once A1.G2 lands (gate-level edge — they need
-the API, not the finished reconciler). **A1–A5 are cluster-independent**:
+A2/A3/A4 START in parallel once A1.G2 lands (gate-level edges); the
+arrows above are start-time — completion gates still reach deeper (A2's
+acceptance exercises A1.G3; A3.G3 completes against A2's bound worker).
+**A1–A5 are cluster-independent**:
 they need one Postgres and a deploy target, not the k8s/gVisor swarm
 runtime — E3 does not queue behind the R-round spikes. Only A6 waits on
 the swarm runtime, and it is deliberately last anyway.
@@ -290,7 +342,8 @@ the swarm runtime, and it is deliberately last anyway.
 ## Risks & Mitigations
 
 - **A1 is the fan-out bottleneck.** Mitigation: gate-level edges — A2,
-  A3, A4 unblock on A1.G2, before G3/G4 finish.
+  A3, A4 START on A1.G2, before G3/G4 finish (their completion gates
+  still reach G3/G4 — see Ordering).
 - **External timing (T5, M2, swarm runtime).** Mitigation: conditional
   gates keep parent acceptance evaluable without them (G3-sdk
   conditional; A6's externals are start-time gates on the last
@@ -415,6 +468,29 @@ UI display naming is A3's surface concern at most).
   vendor in the roadmap would bind a means and go stale exactly the
   way the 07-23 Supabase verdict did. Rejected: fixing hosting here.
   Date/Author: 2026-08-04, session.
+- Decision: Parent acceptance 2's SDK-decision species is conditional
+  on external:cc-harness-T5 — E3 can close on the board species alone.
+  Rationale: external timing must not hostage closure; the projection's
+  board side (schema, roles, ingest seam) still lands in A1, and the
+  queue is species-agnostic by construction, so the unified queue is
+  demonstrated the moment T5 lands with zero A3 rework. This
+  CONDITIONALIZES a human-settled parent decision (unified queue over
+  both park backends, 2026-07-30) — **flagged for the human at spec
+  review; authored by the session.** Rejected: requiring both species
+  (closure hostage to another repo's backlog); dropping the species
+  (reverses the parent decision outright).
+  Date/Author: 2026-08-04, session (review F7).
+- Decision: Run liveness is pluggable-source (X6) — sessionStore join
+  when the binding names a store, automation-renewed lease otherwise,
+  authenticated run writes as evidence; A1 owns the semantics, A2 the
+  local-worker mechanics.
+  Rationale: the r2 draft's mtime-only rule would reclaim live
+  pre-cluster workers (the heartbeat `NOT EXISTS` is vacuously true
+  for a local session); E2's zero-new-duties doctrine survives because
+  renewal is dispatch automation, never worker prose. Rejected:
+  mtime-only liveness (fences the very workers A2 and A5.G1 depend
+  on); a worker-authored heartbeat duty (reverses E2 doctrine).
+  Date/Author: 2026-08-04, session (review F1 — the blocking finding).
 - Decision: Linear mirror deferred out of A4's acceptance; the flip
   (A5) is human-triggered.
   Rationale: no live Linear consumer exists; a cutover is an
@@ -450,10 +526,26 @@ Pending — written when the unit closes. Closing is a RECOMPOSITION
 check: verify Parent-Level Acceptance as written — all children landed
 is not the same event — then retrospect. This is a code-bearing parent
 (children share the API surface and one executable platform): the
-closure package routes through QAgent scale review.
+closure package routes through QAgent scale review. Operational note
+(review F10): with children split across two boards (Decision 1), no
+single board's parent linkage sees all of E3 — recomposition-due
+automation cannot fire for the epic itself; closure runs off this
+Tracking Map by hand.
 
 ## Revision Notes
 
+- 2026-08-04: v1.1, independent fable review (10 findings, all adopted;
+  none re-opened a human decision): **X6 signal-plane contract**
+  (pluggable liveness + answer-wake ownership — the blocking finding:
+  the r2 draft's sessionStore-only heartbeat would have reclaimed
+  every live pre-cluster worker); X2 extended to three principal
+  classes (human credentials are A1-contract, A3-mechanism);
+  completion-gate edges added (A2 → A1.G3, A3.G3 → A2, A6 → A3);
+  X1/A4 bind corrected (mirror writers ride the DB role, not the
+  API); T5/T11 board-side ingest assigned to A1; the SDK-species
+  conditionalization surfaced as a flagged Decision Log entry;
+  manual-recomposition note in Outcomes. Companion edits: r2 draft
+  open item 8; parent-spec board-placement disambiguation.
 - 2026-08-04: v1, authored from the E3 decomposing run (grounding →
   tentative cut → human reaction → grill Q1–Q4 → this document).
   Terminal demotion inherited from the parent spec's same-day steering

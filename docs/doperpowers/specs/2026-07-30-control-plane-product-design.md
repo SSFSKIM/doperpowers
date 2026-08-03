@@ -164,6 +164,10 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-04 (later): board-placement disambiguation — "children on the
+  interim GH board" means Arkho's own repo board for A1/A3–A7 and the
+  doperpowers board for A2, per the roadmap's Decision 1
+  (`2026-08-04-arkho-platform-roadmap.md`).
 - 2026-08-04: E3 kickoff decisions recorded (repo name Arkho; children
   on the interim GH board; terminal demoted to inspection/break-glass —
   the ledger + queue are the communication surfaces). The gating

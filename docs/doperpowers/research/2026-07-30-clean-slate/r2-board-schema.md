@@ -763,3 +763,13 @@ connection, `SELECT ... FOR UPDATE SKIP LOCKED` over `mirror_outbox`:
    the spec `path@SHA` when the contract lives in a repo document;
    whether the Architect's lineage check reads one, the other, or both
    per ticket class is the decomposing run's to fix.
+8. **Liveness-source pluggability** (added 2026-08-04, Arkho roadmap
+   review F1) — §0.5/§3.4 derive liveness solely from
+   `ccs_sessions.mtime`; a pre-cluster plugin worker (local claude CLI
+   session) produces no such feed, so the reclaim's `NOT EXISTS` is
+   vacuously true and would fence live workers at lease expiry. The
+   Arkho roadmap's X6 assigns A1 the fix: pluggable liveness — the
+   sessionStore join when the binding names a store; an
+   automation-renewed lease otherwise; any authenticated run write as
+   evidence. Zero-new-duties survives: renewal is dispatch automation,
+   never worker prose.
