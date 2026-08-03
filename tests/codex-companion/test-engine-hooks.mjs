@@ -318,6 +318,44 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
 }
 
+// --- a review whose target moved under it is not a result --------------------
+// The cache key names a resolved commit, but `review/start` takes a symbolic
+// branch. Between keying the call and the worker reading the diff — a semaphore
+// wait, a transport retry, someone else's push — the ref can move, and the
+// worker then reviews a range the key does not describe. Journaling that under
+// the old commit key is exactly the stale-replay the key exists to prevent.
+{
+  const c = newCase("movingref", [
+    { reviewText: "# R\n\nagainst the moved range" },
+    { reviewText: "# R\n\nstill moved" }
+  ]);
+  const commit = (name, body) => {
+    fs.writeFileSync(path.join(c.repo, name), body);
+    run("git", ["add", "."], { cwd: c.repo });
+    run("git", ["commit", "-m", name], { cwd: c.repo });
+    return run("git", ["rev-parse", "HEAD"], { cwd: c.repo }).stdout.trim();
+  };
+  run("git", ["checkout", "-b", "feature"], { cwd: c.repo });
+  const midpoint = commit("b.txt", "B\n");
+  commit("c.txt", "C\n");
+
+  await assert.rejects(
+    runWorkflow({
+      scriptPath: path.join(FIXTURES, "fx-review-moving.mjs"),
+      args: { repo: c.repo, moveTo: midpoint },
+      cwd: c.repo,
+      runDir: c.runDir
+    }),
+    (err) => /review target moved/.test(err.message),
+    "a review whose base ref moved under it is returned as a result anyway"
+  );
+  assert.equal(counter(c.mockDir), 2, "both attempts ran: the moved target is a leaf failure like any other");
+  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  assert.equal(fin.length, 1, "one finished record");
+  assert.ok(!("result" in fin[0]), "no review text is journaled under a commit key it does not describe");
+  assert.match(fin[0].error, /review target moved/, "the journal says why");
+}
+
 // --- the leaf semaphore caps a bare Promise.all ------------------------------
 {
   const c = newCase("cap", Array.from({ length: 10 }, (_, i) => ({ finalMessage: `c${i} answer`, hangMs: 150 })));

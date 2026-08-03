@@ -283,6 +283,19 @@ export async function runWorkflow(spec) {
           });
           assertTurnUsable(res, "review");
           if (!res.reviewText?.trim()) throw new Error("review returned no output");
+          // review/start takes the SYMBOLIC target — it has no commit parameter —
+          // so the worker reviewed whatever the ref pointed at when it read the
+          // diff, which need not be the commit this call is keyed on: the ref can
+          // move during the semaphore wait, between transport attempts, or while
+          // the worker runs. Re-resolve and fail the leaf rather than journal a
+          // report about one range under a key that names another.
+          const after = reviewTargetCommit(reviewCwd, target);
+          if (after !== targetCommit) {
+            throw new Error(
+              `review target moved while the review ran (${targetCommit} → ${after}); ` +
+              "the report describes a different range than this run journaled"
+            );
+          }
           return { reviewText: res.reviewText, threadId: res.threadId, status: res.status };
         });
       },
