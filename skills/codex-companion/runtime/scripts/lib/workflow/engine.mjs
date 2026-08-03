@@ -59,13 +59,25 @@ export async function runWorkflow(spec) {
   // A fingerprint that could not be TAKEN is recorded as such. It must never
   // compare equal to anything — including the identical failure on a later run,
   // which is exactly how a fail-open constant let a resume replay stale results.
+  // The ARGS are part of the run's identity, not just of the script's inputs:
+  // a leaf is keyed by its payload plus which occurrence of that identity it is
+  // within this run, so args that drop an earlier identical call shift every
+  // later occurrence down one and hand it a result generated for a different
+  // call. Folding them in refuses that resume instead of mixing the two.
   let fp;
   try {
-    fp = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
+    const repo = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
+    fp = crypto.createHash("sha256")
+      .update([repo, JSON.stringify(spec.args ?? null)].join("\x00"))
+      .digest("hex").slice(0, 16);
   } catch (err) {
     fp = `${FINGERPRINT_ERROR_PREFIX}${err?.message ?? err}`;
   }
   try {
+    // The previous run may have died mid-append: close its half-written line
+    // before this one starts appending, or the first event we write joins it.
+    sealJournal(journalPath);
+    const { events, finished } = loadJournal(journalPath);
     if (spec.resume) {
       const recorded = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
       const unusable = [recorded, fp].find((value) => value?.startsWith(FINGERPRINT_ERROR_PREFIX));
@@ -75,19 +87,22 @@ export async function runWorkflow(spec) {
       }
       if (recorded && recorded !== fp) {
         throw new WorkflowError("fingerprint-mismatch",
-          `repo or workflow script changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
+          `repo, workflow script or args changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
       }
-      // A run interrupted before it recorded a fingerprint has nothing to compare
-      // against. Record the current one now rather than leaving the drift guard
-      // off for every later resume of this run dir.
+      // No recorded fingerprint and a journal to replay: nothing says the code
+      // behind those results is the code here now. Adopting the current
+      // fingerprint would BLESS whatever this tree happens to be and then serve
+      // successes produced against the old one — deleting one file would be the
+      // whole attack. Re-fingerprinting is only honest when there is no history.
+      if (!recorded && events.length > 0) {
+        throw new WorkflowError("fingerprint-mismatch",
+          "this run has journaled history but no recorded fingerprint, so the code behind it cannot be " +
+          "confirmed; re-run fresh instead of resuming");
+      }
       if (!recorded) fs.writeFileSync(fpPath, fp);
     } else {
       fs.writeFileSync(fpPath, fp);
     }
-    // The previous run may have died mid-append: close its half-written line
-    // before this one starts appending, or the first event we write joins it.
-    sealJournal(journalPath);
-    const { finished } = loadJournal(journalPath);
     const occurrences = new Map();          // base key → count issued this run
     const liveWorkers = new Set();
     const saveWorkers = () => fs.writeFileSync(workersPath, JSON.stringify([...liveWorkers]));

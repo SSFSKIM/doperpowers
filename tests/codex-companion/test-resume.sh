@@ -293,7 +293,7 @@ node "$RUNTIME" workflow --script "$SCRIPT" --resume "$run_id" --cwd "$repo" \
   > "$scratch/out5.json" 2> "$scratch/refuse-fp.err" || rc=$?
 assert_ne "a drifted resume is refused" 0 "$rc"
 assert_contains "the refusal names the fingerprint" "$scratch/refuse-fp.err" "fingerprint-mismatch"
-assert_contains "the refusal explains the drift" "$scratch/refuse-fp.err" "repo or workflow script changed since the original run"
+assert_contains "the refusal explains the drift" "$scratch/refuse-fp.err" "repo, workflow script or args changed since the original run"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 assert_eq "the earlier result is left intact" \
   "A-first B-live C-first D-live" \
@@ -346,7 +346,7 @@ node "$RUNTIME" workflow --script "$adhoc" --resume "$drift_id" --cwd "$repo" \
 assert_ne "an edited script refuses to resume" 0 "$rc"
 assert_contains "the refusal names the fingerprint" "$scratch/refuse-script.err" "fingerprint-mismatch"
 assert_contains "the refusal names the script as a cause" "$scratch/refuse-script.err" \
-  "repo or workflow script changed since the original run"
+  "repo, workflow script or args changed since the original run"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 assert_eq "the repo never moved during this phase" "$head_before" "$(git -C "$repo" rev-parse HEAD)"
 assert_eq "the repo is still clean" "" "$(git -C "$repo" status --porcelain)"

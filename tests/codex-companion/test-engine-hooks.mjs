@@ -355,18 +355,8 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.deepEqual(first.result, ["first", "second"], "two identical calls get their own turns");
   assert.equal(counter(c.mockDir), 2, "two turns consumed on the fresh run");
 
-  // A run interrupted before it recorded a fingerprint (or one journaled by an
-  // older engine) must not resume with the drift guard permanently disarmed:
-  // the first resume records the CURRENT fingerprint and guards the rest of the
-  // chain from there.
-  fs.rmSync(path.join(c.runDir, "fingerprint"));
-
   const lines = [];
   const resumed = await runWorkflow({ ...spec, resume: true, emit: (l) => lines.push(l) });
-  assert.ok(
-    fs.existsSync(path.join(c.runDir, "fingerprint")),
-    "a resume with no recorded fingerprint arms the guard instead of leaving it off"
-  );
   assert.deepEqual(
     resumed.result,
     ["first", "second"],
@@ -376,6 +366,23 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.equal(resumed.agents, 0, "no leaf call was issued on the resume");
   assert.deepEqual(lines.filter((l) => l.startsWith("cache ")), ["cache agent:dup", "cache agent:dup"], "both hits are announced");
 
+  // A journal whose fingerprint is GONE has nothing to compare against, and
+  // there is cacheable history to serve. Recording the CURRENT fingerprint
+  // there blesses whatever the tree looks like now and then replays successes
+  // produced against the old one — deleting one file would be all it takes.
+  const fpFile = path.join(c.runDir, "fingerprint");
+  const recorded = fs.readFileSync(fpFile, "utf8");
+  fs.rmSync(fpFile);
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch"
+      && /no recorded fingerprint/.test(err.message),
+    "a journal with no fingerprint is replayed against a repo nobody blessed"
+  );
+  assert.ok(!fs.existsSync(fpFile), "the refused resume adopted the current repo state anyway");
+  assert.equal(counter(c.mockDir), 2, "the refused resume never reached the script");
+  fs.writeFileSync(fpFile, recorded);
+
   // fingerprint guard: the same run dir against a changed repo must refuse.
   fs.writeFileSync(path.join(c.repo, "new-untracked.txt"), "drift\n");
   await assert.rejects(
@@ -383,6 +390,25 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
     (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
     "resuming against a changed repo is refused, not silently replayed"
   );
+}
+
+// --- an EMPTY journal may still be re-fingerprinted ---------------------------
+// The refusal above is about replaying history against unblessed code. A run
+// dir with nothing journaled has no history to replay, so arming the guard with
+// the current fingerprint is honest — and refusing here would strand a run that
+// died before it wrote its first event.
+{
+  const c = newCase("nojournal", [{ finalMessage: "fresh" }]);
+  fs.mkdirSync(c.runDir, { recursive: true });
+  const spec = { scriptPath: path.join(FIXTURES, "fx-solo.mjs"), args: {}, cwd: c.repo, runDir: c.runDir };
+  const out = await runWorkflow({ ...spec, resume: true });
+  assert.equal(out.result.one, "fresh", "a resume with nothing journaled runs the script live");
+  assert.ok(
+    fs.existsSync(path.join(c.runDir, "fingerprint")),
+    "a resume with no history arms the guard instead of leaving it off"
+  );
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "…and the guard it armed lets the next resume cache-hit");
 }
 
 // --- resume recovers a failed call, keeps a successful one cached ------------
@@ -542,18 +568,51 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
     additionalProperties: false,
     description: tail            // same length, differs well past byte 64
   });
-  const spec = { scriptPath: path.join(FIXTURES, "fx-schema-args.mjs"), cwd: c.repo, runDir: c.runDir };
+  // The schema arrives through a file OUTSIDE the repo and outside the script's
+  // directory, so it moves without touching the run fingerprint: this case is
+  // about the leaf cache key alone.
+  const schemaPath = path.join(c.scratch, "schema.json");
+  const spec = {
+    scriptPath: path.join(FIXTURES, "fx-schema-file.mjs"), args: { schemaPath },
+    cwd: c.repo, runDir: c.runDir
+  };
   const a = schemaWith("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   const b = schemaWith("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB");
   assert.equal(JSON.stringify(a).length, JSON.stringify(b).length, "the two schemas must be the same length");
   assert.equal(JSON.stringify(a).slice(0, 64), JSON.stringify(b).slice(0, 64), "...and share their first 64 bytes");
 
-  await runWorkflow({ ...spec, args: { schema: a } });
+  fs.writeFileSync(schemaPath, JSON.stringify(a));
+  await runWorkflow(spec);
   assert.equal(counter(c.mockDir), 1);
-  await runWorkflow({ ...spec, args: { schema: a }, resume: true });
+  await runWorkflow({ ...spec, resume: true });
   assert.equal(counter(c.mockDir), 1, "the same schema cache-hits");
-  await runWorkflow({ ...spec, args: { schema: b }, resume: true });
+  fs.writeFileSync(schemaPath, JSON.stringify(b));
+  await runWorkflow({ ...spec, resume: true });
   assert.equal(counter(c.mockDir), 2, "a schema differing after byte 64 must MISS the cache");
+}
+
+{
+  // (c2) The workflow ARGS decide which calls the script makes, and a leaf is
+  // keyed by its payload plus which occurrence of that identity it is within
+  // THIS run. Args that drop an earlier identical call therefore shift a later
+  // logical call onto `#0` and serve it the earlier call's result. Args ride
+  // the run fingerprint, so a changed --args refuses the resume outright.
+  const c = newCase("argsident", [{ finalMessage: "first" }, { finalMessage: "second" }]);
+  const spec = { scriptPath: path.join(FIXTURES, "fx-args-count.mjs"), cwd: c.repo, runDir: c.runDir };
+
+  const out = await runWorkflow({ ...spec, args: { n: 2 } });
+  assert.deepEqual(out.result, ["first", "second"], "two calls, two independent answers");
+  assert.equal(counter(c.mockDir), 2);
+
+  await runWorkflow({ ...spec, args: { n: 2 }, resume: true });
+  assert.equal(counter(c.mockDir), 2, "unchanged args still cache-hit — the guard is not blanket");
+
+  await assert.rejects(
+    runWorkflow({ ...spec, args: { n: 1 }, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    "changed args are replayed against a journal whose call sequence they no longer match"
+  );
+  assert.equal(counter(c.mockDir), 2, "the refused resume never reached the script");
 }
 
 {
