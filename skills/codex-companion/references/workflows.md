@@ -17,7 +17,8 @@ anywhere on this lane.
 `--cwd` is the repo the workers read and the base every relative path resolves
 against, the process cwd by default; `--script` is resolved against it and must
 exist. `--args` is any JSON value, handed to the script as `args` (`{}` when
-omitted). `--max-concurrency` defaults to 6 and bounds live Codex app-servers,
+omitted, and the run's own recorded value when resuming — see below).
+`--max-concurrency` defaults to 6 and bounds live Codex app-servers,
 not script promises. `--resume <run-id>` re-enters an existing run (see below).
 
 The two env prefixes carry the same meaning as everywhere else in this skill:
@@ -125,7 +126,8 @@ is exempt, so it never buys a third model turn.
 
 Everything about a run lives in `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`:
 `journal.jsonl` (the event log — every leaf call's start, retry and outcome,
-appended as it happens), `result.json`, `fingerprint`, `lease.json` while the
+appended as it happens), `result.json`, `fingerprint`, `args.json` (the
+`--args` the run was issued with), `lease.json` while the
 run holds the directory, and `workers.json` tracking live worker pids (each with
 the worker's process start time, so a `cancel` after a reboot cannot signal
 whatever inherited the number). The run
@@ -147,21 +149,39 @@ resume exists to recover a crashed run and replaying a dead worker's failure
 would make the lost result unrecoverable. Two guards sit in front of it. The
 lease: one process holds the run directory at a time, and a lease whose holder
 is provably gone is broken atomically, so a resume of a run that is still going
-is refused rather than racing it. The fingerprint: it hashes the canonical
-repository root, HEAD, the full content diff against HEAD (including dirty
-submodule contents), every untracked file's blob — content, not just paths —
-the `--args` value, and the workflow script's own content along with its sibling
-`.mjs`/`.js`/`.cjs` files and everything under a `lib/` directory next to it, so
-editing even an out-of-tree ad-hoc script or a helper it imports refuses the
+is refused rather than racing it. The fingerprint: four named components, each
+of which refuses the resume by name when it moves — the canonical repository
+path; the repository content (HEAD, the full content diff against HEAD including
+dirty submodule contents, every untracked file's blob and every untracked file
+inside a submodule — content, not just paths); the `--args` value; and the
+workflow script's own content along with its sibling `.mjs`/`.js`/`.cjs` files
+and everything under a `lib/` directory next to it, symlinked entries included,
+so editing even an out-of-tree ad-hoc script or a helper it imports refuses the
 resume too. That last part is a deliberate approximation: the engine does not
 walk the import graph, so a module imported from somewhere ELSE entirely (or a
 change to the engine itself) will not invalidate a journal — keep a workflow's
-helpers beside it or under its `lib/`. A resume against a changed repo, a
-changed script or changed args is refused outright, since the cached results
-describe code that no longer exists. Re-run fresh instead. In a directory with
-no git the fingerprint covers only the script and the directory's own path — the
-repo half of the guard has nothing to watch, but an edited script is still
-refused.
+helpers beside it or under its `lib/`. The same approximation cuts the other
+way: writing a SECOND `.mjs` file into an ad-hoc script's own directory between
+a run and its resume also refuses the first script's resume, since that file is
+now one of its siblings. Give an ad-hoc workflow its own directory. A resume
+against any changed component is refused outright, since the cached results
+describe inputs that no longer exist. Re-run fresh instead.
+
+Two states are un-resumable rather than compared. A `--cwd` that is not inside a
+git repository has no content anything can watch — the workers read files the
+fingerprint never hashes — so such a run is single-use and every resume of it is
+refused; the same goes for a per-call `cwd` outside a repository, whose calls are
+never served from the cache. And a fingerprint that could not be TAKEN (a git
+read that failed — an unreadable object, or a submodule pointer bump whose
+`--submodule=diff` output exceeds the engine's 64 MiB buffer) permanently marks
+that run unresumable: it fails closed rather than comparing two failures as
+equal.
+
+`--args` are recorded in the run directory, so `--resume <run-id>` on its own
+replays the args the run was issued with. Passing `--args` on a resume is still
+allowed and is compared: a different value refuses the resume and says so by
+name. The comparison is over the serialized JSON, so re-ordering the keys counts
+as a change.
 
 A fully-cached resume spawns no workers at all, so `workers.json` may be absent
 rather than empty — `cancel` tolerates that.

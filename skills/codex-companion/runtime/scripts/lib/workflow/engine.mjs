@@ -11,7 +11,8 @@ import { processStartTime } from "../pid.mjs";
 import { validateSchema } from "./validate.mjs";
 import {
   cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease,
-  repoFingerprint, reviewTargetCommit, FINGERPRINT_ERROR_PREFIX
+  repoFingerprint, repoFingerprintParts, reviewTargetCommit,
+  FINGERPRINT_ERROR_PREFIX, FINGERPRINT_NOGIT
 } from "./journal.mjs";
 
 export class WorkflowError extends Error {
@@ -53,6 +54,15 @@ export async function runWorkflow(spec) {
   const journalPath = path.join(runDir, "journal.jsonl");
   const workersPath = path.join(runDir, "workers.json");
   const fpPath = path.join(runDir, "fingerprint");
+  // The args the run was issued with, recorded so a resume can be given them
+  // back: they are part of the run identity, so a resume that has to retype them
+  // byte-for-byte is a refusal waiting to happen. The CLI reads this file when
+  // `--resume` carries no `--args`.
+  const argsPath = path.join(runDir, "args.json");
+  // Per-run uniqueness, used wherever an identity could not be ESTABLISHED —
+  // by the no-git run fingerprint below and by the per-call degraded key. No
+  // journal written by any other run can ever match it.
+  const runNonce = crypto.randomUUID();
   // Once per run: repoFingerprint shells out per untracked file. The script
   // path rides extraPaths so editing an out-of-tree (ad-hoc) workflow script
   // also refuses a stale-cache resume; in-tree scripts are covered twice,
@@ -65,44 +75,63 @@ export async function runWorkflow(spec) {
   // within this run, so args that drop an earlier identical call shift every
   // later occurrence down one and hand it a result generated for a different
   // call. Folding them in refuses that resume instead of mixing the two.
+  // Kept as NAMED COMPONENTS rather than one digest: these are four independent
+  // causes of a refusal, and a resume that only says "something changed" leaves
+  // its caller nothing to check.
   let fp;
   try {
-    const repo = repoFingerprint(spec.cwd, workflowExtraPaths(spec.scriptPath));
-    fp = crypto.createHash("sha256")
-      .update([repo, JSON.stringify(spec.args ?? null)].join("\x00"))
-      .digest("hex").slice(0, 16);
+    const repo = repoFingerprintParts(spec.cwd, workflowExtraPaths(spec.scriptPath));
+    fp = {
+      repoPath: repo.repoPath,
+      // A directory with no git has no comparable content at all: the workers
+      // read files nothing hashes, so its journaled successes must never be
+      // served to a later run. Hashing an arbitrary tree is not worth its cost —
+      // the run is stamped single-use instead, and every resume of it refuses.
+      repoContent: repo.repoContent === FINGERPRINT_NOGIT
+        ? `${FINGERPRINT_NOGIT}:${runNonce}`
+        : repo.repoContent,
+      code: repo.code,
+      args: crypto.createHash("sha256").update(JSON.stringify(spec.args ?? null)).digest("hex").slice(0, 16)
+    };
   } catch (err) {
     fp = `${FINGERPRINT_ERROR_PREFIX}${err?.message ?? err}`;
   }
+  // Written together: the fingerprint the next resume is compared against, and
+  // the args that resume will be handed if it names none.
+  const armGuard = () => {
+    fs.writeFileSync(fpPath, typeof fp === "string" ? fp : JSON.stringify(fp));
+    fs.writeFileSync(argsPath, JSON.stringify(spec.args ?? null));
+  };
   try {
     // The previous run may have died mid-append: close its half-written line
     // before this one starts appending, or the first event we write joins it.
     sealJournal(journalPath);
-    const { events, finished } = loadJournal(journalPath);
+    const { finished } = loadJournal(journalPath);
     if (spec.resume) {
-      const recorded = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
-      const unusable = [recorded, fp].find((value) => value?.startsWith(FINGERPRINT_ERROR_PREFIX));
+      const raw = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
+      const unusable = [raw, fp].find((value) => typeof value === "string" && value.startsWith(FINGERPRINT_ERROR_PREFIX));
       if (unusable) {
         throw new WorkflowError("fingerprint-mismatch",
           `repository fingerprint is unavailable (${unusable}); re-run fresh instead of resuming`);
       }
-      if (recorded && recorded !== fp) {
+      if (raw !== null) {
+        assertFingerprintMatches(parseFingerprint(raw), fp);
+      } else if ([...finished.values()].some((event) => !event.error)) {
+        // No recorded fingerprint and journaled SUCCESSES to replay: nothing
+        // says the code behind those results is the code here now. Adopting the
+        // current fingerprint would BLESS whatever this tree happens to be and
+        // then serve results produced against the old one — deleting one file
+        // would be the whole attack. Log lines, started markers and journaled
+        // failures are not that: a resume can serve none of them, so a journal
+        // holding only those may still be re-fingerprinted.
         throw new WorkflowError("fingerprint-mismatch",
-          `repo, workflow script or args changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
-      }
-      // No recorded fingerprint and a journal to replay: nothing says the code
-      // behind those results is the code here now. Adopting the current
-      // fingerprint would BLESS whatever this tree happens to be and then serve
-      // successes produced against the old one — deleting one file would be the
-      // whole attack. Re-fingerprinting is only honest when there is no history.
-      if (!recorded && events.length > 0) {
-        throw new WorkflowError("fingerprint-mismatch",
-          "this run has journaled history but no recorded fingerprint, so the code behind it cannot be " +
+          "this run has journaled results but no recorded fingerprint, so the code behind them cannot be " +
           "confirmed; re-run fresh instead of resuming");
+      } else {
+        armGuard();
       }
-      if (!recorded) fs.writeFileSync(fpPath, fp);
     } else {
-      fs.writeFileSync(fpPath, fp);
+      armGuard();
     }
     const occurrences = new Map();          // base key → count issued this run
     // pid → its process start time: cancel reads this file, possibly long after
@@ -196,13 +225,14 @@ export async function runWorkflow(spec) {
     };
 
     // A call whose repository identity could not be ESTABLISHED must not be
-    // cacheable at all. `error:<msg>` is a stable string, so a later run failing
-    // the same way would key identically and be served a result produced from
-    // files nobody can compare — the run-level guard refuses that resume
-    // outright, and a per-call one has to be at least as strict. The nonce is
-    // per-run, so no journal key written by any other run can ever match it.
-    const runNonce = crypto.randomUUID();
-    const degraded = (value) => typeof value === "string" && value.startsWith(FINGERPRINT_ERROR_PREFIX);
+    // cacheable at all. `error:<msg>` and `no-git:<digest>` are both stable
+    // strings, so a later run in the same state would key identically and be
+    // served a result produced from files nobody compared — a non-repository
+    // directory hashes its path and the workflow script, never the files the
+    // worker actually read there. The run-level guard refuses such a resume
+    // outright, and a per-call one has to be at least as strict.
+    const degraded = (value) => typeof value === "string"
+      && (value.startsWith(FINGERPRINT_ERROR_PREFIX) || value.startsWith(`${FINGERPRINT_NOGIT}:`));
     const identify = (payload, label, cwd, resolveFailed = false) => {
       const fingerprint = cwdFingerprint(cwd);
       const stamped = { ...payload, cwdFingerprint: fingerprint };
@@ -333,6 +363,46 @@ export async function runWorkflow(spec) {
   }
 }
 
+// What a caller can actually go and check when a resume is refused. The four
+// components are independent causes, and the old single digest named all of them
+// at once — "repo, workflow script or args changed" for a message that was true
+// no matter which one moved.
+const COMPONENT_NAMES = {
+  repoPath: "the repository path",
+  repoContent: "the repository content",
+  code: "the workflow script or a helper beside it",
+  args: "--args"
+};
+
+function parseFingerprint(raw) {
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch { /* not a component record */ }
+  if (!parsed || typeof parsed !== "object") {
+    // A fingerprint file nobody can read is not a match — a run recorded by an
+    // older engine, or a corrupted one, has no components to compare.
+    throw new WorkflowError("fingerprint-mismatch",
+      "the recorded fingerprint cannot be read, so nothing about the original run can be confirmed; " +
+      "re-run fresh instead of resuming");
+  }
+  return parsed;
+}
+
+function assertFingerprintMatches(recorded, current) {
+  const moved = Object.keys(COMPONENT_NAMES).filter((name) => recorded[name] !== current[name]);
+  if (moved.length === 0) return;
+  // A run taken outside a git repository is single-use by construction: its
+  // repoContent carries a per-run nonce, so it never matches and the digest
+  // difference below would be meaningless noise.
+  if ([recorded.repoContent, current.repoContent].some((v) => String(v).startsWith(`${FINGERPRINT_NOGIT}:`))) {
+    throw new WorkflowError("fingerprint-mismatch",
+      "this run's --cwd is not inside a git repository, so nothing watched the files its workers read; " +
+      "such a run cannot be resumed — re-run fresh");
+  }
+  const detail = moved.map((name) => `${COMPONENT_NAMES[name]} (${recorded[name]} → ${current[name]})`).join(", ");
+  throw new WorkflowError("fingerprint-mismatch",
+    `changed since the original run: ${detail}; re-run fresh instead of resuming`);
+}
+
 // What counts as "the workflow's own code" for the fingerprint. A script's
 // helpers are orchestration code too: change `./lib/extract.mjs` and the leaf
 // results in the journal were produced under semantics that no longer exist.
@@ -348,17 +418,29 @@ const WORKFLOW_CODE = /\.(mjs|cjs|js)$/;
 function workflowExtraPaths(scriptPath) {
   const resolved = path.resolve(scriptPath);
   const found = new Set([resolved]);
+  const seen = new Set();                                 // realpaths, so a link loop cannot spin
+  // statSync, not the dirent's own isFile()/isDirectory(): BOTH are false for a
+  // symlink, and linking a shared helper (or a whole lib/) into a workflow
+  // directory is exactly how orchestration code gets reused. Following the link
+  // is also the honest read — the script imports the target's content.
+  const kind = (full) => { try { return fs.statSync(full); } catch { return null; } };
   const walk = (dir, recurse) => {
+    let real;
+    try { real = fs.realpathSync(dir); } catch { return; }
+    if (seen.has(real)) return;
+    seen.add(real);
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
-      if (entry.isFile()) { if (WORKFLOW_CODE.test(entry.name)) found.add(full); }
-      else if (recurse && entry.isDirectory()) walk(full, true);
+      const stat = kind(full);
+      if (!stat) continue;                                // a broken link points at no content
+      if (stat.isFile()) { if (WORKFLOW_CODE.test(entry.name)) found.add(full); }
+      else if (recurse && stat.isDirectory()) walk(full, true);
     }
   };
   walk(path.dirname(resolved), false);
-  walk(path.join(path.dirname(resolved), "lib"), true);   // absent: readdir throws, nothing added
+  walk(path.join(path.dirname(resolved), "lib"), true);   // absent: realpath throws, nothing added
   return [...found].sort();                               // readdir order is not guaranteed stable
 }
 

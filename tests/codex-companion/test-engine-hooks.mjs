@@ -430,9 +430,41 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   fs.writeFileSync(path.join(c.repo, "new-untracked.txt"), "drift\n");
   await assert.rejects(
     runWorkflow({ ...spec, resume: true }),
-    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    // The refusal has to NAME what moved: repo content, repo path, script and
+    // args are four independent causes, and one shared "something changed"
+    // message leaves the caller with nothing to check.
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch"
+      && /repository content/.test(err.message),
     "resuming against a changed repo is refused, not silently replayed"
   );
+}
+
+// --- a journal with no CACHEABLE history may still be re-fingerprinted --------
+// The refusal above is about replaying successes against unblessed code. Log
+// lines, started markers and journaled FAILURES are none of that: a resume can
+// serve nothing from them, so refusing here would strand a run that died early
+// and buy no safety at all.
+{
+  const c = newCase("logonly", [{ finalMessage: "fresh" }]);
+  fs.mkdirSync(c.runDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(c.runDir, "journal.jsonl"),
+    [
+      { type: "log", message: "starting" },
+      { type: "started", key: "agent|solo|deadbeefdeadbeef#0", kind: "agent", label: "solo" },
+      { type: "retry", key: "agent|solo|deadbeefdeadbeef#0", error: "worker died" },
+      { type: "finished", key: "agent|solo|deadbeefdeadbeef#0", error: "worker died" }
+    ].map((e) => `${JSON.stringify(e)}\n`).join("")
+  );
+  const spec = { scriptPath: path.join(FIXTURES, "fx-solo.mjs"), args: {}, cwd: c.repo, runDir: c.runDir };
+  const out = await runWorkflow({ ...spec, resume: true });
+  assert.equal(out.result.one, "fresh", "a resume whose journal holds no success runs the script live");
+  assert.ok(
+    fs.existsSync(path.join(c.runDir, "fingerprint")),
+    "…and arms the guard, so the successes it writes now are protected"
+  );
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "the guard it armed lets the next resume cache-hit");
 }
 
 // --- an EMPTY journal may still be re-fingerprinted ---------------------------
@@ -686,7 +718,8 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
 
   await assert.rejects(
     runWorkflow({ ...spec, args: { n: 1 }, resume: true }),
-    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch"
+      && /--args/.test(err.message),
     "changed args are replayed against a journal whose call sequence they no longer match"
   );
   assert.equal(counter(c.mockDir), 2, "the refused resume never reached the script");
@@ -782,7 +815,8 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   fs.writeFileSync(helper, 'export const note = "inspect harder";\n');
   await assert.rejects(
     runWorkflow({ ...spec, resume: true }),
-    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch"
+      && /workflow script/.test(err.message),
     "an edited lib/ helper leaves the journal replayable under different orchestration code"
   );
 
@@ -794,6 +828,93 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
     "an edited sibling module beside the script is invisible to the guard"
   );
   assert.equal(counter(c.mockDir), 1, "no refused resume reached the script");
+}
+
+{
+  // (e2b) A SYMLINKED helper. `dirent.isFile()` and `dirent.isDirectory()` are
+  // both false for a symlink, so a linked-in helper module — how a shared
+  // workflow library actually gets into an ad-hoc script's directory — rode
+  // nothing at all, and the widening above stopped at the directory's own files.
+  const c = newCase("symlinkhelper", [{ finalMessage: "one" }, { finalMessage: "MUST-NOT-BE-REACHED" }]);
+  const wfDir = path.join(c.scratch, "wf");
+  const shared = path.join(c.scratch, "shared");
+  fs.mkdirSync(path.join(wfDir, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(shared, "deep"), { recursive: true });
+  const linkedHelper = path.join(shared, "helper.mjs");
+  const deepHelper = path.join(shared, "deep", "deeper.mjs");
+  fs.writeFileSync(linkedHelper, 'export const note = "inspect";\n');
+  fs.writeFileSync(deepHelper, "export const level = 1;\n");
+  fs.symlinkSync(linkedHelper, path.join(wfDir, "lib", "helper.mjs"));       // a linked FILE
+  fs.symlinkSync(path.join(shared, "deep"), path.join(wfDir, "lib", "deep")); // a linked DIRECTORY
+  const script = path.join(wfDir, "entry.mjs");
+  fs.writeFileSync(script,
+    'import { note } from "./lib/helper.mjs";\n' +
+    'import { level } from "./lib/deep/deeper.mjs";\n' +
+    'export default async function run({ agent }) { return agent(`${note} ${level}`, { label: "solo" }); }\n');
+
+  const spec = { scriptPath: script, args: {}, cwd: c.repo, runDir: c.runDir };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "an untouched workflow directory still resumes");
+
+  fs.writeFileSync(linkedHelper, 'export const note = "inspect harder";\n');
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    "an edited helper reached through a symlink is invisible to the guard"
+  );
+
+  fs.writeFileSync(linkedHelper, 'export const note = "inspect";\n');        // back to the blessed state
+  fs.writeFileSync(deepHelper, "export const level = 2;\n");
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    "a module under a symlinked directory is invisible to the guard"
+  );
+  assert.equal(counter(c.mockDir), 1, "no refused resume reached the script");
+}
+
+{
+  // (e3) A `--cwd` with no git repository at all. The no-git digest tells
+  // directories and scripts apart, but the directory's CONTENTS are hashed
+  // nowhere: agents read files there, someone edits them, and every journaled
+  // success would replay against inputs nobody compared. Hashing arbitrary trees
+  // is not worth its cost, so such a run is single-use — its resume is refused.
+  const c = newCase("nogitrun", [{ finalMessage: "one" }, { finalMessage: "MUST-NOT-BE-REACHED" }]);
+  const plain = path.join(c.scratch, "plainwork");
+  fs.mkdirSync(plain, { recursive: true });
+
+  const spec = { scriptPath: path.join(FIXTURES, "fx-solo.mjs"), args: {}, cwd: plain, runDir: c.runDir };
+  const out = await runWorkflow(spec);
+  assert.equal(out.result.one, "one", "a FRESH run outside a repository still runs — only its resume is refused");
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch"
+      && /git repository/.test(err.message),
+    "a resume outside a repository serves successes against files nothing watched"
+  );
+  assert.equal(counter(c.mockDir), 1, "the refused resume never reached the script");
+}
+
+{
+  // (e4) The same gap reached through a per-call cwd, where there is no run-level
+  // refusal to fall back on: the call itself must become uncacheable.
+  const c = newCase("nogitpercall", [{ finalMessage: "one" }, { finalMessage: "two" }]);
+  const plain = path.join(c.scratch, "plainwork");
+  fs.mkdirSync(plain, { recursive: true });
+
+  const emitted = [];
+  const spec = {
+    scriptPath: path.join(FIXTURES, "fx-percwd.mjs"), args: { cwd: plain },
+    cwd: c.repo, runDir: c.runDir, emit: (line) => emitted.push(line)
+  };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+  assert.ok(emitted.some((l) => l.startsWith("fingerprint-degraded other")),
+    "a call into a non-repository announces itself as degraded");
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 2, "a call into a non-repository must re-run live, never cache-hit");
 }
 
 {

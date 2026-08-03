@@ -896,6 +896,29 @@ function parseWorkflowArgs(raw) {
   }
 }
 
+// The run fingerprint folds in --args, so a resume that does not repeat them
+// byte-for-byte is refused outright. Retyping a JSON blob exactly is not a
+// contract anyone can keep, so the engine records what each run was issued with
+// and a resume that names none is handed those back. Explicit --args are still
+// honoured — and compared, which is where the refusal belongs.
+function resolveResumeArgs(runDir, raw) {
+  if (raw != null && raw !== "") {
+    return parseWorkflowArgs(raw);
+  }
+  const recorded = path.join(runDir, "args.json");
+  if (!fs.existsSync(recorded)) {
+    return parseWorkflowArgs(raw);
+  }
+  try {
+    return JSON.parse(fs.readFileSync(recorded, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `The args recorded for this run are unreadable (${recorded}): ` +
+      `${error instanceof Error ? error.message : String(error)}. Pass --args explicitly or re-run fresh.`
+    );
+  }
+}
+
 function parseMaxConcurrency(raw) {
   if (raw == null) {
     return undefined; // the engine owns the default (6)
@@ -927,7 +950,6 @@ async function handleWorkflow(argv) {
   }
   ensureCodexAvailable(cwd);
 
-  const args = parseWorkflowArgs(options.args);
   const maxConcurrency = parseMaxConcurrency(options["max-concurrency"]);
   const resume = Boolean(options.resume);
   // The run id IS the job id: one run, one record, one directory — so
@@ -971,6 +993,7 @@ async function handleWorkflow(argv) {
       );
     }
   }
+  const args = resume ? resolveResumeArgs(runDir, options.args) : parseWorkflowArgs(options.args);
   const logFile = createJobLogFile(workspaceRoot, runId, "Codex Workflow");
 
   const lifecycle = workflowJobLifecycle(

@@ -293,7 +293,13 @@ node "$RUNTIME" workflow --script "$SCRIPT" --resume "$run_id" --cwd "$repo" \
   > "$scratch/out5.json" 2> "$scratch/refuse-fp.err" || rc=$?
 assert_ne "a drifted resume is refused" 0 "$rc"
 assert_contains "the refusal names the fingerprint" "$scratch/refuse-fp.err" "fingerprint-mismatch"
-assert_contains "the refusal explains the drift" "$scratch/refuse-fp.err" "repo, workflow script or args changed since the original run"
+# The refusal has to name WHICH input moved: repo content, repo path, script and
+# args are four independent causes, and one shared message leaves the caller with
+# four things to check and no way to tell which.
+assert_contains "the refusal names the repository content as the cause" "$scratch/refuse-fp.err" \
+  "changed since the original run: the repository content"
+assert_absent "…and does not blame the script" "$scratch/refuse-fp.err" "workflow script"
+assert_absent "…and does not blame the args" "$scratch/refuse-fp.err" "--args"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 assert_eq "the earlier result is left intact" \
   "A-first B-live C-first D-live" \
@@ -345,11 +351,55 @@ node "$RUNTIME" workflow --script "$adhoc" --resume "$drift_id" --cwd "$repo" \
   > "$scratch/out8.json" 2> "$scratch/refuse-script.err" || rc=$?
 assert_ne "an edited script refuses to resume" 0 "$rc"
 assert_contains "the refusal names the fingerprint" "$scratch/refuse-script.err" "fingerprint-mismatch"
-assert_contains "the refusal names the script as a cause" "$scratch/refuse-script.err" \
-  "repo, workflow script or args changed since the original run"
+assert_contains "the refusal names the script as the cause" "$scratch/refuse-script.err" \
+  "changed since the original run: the workflow script"
+assert_absent "…and does not blame the repository" "$scratch/refuse-script.err" "repository content"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 assert_eq "the repo never moved during this phase" "$head_before" "$(git -C "$repo" rev-parse HEAD)"
 assert_eq "the repo is still clean" "" "$(git -C "$repo" status --porcelain)"
+
+# ---------------------------------------------------------------------------
+# Phase 8: the --args contract. Args ride the run fingerprint, so a resume that
+# does not repeat them byte-for-byte is refused — which would make EVERY resume
+# of an args-taking workflow a refusal, since nothing used to record what the run
+# was issued with. The run records them; a resume that names none is handed them
+# back; a resume that names different ones is refused by name.
+# ---------------------------------------------------------------------------
+echo "-- phase 8: --args are recorded, and a resume defaults to them"
+ARGS_SCRIPT="$FIXTURES/fx-args-count.mjs"
+reset_mock '{"turns":[{"finalMessage":"N1"}]}'
+rc=0
+node "$RUNTIME" workflow --script "$ARGS_SCRIPT" --args '{"n":1}' --cwd "$repo" \
+  > "$scratch/out9.json" 2> "$scratch/err9.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err9.log"
+assert_eq "the args run exits 0" 0 "$rc"
+args_id="$(jq -r '.runId' "$scratch/out9.json")"
+args_dir="$CLAUDE_PLUGIN_DATA/workflows/$args_id"
+assert_eq "the run recorded the args it was issued with" '{"n":1}' "$(jq -c '.' "$args_dir/args.json")"
+
+reset_mock '{"turns":[{"finalMessage":"must-not-run"}]}'
+rc=0
+node "$RUNTIME" workflow --script "$ARGS_SCRIPT" --resume "$args_id" --cwd "$repo" \
+  > "$scratch/out10.json" 2> "$scratch/err10.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err10.log"
+assert_eq "a resume naming no --args replays the recorded ones" 0 "$rc"
+assert_eq "the cached result came back" N1 "$(jq -r '.result[0]' "$scratch/out10.json")"
+assert_eq "no turn was spent on the defaulted resume" 0 "$(turns_taken)"
+
+rc=0
+node "$RUNTIME" workflow --script "$ARGS_SCRIPT" --resume "$args_id" --args '{"n":1}' --cwd "$repo" \
+  > "$scratch/out11.json" 2> "$scratch/err11.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err11.log"
+assert_eq "a resume repeating the same --args also resumes" 0 "$rc"
+assert_eq "no turn was spent on it either" 0 "$(turns_taken)"
+
+rc=0
+node "$RUNTIME" workflow --script "$ARGS_SCRIPT" --resume "$args_id" --args '{"n":2}' --cwd "$repo" \
+  > /dev/null 2> "$scratch/refuse-args.err" || rc=$?
+assert_ne "a resume with DIFFERENT --args is refused" 0 "$rc"
+assert_contains "the refusal names the args as the cause" "$scratch/refuse-args.err" \
+  "changed since the original run: --args"
+assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 
 if [ "$fail" -eq 0 ]; then echo "workflow resume: all phases passed"; fi
 exit "$fail"

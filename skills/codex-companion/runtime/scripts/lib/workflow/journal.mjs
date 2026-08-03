@@ -178,8 +178,29 @@ export function reviewTargetCommit(cwd, target) {
 }
 
 export const FINGERPRINT_ERROR_PREFIX = "error:";
+// The `repoContent` component of a directory that is not a repository. There is
+// nothing to compare there, and the engine treats it as degraded rather than as
+// a value that could ever match.
+export const FINGERPRINT_NOGIT = "no-git";
 
+const fpDigest = (parts) => crypto.createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
+
+// One digest over everything, for callers that only ask "same or not" — the
+// per-call cwd identity, and the tests. A resume needs to say WHICH half moved,
+// so the engine takes the components instead.
 export function repoFingerprint(cwd, extraPaths = []) {
+  const { repoPath, repoContent, code } = repoFingerprintParts(cwd, extraPaths);
+  return repoContent === FINGERPRINT_NOGIT
+    ? `${FINGERPRINT_NOGIT}:${fpDigest([repoPath, code])}`
+    : fpDigest([repoPath, repoContent, code]);
+}
+
+// The three independent things a run's inputs consist of:
+//   repoPath     the canonical checkout the run was taken in
+//   repoContent  HEAD + the full working-tree diff + untracked blobs, or
+//                FINGERPRINT_NOGIT when there is no repository to read
+//   code         the workflow script and the helpers beside it
+export function repoFingerprintParts(cwd, extraPaths = []) {
   // Content-aware: porcelain alone records paths+status, not bytes — a
   // dirty file edited again between runs would slip through. Hash HEAD,
   // the full content diff vs HEAD, every untracked file's blob hash, and
@@ -196,7 +217,7 @@ export function repoFingerprint(cwd, extraPaths = []) {
   // was taken at is part of the identity. realpath so that a symlinked path and
   // its target are one checkout, not two.
   const canonical = (dir) => { try { return fs.realpathSync(dir); } catch { return path.resolve(dir); } };
-  const digest = (parts) => crypto.createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
+  const digest = fpDigest;
 
   // "Not a repository" is a determinable, STABLE answer, and the only one that
   // may skip the git reads. Everything after this probe is a real git read,
@@ -205,12 +226,13 @@ export function repoFingerprint(cwd, extraPaths = []) {
   // to a shared constant: two runs that both fail would compare equal, and the
   // resume guard would wave through stale results against changed code. Those
   // throw, and the engine records the failure as a fingerprint no resume matches.
-  // No-git is not a constant either: the workflow script rides extraPaths, so an
-  // edited script (or a different directory) still has to be a different answer.
+  // No-git is not a constant either: the directory's own path and the workflow
+  // script still separate one such run from another — but nothing there watches
+  // the FILES the workers read, which is why the engine treats it as degraded.
   try {
     run(["rev-parse", "--is-inside-work-tree"]);
   } catch {
-    return `no-git:${digest([canonical(cwd), hashExtras().join("\n")])}`;
+    return { repoPath: canonical(cwd), repoContent: FINGERPRINT_NOGIT, code: digest(hashExtras()) };
   }
 
   const root = canonical(run(["rev-parse", "--show-toplevel"]).trim());
@@ -228,10 +250,11 @@ export function repoFingerprint(cwd, extraPaths = []) {
     try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
     catch { return f + ":unreadable"; }
   });
-  return digest([
-    root, head, diff, untrackedHashes.join("\n"),
-    submoduleUntracked(cwd, run).join("\n"), hashExtras().join("\n")
-  ]);
+  return {
+    repoPath: root,
+    repoContent: digest([head, diff, untrackedHashes.join("\n"), submoduleUntracked(cwd, run).join("\n")]),
+    code: digest(hashExtras())
+  };
 }
 
 // A submodule's UNTRACKED files are in neither read above: `--submodule=diff`
