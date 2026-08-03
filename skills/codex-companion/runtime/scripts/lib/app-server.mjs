@@ -180,6 +180,26 @@ class AppServerClientBase {
   }
 }
 
+// NO SHELL, on any platform. The `-c` overrides a workflow worker passes carry
+// arbitrary prose — a review lens becomes `developer_instructions=<lens>` — and
+// a shell would interpret `$(…)`, backticks and `&&` in that prose before codex
+// ever starts: a startup failure at best, command execution outside the
+// read-only Codex worker at worst. Spawning the executable directly hands every
+// argument over verbatim, with no quoting rules to get right.
+//
+// `platform` is accepted and deliberately unused: the options are the same
+// everywhere, and a test that asks for the win32 shape on a mac is how that
+// stays true. (A Windows `codex.cmd` shim would need a resolved executable
+// path rather than a shell — spawning prose through cmd.exe is not the fix.)
+export function appServerSpawnOptions({ cwd, env, platform: _platform = process.platform }) {
+  return {
+    cwd,
+    env: env ?? process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  };
+}
+
 class SpawnedCodexAppServerClient extends AppServerClientBase {
   constructor(cwd, options = {}) {
     super(cwd, options);
@@ -190,13 +210,11 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     // Each configOverride is a `codex -c key=value` pair, so a caller that owns
     // this server (a workflow worker) can differ from the session default.
     const configArgs = (this.options.configOverrides ?? []).flatMap((kv) => ["-c", kv]);
-    this.proc = spawn("codex", [...configArgs, "app-server"], {
-      cwd: this.cwd,
-      env: this.options.env ?? process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
-      windowsHide: true
-    });
+    this.proc = spawn(
+      "codex",
+      [...configArgs, "app-server"],
+      appServerSpawnOptions({ cwd: this.cwd, env: this.options.env })
+    );
     this.options.onSpawn?.(this.proc.pid);
 
     this.proc.stdout.setEncoding("utf8");
@@ -249,9 +267,8 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.proc.stdin.end();
       setTimeout(() => {
         if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          // On Windows with shell: true, the direct child is cmd.exe.
-          // Use terminateProcessTree to kill the entire tree including
-          // the grandchild node process.
+          // Windows has no process groups to signal, and a codex launcher may
+          // still have children of its own: taskkill /T is what reaches them.
           if (process.platform === "win32") {
             try {
               terminateProcessTree(this.proc.pid);
