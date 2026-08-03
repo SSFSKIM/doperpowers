@@ -208,7 +208,33 @@ snapshot_status
 assert_eq "cancel verb job is recorded cancelled" cancelled "$(listed_status "$(sole_job_id)")"
 
 # ---------------------------------------------------------------------------
-# 6. Liveness repair: a SIGKILLed run is finalized lazily on read, not reported
+# 6. Cancel under a contended ledger: the signal handler's bookkeeping can throw
+#    (`state lock timeout` after 5s), and that must not cost the exit code or
+#    leave workers alive. The record is NOT asserted here — a finalize that
+#    could not run leaves it to the liveness repair, which is the accepted
+#    outcome in this case.
+# ---------------------------------------------------------------------------
+new_case cancel-contended '{"turns":[{"hangMs":20000}]}'
+node "$RUNTIME" workflow --script "$FIXTURES/fx-par3.mjs" --cwd "$repo" \
+  > "$scratch/out.json" 2> "$scratch/err.log" &
+verb_pid=$!
+assert_eq "three workers went live" 3 "$(wait_for_live 3 15)"
+
+# Hold the ledger lock with a stamp naming this shell — a live pid, so the lock
+# is never breakable and every writer waits out the full timeout.
+state_lock="$(dirname "$(echo "$CLAUDE_PLUGIN_DATA"/state/*/state.json)")/state.json.lock"
+mkdir "$state_lock"
+printf '%s' "$$" > "$state_lock/holder"
+
+kill -TERM "$verb_pid"
+assert_eq "workers die even with the ledger locked" 0 "$(wait_for_live 0 5)"
+rc=0; wait "$verb_pid" || rc=$?
+assert_eq "a contended finalize still exits 130" 130 "$rc"
+assert_contains "the failed bookkeeping is reported" "$scratch/err.log" "cancel bookkeeping failed"
+rm -rf "$state_lock"
+
+# ---------------------------------------------------------------------------
+# 7. Liveness repair: a SIGKILLed run is finalized lazily on read, not reported
 #    as a phantom running job.
 # ---------------------------------------------------------------------------
 new_case liveness '{"turns":[{"hangMs":20000}]}'

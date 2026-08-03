@@ -176,3 +176,32 @@ test("updateState never breaks a lock that carries no holder stamp", () => {
   assert.equal(fs.existsSync(lockDir), true, "an unstamped lock is contended, never breakable");
   assert.deepEqual(loadState(workspace).jobs, []);
 });
+
+// mkdirSync succeeding and the stamp write failing (ENOSPC, EACCES, a full
+// inode table) would abandon an UNSTAMPED lock — unbreakable by design, which is
+// exactly the permanent wedge the breaking mechanism exists to remove.
+test("updateState gives the lock back when the holder stamp cannot be written", () => {
+  const workspace = makeTempDir();
+  const lockDir = `${resolveStateFile(workspace)}.lock`;
+  const realWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = (target, ...rest) => {
+    if (String(target).endsWith(`${path.sep}holder`)) {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    }
+    return realWriteFileSync(target, ...rest);
+  };
+
+  try {
+    assert.throws(() => upsertJob(workspace, { id: "job-not-written", status: "completed" }), /EACCES/);
+  } finally {
+    fs.writeFileSync = realWriteFileSync;
+  }
+
+  assert.equal(fs.existsSync(lockDir), false, "an unstampable lock must not be left behind");
+
+  upsertJob(workspace, { id: "job-after-stamp-failure", status: "completed" });
+  assert.deepEqual(
+    loadState(workspace).jobs.map((job) => job.id),
+    ["job-after-stamp-failure"]
+  );
+});

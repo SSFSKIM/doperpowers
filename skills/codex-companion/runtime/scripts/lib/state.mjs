@@ -230,30 +230,44 @@ function withStateLock(cwd, fn) {
   const holderPath = path.join(lockDir, LOCK_HOLDER_FILE);
   const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   for (;;) {
+    let acquired = false;
     try {
       fs.mkdirSync(lockDir);
-      // Stamped immediately: until this lands the lock reads as "unstamped",
-      // which is unbreakable — the safe direction.
-      fs.writeFileSync(holderPath, String(process.pid), "utf8");
-      break;
+      acquired = true;
     } catch (err) {
       if (err.code !== "EEXIST") {
         throw err;
       }
-      const observed = inspectLock(lockDir);
-      if (observed.state === "dead" && breakDeadLock(lockDir, observed)) {
-        continue; // retake through the same atomic mkdir every contender uses
-      }
-      if (Date.now() > deadline) {
-        const holder = readPidFile(holderPath);
-        throw new Error(
-          `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder}` : "holder unknown"})`
-        );
-      }
-      // Bounded synchronous backoff: the whole mutation API is sync, so there is
-      // no event loop to yield to.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
     }
+
+    if (acquired) {
+      // Stamped immediately: until this lands the lock reads as "unstamped",
+      // which is unbreakable — the safe direction while we are alive to finish
+      // the job. But an unstamped lock we ABANDON is the permanent wedge this
+      // whole mechanism exists to remove, so a failed stamp gives the lock back
+      // before the error propagates.
+      try {
+        fs.writeFileSync(holderPath, String(process.pid), "utf8");
+      } catch (err) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        throw err;
+      }
+      break;
+    }
+
+    const observed = inspectLock(lockDir);
+    if (observed.state === "dead" && breakDeadLock(lockDir, observed)) {
+      continue; // retake through the same atomic mkdir every contender uses
+    }
+    if (Date.now() > deadline) {
+      const holder = readPidFile(holderPath);
+      throw new Error(
+        `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder}` : "holder unknown"})`
+      );
+    }
+    // Bounded synchronous backoff: the whole mutation API is sync, so there is
+    // no event loop to yield to.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
   }
   try {
     return fn();

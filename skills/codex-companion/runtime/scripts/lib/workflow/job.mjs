@@ -107,7 +107,11 @@ function pidAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return err.code === "EPERM"; // exists, owned by another user
+    // ESRCH is the ONLY proof of death — same rule as the state lock and the run
+    // lease. EPERM means the process exists and belongs to someone else, and any
+    // other errno is unexplained; both count as alive, so an unexplained answer
+    // can never finalize a live run as failed.
+    return err.code !== "ESRCH";
   }
 }
 

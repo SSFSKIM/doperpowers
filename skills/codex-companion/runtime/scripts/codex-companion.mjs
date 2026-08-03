@@ -970,8 +970,17 @@ async function handleWorkflow(argv) {
     // Workers are direct children in this process group, so nothing else will
     // reap them: signal every tracked pid before this process goes away.
     const signalled = killWorkflowWorkers(runDir);
-    emit(`cancelled by ${signal}; signalled ${signalled.length} worker(s)`);
-    lifecycle.finalize("cancelled", { errorMessage: `Cancelled by ${signal}.` });
+    try {
+      emit(`cancelled by ${signal}; signalled ${signalled.length} worker(s)`);
+      lifecycle.finalize("cancelled", { errorMessage: `Cancelled by ${signal}.` });
+    } catch (error) {
+      // Bookkeeping must never cost the exit code: a contended ledger throws
+      // `state lock timeout`, and an escaping error here would skip the exit
+      // below and report 1 instead of 130. The workers are already dead, and a
+      // record left `running` is repaired to `failed` on the next read.
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[workflow] cancel bookkeeping failed: ${message}\n`);
+    }
     process.exit(130);
   };
   process.on("SIGTERM", () => cancelRun("SIGTERM"));
