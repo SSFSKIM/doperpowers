@@ -562,6 +562,48 @@ fixture follow-ups are in
 earlier engines' verifiers refuted) is live input to Open Question 2's
 verifier-effort knob.
 
+**Program retrospective (2026-08-03, at finish).** Shipped as
+v7.37.0 on branch `codex-workflow-engine`: the general `workflow` verb
+(M0 read-only engine — hooks, leaf semaphore, event journal with
+content-keyed successes-only cache, re-entrant lease with atomic
+dead-holder breaking, content-aware fail-closed fingerprint, locked
+atomic ledger for all writers, real cancel/liveness) and the
+code-review panel workflow (adaptive diff-derived scalpels ≤5 on
+steered native review + lens-free sweep, marker-finding clean
+sentinel, strict extraction trichotomy, one binding verifier under
+mechanical postconditions, coverage-honest assembly), gated by X1.
+
+Against the purpose: both goals delivered — the Dynamic-Workflow
+counterpart exists on the Codex runtime as one detached headless
+process, and discovery breadth is now a parallel panel instead of
+serial rounds. Execution: two plans, 13 tasks + fix waves, subagent-
+driven (Opus workers) with adversarial review at every level — spec
+(5/5 findings adopted), plans (11/11), per-task reviews (every task
+gained real fixes), final whole-branch review (4 P1 + 2 P2 adopted)
+plus a no-P1 confirmation round (3 P2 polish). Five live probes
+settled design questions unit tests could not: devinstr transport on
+the app-server path, clean-review renders being free-form prose, the
+sentinel needing the findings channel (the line channel failed live),
+the strict structured-output dialect, and the X1 gate itself.
+
+Lessons that changed standing practice: (1) a retry/repair prompt
+must re-carry its WHOLE contract — a fresh thread knows nothing;
+(2) the mock returns whatever the scenario names, so design decisions
+about real render/API behavior must be probed live BEFORE unit tests
+calcify a wrong guess (bit three times: review-text shape, sentinel
+channel, schema dialect); (3) reuse the proven concurrency primitive —
+two independently-invented lock schemes both fell to the same
+two-breaker race the lease had already solved; (4) macOS bash 3.2
+substitutions corrupted scratch paths silently for two whole suites.
+
+Remaining, tracked: panel stability re-run before relying on the
+zero-margin PASS; X1 fixture fixes (case1 tenants NaN/null, case4
+prune label-prefix) before the next scored run-id; verifier-effort
+escalation evidence (case3 FP); sweep-recall watch under the marker
+sentinel; the two deferred owner variants (main-session verifier,
+spec-context deriver); reviewing-prs convergence onto the panel as a
+natural M2 once stability is shown.
+
 ## Revision Notes
 
 - 2026-08-03: v1 — initial design from the brainstorming round following
