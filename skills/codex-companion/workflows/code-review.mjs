@@ -179,7 +179,74 @@ export default async function run({ agent, review, parallel, log, args }) {
     }
   }
 
-  // … Task 4 continues here: final assembly. Until it lands the run reports the
-  // panel's raw material, so the fan-out and the verifier contract are observable.
-  return { lenses, coverage, pool, verified };
+  // Assembly. Every judgement has already been made — the finders raised, the
+  // verifier ruled, coverage recorded what the panel actually got — so what is
+  // left is deterministic. Its only real subject is honesty: which losses a
+  // verdict is still allowed to stand on top of.
+  const sweepDead = coverage.find((c) => c.finder === "sweep" && c.status !== "ok");
+  const lostLenses = coverage.filter((c) => c.status !== "ok");
+
+  // Unjudged candidates are not findings — nobody re-inspected them — but they
+  // are also the only thing this run produced, so they ride along raw instead of
+  // being thrown away with the verdict.
+  if (verified === null) {
+    return { verdict: "interrupted", findings: [], coverage, lenses, pool,
+      explanation: "verifier did not produce a contract-valid verdict set; raw candidate pool attached" };
+  }
+
+  const byId = new Map(verified.map((v) => [v.id, v]));
+  const stubById = new Map(pool.map((s) => [s.id, s]));
+  // A duplicate may point at another duplicate — the postconditions forbid a
+  // cycle and a refuted target, not a chain — so credit follows the chain to the
+  // primary it ends at rather than stopping at the link it named. Otherwise the
+  // third finder to raise a defect silently stops counting as having raised it.
+  const rootOf = (v) => { let cur = v; while (cur.duplicateOf) cur = byId.get(cur.duplicateOf); return cur.id; };
+  const sourcesOf = (v) => [...new Set(
+    [v, ...verified.filter((d) => d.duplicateOf && rootOf(d) === v.id)].map((d) => d.id.split("#")[0])
+  )];
+
+  // One published finding per surviving formulation: the location the finder
+  // reported, the judgement the verifier reached, and the lanes that raised it.
+  const ORDER = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  const findings = verified
+    .filter((v) => v.verdict === "CONFIRMED" && !v.duplicateOf)
+    .map((v) => {
+      const stub = stubById.get(v.id);
+      return {
+        id: v.id, priority: v.priority ?? stub.priority, title: stub.title,
+        file: stub.file, lines: stub.lines, comment: v.comment, sources: sourcesOf(v)
+      };
+    })
+    .sort((a, b) => ORDER[a.priority] - ORDER[b.priority]);
+
+  let verdict = findings.length > 0 ? "incorrect" : "correct";
+  let explanation = findings.length > 0
+    ? `confirmed: ${findings.slice(0, 3).map((f) => f.title).join("; ")}`
+    : "no confirmed findings";
+  // An empty verdict set means two different things — every lane reported and
+  // found nothing, or the lanes that would have found something never reported.
+  // Only coverage tells them apart, so a clean verdict is asserted only when
+  // nothing was lost. A lost lane next to a CONFIRMED finding is the opposite
+  // case: it costs the panel its claim to completeness, never a real defect.
+  if (verdict === "correct" && lostLenses.length > 0) {
+    verdict = "interrupted";
+    explanation = `coverage incomplete (${lostLenses.map((c) => c.finder).join(", ")}) — a clean verdict cannot be asserted`;
+  }
+  if (verdict === "incorrect" && lostLenses.length > 0) {
+    explanation += `; coverage partial: ${lostLenses.map((c) => c.finder).join(", ")}`;
+  }
+  // The sweep is the only lane that reads the whole diff, so without it the
+  // panel cannot say what it missed: losing it fails the ROUND, whatever the
+  // scalpels confirmed. The confirmed findings stay attached — interrupted
+  // withholds the claim of completeness, not the evidence.
+  if (sweepDead) {
+    verdict = "interrupted";
+    explanation = "the lens-free sweep did not complete — round is interrupted" +
+      (findings.length > 0 ? `; ${findings.length} confirmed finding(s) attached as partial evidence` : "");
+  }
+  // A whole panel that found nothing is the shape a mis-aimed diff also makes.
+  if (verdict === "correct" && pool.length === 0) {
+    explanation += " (note: all finders returned zero findings — verify the diff target is what you intended)";
+  }
+  return { verdict, findings, coverage, lenses, explanation };
 }

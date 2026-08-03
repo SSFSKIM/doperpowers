@@ -2,10 +2,19 @@
 // Mock codex app-server. Speaks the REAL JSON-RPC-over-stdio shapes
 // (derived from lib/codex.mjs captureTurn + app-server.mjs — see the
 // PROTOCOL notes below). Controlled by CODEX_MOCK_DIR:
-//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText|turnStatus}... ] }
-//                  consumed in global order via counter file (mkdir lock);
-//                  turnStatus: "failed" ⇒ emit turn/completed with the FAILED
-//                  status shape and NO error object (the false-green case)
+//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText|turnStatus}... ],
+//                    byLens: { "<developer_instructions prefix>": {same behavior} } }
+//                  `turns` is consumed in global order via a counter file (mkdir
+//                  lock); turnStatus: "failed" ⇒ emit turn/completed with the
+//                  FAILED status shape and NO error object (the false-green case).
+//                  `byLens` addresses a behavior to ONE worker instead: this
+//                  server's own `-c developer_instructions=` override is matched
+//                  by PREFIX (first key wins) and the matched turn does not
+//                  consume a `turns` slot. Parallel workers race for the global
+//                  slots, so byLens is the only way to give one lane of a
+//                  fan-out its own outcome — a dead sweep beside a live scalpel.
+//                  A worker spawned without developer_instructions (an agent
+//                  turn) never matches and always reads `turns`.
 //   turns.jsonl    one line per turn/start|review/start request: {method, params, pid}
 //   threads.jsonl  one line per thread/start|thread/resume request: {method, params, pid}
 //                  — the ONLY place a call's model is observable, because a
@@ -118,6 +127,21 @@ function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const DEV_INSTR = "developer_instructions=";
+const devInstructions = args.find((a) => a.startsWith(DEV_INSTR))?.slice(DEV_INSTR.length) ?? null;
+
+// The lens this worker was spawned with is the only per-worker signal the mock
+// has (a finder's label never leaves the engine), so it is what byLens matches.
+function lensBehavior() {
+  if (devInstructions === null) return null;
+  let scenario;
+  try { scenario = JSON.parse(fs.readFileSync(path.join(MOCK, "scenario.json"), "utf8")); } catch { return null; }
+  for (const [prefix, behavior] of Object.entries(scenario.byLens ?? {})) {
+    if (devInstructions.startsWith(prefix)) return behavior;
+  }
+  return null;
+}
+
 function nextTurnBehavior() {
   // global sequential counter under a mkdir lock
   const lockDir = path.join(MOCK, "counter.lock");
@@ -162,7 +186,7 @@ rl.on("line", (line) => {
     recordPeak();
     fs.appendFileSync(path.join(MOCK, "turns.jsonl"),
       JSON.stringify({ method: msg.method, params: msg.params, pid: process.pid }) + "\n");
-    const b = nextTurnBehavior();
+    const b = lensBehavior() ?? nextTurnBehavior();
     if (b.die) process.exit(1);
 
     const isReview = msg.method === "review/start";
