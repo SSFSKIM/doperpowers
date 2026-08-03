@@ -93,7 +93,12 @@ export function acquireLease(runDir) {
   for (let attempt = 0; attempt < 4; attempt++) {
     if (claim(p, attempt)) return { ok: true };
     const holder = inspect(p);
-    if (holder.state === "live") return { ok: false, holderPid: holder.pid };
+    // Re-entrant for the SAME process: the CLI takes the lease before it
+    // replaces the job record on a resume, and then hands off to the engine,
+    // which acquires it again in-process. Another live pid is still refused.
+    if (holder.state === "live") {
+      return holder.pid === process.pid ? { ok: true } : { ok: false, holderPid: holder.pid };
+    }
     if (holder.state === "absent") continue;   // vanished under us; just retry the claim
 
     // Holder is dead or corrupt. BREAKING MUST ALSO BE ATOMIC: two breakers
@@ -116,7 +121,9 @@ export function acquireLease(runDir) {
       // Re-inspect under the token: the lease may have been broken and retaken
       // since the read above. Only a still-dead/corrupt record may be removed.
       const current = inspect(p);
-      if (current.state === "live") return { ok: false, holderPid: current.pid };
+      if (current.state === "live") {
+        return current.pid === process.pid ? { ok: true } : { ok: false, holderPid: current.pid };
+      }
       if (current.state !== "absent") {
         try { fs.rmSync(p, { force: true }); } catch { /* already gone */ }
       }
@@ -140,28 +147,63 @@ export function releaseLease(runDir) {
   fs.rmSync(p, { force: true });
 }
 
+// The commit a review target actually resolves to RIGHT NOW. `{type:"baseBranch"}`
+// names a ref, and a ref moves: two runs can pass identical target objects while
+// the diff under review has changed completely. The merge-base is what a
+// base-branch review diffs against, so that is the identity worth caching on;
+// rev-parse of the branch is the fallback when there is no common ancestor.
+// `uncommittedChanges` needs nothing here — the working tree is already in the
+// repository fingerprint.
+export function reviewTargetCommit(cwd, target) {
+  if (target?.type !== "baseBranch" || !target.branch) {
+    return null;
+  }
+  const git = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  try {
+    return git(["merge-base", target.branch, "HEAD"]);
+  } catch {
+    try {
+      return git(["rev-parse", target.branch]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+export const FINGERPRINT_ERROR_PREFIX = "error:";
+
 export function repoFingerprint(cwd, extraPaths = []) {
   // Content-aware: porcelain alone records paths+status, not bytes — a
   // dirty file edited again between runs would slip through. Hash HEAD,
   // the full content diff vs HEAD, every untracked file's blob hash, and
   // any extra file identities the caller cares about (workflow script).
+  const run = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
+
+  // "Not a repository" is a determinable, STABLE answer, and the only one that
+  // may collapse to a constant. Everything after this probe is a real git read,
+  // and a failure there — ENOBUFS on a diff past the 64 MiB buffer, an unreadable
+  // object, a permissions error, a repository with no commits — must NOT return
+  // that same constant: two runs that both fail would compare equal, and the
+  // resume guard would wave through stale results against changed code. Those
+  // throw, and the engine records the failure as a fingerprint no resume matches.
   try {
-    const run = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
-    const head = run(["rev-parse", "HEAD"]);
-    const diff = run(["diff", "HEAD"]);
-    const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
-    const untrackedHashes = untracked.map((f) => {
-      try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
-      catch { return f + ":unreadable"; }
-    });
-    const extras = extraPaths.map((p) => {
-      try { return p + ":" + crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12); }
-      catch { return p + ":unreadable"; }
-    });
-    return crypto.createHash("sha256")
-      .update([head, diff, untrackedHashes.join("\n"), extras.join("\n")].join("\x00"))
-      .digest("hex").slice(0, 16);
+    run(["rev-parse", "--is-inside-work-tree"]);
   } catch {
     return "no-git";
   }
+
+  const head = run(["rev-parse", "HEAD"]);
+  const diff = run(["diff", "HEAD"]);
+  const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
+  const untrackedHashes = untracked.map((f) => {
+    try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
+    catch { return f + ":unreadable"; }
+  });
+  const extras = extraPaths.map((p) => {
+    try { return p + ":" + crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12); }
+    catch { return p + ":unreadable"; }
+  });
+  return crypto.createHash("sha256")
+    .update([head, diff, untrackedHashes.join("\n"), extras.join("\n")].join("\x00"))
+    .digest("hex").slice(0, 16);
 }

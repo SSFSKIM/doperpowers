@@ -37,6 +37,7 @@ import {
   writeJobFile
 } from "./lib/state.mjs";
 import { runWorkflow, WorkflowError } from "./lib/workflow/engine.mjs";
+import { acquireLease } from "./lib/workflow/journal.mjs";
 import {
   isWorkflowRunActive,
   killWorkflowWorkers,
@@ -930,10 +931,26 @@ async function handleWorkflow(argv) {
   // The run id IS the job id: one run, one record, one directory — so
   // `/codex:result <run-id>` and `--resume <run-id>` name the same thing.
   const runId = options.resume ?? generateJobId("wf");
-  if (resume && isWorkflowRunActive(workspaceRoot, runId)) {
-    throw new Error(`Workflow run ${runId} is still active. Cancel it before resuming.`);
-  }
   const runDir = resolveWorkflowRunDir(runId);
+  if (resume) {
+    if (isWorkflowRunActive(workspaceRoot, runId)) {
+      throw new Error(`Workflow run ${runId} is still active. Cancel it before resuming.`);
+    }
+    // The ledger check above is ADVISORY — two resumers starting together both
+    // pass it before either writes. The run lease is the atomic one, and it has
+    // to be held before the job record is replaced: a resumer that registers
+    // first and loses the lease second would leave the live run indexed under
+    // its own (about to be dead) pid, so status and cancel would act on the
+    // wrong process. The engine re-acquires this same lease in-process, which
+    // acquireLease allows for the same pid.
+    fs.mkdirSync(runDir, { recursive: true });
+    const lease = acquireLease(runDir);
+    if (!lease.ok) {
+      throw new Error(
+        `Workflow run ${runId} is leased by pid ${lease.holderPid ?? "another process"}; it is still running.`
+      );
+    }
+  }
   const logFile = createJobLogFile(workspaceRoot, runId, "Codex Workflow");
 
   const lifecycle = workflowJobLifecycle(

@@ -120,12 +120,26 @@ function pidAlive(pid) {
 // check ever fires. The lease is the race-free guard; this is what keeps the
 // ledger honest in the ordinary case.
 export function isWorkflowRunActive(workspaceRoot, runId) {
-  const jobFile = resolveJobFile(workspaceRoot, runId);
+  // The ledger row, not the per-job file: the ledger is written atomically under
+  // a lock, so it can never be torn, and this must not throw on a record some
+  // killed writer left half-finished.
+  const job = listJobs(workspaceRoot).find((row) => row.id === runId);
+  return Boolean(job) && job.status === "running" && pidAlive(job.pid);
+}
+
+// A per-job file written by a process that died mid-write (and every file
+// written before writeJobFile became atomic) can be empty or truncated. An
+// unguarded parse here would throw on EVERY status/result/cancel, so the lazy
+// repair below would never run and the phantom `running` row would be permanent.
+function readStoredJobOrCorrupt(jobFile) {
   if (!fs.existsSync(jobFile)) {
-    return false;
+    return { stored: {}, corrupt: false };
   }
-  const stored = readJobFile(jobFile);
-  return stored.status === "running" && pidAlive(stored.pid);
+  try {
+    return { stored: readJobFile(jobFile), corrupt: false };
+  } catch {
+    return { stored: {}, corrupt: true };
+  }
 }
 
 // A workflow run is one process, so nothing else will ever finalize its record:
@@ -142,10 +156,13 @@ export function repairDeadWorkflowJobs(workspaceRoot) {
     if (pidAlive(job.pid)) {
       continue;
     }
-    const jobFile = resolveJobFile(workspaceRoot, job.id);
-    const stored = fs.existsSync(jobFile) ? readJobFile(jobFile) : {};
+    const { stored, corrupt } = readStoredJobOrCorrupt(resolveJobFile(workspaceRoot, job.id));
+    // finalize rewrites the per-job file, so a torn one is REPAIRED here rather
+    // than left to break the next read.
     workflowJobLifecycle(workspaceRoot, { ...stored, ...job }).finalize("failed", {
-      errorMessage: `Workflow process ${job.pid ?? "(unrecorded)"} is gone; the run never finished.`
+      errorMessage: `Workflow process ${job.pid ?? "(unrecorded)"} is gone; the run never finished.${
+        corrupt ? " Its record file was unreadable and has been rewritten." : ""
+      }`
     });
   }
 }

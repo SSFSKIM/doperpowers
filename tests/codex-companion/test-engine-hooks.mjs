@@ -28,6 +28,9 @@ delete process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT;
 const { runWorkflow, WorkflowError } = await import(
   "../../skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs"
 );
+const { acquireLease, releaseLease, repoFingerprint } = await import(
+  "../../skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs"
+);
 
 const scratches = [];
 
@@ -436,14 +439,24 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
 {
   const c = newCase("refuse", [{ finalMessage: "unused" }]);
   fs.mkdirSync(c.runDir, { recursive: true });
-  fs.writeFileSync(path.join(c.runDir, "lease.json"), JSON.stringify({ pid: process.pid, at: Date.now() }));
+  // pid 1 — always alive, never us. It used to be process.pid here, but the
+  // lease is now re-entrant for the SAME process (the CLI takes it before
+  // replacing a resumed run's record, then hands off to the engine), so only a
+  // FOREIGN live holder proves the refusal.
+  fs.writeFileSync(path.join(c.runDir, "lease.json"), JSON.stringify({ pid: 1, at: Date.now() }));
   await assert.rejects(
     runWorkflow({ scriptPath: path.join(FIXTURES, "fx-happy.mjs"), args: {}, cwd: c.repo, runDir: c.runDir }),
     (err) => err instanceof WorkflowError && err.reason === "lease-held" && /pid \d+/.test(err.message),
-    "a run dir held by a live process is refused, naming the holder"
+    "a run dir held by a live FOREIGN process is refused, naming the holder"
   );
+
+  // ...and the same-pid case is the one the resume path depends on: a lease this
+  // process already holds must not refuse its own engine hand-off.
+  fs.rmSync(path.join(c.runDir, "lease.json"), { force: true });
+  assert.deepEqual(acquireLease(c.runDir), { ok: true });
+  assert.deepEqual(acquireLease(c.runDir), { ok: true }, "the lease is re-entrant for its own holder");
+  releaseLease(c.runDir);   // leaves the run dir lease-free for the next case
   assert.equal(counter(c.mockDir), 0, "a refused run never reaches the workflow script");
-  fs.rmSync(path.join(c.runDir, "lease.json"));
 
   await assert.rejects(
     runWorkflow({ scriptPath: path.join(FIXTURES, "fx-nodefault.mjs"), args: {}, cwd: c.repo, runDir: c.runDir }),
@@ -452,6 +465,130 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   );
   // The lease is released even when the run throws, so the next run can proceed.
   assert.ok(!fs.existsSync(path.join(c.runDir, "lease.json")), "the lease is released on the failure path");
+}
+
+// --- cache identity: what a resume is allowed to reuse ------------------------
+// Every case here runs, then RESUMES the same run dir and reads the mock's
+// global turn counter: an unchanged input must cost 0 new turns (cache hit) and
+// a changed one must cost a fresh turn (cache miss). The counter is the mock's
+// own file, not the engine's bookkeeping.
+{
+  // (a) A hook pointed at ANOTHER repository through opts.cwd. The run-level
+  // fingerprint only ever covered spec.cwd, so changes over there were invisible.
+  const c = newCase("percwd", [{ finalMessage: "one" }, { finalMessage: "two" }]);
+  const other = path.join(c.scratch, "other");
+  fs.mkdirSync(other, { recursive: true });
+  initGitRepo(other);
+  fs.writeFileSync(path.join(other, "f.txt"), "before\n");
+  run("git", ["add", "."], { cwd: other });
+  run("git", ["commit", "-m", "base"], { cwd: other });
+
+  const spec = { scriptPath: path.join(FIXTURES, "fx-percwd.mjs"), args: { cwd: other }, cwd: c.repo, runDir: c.runDir };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "an unchanged per-call repo cache-hits");
+
+  fs.writeFileSync(path.join(other, "f.txt"), "after\n");   // dirty the OTHER repo only
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 2, "a changed per-call repo must MISS the cache");
+}
+
+{
+  // (b) A review whose base ref MOVES. The opts are byte-identical across runs;
+  // only the commit the ref resolves to changed.
+  const c = newCase("movedref", [{ reviewText: "# R\n\nfirst" }, { reviewText: "# R\n\nsecond" }]);
+  const commit = (name, body) => {
+    fs.writeFileSync(path.join(c.repo, name), body);
+    run("git", ["add", "."], { cwd: c.repo });
+    run("git", ["commit", "-m", name], { cwd: c.repo });
+    return run("git", ["rev-parse", "HEAD"], { cwd: c.repo }).stdout.trim();
+  };
+  run("git", ["checkout", "-b", "feature"], { cwd: c.repo });
+  const midpoint = commit("b.txt", "B\n");
+  commit("c.txt", "C\n");
+
+  const spec = { scriptPath: path.join(FIXTURES, "fx-review.mjs"), args: {}, cwd: c.repo, runDir: c.runDir };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "an unmoved base ref cache-hits");
+
+  // Move `main` forward along feature's own history. HEAD, the working tree and
+  // the untracked set are all untouched, so the RUN fingerprint is byte-identical
+  // — but merge-base(main, HEAD) is now a different commit, so the review is
+  // against a different diff. Only a target-aware cache key can see this.
+  const before = repoFingerprint(c.repo, [path.join(FIXTURES, "fx-review.mjs")]);
+  run("git", ["branch", "-f", "main", midpoint], { cwd: c.repo });
+  assert.equal(
+    repoFingerprint(c.repo, [path.join(FIXTURES, "fx-review.mjs")]), before,
+    "the run fingerprint must be unchanged, or this case proves nothing"
+  );
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 2, "a moved review target must MISS the cache");
+}
+
+{
+  // (c) A schema that changes AFTER byte 64 without changing its length. The old
+  // key was length + the first 64 chars, so these two collided — and a resume
+  // serves the cached result before validating it against the current schema.
+  const c = newCase("schemahash", [{ finalRaw: '{"a":1}' }, { finalRaw: '{"a":1}' }]);
+  const schemaWith = (tail) => ({
+    type: "object",
+    properties: { a: { type: "number" } },
+    required: ["a"],
+    additionalProperties: false,
+    description: tail            // same length, differs well past byte 64
+  });
+  const spec = { scriptPath: path.join(FIXTURES, "fx-schema-args.mjs"), cwd: c.repo, runDir: c.runDir };
+  const a = schemaWith("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  const b = schemaWith("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB");
+  assert.equal(JSON.stringify(a).length, JSON.stringify(b).length, "the two schemas must be the same length");
+  assert.equal(JSON.stringify(a).slice(0, 64), JSON.stringify(b).slice(0, 64), "...and share their first 64 bytes");
+
+  await runWorkflow({ ...spec, args: { schema: a } });
+  assert.equal(counter(c.mockDir), 1);
+  await runWorkflow({ ...spec, args: { schema: a }, resume: true });
+  assert.equal(counter(c.mockDir), 1, "the same schema cache-hits");
+  await runWorkflow({ ...spec, args: { schema: b }, resume: true });
+  assert.equal(counter(c.mockDir), 2, "a schema differing after byte 64 must MISS the cache");
+}
+
+{
+  // (d) Fingerprinting that FAILS is not the same as a directory that is not a
+  // repository. A corrupt HEAD makes every git read after the work-tree probe
+  // fail; both runs would previously have recorded the "no-git" constant and
+  // compared equal, waving a resume through against unknown code.
+  const c = newCase("fpfail", [{ finalMessage: "one" }]);
+
+  // A directory that is not a repository at all: still the stable constant.
+  const plain = path.join(c.scratch, "plain");
+  fs.mkdirSync(plain, { recursive: true });
+  assert.equal(repoFingerprint(plain), "no-git", "a non-repository is still 'no-git'");
+
+  // A real repository whose git reads FAIL. A commitless repo is the cheapest
+  // faithful instance: `rev-parse --is-inside-work-tree` succeeds, and every
+  // read after it (rev-parse HEAD, diff HEAD) fails. The 64 MiB-diff ENOBUFS
+  // case the review named takes the same path — execFileSync is a named ESM
+  // import here and cannot be monkeypatched, so this is the honest stand-in.
+  const empty = path.join(c.scratch, "empty");
+  fs.mkdirSync(empty, { recursive: true });
+  initGitRepo(empty);
+  assert.throws(() => repoFingerprint(empty), "a failed git read must throw, never collapse to 'no-git'");
+
+  const spec = { scriptPath: path.join(FIXTURES, "fx-solo.mjs"), args: {}, cwd: empty, runDir: c.runDir };
+  await runWorkflow(spec);   // a FRESH run still proceeds, recording the failure
+  assert.equal(counter(c.mockDir), 1);
+  assert.match(fs.readFileSync(path.join(c.runDir, "fingerprint"), "utf8"), /^error:/);
+
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch" && /unavailable/.test(err.message),
+    "a resume whose fingerprint cannot be taken is refused, not waved through"
+  );
+  assert.equal(counter(c.mockDir), 1, "the refused resume never reached the script");
 }
 
 for (const s of scratches) fs.rmSync(s, { recursive: true, force: true });

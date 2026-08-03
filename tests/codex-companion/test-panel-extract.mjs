@@ -323,4 +323,47 @@ for (const empty of [undefined, null, "", "   \n\n  "]) {
   assert.equal(extractStubs(tagInBody, "f").failed, false);
 }
 
+// ---------------------------------------------------------------------------
+// SYNTHETIC (not a real render): the two shapes the final review named — a
+// valid head whose PATH contains spaces, and an untagged head-shaped line that
+// fails to parse while a real finding parses beside it.
+// ---------------------------------------------------------------------------
+{
+  // A repository path may legitimately contain spaces. Such a head used to fail
+  // HEAD_RE and be swallowed as the previous finding's body.
+  const spaced = [
+    "- [P1] Spaced path — src/my module/a b.ts:12",
+    "  its body",
+    "",
+    "- Untagged with a spaced path — docs/design notes/x.md:3-7"
+  ].join("\n");
+  const r = extractStubs(spaced, "f");
+  assert.equal(classify(r), "stubs");
+  assert.equal(r.stubs.length, 2);
+  assert.equal(r.stubs[0].file, "src/my module/a b.ts");
+  assert.equal(r.stubs[0].lines, "12");
+  assert.equal(r.stubs[1].file, "docs/design notes/x.md");
+  assert.equal(r.stubs[1].priority, "P3");
+  assert.equal(r.stubs[1].lines, "3-7");
+
+  // A title carrying its own em-dash: the separator binds to the LAST one, so
+  // the path stays a path.
+  const dashedTitle = extractStubs("- [P2] Guard — really — src/x.ts:9", "f");
+  assert.equal(dashedTitle.stubs.length, 1);
+  assert.equal(dashedTitle.stubs[0].title, "Guard — really");
+  assert.equal(dashedTitle.stubs[0].file, "src/x.ts");
+
+  // The nastiest case from the final review: the clean MARKER parses, and an
+  // untagged head-shaped line beside it does NOT. Counting only [P#] heads as
+  // drift reported this lane CLEAN while dropping the real defect.
+  const markerPlusMalformed = [
+    "- [P3] NO-MATERIAL-FINDINGS — n/a:0",
+    "",
+    "- Real defect whose head lost its path — :12"
+  ].join("\n");
+  const mm = extractStubs(markerPlusMalformed, "f");
+  assert.equal(classify(mm), "failed", "a malformed untagged head beside the marker is drift, never clean");
+  assert.deepEqual(mm, { stubs: [], clean: false, failed: true });
+}
+
 console.log("test-panel-extract: ok");

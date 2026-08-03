@@ -2,12 +2,16 @@
 // (agent/review/parallel/pipeline/log), caps how many Codex app-servers can be
 // alive at once, and records every leaf call in a journal so an interrupted run
 // can be resumed instead of re-paid for.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAppServerTurn, runAppServerReview, parseStructuredOutput, resolveReviewTarget } from "../codex.mjs";
 import { validateSchema } from "./validate.mjs";
-import { cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease, repoFingerprint } from "./journal.mjs";
+import {
+  cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease,
+  repoFingerprint, reviewTargetCommit, FINGERPRINT_ERROR_PREFIX
+} from "./journal.mjs";
 
 export class WorkflowError extends Error {
   constructor(reason, message) { super(message); this.reason = reason; }
@@ -49,10 +53,23 @@ export async function runWorkflow(spec) {
   // path rides extraPaths so editing an out-of-tree (ad-hoc) workflow script
   // also refuses a stale-cache resume; in-tree scripts are covered twice,
   // which is harmless.
-  const fp = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
+  // A fingerprint that could not be TAKEN is recorded as such. It must never
+  // compare equal to anything — including the identical failure on a later run,
+  // which is exactly how a fail-open constant let a resume replay stale results.
+  let fp;
+  try {
+    fp = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
+  } catch (err) {
+    fp = `${FINGERPRINT_ERROR_PREFIX}${err?.message ?? err}`;
+  }
   try {
     if (spec.resume) {
       const recorded = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
+      const unusable = [recorded, fp].find((value) => value?.startsWith(FINGERPRINT_ERROR_PREFIX));
+      if (unusable) {
+        throw new WorkflowError("fingerprint-mismatch",
+          `repository fingerprint is unavailable (${unusable}); re-run fresh instead of resuming`);
+      }
       if (recorded && recorded !== fp) {
         throw new WorkflowError("fingerprint-mismatch",
           `repo or workflow script changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
@@ -134,12 +151,33 @@ export async function runWorkflow(spec) {
       if (!isSuccessStatus(turn.status)) throw new Error(`${what} completed unsuccessfully (status ${JSON.stringify(turn.status)})`);
     }
 
+    // The run-level fingerprint covers spec.cwd only. A hook pointed at ANOTHER
+    // repository through the documented per-call `cwd` would otherwise cache-hit
+    // across every change to it, so that repository's identity rides the call's
+    // own cache key. Memoized: repoFingerprint shells out once per untracked file.
+    const perCwdFingerprints = new Map();
+    const cwdFingerprint = (cwd) => {
+      if (!cwd) return null;
+      const resolved = path.resolve(cwd);
+      if (resolved === path.resolve(spec.cwd)) return null; // already in the run fingerprint
+      if (!perCwdFingerprints.has(resolved)) {
+        let value;
+        try {
+          value = repoFingerprint(resolved);
+        } catch (err) {
+          value = `${FINGERPRINT_ERROR_PREFIX}${err?.message ?? err}`;
+        }
+        perCwdFingerprints.set(resolved, value);
+      }
+      return perCwdFingerprints.get(resolved);
+    };
+
     const hooks = {
       args: spec.args,
       log: (m) => { appendEvent(journalPath, { type: "log", message: String(m) }); emit(`log ${m}`); },
 
       agent: (prompt, opts = {}) =>
-        leafCall("agent", opts.label, { prompt, opts: sanitize(opts) }, async (onSpawn, key) => {
+        leafCall("agent", opts.label, { prompt, opts: sanitize(opts), cwdFingerprint: cwdFingerprint(opts.cwd) }, async (onSpawn, key) => {
           // No -c overrides on this lane: model and effort ride the turn params.
           const connect = { disableBroker: true, onSpawn };
           const turn = await runAppServerTurn(opts.cwd ?? spec.cwd, {
@@ -172,15 +210,36 @@ export async function runWorkflow(spec) {
           return parsed.parsed;
         }),
 
-      review: (opts = {}) =>
-        leafCall("review", opts.label, { opts: sanitize(opts) }, async (onSpawn) => {
+      review: (opts = {}) => {
+        // Resolved BEFORE the cache key is built, not inside the call: a ref
+        // moves, so `{base:"main"}` can name a completely different diff on a
+        // later run while the opts object stays byte-identical. The resolved
+        // commit is what the cache must be keyed on.
+        // runAppServerReview sends options.target to review/start verbatim — it
+        // has no base/scope params — so the hook resolves the target the same
+        // way the /codex:review verb does.
+        const reviewCwd = opts.cwd ?? spec.cwd;
+        let target = null;
+        let targetCommit = null;
+        let resolveError = null;
+        try {
+          target = resolveReviewTarget(reviewCwd, { base: opts.base, scope: opts.scope });
+          targetCommit = reviewTargetCommit(reviewCwd, target);
+        } catch (err) {
+          // Deferred, not thrown here: a resolution failure stays a LEAF failure,
+          // journaled and retried like any other, exactly as it was when the
+          // resolution lived inside the call.
+          resolveError = err;
+        }
+        return leafCall("review", opts.label, {
+          opts: sanitize(opts),
+          cwdFingerprint: cwdFingerprint(opts.cwd),
+          targetCommit
+        }, async (onSpawn) => {
+          if (resolveError) throw resolveError;
           const overrides = [];
           if (opts.effort) overrides.push(`model_reasoning_effort=${opts.effort}`);
           if (opts.lens) overrides.push(`developer_instructions=${opts.lens}`);
-          // runAppServerReview sends options.target to review/start verbatim — it
-          // has no base/scope params — so the hook resolves the target the same
-          // way the /codex:review verb does.
-          const target = resolveReviewTarget(opts.cwd ?? spec.cwd, { base: opts.base, scope: opts.scope });
           const res = await runAppServerReview(opts.cwd ?? spec.cwd, {
             model: opts.model, target,
             connect: { disableBroker: true, configOverrides: overrides, onSpawn }
@@ -188,7 +247,8 @@ export async function runWorkflow(spec) {
           assertTurnUsable(res, "review");
           if (!res.reviewText?.trim()) throw new Error("review returned no output");
           return { reviewText: res.reviewText, threadId: res.threadId, status: res.status };
-        }),
+        });
+      },
 
       parallel: (thunks) => Promise.all(thunks.map((t) =>
         Promise.resolve().then(t).catch(() => null))),
@@ -217,5 +277,12 @@ export async function runWorkflow(spec) {
 
 function sanitize(opts) {
   const { schema, ...rest } = opts;   // schema objects can be large; hash their JSON separately
-  return { ...rest, schemaHash: schema ? JSON.stringify(schema).length + ":" + JSON.stringify(schema).slice(0, 64) : null };
+  // A full cryptographic hash, not length-plus-prefix: two schemas of the same
+  // length differing after byte 64 collided, and a resume serves the cached
+  // result BEFORE validating it against the current schema — so output valid
+  // under the old schema would be handed back under the new one.
+  return {
+    ...rest,
+    schemaHash: schema ? crypto.createHash("sha256").update(JSON.stringify(schema)).digest("hex") : null
+  };
 }

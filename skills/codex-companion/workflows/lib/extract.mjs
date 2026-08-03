@@ -9,12 +9,24 @@
 // zero stubs is never silently ok. A finder that went quiet, drifted out of
 // format, or answered in prose is a DEAD finder whose findings are lost; only
 // the runtime's own no-findings rendering may be read as a clean verdict.
-const HEAD_RE = /^[ \t]*[-*]\s+(?:\[(P[0-3])\]\s*)?(.+?)\s+—\s+(\S+?):(\d+)(?:-(\d+))?\s*$/;
 
-// A line that OPENS like a finding head — optional list marker, then a priority
-// tag — but did not parse as one. Anchored at the line start so a body that
-// merely mentions "[P2]" mid-sentence is not mistaken for a mangled head.
+// The path is `.+?` rather than `\S+?`: a valid repository path may contain
+// spaces, and a head whose only sin was a spaced path used to fall through to
+// the body of the previous finding — silently merging two findings into one.
+// The TITLE is greedy so the separator binds to the LAST em-dash on the line,
+// which is what makes a title that itself contains an em-dash parse correctly.
+const HEAD_RE = /^[ \t]*[-*]\s+(?:\[(P[0-3])\]\s*)?(.+)\s+—\s+(.+?):(\d+)(?:-(\d+))?\s*$/;
+
+// A line that OPENS like a finding head but did not parse as one. Two shapes
+// count, and the second is the one that matters most:
+//   - an explicit `[P#]` tag: a mangled tagged head. Anchored at the line start
+//     so a body that merely mentions "[P2]" mid-sentence is not mistaken for one.
+//   - the full head SHAPE with no tag at all — list marker, em-dash separator,
+//     `:NN` location tail. An UNTAGGED head that fails HEAD_RE looks exactly
+//     like this, and counting only tagged ones let a real finding be absorbed
+//     into the previous finding's body while the extractor reported success.
 const ORPHAN_TAG_RE = /^[ \t]*(?:[-*]\s*)?\[P[0-3]\]/;
+const HEAD_SHAPE_RE = /^[ \t]*[-*]\s+.*\s—\s.*:\d+(?:-\d+)?\s*$/;
 
 // The one line that earns a clean verdict. Two sources, one string:
 //   - runtime/scripts/lib/render.mjs:263 (`renderReviewResult`, zero findings)
@@ -74,11 +86,11 @@ export function extractStubs(reviewText, finderId) {
   const lines = String(reviewText ?? "").split("\n");
   const stubs = [];
   let current = null;
-  let orphanTags = 0;
+  let malformedHeads = 0;
 
   for (const line of lines) {
     const m = line.match(HEAD_RE);
-    if (!m && ORPHAN_TAG_RE.test(line)) orphanTags += 1;
+    if (!m && (ORPHAN_TAG_RE.test(line) || HEAD_SHAPE_RE.test(line))) malformedHeads += 1;
     if (m) {
       if (current) stubs.push(current);
       current = {
@@ -98,12 +110,12 @@ export function extractStubs(reviewText, finderId) {
   }
   if (current) stubs.push(current);
 
-  // Partial drift: some heads parsed, at least one tagged line did not. Handing
+  // Partial drift: some heads parsed, at least one head-shaped line did not. Handing
   // back the parsed subset would silently drop the drifted finding, so the whole
   // finder is suspect — and a suspect finder is a failed one, not a partial
   // success a caller might half-trust. The stubs go with it: `failed` means
   // re-run or escalate this finder, and a re-run recovers them all.
-  if (orphanTags > 0) return { stubs: [], clean: false, failed: true };
+  if (malformedHeads > 0) return { stubs: [], clean: false, failed: true };
 
   if (stubs.length > 0) {
     const real = stubs.filter((s) => !isMarkerTitle(s.title));

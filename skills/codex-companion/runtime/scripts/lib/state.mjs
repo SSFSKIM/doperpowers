@@ -333,7 +333,11 @@ export function getConfig(cwd) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  // Write-then-rename, same reason as the ledger: a process that dies mid-write
+  // must not leave a torn record for the next reader to choke on.
+  const tmp = `${jobFile}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, jobFile);
   return jobFile;
 }
 

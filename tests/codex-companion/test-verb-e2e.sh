@@ -34,6 +34,10 @@ assert_contains() { # desc file needle
   if grep -Fq -- "$3" "$2"; then ok "$1"; else bad "$1 (no '$3' in $2)"; fi
 }
 
+assert_ne() { # desc unwanted got
+  if [ "$2" != "$3" ]; then ok "$1"; else bad "$1 (got the unwanted '$3')"; fi
+}
+
 assert_file() { # desc path
   if [ -e "$2" ]; then ok "$1"; else bad "$1 (missing $2)"; fi
 }
@@ -255,6 +259,76 @@ node "$RUNTIME" result "$killed_id" --cwd "$repo" > "$scratch/result.txt" 2> "$s
 assert_eq "result on a killed run exits 0" 0 "$rc"
 assert_contains "result reports the failure" "$scratch/result.txt" "Status: failed"
 assert_contains "result still names the run directory" "$scratch/result.txt" "workflows/$killed_id"
+
+# ---------------------------------------------------------------------------
+# 8. A torn per-job file must not wedge the liveness repair. Every status/result
+#    read parses that file; an unguarded parse throws forever, so the promised
+#    lazy transition to `failed` would never happen.
+# ---------------------------------------------------------------------------
+new_case torn-job '{"turns":[{"hangMs":20000}]}'
+node "$RUNTIME" workflow --script "$FIXTURES/fx-par3.mjs" --cwd "$repo" \
+  > "$scratch/out.json" 2> "$scratch/err.log" &
+verb_pid=$!
+assert_eq "a worker went live" 3 "$(wait_for_live 3 15)"
+kill -9 "$verb_pid"
+wait "$verb_pid" 2>/dev/null || true
+
+job_file="$(echo "$CLAUDE_PLUGIN_DATA"/state/*/jobs/wf-*.json)"
+assert_file "the per-job file exists" "$job_file"
+printf '{"id": "wf-tor' > "$job_file"          # exactly what a killed writer leaves
+
+rc=0; snapshot_status || rc=$?
+assert_eq "status survives a torn job file" 0 "$rc"
+torn_id="$(sole_job_id)"
+assert_eq "the torn record is still repaired to failed" failed "$(listed_status "$torn_id")"
+assert_eq "the repair rewrote the job file" 0 "$(node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$job_file" >/dev/null 2>&1; echo $?)"
+node "$RUNTIME" result "$torn_id" --cwd "$repo" > "$scratch/result.txt"
+assert_contains "result reads the repaired record" "$scratch/result.txt" "Status: failed"
+
+# ---------------------------------------------------------------------------
+# 9. Two simultaneous resumers of ONE run id. The ledger pre-check is advisory —
+#    both can pass it before either writes — so the run LEASE has to be held
+#    before the job record is replaced. Exactly one may proceed, and the ledger
+#    must name the process that is actually running.
+# ---------------------------------------------------------------------------
+new_case resume-race '{"turns":[{"hangMs":20000}]}'
+node "$RUNTIME" workflow --script "$FIXTURES/fx-par3.mjs" --cwd "$repo" \
+  > "$scratch/out.json" 2> "$scratch/err.log" &
+verb_pid=$!
+assert_eq "the first run went live" 3 "$(wait_for_live 3 15)"
+kill -9 "$verb_pid"                                   # leaves a resumable run dir
+wait "$verb_pid" 2>/dev/null || true
+kill_live_workers "$scratch/mockstate"
+snapshot_status
+race_id="$(sole_job_id)"
+
+node "$RUNTIME" workflow --script "$FIXTURES/fx-par3.mjs" --resume "$race_id" --cwd "$repo" \
+  > /dev/null 2> "$scratch/resume-a.log" &
+pid_a=$!
+node "$RUNTIME" workflow --script "$FIXTURES/fx-par3.mjs" --resume "$race_id" --cwd "$repo" \
+  > /dev/null 2> "$scratch/resume-b.log" &
+pid_b=$!
+
+# Settle: exactly one of the two must still be alive.
+deadline=$(( SECONDS + 30 ))
+while kill -0 "$pid_a" 2>/dev/null && kill -0 "$pid_b" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+  sleep 0.2
+done
+alive_count=0
+kill -0 "$pid_a" 2>/dev/null && alive_count=$(( alive_count + 1 )) || true
+kill -0 "$pid_b" 2>/dev/null && alive_count=$(( alive_count + 1 )) || true
+assert_eq "exactly one resumer proceeds" 1 "$alive_count"
+
+if kill -0 "$pid_a" 2>/dev/null; then winner=$pid_a; loser=$pid_b; else winner=$pid_b; loser=$pid_a; fi
+rc=0; wait "$loser" || rc=$?
+assert_ne "the loser exits nonzero" 0 "$rc"
+
+snapshot_status
+assert_eq "the ledger still says running" running "$(listed_status "$race_id")"
+assert_eq "the ledger names the process that is actually running" "$winner" "$(listed_field "$race_id" pid)"
+
+kill -TERM "$winner" 2>/dev/null || true
+wait "$winner" 2>/dev/null || true
 
 if [ "$fail" -eq 0 ]; then echo "workflow verb e2e: all cases passed"; fi
 exit "$fail"

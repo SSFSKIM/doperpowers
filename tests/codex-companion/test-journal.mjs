@@ -34,7 +34,11 @@ sealJournal(j);                                                          // idem
 assert.equal(loadJournal(j).events.length, 5);
 
 assert.deepEqual(acquireLease(dir), { ok: true });
-assert.equal(acquireLease(dir).ok, false);                                // same live pid holds it
+// Re-entrant for the SAME pid (reversed 2026-08-03 by the final-review wave):
+// the CLI takes the lease before replacing a resumed run's job record, then the
+// engine acquires it again in-process. A refusal there would make every resume
+// fail. Another live pid is still refused — the case below.
+assert.deepEqual(acquireLease(dir), { ok: true });
 releaseLease(dir);
 assert.equal(acquireLease(dir).ok, true);
 releaseLease(dir);
