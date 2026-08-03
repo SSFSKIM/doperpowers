@@ -13,7 +13,7 @@ import {
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { loadState, resolveStateFile, updateState } from "./lib/state.mjs";
 import { TRANSCRIPT_PATH_ENV } from "./lib/claude-session-transfer.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -50,27 +50,32 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
+  if (!loadState(workspaceRoot).jobs.some((job) => job.sessionId === sessionId)) {
     return;
   }
 
-  for (const job of removedJobs) {
-    const stillRunning = job.status === "queued" || job.status === "running";
-    if (!stillRunning) {
-      continue;
+  // This is a ledger WRITER, so it takes the same lock every other writer takes.
+  // An unlocked load-then-save could be renamed over a concurrent upsertJob's
+  // ledger — and saveState's pruning pass would then delete the job record and
+  // log that upsert had just added, reading them as dropped. The rows are
+  // re-read inside the lock: the snapshot above is only a cheap "is there
+  // anything to do at all".
+  updateState(workspaceRoot, (state) => {
+    for (const job of state.jobs) {
+      if (job.sessionId !== sessionId) {
+        continue;
+      }
+      const stillRunning = job.status === "queued" || job.status === "running";
+      if (!stillRunning) {
+        continue;
+      }
+      try {
+        terminateProcessTree(job.pid ?? Number.NaN);
+      } catch {
+        // Ignore teardown failures during session shutdown.
+      }
     }
-    try {
-      terminateProcessTree(job.pid ?? Number.NaN);
-    } catch {
-      // Ignore teardown failures during session shutdown.
-    }
-  }
-
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
   });
 }
 
