@@ -273,17 +273,39 @@ function isBreakable(observed) {
   );
 }
 
-// Atomic create — the only way to own a break token.
-function claimToken(tokenPath) {
+// Publishing a record whose mere EXISTENCE is a claim — the lock's holder stamp,
+// a break token. An O_EXCL create followed by a separate write makes the file
+// VISIBLE while it is still empty, and everything that reads these records reads
+// the window as an absence of ownership: a holderless lock, or a break token
+// nobody owns, which the reader then deletes out from under a live breaker. So
+// the body goes to a private temp file (its name carries this process's pid, so
+// no other writer can be using it) and the hard link is what publishes it —
+// atomically, complete, exactly the pattern the run lease uses. EEXIST from the
+// link is the ordinary "someone else got there first".
+let tmpSeq = 0;
+function publishIdentityFile(target, body) {
+  const tmp = `${target}.${process.pid}-${tmpSeq++}.tmp`;
   try {
-    fs.writeFileSync(tokenPath, stampBody(), { flag: "wx" });
+    fs.writeFileSync(tmp, body);
+    fs.linkSync(tmp, target);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") {
       throw err;
     }
     return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* best effort: the link, if it landed, is the record that matters */
+    }
   }
+}
+
+// Atomic create — the only way to own a break token.
+function claimToken(tokenPath) {
+  return publishIdentityFile(tokenPath, stampBody());
 }
 
 // A holder SIGKILLed inside the critical section leaves its lock behind, and
@@ -358,8 +380,8 @@ function withStateLock(cwd, fn) {
       // claimer stalled past it (a stop signal, a paused VM) can wake to find
       // its lock already broken and RETAKEN. Its stamp must not land in the
       // successor's directory — that is two writers in one critical section.
-      // Two guards, because the successor may or may not have stamped yet:
-      // "wx" refuses to overwrite a stamp, and the directory identity catches
+      // Two guards, because the successor may or may not have stamped yet: the
+      // link refuses to overwrite a stamp, and the directory identity catches
       // the case where there is nothing yet to overwrite. Either way the claim
       // is simply lost: NOTHING is removed, because everything here now belongs
       // to the successor.
@@ -373,10 +395,9 @@ function withStateLock(cwd, fn) {
 
       let stamped = false;
       try {
-        fs.writeFileSync(holderPath, stampBody(), { flag: "wx" });
-        stamped = true;
+        stamped = publishIdentityFile(holderPath, stampBody());
       } catch (err) {
-        if (err.code !== "EEXIST" && err.code !== "ENOENT") {
+        if (err.code !== "ENOENT") {
           // A real write failure (ENOSPC, EACCES) on a directory that is still
           // ours: give the lock back rather than abandon it unstamped.
           if (isSameDir(lockDir, identity)) {

@@ -149,6 +149,49 @@ test("updateState breaks a lock whose holder is dead and lands the mutation", ()
   assert.equal(fs.existsSync(lockDir), false);
 });
 
+// A file whose mere EXISTENCE is a claim cannot be created empty and filled a
+// syscall later: inside that window a rival reads an unparseable record and acts
+// on it — a holderless lock, or a break token nobody owns, which it then deletes
+// while its owner is mid-break, admitting two breakers into the same lock. Both
+// records are published the way the run lease publishes its own: written to a
+// private temp file and hard-linked into place, so a reader sees the complete
+// record or nothing at all.
+test("a lock's identity records are never visible before they are complete", () => {
+  const workspace = makeTempDir();
+  const lockDir = plantLock(workspace, deadPid());   // forces the break-token path too
+  const holderPath = path.join(lockDir, "holder");
+
+  const bodyWrites = [];
+  const realWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = (target, ...rest) => {
+    bodyWrites.push(String(target));
+    return realWriteFileSync(target, ...rest);
+  };
+  try {
+    upsertJob(workspace, { id: "job-atomic", status: "completed" });
+  } finally {
+    fs.writeFileSync = realWriteFileSync;
+  }
+
+  assert.deepEqual(loadState(workspace).jobs.map((job) => job.id), ["job-atomic"]);
+  assert.equal(
+    bodyWrites.includes(holderPath),
+    false,
+    "the holder stamp is published by link, never created empty at its own path"
+  );
+  assert.equal(
+    bodyWrites.some((target) => path.basename(target).includes(".break-") && !target.endsWith(".tmp")),
+    false,
+    "…and so is the break token"
+  );
+  // Nothing private is left lying around next to the state file.
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(resolveStateFile(workspace))).filter((entry) => entry.endsWith(".tmp")),
+    [],
+    "the temp files used to publish them are cleaned up"
+  );
+});
+
 test("updateState waits out a live holder and fails loudly, naming the lock", () => {
   const workspace = makeTempDir();
   const lockDir = plantLock(workspace, process.pid);
@@ -205,7 +248,9 @@ test("updateState gives the lock back when the holder stamp cannot be written", 
   const lockDir = `${resolveStateFile(workspace)}.lock`;
   const realWriteFileSync = fs.writeFileSync;
   fs.writeFileSync = (target, ...rest) => {
-    if (String(target).endsWith(`${path.sep}holder`)) {
+    // The stamp is written to a private temp beside the holder path and linked
+    // into place, so the failing write is the temp one.
+    if (path.basename(String(target)).startsWith("holder")) {
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     }
     return realWriteFileSync(target, ...rest);
@@ -239,7 +284,9 @@ function swapLockOnStamp(lockDir, { stampSuccessor, thenThrow = null }) {
   const realWriteFileSync = fs.writeFileSync;
   let swapped = false;
   fs.writeFileSync = (target, ...rest) => {
-    if (!swapped && String(target).endsWith(`${path.sep}holder`)) {
+    // The stamp lands via a private temp beside the holder path, so the write to
+    // intercept is that one — it is the last thing before the publishing link.
+    if (!swapped && path.basename(String(target)).startsWith("holder")) {
       swapped = true;
       fs.rmSync(lockDir, { recursive: true, force: true });
       fs.mkdirSync(lockDir);
