@@ -658,6 +658,25 @@ code, and the two adversarial wave-reviews had already caught a
 different, non-overlapping set (broker pid, Linux clock-step
 liveness). Neither layer subsumes the other.
 
+Round 3 (gate run): verdict `interrupted` — correctly: a docs commit
+landed on the branch mid-run and the new head-drift gate caught it,
+an accidental live validation. Its verifier still confirmed 18
+findings (13 P1) as partial evidence, overwhelmingly against round-2
+fix code and narrower than round 2's: TOCTOU windows between
+lease/ledger writes, exit-drain ordering, fingerprint-completeness
+nits, plus re-flags of two accepted-and-documented limitations. The
+loop was STOPPED here by the predeclared rule (a round that still
+bleeds P1s in the previous round's code is an asymptote, not
+convergence). Round-3 findings are recorded as a triage backlog, not
+silent debt: `tests/review-bench/results/2026-08-04-pr43-dogfood-loop/`
+holds all three rounds' outputs and the triage reading (small
+mechanical wave worth taking; ledger races deserve a designed
+lifecycle pass, not spot fixes; fingerprint nits are
+accept+document candidates). Program lesson: a strong review engine
+pointed at its own fixes does not terminate — each wave's code feeds
+the next wave's findings. The gate for "ship" is load-bearing-defect
+exhaustion plus green suites, not a clean panel verdict.
+
 A `watch` verb (live journal-driven progress tree, read-only, no
 --cwd needed) shipped separately on the stacked `workflow-watch`
 branch after proving itself against the dogfood run live.

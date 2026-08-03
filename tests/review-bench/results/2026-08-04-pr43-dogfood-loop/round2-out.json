@@ -1,0 +1,257 @@
+{
+  "runId": "wf-msdooldi-76t1t2",
+  "result": {
+    "verdict": "incorrect",
+    "findings": [
+      {
+        "id": "sweep#1",
+        "priority": "P1",
+        "title": "Resolve npm shims without cmd.exe",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/app-server.mjs",
+        "lines": "257-261",
+        "comment": "On win32, resolveCodexSpawnTarget maps a .cmd/.bat shim to cmd.exe /d /s /c and appends config arguments containing the model-derived lens. Metacharacters such as & and | and %VAR% are therefore reparsed by cmd.exe, enabling command execution or argument corruption outside the read-only Codex process.",
+        "sources": [
+          "sweep",
+          "scalpel-2",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-1#1",
+        "priority": "P1",
+        "title": "Reap orphan workers before replaying a crashed leaf",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/codex-companion.mjs",
+        "lines": "989-994",
+        "comment": "The resume path acquires a dead run's lease and immediately starts runWorkflow without sweeping the persisted workers.json. A SIGKILL-surviving app-server can therefore keep executing while the unfinished leaf is reissued, duplicating work and side effects.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#2",
+        "priority": "P1",
+        "title": "Preserve completed state across split job-record writes",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/job.mjs",
+        "lines": "68-71",
+        "comment": "persist writes the per-job file before separately updating the ledger. A crash between those writes leaves a terminal file and a running ledger row; repairDeadWorkflowJobs constructs {...stored, ...job}, so the stale running row wins and the completed run is rewritten as failed.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-2#2",
+        "priority": "P1",
+        "title": "Reap workers before finalizing a dead workflow",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/job.mjs",
+        "lines": "190-196",
+        "comment": "repairDeadWorkflowJobs marks a dead workflow failed without calling killWorkflowWorkers. handleCancel invokes that repair first, after which resolveCancelableJob accepts only queued/running rows and rejects the run, leaving surviving stamped app-server children without a CLI cleanup path.",
+        "sources": [
+          "scalpel-2",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-2#4",
+        "priority": "P1",
+        "title": "Make PID stamps durable on every supported platform",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/pid.mjs",
+        "lines": "101-107",
+        "comment": "processStartTime returns null on Windows, reducing durable records to PID-only identity before taskkill. Linux records only boot-relative jiffies, so a persisted pre-reboot record can match the same PID and start tick after reboot; either case can signal an unrelated process or misclassify stale state.",
+        "sources": [
+          "scalpel-2",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-2#5",
+        "priority": "P1",
+        "title": "Publish state-lock identity records atomically",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/state.mjs",
+        "lines": "271-274",
+        "comment": "claimToken and holder publication use writeFileSync with wx, which creates a visible file before its body is fully written. A rival can parse that window as holderless and delete a live break token, admitting two breakers; a crash in holder publication can also leave a permanently corrupt lock.",
+        "sources": [
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-4#1",
+        "priority": "P1",
+        "title": "Pass the pinned base to every native finder",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "206-206",
+        "comment": "baseCommit is resolved once for prompts, but line 206 passes the mutable base ref to every native finder. A ref movement before finder startup yields apparently successful coverage for a different diff and can let the old-range verifier publish a false clean result.",
+        "sources": [
+          "scalpel-4",
+          "sweep",
+          "scalpel-1",
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-4#2",
+        "priority": "P1",
+        "title": "Pin the head commit before starting the panel",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "178-178",
+        "comment": "The panel pins only the merge base and never records the feature-tip SHA. reviewTargetCommit also omits HEAD, so a commit added during the panel can make deriver, finders, and verifier inspect different revisions without causing coverage loss or interruption.",
+        "sources": [
+          "scalpel-4",
+          "sweep",
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-4#3",
+        "priority": "P1",
+        "title": "Terminate foreground workflows directly on SessionEnd",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/session-lifecycle-hook.mjs",
+        "lines": "80-80",
+        "comment": "terminateProcessTree deliberately does not fall back from ESRCH on kill(-pid). SessionEnd ignores its delivered:false result and removes the workflow record, unlike handleCancel's required direct PID signal and worker sweep.",
+        "sources": [
+          "scalpel-4",
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "sweep#4",
+        "priority": "P2",
+        "title": "Fingerprint untracked files from the repository root",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "247-250",
+        "comment": "repoFingerprintParts resolves the repository root but runs git ls-files and hash-object with cwd unchanged. Git scopes ls-files to the invoking subdirectory, so untracked files elsewhere in the same checkout are omitted even though workers can read them.",
+        "sources": [
+          "sweep"
+        ]
+      },
+      {
+        "id": "sweep#5",
+        "priority": "P2",
+        "title": "Compare enum members by JSON value",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/validate.mjs",
+        "lines": "31-32",
+        "comment": "validateSchema uses Array.prototype.includes for enum validation. Parsed object and array values cannot be reference-equal to schema literals, so structurally equal JSON enum members are rejected and can exhaust the single repair attempt.",
+        "sources": [
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-1#4",
+        "priority": "P2",
+        "title": "Account for ignored files in resume fingerprints",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "247-250",
+        "comment": "The fingerprint explicitly uses git ls-files --others --exclude-standard, excluding ignored inputs. A worker can read an ignored fixture, generated artifact, or environment file, yet changing it before resume leaves successful cached leaf results reusable.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-2#8",
+        "priority": "P2",
+        "title": "Do not cache PID identity across process reuse",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/pid.mjs",
+        "lines": "41-43",
+        "comment": "processStartTime caches successful tokens by PID for 250 ms. If that process exits and the PID is reused within the window, pidInstanceAlive can compare against the predecessor's cached token and authorize signalling the unrelated successor; spawn stamping can likewise record the predecessor's token.",
+        "sources": [
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-3#4",
+        "priority": "P2",
+        "title": "Fail malformed protocol responses instead of hanging",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/app-server.mjs",
+        "lines": "135-141",
+        "comment": "handleLine ignores every non-JSON line, while request has no timeout. If a response is malformed or prefixed onto banner text and the process stays alive, the corresponding initialize or turn/start entry remains pending indefinitely and retains the workflow semaphore slot.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-3#5",
+        "priority": "P2",
+        "title": "Drain stdout before deciding an exited turn's result",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/codex.mjs",
+        "lines": "570-575",
+        "comment": "exitPromise settles on the child exit event, which may precede stdout/readline closure. completionLostToExit waits only 50 ms, so delayed buffered notifications can arrive after it retries, throws, or infers success; the stream-close event is the actual drain boundary.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-3#6",
+        "priority": "P2",
+        "title": "Close private servers when connection setup fails",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/codex.mjs",
+        "lines": "656-656",
+        "comment": "CodexAppServerClient.connect awaits client.initialize before returning the client, and neither connect nor initialize closes on rejection. If onSpawn throws or initialize rejects while the child remains alive, withAppServer never obtains ownClient and cannot run its finally cleanup.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-4#4",
+        "priority": "P2",
+        "title": "Interrupt when the base cannot be pinned",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "181-181",
+        "comment": "resolveBaseCommit returns null on a nonexistent or unrelated base, but the panel deliberately continues and its assembly can return correct when mocked native finders report clean. No established common range gates that terminal verdict, violating the panel's pinned-target guarantee.",
+        "sources": [
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-4#5",
+        "priority": "P2",
+        "title": "Escape the NUL delimiters in source",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/pid.mjs",
+        "lines": "102-102",
+        "comment": "The cache-key templates contain actual U+0000 bytes. file identifies pid.mjs as data and git diff reports it as binary, concealing the new PID identity implementation from ordinary textual diff and review tooling; escaped source delimiters preserve runtime behavior without that loss.",
+        "sources": [
+          "scalpel-4"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Audit journal replay, caching, retries, and resume guards in the new workflow engine. Crashes must not skip work, duplicate side effects, reuse stale results, or misreport terminal state.",
+        "status": "ok",
+        "stubs": 4
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Trace concurrency across parallel workers, state-ledger locks, run leases, PID identity, cancellation, and session cleanup. Check for lost updates, leaked processes, and signals sent to reused PIDs.",
+        "status": "ok",
+        "stubs": 8
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Inspect the private app-server transport and process boundary. Pay attention to arbitrary config overrides, Windows launcher handling, ignored stdout, late exits, retry ownership, and cleanup.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Verify that the review panel preserves its pinned diff target through every reviewer and verifier. Extraction, coverage loss, deduplication, and verifier failure must never produce a false clean verdict.",
+        "status": "ok",
+        "stubs": 5
+      }
+    ],
+    "lenses": [
+      "Audit journal replay, caching, retries, and resume guards in the new workflow engine. Crashes must not skip work, duplicate side effects, reuse stale results, or misreport terminal state.",
+      "Trace concurrency across parallel workers, state-ledger locks, run leases, PID identity, cancellation, and session cleanup. Check for lost updates, leaked processes, and signals sent to reused PIDs.",
+      "Inspect the private app-server transport and process boundary. Pay attention to arbitrary config overrides, Windows launcher handling, ignored stdout, late exits, retry ownership, and cleanup.",
+      "Verify that the review panel preserves its pinned diff target through every reviewer and verifier. Extraction, coverage loss, deduplication, and verifier failure must never produce a false clean verdict."
+    ],
+    "explanation": "confirmed: Resolve npm shims without cmd.exe; Reap orphan workers before replaying a crashed leaf; Preserve completed state across split job-record writes"
+  },
+  "agents": 7,
+  "durationMs": 1342984
+}

@@ -1,0 +1,260 @@
+{
+  "runId": "wf-msdrar6d-vh70jn",
+  "result": {
+    "verdict": "interrupted",
+    "findings": [
+      {
+        "id": "scalpel-1#1",
+        "priority": "P1",
+        "title": "Revalidate fingerprints before serving cache hits",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "163-167",
+        "comment": "The repository/workflow fingerprint is captured once at runWorkflow entry. A cache hit at engine.mjs:163-167 returns immediately without recomputing it, so an edit made after the resume guard—during an earlier leaf, semaphore wait, or before workflow import—can reuse a success produced from the old tree.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#2",
+        "priority": "P1",
+        "title": "Pass the pinned review base to every finder",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "241-246",
+        "comment": "Each finder receives the symbolic base ref, while resolvePin/pinDrift retain only merge-base and HEAD. journal.mjs explicitly treats both merge-base and base-tip as native-review identity; therefore a non-ancestor base-tip advance after a finder completes is missed by the panel gate and results for the prior target can be published.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#3",
+        "priority": "P1",
+        "title": "Include workflow runtime code in the fingerprint",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "442-444",
+        "comment": "workflowExtraPaths includes the workflow directory, sibling JS modules, and its lib subtree only. It excludes engine.mjs, codex.mjs, journal.mjs, and other runtime dependencies, so a later runtime version can accept the old fingerprint and replay results generated under materially different execution semantics.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-2#1",
+        "priority": "P1",
+        "title": "Stamp queued worker PIDs before requiring verification",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/codex-companion.mjs",
+        "lines": "1207-1209",
+        "comment": "spawnDetachedTaskWorker returns a PID, but queuedRecord persists no processStartTime. Both cancel and SessionEnd require pidInstanceVerified, so they cannot signal this queued child; task-worker subsequently reads the still-present request without checking cancelled status and can transition back to running.",
+        "sources": [
+          "scalpel-2",
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-2#2",
+        "priority": "P1",
+        "title": "Publish workers.json atomically",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "142-142",
+        "comment": "workers.json is truncated and rewritten in place at engine.mjs:141-142. SIGKILL during that write makes JSON.parse fail; killWorkflowWorkers then returns [] and a later save overwrites the recovery evidence, leaving orphan workers unaddressable.",
+        "sources": [
+          "scalpel-2",
+          "sweep",
+          "scalpel-5"
+        ]
+      },
+      {
+        "id": "scalpel-2#3",
+        "priority": "P1",
+        "title": "Sweep workers when the workflow parent is already gone",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/session-lifecycle-hook.mjs",
+        "lines": "79-80",
+        "comment": "The parent verification failure continues before the workflow-specific killWorkflowWorkers call. Cleanup nevertheless filters the session row afterward, so a dead/reused—or temporarily unverifiable—parent causes its independently stamped live workers to be skipped and their runDir pointer to disappear from the ledger.",
+        "sources": [
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-2#4",
+        "priority": "P1",
+        "title": "Quiesce workflow writers before deleting session rows",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/session-lifecycle-hook.mjs",
+        "lines": "88-91",
+        "comment": "cleanupSessionJobs signals inside updateState's locked mutation. The workflow SIGTERM handler calls lifecycle.finalize, whose writeJobFile precedes its contended upsertJob; cleanup can delete the row/artifacts and then the delayed upsert re-inserts the cancelled row after the lock is released. No tombstone or generation check rejects it.",
+        "sources": [
+          "scalpel-2",
+          "sweep",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-2#5",
+        "priority": "P1",
+        "title": "Verify broker identity with the kill-path predicate",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/broker-lifecycle.mjs",
+        "lines": "193-193",
+        "comment": "brokerInstanceIsOurs requires a stored stamp but delegates comparison to pidInstanceAlive, whose fail-open current-start-time read is appropriate for liveness, not signalling. A transient unreadable start time therefore authorizes terminateProcessTree against a possibly reused PID and its process group.",
+        "sources": [
+          "scalpel-2",
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-3#1",
+        "priority": "P1",
+        "title": "Drain pending start responses before treating exit as failure",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/codex.mjs",
+        "lines": "663-663",
+        "comment": "AppServerClientBase.handleExit immediately rejects and removes all pending RPCs. Node's child exit event may precede delivery/closure of buffered stdout, so a buffered turn/start or review/start response finds no pending entry when later parsed; captureTurn never reaches its post-start exit-drain race.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-3#2",
+        "priority": "P1",
+        "title": "Preserve completed native-review output on transport close",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/codex.mjs",
+        "lines": "609-610",
+        "comment": "A completed exitedReviewMode item populates reviewText but never finalAnswerSeen. After stream drain, completionLostToExit salvages only finalAnswerSeen with drained collaborations/subagent turns, so valid native-review output is rejected if transport closes before turn/completed.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-4#1",
+        "priority": "P1",
+        "title": "Publish resume ownership before dead-job repair",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/codex-companion.mjs",
+        "lines": "990-990",
+        "comment": "Resume acquires the run lease at line 990 but does not publish its new PID to the ledger until lifecycle.register at line 1025. repairDeadWorkflowJobs ignores the lease, so a concurrent reader can finalize the old dead-PID row as failed and return it before the resumer later rewrites the same job as running.",
+        "sources": [
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-4#2",
+        "priority": "P1",
+        "title": "Commit per-job and ledger records as one generation",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/job.mjs",
+        "lines": "73-74",
+        "comment": "workflowJobLifecycle.persist writes the per-job record and ledger in separate operations. A resumed terminal run can therefore leave a durable running job file beside its prior terminal ledger if interrupted between them; repair skips terminal ledger rows, and result --json exposes the two incompatible generations directly.",
+        "sources": [
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-4#3",
+        "priority": "P1",
+        "title": "Revalidate the job before committing cancellation",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/codex-companion.mjs",
+        "lines": "1207-1209",
+        "comment": "resolveCancelableJob returns an unlocked running snapshot, after which interruptAppServerTurn and signalling can take time. There is no locked status/PID-generation recheck before cancellation writes, so natural completion can commit first and then be overwritten as cancelled, including mixed per-job/ledger interleavings.",
+        "sources": [
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#2",
+        "priority": "P2",
+        "title": "Settle cleanup when broker initialization creates no socket",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/app-server.mjs",
+        "lines": "468-474",
+        "comment": "parseBrokerEndpoint executes before this.socket is assigned. If it throws, connect's catch awaits close(); broker close has no no-socket settlement path and waits forever on exitPromise, which only socket error/close handlers resolve.",
+        "sources": [
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-1#4",
+        "priority": "P2",
+        "title": "Account for non-HEAD Git refs in repository identity",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "258-261",
+        "comment": "repoContent hashes HEAD, its diff, untracked blobs, and submodule state, but no other ref resolutions. An unchanged prompt that reads a literal mutable ref such as main therefore retains the same leaf key after that ref moves and can receive its prior answer.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-2#6",
+        "priority": "P2",
+        "title": "Avoid signalling the workflow PID twice",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/codex-companion.mjs",
+        "lines": "1218-1220",
+        "comment": "handleCancel ignores terminateProcessTree's delivered result and unconditionally sends a second direct SIGTERM for workflows. If the first process-group signal was delivered, the original verification is stale by the second call; unlike SessionEnd, this path permits a successor PID to be signalled after a rapid exit/reuse.",
+        "sources": [
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-5#1",
+        "priority": "P2",
+        "title": "Add an end-of-options boundary for the base ref",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "50-52",
+        "comment": "resolvePin passes args.base directly after git merge-base with no option boundary or validation. For example, git merge-base --octopus HEAD resolves successfully to HEAD in this checkout, so the baseCommit guard accepts an option as a ref and starts a panel against an unintended target.",
+        "sources": [
+          "scalpel-5"
+        ]
+      },
+      {
+        "id": "scalpel-5#2",
+        "priority": "P2",
+        "title": "Hash untracked paths with a lossless delimiter",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "253-256",
+        "comment": "Both top-level and submodule untracked enumeration use newline-delimited, default-quoted Git output. A quoted non-ASCII/control-character filename is passed literally to hash-object, which fails and yields the constant unreadable marker; subsequent content changes then leave repoContent unchanged.",
+        "sources": [
+          "scalpel-5"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Scrutinize resume correctness across journal cache keys, repository fingerprints, workflow fingerprints, and pinned review targets. Changed code or Git refs must not reuse stale worker results.",
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Trace process ownership across PID stamps, leases, state locks, cancellation, worker cleanup, and app-server shutdown. Look for races that leak workers or signal reused PIDs.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Check app-server event correlation and exit draining under concurrent workflow workers. Late notifications, stray stdout, or transport closure must not lose output or complete the wrong turn.",
+        "status": "ok",
+        "stubs": 2
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Audit durable job transitions across per-job records, the global ledger, the run journal, resume, and dead-job repair. Crashes and concurrent readers must not produce contradictory terminal state.",
+        "status": "ok",
+        "stubs": 4
+      },
+      {
+        "finder": "scalpel-5",
+        "lens": "Review path containment and argument-injection boundaries in workflow loading, run identifiers, persisted job paths, and developer-instruction config overrides.",
+        "status": "ok",
+        "stubs": 3
+      }
+    ],
+    "lenses": [
+      "Scrutinize resume correctness across journal cache keys, repository fingerprints, workflow fingerprints, and pinned review targets. Changed code or Git refs must not reuse stale worker results.",
+      "Trace process ownership across PID stamps, leases, state locks, cancellation, worker cleanup, and app-server shutdown. Look for races that leak workers or signal reused PIDs.",
+      "Check app-server event correlation and exit draining under concurrent workflow workers. Late notifications, stray stdout, or transport closure must not lose output or complete the wrong turn.",
+      "Audit durable job transitions across per-job records, the global ledger, the run journal, resume, and dead-job repair. Crashes and concurrent readers must not produce contradictory terminal state.",
+      "Review path containment and argument-injection boundaries in workflow loading, run identifiers, persisted job paths, and developer-instruction config overrides."
+    ],
+    "explanation": "the review target moved while the panel ran (HEAD was cf5771fb7884c2078cef79a4aa60516333c38107, is now aae0d81e8cb771996aa0460a0bed1484ddee7a2a) — no verdict about this diff can be asserted; 18 confirmed finding(s) attached as partial evidence"
+  },
+  "agents": 8,
+  "durationMs": 1244577
+}
