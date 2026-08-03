@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { listJobs, readJobFile, resolveJobFile, upsertJob, writeJobFile } from "../state.mjs";
+import { listJobs, readJobFile, resolveJobFile, updateState, upsertJob, writeJobFile } from "../state.mjs";
 
 export const WORKFLOW_JOB_CLASS = "workflow";
 
@@ -84,19 +84,26 @@ export function workflowJobLifecycle(workspaceRoot, job) {
       });
     },
     finalize(status, patch = {}) {
-      const next = {
-        ...patch,
-        status,
-        phase: PHASE_BY_STATUS[status] ?? status,
-        pid: null,
-        completedAt: nowIso()
-      };
-      // Rendered eagerly so `result` shows the run directory on every terminal
-      // path, including the lazily repaired one below where nothing else ran.
-      next.rendered = renderWorkflowJobResult({ ...record, ...next });
-      return persist(next);
+      return persist(finalizePatch(record, status, patch));
     }
   };
+}
+
+// The terminal patch for a record, shared by the lifecycle above and the lazy
+// repair below (which cannot use the lifecycle: its writes have to happen inside
+// the state lock, and persist() takes that lock itself).
+function finalizePatch(record, status, patch = {}) {
+  const next = {
+    ...patch,
+    status,
+    phase: PHASE_BY_STATUS[status] ?? status,
+    pid: null,
+    completedAt: nowIso()
+  };
+  // Rendered eagerly so `result` shows the run directory on every terminal
+  // path, including the lazily repaired one where nothing else ran.
+  next.rendered = renderWorkflowJobResult({ ...record, ...next });
+  return next;
 }
 
 function pidAlive(pid) {
@@ -142,29 +149,52 @@ function readStoredJobOrCorrupt(jobFile) {
   }
 }
 
+function isDeadWorkflowRow(job) {
+  return (
+    job.jobClass === WORKFLOW_JOB_CLASS &&
+    (job.status === "running" || job.status === "queued") &&
+    !pidAlive(job.pid)
+  );
+}
+
 // A workflow run is one process, so nothing else will ever finalize its record:
 // SIGKILL, a reboot or a crashed harness leaves it `running` forever. The read
 // paths repair it lazily rather than reporting a phantom run.
+//
+// The dead-check and the finalize are ONE locked step. Split, they lose the race
+// against the one thing that legitimately revives a run: a `--resume` registers
+// a new live pid for the same id, and a repair that decided "dead" before that
+// registration would overwrite a running run's record and ledger row as failed.
 export function repairDeadWorkflowJobs(workspaceRoot) {
-  for (const job of listJobs(workspaceRoot)) {
-    if (job.jobClass !== WORKFLOW_JOB_CLASS) {
-      continue;
-    }
-    if (job.status !== "running" && job.status !== "queued") {
-      continue;
-    }
-    if (pidAlive(job.pid)) {
-      continue;
-    }
-    const { stored, corrupt } = readStoredJobOrCorrupt(resolveJobFile(workspaceRoot, job.id));
-    // finalize rewrites the per-job file, so a torn one is REPAIRED here rather
-    // than left to break the next read.
-    workflowJobLifecycle(workspaceRoot, { ...stored, ...job }).finalize("failed", {
-      errorMessage: `Workflow process ${job.pid ?? "(unrecorded)"} is gone; the run never finished.${
-        corrupt ? " Its record file was unreadable and has been rewritten." : ""
-      }`
-    });
+  // Unlocked probe first: every status/result/cancel calls this, and the
+  // overwhelmingly common answer is that there is nothing to repair. Its verdict
+  // is never trusted for a write — the rows are re-read and re-verified inside
+  // the lock below.
+  if (!listJobs(workspaceRoot).some(isDeadWorkflowRow)) {
+    return;
   }
+  updateState(workspaceRoot, (state) => {
+    state.jobs.forEach((job, index) => {
+      if (!isDeadWorkflowRow(job)) {
+        return;
+      }
+      const { stored, corrupt } = readStoredJobOrCorrupt(resolveJobFile(workspaceRoot, job.id));
+      const record = { ...stored, ...job };
+      // The per-job file is rewritten too, so a torn one is REPAIRED here rather
+      // than left to break the next read. writeJobFile takes no lock of its own,
+      // which is why this can run inside the mutation.
+      const finalized = {
+        ...record,
+        ...finalizePatch(record, "failed", {
+          errorMessage: `Workflow process ${job.pid ?? "(unrecorded)"} is gone; the run never finished.${
+            corrupt ? " Its record file was unreadable and has been rewritten." : ""
+          }`
+        })
+      };
+      writeJobFile(workspaceRoot, job.id, finalized);
+      state.jobs[index] = { ...ledgerRow(finalized), updatedAt: nowIso() };
+    });
+  });
 }
 
 // workers.json may be ABSENT rather than `[]` — a fully-cached resume never
