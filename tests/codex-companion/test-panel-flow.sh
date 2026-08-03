@@ -48,6 +48,10 @@ assert_contains() { # desc file needle
   if grep -Fq -- "$3" "$2"; then ok "$1"; else bad "$1 (no '$3' in $2)"; fi
 }
 
+assert_absent() { # desc file needle
+  if grep -Fq -- "$3" "$2"; then bad "$1 (found '$3' in $2)"; else ok "$1"; fi
+}
+
 cleanup() {
   local dir
   for dir in "${scratches[@]:-}"; do
@@ -76,6 +80,12 @@ run_panel() { # args-json → rc in $rc, stdout in $scratch/out.json
   rc=0
   node "$RUNTIME" workflow --script "$PANEL" --args "$1" --cwd "$repo" \
     > "$scratch/out.json" 2> "$scratch/err.log" || rc=$?
+}
+
+resume_panel() { # args-json run-id → rc in $rc, stdout in $scratch/out2.json
+  rc=0
+  node "$RUNTIME" workflow --script "$PANEL" --args "$1" --cwd "$repo" --resume "$2" \
+    > "$scratch/out2.json" 2> "$scratch/err2.log" || rc=$?
 }
 
 turn_count() {
@@ -334,6 +344,19 @@ assert_eq "every finder reviews the caller's base as a native branch target" \
 
 turn_field 0 '.params.input[0].text' > "$scratch/prompt.txt"
 assert_contains "deriver prompt names the diff base" "$scratch/prompt.txt" "merge-base(HEAD, main)"
+# The panel resolves its base ONCE and names the commit everywhere. A ref moves:
+# the engine keys each review call on the commit it resolved, but an agent call
+# is keyed on its PROMPT, so a deriver prompt that said only "main" would
+# cache-hit on a resume whose reviews were re-run against a base that had
+# advanced — lenses derived from one diff, aimed at another. `git merge-base
+# <base> HEAD` is exactly what the engine records for a review call
+# (journal.mjs reviewTargetCommit), so the two move together.
+base_commit="$(git -C "$repo" merge-base main HEAD)"
+assert_contains "deriver prompt pins the resolved merge base" "$scratch/prompt.txt" "$base_commit"
+assert_contains "the deriver is told to diff the pinned commit, not to re-resolve the ref" \
+  "$scratch/prompt.txt" "git diff $base_commit --stat"
+assert_contains "the run logs the commit the panel pinned" "$scratch/err.log" \
+  "panel base main pinned at $base_commit"
 assert_contains "deriver prompt caps mandate length" "$scratch/prompt.txt" "AT MOST TWO SIMPLE SENTENCES"
 assert_contains "deriver prompt caps mandate count" "$scratch/prompt.txt" "between 0 and 5"
 assert_contains "deriver prompt says sharper beats padding" "$scratch/prompt.txt" "fewer, sharper mandates beat coverage padding"
@@ -386,6 +409,9 @@ assert_eq "the deriver schema is closed too" "false" \
 verifier_prompts > "$scratch/vprompt.txt"
 assert_contains "the verifier is told to re-inspect the code itself" "$scratch/vprompt.txt" "re-inspect the code yourself"
 assert_contains "the verifier prompt names the diff base" "$scratch/vprompt.txt" "merge-base(HEAD, main)"
+# One range for the whole panel: the verifier re-inspects the code itself, so it
+# must be pointed at the same commit the finders were.
+assert_contains "the verifier is pinned to the same commit as the deriver" "$scratch/vprompt.txt" "$base_commit"
 assert_contains "the verifier prompt carries the candidate pool verbatim" "$scratch/vprompt.txt" '"id": "scalpel-2#2"'
 # A lens-directed claim reads differently once you know which mandate produced
 # it, so the roster rides above the candidates.
@@ -412,6 +438,81 @@ assert_eq "the explanation names the confirmed findings, at most three of them" 
 # second copy of them: a verified panel hands back the verdict, not the material.
 assert_eq "a verified panel does not carry the raw candidate pool" "null" \
   "$(jq -c '.result.pool' "$scratch/out.json")"
+
+# ---------------------------------------------------------------------------
+# 1b. A base whose merge base does not exist — here two unrelated histories, but
+#     a ref that names nothing in this checkout lands the same way. The pin is an
+#     optimization of cache identity, never a precondition: the panel runs
+#     exactly as it did before pinning, the deriver is told to resolve the range
+#     itself, and the loss is said out loud rather than papered over with a
+#     commit nobody resolved.
+# ---------------------------------------------------------------------------
+new_case unpinnable-base "$(scenario \
+  "$(msg_turn '{"lenses":[]}')" \
+  "$(review_turn "$CLEAN_TEXT")")"
+git -C "$repo" checkout -q --orphan unrelated
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m "unrelated root"
+git -C "$repo" checkout -q main
+run_panel '{"base":"unrelated"}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "an unpinnable base costs the panel nothing: deriver + sweep" "0:2" "$(rc_and_turns)"
+turn_field 0 '.params.input[0].text' > "$scratch/prompt.txt"
+assert_contains "the unpinned deriver resolves the range itself, as it always did" \
+  "$scratch/prompt.txt" 'git diff $(git merge-base HEAD unrelated) --stat'
+assert_contains "the run says the base could not be pinned" "$scratch/err.log" \
+  "panel base unrelated could not be resolved to a commit"
+assert_eq "an unpinned panel still reaches its verdict" "correct" "$(verdict)"
+
+# ---------------------------------------------------------------------------
+# 1c. Why the pin exists, end to end: a RESUME taken after the merge base moved.
+#     Nothing the run fingerprint watches has changed — HEAD, the working tree
+#     and the untracked files are all where they were — so the resume is allowed,
+#     and the review calls re-run because the engine keys them on the commit it
+#     resolved. The deriver is the lane with no such key: an agent call is keyed
+#     on its PROMPT, so a prompt naming only "main" would serve lenses derived
+#     from the OLD range while every finder reviews the new one. The pinned
+#     commit is what makes that a cache miss.
+# ---------------------------------------------------------------------------
+new_case pin-resume "$(scenario \
+  "$(msg_turn '{"lenses":[]}')" \
+  "$(review_turn "$CLEAN_TEXT")" \
+  "$(msg_turn '{"lenses":[]}')" \
+  "$(review_turn "$CLEAN_TEXT")")"
+# main forks, HEAD moves onto its own branch: the merge base is the fork point,
+# and moving `main` BACK behind it is what changes the range without touching a
+# single byte the fingerprint hashes (a force-pushed or rebased base branch is
+# the same event).
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m "second on main"
+git -C "$repo" checkout -q -b work
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m "work"
+root_commit="$(git -C "$repo" rev-list --max-parents=0 HEAD)"
+fork_commit="$(git -C "$repo" rev-parse main)"
+head_before="$(git -C "$repo" rev-parse HEAD)"
+
+run_panel '{"base":"main"}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "the first run pins the fork point" "0:2" "$(rc_and_turns)"
+assert_contains "the first run's deriver carries the fork point" "$scratch/err.log" \
+  "panel base main pinned at $fork_commit"
+
+git -C "$repo" branch -f main "$root_commit"
+assert_eq "the resume sees the same HEAD the first run was fingerprinted on" \
+  "$head_before" "$(git -C "$repo" rev-parse HEAD)"
+resume_panel '{"base":"main"}' "$(jq -r .runId "$scratch/out.json")"
+[ "$rc" -eq 0 ] || cat "$scratch/err2.log"
+assert_eq "the resume is allowed and re-runs both lanes" "0:4" "$(rc_and_turns)"
+assert_contains "the resumed panel pins the NEW merge base" "$scratch/err2.log" \
+  "panel base main pinned at $root_commit"
+turn_field 2 '.params.input[0].text' > "$scratch/prompt2.txt"
+assert_contains "the resumed deriver is told the new range" "$scratch/prompt2.txt" "$root_commit"
+# The whole point: a lens set derived against the old range is never served for
+# the new one.
+assert_absent "the resumed deriver is a live call, not a cache hit" \
+  "$scratch/err2.log" "cache agent:lens-deriver"
+assert_contains "the resumed deriver really ran" "$scratch/err2.log" "start agent:lens-deriver"
 
 # ---------------------------------------------------------------------------
 # 2. Caller bypass: `args.lenses` spends no deriver turn and is passed through.

@@ -2,9 +2,55 @@
 // scalpel lenses, and one binding verifier. This file is a pure orchestration
 // script on the `workflow` verb's engine — every model judgment lives in a
 // turn, everything else here is deterministic.
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { extractStubs } from "./lib/extract.mjs";
 
 export const meta = { name: "code-review", description: "Multi-lens codex review panel: native sweep + diff-derived scalpels + one binding verifier" };
+
+// Where the workers read. The engine hands a script no cwd of its own, so this
+// repeats the resolution the `workflow` verb already made — `--cwd`/`-C` against
+// the process cwd, the process cwd when neither is given (codex-companion.mjs
+// resolveCommandCwd). Read off argv rather than taken as an arg because a second
+// declaration is one more thing that can disagree with what the workers got.
+// Used for exactly ONE thing — resolving the base commit below — and never
+// handed to a worker: under a driver other than the verb this can guess wrong,
+// and a wrong guess must cost a prompt line and a cache key, never send every
+// reviewer at the wrong repository.
+function verbCwd() {
+  let raw = null;
+  for (let i = 0; i < process.argv.length; i += 1) {
+    const m = /^(?:--cwd|-C)(?:=(.*))?$/.exec(process.argv[i]);   // both spellings the verb accepts
+    if (!m) continue;
+    const value = m[1] ?? process.argv[i + 1];
+    if (value !== undefined) raw = value;                          // last one wins, as the parser does
+  }
+  return raw === null ? process.cwd() : path.resolve(process.cwd(), raw);
+}
+
+// The base ref resolved to the commit the reviewers are actually keyed on:
+// `git merge-base <base> HEAD` is the same command the engine journals a review
+// call under (workflow/journal.mjs reviewTargetCommit), so the pin and the
+// reviews move together or not at all. null when it cannot be resolved — an
+// unrelated history, a ref that names nothing here, a cwd that is not a
+// repository — and the panel then runs exactly as it did before pinning.
+function resolveBaseCommit(cwd, base) {
+  const out = spawnSync("git", ["-C", cwd, "merge-base", base, "HEAD"], { encoding: "utf8" });
+  const sha = out.status === 0 ? String(out.stdout ?? "").trim() : "";
+  return /^[0-9a-f]{7,64}$/.test(sha) ? sha : null;
+}
+
+// The range every prompt in this panel names. A ref MOVES, and only half the
+// panel notices: the engine keys each review call on the commit it resolved,
+// while an agent call is keyed on its prompt alone. A deriver prompt carrying
+// just the word "main" therefore cache-hits on a resume whose reviews were
+// re-run against a base that advanced underneath it — lenses derived from one
+// diff, aimed at another. Writing the resolved commit into the text is what puts
+// it in that cache identity, and it also stops the deriver and the verifier from
+// each re-resolving a range that must not drift between the panel's own workers.
+const rangeOf = (base, commit) => commit
+  ? `${commit} (merge-base(HEAD, ${base}), resolved once at panel start)`
+  : `merge-base(HEAD, ${base})`;
 
 // The panel's mandate cap is the owner's, not the model's: it binds the derived
 // lenses and a caller's `args.lenses` alike.
@@ -21,7 +67,7 @@ const DERIVER_SCHEMA = {
   properties: { lenses: { type: "array", items: { type: "string" } } }
 };
 
-const DERIVER_PROMPT = (base) => `You are preparing a multi-reviewer code-review panel for the diff between merge-base(HEAD, ${base}) and HEAD in this repository. Run \`git diff $(git merge-base HEAD ${base}) --stat\` and skim the largest hunks with \`git diff\`.
+const DERIVER_PROMPT = (base, commit) => `You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf(base, commit)} and HEAD in this repository. Run \`git diff ${commit ?? `$(git merge-base HEAD ${base})`} --stat\` and skim the largest hunks with \`git diff\`.
 
 Write between 0 and 5 scalpel lens mandates. Each mandate is AT MOST TWO SIMPLE SENTENCES naming one structural risk surface of THIS diff (example of the calibre required: "Pay attention to authorization and actor-identity assumptions in the changed API routes."). A separate lens-free reviewer already sweeps everything, so a mandate must earn its slot: fewer, sharper mandates beat coverage padding — a small single-concern diff deserves zero or one. Consider, only where this diff actually raises them: changed-logic accuracy, cross-file contract impact, behavior lost with removed/moved code, security surface, performance/resources.
 
@@ -100,8 +146,8 @@ const lensRoster = (finders) => finders
   .map(({ finderId, mandate }) => `- ${finderId}: ${mandate ?? "(lens-free sweep)"}`)
   .join("\n");
 
-const VERIFIER_PROMPT = (base, finders, pool) =>
-  `You are the binding verifier of a multi-reviewer panel. The candidate findings below came from independent reviewers of the diff against merge-base(HEAD, ${base}) — re-inspect the code yourself before judging. For EVERY candidate id return exactly one verdict: CONFIRMED (you can name the concrete failure) or REFUTED (state why it is wrong or not a real defect). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0-P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
+const VERIFIER_PROMPT = (base, commit, finders, pool) =>
+  `You are the binding verifier of a multi-reviewer panel. The candidate findings below came from independent reviewers of the diff against ${rangeOf(base, commit)} — re-inspect the code yourself before judging. For EVERY candidate id return exactly one verdict: CONFIRMED (you can name the concrete failure) or REFUTED (state why it is wrong or not a real defect). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0-P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
 
 The reviewers, and the lens each was given (a candidate id carries its reviewer's label):
 ${lensRoster(finders)}
@@ -113,10 +159,10 @@ ${JSON.stringify(pool, null, 2)}`;
 // whatever this prompt omits, the repairing verifier does not know: not its
 // role, not the base, not what CONFIRMED means. Its answer is binding when it
 // passes, so it carries the WHOLE contract, with the violation on top.
-const REPAIR_PROMPT = (base, errs, finders, pool) =>
+const REPAIR_PROMPT = (base, commit, errs, finders, pool) =>
   `Your verdict set violated the contract: ${errs.join("; ")}. The full contract follows again, unchanged.
 
-${VERIFIER_PROMPT(base, finders, pool)}
+${VERIFIER_PROMPT(base, commit, finders, pool)}
 
 Return the FULL corrected verdicts array covering every candidate id exactly once.`;
 
@@ -126,12 +172,20 @@ export default async function run({ agent, review, parallel, log, args }) {
   const finderModel  = args.finderModel  ?? "gpt-5.6-sol";
   const finderEffort = args.finderEffort ?? "xhigh";
 
+  // Once, before any worker: every prompt below names this commit, so the whole
+  // panel — deriver, finders, verifier — is talking about one range even if the
+  // ref moves while it runs.
+  const baseCommit = resolveBaseCommit(verbCwd(), base);
+  log(baseCommit
+    ? `panel base ${base} pinned at ${baseCommit}`
+    : `panel base ${base} could not be resolved to a commit; the panel runs unpinned`);
+
   let lenses = args.lenses;
   if (!Array.isArray(lenses)) {
     // Deliberately the finder model: the deriver reads the same diff the
     // finders will, so re-routing the finders re-routes the read of what they
     // should look at. Its effort is fixed low — this is a skim, not a review.
-    const derived = await agent(DERIVER_PROMPT(base), {
+    const derived = await agent(DERIVER_PROMPT(base, baseCommit), {
       model: finderModel, effort: "medium",
       schema: DERIVER_SCHEMA, label: "lens-deriver"
     });
@@ -181,14 +235,14 @@ export default async function run({ agent, review, parallel, log, args }) {
       model: args.verifierModel ?? "gpt-5.6-sol", effort: args.verifierEffort ?? "high",
       schema: VERIFIER_SCHEMA
     };
-    const attempt = await agent(VERIFIER_PROMPT(base, finders, pool), { ...opts, label: "verifier" }).catch(() => null);
+    const attempt = await agent(VERIFIER_PROMPT(base, baseCommit, finders, pool), { ...opts, label: "verifier" }).catch(() => null);
     const errs = attempt ? checkPostconditions(attempt.verdicts, pool) : ["verifier failed"];
     if (errs.length === 0) verified = attempt.verdicts;
     else {
       log(`verifier postconditions failed: ${errs.join("; ")} — retrying`);
       // A FRESH agent() call, not a resumed thread: content-keyed separately, so
       // a resume never conflates the rejected answer with its replacement.
-      const retry = await agent(REPAIR_PROMPT(base, errs, finders, pool), { ...opts, label: "verifier-retry" }).catch(() => null);
+      const retry = await agent(REPAIR_PROMPT(base, baseCommit, errs, finders, pool), { ...opts, label: "verifier-retry" }).catch(() => null);
       const errs2 = retry ? checkPostconditions(retry.verdicts, pool) : ["verifier retry failed"];
       verified = errs2.length === 0 ? retry.verdicts : null;
     }
