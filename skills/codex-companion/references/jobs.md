@@ -6,7 +6,12 @@ mandatory on every invocation: unset, the runtime falls back to a tmpdir
 that macOS periodically purges, and job history (`status`, `result`,
 `--resume-last`) silently vanishes. Sessions that still have the OpenAI
 codex plugin installed also inherit ITS `CLAUDE_PLUGIN_DATA` from a hook;
-the explicit prefix wins over both.
+the explicit prefix wins over both. One state root is also one lock, so
+two DIFFERENT versions of this runtime pointed at the same root can
+disagree about what a lock holder looks like: the older one reads the
+newer's holder record as unreadable and waits it out instead of breaking
+it. That costs a wait (a `state lock timeout` after five seconds), never
+a lost record, and it ends when the last old process does.
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
     CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
