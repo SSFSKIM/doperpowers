@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { currentPidStamp, pidInstanceAlive } from "../pid.mjs";
+import { currentPidStamp, pidInstanceAlive, pidInstanceVerified } from "../pid.mjs";
 import { isPathSegment, listJobs, readJobFile, resolveJobFile, updateState, upsertJob, writeJobFile } from "../state.mjs";
 
 export const WORKFLOW_JOB_CLASS = "workflow";
@@ -203,10 +203,11 @@ export function repairDeadWorkflowJobs(workspaceRoot) {
 // spawns a worker — and a recorded pid may already have exited. Neither is an
 // error, and neither may throw: this runs from a signal handler.
 //
-// Entries are `{pid, pidStart}`; a bare number is the pre-stamp format and is
-// still honored (pid-only). The stamp is what keeps a cancel from SIGTERMing an
-// unrelated process that inherited a dead worker's pid — the run directory can
-// outlive a reboot, and cancel is exactly the path that signals what it finds.
+// Entries are `{pid, pidStart}`. This is a KILL path, so it follows that rule
+// (pidInstanceVerified): only an entry whose instance can be proven right now is
+// signalled. A bare number (the pre-stamp format) and a pid on a platform with
+// no readable start time prove nothing and are skipped — the run directory
+// outlives a reboot, and the number in it may belong to a stranger by then.
 export function killWorkflowWorkers(runDir, signal = "SIGTERM") {
   if (!runDir) {
     return [];
@@ -227,8 +228,8 @@ export function killWorkflowWorkers(runDir, signal = "SIGTERM") {
     if (typeof pid !== "number") {
       continue;
     }
-    if (!pidAlive(pid, pidStart)) {
-      continue; // gone, or the number belongs to someone else now
+    if (!pidInstanceVerified(pid, pidStart)) {
+      continue; // gone, unprovable, or the number belongs to someone else now
     }
     try {
       process.kill(pid, signal);

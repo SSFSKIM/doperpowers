@@ -257,7 +257,13 @@ function inspectLock(lockDir) {
     // it was created.
     return { state: "unstamped", ageMs: Date.now() - stat.mtimeMs };
   }
-  return { state: pidInstanceAlive(holder.pid, holder.pidStart) ? "live" : "dead", pid: holder.pid };
+  // The one caller allowed a cached start-time read (lib/pid.mjs): this runs on
+  // every ~15ms retry of the acquisition loop, and it decides who WAITS, never
+  // who gets signalled.
+  return {
+    state: pidInstanceAlive(holder.pid, holder.pidStart, { cache: true }) ? "live" : "dead",
+    pid: holder.pid
+  };
 }
 
 function isBreakable(observed) {

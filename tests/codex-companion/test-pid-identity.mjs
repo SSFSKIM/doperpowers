@@ -162,14 +162,21 @@ function spawnVictim() {
 }
 
 {
-  // Records written before stamps existed are still honored: pid-only, as before.
+  // An UNSTAMPED entry proves nothing. A bare number is the pre-stamp format,
+  // and on Windows no start time is readable at all, so every entry looks like
+  // this — but the same run directory outlives a reboot, and the number in it
+  // may now be a stranger's. Every kill path in this runtime (cancel, the worker
+  // sweep, the SessionEnd teardown, the broker teardown) refuses what it cannot
+  // prove: the cost is a leaked worker that was already unreachable.
   const runDir = path.join(scratch, "workers-legacy");
   fs.mkdirSync(runDir, { recursive: true });
   const victim = spawnVictim();
-  const exited = new Promise((resolve) => victim.on("exit", resolve));
   fs.writeFileSync(path.join(runDir, "workers.json"), JSON.stringify([victim.pid]));
-  assert.deepEqual(killWorkflowWorkers(runDir), [victim.pid], "a legacy numeric workers.json still cancels");
-  await exited;
+  assert.deepEqual(killWorkflowWorkers(runDir), [], "an unstamped worker entry is never signalled");
+  sleep(300);
+  assert.equal(victim.exitCode, null, "…and the process it names keeps running");
+  victim.kill("SIGKILL");
+  await new Promise((resolve) => victim.on("exit", resolve));
 }
 
 fs.rmSync(scratch, { recursive: true, force: true });

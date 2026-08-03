@@ -1873,6 +1873,9 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
             title: "Codex Review",
             sessionId: "sess-current",
             pid: sleeper.pid,
+            // The instance stamp every writer records: teardown signals only a pid
+            // it can prove is still the process the row named.
+            pidStart: processStartTime(sleeper.pid),
             logFile: runningLog,
             createdAt: "2026-03-18T15:32:00.000Z",
             updatedAt: "2026-03-18T15:33:00.000Z"

@@ -25,7 +25,7 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { pidInstanceAlive } from "./lib/pid.mjs";
+import { pidInstanceVerified } from "./lib/pid.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -1188,11 +1188,12 @@ async function handleCancel(argv) {
     );
   }
 
-  // Only signal a pid that is still the process this record named. A run
+  // Only signal a pid this record can PROVE is still its own process. A run
   // directory and a ledger row outlive a reboot, and cancel is precisely the
   // path that shoots at whatever it finds: a reused pid here is somebody else's
-  // process (and terminateProcessTree signals its whole GROUP).
-  const runPidIsOurs = pidInstanceAlive(job.pid ?? Number.NaN, job.pidStart ?? null);
+  // process (and terminateProcessTree signals its whole GROUP). An unstamped or
+  // unreadable instance is unprovable, and unprovable is never signalled.
+  const runPidIsOurs = pidInstanceVerified(job.pid ?? Number.NaN, job.pidStart ?? null);
   if (runPidIsOurs) {
     terminateProcessTree(job.pid ?? Number.NaN);
   }

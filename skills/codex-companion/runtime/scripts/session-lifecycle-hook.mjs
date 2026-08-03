@@ -3,8 +3,9 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { pidInstanceAlive } from "./lib/pid.mjs";
+import { pidInstanceVerified } from "./lib/pid.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
+import { killWorkflowWorkers, WORKFLOW_JOB_CLASS } from "./lib/workflow/job.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
   clearBrokerSession,
@@ -70,16 +71,33 @@ function cleanupSessionJobs(cwd, sessionId) {
       if (!stillRunning) {
         continue;
       }
-      // Only if the pid is still the process this row named: terminateProcessTree
+      // Only a pid this row can PROVE is still its own process: terminateProcessTree
       // signals a whole process GROUP, and a row that outlived a reboot points at
-      // whoever inherited the number.
-      if (!pidInstanceAlive(job.pid ?? Number.NaN, job.pidStart ?? null)) {
+      // whoever inherited the number. Unprovable (unstamped, or a platform with no
+      // readable start time) is never signalled — the same rule every kill path here
+      // follows.
+      if (!pidInstanceVerified(job.pid ?? Number.NaN, job.pidStart ?? null)) {
         continue;
       }
       try {
-        terminateProcessTree(job.pid ?? Number.NaN);
+        // A workflow run is a plain foreground child of whoever launched it, not a
+        // process-group leader, so the group signal raises ESRCH and delivers
+        // nothing. Dropping the row on that would leave the run — and its workers —
+        // executing with nothing left addressing them, so this is the same direct
+        // signal + worker sweep that `cancel` does.
+        const outcome = terminateProcessTree(job.pid ?? Number.NaN);
+        if (!outcome.delivered) {
+          try {
+            process.kill(job.pid, "SIGTERM");
+          } catch {
+            /* already gone */
+          }
+        }
       } catch {
         // Ignore teardown failures during session shutdown.
+      }
+      if (job.jobClass === WORKFLOW_JOB_CLASS) {
+        killWorkflowWorkers(job.runDir ?? null);
       }
     }
     state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
