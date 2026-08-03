@@ -591,5 +591,50 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.equal(counter(c.mockDir), 1, "the refused resume never reached the script");
 }
 
+{
+  // (e) A per-call cwd that cannot be fingerprinted makes that call UNCACHEABLE.
+  // `error:<msg>` is stable, so keying on it would let a resume that fails the
+  // same way be served a result computed from files nobody can compare.
+  const c = newCase("degraded", [{ finalMessage: "one" }, { finalMessage: "two" }]);
+  const unborn = path.join(c.scratch, "unborn");
+  fs.mkdirSync(unborn, { recursive: true });
+  initGitRepo(unborn);                       // a repo with no commits: every read after the probe fails
+  assert.throws(() => repoFingerprint(unborn));
+
+  const emitted = [];
+  const spec = {
+    scriptPath: path.join(FIXTURES, "fx-percwd.mjs"), args: { cwd: unborn },
+    cwd: c.repo, runDir: c.runDir, emit: (line) => emitted.push(line)
+  };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+  assert.ok(emitted.some((l) => l.startsWith("fingerprint-degraded other")),
+    "a degraded call announces itself on the progress channel");
+  assert.ok(
+    journal(c.runDir).some((e) => e.type === "finished" && !e.error),
+    "the run still journaled a success, so only the KEY may prevent the hit"
+  );
+
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 2, "a degraded call must re-run live, never cache-hit");
+}
+
+{
+  // (f) An ARRAY-root schema whose first response needs repair. The repair prompt
+  // used to demand a "JSON object", contradicting the schema it was repairing
+  // against, so a repairable array failed terminally.
+  const c = newCase("arrayschema", [{ finalRaw: '{"a":1}' }, { finalRaw: '[{"a":1}]' }]);
+  const schema = { type: "array", items: { type: "object", properties: { a: { type: "number" } }, required: ["a"] } };
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-schema-args.mjs"), args: { schema },
+    cwd: c.repo, runDir: c.runDir, maxConcurrency: 1
+  });
+  assert.deepEqual(out.result, [{ a: 1 }], "the repaired array is returned, not a terminal failure");
+  assert.equal(counter(c.mockDir), 2, "exactly two turns: the invalid one and its repair");
+  const repairPrompt = turnRequests(c.mockDir)[1].params.input[0].text;
+  assert.match(repairPrompt, /corrected JSON value matching the schema/);
+  assert.doesNotMatch(repairPrompt, /JSON object/, "the prompt must not contradict an array-root schema");
+}
+
 for (const s of scratches) fs.rmSync(s, { recursive: true, force: true });
 console.log("test-engine-hooks: ok");

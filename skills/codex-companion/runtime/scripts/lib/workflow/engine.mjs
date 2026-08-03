@@ -36,9 +36,12 @@ class Semaphore {
 // false-greens exactly those.
 const isSuccessStatus = (status) => status === 0;
 
+// "JSON value", not "JSON object": an array-root schema is supported (and
+// documented in references/workflows.md), and demanding an object would tell the
+// model to contradict its own schema — repairable output failing terminally.
 const REPAIR_PROMPT = (errors) =>
   `Your previous output failed schema validation: ${errors.join("; ")}. ` +
-  `Re-emit ONLY the corrected JSON object, nothing else.`;
+  `Re-emit ONLY the corrected JSON value matching the schema, nothing else.`;
 
 export async function runWorkflow(spec) {
   const t0 = Date.now();
@@ -172,12 +175,30 @@ export async function runWorkflow(spec) {
       return perCwdFingerprints.get(resolved);
     };
 
+    // A call whose repository identity could not be ESTABLISHED must not be
+    // cacheable at all. `error:<msg>` is a stable string, so a later run failing
+    // the same way would key identically and be served a result produced from
+    // files nobody can compare — the run-level guard refuses that resume
+    // outright, and a per-call one has to be at least as strict. The nonce is
+    // per-run, so no journal key written by any other run can ever match it.
+    const runNonce = crypto.randomUUID();
+    const degraded = (value) => typeof value === "string" && value.startsWith(FINGERPRINT_ERROR_PREFIX);
+    const identify = (payload, label, cwd, resolveFailed = false) => {
+      const fingerprint = cwdFingerprint(cwd);
+      const stamped = { ...payload, cwdFingerprint: fingerprint };
+      if (!degraded(fingerprint) && !resolveFailed) {
+        return stamped;
+      }
+      emit(`fingerprint-degraded ${label ?? "(unlabeled)"}`);
+      return { ...stamped, uncacheable: runNonce };
+    };
+
     const hooks = {
       args: spec.args,
       log: (m) => { appendEvent(journalPath, { type: "log", message: String(m) }); emit(`log ${m}`); },
 
       agent: (prompt, opts = {}) =>
-        leafCall("agent", opts.label, { prompt, opts: sanitize(opts), cwdFingerprint: cwdFingerprint(opts.cwd) }, async (onSpawn, key) => {
+        leafCall("agent", opts.label, identify({ prompt, opts: sanitize(opts) }, opts.label, opts.cwd), async (onSpawn, key) => {
           // No -c overrides on this lane: model and effort ride the turn params.
           const connect = { disableBroker: true, onSpawn };
           const turn = await runAppServerTurn(opts.cwd ?? spec.cwd, {
@@ -231,11 +252,12 @@ export async function runWorkflow(spec) {
           // resolution lived inside the call.
           resolveError = err;
         }
-        return leafCall("review", opts.label, {
-          opts: sanitize(opts),
-          cwdFingerprint: cwdFingerprint(opts.cwd),
-          targetCommit
-        }, async (onSpawn) => {
+        return leafCall("review", opts.label, identify(
+          { opts: sanitize(opts), targetCommit },
+          opts.label,
+          opts.cwd,
+          Boolean(resolveError)   // an unresolvable target is an unknown identity too
+        ), async (onSpawn) => {
           if (resolveError) throw resolveError;
           const overrides = [];
           if (opts.effort) overrides.push(`model_reasoning_effort=${opts.effort}`);

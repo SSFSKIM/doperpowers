@@ -933,6 +933,15 @@ async function handleWorkflow(argv) {
   const runId = options.resume ?? generateJobId("wf");
   const runDir = resolveWorkflowRunDir(runId);
   if (resume) {
+    // A typo'd id (or one from another state root) has no run directory. Without
+    // this the engine would find no fingerprint and no journal, read that as an
+    // interrupted legacy run, and re-pay for every worker while calling it a
+    // resume. Checked before the lease, so a refused resume creates nothing.
+    if (!fs.existsSync(runDir)) {
+      throw new Error(
+        `No workflow run directory for ${runId} under ${path.dirname(runDir)}; nothing to resume.`
+      );
+    }
     if (isWorkflowRunActive(workspaceRoot, runId)) {
       throw new Error(`Workflow run ${runId} is still active. Cancel it before resuming.`);
     }
@@ -943,7 +952,6 @@ async function handleWorkflow(argv) {
     // its own (about to be dead) pid, so status and cancel would act on the
     // wrong process. The engine re-acquires this same lease in-process, which
     // acquireLease allows for the same pid.
-    fs.mkdirSync(runDir, { recursive: true });
     const lease = acquireLease(runDir);
     if (!lease.ok) {
       throw new Error(

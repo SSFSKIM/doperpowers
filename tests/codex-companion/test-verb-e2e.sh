@@ -330,5 +330,25 @@ assert_eq "the ledger names the process that is actually running" "$winner" "$(l
 kill -TERM "$winner" 2>/dev/null || true
 wait "$winner" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# 10. A --resume id with no run directory is a typo, not a run. Restarting it
+#     silently would re-pay for every worker while calling it a resume.
+# ---------------------------------------------------------------------------
+new_case resume-missing '{"turns":[{}]}'
+rc=0
+node "$RUNTIME" workflow --script "$FIXTURES/fx-solo.mjs" --resume wf-nonexistent --cwd "$repo" \
+  > "$scratch/out.json" 2> "$scratch/err.log" || rc=$?
+assert_ne "resuming an unknown run id fails" 0 "$rc"
+assert_contains "the refusal names the id" "$scratch/err.log" "wf-nonexistent"
+assert_contains "the refusal names the workflows root" "$scratch/err.log" "$CLAUDE_PLUGIN_DATA/workflows"
+if [ -e "$CLAUDE_PLUGIN_DATA/workflows/wf-nonexistent" ]; then
+  bad "the refused resume created a run directory"
+else
+  ok "no run directory was created"
+fi
+rc=0; snapshot_status || rc=$?
+assert_eq "status still reads" 0 "$rc"
+assert_eq "no job was registered" 0 "$(listed_ids | grep -c . || true)"
+
 if [ "$fail" -eq 0 ]; then echo "workflow verb e2e: all cases passed"; fi
 exit "$fail"
