@@ -147,7 +147,7 @@ the edge, **pr** = review artifact required):
 | `in-design` | → `ready-for-implementer` (completion, **note**, plus exactly ONE of: `plan` = `path@SHA` pin, `plan` = `pre-spec` sentinel, or the decompose exit — children exist and `plan` is null); → parks (**WIP banked** on the pushed branch per E1); → `done`/`wontfix` **epic-guarded** (scoped terminal authority — recomposition verdicts only, §1a); → `wontfix`/`deferred` |
 | `ready-for-implementer` | → `in-progress` (implementer gate/DIRECT, or plan-execution first write); → `ready-for-architect` (gate escalation, **note**, convergence-counted); → parks; → `wontfix`/`deferred` |
 | `in-progress` | → `in-review` (**pr** — leaf: PR URL; epic: closure-package event, §1a); → `ready-for-architect` (return park, **note**, convergence-counted); → parks (**note**); → `done` (non-PR work); → `wontfix`/`deferred` |
-| `in-review` | → `in-progress` (fix waves); → `confident-ready`; → `done` (incl. the QAgent's clean scale-review close of an epic); → **`ready-for-architect` (review impasse, **note**, convergence-counted — the QAgent's third-address edge, E1 v1.3)**; → `needs-human`/`needs-info` (**note**); → `wontfix`/`deferred` |
+| `in-review` | → `in-progress` (fix waves); → `confident-ready`; → `done` (**epic-guarded for workers** — only a QAgent scale-review claim whose stamped closure-package id matches the epic's current one; a leaf reaches `done` from review via `confident-ready` or a human write, per E2's worker-never-closes doctrine); → **`ready-for-architect` (review impasse, **note**, convergence-counted — the QAgent's third-address edge, E1 v1.3)**; → `needs-human`/`needs-info` (**note**); → `wontfix`/`deferred` |
 | `needs-human` | → `in-design` / `in-progress` / `in-review` (answer relay, lane-mapped — §3.3; the `in-review` return needs no fresh **pr**: the gate binds the `in-progress → in-review` edge only, per E1 v1.3.2); → other parks; → `done` (spike handoff, human); → `wontfix`/`deferred` |
 | `needs-info` | fold-and-recut only: → `ready-for-implementer` / `ready-for-architect` (answerer's lane-aware routing; no resume) |
 | `interactive-preferred` | human-authored exits (v8 semantics) |
@@ -323,7 +323,7 @@ create table board.ticket_event (
   kind       text not null,        -- 'register','claim','bind','release','reclaim','supersede',
                                    -- 'gate','transition','park','answer','superseded-answer',
                                    -- 'field-change','note','comment','parent-impact',
-                                   -- 'closure-package'
+                                   -- 'parent-impact-consumed','closure-package'
   from_state text,
   to_state   text,
   body       jsonb not null default '{}'::jsonb
@@ -333,9 +333,15 @@ create table board.ticket_event (
                -- transitions: shortcircuit flag, orientation summary,
                --   recomposition-due / reconcile markers, etc.
                -- field-change: {field, old, new}
-               -- parent-impact: {parent, clauses, evidence, consumed_by}
+               -- parent-impact: {parent, clauses, evidence}
+               -- parent-impact-consumed: {proposal_event_id}
 );
 create index on board.ticket_event (ticket_id, id);
+-- Exactly one consumption per proposal, enforced structurally (the
+-- proposal row is immutable — consumption is its own appended event):
+create unique index ticket_event_one_consumption
+  on board.ticket_event ((body->>'proposal_event_id'))
+  where kind = 'parent-impact-consumed';
 -- No UPDATE/DELETE grants exist on this table for ANY role (append-only
 -- by privilege, not convention).
 
@@ -498,7 +504,11 @@ One transaction: legality lookup in `legal_transition` (missing row =
 illegal, 409) → edge-keyed note/PR checks (the in-review gate takes a
 PR URL for leaves, a closure-package event id for epics; the epic
 terminal edges from `in-design` additionally verify children exist and
-the writing run is an architect-lane claim — §1a) → convergence-rule
+the writing run is an architect-lane claim — §1a; a worker-authored
+`in-review → done` additionally verifies the ticket is an epic AND the
+writing run is the QAgent scale-review claim whose stamped
+closure-package id matches the current one — leaf reviews exit via
+`confident-ready`) → convergence-rule
 COUNT with the post-adjudication reset (§1: worker-authored traversals
 since the ticket's latest human event; transmute the second into a
 `needs-human` park) → conditional `UPDATE board.ticket SET state=$to
@@ -530,13 +540,18 @@ with a distinguishing body marker), still outbox-mirrored.
 ### 3.3 Park answer (E1 T7, v1.3.3 form)
 
 **The relay serves `needs-human` only.** The answer API, in one
-transaction: bind the answer to the park's `decision_park` row —
-`UPDATE board.decision_park SET answer_event_id=$e, answered_via=$via
-WHERE correlation_id=$c AND answer_event_id IS NULL`; zero rows = a
-first answer already bound, so record a `superseded-answer` event and
-stop (first accepted wins, E2) — then append the `answer` event (body =
-numbered replies) and return the ticket to **the parking lane's
-in-flight state**, mapped from the latest `park` event's `from_state`:
+transaction: `SELECT … FOR UPDATE` the park's `decision_park` row; if
+`answer_event_id` is already set (a first answer won the lock race),
+append only a `superseded-answer` event and stop — the projection is
+untouched and the worker never observes two answers (first accepted
+wins, E2). Otherwise append the `answer` event (body = numbered
+replies) FIRST, then bind its generated id — `UPDATE
+board.decision_park SET answer_event_id = $new_event_id, answered_via
+= $via WHERE correlation_id = $c` — and return the ticket to **the
+parking lane's in-flight state**, mapped from the latest `park`
+event's `from_state`. (The event INSERT must precede the projection
+UPDATE: `answer_event_id`'s foreign key to the identity-generated
+`ticket_event.id` makes the reverse order unsatisfiable.)
 
 | park written from | returns to |
 |---|---|
@@ -618,13 +633,18 @@ route; the ops agent may preferentially claim the category.
   pulled in-flight state, return it to `ready-for-architect` with the
   `recomposition-due` marker (bookkeeping transition, evented,
   convergence-exempt by `actor_kind`).
-- **Reconcile pass:** unconsumed `parent-impact` events (body lacks
-  `consumed_by`) whose parent is claimable or in-flight ⇒ the same
-  bookkeeping return with a `reconcile` marker. Parked and terminal
-  parents are skipped WITHOUT consuming the proposal — it fires on the
-  tick after the park resolves (E2 implementation decision). Consumption
-  is recorded by the reconciling Architect's claim writing
-  `consumed_by` — an event append, never an event mutation.
+- **Reconcile pass:** a proposal is unconsumed when NO
+  `parent-impact-consumed` event references its event id — a
+  `NOT EXISTS` anti-join, never a field on the immutable proposal row
+  (which by construction can never change to record its own
+  consumption). Unconsumed proposals whose parent is claimable or
+  in-flight ⇒ the same bookkeeping return with a `reconcile` marker.
+  Parked and terminal parents are skipped WITHOUT consuming the
+  proposal — it fires on the tick after the park resolves (E2
+  implementation decision). The reconciling Architect's claim appends
+  one `parent-impact-consumed` event per proposal it folded; the
+  partial unique index makes double-consumption a constraint violation,
+  not a race.
 - **Epic pull:** when a child goes active and its parent epic waits in
   a pull-eligible state (`ready-for-implementer` post-decompose,
   `needs-info` post-reconciliation, `deferred`), return the parent to

@@ -139,9 +139,13 @@ vocabulary — is already shipped and live.
   recomposition → terminal — against a live A1 instance, with worker
   transcripts indistinguishable from GH-board runs modulo transport.
   An answered `needs-human` park physically resumes the bound worker —
-  A2's ported sweep/relay is the wake mechanism for plugin workers, and
+  A2's ported sweep/relay owns wake delivery end-to-end for plugin
+  workers (level-triggered poll, idempotent resume, ack marker), and
   its dispatch automation renews the run lease for sessions with no
-  sessionStore feed (X6). Board binding is per-repo configuration: gh
+  sessionStore feed (X6). The wake path survives a relay crash at
+  every boundary: answered-but-unrelayed states are re-polled, never
+  lost, never double-resumed — the crash-at-boundary drill is part of
+  this acceptance. Board binding is per-repo configuration: gh
   mode remains fully supported (X5 — consumer repos like ida-solution
   never require a Postgres service).
 - **Edges:** blocked-by: A1.G2 (start); completion additionally
@@ -208,11 +212,20 @@ vocabulary — is already shipped and live.
   playbook is itself a deliverable — every subsequent board flip
   (doperpowers', consumer repos') replays it.
 - **Acceptance:**
-  - **G1 (Arkho's own board — required):** pre-flip GH state (tickets,
-    states, edges, open parks) imported faithfully; post-flip a worker
-    runs the full protocol via A2 against the Arkho SSOT; the GH
-    mirror tracks; a mirror edit is repaired. The flip itself is
-    human-triggered.
+  - **G1 (Arkho's own board — required):** the flip is a BARRIER, not
+    a snapshot: ALL board writes freeze (not just registrations) and
+    every active claim is drained to a scope end or explicitly
+    migrated before the import; the import replays to a high-water
+    mark and passes a parity check against the frozen GH state
+    (tickets, states, edges, open parks); a defined rollback exists
+    until the binding flips; the flip is atomic per repo (A2's
+    binding), runs under an out-of-band control principal — never a
+    worker claim on the board being flipped — and is human-triggered.
+    Post-flip a worker runs the full protocol via A2 against the Arkho
+    SSOT; the GH mirror tracks; a mirror edit is repaired. A straggler
+    write after the snapshot is impossible by the freeze — never
+    merely "repaired" away, which would silently destroy legitimate
+    workflow state.
   - **G2 (doperpowers board — conditional):** the same playbook run on
     the doperpowers board; becomes evaluable when the human triggers
     it. Not required for E3 closure (Parent-Level Acceptance 5).
@@ -313,10 +326,17 @@ vocabulary — is already shipped and live.
   automation-renewed lease otherwise; any authenticated write from
   the run counts as life (all reconcilable with E2's zero-new-duties
   — renewal is dispatch automation, never worker prose). The same
-  plane carries the wake: A1's answer endpoint emits the signal
-  (answer event + NOTIFY), A2's relay resumes the bound session, A3
-  merely submits. Binds A5 (its G1 drills run entirely on this
-  plane) and A6 (terminal authz reads the same run liveness).
+  plane carries the wake, and delivery is **level-triggered off
+  durable state, never edge-triggered**: the answer event IS the
+  queue entry (NOTIFY is a latency hint only). **A2 owns wake
+  delivery end-to-end for plugin workers** — it polls unrelayed
+  answers, resumes the bound session idempotently, and acknowledges
+  by appending a relay marker keyed to the answer event id; A1 owns
+  the durable answer/ack state and enforces one ack per answer. A
+  crash at any boundary leaves a re-pollable state — never a ticket
+  returned in-flight while its session stays parked, never a doubled
+  resume. A3 merely submits. Binds A5 (its G1 drills run entirely on
+  this plane) and A6 (terminal authz reads the same run liveness).
   Recorded in the r2 draft as open item 8.
 
 ## Ordering & Dependency Map
@@ -336,8 +356,12 @@ arrows above are start-time — completion gates still reach deeper (A2's
 acceptance exercises A1.G3; A3.G3 completes against A2's bound worker).
 **A1–A5 are cluster-independent**:
 they need one Postgres and a deploy target, not the k8s/gVisor swarm
-runtime — E3 does not queue behind the R-round spikes. Only A6 waits on
-the swarm runtime, and it is deliberately last anyway.
+runtime — every phase-web surface except the terminal, and the cutover
+itself, proceed without the R-round spikes. **E3's CLOSURE still
+queues behind them**: A6 is required, and its externals (cc-harness M2;
+swarm-runtime worker pods) are hard completion dependencies with
+outside owners — carried as external rows in the Tracking Map, not
+hidden behind "deliberately late".
 
 ## Risks & Mitigations
 
@@ -386,6 +410,8 @@ UI display naming is A3's surface concern at most).
 | A5 cutover | — (Arkho board) | not-dispatched |
 | A6 terminal gateway | — (Arkho board) | not-dispatched |
 | A7 macOS app | — (registered at phase-native go) | conditional |
+| external: cc-harness M2 control surface | owner: cc-harness program (R1 T9) | not-started — blocks A6 completion |
+| external: swarm-runtime worker pods (`ccx serve`-born sessions) | owner: cloud program (R-round spikes, human-gated) | not-started — blocks A6 completion |
 
 ## Decision Log
 
@@ -534,6 +560,24 @@ Tracking Map by hand.
 
 ## Revision Notes
 
+- 2026-08-04: v1.2, codex adversarial review (gpt-5.6-sol, xhigh; 7
+  findings, 6 adopted): **A5.G1 rewritten as a full cutover barrier**
+  (freeze ALL writes, drain/migrate active claims, high-water-mark
+  delta + parity check, defined rollback, out-of-band control
+  principal — was registration-freeze only, which would have repaired
+  away legitimate straggler writes); **X6 wake delivery made
+  level-triggered and crash-safe** (A2 = end-to-end delivery owner,
+  ack markers keyed to the answer event id, crash-at-boundary drill in
+  A2's acceptance); the cluster-independence claim narrowed (A1–A5
+  proceed, E3's CLOSURE still queues behind A6's externals — now
+  owned rows in the Tracking Map). Companion fixes in the r2 draft:
+  answer-transaction event-before-projection ordering (FK made the
+  drafted order unsatisfiable), worker-authored `in-review → done`
+  epic-guarded at the API boundary (leaf reviews exit via
+  `confident-ready`), parent-impact consumption as anti-joined
+  `parent-impact-consumed` events with a one-consumption unique index.
+  The 7th finding (SDK-species conditionalization) restates the
+  already-flagged Decision Log entry — the human's gate ruling.
 - 2026-08-04: v1.1, independent fable review (10 findings, all adopted;
   none re-opened a human decision): **X6 signal-plane contract**
   (pluggable liveness + answer-wake ownership — the blocking finding:
