@@ -87,7 +87,13 @@ Hooks:
   ONE repair turn on the same thread, and a second failure is terminal — exactly
   two turns, never a third. A schema with no `type` at its root validates
   nothing, silently — give the root a `type` (`object` and `array` roots both
-  recurse into `properties`/`items`).
+  recurse into `properties`/`items`). The server side is STRICT and rejects the
+  turn with a 400 before the model runs: every object needs
+  `additionalProperties: false`, and `required` must list every property that
+  object declares. An OPTIONAL field is therefore a required one whose type
+  admits null — `{type: ["string", "null"]}`, and an `enum` beside it must carry
+  `null` as a member. The engine-side validator understands that union, so the
+  same schema serves both checks.
 - `review({base, scope, model, effort, lens, label, cwd})` →
   `{reviewText, threadId, status}`. Target selection matches the `review` verb
   (`base`, or `scope` of `auto`/`working-tree`/`branch` — see

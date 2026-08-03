@@ -3,29 +3,35 @@
 // The runtime's parseStructuredOutput is JSON.parse-only, so a syntactically
 // valid but wrong-shaped payload passes silently (false green). This closes
 // that hole for the subset of JSON Schema the workflow engine actually uses:
-// `type`, `properties`, `required`, `items`, `enum`. Unknown keywords are
-// ignored on purpose — the same schema also rides `outputSchema` server-side,
-// where the full validator lives.
+// `type` (a single name or a union array), `properties`, `required`, `items`,
+// `enum`. Unknown keywords are ignored on purpose — the same schema also rides
+// `outputSchema` server-side, where the full validator lives.
+
+function matchesType(value, t) {
+  return (t === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) ||
+    (t === "array" && Array.isArray(value)) ||
+    (t === "string" && typeof value === "string") ||
+    (t === "boolean" && typeof value === "boolean") ||
+    (t === "number" && typeof value === "number") ||
+    (t === "integer" && Number.isInteger(value)) ||
+    (t === "null" && value === null);
+}
 
 export function validateSchema(value, schema, path = "$") {
   const errors = [];
   if (!schema || typeof schema !== "object") return errors;
-  if (schema.type) {
-    const t = schema.type;
-    const ok =
-      (t === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) ||
-      (t === "array" && Array.isArray(value)) ||
-      (t === "string" && typeof value === "string") ||
-      (t === "boolean" && typeof value === "boolean") ||
-      (t === "number" && typeof value === "number") ||
-      (t === "integer" && Number.isInteger(value)) ||
-      (t === "null" && value === null);
-    if (!ok) { errors.push(`${path}: expected ${t}`); return errors; }
+  // A union `type` (`["string", "null"]`) is how a strict output schema spells
+  // an OPTIONAL property: the API's strict mode requires every property to be
+  // listed in `required`, so "absent" has to be expressed as an allowed null.
+  const types = schema.type ? (Array.isArray(schema.type) ? schema.type : [schema.type]) : [];
+  if (types.length > 0 && !types.some((t) => matchesType(value, t))) {
+    errors.push(`${path}: expected ${types.join("|")}`);
+    return errors;
   }
   if (schema.enum && !schema.enum.includes(value)) {
     errors.push(`${path}: not in enum [${schema.enum.join(", ")}]`);
   }
-  if (schema.type === "object") {
+  if (types.includes("object") && matchesType(value, "object")) {
     for (const key of schema.required ?? []) {
       if (!(key in value)) errors.push(`${path}: missing required "${key}" (have: ${Object.keys(value).join(",") || "none"})`);
     }
@@ -33,7 +39,7 @@ export function validateSchema(value, schema, path = "$") {
       if (key in value) errors.push(...validateSchema(value[key], sub, `${path}.${key}`));
     }
   }
-  if (schema.type === "array" && schema.items) {
+  if (types.includes("array") && Array.isArray(value) && schema.items) {
     value.forEach((item, i) => errors.push(...validateSchema(item, schema.items, `${path}[${i}]`)));
   }
   return errors;

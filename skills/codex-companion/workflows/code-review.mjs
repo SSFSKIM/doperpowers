@@ -10,8 +10,14 @@ export const meta = { name: "code-review", description: "Multi-lens codex review
 // lenses and a caller's `args.lenses` alike.
 const MAX_LENSES = 5;
 
+// Both schemas ride to the API as a STRICT output schema, which is a narrower
+// dialect than JSON Schema: every object must carry `additionalProperties:
+// false`, and `required` must list every property it declares. An optional
+// field is therefore spelled as a required one whose type admits null (see
+// duplicateOf/priority below) — omit any of this and the turn is rejected 400
+// before the model ever runs (live-proven, 2026-08-03 X1 run).
 const DERIVER_SCHEMA = {
-  type: "object", required: ["lenses"],
+  type: "object", additionalProperties: false, required: ["lenses"],
   properties: { lenses: { type: "array", items: { type: "string" } } }
 };
 
@@ -38,14 +44,18 @@ const CLEAN_SENTINEL =
   "If your review finds no issues, end your final message with exactly this line (alone on its own line):\nNo material findings.";
 
 const VERIFIER_SCHEMA = {
-  type: "object", required: ["verdicts"],
+  type: "object", additionalProperties: false, required: ["verdicts"],
   properties: { verdicts: { type: "array", items: {
-    type: "object", required: ["id", "verdict", "comment"],
+    type: "object", additionalProperties: false,
+    required: ["id", "verdict", "duplicateOf", "priority", "comment"],
     properties: {
       id: { type: "string" },
       verdict: { type: "string", enum: ["CONFIRMED", "REFUTED"] },
-      duplicateOf: { type: "string" },
-      priority: { type: "string", enum: ["P0", "P1", "P2", "P3"] },
+      // null = not a duplicate / no priority assigned. Everything downstream
+      // reads these through a falsy or nullish test, so a null reads exactly
+      // as the absent field it replaces.
+      duplicateOf: { type: ["string", "null"] },
+      priority: { type: ["string", "null"], enum: ["P0", "P1", "P2", "P3", null] },
       comment: { type: "string" }
     } } } }
 };
@@ -86,7 +96,7 @@ const lensRoster = (finders) => finders
   .join("\n");
 
 const VERIFIER_PROMPT = (base, finders, pool) =>
-  `You are the binding verifier of a multi-reviewer panel. The candidate findings below came from independent reviewers of the diff against merge-base(HEAD, ${base}) — re-inspect the code yourself before judging. For EVERY candidate id return exactly one verdict: CONFIRMED (you can name the concrete failure) or REFUTED (state why it is wrong or not a real defect). Mark true duplicates with duplicateOf pointing at the strongest formulation, assign priority P0-P3 to confirmed findings, and put your evidence in comment.
+  `You are the binding verifier of a multi-reviewer panel. The candidate findings below came from independent reviewers of the diff against merge-base(HEAD, ${base}) — re-inspect the code yourself before judging. For EVERY candidate id return exactly one verdict: CONFIRMED (you can name the concrete failure) or REFUTED (state why it is wrong or not a real defect). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0-P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
 
 The reviewers, and the lens each was given (a candidate id carries its reviewer's label):
 ${lensRoster(finders)}

@@ -19,4 +19,27 @@ assert.ok(validateSchema({ findings: [{ id: "a", verdict: "MAYBE" }] }, FINDER)
 assert.ok(validateSchema("nope", FINDER).some(e => e.includes("object")));
 assert.deepEqual(validateSchema(3, { type: "integer" }), []);
 assert.ok(validateSchema(3.5, { type: "integer" }).length === 1);
+
+// Union types: how a strict output schema spells an optional property (the API
+// requires every property in `required`, so absent is expressed as null).
+const NULLABLE = {
+  type: "object", required: ["id", "priority"],
+  properties: {
+    id: { type: "string" },
+    priority: { type: ["string", "null"], enum: ["P0", "P1", null] }
+  }
+};
+assert.deepEqual(validateSchema({ id: "a", priority: "P1" }, NULLABLE), []);
+assert.deepEqual(validateSchema({ id: "a", priority: null }, NULLABLE), []);
+assert.ok(validateSchema({ id: "a", priority: 7 }, NULLABLE)
+  .some(e => e.includes("expected string|null")));
+assert.ok(validateSchema({ id: "a", priority: "P9" }, NULLABLE).some(e => e.includes("enum")));
+// A union that includes "object"/"array" still recurses into the branch the
+// value actually took, and still enforces `required` on it.
+const UNION_OBJ = {
+  type: ["object", "null"], required: ["n"], properties: { n: { type: "number" } }
+};
+assert.deepEqual(validateSchema(null, UNION_OBJ), []);
+assert.ok(validateSchema({}, UNION_OBJ).some(e => e.includes('missing required "n"')));
+assert.ok(validateSchema({ n: "x" }, UNION_OBJ).some(e => e.includes("expected number")));
 console.log("test-validate: ok");

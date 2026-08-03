@@ -277,12 +277,12 @@ DRIFT_TEXT="$(cat "$FIXTURES/partial-drift.md")"
 #    own lens, so this case can assert WHICH finder raised what.
 # ---------------------------------------------------------------------------
 VERDICTS_OK='{"verdicts":[
-  {"id":"sweep#1","verdict":"CONFIRMED","priority":"P0","comment":"the lane is charged twice"},
-  {"id":"sweep#2","verdict":"CONFIRMED","priority":"P3","comment":"the label really is ignored"},
-  {"id":"scalpel-1#1","verdict":"CONFIRMED","priority":"P1","comment":"registry namespace collision confirmed"},
-  {"id":"scalpel-1#2","verdict":"CONFIRMED","duplicateOf":"sweep#1","comment":"same lane accounting defect"},
-  {"id":"scalpel-2#1","verdict":"CONFIRMED","priority":"P2","comment":"the head ref is genuinely unfetched"},
-  {"id":"scalpel-2#2","verdict":"REFUTED","comment":"retirement validates the shape first"}
+  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P0","comment":"the lane is charged twice"},
+  {"id":"sweep#2","verdict":"CONFIRMED","duplicateOf":null,"priority":"P3","comment":"the label really is ignored"},
+  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"registry namespace collision confirmed"},
+  {"id":"scalpel-1#2","verdict":"CONFIRMED","duplicateOf":"sweep#1","priority":null,"comment":"same lane accounting defect"},
+  {"id":"scalpel-2#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P2","comment":"the head ref is genuinely unfetched"},
+  {"id":"scalpel-2#2","verdict":"REFUTED","duplicateOf":null,"priority":null,"comment":"retirement validates the shape first"}
 ]}'
 
 new_case derive "$(lens_scenario \
@@ -341,6 +341,19 @@ assert_eq "the verifier runs on sol at high effort" "gpt-5.6-sol high" \
   "$(verifier_turns '"\(.model) \(.effort)"')"
 assert_eq "the verifier turn is schema-forced on a verdicts array" "array" \
   "$(verifier_turns '.outputSchema.properties.verdicts.type')"
+# The API's strict dialect, live-proven on the 2026-08-03 X1 run: without
+# additionalProperties:false on EVERY object, and a `required` naming every
+# property it declares, the turn is rejected 400 before the model runs. The
+# optional fields survive that as nullable-and-required.
+assert_eq "every object in the verifier schema is closed" "false false" \
+  "$(verifier_turns '"\(.outputSchema.additionalProperties) \(.outputSchema.properties.verdicts.items.additionalProperties)"')"
+assert_eq "the verdict schema requires every property it declares" \
+  "comment duplicateOf id priority verdict" \
+  "$(verifier_turns '.outputSchema.properties.verdicts.items | (.required | sort | join(" ")) as $r | (.properties | keys | sort | join(" ")) as $p | if $r == $p then $r else "required=\($r) properties=\($p)" end')"
+assert_eq "the optional verdict fields are nullable rather than absent" "string,null string,null" \
+  "$(verifier_turns '.outputSchema.properties.verdicts.items.properties | "\(.duplicateOf.type | join(",")) \(.priority.type | join(","))"')"
+assert_eq "the deriver schema is closed too" "false" \
+  "$(turn_field 0 '.params.outputSchema.additionalProperties')"
 verifier_prompts > "$scratch/vprompt.txt"
 assert_contains "the verifier is told to re-inspect the code itself" "$scratch/vprompt.txt" "re-inspect the code yourself"
 assert_contains "the verifier prompt names the diff base" "$scratch/vprompt.txt" "merge-base(HEAD, main)"
@@ -470,7 +483,7 @@ assert_eq "a zero-finding verdict says what else zero findings can mean" \
 #    This case also carries explicit model routing, the only place the finder
 #    model is observable at all (it rides thread/start, not review/start).
 # ---------------------------------------------------------------------------
-SHORT_VERDICTS='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","priority":"P1","comment":"real"}]}'
+SHORT_VERDICTS='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"real"}]}'
 new_case verifier-omission "$(scenario \
   "$(review_turn "$ONE_A")" \
   "$(review_turn "$ONE_B")" \
@@ -526,8 +539,8 @@ assert_eq "the caller's finder effort reaches both finders" "2" \
 #    check catches it. Same fate as an omission — one repair, then abandoned.
 # ---------------------------------------------------------------------------
 CYCLIC='{"verdicts":[
-  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":"scalpel-1#1","comment":"same as the other"},
-  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","comment":"same as the other"}
+  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":"scalpel-1#1","priority":null,"comment":"same as the other"},
+  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","priority":null,"comment":"same as the other"}
 ]}'
 new_case verifier-cycle "$(scenario \
   "$(review_turn "$ONE_A")" \
@@ -546,13 +559,13 @@ assert_contains "the run names the cycle" "$scratch/err.log" "duplicateOf cycle 
 #    finding are both caught, and a corrected second answer is accepted.
 # ---------------------------------------------------------------------------
 BAD_VERDICTS='{"verdicts":[
-  {"id":"ghost#1","verdict":"CONFIRMED","comment":"invented"},
-  {"id":"sweep#1","verdict":"REFUTED","comment":"not real"},
-  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","comment":"dup of a refuted one"}
+  {"id":"ghost#1","verdict":"CONFIRMED","duplicateOf":null,"priority":null,"comment":"invented"},
+  {"id":"sweep#1","verdict":"REFUTED","duplicateOf":null,"priority":null,"comment":"not real"},
+  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","priority":null,"comment":"dup of a refuted one"}
 ]}'
 GOOD_VERDICTS='{"verdicts":[
-  {"id":"sweep#1","verdict":"CONFIRMED","priority":"P1","comment":"reinspected: real"},
-  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","comment":"same defect"}
+  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"reinspected: real"},
+  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#1","priority":null,"comment":"same defect"}
 ]}'
 new_case verifier-repair "$(lens_scenario \
   "$(msg_turn "$BAD_VERDICTS"),$(msg_turn "$GOOD_VERDICTS")" \
@@ -614,7 +627,7 @@ assert_eq "no finding is invented to justify the interruption" "0" "$(finding_co
 #     claim to completeness, never a defect it actually confirmed: the verdict
 #     stays incorrect and the partial coverage rides on the explanation.
 # ---------------------------------------------------------------------------
-CONFIRM_SWEEP='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","priority":"P1","comment":"the destination lane is charged"}]}'
+CONFIRM_SWEEP='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"the destination lane is charged"}]}'
 new_case dead-scalpel-confirmed "$(lens_scenario "$(msg_turn "$CONFIRM_SWEEP")" \
   "$SWEEP_LENS"          "$(review_turn "$ONE_A")" \
   "removed guards."      "$DIE")"
@@ -635,7 +648,7 @@ assert_eq "the verdict carries its own coverage caveat" \
 #     surviving lenses confirmed. The confirmed findings still ride along —
 #     interrupted withholds the CLAIM OF COMPLETENESS, not the evidence.
 # ---------------------------------------------------------------------------
-CONFIRM_SCALPEL='{"verdicts":[{"id":"scalpel-1#1","verdict":"CONFIRMED","priority":"P0","comment":"the cursor is addressable as a daemon"}]}'
+CONFIRM_SCALPEL='{"verdicts":[{"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P0","comment":"the cursor is addressable as a daemon"}]}'
 new_case dead-sweep-confirmed "$(lens_scenario "$(msg_turn "$CONFIRM_SCALPEL")" \
   "$SWEEP_LENS"           "$DIE" \
   "the daemon registry."  "$(review_turn "$ONE_B")")"
@@ -704,9 +717,9 @@ assert_contains "the run says the verifier itself failed" "$scratch/err.log" \
 #     raised the same defect twice must not be counted twice.
 # ---------------------------------------------------------------------------
 CHAINED='{"verdicts":[
-  {"id":"sweep#1","verdict":"CONFIRMED","priority":"P1","comment":"the lane is charged twice"},
-  {"id":"sweep#2","verdict":"CONFIRMED","duplicateOf":"sweep#1","comment":"the same accounting defect, said twice"},
-  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#2","comment":"third sighting of the same defect"}
+  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"the lane is charged twice"},
+  {"id":"sweep#2","verdict":"CONFIRMED","duplicateOf":"sweep#1","priority":null,"comment":"the same accounting defect, said twice"},
+  {"id":"scalpel-1#1","verdict":"CONFIRMED","duplicateOf":"sweep#2","priority":null,"comment":"third sighting of the same defect"}
 ]}'
 new_case duplicate-chain "$(lens_scenario "$(msg_turn "$CHAINED")" \
   "$SWEEP_LENS"          "$(review_turn "$SWEEP_TEXT")" \
@@ -724,8 +737,8 @@ assert_eq "a chain of duplicates collapses onto the one primary, crediting every
 #     zero-findings caveat, which is about a panel that saw nothing at all.
 # ---------------------------------------------------------------------------
 ALL_REFUTED='{"verdicts":[
-  {"id":"sweep#1","verdict":"REFUTED","comment":"the lane is charged one frame up"},
-  {"id":"scalpel-1#1","verdict":"REFUTED","comment":"the cursor is namespaced after all"}
+  {"id":"sweep#1","verdict":"REFUTED","duplicateOf":null,"priority":null,"comment":"the lane is charged one frame up"},
+  {"id":"scalpel-1#1","verdict":"REFUTED","duplicateOf":null,"priority":null,"comment":"the cursor is namespaced after all"}
 ]}'
 new_case all-refuted "$(lens_scenario "$(msg_turn "$ALL_REFUTED")" \
   "$SWEEP_LENS"          "$(review_turn "$ONE_A")" \
