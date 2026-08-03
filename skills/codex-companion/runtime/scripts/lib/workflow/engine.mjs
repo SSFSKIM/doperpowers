@@ -66,7 +66,7 @@ export async function runWorkflow(spec) {
   // call. Folding them in refuses that resume instead of mixing the two.
   let fp;
   try {
-    const repo = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
+    const repo = repoFingerprint(spec.cwd, workflowExtraPaths(spec.scriptPath));
     fp = crypto.createHash("sha256")
       .update([repo, JSON.stringify(spec.args ?? null)].join("\x00"))
       .digest("hex").slice(0, 16);
@@ -323,6 +323,35 @@ export async function runWorkflow(spec) {
   } finally {
     releaseLease(runDir);
   }
+}
+
+// What counts as "the workflow's own code" for the fingerprint. A script's
+// helpers are orchestration code too: change `./lib/extract.mjs` and the leaf
+// results in the journal were produced under semantics that no longer exist.
+// Tracking the real import graph would mean resolving every specifier the
+// script (and its imports) can reach, so this is a deliberate approximation —
+// the modules beside the script plus everything under a `lib/` next to it,
+// which is how the shipped workflows are laid out. Modules imported from
+// anywhere else stay invisible, and references/workflows.md says so. Only
+// JS module files: an ad-hoc script often shares a scratch directory with
+// unrelated output files, and hashing those would refuse honest resumes.
+const WORKFLOW_CODE = /\.(mjs|cjs|js)$/;
+
+function workflowExtraPaths(scriptPath) {
+  const resolved = path.resolve(scriptPath);
+  const found = new Set([resolved]);
+  const walk = (dir, recurse) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isFile()) { if (WORKFLOW_CODE.test(entry.name)) found.add(full); }
+      else if (recurse && entry.isDirectory()) walk(full, true);
+    }
+  };
+  walk(path.dirname(resolved), false);
+  walk(path.join(path.dirname(resolved), "lib"), true);   // absent: readdir throws, nothing added
+  return [...found].sort();                               // readdir order is not guaranteed stable
 }
 
 function sanitize(opts) {

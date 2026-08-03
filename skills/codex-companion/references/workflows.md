@@ -145,14 +145,21 @@ resume exists to recover a crashed run and replaying a dead worker's failure
 would make the lost result unrecoverable. Two guards sit in front of it. The
 lease: one process holds the run directory at a time, and a lease whose holder
 is provably gone is broken atomically, so a resume of a run that is still going
-is refused rather than racing it. The fingerprint: it hashes HEAD, the full
-content diff against HEAD, every untracked file's blob — content, not just
-paths — and the resolved workflow script's own path and content, so editing even
-an out-of-tree ad-hoc script between runs refuses the resume too. A resume
-against a changed repo or a changed script is refused outright, since the cached
-results describe code that no longer exists. Re-run fresh instead. (In a
-directory with no git, the fingerprint is a constant and the whole guard is off,
-script included.)
+is refused rather than racing it. The fingerprint: it hashes the canonical
+repository root, HEAD, the full content diff against HEAD (including dirty
+submodule contents), every untracked file's blob — content, not just paths —
+the `--args` value, and the workflow script's own content along with its sibling
+`.mjs`/`.js`/`.cjs` files and everything under a `lib/` directory next to it, so
+editing even an out-of-tree ad-hoc script or a helper it imports refuses the
+resume too. That last part is a deliberate approximation: the engine does not
+walk the import graph, so a module imported from somewhere ELSE entirely (or a
+change to the engine itself) will not invalidate a journal — keep a workflow's
+helpers beside it or under its `lib/`. A resume against a changed repo, a
+changed script or changed args is refused outright, since the cached results
+describe code that no longer exists. Re-run fresh instead. In a directory with
+no git the fingerprint covers only the script and the directory's own path — the
+repo half of the guard has nothing to watch, but an edited script is still
+refused.
 
 A fully-cached resume spawns no workers at all, so `workers.json` may be absent
 rather than empty — `cancel` tolerates that.

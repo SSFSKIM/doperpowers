@@ -717,6 +717,47 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
 }
 
 {
+  // (e2) A workflow script's HELPERS are orchestration code too. Only the entry
+  // script used to ride the fingerprint, so an ad-hoc script's `./lib/extract.mjs`
+  // could change between runs and the journal would mix results produced under
+  // the old semantics with fresh ones. The widening is deliberately pragmatic —
+  // the script's own directory plus a `lib/` beside it, not the import graph.
+  const c = newCase("helperdrift", [{ finalMessage: "one" }, { finalMessage: "MUST-NOT-BE-REACHED" }]);
+  const wfDir = path.join(c.scratch, "wf");
+  fs.mkdirSync(path.join(wfDir, "lib"), { recursive: true });
+  const script = path.join(wfDir, "entry.mjs");
+  const helper = path.join(wfDir, "lib", "helper.mjs");
+  const sibling = path.join(wfDir, "sibling.mjs");
+  fs.writeFileSync(helper, 'export const note = "inspect";\n');
+  fs.writeFileSync(sibling, "export const unused = 1;\n");
+  fs.writeFileSync(script,
+    'import { note } from "./lib/helper.mjs";\n' +
+    "export default async function run({ agent }) { return agent(note, { label: \"solo\" }); }\n");
+
+  const spec = { scriptPath: script, args: {}, cwd: c.repo, runDir: c.runDir };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "an untouched workflow directory still resumes — the guard is not blanket");
+
+  fs.writeFileSync(helper, 'export const note = "inspect harder";\n');
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    "an edited lib/ helper leaves the journal replayable under different orchestration code"
+  );
+
+  fs.writeFileSync(helper, 'export const note = "inspect";\n');          // back to the blessed state
+  fs.writeFileSync(sibling, "export const unused = 2;\n");
+  await assert.rejects(
+    runWorkflow({ ...spec, resume: true }),
+    (err) => err instanceof WorkflowError && err.reason === "fingerprint-mismatch",
+    "an edited sibling module beside the script is invisible to the guard"
+  );
+  assert.equal(counter(c.mockDir), 1, "no refused resume reached the script");
+}
+
+{
   // (f) An ARRAY-root schema whose first response needs repair. The repair prompt
   // used to demand a "JSON object", contradicting the schema it was repairing
   // against, so a repairable array failed terminally.
