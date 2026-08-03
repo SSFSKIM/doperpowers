@@ -53,8 +53,26 @@ function resolveDataRoot() {
   return process.env[PLUGIN_DATA_ENV] ?? FALLBACK_STATE_ROOT_DIR;
 }
 
+// Every id here becomes a path segment — the run directory, the per-job record,
+// the job log — so an id that is not a BARE segment names something outside the
+// directory it was meant to name. `--resume ../state` is the expensive one: the
+// run directory resolves onto the plugin's state root (which exists, so the
+// nothing-to-resume guard passes), `jobs/../state.json` normalizes onto the
+// workspace ledger, and registering the run REPLACES that ledger — every other
+// job record and the whole config gone. Refuse at the resolver, so no caller can
+// forget: an id is either a single segment or it is not an id.
+export function assertPathSegment(id, label = "id") {
+  const value = String(id ?? "");
+  if (value === "" || value === "." || value === ".." || /[\\/\0]/.test(value)) {
+    throw new Error(
+      `Invalid ${label} ${JSON.stringify(value)}: it must be a single path segment (no separators, no "..").`
+    );
+  }
+  return value;
+}
+
 export function resolveWorkflowRunDir(runId) {
-  return path.join(resolveDataRoot(), "workflows", runId);
+  return path.join(resolveDataRoot(), "workflows", assertPathSegment(runId, "run id"));
 }
 
 export function resolveStateFile(cwd) {
@@ -352,11 +370,13 @@ function removeJobFile(jobFile) {
 }
 
 export function resolveJobLogFile(cwd, jobId) {
+  const id = assertPathSegment(jobId, "job id");
   ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.log`);
+  return path.join(resolveJobsDir(cwd), `${id}.log`);
 }
 
 export function resolveJobFile(cwd, jobId) {
+  const id = assertPathSegment(jobId, "job id");
   ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.json`);
+  return path.join(resolveJobsDir(cwd), `${id}.json`);
 }

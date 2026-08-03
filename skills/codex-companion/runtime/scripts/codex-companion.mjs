@@ -28,6 +28,7 @@ import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
+  assertPathSegment,
   generateJobId,
   getConfig,
   listJobs,
@@ -931,6 +932,16 @@ async function handleWorkflow(argv) {
   // The run id IS the job id: one run, one record, one directory — so
   // `/codex:result <run-id>` and `--resume <run-id>` name the same thing.
   const runId = options.resume ?? generateJobId("wf");
+  // The id arrives from the command line and immediately becomes a directory
+  // name and a job-record filename. Checked HERE as well as in the resolver so
+  // the message names the flag the caller actually typed.
+  if (resume) {
+    try {
+      assertPathSegment(runId, "run id");
+    } catch (error) {
+      throw new Error(`--resume ${JSON.stringify(runId)} is not a run id: ${error.message}`);
+    }
+  }
   const runDir = resolveWorkflowRunDir(runId);
   if (resume) {
     // A typo'd id (or one from another state root) has no run directory. Without
