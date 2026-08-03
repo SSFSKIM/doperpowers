@@ -7,6 +7,9 @@
 //                  turnStatus: "failed" ⇒ emit turn/completed with the FAILED
 //                  status shape and NO error object (the false-green case)
 //   turns.jsonl    one line per turn/start|review/start request: {method, params, pid}
+//   threads.jsonl  one line per thread/start|thread/resume request: {method, params, pid}
+//                  — the ONLY place a call's model is observable, because a
+//                  review's model rides thread/start, not review/start
 //   spawn-<pid>.json   written on start: { argv, cwd }
 //   live/<pid>         existence = live server (removed on exit)
 //   peak               max simultaneous live/* observed at any turn/start
@@ -149,6 +152,8 @@ rl.on("line", (line) => {
   if (msg.method === "initialize") return send({ id: msg.id, result: { userAgent: "codex-mock-app-server" } });
   if (msg.method === "initialized") return;
   if (msg.method === "thread/start" || msg.method === "thread/resume") {
+    fs.appendFileSync(path.join(MOCK, "threads.jsonl"),
+      JSON.stringify({ method: msg.method, params: msg.params, pid: process.pid }) + "\n");
     const id = msg.method === "thread/resume" ? msg.params.threadId : `t-${process.pid}-${++threadSeq}`;
     return send({ id: msg.id, result: { thread: { id, name: null, cwd: msg.params?.cwd ?? process.cwd() } } });
   }

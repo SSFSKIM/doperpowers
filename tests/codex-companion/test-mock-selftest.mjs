@@ -87,7 +87,7 @@ async function main() {
 
   const started = await request("thread/start", {
     cwd: process.cwd(),
-    model: null,
+    model: "gpt-5.6-sol",
     approvalPolicy: "never",
     sandbox: "read-only",
     serviceName: "claude_code_codex_plugin",
@@ -133,6 +133,14 @@ async function main() {
   assert.equal(turns[0].method, "turn/start");
   assert.equal(turns[0].pid, child.pid);
   assert.equal(turns[0].params.threadId, threadId);
+
+  // threads.jsonl carries the model, which no other artifact does: review/start
+  // has no model param, so a review's model is only visible on its thread.
+  const threads = fs.readFileSync(path.join(mockDir, "threads.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0].method, "thread/start");
+  assert.equal(threads[0].pid, child.pid);
+  assert.equal(threads[0].params.model, "gpt-5.6-sol", "the thread's model is recorded");
 
   assert.equal(fs.readFileSync(path.join(mockDir, "peak"), "utf8"), "1");
 
