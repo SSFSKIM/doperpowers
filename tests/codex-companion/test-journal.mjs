@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync, spawn } from "node:child_process";
-import { cacheKey, appendEvent, loadJournal, acquireLease, releaseLease, repoFingerprint }
+import { cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease, repoFingerprint }
   from "../../skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wfj-"));
@@ -22,9 +22,16 @@ let loaded = loadJournal(j);
 assert.equal(loaded.finished.get(k1 + "#0").result, "A");
 assert.equal(loaded.finished.get("agent|b|x#0").result, "B");
 assert.equal(loaded.finished.size, 2);                                    // torn line ignored
+// Tolerating the torn line has to CONTAIN it: an append straight onto the wreck
+// would glue the next event to it and lose that one as well.
+sealJournal(j);
 appendEvent(j, { type: "started", key: "agent|c|y#0" });                  // started, never finished
 loaded = loadJournal(j);
 assert.ok(!loaded.finished.has("agent|c|y#0"));
+assert.ok(loaded.events.some((e) => e.type === "started" && e.key === "agent|c|y#0"),
+  "the event appended after a torn line was swallowed by it");
+sealJournal(j);                                                          // idempotent on a clean tail
+assert.equal(loadJournal(j).events.length, 5);
 
 assert.deepEqual(acquireLease(dir), { ok: true });
 assert.equal(acquireLease(dir).ok, false);                                // same live pid holds it

@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAppServerTurn, runAppServerReview, parseStructuredOutput, resolveReviewTarget } from "../codex.mjs";
 import { validateSchema } from "./validate.mjs";
-import { cacheKey, appendEvent, loadJournal, acquireLease, releaseLease, repoFingerprint } from "./journal.mjs";
+import { cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease, repoFingerprint } from "./journal.mjs";
 
 export class WorkflowError extends Error {
   constructor(reason, message) { super(message); this.reason = reason; }
@@ -61,6 +61,9 @@ export async function runWorkflow(spec) {
     } else {
       fs.writeFileSync(fpPath, fp);
     }
+    // The previous run may have died mid-append: close its half-written line
+    // before this one starts appending, or the first event we write joins it.
+    sealJournal(journalPath);
     const { finished } = loadJournal(journalPath);
     const occurrences = new Map();          // base key → count issued this run
     const liveWorkers = new Set();

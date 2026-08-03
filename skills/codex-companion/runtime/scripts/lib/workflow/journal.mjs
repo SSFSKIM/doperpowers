@@ -15,6 +15,23 @@ export function appendEvent(journalPath, event) {
   fs.appendFileSync(journalPath, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
 }
 
+// A run killed mid-append leaves a last line with no newline. loadJournal drops
+// that torn line, but an append onto it would GLUE the next event to the wreck
+// and lose that one too — the tolerance has to be contained to the torn line, so
+// close it before anything else writes.
+export function sealJournal(journalPath) {
+  let fd;
+  try { fd = fs.openSync(journalPath, "r+"); }
+  catch { return; }                                    // nothing journaled yet
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return;
+    const last = Buffer.alloc(1);
+    fs.readSync(fd, last, 0, 1, size - 1);
+    if (last[0] !== 0x0a) fs.writeSync(fd, "\n", size);
+  } finally { fs.closeSync(fd); }
+}
+
 export function loadJournal(journalPath) {
   const events = [];
   const finished = new Map();
