@@ -789,6 +789,27 @@ assert_eq "a chain of duplicates collapses onto the one primary, crediting every
   "sweep#1/P1[sweep+scalpel-1] Require the worker role to match the charged lane" "$(findings_lines)"
 
 # ---------------------------------------------------------------------------
+# 15b. A REFUTED verdict that carries duplicateOf. The postconditions allow it —
+#     its target is confirmed, so nothing about the graph is broken — and the
+#     verifier really does write this: "same claim as sweep#1, and it is wrong".
+#     What it must NOT buy is corroboration. `sources` is the published finding's
+#     claim about how many reviewers independently stand behind it, and a lane
+#     whose own verdict was refuted stands behind nothing.
+# ---------------------------------------------------------------------------
+REFUTED_DUP='{"verdicts":[
+  {"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"the lane is charged twice"},
+  {"id":"scalpel-1#1","verdict":"REFUTED","duplicateOf":"sweep#1","priority":null,"comment":"same claim, and the cursor is namespaced after all"}
+]}'
+new_case refuted-duplicate "$(lens_scenario "$(msg_turn "$REFUTED_DUP")" \
+  "$SWEEP_LENS"          "$(review_turn "$ONE_A")" \
+  "only one mandate."    "$(review_turn "$ONE_B")")"
+run_panel '{"base":"main","lenses":["only one mandate."]}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "a refuted duplicate is a contract-valid verdict set, repaired never" "0:3" "$(rc_and_turns)"
+assert_eq "a refuted duplicate never credits its lane as a corroborating source" \
+  "sweep#1/P1[sweep] Charge the handoff to the source lane" "$(findings_lines)"
+
+# ---------------------------------------------------------------------------
 # 16. Every candidate refuted: the finders raised real material, the verifier
 #     re-inspected it and none of it held. That is a clean diff arrived at the
 #     hard way — correct, with nothing published — and it must NOT carry the

@@ -216,8 +216,18 @@ export default async function run({ agent, review, parallel, log, args }) {
   // primary it ends at rather than stopping at the link it named. Otherwise the
   // third finder to raise a defect silently stops counting as having raised it.
   const rootOf = (v) => { let cur = v; while (cur.duplicateOf) cur = byId.get(cur.duplicateOf); return cur.id; };
+  // `sources` is the finding's claim about who independently stands behind it,
+  // so only a verdict the verifier itself upheld may be counted. A REFUTED
+  // duplicate is the verifier saying "the same claim, and it is wrong" in one
+  // breath — a real thing it writes, and a contract-valid one (the graph rules
+  // forbid pointing AT a refuted finding, not being one) — and crediting that
+  // lane would publish a second reviewer's name under a claim its own verdict
+  // denies. Read correctly here rather than rejected in the postconditions: a
+  // rejection costs a full repair round, and the panel itself if the repair is
+  // no better, over a contradiction that costs nothing to resolve.
   const sourcesOf = (v) => [...new Set(
-    [v, ...verified.filter((d) => d.duplicateOf && rootOf(d) === v.id)].map((d) => d.id.split("#")[0])
+    [v, ...verified.filter((d) => d.duplicateOf && d.verdict === "CONFIRMED" && rootOf(d) === v.id)]
+      .map((d) => d.id.split("#")[0])
   )];
 
   // One published finding per surviving formulation: the location the finder
