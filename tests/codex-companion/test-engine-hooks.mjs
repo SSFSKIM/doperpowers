@@ -349,8 +349,13 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
     (err) => /review target moved/.test(err.message),
     "a review whose base ref moved under it is returned as a result anyway"
   );
-  assert.equal(counter(c.mockDir), 2, "both attempts ran: the moved target is a leaf failure like any other");
-  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  // TERMINAL: the automatic transport retry re-resolves the SAME moved ref and
+  // fails identically, so a second review turn buys nothing and costs a full
+  // review's worth of tokens.
+  assert.equal(counter(c.mockDir), 1, "the moved target is terminal — it must not buy a second review turn");
+  const evs = journal(c.runDir);
+  assert.deepEqual(evs.filter((e) => e.type === "retry"), [], "…and is not journaled as a retry");
+  const fin = evs.filter((e) => e.type === "finished");
   assert.equal(fin.length, 1, "one finished record");
   assert.ok(!("result" in fin[0]), "no review text is journaled under a commit key it does not describe");
   assert.match(fin[0].error, /review target moved/, "the journal says why");
@@ -592,6 +597,40 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   );
   await runWorkflow({ ...spec, resume: true });
   assert.equal(counter(c.mockDir), 2, "a moved review target must MISS the cache");
+}
+
+{
+  // (b2) The base branch's TIP moves while the merge-base stands still — an
+  // ordinary `main` advance, the most common move there is. What Codex's
+  // review/start diffs is not observable from here, so a reviewer that reads the
+  // branch tip would have been handed a different range under the same key, and
+  // the moved-target guard would have stayed silent about it.
+  const c = newCase("movedtip", [{ reviewText: "# R\n\nfirst" }, { reviewText: "# R\n\nsecond" }]);
+  const git = (...args) => run("git", args, { cwd: c.repo }).stdout.trim();
+  run("git", ["checkout", "-b", "feature"], { cwd: c.repo });
+  fs.writeFileSync(path.join(c.repo, "b.txt"), "B\n");
+  run("git", ["add", "."], { cwd: c.repo });
+  run("git", ["commit", "-m", "b"], { cwd: c.repo });
+
+  const spec = { scriptPath: path.join(FIXTURES, "fx-review.mjs"), args: {}, cwd: c.repo, runDir: c.runDir };
+  await runWorkflow(spec);
+  assert.equal(counter(c.mockDir), 1);
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 1, "an unadvanced base branch cache-hits");
+
+  // A commit on top of `main` that is NOT an ancestor of HEAD: merge-base stays
+  // the fork point, the tip does not. Built with commit-tree so HEAD, the index
+  // and the working tree are never touched.
+  const advanced = git("commit-tree", git("rev-parse", "main^{tree}"), "-p", "main", "-m", "advance");
+  const mergeBase = git("merge-base", "main", "HEAD");
+  const fpBefore = repoFingerprint(c.repo, [path.join(FIXTURES, "fx-review.mjs")]);
+  run("git", ["branch", "-f", "main", advanced], { cwd: c.repo });
+  assert.equal(git("merge-base", "main", "HEAD"), mergeBase,
+    "the merge-base must be unchanged, or this case only re-proves the one above");
+  assert.equal(repoFingerprint(c.repo, [path.join(FIXTURES, "fx-review.mjs")]), fpBefore,
+    "the run fingerprint must be unchanged, or this case proves nothing");
+  await runWorkflow({ ...spec, resume: true });
+  assert.equal(counter(c.mockDir), 2, "an advanced base branch TIP must MISS the cache");
 }
 
 {

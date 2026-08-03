@@ -296,10 +296,13 @@ export async function runWorkflow(spec) {
           // report about one range under a key that names another.
           const after = reviewTargetCommit(reviewCwd, target);
           if (after !== targetCommit) {
-            throw new Error(
+            // terminal: the automatic transport retry would re-resolve the same
+            // moved ref and fail identically — a second review turn that can only
+            // reach the same verdict, at a full review's cost.
+            throw Object.assign(new Error(
               `review target moved while the review ran (${targetCommit} → ${after}); ` +
               "the report describes a different range than this run journaled"
-            );
+            ), { terminal: true });
           }
           return { reviewText: res.reviewText, threadId: res.threadId, status: res.status };
         });

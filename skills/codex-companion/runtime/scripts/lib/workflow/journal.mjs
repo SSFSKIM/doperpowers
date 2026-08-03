@@ -151,27 +151,30 @@ export function releaseLease(runDir) {
   fs.rmSync(p, { force: true });
 }
 
-// The commit a review target actually resolves to RIGHT NOW. `{type:"baseBranch"}`
+// The commits a review target actually resolves to RIGHT NOW. `{type:"baseBranch"}`
 // names a ref, and a ref moves: two runs can pass identical target objects while
-// the diff under review has changed completely. The merge-base is what a
-// base-branch review diffs against, so that is the identity worth caching on;
-// rev-parse of the branch is the fallback when there is no common ancestor.
+// the diff under review has changed completely.
+// BOTH ends are reported. A base-branch review diffs from the merge-base if it
+// diffs three-dot, and from the branch TIP if it diffs two-dot — and what Codex's
+// own `review/start` does is not observable from this repository. Comparing only
+// the merge-base would let an ordinary `main` advance (which leaves the merge-base
+// alone) change the reviewed range invisibly, so the identity is the pair.
 // `uncommittedChanges` needs nothing here — the working tree is already in the
 // repository fingerprint.
 export function reviewTargetCommit(cwd, target) {
   if (target?.type !== "baseBranch" || !target.branch) {
     return null;
   }
-  const git = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-  try {
-    return git(["merge-base", target.branch, "HEAD"]);
-  } catch {
-    try {
-      return git(["rev-parse", target.branch]);
-    } catch {
-      return null;
-    }
+  const git = (args) => {
+    try { return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
+    catch { return null; }
+  };
+  const mergeBase = git(["merge-base", target.branch, "HEAD"]);
+  const tip = git(["rev-parse", target.branch]);
+  if (mergeBase === null && tip === null) {
+    return null;
   }
+  return `${mergeBase ?? "none"}..${tip ?? "none"}`;
 }
 
 export const FINGERPRINT_ERROR_PREFIX = "error:";
