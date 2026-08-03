@@ -160,6 +160,26 @@ assert.notEqual(repoFingerprint(repo), fpA, "fingerprint blind to content change
 const fp1 = repoFingerprint(process.cwd());
 assert.equal(fp1, repoFingerprint(process.cwd()));
 
+// A per-call `cwd` is routinely a SUBDIRECTORY of the checkout, and `git
+// ls-files` is scoped to the directory it is invoked from — so untracked files
+// anywhere else in the same repository were invisible, even though the workers
+// read the whole checkout. The reads are anchored at the repository root, which
+// is already resolved for the fingerprint's own repoPath.
+const nested = path.join(repo, "pkg", "deep");
+fs.mkdirSync(nested, { recursive: true });
+fs.writeFileSync(path.join(nested, "kept.txt"), "in-subdir");
+const fromSub = repoFingerprint(nested);
+fs.writeFileSync(path.join(repo, "untracked-at-root.txt"), "one");
+const withRootUntracked = repoFingerprint(nested);
+assert.notEqual(withRootUntracked, fromSub, "an untracked file OUTSIDE the cwd is invisible from a subdirectory");
+fs.writeFileSync(path.join(repo, "untracked-at-root.txt"), "two");
+assert.notEqual(
+  repoFingerprint(nested), withRootUntracked,
+  "its CONTENT is invisible from a subdirectory too"
+);
+fs.rmSync(path.join(repo, "untracked-at-root.txt"));
+fs.rmSync(path.join(repo, "pkg"), { recursive: true, force: true });
+
 // A run is bound to the CHECKOUT it ran in, not just to the content. Two clones
 // with identical HEAD, diff and untracked sets still differ in cwd, ignored
 // files, branch context and local git config — a resume addressed globally by

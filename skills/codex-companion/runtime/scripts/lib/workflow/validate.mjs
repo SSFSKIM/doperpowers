@@ -17,6 +17,25 @@ function matchesType(value, t) {
     (t === "null" && value === null);
 }
 
+// Enum membership is STRUCTURAL. A member can be an object or an array (a review
+// target, a tuple), and a value that came out of JSON.parse is never the same
+// reference as the schema literal beside it — so identity comparison rejected
+// every structurally correct payload and spent the run's single repair turn
+// proving it. Object key ORDER is not part of a JSON value, which is why this is
+// a walk and not a stringify comparison: a model that emits the same object with
+// its keys in another order emitted the same value.
+function sameJsonValue(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    return a.length === b.length && a.every((item, i) => sameJsonValue(item, b[i]));
+  }
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && sameJsonValue(a[key], b[key]));
+}
+
 export function validateSchema(value, schema, path = "$") {
   const errors = [];
   if (!schema || typeof schema !== "object") return errors;
@@ -28,7 +47,7 @@ export function validateSchema(value, schema, path = "$") {
     errors.push(`${path}: expected ${types.join("|")}`);
     return errors;
   }
-  if (schema.enum && !schema.enum.includes(value)) {
+  if (schema.enum && !schema.enum.some((member) => sameJsonValue(member, value))) {
     errors.push(`${path}: not in enum [${schema.enum.join(", ")}]`);
   }
   if (types.includes("object") && matchesType(value, "object")) {

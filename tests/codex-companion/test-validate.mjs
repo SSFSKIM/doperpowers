@@ -42,4 +42,24 @@ const UNION_OBJ = {
 assert.deepEqual(validateSchema(null, UNION_OBJ), []);
 assert.ok(validateSchema({}, UNION_OBJ).some(e => e.includes('missing required "n"')));
 assert.ok(validateSchema({ n: "x" }, UNION_OBJ).some(e => e.includes("expected number")));
+// An enum whose members are objects or arrays. A parsed value can never be
+// reference-equal to a schema literal, so identity comparison rejected every
+// structurally-correct payload — and burned the single repair turn proving it.
+const STRUCTURAL = {
+  type: "object", required: ["target"],
+  properties: {
+    target: { enum: [{ type: "baseBranch", branch: "main" }, { type: "uncommittedChanges" }, ["a", "b"]] }
+  }
+};
+assert.deepEqual(validateSchema({ target: { type: "baseBranch", branch: "main" } }, STRUCTURAL), []);
+assert.deepEqual(validateSchema({ target: { type: "uncommittedChanges" } }, STRUCTURAL), []);
+assert.deepEqual(validateSchema({ target: ["a", "b"] }, STRUCTURAL), []);
+assert.ok(validateSchema({ target: { type: "baseBranch", branch: "other" } }, STRUCTURAL)
+  .some(e => e.includes("enum")), "a structurally different member is still rejected");
+assert.ok(validateSchema({ target: ["b", "a"] }, STRUCTURAL)
+  .some(e => e.includes("enum")), "array order is part of the value");
+// Scalars keep behaving exactly as before.
+assert.deepEqual(validateSchema("P0", { enum: ["P0", "P1"] }), []);
+assert.ok(validateSchema("P2", { enum: ["P0", "P1"] }).length === 1);
+
 console.log("test-validate: ok");

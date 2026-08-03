@@ -244,14 +244,20 @@ export function repoFingerprintParts(cwd, extraPaths = []) {
   // diff ENTIRELY, so without this override the line above does nothing in
   // exactly the repositories that opted out of seeing submodule dirt.
   const diff = run(["diff", "HEAD", "--submodule=diff", "--ignore-submodules=none"]);
-  const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
+  // From the ROOT, not from `cwd`. A per-call cwd is routinely a subdirectory of
+  // the checkout, and `git ls-files` is scoped to the directory it runs in — so
+  // untracked files anywhere else in the same repository were simply absent from
+  // the fingerprint, while the workers could read them all along. (`git diff`
+  // above is repo-wide regardless of cwd, which is why only these two moved.)
+  const atRoot = (args) => execFileSync("git", args, { cwd: root, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
+  const untracked = atRoot(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
   const untrackedHashes = untracked.map((f) => {
-    try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
+    try { return f + ":" + atRoot(["hash-object", "--", f]).trim(); }
     catch { return f + ":unreadable"; }
   });
   return {
     repoPath: root,
-    repoContent: fpDigest([head, diff, untrackedHashes.join("\n"), submoduleUntracked(cwd, run).join("\n")]),
+    repoContent: fpDigest([head, diff, untrackedHashes.join("\n"), submoduleUntracked(root, atRoot).join("\n")]),
     code: fpDigest(hashExtras())
   };
 }
