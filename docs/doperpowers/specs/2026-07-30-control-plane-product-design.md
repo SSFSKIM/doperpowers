@@ -120,6 +120,32 @@ Issues can be the mirror") — edits on a mirror never mutate the SSOT.
   rule).
   Date/Author: 2026-07-30, session, consistent with standing gates.
 
+- Decision: The platform repo is named **Arkho**.
+  Date/Author: 2026-08-04, human.
+- Decision: E3's own children are tracked on the interim GitHub board
+  (usable today); the Postgres board remains the end-state SSOT the
+  platform builds.
+  Rationale: the board the platform will replace is the only board
+  that exists while the platform is being built; substrate-neutral
+  ticket rules make the eventual migration mechanical.
+  Date/Author: 2026-08-04, human.
+- Decision (roadmapping input): the ledger + unified needs-human queue
+  are THE human↔agent communication surfaces; live session steering is
+  demoted — the human does not steer worker sessions in real time, so
+  the session terminal (surface 4) is an inspection/break-glass
+  surface, not a primary one. The E3 roadmapping run re-weights
+  phasing and acceptance accordingly (surfaces 1–3 core, terminal
+  later); this narrows the appserver dependency to T5 park durability
+  + the respond path, off the M2 full terminal wire (R1 T9).
+  Rationale: at swarm scale the human's decision throughput on parked
+  work is the bottleneck the product exists to fix; a terminal-first
+  posture would rebuild the attach-one-at-a-time model the Purpose
+  section rejects. `ccx attach` is node-local (UDS) by construction —
+  cross-pod access always means the appserver seam, and human
+  `pods/exec` stays rejected per the session-entry decision above.
+  Date/Author: 2026-08-04, human ("human is not going to steer agent
+  real-time session anymore"), grounded in R1 §F.
+
 ## Surprises & Discoveries
 
 - Observation: the platform's hardest-looking parts already exist as
@@ -138,5 +164,11 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-04: E3 kickoff decisions recorded (repo name Arkho; children
+  on the interim GH board; terminal demoted to inspection/break-glass —
+  the ledger + queue are the communication surfaces). The gating
+  research landed: `r2-board-schema.md` rebased to v2 against
+  E1 v1.3.3 + E2 v2.x — the decomposing run's internals input is
+  current. Division still pending that run.
 - 2026-07-30: v1, authored from the E3 grill of the ideadump roadmapping
   session (product boundary → session-entry seam → queue unification).

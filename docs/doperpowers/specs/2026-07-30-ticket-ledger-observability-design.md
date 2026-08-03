@@ -784,6 +784,12 @@ new-comment-per-cycle clause.
 
 ## Revision Notes
 
+- 2026-08-04: § R2 rebase requirements DISCHARGED —
+  `research/2026-07-30-clean-slate/r2-board-schema.md` rebased to v2
+  against E1 v1.3.3 + this contract. All seven named defects fixed
+  visibly (its § Rebase record maps each defect to its fix); the T5
+  decision-park projection and T11 activity projection upgraded from
+  reserved maybes to schema, per this spec's v2 decisions.
 - 2026-08-03: post-merge hardening campaign on `e2-ledger-contract` — 15
   rounds of independent codex review, each followed by a fix wave. Ranged
   over the whole interim slice and its neighbours: dispatch lane routing and
