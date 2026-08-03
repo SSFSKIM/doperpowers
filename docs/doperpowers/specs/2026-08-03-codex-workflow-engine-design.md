@@ -639,6 +639,25 @@ best-effort (no readable start time ⇒ nothing is signalled). Panel
 extraction/verifier changes have NOT been re-scored on X1 — the
 stability re-run already tracked above should run on the fixed panel.
 
+Round 2 (same day): the fixed panel re-reviewed the fixed branch and
+returned `incorrect` again — 18 findings (9 P1), most against code the
+round-1 fixes introduced: the win32 `cmd.exe` shim path re-opened the
+injection it was closing (resolved by refusing `.cmd` shims outright),
+resume did not reap SIGKILL-orphaned workers before replaying their
+leaves, a terminal per-job file could be overwritten by a stale
+`running` ledger row, the panel pinned its base for prompts but handed
+finders the mutable ref and never pinned HEAD at all (closed with an
+assembly-time re-resolution gate: any pin drift ⇒ unconditional
+`interrupted`), and the schema validator's `enum` check compared by
+reference so object members could never match. 16 of 18 fixed in a
+two-wave round (runtime + panel); the ignored-files fingerprint scope
+was accepted and documented; the malformed-response hang was deferred
+into the watchdog follow-up. Lesson recorded: fix waves need their own
+review pressure — round-2 findings were overwhelmingly in round-1
+code, and the two adversarial wave-reviews had already caught a
+different, non-overlapping set (broker pid, Linux clock-step
+liveness). Neither layer subsumes the other.
+
 A `watch` verb (live journal-driven progress tree, read-only, no
 --cwd needed) shipped separately on the stacked `workflow-watch`
 branch after proving itself against the dogfood run live.
