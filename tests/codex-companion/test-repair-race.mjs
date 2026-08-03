@@ -30,6 +30,7 @@ const { loadState, readJobFile, resolveJobFile, resolveStateFile, upsertJob, wri
 const { repairDeadWorkflowJobs, WORKFLOW_JOB_CLASS } = await import(
   "../../skills/codex-companion/runtime/scripts/lib/workflow/job.mjs"
 );
+const { processStartTime } = await import("../../skills/codex-companion/runtime/scripts/lib/pid.mjs");
 
 function deadPid() {
   const finished = run(process.execPath, ["-e", "process.exit(0)"]);
@@ -115,6 +116,87 @@ function plantRunningRun(workspace, id, pid) {
     readJobFile(resolveJobFile(workspace, "wf-raced")).status,
     "running",
     "the live run's own record must not be overwritten either"
+  );
+}
+
+// --- a completed run is never rewritten as failed ----------------------------
+//
+// A transition writes the per-job file first and the ledger row second (two
+// files, two writes, no atomicity across them). A crash between the two leaves a
+// TERMINAL record beside a `running` row — and the repair used to let the row
+// win, so a run that finished successfully was reported as "the process is gone;
+// the run never finished", with its result thrown away. The per-job file is the
+// record `result` renders, and a terminal one is the authority.
+{
+  const workspace = path.join(scratch, "half-written");
+  fs.mkdirSync(workspace, { recursive: true });
+  const pid = deadPid();
+  const finishedRecord = {
+    id: "wf-finished",
+    runId: "wf-finished",
+    jobClass: WORKFLOW_JOB_CLASS,
+    kind: "workflow",
+    title: "Codex Workflow",
+    status: "completed",
+    phase: "done",
+    pid: null,
+    pidStart: null,
+    agents: 3,
+    result: { runId: "wf-finished", agents: 3 },
+    rendered: "# Codex Workflow\n\nStatus: completed\n",
+    completedAt: "2026-01-01T00:00:00.000Z"
+  };
+  writeJobFile(workspace, finishedRecord.id, finishedRecord);
+  // The ledger row the crashed writer never got to update.
+  upsertJob(workspace, { ...finishedRecord, status: "running", phase: "running", pid, result: undefined, rendered: undefined });
+
+  repairDeadWorkflowJobs(workspace);
+
+  const row = loadState(workspace).jobs.find((job) => job.id === "wf-finished");
+  assert.equal(row.status, "completed", "the ledger row is reconciled TO the terminal record");
+  assert.equal(row.pid, null, "…and stops naming a process");
+  const stored = readJobFile(resolveJobFile(workspace, "wf-finished"));
+  assert.equal(stored.status, "completed", "the finished record is left alone");
+  assert.deepEqual(stored.result, finishedRecord.result, "…including the result `result` renders");
+}
+
+// --- finalizing a dead run also reaps the workers it left behind --------------
+//
+// The run process is gone, so nothing else will ever signal its children: they
+// are direct children of a dead parent, still holding app-servers open. cancel
+// cannot reach them either — it repairs first, and a repaired row is no longer
+// cancelable — so this pass is the only cleanup path left.
+{
+  const workspace = path.join(scratch, "orphans");
+  fs.mkdirSync(workspace, { recursive: true });
+  const runDir = path.join(scratch, "orphans-run");
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const worker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+  const deadline = Date.now() + 5000;
+  while (!processStartTime(worker.pid) && Date.now() < deadline) sleep(20);
+  fs.writeFileSync(
+    path.join(runDir, "workers.json"),
+    JSON.stringify([{ pid: worker.pid, pidStart: processStartTime(worker.pid) }])
+  );
+
+  const record = { ...plantRunningRun(workspace, "wf-orphaned", deadPid()), runDir };
+  writeJobFile(workspace, record.id, record);
+  upsertJob(workspace, record);
+
+  repairDeadWorkflowJobs(workspace);
+
+  // Awaited, not slept: the child's exit is an event-loop event, and a blocking
+  // sleep would never let it be observed.
+  const exitDeadline = Date.now() + 5000;
+  while (worker.exitCode === null && worker.signalCode === null && Date.now() < exitDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.notEqual(worker.signalCode ?? worker.exitCode, null, "the dead run's workers are signalled");
+  assert.equal(
+    loadState(workspace).jobs.find((job) => job.id === "wf-orphaned").status,
+    "failed",
+    "…and the row is still finalized"
   );
 }
 

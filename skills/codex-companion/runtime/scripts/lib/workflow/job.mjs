@@ -25,6 +25,9 @@ const PHASE_BY_STATUS = {
   cancelled: "cancelled"
 };
 
+// A record in one of these is finished, and finished is not revisable.
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
 // The bulky payloads stay in the per-job file: the ledger is re-read and
 // re-written by every verb invocation and capped at MAX_JOBS records.
 const LEDGER_OMITTED_FIELDS = new Set(["result", "rendered"]);
@@ -182,6 +185,21 @@ export function repairDeadWorkflowJobs(workspaceRoot) {
       }
       const { stored, corrupt } = readStoredJobOrCorrupt(resolveJobFile(workspaceRoot, job.id));
       const record = { ...stored, ...job };
+      // A transition writes the per-job file and then the ledger row — two files,
+      // no atomicity across them. A crash in between leaves a TERMINAL record
+      // beside a `running` row, and the row is the stale half: finalizing on it
+      // would rewrite a completed run as "the process is gone; the run never
+      // finished" and drop the result `result` renders. Reconcile the row to the
+      // record instead, and touch nothing else.
+      if (!corrupt && TERMINAL_STATUSES.has(stored.status)) {
+        state.jobs[index] = { ...ledgerRow(stored), updatedAt: nowIso() };
+        return;
+      }
+      // Nothing else will ever reap this run's workers: they are children of a
+      // process that is gone, and cancel cannot reach them — it repairs first,
+      // and a repaired row is no longer cancelable. The sweep is instance-guarded,
+      // so a pid that has since been reused is dropped rather than signalled.
+      killWorkflowWorkers(record.runDir ?? null);
       // The per-job file is rewritten too, so a torn one is REPAIRED here rather
       // than left to break the next read. writeJobFile takes no lock of its own,
       // which is why this can run inside the mutation.
