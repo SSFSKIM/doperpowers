@@ -486,6 +486,17 @@ truth set for one frozen diff.
   compacted past it). Lesson reinforced: the look-outside pass before
   locking a design must include *this repo's own* specs/execplans/bench
   results, not just external prior art.
+- (2026-08-03, implementation, clean-render probe) A native review that
+  finds nothing renders as FREE-FORM PROSE — no stable phrasing, no
+  "Full review comments:" section (evidence:
+  `tests/review-bench/results/2026-08-03-native-clean-render-probe/`).
+  Strict extraction would classify every clean finder as failed and
+  interrupt clean-diff panels. Resolution: all panel finders (sweep
+  included) carry a format-only `developer_instructions` sentinel —
+  "end a clean review with exactly: No material findings." — an output
+  convention, not a content lens; the sweep's discovery behavior stays
+  unsteered and the X1 bench measures any recall cost. Extraction
+  stays strict (no prose-pattern loosening).
 - (2026-08-03, transport probe) App-server native review DOES honor
   `developer_instructions` set on the serving process: a with-effort
   wrapped `review` run with a marker instruction returned the marker
