@@ -1222,7 +1222,11 @@ async function handleCancel(argv) {
     ...job,
     status: "cancelled",
     phase: "cancelled",
+    // The pid and the instance it named are one fact: clearing only the number
+    // leaves a finished row still carrying a stamp, and the stamp is what every
+    // liveness check reads beside that number.
     pid: null,
+    pidStart: null,
     completedAt,
     errorMessage: "Cancelled by user."
   };
@@ -1237,6 +1241,7 @@ async function handleCancel(argv) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    pidStart: null,
     errorMessage: "Cancelled by user.",
     completedAt
   });

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../../skills/codex-companion/runtime/scripts/lib/broker-lifecycle.mjs";
+import { processStartTime } from "../../skills/codex-companion/runtime/scripts/lib/pid.mjs";
 import { resolveStateDir } from "../../skills/codex-companion/runtime/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1595,6 +1596,7 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
             jobClass: "task",
             summary: "Investigate flaky test",
             pid: sleeper.pid,
+            pidStart: processStartTime(sleeper.pid),
             logFile,
             createdAt: "2026-03-18T15:30:00.000Z",
             startedAt: "2026-03-18T15:30:01.000Z",
@@ -1628,9 +1630,14 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
   const cancelled = state.jobs.find((job) => job.id === "task-live");
   assert.equal(cancelled.status, "cancelled");
   assert.equal(cancelled.pid, null);
+  // The pid and the instance it named are one fact. Clearing only the number
+  // leaves a finished row still claiming a process — and the stamp is what every
+  // liveness check reads next to that number.
+  assert.equal(cancelled.pidStart, null);
 
   const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
   assert.equal(stored.status, "cancelled");
+  assert.equal(stored.pidStart, null);
   assert.match(fs.readFileSync(logFile, "utf8"), /Cancelled by user/);
 });
 
