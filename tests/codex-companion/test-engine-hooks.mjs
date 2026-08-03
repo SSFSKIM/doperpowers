@@ -566,7 +566,7 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   // A directory that is not a repository at all: still the stable constant.
   const plain = path.join(c.scratch, "plain");
   fs.mkdirSync(plain, { recursive: true });
-  assert.equal(repoFingerprint(plain), "no-git", "a non-repository is still 'no-git'");
+  assert.ok(repoFingerprint(plain).startsWith("no-git:"), "a non-repository is still marked no-git");
 
   // A real repository whose git reads FAIL. A commitless repo is the cheapest
   // faithful instance: `rev-parse --is-inside-work-tree` succeeds, and every

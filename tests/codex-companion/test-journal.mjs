@@ -159,5 +159,57 @@ assert.notEqual(repoFingerprint(repo), fpA, "fingerprint blind to content change
 
 const fp1 = repoFingerprint(process.cwd());
 assert.equal(fp1, repoFingerprint(process.cwd()));
-assert.equal(repoFingerprint(dir), "no-git");
+
+// A run is bound to the CHECKOUT it ran in, not just to the content. Two clones
+// with identical HEAD, diff and untracked sets still differ in cwd, ignored
+// files, branch context and local git config — a resume addressed globally by
+// run id must not replay one clone's outputs in the other.
+const clone = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wfc-")), "copy");
+spawnSync("cp", ["-R", repo, clone]);
+assert.notEqual(
+  repoFingerprint(clone), repoFingerprint(repo),
+  "fingerprint blind to WHICH checkout it was taken in"
+);
+
+// A directory with no git is a stable answer, but it must not be a CONSTANT:
+// the workflow script rides extraPaths, and every no-git state comparing equal
+// would serve stale results after the script (or the directory) changed.
+const nogit = repoFingerprint(dir);
+assert.ok(nogit.startsWith("no-git:"), `a non-repository is still marked no-git (got ${nogit})`);
+assert.equal(nogit, repoFingerprint(dir), "the no-git fingerprint is stable for one directory");
+const script = path.join(dir, "adhoc.mjs");
+fs.writeFileSync(script, "export default async () => 1;\n");
+const withScript = repoFingerprint(dir, [script]);
+assert.notEqual(withScript, nogit, "extraPaths are ignored outside a repository");
+fs.writeFileSync(script, "export default async () => 2;\n");
+assert.notEqual(
+  repoFingerprint(dir, [script]), withScript,
+  "an edited workflow script compares equal outside a repository"
+);
+const otherPlain = fs.mkdtempSync(path.join(os.tmpdir(), "wfn-"));
+assert.notEqual(repoFingerprint(otherPlain), nogit, "two different non-repositories compare equal");
+
+// A dirty SUBMODULE: the parent's commit pointer is unchanged, so a plain
+// `git diff HEAD` records only a `-dirty` marker and the parent's untracked
+// list never mentions the submodule's files. Distinct submodule contents must
+// still be distinct fingerprints.
+const subScratch = fs.mkdtempSync(path.join(os.tmpdir(), "wfs-"));
+const sub = path.join(subScratch, "sub");
+const parent = path.join(subScratch, "parent");
+const git = (cwd, args) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t",
+  "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", ...args], { cwd, encoding: "utf8" });
+fs.mkdirSync(sub); fs.mkdirSync(parent);
+spawnSync("git", ["init", "-q", "-b", "main"], { cwd: sub });
+fs.writeFileSync(path.join(sub, "s.txt"), "one");
+git(sub, ["add", "-A"]); git(sub, ["commit", "-qm", "s"]);
+spawnSync("git", ["init", "-q", "-b", "main"], { cwd: parent });
+git(parent, ["submodule", "add", "-q", sub, "sub"]);
+git(parent, ["commit", "-qm", "add-sub"]);
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "dirty-A");
+const subA = repoFingerprint(parent);
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "dirty-B");
+assert.notEqual(
+  repoFingerprint(parent), subA,
+  "fingerprint blind to dirty submodule CONTENT — both states are just `-dirty` to the parent"
+);
 console.log("test-journal: ok");

@@ -179,31 +179,43 @@ export function repoFingerprint(cwd, extraPaths = []) {
   // any extra file identities the caller cares about (workflow script).
   const run = (args) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
 
+  const hashExtras = () => extraPaths.map((p) => {
+    try { return p + ":" + crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12); }
+    catch { return p + ":unreadable"; }
+  });
+  // Same content is not the same run: outputs depend on the checkout's own
+  // path, its ignored files, its branch context and its local git config, and a
+  // run is addressed globally by id — so the canonical location the fingerprint
+  // was taken at is part of the identity. realpath so that a symlinked path and
+  // its target are one checkout, not two.
+  const canonical = (dir) => { try { return fs.realpathSync(dir); } catch { return path.resolve(dir); } };
+  const digest = (parts) => crypto.createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
+
   // "Not a repository" is a determinable, STABLE answer, and the only one that
-  // may collapse to a constant. Everything after this probe is a real git read,
+  // may skip the git reads. Everything after this probe is a real git read,
   // and a failure there — ENOBUFS on a diff past the 64 MiB buffer, an unreadable
-  // object, a permissions error, a repository with no commits — must NOT return
-  // that same constant: two runs that both fail would compare equal, and the
+  // object, a permissions error, a repository with no commits — must NOT collapse
+  // to a shared constant: two runs that both fail would compare equal, and the
   // resume guard would wave through stale results against changed code. Those
   // throw, and the engine records the failure as a fingerprint no resume matches.
+  // No-git is not a constant either: the workflow script rides extraPaths, so an
+  // edited script (or a different directory) still has to be a different answer.
   try {
     run(["rev-parse", "--is-inside-work-tree"]);
   } catch {
-    return "no-git";
+    return `no-git:${digest([canonical(cwd), hashExtras().join("\n")])}`;
   }
 
+  const root = canonical(run(["rev-parse", "--show-toplevel"]).trim());
   const head = run(["rev-parse", "HEAD"]);
-  const diff = run(["diff", "HEAD"]);
+  // --submodule=diff: for an UNCHANGED submodule commit, plain `git diff HEAD`
+  // reduces every distinct dirty submodule working tree to the same `-dirty`
+  // marker, and the parent's untracked list never names files inside it.
+  const diff = run(["diff", "HEAD", "--submodule=diff"]);
   const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
   const untrackedHashes = untracked.map((f) => {
     try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
     catch { return f + ":unreadable"; }
   });
-  const extras = extraPaths.map((p) => {
-    try { return p + ":" + crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12); }
-    catch { return p + ":unreadable"; }
-  });
-  return crypto.createHash("sha256")
-    .update([head, diff, untrackedHashes.join("\n"), extras.join("\n")].join("\x00"))
-    .digest("hex").slice(0, 16);
+  return digest([root, head, diff, untrackedHashes.join("\n"), hashExtras().join("\n")]);
 }
