@@ -127,10 +127,10 @@ is exempt, so it never buys a third model turn.
 Everything about a run lives in `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`:
 `journal.jsonl` (the event log — every leaf call's start, retry and outcome,
 appended as it happens), `result.json`, `fingerprint`, `args.json` (the
-`--args` the run was issued with), `lease.json` while the
-run holds the directory, and `workers.json` tracking live worker pids (each with
-the worker's process start time, so a `cancel` after a reboot cannot signal
-whatever inherited the number). The run
+`--args` the run was issued with), `lease.json` while the run holds the
+directory, and `workers.json` tracking live worker pids (each with the worker's
+process start time, so a `cancel` after a reboot cannot signal whatever
+inherited the number). The run
 id IS the job id, so `status <run-id>`, `result <run-id>` and `cancel <run-id>`
 work exactly as in references/jobs.md; the job statuses are `running`,
 `completed`, `failed` and `cancelled`. Run directories are global under the
