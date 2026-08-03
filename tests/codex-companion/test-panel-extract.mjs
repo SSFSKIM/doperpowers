@@ -102,12 +102,46 @@ function classify(result) {
 
 // ---------------------------------------------------------------------------
 // no-findings.md — the runtime's own clean rendering (render.mjs line 263,
-// "No material findings."). The ONLY text that earns `clean`.
+// "No material findings."). The ONLY line that earns `clean`.
 // ---------------------------------------------------------------------------
 {
   const r = extractStubs(fx("no-findings"), "lens-3");
   assert.deepEqual(r, { stubs: [], clean: true, failed: false });
   assert.equal(classify(r), "clean");
+}
+
+// ---------------------------------------------------------------------------
+// clean-prose-unsentineled.md — a LIVE probe of a genuinely clean NATIVE review,
+// byte-identical to the committed
+// tests/review-bench/results/2026-08-03-native-clean-render-probe/probe-out.md.
+// It is free-form prose: no findings section, no tags, and no stable phrasing of
+// its own ("No functional defects were identified."). Today it classifies
+// `failed`, and that is the reality Task 3's sentinel instruction exists to fix
+// — a clean finder must SAY the sentinel line, because the runtime never does.
+// ---------------------------------------------------------------------------
+{
+  const prose = fx("clean-prose-unsentineled");
+  assert.ok(!/No material findings\./.test(prose), "the probe carries no sentinel");
+  assert.equal(classify(extractStubs(prose, "lens-4")), "failed");
+
+  // The sentinel contract Task 3 will rely on: the SAME prose, ending with the
+  // sentinel line, is clean. No loosening of the exact-line check is required.
+  const sentineled = `${prose.trimEnd()}\n\nNo material findings.\n`;
+  assert.deepEqual(extractStubs(sentineled, "lens-4"), { stubs: [], clean: true, failed: false });
+}
+
+// ---------------------------------------------------------------------------
+// partial-drift.md — r15 with the list marker stripped from the SECOND head
+// only. The first finding still parses; handing back that subset would silently
+// lose the second. One unconsumed [P#] line makes the whole finder suspect.
+// ---------------------------------------------------------------------------
+{
+  const r = extractStubs(fx("partial-drift"), "lens-5");
+  assert.equal(classify(r), "failed", "partial drift must not return a partial subset");
+  assert.deepEqual(r, { stubs: [], clean: false, failed: true });
+  // Guard against passing for the wrong reason: the intact first head really is
+  // parseable on its own, so the failure comes from the drifted second one.
+  assert.equal(extractStubs(fx("campaign-r15"), "lens-5").stubs.length, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +153,8 @@ for (const name of [
   "drifted",        // r15 with the list markers stripped: [P#] present, structure gone
   "untagged-drift", // r15 with tag and location stripped: findings-like prose only
   "empty-stdout",   // render.mjs line 301 — a recognized rendering, but output loss
-  "prose-answer"    // a real run that answered in prose instead of the finding format
+  "prose-answer",   // a real run that answered in prose instead of the finding format
+  "partial-drift"   // only the second head lost its marker — the whole finder is suspect
 ]) {
   const r = extractStubs(fx(name), "lens-x");
   assert.equal(classify(r), "failed", `${name}.md must classify failed`);
@@ -151,6 +186,13 @@ for (const empty of [undefined, null, "", "   \n\n  "]) {
   // The em-dash separator is part of the head shape every observed render uses:
   // a list item ending in a bare path:line is drift, not a finding.
   assert.deepEqual(extractStubs("- No separator /a/b.ts:4", "f").stubs, []);
+
+  // The drift guard keys on lines that OPEN like a head. A body that merely
+  // mentions a priority mid-sentence is not a mangled head, and must not blow up
+  // an otherwise healthy finder.
+  const tagInBody = ["- [P1] Healthy finding — /a/b.ts:3", "  downgraded from [P0] after review"].join("\n");
+  assert.equal(extractStubs(tagInBody, "f").stubs.length, 1);
+  assert.equal(extractStubs(tagInBody, "f").failed, false);
 }
 
 console.log("test-panel-extract: ok");

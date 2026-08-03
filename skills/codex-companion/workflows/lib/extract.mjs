@@ -11,8 +11,18 @@
 // the runtime's own no-findings rendering may be read as a clean verdict.
 const HEAD_RE = /^[ \t]*[-*]\s+(?:\[(P[0-3])\]\s*)?(.+?)\s+—\s+(\S+?):(\d+)(?:-(\d+))?\s*$/;
 
-// The one clean rendering the runtime emits, verbatim from
-// runtime/scripts/lib/render.mjs (`renderReviewResult`, zero findings).
+// A line that OPENS like a finding head — optional list marker, then a priority
+// tag — but did not parse as one. Anchored at the line start so a body that
+// merely mentions "[P2]" mid-sentence is not mistaken for a mangled head.
+const ORPHAN_TAG_RE = /^[ \t]*(?:[-*]\s*)?\[P[0-3]\]/;
+
+// The one line that earns a clean verdict. Two sources, one string:
+//   - runtime/scripts/lib/render.mjs:263 (`renderReviewResult`, zero findings)
+//     emits it verbatim;
+//   - the panel's finder sentinel convention — Task 3 instructs each reviewer to
+//     end a nothing-found review with exactly this line, because a real clean
+//     NATIVE review is free-form prose with no stable phrasing of its own
+//     (see fixtures/review-texts/clean-prose-unsentineled.md).
 // Deliberately NOT here: "Codex review completed without any stdout output."
 // (`renderNativeReviewResult` with empty stdout) — that is a finder that
 // produced nothing, which is output loss, not a clean review.
@@ -22,9 +32,11 @@ export function extractStubs(reviewText, finderId) {
   const lines = String(reviewText ?? "").split("\n");
   const stubs = [];
   let current = null;
+  let orphanTags = 0;
 
   for (const line of lines) {
     const m = line.match(HEAD_RE);
+    if (!m && ORPHAN_TAG_RE.test(line)) orphanTags += 1;
     if (m) {
       if (current) stubs.push(current);
       current = {
@@ -43,6 +55,13 @@ export function extractStubs(reviewText, finderId) {
     }
   }
   if (current) stubs.push(current);
+
+  // Partial drift: some heads parsed, at least one tagged line did not. Handing
+  // back the parsed subset would silently drop the drifted finding, so the whole
+  // finder is suspect — and a suspect finder is a failed one, not a partial
+  // success a caller might half-trust. The stubs go with it: `failed` means
+  // re-run or escalate this finder, and a re-run recovers them all.
+  if (orphanTags > 0) return { stubs: [], clean: false, failed: true };
 
   if (stubs.length > 0) return { stubs, clean: false, failed: false };
 
