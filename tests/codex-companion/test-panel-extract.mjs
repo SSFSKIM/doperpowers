@@ -124,10 +124,61 @@ function classify(result) {
   assert.ok(!/No material findings\./.test(prose), "the probe carries no sentinel");
   assert.equal(classify(extractStubs(prose, "lens-4")), "failed");
 
-  // The sentinel contract Task 3 will rely on: the SAME prose, ending with the
+  // The sentinel contract Task 3 relies on: the SAME prose, ending with the
   // sentinel line, is clean. No loosening of the exact-line check is required.
   const sentineled = `${prose.trimEnd()}\n\nNo material findings.\n`;
   assert.deepEqual(extractStubs(sentineled, "lens-4"), { stubs: [], clean: true, failed: false });
+}
+
+// ---------------------------------------------------------------------------
+// Sentinel decoration. A finder told to emit one exact line still routinely
+// bolds it, quotes it, or drops the period — and under the exact-line contract
+// each of those turns a CLEAN review into a failed finder, i.e. an interrupted
+// panel. The candidate line is therefore canonicalized first, by a closed
+// whitelist: surrounding emphasis/quote wrappers, and one trailing period
+// present or absent. Nothing prose-shaped, and no substring match — the
+// negative rows below are the point of the exercise.
+// ---------------------------------------------------------------------------
+{
+  const clean = [
+    "No material findings.",              // canonical
+    "No material findings",               // period dropped
+    "**No material findings.**",          // bolded
+    "**No material findings**",           // bolded, no period
+    "*No material findings.*",            // italic
+    "`No material findings.`",            // code span
+    '"No material findings."',            // quoted
+    "'No material findings'",             // single-quoted, no period
+    "“No material findings.”",  // smart quotes
+    "  No material findings.  ",          // padded (already trimmed before)
+    "**\"No material findings.\"**"       // both wrappers
+  ];
+  for (const line of clean) {
+    assert.deepEqual(
+      extractStubs(`# Codex Review\n\n${line}\n`, "lens-6"),
+      { stubs: [], clean: true, failed: false },
+      `decorated sentinel must still be clean: ${JSON.stringify(line)}`
+    );
+  }
+
+  // The normalization must never widen into a prefix or substring match: each
+  // of these SAYS something else, and a finder that says something else has
+  // not given the clean verdict.
+  const notClean = [
+    "No material findings mentioned.",
+    "No material findings were identified.",
+    "No material findings.." ,                       // two periods: one tolerance, not two
+    "There are no material findings.",
+    "no material findings.",                         // the contract is the exact line, casing included
+    "No material findings. See the note below.",
+    "- No material findings."                        // a list item is not the line
+  ];
+  for (const line of notClean) {
+    assert.equal(
+      classify(extractStubs(`# Codex Review\n\n${line}\n`, "lens-6")), "failed",
+      `must NOT be read as the clean verdict: ${JSON.stringify(line)}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

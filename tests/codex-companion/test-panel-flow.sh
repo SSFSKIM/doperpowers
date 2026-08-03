@@ -106,8 +106,11 @@ scenario()    { printf '{"turns":[%s]}' "$(printf '%s,' "$@" | sed 's/,$//')"; }
 # The clean sentinel EVERY finder carries. Real clean native reviews are
 # free-form prose (fixtures/review-texts/clean-prose-unsentineled.md), so
 # without it a finder that found nothing is indistinguishable from one that
-# went dark — see the spec's clean-render probe.
-SENTINEL='If your review finds no issues, end your final message with exactly this line: No material findings.'
+# went dark — see the spec's clean-render probe. The sentinel sits ALONE on its
+# own line: asked for it at the end of a sentence, a model reproduces the
+# sentence's punctuation, and extraction wants the bare line.
+SENTINEL='If your review finds no issues, end your final message with exactly this line (alone on its own line):
+No material findings.'
 
 # Every developer_instructions override any worker was spawned with, one
 # JSON-encoded string per line (the scalpel lenses are multi-line), sorted so
@@ -304,6 +307,10 @@ verifier_prompts > "$scratch/vprompt.txt"
 assert_contains "the verifier is told to re-inspect the code itself" "$scratch/vprompt.txt" "re-inspect the code yourself"
 assert_contains "the verifier prompt names the diff base" "$scratch/vprompt.txt" "merge-base(HEAD, main)"
 assert_contains "the verifier prompt carries the candidate pool verbatim" "$scratch/vprompt.txt" '"id": "scalpel-2#2"'
+# A lens-directed claim reads differently once you know which mandate produced
+# it, so the roster rides above the candidates.
+assert_contains "the verifier is shown the sweep as lens-free" "$scratch/vprompt.txt" "- sweep: (lens-free sweep)"
+assert_contains "the verifier is shown each scalpel's mandate" "$scratch/vprompt.txt" "- scalpel-2: check removed guards."
 assert_eq "the verified verdicts reach the result untouched" \
   "scalpel-1#1=CONFIRMED/P1 scalpel-1#2=CONFIRMED→sweep#1 scalpel-2#1=CONFIRMED/P2 scalpel-2#2=REFUTED sweep#1=CONFIRMED/P0 sweep#2=REFUTED" \
   "$(verdict_lines)"
@@ -410,12 +417,25 @@ assert_contains "the run names the postcondition that failed" "$scratch/err.log"
   "verifier postconditions failed: missing verdict for scalpel-1#1"
 assert_eq "exactly one repair turn is spent — never a second" "1" \
   "$(verifier_prompts | grep -c '^Your verdict set violated' || true)"
-verifier_prompts > "$scratch/vprompt.txt"
-assert_contains "the repair prompt names the violation" "$scratch/vprompt.txt" \
+verifier_prompts | sed -n '/^Your verdict set violated/,$p' > "$scratch/repair.txt"
+assert_contains "the repair prompt names the violation" "$scratch/repair.txt" \
   "Your verdict set violated the contract: missing verdict for scalpel-1#1"
-assert_contains "the repair prompt demands the FULL set, not a patch" "$scratch/vprompt.txt" \
+assert_contains "the repair prompt demands the FULL set, not a patch" "$scratch/repair.txt" \
   "Return the FULL corrected verdicts array covering every candidate id exactly once"
-assert_contains "the repair prompt re-sends the candidates" "$scratch/vprompt.txt" '"id": "scalpel-1#1"'
+assert_contains "the repair prompt re-sends the candidates" "$scratch/repair.txt" '"id": "scalpel-1#1"'
+# The repair rides a FRESH thread, so anything the first turn was told and this
+# one is not, the repairing verifier simply does not know — and case 8 makes its
+# answer BINDING. The whole contract therefore travels with the repair.
+assert_contains "the repair prompt restates the verifier's role" "$scratch/repair.txt" \
+  "You are the binding verifier of a multi-reviewer panel"
+assert_contains "the repair prompt keeps the re-inspect instruction" "$scratch/repair.txt" \
+  "re-inspect the code yourself before judging"
+assert_contains "the repair prompt keeps the verdict definitions" "$scratch/repair.txt" \
+  "CONFIRMED (you can name the concrete failure) or REFUTED"
+assert_contains "the repair prompt keeps the duplicateOf and priority rules" "$scratch/repair.txt" \
+  "Mark true duplicates with duplicateOf pointing at the strongest formulation"
+assert_contains "the repair prompt keeps the diff base" "$scratch/repair.txt" "merge-base(HEAD, main)"
+assert_contains "the repair prompt keeps the lens map" "$scratch/repair.txt" "- sweep: (lens-free sweep)"
 assert_eq "finders run on the caller's finder model, the verifier on its own" \
   "2 gpt-5.6-luna
 2 gpt-5.6-terra" "$(thread_models)"

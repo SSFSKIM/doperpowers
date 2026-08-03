@@ -27,11 +27,15 @@ Return JSON: {"lenses": ["...", ...]}`;
 // this a finder that found nothing reads exactly like one that went dark, and
 // extractStubs must call both a failure. It steers rendering only — the sweep
 // stays the lens-free reviewer, because nothing here points its attention.
-// A scalpel's lens is therefore two lines; raw multi-line developer_instructions
-// is live-proven to survive the `-c` carrier intact (specs/2026-07-12-native-
-// review-recovery-design.md, "raw multi-line developer_instructions survives").
+// The sentinel sits ALONE on its own line rather than at the end of a sentence:
+// asked for a line mid-sentence, a model reproduces the sentence's punctuation
+// and its emphasis, and extraction wants the bare line. (extract.mjs canonicalizes
+// the obvious decorations from the other side; this is the cheap half.)
+// Raw multi-line developer_instructions is live-proven to survive the `-c`
+// carrier intact (specs/2026-07-12-native-review-recovery-design.md, "raw
+// multi-line developer_instructions survives").
 const CLEAN_SENTINEL =
-  "If your review finds no issues, end your final message with exactly this line: No material findings.";
+  "If your review finds no issues, end your final message with exactly this line (alone on its own line):\nNo material findings.";
 
 const VERIFIER_SCHEMA = {
   type: "object", required: ["verdicts"],
@@ -74,17 +78,32 @@ function checkPostconditions(verdicts, pool) {
   return errs;
 }
 
-const VERIFIER_PROMPT = (base, pool) =>
+// A candidate id is prefixed with the finder that raised it, so the roster tells
+// the verifier what each reviewer was pointed at. A claim from a mandated lens
+// reads differently from the same claim raised unprompted by the sweep.
+const lensRoster = (finders) => finders
+  .map(({ finderId, mandate }) => `- ${finderId}: ${mandate ?? "(lens-free sweep)"}`)
+  .join("\n");
+
+const VERIFIER_PROMPT = (base, finders, pool) =>
   `You are the binding verifier of a multi-reviewer panel. The candidate findings below came from independent reviewers of the diff against merge-base(HEAD, ${base}) — re-inspect the code yourself before judging. For EVERY candidate id return exactly one verdict: CONFIRMED (you can name the concrete failure) or REFUTED (state why it is wrong or not a real defect). Mark true duplicates with duplicateOf pointing at the strongest formulation, assign priority P0-P3 to confirmed findings, and put your evidence in comment.
 
-Candidates (JSON):
-${JSON.stringify(pool, null, 2)}`;
-
-const REPAIR_PROMPT = (errs, pool) =>
-  `Your verdict set violated the contract: ${errs.join("; ")}. Return the FULL corrected verdicts array covering every candidate id exactly once.
+The reviewers, and the lens each was given (a candidate id carries its reviewer's label):
+${lensRoster(finders)}
 
 Candidates (JSON):
 ${JSON.stringify(pool, null, 2)}`;
+
+// The repair rides a FRESH thread — the engine's agent() opens one per call — so
+// whatever this prompt omits, the repairing verifier does not know: not its
+// role, not the base, not what CONFIRMED means. Its answer is binding when it
+// passes, so it carries the WHOLE contract, with the violation on top.
+const REPAIR_PROMPT = (base, errs, finders, pool) =>
+  `Your verdict set violated the contract: ${errs.join("; ")}. The full contract follows again, unchanged.
+
+${VERIFIER_PROMPT(base, finders, pool)}
+
+Return the FULL corrected verdicts array covering every candidate id exactly once.`;
 
 export default async function run({ agent, review, parallel, log, args }) {
   if (!args?.base) throw new Error("code-review workflow requires args.base");
@@ -147,14 +166,14 @@ export default async function run({ agent, review, parallel, log, args }) {
       model: args.verifierModel ?? "gpt-5.6-sol", effort: args.verifierEffort ?? "high",
       schema: VERIFIER_SCHEMA
     };
-    const attempt = await agent(VERIFIER_PROMPT(base, pool), { ...opts, label: "verifier" }).catch(() => null);
+    const attempt = await agent(VERIFIER_PROMPT(base, finders, pool), { ...opts, label: "verifier" }).catch(() => null);
     const errs = attempt ? checkPostconditions(attempt.verdicts, pool) : ["verifier failed"];
     if (errs.length === 0) verified = attempt.verdicts;
     else {
       log(`verifier postconditions failed: ${errs.join("; ")} — retrying`);
       // A FRESH agent() call, not a resumed thread: content-keyed separately, so
       // a resume never conflates the rejected answer with its replacement.
-      const retry = await agent(REPAIR_PROMPT(errs, pool), { ...opts, label: "verifier-retry" }).catch(() => null);
+      const retry = await agent(REPAIR_PROMPT(base, errs, finders, pool), { ...opts, label: "verifier-retry" }).catch(() => null);
       const errs2 = retry ? checkPostconditions(retry.verdicts, pool) : ["verifier retry failed"];
       verified = errs2.length === 0 ? retry.verdicts : null;
     }

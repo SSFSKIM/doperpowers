@@ -28,6 +28,36 @@ const ORPHAN_TAG_RE = /^[ \t]*(?:[-*]\s*)?\[P[0-3]\]/;
 // produced nothing, which is output loss, not a clean review.
 const NO_FINDINGS_LINES = ["No material findings."];
 
+// A finder told to emit one exact line still routinely decorates it — bolds it,
+// quotes it, drops the period. Under a raw exact-line test each of those turns a
+// genuinely CLEAN review into a failed finder, which the panel reports as an
+// interrupted review. So the candidate line is canonicalized first, by a CLOSED
+// whitelist: these surrounding wrappers, and one trailing period present or
+// absent. Nothing prose-shaped and no substring match — the contract is still
+// "the finder said exactly this line", so "No material findings mentioned."
+// and "There are no material findings." remain what they are: something else.
+const WRAPPERS = [
+  ["**", "**"], ["*", "*"], ["`", "`"], ['"', '"'], ["'", "'"],
+  ["“", "”"], ["‘", "’"]     // smart double / single quotes
+];
+
+function canonicalizeLine(line) {
+  let s = line.trim();
+  for (let peeled = true; peeled; ) {
+    peeled = false;
+    for (const [open, close] of WRAPPERS) {
+      if (s.length > open.length + close.length && s.startsWith(open) && s.endsWith(close)) {
+        s = s.slice(open.length, -close.length).trim();
+        peeled = true;
+        break;
+      }
+    }
+  }
+  return s.endsWith(".") ? s.slice(0, -1) : s;   // exactly ONE period of slack
+}
+
+const NO_FINDINGS_CANONICAL = new Set(NO_FINDINGS_LINES.map(canonicalizeLine));
+
 export function extractStubs(reviewText, finderId) {
   const lines = String(reviewText ?? "").split("\n");
   const stubs = [];
@@ -65,6 +95,6 @@ export function extractStubs(reviewText, finderId) {
 
   if (stubs.length > 0) return { stubs, clean: false, failed: false };
 
-  const clean = lines.some((line) => NO_FINDINGS_LINES.includes(line.trim()));
+  const clean = lines.some((line) => NO_FINDINGS_CANONICAL.has(canonicalizeLine(line)));
   return { stubs, clean, failed: !clean };
 }
