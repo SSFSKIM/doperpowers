@@ -1,0 +1,124 @@
+{
+  "runId": "wf-mscorzkg-7vbjrt",
+  "result": {
+    "verdict": "incorrect",
+    "findings": [
+      {
+        "id": "sweep#1",
+        "priority": "P1",
+        "title": "Release the registry guard before awaiting keyed work",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/keylock.py",
+        "lines": "46-50",
+        "comment": "keylock.py:34-61 holds _guard while awaiting lock.acquire() and throughout yield. A live probe showed key B could not enter while key A was active, and B's 0.01s timeout still had not fired after 0.03s because it was waiting for _guard before reaching wait_for().",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#2",
+        "priority": "P1",
+        "title": "Clear in-flight state when a factory fails",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py",
+        "lines": "130-133",
+        "comment": "cache.py:130-133 removes and signals the event only after factory() and _store() succeed. After a factory raised, inflight() remained 1 and a retry never invoked its factory, confirming that retries and joiners wedge on the orphaned event.",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#3",
+        "priority": "P1",
+        "title": "Check expiry before extending the deadline",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py",
+        "lines": "77-80",
+        "comment": "cache.py:75-80 increments hits and replaces expires_at before testing the prior deadline. With ttl=1 and refresh_after_hits=3, two fresh hits followed by a read at time 2 returned the original value and left the factory call count at one, violating README's freshness contract.",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#4",
+        "priority": "P2",
+        "title": "Apply cache timeouts to in-flight joins",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py",
+        "lines": "110-111",
+        "comment": "cache.py:105-118 awaits pending.wait() before resolving either the per-call timeout or _lock_timeout. A joined call using timeout=0.01 was still pending after 0.03s behind a blocked producer.",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#5",
+        "priority": "P2",
+        "title": "Update hit-rate consumers with the counter rename",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py",
+        "lines": "127-129",
+        "comment": "cache.py produces cache.get.hit, cache.get.hit_after_wait, and cache.get.miss, while jobqueue.py:202-210 reads cache.hit, cache.hit_after_wait, and cache.miss. After a real miss the snapshot contained cache.get.miss=1, but cache_hit_rate() returned 1.0 and warm_stale_keys() refreshed zero candidates.",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Scrutinize failure and cancellation cleanup for per-key inflight computations. Ensure joiners wake and retries can proceed after a factory fails.",
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Verify that `KeyedLock` still permits concurrency across different keys. Check that its timeout covers the full wait.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Check sliding-expiry ordering so an access cannot renew an already expired cache entry.",
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Trace the renamed cache metrics through hit-rate and warm-up logic. Ensure every producer and consumer uses the same counter names.",
+        "status": "ok",
+        "stubs": 5
+      }
+    ],
+    "lenses": [
+      "Scrutinize failure and cancellation cleanup for per-key inflight computations. Ensure joiners wake and retries can proceed after a factory fails.",
+      "Verify that `KeyedLock` still permits concurrency across different keys. Check that its timeout covers the full wait.",
+      "Check sliding-expiry ordering so an access cannot renew an already expired cache entry.",
+      "Trace the renamed cache metrics through hit-rate and warm-up logic. Ensure every producer and consumer uses the same counter names."
+    ],
+    "explanation": "confirmed: Release the registry guard before awaiting keyed work; Clear in-flight state when a factory fails; Check expiry before extending the deadline"
+  },
+  "agents": 7,
+  "durationMs": 620767
+}

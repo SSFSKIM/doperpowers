@@ -506,9 +506,50 @@ truth set for one frozen diff.
   `adversarial-review` positional focus, so the F3-validated mechanism
   had silently fallen out of production use at the bundle migration.
 
+- (2026-08-03, first LIVE run) The API's structured-output mode is a
+  STRICTER dialect than JSON Schema, and both panel schemas violated it:
+  every object must carry `additionalProperties: false`, and `required`
+  must name every property the object declares (so an optional field is
+  a required one whose type admits null). The very first live turn died
+  400 `invalid_json_schema` before the model ran. No mock test could
+  have caught it — the mock never validates a schema server-side, and
+  the engine's own validator was the only check the fixtures met. Fixed
+  both schemas, taught the engine validator union `type`, documented the
+  contract in `references/workflows.md`, and pinned all of it in
+  `test-panel-flow.sh`. Lesson for the rest of the engine: a contract
+  that only a remote service enforces is unvalidated until a live run,
+  however green the mock suite is.
+- (2026-08-03, X1 live gate) The panel's ONE false positive is a
+  candidate three previous engines also raised and all three of THEIR
+  verifiers refuted (case3's "unbounded export", which the fixture's own
+  docstring declares to be the endpoint's purpose). The panel's finders
+  ran at xhigh and its verifier at high. That is a direct argument for
+  Open Question 2's verifier-effort escalation: with recall-biased
+  finders, the verifier is the only stage between a plausible candidate
+  and a published finding, so it is the wrong one to economize on.
+- (2026-08-03, X1 live gate) The clean sentinel — the thing every
+  `correct` verdict depends on — was NOT exercised by the run. All 22
+  finder lanes across the five cases found something, so no lane ever
+  had to render a clean review. Live validation of the sentinel still
+  needs a deliberately clean diff.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**X1 quality gate: PASS** (run-id `2026-08-03-panel-x1`, five seeded
+cases live, sequential).
+
+| engine | seeded recall | FP | promoted | full 20 |
+|---|---|---|---|---|
+| codex baseline `2026-07-26-c2-codex-r3` (single review, sol/xhigh) | 17/17 | 0 | 3/3 | 20/20 |
+| **review panel** (sweep + 3–4 scalpels at sol/xhigh, verifier sol/high) | **17/17** | **1** | **3/3** | **20/20** |
+
+The predeclared bar was recall ≥ baseline AND FP ≤ baseline + 1: met,
+with the FP allowance fully spent. Per case 417–714 s and 6–7 workers;
+22 finder lanes all reported (no dead worker, no extraction failure);
+the verifier's postconditions held first try in all five cases, so the
+repair retry never fired live. Full adjudication mapping, the scoring
+sensitivity, and the two new fixture follow-ups are in
+`tests/review-bench/results/2026-08-03-panel-x1/`.
 
 ## Revision Notes
 

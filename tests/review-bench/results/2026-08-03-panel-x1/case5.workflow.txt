@@ -1,0 +1,39 @@
+panel verdict: incorrect
+explanation: confirmed: Release the registry guard before awaiting keyed work; Clear in-flight state when a factory fails; Check expiry before extending the deadline
+run: runId=wf-mscorzkg-7vbjrt agents=7 durationMs=620767
+
+derived lenses (4):
+  scalpel-1: Scrutinize failure and cancellation cleanup for per-key inflight computations. Ensure joiners wake and retries can proceed after a factory fails.
+  scalpel-2: Verify that `KeyedLock` still permits concurrency across different keys. Check that its timeout covers the full wait.
+  scalpel-3: Check sliding-expiry ordering so an access cannot renew an already expired cache entry.
+  scalpel-4: Trace the renamed cache metrics through hit-rate and warm-up logic. Ensure every producer and consumer uses the same counter names.
+
+coverage (5/5 ok):
+  sweep: status=ok stubs=5 lens=(lens-free sweep)
+  scalpel-1: status=ok stubs=5 lens=Scrutinize failure and cancellation cleanup for per-key inflight computations. Ensure joiners wake and retries can proceed after a factory fails.
+  scalpel-2: status=ok stubs=6 lens=Verify that `KeyedLock` still permits concurrency across different keys. Check that its timeout covers the full wait.
+  scalpel-3: status=ok stubs=5 lens=Check sliding-expiry ordering so an access cannot renew an already expired cache entry.
+  scalpel-4: status=ok stubs=5 lens=Trace the renamed cache metrics through hit-rate and warm-up logic. Ensure every producer and consumer uses the same counter names.
+
+Full review comments (5):
+
+- [P1] Release the registry guard before awaiting keyed work — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/keylock.py:46-50
+  keylock.py:34-61 holds _guard while awaiting lock.acquire() and throughout yield. A live probe showed key B could not enter while key A was active, and B's 0.01s timeout still had not fired after 0.03s because it was waiting for _guard before reaching wait_for().
+  (raised by: sweep, scalpel-1, scalpel-2, scalpel-3, scalpel-4)
+
+- [P1] Clear in-flight state when a factory fails — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py:130-133
+  cache.py:130-133 removes and signals the event only after factory() and _store() succeed. After a factory raised, inflight() remained 1 and a retry never invoked its factory, confirming that retries and joiners wedge on the orphaned event.
+  (raised by: sweep, scalpel-1, scalpel-2, scalpel-3, scalpel-4)
+
+- [P1] Check expiry before extending the deadline — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py:77-80
+  cache.py:75-80 increments hits and replaces expires_at before testing the prior deadline. With ttl=1 and refresh_after_hits=3, two fresh hits followed by a read at time 2 returned the original value and left the factory call count at one, violating README's freshness contract.
+  (raised by: sweep, scalpel-1, scalpel-2, scalpel-3, scalpel-4)
+
+- [P2] Apply cache timeouts to in-flight joins — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py:110-111
+  cache.py:105-118 awaits pending.wait() before resolving either the per-call timeout or _lock_timeout. A joined call using timeout=0.01 was still pending after 0.03s behind a blocked producer.
+  (raised by: sweep, scalpel-1, scalpel-2, scalpel-3, scalpel-4)
+
+- [P2] Update hit-rate consumers with the counter rename — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.fP3U4C/cache.py:127-129
+  cache.py produces cache.get.hit, cache.get.hit_after_wait, and cache.get.miss, while jobqueue.py:202-210 reads cache.hit, cache.hit_after_wait, and cache.miss. After a real miss the snapshot contained cache.get.miss=1, but cache_hit_rate() returned 1.0 and warm_stale_keys() refreshed zero candidates.
+  (raised by: sweep, scalpel-1, scalpel-2, scalpel-3, scalpel-4)
+

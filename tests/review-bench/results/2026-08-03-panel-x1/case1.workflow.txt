@@ -1,0 +1,33 @@
+panel verdict: incorrect
+explanation: confirmed: Subtract allowed lateness from each tenant watermark; Clear accumulated windows when flushing each batch; Load tenant configuration once per run
+run: runId=wf-mscnewwm-cihd8d agents=6 durationMs=519309
+
+derived lenses (3):
+  scalpel-1: Scrutinize the per-tenant watermark cutoff arithmetic and boundary behavior for allowed lateness.
+  scalpel-2: Trace the aggregator flush contract across batches, especially window retirement, duplicate output, and retained memory.
+  scalpel-3: Examine per-reading tenant configuration loading for repeated I/O, malformed configuration handling, and consistent fallback behavior.
+
+coverage (4/4 ok):
+  sweep: status=ok stubs=3 lens=(lens-free sweep)
+  scalpel-1: status=ok stubs=3 lens=Scrutinize the per-tenant watermark cutoff arithmetic and boundary behavior for allowed lateness.
+  scalpel-2: status=ok stubs=2 lens=Trace the aggregator flush contract across batches, especially window retirement, duplicate output, and retained memory.
+  scalpel-3: status=ok stubs=4 lens=Examine per-reading tenant configuration loading for repeated I/O, malformed configuration handling, and consistent fallback behavior.
+
+Full review comments (4):
+
+- [P1] Subtract allowed lateness from each tenant watermark — /var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.J1BsCs/windows.py:70-70
+  The documented rule is to reject timestamps further behind the tenant watermark than allowed_lateness. Thus watermark 100 and allowance 30 yields cutoff 70, with timestamp 70 accepted because the comparison is strict <; windows.py:70 instead computes 130 and rejects both 70 and newer timestamp 110.
+  (raised by: scalpel-1, sweep, scalpel-2, scalpel-3)
+
+- [P1] Clear accumulated windows when flushing each batch — /var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.J1BsCs/aggregate.py:85-87
+  aggregate.py:85-87 promises to emit and retire but only snapshots. Because pipeline.py:50 reuses the same aggregator across paths, already-emitted windows remain open, are emitted again, absorb later readings into prior-batch totals, and accumulate for the full backfill.
+  (raised by: scalpel-1, sweep, scalpel-2, scalpel-3)
+
+- [P2] Load tenant configuration once per run — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.J1BsCs/pipeline.py:39-40
+  summarize_files calls load_tenant_limits inside the reading loop, and that function opens and parses tenants.json each time. Besides O(readings) I/O, this means readings within one invocation can use different limits if the file changes mid-run instead of one consistent configuration snapshot.
+  (raised by: scalpel-3, sweep, scalpel-1)
+
+- [P2] Validate tenant configuration before lookup — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.J1BsCs/tenants.py:41-48
+  tenants.py:41-48 assumes both the root and selected entry are mappings and converts max_value without type or finiteness validation. Direct checks show a list root and null default raise incidental AttributeError, while max_value NaN becomes float nan; pipeline.py:41 then evaluates every value > nan as false, silently disabling clipping.
+  (raised by: scalpel-3)
+
