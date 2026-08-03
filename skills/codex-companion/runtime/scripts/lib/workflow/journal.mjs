@@ -215,11 +215,51 @@ export function repoFingerprint(cwd, extraPaths = []) {
   // --submodule=diff: for an UNCHANGED submodule commit, plain `git diff HEAD`
   // reduces every distinct dirty submodule working tree to the same `-dirty`
   // marker, and the parent's untracked list never names files inside it.
-  const diff = run(["diff", "HEAD", "--submodule=diff"]);
+  // --ignore-submodules=none: `submodule.<name>.ignore` (from .gitmodules or the
+  // local config) and `diff.ignoreSubmodules` drop the submodule section of the
+  // diff ENTIRELY, so without this override the line above does nothing in
+  // exactly the repositories that opted out of seeing submodule dirt.
+  const diff = run(["diff", "HEAD", "--submodule=diff", "--ignore-submodules=none"]);
   const untracked = run(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).sort();
   const untrackedHashes = untracked.map((f) => {
     try { return f + ":" + execFileSync("git", ["hash-object", "--", f], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
     catch { return f + ":unreadable"; }
   });
-  return digest([root, head, diff, untrackedHashes.join("\n"), hashExtras().join("\n")]);
+  return digest([
+    root, head, diff, untrackedHashes.join("\n"),
+    submoduleUntracked(cwd, run).join("\n"), hashExtras().join("\n")
+  ]);
+}
+
+// A submodule's UNTRACKED files are in neither read above: `--submodule=diff`
+// diffs tracked content only, and the parent's `ls-files --others` does not
+// descend into a submodule. Two brand-new files inside one therefore produced
+// identical parent fingerprints. One `submodule status --recursive` pass names
+// every initialized submodule; each is then asked for its own untracked blobs.
+// Bounded on purpose: an uninitialized submodule (`-` status) has no working
+// tree to read, and a submodule that cannot be read at all is recorded as such
+// rather than silently contributing nothing.
+function submoduleUntracked(cwd, run) {
+  let status;
+  try { status = run(["submodule", "status", "--recursive"]); } catch { return []; }
+  const out = [];
+  for (const line of status.split("\n")) {
+    // " <sha> <path> (<describe>)" — the leading char is the state, and the
+    // optional trailing parenthetical is why the path is matched non-greedily.
+    const m = /^([ +\-U])[0-9a-f]+ (.+?)(?: \(.*\))?$/.exec(line);
+    if (!m || m[1] === "-") continue;                 // "-": not initialized, no work tree
+    const subPath = m[2];
+    const subDir = path.resolve(cwd, subPath);
+    const sub = (args) =>
+      execFileSync("git", ["-C", subDir, ...args], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
+    let files;
+    try { files = sub(["ls-files", "--others", "--exclude-standard"]); }
+    catch { out.push(`${subPath}:unreadable`); continue; }
+    for (const f of files.split("\n").filter(Boolean).sort()) {
+      let blob;
+      try { blob = sub(["hash-object", "--", f]).trim(); } catch { blob = "unreadable"; }
+      out.push(`${subPath}/${f}:${blob}`);
+    }
+  }
+  return out;
 }

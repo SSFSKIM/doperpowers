@@ -212,4 +212,51 @@ assert.notEqual(
   repoFingerprint(parent), subA,
   "fingerprint blind to dirty submodule CONTENT — both states are just `-dirty` to the parent"
 );
+
+// `submodule.<name>.ignore` (in .gitmodules or the local config) and
+// `diff.ignoreSubmodules` suppress the submodule section of `git diff`
+// ENTIRELY — so the content diff above disappears exactly in the repositories
+// that configured themselves to ignore submodule dirt. `--ignore-submodules=none`
+// is what overrides both.
+git(parent, ["config", "submodule.sub.ignore", "all"]);
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "dirty-C");
+const ignoredC = repoFingerprint(parent);
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "dirty-D");
+assert.notEqual(
+  repoFingerprint(parent), ignoredC,
+  "submodule.<name>.ignore silences the submodule diff, and with it the whole guard"
+);
+git(parent, ["config", "--unset", "submodule.sub.ignore"]);
+git(parent, ["config", "diff.ignoreSubmodules", "all"]);
+const ignoredD = repoFingerprint(parent);
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "dirty-E");
+assert.notEqual(
+  repoFingerprint(parent), ignoredD,
+  "diff.ignoreSubmodules silences the submodule diff, and with it the whole guard"
+);
+git(parent, ["config", "--unset", "diff.ignoreSubmodules"]);
+
+// An UNTRACKED file inside a submodule is in NEITHER read: `--submodule=diff`
+// diffs tracked content only, and the parent's `ls-files --others` does not
+// descend into a submodule. Two different new files there used to be one
+// fingerprint.
+fs.writeFileSync(path.join(parent, "sub", "s.txt"), "one");        // submodule clean again
+const subClean = repoFingerprint(parent);
+fs.writeFileSync(path.join(parent, "sub", "u.txt"), "X");
+const subU1 = repoFingerprint(parent);
+assert.notEqual(subU1, subClean, "an untracked file inside a submodule is invisible to the fingerprint");
+fs.writeFileSync(path.join(parent, "sub", "u.txt"), "Y");
+assert.notEqual(
+  repoFingerprint(parent), subU1,
+  "two different untracked CONTENTS inside a submodule compare equal"
+);
+fs.rmSync(path.join(parent, "sub", "u.txt"));
+fs.writeFileSync(path.join(parent, "sub", "v.txt"), "X");
+assert.notEqual(
+  repoFingerprint(parent), subU1,
+  "two different untracked FILENAMES inside a submodule compare equal"
+);
+fs.rmSync(path.join(parent, "sub", "v.txt"));
+assert.equal(repoFingerprint(parent), subClean, "a submodule returned to clean is the clean fingerprint again");
+
 console.log("test-journal: ok");
