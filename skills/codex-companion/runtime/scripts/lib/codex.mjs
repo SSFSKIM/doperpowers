@@ -559,6 +559,33 @@ function applyTurnNotification(state, message) {
   }
 }
 
+// An app-server can die AFTER the start request has returned. By then there is
+// no outstanding RPC left for handleExit to reject, and state.completion is only
+// ever settled by a turn notification that will now never arrive: the leaf, the
+// semaphore slot it holds and the whole workflow wait forever. The exit IS the
+// answer — fail the turn so the engine's transport retry gets its one attempt
+// and the slot comes back.
+const EXIT_DRAIN_MS = 50;
+
+async function completionLostToExit(client, state) {
+  await client.exitPromise;
+  // Lines that were already in the pipe when the process exited can still be
+  // delivered after the exit event; give them a tick. If the completion lands in
+  // that window it simply wins the race below, and nothing here matters.
+  await new Promise((resolve) => setTimeout(resolve, EXIT_DRAIN_MS));
+  if (state.completed) {
+    return state.completion;
+  }
+  // A turn whose final answer already arrived with nothing outstanding is the
+  // completion the inference timer was about to make anyway — the server going
+  // away afterwards does not un-answer it.
+  if (state.finalAnswerSeen && state.pendingCollaborations.size === 0 && state.activeSubagentTurns.size === 0) {
+    completeTurn(state, null, { inferred: true });
+    return state.completion;
+  }
+  throw client.exitError ?? new Error("codex app-server exited before the turn completed.");
+}
+
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
@@ -606,7 +633,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       completeTurn(state, response.turn);
     }
 
-    return await state.completion;
+    return await Promise.race([state.completion, completionLostToExit(client, state)]);
   } finally {
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);

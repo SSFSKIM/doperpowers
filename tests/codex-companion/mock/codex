@@ -2,7 +2,7 @@
 // Mock codex app-server. Speaks the REAL JSON-RPC-over-stdio shapes
 // (derived from lib/codex.mjs captureTurn + app-server.mjs — see the
 // PROTOCOL notes below). Controlled by CODEX_MOCK_DIR:
-//   scenario.json  { turns: [ {finalMessage|finalRaw|die|hangMs|reviewText|turnStatus}... ],
+//   scenario.json  { turns: [ {finalMessage|finalRaw|die|dieMidTurn|hangMs|reviewText|turnStatus}... ],
 //                    byLens: { "<developer_instructions prefix>": {same behavior} } }
 //                  `turns` is consumed in global order via a counter file (mkdir
 //                  lock); turnStatus: "failed" ⇒ emit turn/completed with the
@@ -208,6 +208,15 @@ rl.on("line", (line) => {
     });
     if (threadId !== sourceThreadId) {
       send({ method: "thread/started", params: { thread: { id: threadId, name: null } } });
+    }
+
+    // dieMidTurn: the start request is ANSWERED and the server then dies. No
+    // pending RPC is left for the client's exit handler to reject, and the turn
+    // notification that would settle the capture never comes — the case where a
+    // leaf waits forever. The delay lets the response reach the pipe first.
+    if (b.dieMidTurn) {
+      setTimeout(() => process.exit(1), 50);
+      return;
     }
 
     const finish = () => {
