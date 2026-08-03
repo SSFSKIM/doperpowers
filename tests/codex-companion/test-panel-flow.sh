@@ -30,6 +30,9 @@ source "$HERE/lib-mock.sh"
 
 PANEL="$REPO_ROOT/skills/codex-companion/workflows/code-review.mjs"
 FIXTURES="$HERE/fixtures/review-texts"
+# Every case rebuilds PATH from this, so a case that puts its own `codex` shim in
+# front (mid_run_git) cannot leak that shim into the cases after it.
+ORIG_PATH="$PATH"
 fail=0
 scratches=()
 scratch=""
@@ -63,6 +66,7 @@ trap cleanup EXIT
 
 new_case() { # name scenario-json
   echo "-- case: $1"
+  PATH="$ORIG_PATH"
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/codex-panel-$1-XXXXXX")"
   # TMPDIR usually ends in a slash; `tr -s` rather than a bash replacement
   # because bash 3.2 keeps the backslash from a `\/` replacement string.
@@ -86,6 +90,30 @@ resume_panel() { # args-json run-id → rc in $rc, stdout in $scratch/out2.json
   rc=0
   node "$RUNTIME" workflow --script "$PANEL" --args "$1" --cwd "$repo" --resume "$2" \
     > "$scratch/out2.json" 2> "$scratch/err2.log" || rc=$?
+}
+
+# Move a ref WHILE the panel runs — the only event the pin exists to catch, and
+# not something a scenario file can express. A `codex` shim in front of the mock
+# runs the git command once, on the first APP-SERVER spawn of the run: that is
+# the deriver's worker, which the panel starts after it has pinned and before any
+# finder has resolved a target of its own. The availability probes (`--version`,
+# `--help`) run before the script does, so they are deliberately not the trigger.
+# Every later codex, and every probe, is the ordinary mock.
+mid_run_git() { # git-args...
+  mkdir -p "$scratch/shim"
+  {
+    printf '#!/usr/bin/env bash\n'
+    # app-server as the LAST argument is a real server spawn; the availability
+    # probe (`app-server --help`, run before the workflow script starts, so
+    # before the pin exists) has it in the middle and must not trigger.
+    printf 'if [ "${!#}" = app-server ] && mkdir %q 2>/dev/null; then\n' "$scratch/shim.once"
+    printf '  git -C %q -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false' "$repo"
+    printf ' %s >%q 2>&1\n' "$*" "$scratch/shim-git.log"
+    printf 'fi\n'
+    printf 'exec %q "$@"\n' "$HERE/mock/codex"
+  } > "$scratch/shim/codex"
+  chmod +x "$scratch/shim/codex"
+  export PATH="$scratch/shim:$PATH"
 }
 
 turn_count() {
@@ -441,11 +469,11 @@ assert_eq "a verified panel does not carry the raw candidate pool" "null" \
 
 # ---------------------------------------------------------------------------
 # 1b. A base whose merge base does not exist — here two unrelated histories, but
-#     a ref that names nothing in this checkout lands the same way. The pin is an
-#     optimization of cache identity, never a precondition: the panel runs
-#     exactly as it did before pinning, the deriver is told to resolve the range
-#     itself, and the loss is said out loud rather than papered over with a
-#     commit nobody resolved.
+#     a ref that names nothing in this checkout lands the same way. The pin is a
+#     PRECONDITION, not an optimization: every prompt, and the drift gate at the
+#     end, is stated in terms of the pinned commit, so a panel that ran unpinned
+#     could answer `correct` about a diff nobody ever established. The round ends
+#     before a worker is paid for, and the base that could not be pinned is named.
 # ---------------------------------------------------------------------------
 new_case unpinnable-base "$(scenario \
   "$(msg_turn '{"lenses":[]}')" \
@@ -456,13 +484,15 @@ git -C "$repo" -c user.email=t@example.com -c user.name=t \
 git -C "$repo" checkout -q main
 run_panel '{"base":"unrelated"}'
 [ "$rc" -eq 0 ] || cat "$scratch/err.log"
-assert_eq "an unpinnable base costs the panel nothing: deriver + sweep" "0:2" "$(rc_and_turns)"
-turn_field 0 '.params.input[0].text' > "$scratch/prompt.txt"
-assert_contains "the unpinned deriver resolves the range itself, as it always did" \
-  "$scratch/prompt.txt" 'git diff $(git merge-base HEAD unrelated) --stat'
+assert_eq "an unpinnable base spends nothing at all — not even the deriver" "0:0" "$(rc_and_turns)"
+assert_eq "a panel with no established target never calls the diff clean" "interrupted" "$(verdict)"
+explanation > "$scratch/expl.txt"
+assert_contains "the interrupted panel names the base it could not resolve" "$scratch/expl.txt" \
+  "base unrelated could not be resolved to a merge-base commit"
+assert_eq "no lane is reported, because no lane ran" "[]" "$(coverage_rows)"
+assert_eq "nothing is published by a panel that never reviewed anything" "0" "$(finding_count)"
 assert_contains "the run says the base could not be pinned" "$scratch/err.log" \
-  "panel base unrelated could not be resolved to a commit"
-assert_eq "an unpinned panel still reaches its verdict" "correct" "$(verdict)"
+  "panel base unrelated could not be resolved to a merge-base commit"
 
 # ---------------------------------------------------------------------------
 # 1c. Why the pin exists, end to end: a RESUME taken after the merge base moved.
@@ -513,6 +543,84 @@ assert_contains "the resumed deriver is told the new range" "$scratch/prompt2.tx
 assert_absent "the resumed deriver is a live call, not a cache hit" \
   "$scratch/err2.log" "cache agent:lens-deriver"
 assert_contains "the resumed deriver really ran" "$scratch/err2.log" "start agent:lens-deriver"
+
+# ---------------------------------------------------------------------------
+# 1d. The feature tip moves mid-panel. This is the drift NOTHING else catches:
+#     the engine keys a review leaf on merge-base..tip-of-the-base-branch
+#     (journal.mjs reviewTargetCommit), and a commit added to the branch under
+#     review moves neither, so every leaf resolves the same key before and after
+#     and passes. The finders are honest — they reviewed whatever HEAD was when
+#     each of them read it — but the panel can no longer say WHICH revision they
+#     read, so it may not assert a verdict about "this diff" at all.
+# ---------------------------------------------------------------------------
+new_case head-drift "$(scenario \
+  "$(msg_turn '{"lenses":[]}')" \
+  "$(review_turn "$CLEAN_TEXT")")"
+git -C "$repo" checkout -q -b work
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m work
+head_before="$(git -C "$repo" rev-parse HEAD)"
+base_before="$(git -C "$repo" merge-base main HEAD)"
+mid_run_git commit -q --allow-empty -m mid-panel
+run_panel '{"base":"main"}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "the mid-panel commit really landed" "false" \
+  "$([ "$(git -C "$repo" rev-parse HEAD)" = "$head_before" ] && echo true || echo false)"
+assert_eq "the merge base never moved — this is HEAD drift alone" "$base_before" \
+  "$(git -C "$repo" merge-base main HEAD)"
+assert_eq "the panel still spends its deriver and its sweep" "0:2" "$(rc_and_turns)"
+# The engine saw nothing: the sweep completed and its lane is fully covered. The
+# loss is the panel's own to notice.
+assert_eq "no leaf failed — every lane reports ok" \
+  '[{"finder":"sweep","lens":null,"status":"ok","stubs":0}]' "$(coverage_rows)"
+assert_eq "a panel whose HEAD moved under it cannot call the diff clean" "interrupted" "$(verdict)"
+explanation > "$scratch/expl.txt"
+assert_contains "the explanation names the tip that moved, and where it moved from" \
+  "$scratch/expl.txt" "HEAD was $head_before, is now $(git -C "$repo" rev-parse HEAD)"
+assert_absent "a merge base that held still is not reported as drift" "$scratch/expl.txt" "merge base was"
+assert_contains "the explanation says what the panel is withholding" "$scratch/expl.txt" \
+  "no verdict about this diff can be asserted"
+
+# ---------------------------------------------------------------------------
+# 1e. The BASE moves mid-panel, before any finder resolved its own target: every
+#     leaf then agrees with every other leaf and all of them disagree with the
+#     commit the panel pinned and derived its lenses from. The engine's per-leaf
+#     check passes for exactly that reason — it compares a leaf against itself.
+#     A confirmed finding rides this case, because interrupted withholds the
+#     panel's claim of a verdict, never the evidence it collected.
+# ---------------------------------------------------------------------------
+CONFIRM_SWEEP_DRIFT='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"the destination lane is charged"}]}'
+new_case base-drift "$(scenario \
+  "$(msg_turn '{"lenses":[]}')" \
+  "$(review_turn "$ONE_A")" \
+  "$(msg_turn "$CONFIRM_SWEEP_DRIFT")")"
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m "second on main"
+git -C "$repo" checkout -q -b work
+git -C "$repo" -c user.email=t@example.com -c user.name=t \
+  -c commit.gpgsign=false commit -q --allow-empty -m work
+root_commit="$(git -C "$repo" rev-list --max-parents=0 HEAD)"
+fork_commit="$(git -C "$repo" merge-base main HEAD)"
+mid_run_git branch -f main "$root_commit"
+run_panel '{"base":"main"}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "the base really moved back behind the fork point" "$root_commit" \
+  "$(git -C "$repo" merge-base main HEAD)"
+assert_eq "the moved base costs no lane: deriver, sweep, verifier" "0:3" "$(rc_and_turns)"
+turn_field 0 '.params.input[0].text' > "$scratch/prompt.txt"
+assert_contains "the lenses were derived against the range the panel pinned" \
+  "$scratch/prompt.txt" "$fork_commit"
+assert_eq "the sweep reviewed the moved range without the engine noticing" \
+  '[{"finder":"sweep","lens":null,"status":"ok","stubs":1}]' "$(coverage_rows)"
+assert_eq "a confirmed finding does not buy a verdict about a diff that moved" \
+  "interrupted" "$(verdict)"
+assert_eq "the evidence is kept even though the claim is withheld" \
+  "sweep#1/P1[sweep] Charge the handoff to the source lane" "$(findings_lines)"
+explanation > "$scratch/expl.txt"
+assert_contains "the explanation names the merge base that moved" "$scratch/expl.txt" \
+  "merge base was $fork_commit, is now $root_commit"
+assert_contains "the confirmed findings are marked as partial evidence" "$scratch/expl.txt" \
+  "1 confirmed finding(s) attached as partial evidence"
 
 # ---------------------------------------------------------------------------
 # 2. Caller bypass: `args.lenses` spends no deriver turn and is passed through.

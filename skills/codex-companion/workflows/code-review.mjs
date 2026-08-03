@@ -13,10 +13,12 @@ export const meta = { name: "code-review", description: "Multi-lens codex review
 // the process cwd, the process cwd when neither is given (codex-companion.mjs
 // resolveCommandCwd). Read off argv rather than taken as an arg because a second
 // declaration is one more thing that can disagree with what the workers got.
-// Used for exactly ONE thing — resolving the base commit below — and never
-// handed to a worker: under a driver other than the verb this can guess wrong,
-// and a wrong guess must cost a prompt line and a cache key, never send every
-// reviewer at the wrong repository.
+// Used for exactly ONE thing — resolving the panel's pin below, and re-reading
+// it at the end — and never handed to a worker: under a driver other than the
+// verb this can guess wrong, and a wrong guess must cost this panel its own run,
+// never send every reviewer at the wrong repository. A guess that names no
+// repository resolves no base, and the panel then refuses the round rather than
+// reviewing a range it cannot state.
 function verbCwd() {
   let raw = null;
   for (let i = 0; i < process.argv.length; i += 1) {
@@ -28,16 +30,39 @@ function verbCwd() {
   return raw === null ? process.cwd() : path.resolve(process.cwd(), raw);
 }
 
-// The base ref resolved to the commit the reviewers are actually keyed on:
-// `git merge-base <base> HEAD` is the same command the engine journals a review
-// call under (workflow/journal.mjs reviewTargetCommit), so the pin and the
-// reviews move together or not at all. null when it cannot be resolved — an
-// unrelated history, a ref that names nothing here, a cwd that is not a
-// repository — and the panel then runs exactly as it did before pinning.
-function resolveBaseCommit(cwd, base) {
-  const out = spawnSync("git", ["-C", cwd, "merge-base", base, "HEAD"], { encoding: "utf8" });
+// The commit a git query resolves to here, or null when it resolves to nothing —
+// an unrelated history, a ref that names nothing in this checkout, a cwd that is
+// not a repository.
+function gitCommit(cwd, args) {
+  const out = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   const sha = out.status === 0 ? String(out.stdout ?? "").trim() : "";
   return /^[0-9a-f]{7,64}$/.test(sha) ? sha : null;
+}
+
+// The panel's review target as two commits, both of which the diff under review
+// depends on. `git merge-base <base> HEAD` is half of what the engine journals a
+// review call under (workflow/journal.mjs reviewTargetCommit), so that half of
+// the pin and the reviews move together or not at all. HEAD is pinned beside it
+// because NOTHING else watches it: the engine's per-leaf identity is
+// merge-base..tip-of-the-base-branch, and a commit added to the feature branch
+// mid-panel leaves both of those alone while changing the diff every later
+// finder reads.
+const resolvePin = (cwd, base) => ({
+  baseCommit: gitCommit(cwd, ["merge-base", base, "HEAD"]),
+  headCommit: gitCommit(cwd, ["rev-parse", "HEAD"])
+});
+
+// What moved since the pin, said in words, or null when the target held still.
+// The engine already fails an individual review leaf whose target moves mid-leaf;
+// this is the panel-level window it cannot see — a ref that moves between the pin
+// and a leaf's key, or between the last leaf and the assembly.
+function pinDrift(cwd, base, pin) {
+  const now = resolvePin(cwd, base);
+  const moved = [];
+  const say = (what, was, is) => `${what} was ${was}, is now ${is ?? "unresolvable"}`;
+  if (now.baseCommit !== pin.baseCommit) moved.push(say("merge base", pin.baseCommit, now.baseCommit));
+  if (now.headCommit !== pin.headCommit) moved.push(say("HEAD", pin.headCommit, now.headCommit));
+  return moved.length === 0 ? null : `the review target moved while the panel ran (${moved.join("; ")})`;
 }
 
 // The range every prompt in this panel names. A ref MOVES, and only half the
@@ -48,9 +73,8 @@ function resolveBaseCommit(cwd, base) {
 // diff, aimed at another. Writing the resolved commit into the text is what puts
 // it in that cache identity, and it also stops the deriver and the verifier from
 // each re-resolving a range that must not drift between the panel's own workers.
-const rangeOf = (base, commit) => commit
-  ? `${commit} (merge-base(HEAD, ${base}), resolved once at panel start)`
-  : `merge-base(HEAD, ${base})`;
+const rangeOf = (base, commit) =>
+  `${commit} (merge-base(HEAD, ${base}), resolved once at panel start)`;
 
 // The panel's mandate cap is the owner's, not the model's: it binds the derived
 // lenses and a caller's `args.lenses` alike.
@@ -67,7 +91,7 @@ const DERIVER_SCHEMA = {
   properties: { lenses: { type: "array", items: { type: "string" } } }
 };
 
-const DERIVER_PROMPT = (base, commit) => `You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf(base, commit)} and HEAD in this repository. Run \`git diff ${commit ?? `$(git merge-base HEAD ${base})`} --stat\` and skim the largest hunks with \`git diff\`.
+const DERIVER_PROMPT = (base, commit) => `You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf(base, commit)} and HEAD in this repository. Run \`git diff ${commit} --stat\` and skim the largest hunks with \`git diff\`.
 
 Write between 0 and 5 scalpel lens mandates. Each mandate is AT MOST TWO SIMPLE SENTENCES naming one structural risk surface of THIS diff (example of the calibre required: "Pay attention to authorization and actor-identity assumptions in the changed API routes."). A separate lens-free reviewer already sweeps everything, so a mandate must earn its slot: fewer, sharper mandates beat coverage padding — a small single-concern diff deserves zero or one. Consider, only where this diff actually raises them: changed-logic accuracy, cross-file contract impact, behavior lost with removed/moved code, security surface, performance/resources.
 
@@ -172,13 +196,26 @@ export default async function run({ agent, review, parallel, log, args }) {
   const finderModel  = args.finderModel  ?? "gpt-5.6-sol";
   const finderEffort = args.finderEffort ?? "xhigh";
 
-  // Once, before any worker: every prompt below names this commit, so the whole
-  // panel — deriver, finders, verifier — is talking about one range even if the
-  // ref moves while it runs.
-  const baseCommit = resolveBaseCommit(verbCwd(), base);
-  log(baseCommit
-    ? `panel base ${base} pinned at ${baseCommit}`
-    : `panel base ${base} could not be resolved to a commit; the panel runs unpinned`);
+  // Once, before any worker: every prompt below names the pinned base commit, so
+  // the whole panel — deriver, finders, verifier — is talking about one range
+  // even if the ref moves while it runs, and the assembly at the bottom re-reads
+  // the pair to find out whether it did.
+  const cwd = verbCwd();
+  const pin = resolvePin(cwd, base);
+  // A panel that cannot name its target cannot review it. Everything downstream
+  // is stated in terms of the pinned commit — the deriver's range, the verifier's
+  // re-inspection, the drift gate — and a run that proceeds without one can still
+  // reach `correct`: a clean bill of health for a diff nobody ever established.
+  // That is the one answer this panel must never produce, so an unresolvable base
+  // ends the round here, before a single worker is paid for.
+  if (!pin.baseCommit) {
+    const explanation =
+      `base ${base} could not be resolved to a merge-base commit in ${cwd}; the panel has no target to review`;
+    log(`panel ${explanation}`);
+    return { verdict: "interrupted", findings: [], coverage: [], lenses: [], explanation };
+  }
+  const baseCommit = pin.baseCommit;
+  log(`panel base ${base} pinned at ${baseCommit} (HEAD ${pin.headCommit})`);
 
   let lenses = args.lenses;
   if (!Array.isArray(lenses)) {
@@ -254,13 +291,20 @@ export default async function run({ agent, review, parallel, log, args }) {
   // verdict is still allowed to stand on top of.
   const sweepDead = coverage.find((c) => c.finder === "sweep" && c.status !== "ok");
   const lostLenses = coverage.filter((c) => c.status !== "ok");
+  // The pin, re-read now that every worker is done. Between pinning and here
+  // there are two windows nothing else covers: the ref can move before a leaf
+  // resolves its own key (every finder then agrees with every other, and all of
+  // them disagree with the panel), and it can move after the last leaf finished
+  // (the reviews are honest, the assembly's claim about them is not).
+  const drift = pinDrift(cwd, base, pin);
 
   // Unjudged candidates are not findings — nobody re-inspected them — but they
   // are also the only thing this run produced, so they ride along raw instead of
   // being thrown away with the verdict.
   if (verified === null) {
     return { verdict: "interrupted", findings: [], coverage, lenses, pool,
-      explanation: "verifier did not produce a contract-valid verdict set; raw candidate pool attached" };
+      explanation: "verifier did not produce a contract-valid verdict set; raw candidate pool attached"
+        + (drift ? `; ${drift}` : "") };
   }
 
   const byId = new Map(verified.map((v) => [v.id, v]));
@@ -326,6 +370,17 @@ export default async function run({ agent, review, parallel, log, args }) {
   // A whole panel that found nothing is the shape a mis-aimed diff also makes.
   if (verdict === "correct" && pool.length === 0) {
     explanation += " (note: all finders returned zero findings — verify the diff target is what you intended)";
+  }
+  // Last, and over every other verdict: a verdict is a claim about one specific
+  // diff, and a panel whose target moved under it has no such diff to claim
+  // anything about — not a clean one, and not a defective one either, since
+  // nobody can say which revision the reports describe. The confirmed findings
+  // still ride along, as they do for a lost sweep: interrupted withholds the
+  // claim, not the evidence.
+  if (drift) {
+    verdict = "interrupted";
+    explanation = `${drift} — no verdict about this diff can be asserted` +
+      (findings.length > 0 ? `; ${findings.length} confirmed finding(s) attached as partial evidence` : "");
   }
   return { verdict, findings, coverage, lenses, explanation };
 }
