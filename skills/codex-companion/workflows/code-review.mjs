@@ -33,15 +33,20 @@ Return JSON: {"lenses": ["...", ...]}`;
 // this a finder that found nothing reads exactly like one that went dark, and
 // extractStubs must call both a failure. It steers rendering only — the sweep
 // stays the lens-free reviewer, because nothing here points its attention.
-// The sentinel sits ALONE on its own line rather than at the end of a sentence:
-// asked for a line mid-sentence, a model reproduces the sentence's punctuation
-// and its emphasis, and extraction wants the bare line. (extract.mjs canonicalizes
-// the obvious decorations from the other side; this is the cheap half.)
-// Raw multi-line developer_instructions is live-proven to survive the `-c`
-// carrier intact (specs/2026-07-12-native-review-recovery-design.md, "raw
-// multi-line developer_instructions survives").
+// The sentinel rides the FINDINGS channel, not the final message. Asking a
+// finder to end its message with a sentinel line does NOT work on the native
+// review path — a review turn renders reviewText from codex's own review
+// pipeline, and a live run on a known-clean diff came back as free-form prose
+// with the instruction in place (evidence:
+// tests/review-bench/results/2026-08-03-native-clean-render-probe/notes.md).
+// The same channel DOES reliably shape findings — the LENSPROBE-7Q probe had a
+// marker finding added on demand
+// (tests/review-bench/results/2026-08-03-appserver-devinstr-probe/) — so a
+// finder that found nothing says so in the only vocabulary the render has.
+// Raw multi-line developer_instructions survives the `-c` carrier intact
+// (specs/2026-07-12-native-review-recovery-design.md).
 const CLEAN_SENTINEL =
-  "If your review finds no issues, end your final message with exactly this line (alone on its own line):\nNo material findings.";
+  'If and only if your review finds no material issues, report exactly one finding titled "NO-MATERIAL-FINDINGS" at the lowest priority, pointing at any changed file.';
 
 const VERIFIER_SCHEMA = {
   type: "object", additionalProperties: false, required: ["verdicts"],

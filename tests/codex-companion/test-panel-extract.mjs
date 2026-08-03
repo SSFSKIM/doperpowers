@@ -182,6 +182,83 @@ function classify(result) {
 }
 
 // ---------------------------------------------------------------------------
+// The clean verdict rides the FINDINGS channel. Live evidence (notes.md in
+// tests/review-bench/results/2026-08-03-native-clean-render-probe/): an
+// instruction to end the final message with a sentinel line does NOT reach a
+// native review — review mode renders reviewText from its own pipeline, so the
+// clean render came back as pure prose again. The same devinstr channel DOES
+// reliably shape findings (LENSPROBE-7Q, appserver-devinstr-probe), so the
+// sentinel is now a marker FINDING: exactly one, titled NO-MATERIAL-FINDINGS.
+// ---------------------------------------------------------------------------
+{
+  const marker = (title, priority = "P3") =>
+    `# Codex Review\n\nTarget: branch diff against main\n\nNo material issues.\n\nFull review comments:\n\n- [${priority}] ${title} — app.py:1\n  The change is additive and self-contained.\n`;
+
+  // Marker ALONE — the clean verdict, and it yields NO stubs: the marker is a
+  // carrier for "nothing found", never a finding the verifier should judge.
+  for (const title of [
+    "NO-MATERIAL-FINDINGS",
+    "no-material-findings",          // case-insensitive
+    "No-Material-Findings",
+    "**NO-MATERIAL-FINDINGS**",      // emphasized
+    "`NO-MATERIAL-FINDINGS`",
+    '"NO-MATERIAL-FINDINGS"',
+    "NO-MATERIAL-FINDINGS."          // one trailing period of slack
+  ]) {
+    assert.deepEqual(
+      extractStubs(marker(title), "lens-7"), { stubs: [], clean: true, failed: false },
+      `marker alone must read clean: ${JSON.stringify(title)}`
+    );
+  }
+
+  // Any priority: the instruction asks for the lowest, but a finder that files
+  // the marker at P0 still means "nothing found".
+  assert.deepEqual(extractStubs(marker("NO-MATERIAL-FINDINGS", "P0"), "lens-7"),
+    { stubs: [], clean: true, failed: false });
+
+  // A title that merely CONTAINS the marker is a real finding, not the verdict.
+  for (const title of ["NO-MATERIAL-FINDINGS in the parser", "Fix NO-MATERIAL-FINDINGS handling"]) {
+    const r = extractStubs(marker(title), "lens-7");
+    assert.equal(classify(r), "stubs", `must stay a real finding: ${title}`);
+    assert.equal(r.stubs.length, 1);
+    assert.equal(r.stubs[0].title, title);
+  }
+
+  // Marker ALONGSIDE real findings: the model misread "if and only if". Losing
+  // the real findings to a stray marker would be the worst outcome, so the
+  // marker is dropped and the findings are kept — and because `clean` demands
+  // the marker stood ALONE, this can never manufacture a false clean.
+  {
+    const mixed = `# Codex Review
+
+Full review comments:
+
+- [P2] Move the sweep cursor outside the daemon registry — skills/board-sweep.sh:429
+  The cursor is addressable by daemon commands.
+
+- [P3] NO-MATERIAL-FINDINGS — app.py:1
+  Otherwise nothing material.
+
+- [P1] Guard the impact cursor — skills/daemon-retire.sh:88-92
+  Retirement corrupts the cursor.
+`;
+    const r = extractStubs(mixed, "lens-8");
+    assert.equal(r.clean, false, "a marker beside real findings is not a clean verdict");
+    assert.equal(r.failed, false);
+    assert.deepEqual(r.stubs.map((s) => s.title),
+      ["Move the sweep cursor outside the daemon registry", "Guard the impact cursor"],
+      "the marker is dropped, every real finding survives");
+    // Ids stay as parsed — they are opaque keys, and the gap is the truth about
+    // where each finding sat in the finder's render.
+    assert.deepEqual(r.stubs.map((s) => s.id), ["lens-8#1", "lens-8#3"]);
+  }
+
+  // The unsentineled clean prose is STILL failed: the marker is the only clean
+  // signal on the native path, and silence is never read as "nothing found".
+  assert.equal(classify(extractStubs(fx("clean-prose-unsentineled"), "lens-9")), "failed");
+}
+
+// ---------------------------------------------------------------------------
 // partial-drift.md — r15 with the list marker stripped from the SECOND head
 // only. The first finding still parses; handing back that subset would silently
 // lose the second. One unconsumed [P#] line makes the whole finder suspect.

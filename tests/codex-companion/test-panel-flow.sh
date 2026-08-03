@@ -123,16 +123,16 @@ lens_scenario() { # turns-json-list prefix behavior-json [prefix behavior-json .
 # The clean sentinel EVERY finder carries. Real clean native reviews are
 # free-form prose (fixtures/review-texts/clean-prose-unsentineled.md), so
 # without it a finder that found nothing is indistinguishable from one that
-# went dark — see the spec's clean-render probe. The sentinel sits ALONE on its
-# own line: asked for it at the end of a sentence, a model reproduces the
-# sentence's punctuation, and extraction wants the bare line.
-SENTINEL='If your review finds no issues, end your final message with exactly this line (alone on its own line):
-No material findings.'
+# went dark. It rides the FINDINGS channel because that is the only channel a
+# review turn's render exposes — a final-message sentinel was live-disproven,
+# a marker finding live-proven (both in
+# tests/review-bench/results/2026-08-03-native-clean-render-probe/notes.md).
+SENTINEL='If and only if your review finds no material issues, report exactly one finding titled "NO-MATERIAL-FINDINGS" at the lowest priority, pointing at any changed file.'
 
 # The sweep carries the sentinel and nothing else, so its developer_instructions
 # START with the sentinel's opening words while a scalpel's start with its own
 # mandate: that is what makes the two addressable apart in `lens_scenario`.
-SWEEP_LENS='If your review finds no issues'
+SWEEP_LENS='If and only if your review finds'
 
 # Every developer_instructions override any worker was spawned with, one
 # JSON-encoded string per line (the scalpel lenses are multi-line), sorted so
@@ -266,8 +266,37 @@ Full review comments:
 - [P2] Move the sweep cursor outside the daemon registry — skills/issue-tracker/scripts/board-sweep.sh:429
   The cursor is addressable by daemon commands.'
 
-CLEAN_TEXT="$(cat "$FIXTURES/no-findings.md")"
+# What a clean finder actually renders once it carries the marker instruction:
+# byte-identical to the live sentinelcheck2 run recorded in
+# tests/review-bench/results/2026-08-03-native-clean-render-probe/notes.md.
+# Note what the real render does NOT have — no [P#] tag on the marker, and no
+# "Full review comments:" heading. Both were guesses in the hand-written version
+# of this fixture, and neither survived contact with the model.
+CLEAN_TEXT="$(cat "$FIXTURES/marker-clean.md")"
 DRIFT_TEXT="$(cat "$FIXTURES/partial-drift.md")"
+
+# Marker beside real findings — the finder misread "if and only if". The marker
+# must be dropped and the real finding kept, and the marker sits FIRST in both
+# renders so the surviving stub's id is #2 in either slot the race hands out.
+MIXED_A='# Codex Review
+
+Full review comments:
+
+- [P3] NO-MATERIAL-FINDINGS — app.py:1
+  Nothing material beyond the note below.
+
+- [P1] Charge the handoff to the source lane — skills/implementing/scripts/implement-dispatch.sh:169
+  The destination lane is charged a worker it does not own.'
+
+MIXED_B='# Codex Review
+
+Full review comments:
+
+- [P3] NO-MATERIAL-FINDINGS — app.py:1
+  Nothing material beyond the note below.
+
+- [P2] Move the sweep cursor outside the daemon registry — skills/issue-tracker/scripts/board-sweep.sh:429
+  The cursor is addressable by daemon commands.'
 
 # ---------------------------------------------------------------------------
 # 1. The whole panel on the derived path: one deriver turn, three finders
@@ -434,6 +463,35 @@ assert_eq "caller lenses sliced to five, trimmed, blanks dropped" \
 assert_eq "the cleaned mandates are what the finders actually receive" \
   "$(expected_lenses "a." "b." "c." "d.")" "$(actual_lenses)"
 assert_eq "five finders that all came back clean make one correct verdict" "correct" "$(verdict)"
+
+# ---------------------------------------------------------------------------
+# 3b. The marker beside real findings. "If and only if" is exactly the kind of
+#     condition a finder mis-applies, and the marker is a stub like any other
+#     until extraction reads it, so the failure mode to bar is a real finding
+#     lost to a stray marker. The marker leads BOTH renders, so the surviving
+#     stub is #2 of its finder either way and the id gap is visible in the pool
+#     the verifier is handed.
+# ---------------------------------------------------------------------------
+new_case marker-mixed "$(lens_scenario \
+  "$(msg_turn '{"verdicts":[
+       {"id":"sweep#2","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"real"},
+       {"id":"scalpel-1#2","verdict":"CONFIRMED","duplicateOf":null,"priority":"P2","comment":"real"}]}')" \
+  "$SWEEP_LENS"   "$(review_turn "$MIXED_A")" \
+  "mixed lane."   "$(review_turn "$MIXED_B")")"
+run_panel '{"base":"main","lenses":["mixed lane."]}'
+[ "$rc" -eq 0 ] || cat "$scratch/err.log"
+assert_eq "the mixed panel runs two finders and one verifier" "0:3" "$(rc_and_turns)"
+assert_eq "the marker is not counted as coverage — each lane reports its real finding" \
+  '[{"finder":"sweep","lens":null,"status":"ok","stubs":1},{"finder":"scalpel-1","lens":"mixed lane.","status":"ok","stubs":1}]' \
+  "$(coverage_rows)"
+assert_eq "the verifier is never asked to judge the marker" \
+  "scalpel-1#2,sweep#2" "$(pool_ids)"
+assert_eq "the real findings survive the marker beside them" \
+  "Charge the handoff to the source lane | Move the sweep cursor outside the daemon registry" \
+  "$(pool_titles)"
+assert_eq "a lane that filed a marker AND a real finding is not a clean lane" \
+  "incorrect" "$(verdict)"
+assert_eq "both real findings are published" "2" "$(finding_count)"
 
 # ---------------------------------------------------------------------------
 # 4. The cap binds the model too: a deriver that returns more than five

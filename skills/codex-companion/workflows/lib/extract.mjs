@@ -58,6 +58,18 @@ function canonicalizeLine(line) {
 
 const NO_FINDINGS_CANONICAL = new Set(NO_FINDINGS_LINES.map(canonicalizeLine));
 
+// The clean verdict a native finder can actually give. A review turn renders
+// reviewText from codex's own review pipeline, so "end your final message with
+// this line" never reaches it — live-proven twice, in
+// tests/review-bench/results/2026-08-03-native-clean-render-probe/notes.md: the
+// clean render came back as free-form prose both without the instruction and
+// with it. The SAME developer_instructions channel does reliably shape FINDINGS
+// (LENSPROBE-7Q, .../2026-08-03-appserver-devinstr-probe/), so the panel asks a
+// finder that found nothing for one marker finding instead, and this is its
+// title. Same closed-whitelist normalization as the line sentinel, plus case.
+const MARKER_TITLE = "NO-MATERIAL-FINDINGS";
+const isMarkerTitle = (title) => canonicalizeLine(title).toUpperCase() === MARKER_TITLE;
+
 export function extractStubs(reviewText, finderId) {
   const lines = String(reviewText ?? "").split("\n");
   const stubs = [];
@@ -93,8 +105,21 @@ export function extractStubs(reviewText, finderId) {
   // re-run or escalate this finder, and a re-run recovers them all.
   if (orphanTags > 0) return { stubs: [], clean: false, failed: true };
 
-  if (stubs.length > 0) return { stubs, clean: false, failed: false };
+  if (stubs.length > 0) {
+    const real = stubs.filter((s) => !isMarkerTitle(s.title));
+    // The marker ALONE is the clean verdict, and it carries no stub: it stands
+    // for "nothing found", not for something the verifier should judge.
+    if (real.length === 0) return { stubs: [], clean: true, failed: false };
+    // The marker BESIDE real findings is a finder that misread "if and only if".
+    // Losing real findings to a stray marker would be the worst outcome, so the
+    // marker is dropped and the findings kept. Ids stay as parsed — they are
+    // opaque keys, and the gap is the truth about the render. `clean` still
+    // demands the marker stood alone, so this can never fake a clean verdict.
+    return { stubs: real, clean: false, failed: false };
+  }
 
+  // The structured renderer's own clean line (render.mjs) still counts: that
+  // path does emit it verbatim, and it costs nothing to keep recognizing.
   const clean = lines.some((line) => NO_FINDINGS_CANONICAL.has(canonicalizeLine(line)));
   return { stubs, clean, failed: !clean };
 }
