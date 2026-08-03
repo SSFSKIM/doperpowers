@@ -277,6 +277,21 @@ function breakStaleLock(lockDir, observed) {
   }
 }
 
+// Is the directory at this path still the one we created? A lock directory can
+// be broken and retaken between two of our own syscalls, and the path says
+// nothing about that — the inode does.
+function isSameDir(lockDir, identity) {
+  if (!identity) {
+    return false;
+  }
+  try {
+    const stat = fs.statSync(lockDir);
+    return stat.ino === identity.ino && stat.dev === identity.dev;
+  } catch {
+    return false;
+  }
+}
+
 function withStateLock(cwd, fn) {
   ensureStateDir(cwd);
   const lockDir = `${resolveStateFile(cwd)}.lock`;
@@ -299,13 +314,43 @@ function withStateLock(cwd, fn) {
       // the job. But an unstamped lock we ABANDON is the permanent wedge this
       // whole mechanism exists to remove, so a failed stamp gives the lock back
       // before the error propagates.
+      //
+      // That window is also the one the unstamped TTL declares abandoned, so a
+      // claimer stalled past it (a stop signal, a paused VM) can wake to find
+      // its lock already broken and RETAKEN. Its stamp must not land in the
+      // successor's directory — that is two writers in one critical section.
+      // Two guards, because the successor may or may not have stamped yet:
+      // "wx" refuses to overwrite a stamp, and the directory identity catches
+      // the case where there is nothing yet to overwrite. Either way the claim
+      // is simply lost: NOTHING is removed, because everything here now belongs
+      // to the successor.
+      let identity = null;
       try {
-        fs.writeFileSync(holderPath, stampBody(), "utf8");
-      } catch (err) {
-        fs.rmSync(lockDir, { recursive: true, force: true });
-        throw err;
+        const stat = fs.statSync(lockDir);
+        identity = { ino: stat.ino, dev: stat.dev };
+      } catch {
+        identity = null; // already gone: the claim is lost below
       }
-      break;
+
+      let stamped = false;
+      try {
+        fs.writeFileSync(holderPath, stampBody(), { flag: "wx" });
+        stamped = true;
+      } catch (err) {
+        if (err.code !== "EEXIST" && err.code !== "ENOENT") {
+          // A real write failure (ENOSPC, EACCES) on a directory that is still
+          // ours: give the lock back rather than abandon it unstamped.
+          if (isSameDir(lockDir, identity)) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+          }
+          throw err;
+        }
+      }
+
+      if (stamped && isSameDir(lockDir, identity)) {
+        break;
+      }
+      // Lost the race. Fall through to the wait below and contend for it again.
     }
 
     const observed = inspectLock(lockDir);

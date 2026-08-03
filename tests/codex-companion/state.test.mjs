@@ -225,3 +225,107 @@ test("updateState gives the lock back when the holder stamp cannot be written", 
     ["job-after-stamp-failure"]
   );
 });
+
+// The window between mkdirSync landing and the stamp write is normally
+// microseconds — but it is the same window the TTL above declares abandoned, so
+// a claimer stalled long enough (a stop signal, a paused VM, a swapping host)
+// wakes up to find its lock broken and RETAKEN. Its stamp must not land in the
+// successor's directory: that is two writers inside one critical section, which
+// is the exact thing the lock exists to prevent.
+//
+// `swapLockOnStamp` is that interleaving, forced: the successor's break-and-
+// retake happens inside the stalled claimer's own holder write.
+function swapLockOnStamp(lockDir, { stampSuccessor, thenThrow = null }) {
+  const realWriteFileSync = fs.writeFileSync;
+  let swapped = false;
+  fs.writeFileSync = (target, ...rest) => {
+    if (!swapped && String(target).endsWith(`${path.sep}holder`)) {
+      swapped = true;
+      fs.rmSync(lockDir, { recursive: true, force: true });
+      fs.mkdirSync(lockDir);
+      if (stampSuccessor) {
+        // A LIVE successor: only its own stamp may be in this directory.
+        realWriteFileSync(path.join(lockDir, "holder"), JSON.stringify({ pid: process.pid, pidStart: null }), "utf8");
+      }
+      if (thenThrow) {
+        throw thenThrow;
+      }
+    }
+    return realWriteFileSync(target, ...rest);
+  };
+  return () => {
+    fs.writeFileSync = realWriteFileSync;
+  };
+}
+
+test("a stalled claimer cannot stamp itself over a successor's lock", () => {
+  const workspace = makeTempDir();
+  const lockDir = `${resolveStateFile(workspace)}.lock`;
+  const restore = swapLockOnStamp(lockDir, { stampSuccessor: true });
+
+  try {
+    assert.throws(
+      () => upsertJob(workspace, { id: "job-from-the-stalled-writer", status: "completed" }),
+      (error) => error.message.includes(lockDir) && error.message.includes(`live pid ${process.pid}`),
+      "the stalled claimer lost the lock and must wait for it like anyone else"
+    );
+  } finally {
+    restore();
+  }
+
+  assert.equal(fs.existsSync(lockDir), true, "the successor's lock survives");
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(lockDir, "holder"), "utf8")),
+    { pid: process.pid, pidStart: null },
+    "…and still names the successor, not the writer that lost the race"
+  );
+  assert.deepEqual(loadState(workspace).jobs, [], "no mutation entered behind the successor's back");
+});
+
+// Same race, one instant earlier: the successor has retaken the directory but
+// has not stamped it yet, so the stalled claimer's stamp write SUCCEEDS. The
+// directory it landed in is not the one it created, which is the only thing that
+// can tell the two apart.
+test("a stamp that lands in a directory we no longer own does not grant the lock", () => {
+  const workspace = makeTempDir();
+  const lockDir = `${resolveStateFile(workspace)}.lock`;
+  const restore = swapLockOnStamp(lockDir, { stampSuccessor: false });
+
+  try {
+    assert.throws(
+      () => upsertJob(workspace, { id: "job-from-the-stalled-writer", status: "completed" }),
+      /state lock timeout/,
+      "a lock directory we did not create is not ours to hold"
+    );
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(loadState(workspace).jobs, [], "no mutation entered behind the successor's back");
+});
+
+// And the failure the same interleaving produces first: our directory is gone,
+// so the stamp write fails with ENOENT. Removing "the lock" there removes the
+// SUCCESSOR's — handing the critical section to a third writer while the
+// successor is inside it.
+test("a stamp that fails because our lock is gone never deletes the successor's", () => {
+  const workspace = makeTempDir();
+  const lockDir = `${resolveStateFile(workspace)}.lock`;
+  const restore = swapLockOnStamp(lockDir, {
+    stampSuccessor: true,
+    thenThrow: Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" })
+  });
+
+  try {
+    assert.throws(
+      () => upsertJob(workspace, { id: "job-from-the-stalled-writer", status: "completed" }),
+      (error) => error.message.includes(lockDir) && error.message.includes(`live pid ${process.pid}`),
+      "a vanished claim is a lost race, not an error to hand back"
+    );
+  } finally {
+    restore();
+  }
+
+  assert.equal(fs.existsSync(lockDir), true, "the successor's lock survives");
+  assert.deepEqual(loadState(workspace).jobs, []);
+});
