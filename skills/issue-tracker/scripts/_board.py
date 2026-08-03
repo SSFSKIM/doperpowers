@@ -445,8 +445,11 @@ def ensure_labels():
               "deliverable is findings, never a merge")]
     want += [("env-issue", ENV_ISSUE_COLOR,
               "issue-tracker board category: environmental friction — "
-              "fire-and-continue report; default birth needs-human")]
+              "fire-and-continue; default birth needs-human")]
     for name, color, desc in want:
+        # GitHub rejects label descriptions over 100 chars (422) — fail
+        # here, at the string, not remotely mid-registration.
+        assert len(desc) <= 100, "label %s description exceeds 100 chars" % name
         if name not in have:
             gh(["label", "create", name, "-R", repo(), "--color", color,
                 "--description", desc, "--force"])
