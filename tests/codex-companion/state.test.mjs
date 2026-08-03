@@ -177,6 +177,26 @@ test("updateState never breaks a lock that carries no holder stamp", () => {
   assert.deepEqual(loadState(workspace).jobs, []);
 });
 
+// …but "never" cannot mean never: mkdirSync landing and the process being
+// killed before the stamp write leaves an unstamped lock nobody can ever break,
+// and every state mutation from then on times out until someone deletes it by
+// hand. Contended for a moment, abandoned after a minute — the window between
+// mkdir and one small file write is microseconds, so age settles which it is.
+test("updateState breaks an unstamped lock that has been abandoned long enough", () => {
+  const workspace = makeTempDir();
+  const lockDir = plantLock(workspace, null);
+  const longAgo = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(lockDir, longAgo, longAgo);
+
+  upsertJob(workspace, { id: "job-after-wedge", status: "completed" });
+
+  assert.deepEqual(
+    loadState(workspace).jobs.map((job) => job.id),
+    ["job-after-wedge"]
+  );
+  assert.equal(fs.existsSync(lockDir), false, "the abandoned lock is gone");
+});
+
 // mkdirSync succeeding and the stamp write failing (ENOSPC, EACCES, a full
 // inode table) would abandon an UNSTAMPED lock — unbreakable by design, which is
 // exactly the permanent wedge the breaking mechanism exists to remove.

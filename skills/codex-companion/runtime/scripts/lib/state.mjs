@@ -192,19 +192,46 @@ function stampBody() {
   return JSON.stringify(currentPidStamp());
 }
 
-// The four states a held lock can be in. Only "dead" may ever be broken:
-// "unstamped" is the one-syscall window between mkdir and the stamp landing (or
-// a lock being broken right now), and "corrupt" is a stamp nobody has proven
-// dead — both are contended, so a wrong read costs a wait, never a lock.
+// How long an unstamped lock may sit before it is treated as abandoned rather
+// than as the microsecond window it normally is. Far longer than any holder
+// could take to write one small file, and far longer than the lock timeout, so
+// nobody ever waits on this number — it only heals a wedge on some later call.
+const UNSTAMPED_LOCK_TTL_MS = 60_000;
+
+// The four states a held lock can be in. "corrupt" is a stamp nobody has proven
+// dead, so it is contended and a wrong read costs a wait, never a lock.
+// "unstamped" is normally the same: the one-syscall window between mkdir and the
+// stamp landing (or a lock being broken right now). But a holder killed INSIDE
+// that window leaves an unstamped lock forever, and every state mutation after
+// it would time out until someone deleted the directory by hand — so age is what
+// separates "someone is mid-claim" from "nobody is coming back".
 function inspectLock(lockDir) {
   const holder = readHolder(path.join(lockDir, LOCK_HOLDER_FILE));
   if (holder == null) {
-    if (!fs.existsSync(lockDir)) {
-      return { state: "absent" };
+    let stat;
+    try {
+      stat = fs.statSync(lockDir);
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        return { state: "absent" };
+      }
+      throw err;
     }
-    return { state: fs.existsSync(path.join(lockDir, LOCK_HOLDER_FILE)) ? "corrupt" : "unstamped" };
+    if (fs.existsSync(path.join(lockDir, LOCK_HOLDER_FILE))) {
+      return { state: "corrupt" };
+    }
+    // Nothing is ever added to an unstamped lock directory, so its mtime is when
+    // it was created.
+    return { state: "unstamped", ageMs: Date.now() - stat.mtimeMs };
   }
   return { state: pidInstanceAlive(holder.pid, holder.pidStart) ? "live" : "dead", pid: holder.pid };
+}
+
+function isBreakable(observed) {
+  return (
+    observed.state === "dead" ||
+    (observed.state === "unstamped" && observed.ageMs > UNSTAMPED_LOCK_TTL_MS)
+  );
 }
 
 // Atomic create — the only way to own a break token.
@@ -226,9 +253,9 @@ function claimToken(tokenPath) {
 // same dead pid would take turns deleting each other's freshly created LIVE
 // lock. Same fix as the workflow run lease (workflow/journal.mjs): a break
 // token keyed to the observed holder, and a re-inspect UNDER that token so only
-// a still-dead lock is ever removed.
-function breakDeadLock(lockDir, observed) {
-  const tokenPath = `${lockDir}.break-${observed.pid}`;
+// a still-breakable lock is ever removed.
+function breakStaleLock(lockDir, observed) {
+  const tokenPath = `${lockDir}.break-${observed.pid ?? "unstamped"}`;
   if (!claimToken(tokenPath)) {
     // Token held: its owner is breaking right now (retry and we will see their
     // lock), or it died mid-break — clear that wedge so a dead breaker cannot
@@ -240,7 +267,7 @@ function breakDeadLock(lockDir, observed) {
     return false;
   }
   try {
-    if (inspectLock(lockDir).state !== "dead") {
+    if (!isBreakable(inspectLock(lockDir))) {
       return false; // broken and retaken since the read that sent us here
     }
     fs.rmSync(lockDir, { recursive: true, force: true });
@@ -282,7 +309,7 @@ function withStateLock(cwd, fn) {
     }
 
     const observed = inspectLock(lockDir);
-    if (observed.state === "dead" && breakDeadLock(lockDir, observed)) {
+    if (isBreakable(observed) && breakStaleLock(lockDir, observed)) {
       continue; // retake through the same atomic mkdir every contender uses
     }
     if (Date.now() > deadline) {
