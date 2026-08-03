@@ -118,5 +118,40 @@ function plantRunningRun(workspace, id, pid) {
   );
 }
 
+// --- a poisoned row does not take the repair pass down with it ---------------
+//
+// A ledger written before run ids were validated can hold one that is not a path
+// segment. Turning it into a per-job file path throws, and this pass runs from
+// every status, result and cancel — so one such row would make the whole runtime
+// unusable, including for the healthy runs beside it.
+{
+  const workspace = path.join(scratch, "poisoned");
+  fs.mkdirSync(workspace, { recursive: true });
+  plantRunningRun(workspace, "wf-healthy-dead", deadPid());
+
+  const stateFile = resolveStateFile(workspace);
+  const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  state.jobs.unshift({
+    id: "../state",
+    runId: "../state",
+    jobClass: WORKFLOW_JOB_CLASS,
+    status: "running",
+    phase: "running",
+    pid: deadPid(),
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  });
+  fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+  repairDeadWorkflowJobs(workspace);
+
+  const jobs = loadState(workspace).jobs;
+  assert.equal(
+    jobs.find((job) => job.id === "wf-healthy-dead").status,
+    "failed",
+    "the repairable run beside the poisoned row is still repaired"
+  );
+  assert.equal(jobs.some((job) => job.id === "../state"), false, "and the row nothing can address is gone");
+}
+
 fs.rmSync(scratch, { recursive: true, force: true });
 console.log("test-repair-race: ok");

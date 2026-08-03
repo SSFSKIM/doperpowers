@@ -329,3 +329,40 @@ test("a stamp that fails because our lock is gone never deletes the successor's"
   assert.equal(fs.existsSync(lockDir), true, "the successor's lock survives");
   assert.deepEqual(loadState(workspace).jobs, []);
 });
+
+// A ledger written before ids were validated can contain one that is not a path
+// segment — `--resume ../state` wrote exactly that. Every later mutation walks
+// the prune pass, which turns each dropped id into a file path, and one throw
+// there fails EVERY write from then on: the poisoned row cannot be removed by
+// the mechanism whose job is removing rows. Drop it, touch nothing it names.
+test("a ledger row whose id is not a path segment is dropped, not thrown on", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  ensureStateDir(workspace);
+  const bystander = path.join(path.dirname(stateFile), "bystander.json");
+  fs.writeFileSync(bystander, "{}\n", "utf8");
+
+  fs.writeFileSync(
+    stateFile,
+    `${JSON.stringify({
+      version: 1,
+      config: { stopReviewGate: true },
+      jobs: [
+        { id: "../bystander", status: "running", jobClass: "workflow", updatedAt: "2026-01-01T00:00:00.000Z" },
+        { id: "job-real", status: "completed", updatedAt: "2026-01-02T00:00:00.000Z" }
+      ]
+    }, null, 2)}\n`,
+    "utf8"
+  );
+
+  upsertJob(workspace, { id: "job-new", status: "running" });
+
+  const jobs = loadState(workspace).jobs;
+  assert.deepEqual(
+    jobs.map((job) => job.id).sort(),
+    ["job-new", "job-real"],
+    "the poisoned row is gone and the healthy ones are untouched"
+  );
+  assert.equal(fs.existsSync(bystander), true, "…and nothing it pointed at was deleted");
+  assert.equal(loadState(workspace).config.stopReviewGate, true, "the config survived the write");
+});

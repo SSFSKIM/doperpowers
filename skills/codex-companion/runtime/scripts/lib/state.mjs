@@ -72,6 +72,33 @@ export function assertPathSegment(id, label = "id") {
   return value;
 }
 
+// The same question without the throw, for the paths that must SURVIVE a bad id
+// rather than refuse it. A ledger written before the check above existed can
+// carry one (`--resume ../state` wrote exactly that), and a row nobody can
+// resolve must not be able to fail every future write — a poisoned row would
+// otherwise be un-removable by the very pass whose job is removing rows.
+export function isPathSegment(id) {
+  try {
+    assertPathSegment(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let warnedAboutBadIds = false;
+
+function dropUnresolvableIds(jobs) {
+  const kept = jobs.filter((job) => isPathSegment(job?.id));
+  if (kept.length !== jobs.length && !warnedAboutBadIds) {
+    warnedAboutBadIds = true;
+    process.stderr.write(
+      "[codex] dropping job record(s) whose id is not a path segment; they name nothing this runtime can address.\n"
+    );
+  }
+  return kept;
+}
+
 export function resolveWorkflowRunDir(runId) {
   return path.join(resolveDataRoot(), "workflows", assertPathSegment(runId, "run id"));
 }
@@ -125,7 +152,7 @@ function removeFileIfExists(filePath) {
 export function saveState(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  const nextJobs = pruneJobs(dropUnresolvableIds(state.jobs ?? []));
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -138,6 +165,12 @@ export function saveState(cwd, state) {
   const retainedIds = new Set(nextJobs.map((job) => job.id));
   for (const job of previousJobs) {
     if (retainedIds.has(job.id)) {
+      continue;
+    }
+    if (!isPathSegment(job.id)) {
+      // The row is dropped from the ledger, but its id names nothing we are
+      // willing to resolve — and its logFile is whatever that writer recorded.
+      // Deleting on its say-so is the traversal all over again.
       continue;
     }
     removeJobFile(resolveJobFile(cwd, job.id));

@@ -14,7 +14,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { currentPidStamp, pidInstanceAlive } from "../pid.mjs";
-import { listJobs, readJobFile, resolveJobFile, updateState, upsertJob, writeJobFile } from "../state.mjs";
+import { isPathSegment, listJobs, readJobFile, resolveJobFile, updateState, upsertJob, writeJobFile } from "../state.mjs";
 
 export const WORKFLOW_JOB_CLASS = "workflow";
 
@@ -145,9 +145,15 @@ function readStoredJobOrCorrupt(jobFile) {
   }
 }
 
+// An id that is not a path segment cannot become a per-job file, so this pass
+// cannot repair such a row and must not throw trying: it runs from every status,
+// result and cancel, and one poisoned row (a ledger written before ids were
+// validated) would take the whole runtime down with it. saveState drops those
+// rows on the next write.
 function isDeadWorkflowRow(job) {
   return (
     job.jobClass === WORKFLOW_JOB_CLASS &&
+    isPathSegment(job.id) &&
     (job.status === "running" || job.status === "queued") &&
     !pidAlive(job.pid, job.pidStart)
   );
