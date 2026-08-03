@@ -11,6 +11,10 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+// The lock directory is the atomic primitive; the file inside it names the
+// holder so a dead one can be broken instead of wedging every later writer.
+const LOCK_HOLDER_FILE = "holder";
+export const STATE_LOCK_TIMEOUT_MS = 5000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -136,20 +140,115 @@ export function saveState(cwd, state) {
 // than around one verb's own writes — is what stops two concurrent runs from
 // losing each other's job records: an unlocked legacy writer would happily
 // overwrite a workflow's row with a ledger it loaded before that row existed.
+function readPidFile(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
+  const pid = Number(raw.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+// ESRCH is the ONLY proof of death. EPERM means the process exists and belongs
+// to someone else, and any other errno is unexplained — both count as alive, so
+// an unexplained answer can never cost anyone their lock.
+function pidIsDead(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
+  }
+}
+
+// The four states a held lock can be in. Only "dead" may ever be broken:
+// "unstamped" is the one-syscall window between mkdir and the stamp landing (or
+// a lock being broken right now), and "corrupt" is a stamp nobody has proven
+// dead — both are contended, so a wrong read costs a wait, never a lock.
+function inspectLock(lockDir) {
+  const pid = readPidFile(path.join(lockDir, LOCK_HOLDER_FILE));
+  if (pid == null) {
+    if (!fs.existsSync(lockDir)) {
+      return { state: "absent" };
+    }
+    return { state: fs.existsSync(path.join(lockDir, LOCK_HOLDER_FILE)) ? "corrupt" : "unstamped" };
+  }
+  return { state: pidIsDead(pid) ? "dead" : "live", pid };
+}
+
+// Atomic create — the only way to own a break token.
+function claimToken(tokenPath) {
+  try {
+    fs.writeFileSync(tokenPath, String(process.pid), { flag: "wx" });
+    return true;
+  } catch (err) {
+    if (err.code !== "EEXIST") {
+      throw err;
+    }
+    return false;
+  }
+}
+
+// A holder SIGKILLed inside the critical section leaves its lock behind, and
+// without this every later writer blocks to the deadline and then fails —
+// forever. BREAKING MUST ALSO BE SERIALIZED: two breakers that both read the
+// same dead pid would take turns deleting each other's freshly created LIVE
+// lock. Same fix as the workflow run lease (workflow/journal.mjs): a break
+// token keyed to the observed holder, and a re-inspect UNDER that token so only
+// a still-dead lock is ever removed.
+function breakDeadLock(lockDir, observed) {
+  const tokenPath = `${lockDir}.break-${observed.pid}`;
+  if (!claimToken(tokenPath)) {
+    // Token held: its owner is breaking right now (retry and we will see their
+    // lock), or it died mid-break — clear that wedge so a dead breaker cannot
+    // pin acquisition forever.
+    const breaker = readPidFile(tokenPath);
+    if (breaker == null || pidIsDead(breaker)) {
+      fs.rmSync(tokenPath, { force: true });
+    }
+    return false;
+  }
+  try {
+    if (inspectLock(lockDir).state !== "dead") {
+      return false; // broken and retaken since the read that sent us here
+    }
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    return true;
+  } finally {
+    fs.rmSync(tokenPath, { force: true });
+  }
+}
+
 function withStateLock(cwd, fn) {
   ensureStateDir(cwd);
   const lockDir = `${resolveStateFile(cwd)}.lock`;
-  const deadline = Date.now() + 5000;
+  const holderPath = path.join(lockDir, LOCK_HOLDER_FILE);
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   for (;;) {
     try {
       fs.mkdirSync(lockDir);
+      // Stamped immediately: until this lands the lock reads as "unstamped",
+      // which is unbreakable — the safe direction.
+      fs.writeFileSync(holderPath, String(process.pid), "utf8");
       break;
     } catch (err) {
       if (err.code !== "EEXIST") {
         throw err;
       }
+      const observed = inspectLock(lockDir);
+      if (observed.state === "dead" && breakDeadLock(lockDir, observed)) {
+        continue; // retake through the same atomic mkdir every contender uses
+      }
       if (Date.now() > deadline) {
-        throw new Error(`state lock timeout: ${lockDir} (stale lock?)`);
+        const holder = readPidFile(holderPath);
+        throw new Error(
+          `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder}` : "holder unknown"})`
+        );
       }
       // Bounded synchronous backoff: the whole mutation API is sync, so there is
       // no event loop to yield to.
@@ -160,7 +259,7 @@ function withStateLock(cwd, fn) {
     return fn();
   } finally {
     try {
-      fs.rmdirSync(lockDir);
+      fs.rmSync(lockDir, { recursive: true, force: true });
     } catch {
       /* already released */
     }

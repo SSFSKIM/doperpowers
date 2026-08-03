@@ -4,8 +4,36 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../../skills/codex-companion/runtime/scripts/lib/state.mjs";
+import { makeTempDir, run } from "./helpers.mjs";
+import {
+  ensureStateDir,
+  loadState,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  STATE_LOCK_TIMEOUT_MS,
+  upsertJob
+} from "../../skills/codex-companion/runtime/scripts/lib/state.mjs";
+
+// Plants a lock directory as if a writer were holding it. `pid` null plants a
+// lock with no holder stamp at all — the freshly-created / mid-break window.
+function plantLock(workspace, pid) {
+  ensureStateDir(workspace);
+  const lockDir = `${resolveStateFile(workspace)}.lock`;
+  fs.mkdirSync(lockDir);
+  if (pid != null) {
+    fs.writeFileSync(path.join(lockDir, "holder"), String(pid), "utf8");
+  }
+  return lockDir;
+}
+
+function deadPid() {
+  const finished = run(process.execPath, ["-e", "process.exit(0)"]);
+  assert.equal(finished.status, 0);
+  return finished.pid;
+}
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +130,49 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+// A writer SIGKILLed inside the critical section leaves its lock behind. Without
+// stale-lock breaking that wedges every later writer permanently, which the
+// workflow verb's own SIGKILL path makes a routine occurrence rather than a
+// theoretical one.
+test("updateState breaks a lock whose holder is dead and lands the mutation", () => {
+  const workspace = makeTempDir();
+  const lockDir = plantLock(workspace, deadPid());
+
+  upsertJob(workspace, { id: "job-after-break", status: "completed" });
+
+  assert.deepEqual(
+    loadState(workspace).jobs.map((job) => job.id),
+    ["job-after-break"]
+  );
+  assert.equal(fs.existsSync(lockDir), false);
+});
+
+test("updateState waits out a live holder and fails loudly, naming the lock", () => {
+  const workspace = makeTempDir();
+  const lockDir = plantLock(workspace, process.pid);
+  const startedAt = Date.now();
+
+  assert.throws(
+    () => upsertJob(workspace, { id: "job-never-written", status: "completed" }),
+    (error) => error.message.includes(lockDir) && error.message.includes(`live pid ${process.pid}`)
+  );
+
+  assert.ok(Date.now() - startedAt >= STATE_LOCK_TIMEOUT_MS);
+  assert.equal(fs.existsSync(lockDir), true, "a live holder's lock must survive");
+  assert.deepEqual(loadState(workspace).jobs, []);
+});
+
+test("updateState never breaks a lock that carries no holder stamp", () => {
+  const workspace = makeTempDir();
+  const lockDir = plantLock(workspace, null);
+
+  assert.throws(
+    () => upsertJob(workspace, { id: "job-never-written", status: "completed" }),
+    (error) => error.message.includes(lockDir) && error.message.includes("holder unknown")
+  );
+
+  assert.equal(fs.existsSync(lockDir), true, "an unstamped lock is contended, never breakable");
+  assert.deepEqual(loadState(workspace).jobs, []);
 });
