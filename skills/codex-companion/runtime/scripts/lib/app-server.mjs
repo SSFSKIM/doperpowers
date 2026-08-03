@@ -9,8 +9,9 @@
  */
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
@@ -201,8 +202,8 @@ class AppServerClientBase {
 //
 // `platform` is accepted and deliberately unused: the options are the same
 // everywhere, and a test that asks for the win32 shape on a mac is how that
-// stays true. (A Windows `codex.cmd` shim would need a resolved executable
-// path rather than a shell — spawning prose through cmd.exe is not the fix.)
+// stays true. What Windows needs instead is a resolved executable — see
+// resolveCodexSpawnTarget.
 export function appServerSpawnOptions({ cwd, env, platform: _platform = process.platform }) {
   return {
     cwd,
@@ -210,6 +211,60 @@ export function appServerSpawnOptions({ cwd, env, platform: _platform = process.
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true
   };
+}
+
+function whereIs(command, env) {
+  try {
+    const out = execFileSync("where", [command], {
+      env: env ?? process.env,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      windowsHide: true
+    });
+    // `where` prints every match, best first.
+    return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// What to actually spawn for `codex`.
+//
+// Everywhere but Windows: the name, handed to execvp, unchanged. On Windows npm
+// installs codex as `codex.cmd`, a batch shim — and Node >= 18.20 refuses to
+// spawn a .cmd without a shell (EINVAL), so the no-shell rule above would leave
+// Windows unable to start codex at all. A shell is still not the answer: the
+// config overrides carry arbitrary prose (`developer_instructions=<lens>`), and a
+// command line is where prose becomes code. So resolve the real target instead
+// — an .exe or a .js needs no interpreter at all, and only the batch shim goes
+// through cmd.exe, with every argument still a DISCRETE argv element rather than
+// a string this code assembled.
+export function resolveCodexSpawnTarget({
+  command = "codex",
+  args,
+  platform = process.platform,
+  env = process.env,
+  which = whereIs
+} = {}) {
+  if (platform !== "win32") {
+    return { command, args };
+  }
+  const resolved = which(command, env);
+  if (!resolved) {
+    return { command, args }; // let the spawn fail with its own ENOENT
+  }
+  const extension = path.extname(resolved).toLowerCase();
+  if (extension === ".cmd" || extension === ".bat") {
+    return {
+      command: env.ComSpec || "cmd.exe",
+      // /d skips AutoRun, /s fixes cmd's quote-stripping rules, /c runs and exits.
+      args: ["/d", "/s", "/c", resolved, ...args]
+    };
+  }
+  if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
+    return { command: process.execPath, args: [resolved, ...args] };
+  }
+  return { command: resolved, args };
 }
 
 class SpawnedCodexAppServerClient extends AppServerClientBase {
@@ -222,9 +277,13 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     // Each configOverride is a `codex -c key=value` pair, so a caller that owns
     // this server (a workflow worker) can differ from the session default.
     const configArgs = (this.options.configOverrides ?? []).flatMap((kv) => ["-c", kv]);
+    const target = resolveCodexSpawnTarget({
+      args: [...configArgs, "app-server"],
+      env: this.options.env ?? process.env
+    });
     this.proc = spawn(
-      "codex",
-      [...configArgs, "app-server"],
+      target.command,
+      target.args,
       appServerSpawnOptions({ cwd: this.cwd, env: this.options.env })
     );
     this.options.onSpawn?.(this.proc.pid);

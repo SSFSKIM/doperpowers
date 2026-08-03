@@ -27,7 +27,7 @@ process.env.CODEX_MOCK_DIR = mockDir;
 process.env.PATH = `${MOCK_BIN_DIR}${path.delimiter}${process.env.PATH}`;
 delete process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT;
 
-const { appServerSpawnOptions } = await import(
+const { appServerSpawnOptions, resolveCodexSpawnTarget } = await import(
   "../../skills/codex-companion/runtime/scripts/lib/app-server.mjs"
 );
 
@@ -37,6 +37,64 @@ for (const platform of ["win32", "darwin", "linux"]) {
   assert.ok(!options.shell, `platform ${platform} must not spawn codex through a shell (got ${JSON.stringify(options.shell)})`);
   assert.equal(options.cwd, scratch);
   assert.equal(options.windowsHide, true);
+}
+
+// --- win32: npm installs codex as a .cmd shim, which cannot be spawned direct -
+//
+// Node >= 18.20 refuses to spawn a .cmd without a shell (EINVAL), so "no shell"
+// alone leaves Windows unable to start codex at all. The shim is reached through
+// cmd.exe — but every argument stays a DISCRETE argv element: the lens must
+// never be concatenated into a command string, which is the whole point of not
+// using `shell: true`.
+const winArgs = ["-c", "developer_instructions=Review $(whoami) `id` && echo pwned", "app-server"];
+
+const viaCmdShim = resolveCodexSpawnTarget({
+  args: winArgs,
+  platform: "win32",
+  which: () => "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd"
+});
+assert.match(viaCmdShim.command, /cmd\.exe$/i, "a .cmd shim is run by the command processor");
+assert.deepEqual(
+  viaCmdShim.args,
+  ["/d", "/s", "/c", "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd", ...winArgs],
+  "the shim path and every codex argument stay separate argv elements"
+);
+assert.equal(
+  viaCmdShim.args.filter((arg) => arg === winArgs[1]).length,
+  1,
+  "the lens appears once, whole, as one element"
+);
+
+const viaExe = resolveCodexSpawnTarget({
+  args: winArgs,
+  platform: "win32",
+  which: () => "C:\\Program Files\\codex\\codex.exe"
+});
+assert.equal(viaExe.command, "C:\\Program Files\\codex\\codex.exe", "a real executable needs no interpreter");
+assert.deepEqual(viaExe.args, winArgs);
+
+const viaScript = resolveCodexSpawnTarget({
+  args: winArgs,
+  platform: "win32",
+  which: () => "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\codex\\bin\\codex.js"
+});
+assert.equal(viaScript.command, process.execPath, "a .js entry point is run by node itself");
+assert.deepEqual(viaScript.args, ["C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\codex\\bin\\codex.js", ...winArgs]);
+
+const unresolvable = resolveCodexSpawnTarget({ args: winArgs, platform: "win32", which: () => null });
+assert.equal(unresolvable.command, "codex", "an unresolvable name falls back to the plain spawn and its error");
+assert.deepEqual(unresolvable.args, winArgs);
+
+for (const platform of ["darwin", "linux"]) {
+  const target = resolveCodexSpawnTarget({
+    args: winArgs,
+    platform,
+    which: () => {
+      throw new Error(`no resolution may be attempted on ${platform}`);
+    }
+  });
+  assert.equal(target.command, "codex", `${platform} spawns codex directly, unchanged`);
+  assert.deepEqual(target.args, winArgs);
 }
 
 // --- the lens reaches the process verbatim -----------------------------------
