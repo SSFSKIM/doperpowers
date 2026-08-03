@@ -625,9 +625,17 @@ silently replayable; review leaves key on merge-base AND tip;
 requires the clean marker to stand alone; a refuted duplicate
 corroborates nothing; the panel pins its base to one resolved
 merge-base commit at start. Known residuals accepted and documented:
-no per-turn watchdog for a silent-but-alive worker (follow-up), Linux
-token-format upgrade window (one-time, fails safe), win32 spawn now
-resolves the codex shim but real-Windows behavior is untested. Panel
+no per-turn watchdog for a silent-but-alive worker (follow-up) — and in
+the same class, and deferred with it, an RPC that never answers because
+the response was malformed or arrived glued to banner text, which leaves
+`initialize`/`turn/start` pending for as long as the process stays alive
+and holds its semaphore slot; Linux token-format upgrade window
+(one-time, fails safe); ignored files are outside the resume fingerprint
+by design (derived artifacts — hashing them would make every rebuild a
+refusal), so a worker that reads an ignored fixture can resume against a
+changed input; win32 now REFUSES an npm `.cmd` shim outright rather than
+routing argv through cmd.exe, and Windows process teardown is
+best-effort (no readable start time ⇒ nothing is signalled). Panel
 extraction/verifier changes have NOT been re-scored on X1 — the
 stability re-run already tracked above should run on the fixed panel.
 

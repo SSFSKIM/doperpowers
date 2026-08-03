@@ -138,7 +138,17 @@ state root, but the job RECORD is filed per workspace — the one resolved from
 `--cwd` — so the job verbs need the same `--cwd` (or the same working directory)
 the run used, or they will not find it. A run killed hard (SIGKILL, reboot)
 leaves its record `running` forever; the read paths repair it to `failed` when
-they next look, so `result` reports the death instead of a phantom.
+they next look, so `result` reports the death instead of a phantom, and that
+repair also signals whatever workers the dead run left running. A `--resume`
+sweeps the same list before it starts, so a replayed leaf never runs alongside
+the copy the crashed run left behind.
+
+Every path that signals a recorded pid — `cancel`, that sweep, the SessionEnd
+teardown — signals only a pid whose process instance it can prove (the recorded
+start time still matches). A record with no start time proves nothing and is
+cleaned up without a signal, which is the whole story on Windows: no start time
+is readable there, so process teardown is best-effort and a leaked worker is
+preferred over signalling whatever inherited the number.
 
 `--resume <run-id>` re-runs the script against the same journal. The cache is
 content-keyed — a call is identified by its kind, its label and a hash of its
@@ -166,6 +176,12 @@ a run and its resume also refuses the first script's resume, since that file is
 now one of its siblings. Give an ad-hoc workflow its own directory. A resume
 against any changed component is refused outright, since the cached results
 describe inputs that no longer exist. Re-run fresh instead.
+
+Ignored files are deliberately outside the repository-content component. They
+are conventionally derived artifacts — build output, caches, local env files —
+and hashing them would turn every rebuild between a run and its resume into a
+refusal. A worker that reads an ignored fixture and a resume that follows an
+edit to it is therefore the one input change the fingerprint does not catch.
 
 Two states are un-resumable rather than compared. A `--cwd` that is not inside a
 git repository has no content anything can watch — the workers read files the
