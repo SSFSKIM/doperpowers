@@ -39,31 +39,22 @@ for (const platform of ["win32", "darwin", "linux"]) {
   assert.equal(options.windowsHide, true);
 }
 
-// --- win32: npm installs codex as a .cmd shim, which cannot be spawned direct -
+// --- win32: an npm .cmd shim is REFUSED, never routed through cmd.exe ---------
 //
-// Node >= 18.20 refuses to spawn a .cmd without a shell (EINVAL), so "no shell"
-// alone leaves Windows unable to start codex at all. The shim is reached through
-// cmd.exe — but every argument stays a DISCRETE argv element: the lens must
-// never be concatenated into a command string, which is the whole point of not
-// using `shell: true`.
+// Node >= 18.20 refuses to spawn a .cmd without a shell (EINVAL), and cmd.exe is
+// the one interpreter that would take it: but cmd.exe re-parses its own command
+// line, so `&`, `|` and `%VAR%` inside the lens become command separators and
+// variable expansions no argv-element discipline can prevent. There is no safe
+// way to reach the shim, so the shim is not reached at all.
 const winArgs = ["-c", "developer_instructions=Review $(whoami) `id` && echo pwned", "app-server"];
 
-const viaCmdShim = resolveCodexSpawnTarget({
-  args: winArgs,
-  platform: "win32",
-  which: () => "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd"
-});
-assert.match(viaCmdShim.command, /cmd\.exe$/i, "a .cmd shim is run by the command processor");
-assert.deepEqual(
-  viaCmdShim.args,
-  ["/d", "/s", "/c", "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd", ...winArgs],
-  "the shim path and every codex argument stay separate argv elements"
-);
-assert.equal(
-  viaCmdShim.args.filter((arg) => arg === winArgs[1]).length,
-  1,
-  "the lens appears once, whole, as one element"
-);
+for (const shim of ["C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd", "C:\\tools\\codex.BAT"]) {
+  assert.throws(
+    () => resolveCodexSpawnTarget({ args: winArgs, platform: "win32", which: () => shim }),
+    /native codex binary/i,
+    `the ${path.extname(shim)} shim must be refused, not interpreted`
+  );
+}
 
 const viaExe = resolveCodexSpawnTarget({
   args: winArgs,

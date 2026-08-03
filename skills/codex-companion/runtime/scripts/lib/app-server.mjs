@@ -232,13 +232,15 @@ function whereIs(command, env) {
 //
 // Everywhere but Windows: the name, handed to execvp, unchanged. On Windows npm
 // installs codex as `codex.cmd`, a batch shim — and Node >= 18.20 refuses to
-// spawn a .cmd without a shell (EINVAL), so the no-shell rule above would leave
-// Windows unable to start codex at all. A shell is still not the answer: the
-// config overrides carry arbitrary prose (`developer_instructions=<lens>`), and a
-// command line is where prose becomes code. So resolve the real target instead
-// — an .exe or a .js needs no interpreter at all, and only the batch shim goes
-// through cmd.exe, with every argument still a DISCRETE argv element rather than
-// a string this code assembled.
+// spawn a .cmd without a shell (EINVAL). cmd.exe is the only thing that would
+// take it, and cmd.exe RE-PARSES the command line it is handed: `&`, `|` and
+// `%VAR%` inside a config override (`developer_instructions=<lens>` is arbitrary
+// prose written by whoever wrote the workflow script) become separators and
+// expansions, no matter how carefully the argv elements were kept apart. There is
+// no argument-quoting discipline that closes that, so the shim is REFUSED rather
+// than interpreted: an .exe spawns directly, a .js runs under node, and a .cmd
+// asks the operator for a native binary. Windows is not a supported platform for
+// this fork — a hard refusal beats an injectable path.
 export function resolveCodexSpawnTarget({
   command = "codex",
   args,
@@ -255,11 +257,9 @@ export function resolveCodexSpawnTarget({
   }
   const extension = path.extname(resolved).toLowerCase();
   if (extension === ".cmd" || extension === ".bat") {
-    return {
-      command: env.ComSpec || "cmd.exe",
-      // /d skips AutoRun, /s fixes cmd's quote-stripping rules, /c runs and exits.
-      args: ["/d", "/s", "/c", resolved, ...args]
-    };
+    throw new Error(
+      `codex resolves to a batch shim (${resolved}); install a native codex binary — the npm .cmd shim cannot be spawned safely.`
+    );
   }
   if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
     return { command: process.execPath, args: [resolved, ...args] };
