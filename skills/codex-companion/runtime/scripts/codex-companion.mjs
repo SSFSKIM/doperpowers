@@ -966,6 +966,7 @@ async function handleWorkflow(argv) {
     }
   }
   const runDir = resolveWorkflowRunDir(runId);
+  let reapedWorkers = [];
   if (resume) {
     // A typo'd id (or one from another state root) has no run directory. Without
     // this the engine would find no fingerprint and no journal, read that as an
@@ -992,6 +993,13 @@ async function handleWorkflow(argv) {
         `Workflow run ${runId} is leased by pid ${lease.holderPid ?? "another process"}; it is still running.`
       );
     }
+    // The run this resume replaces was killed, and a killed run reaps nothing:
+    // its workers are still executing, still holding app-servers open. Replaying
+    // the unfinished leaf on top of them means two workers doing the same work
+    // with the same side effects. The lease is held, so nobody else owns them —
+    // sweep before the engine starts, with the instance-guarded kill cancel uses
+    // (an entry whose instance cannot be proven is dropped, never signalled).
+    reapedWorkers = killWorkflowWorkers(runDir);
   }
   const args = resume ? resolveResumeArgs(runDir, options.args) : parseWorkflowArgs(options.args);
   const logFile = createJobLogFile(workspaceRoot, runId, "Codex Workflow");
@@ -1020,6 +1028,9 @@ async function handleWorkflow(argv) {
     process.stderr.write(`[workflow] ${line}\n`);
     appendLogLine(logFile, line);
   };
+  if (reapedWorkers.length > 0) {
+    emit(`signalled ${reapedWorkers.length} orphaned worker(s) from the interrupted run`);
+  }
 
   let cancelling = false;
   const cancelRun = (signal) => {

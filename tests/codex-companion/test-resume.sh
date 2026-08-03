@@ -401,5 +401,51 @@ assert_contains "the refusal names the args as the cause" "$scratch/refuse-args.
   "changed since the original run: --args"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 
+# ---------------------------------------------------------------------------
+# Phase 9: the killed run's workers are still RUNNING. A SIGKILLed run cannot
+# reap its own children, so a resume that just replays the unfinished leaf runs
+# it a second time alongside the first — two app-servers doing the same work,
+# with whatever side effects that carries. The resume sweeps workers.json before
+# it starts, with the same instance-guarded kill cancel uses.
+# ---------------------------------------------------------------------------
+echo "-- phase 9: a resume reaps the workers the killed run left behind"
+reset_mock '{"turns":[{"finalMessage":"A9"},{"hangMs":60000},{"finalMessage":"C9"}]}' stagger
+node "$RUNTIME" workflow --script "$SCRIPT" --cwd "$repo" \
+  > "$scratch/out12.json" 2> "$scratch/err12.log" &
+verb_pid=$!
+orphan_id="$(wait_job_id "$run_id $live_id $drift_id $args_id" 30)"
+if [ -n "$orphan_id" ]; then ok "the run registered a record"; else bad "the run never registered a record"; fi
+orphan_dir="$CLAUDE_PLUGIN_DATA/workflows/$orphan_id"
+assert_eq "one worker is left hanging" 1 "$(wait_for_live 1 40)"
+
+# SIGKILL only the run process: its children are deliberately left alive, which
+# is exactly the state a crashed harness leaves behind.
+kill -9 "$verb_pid"
+wait "$verb_pid" 2>/dev/null || true
+orphan_pids="$(jq -r '.[] | if type == "number" then . else .pid end' "$orphan_dir/workers.json")"
+assert_ne "the killed run left a worker tracked" "" "$orphan_pids"
+alive=0
+for p in $orphan_pids; do if kill -0 "$p" 2>/dev/null; then alive=$((alive + 1)); fi; done
+assert_eq "…and that worker outlived the run" 1 "$alive"
+
+# A fresh scenario WITHOUT reset_mock: resetting would kill the orphan itself.
+printf '%s' '{"turns":[{"finalMessage":"B9"},{"finalMessage":"D9"}]}' > "$CODEX_MOCK_DIR/scenario.json"
+rm -f "$CODEX_MOCK_DIR/counter" "$CODEX_MOCK_DIR/turns.jsonl" "$CODEX_MOCK_DIR/stagger"
+rc=0
+node "$RUNTIME" workflow --script "$SCRIPT" --resume "$orphan_id" --cwd "$repo" \
+  > "$scratch/out13.json" 2> "$scratch/err13.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err13.log"
+assert_eq "the resume exits 0" 0 "$rc"
+
+deadline=$(( SECONDS + 10 ))
+still=1
+while [ "$still" -ne 0 ] && [ "$SECONDS" -lt "$deadline" ]; do
+  still=0
+  for p in $orphan_pids; do if kill -0 "$p" 2>/dev/null; then still=$((still + 1)); fi; done
+  [ "$still" -eq 0 ] || sleep 0.2
+done
+assert_eq "the orphaned worker was reaped by the resume" 0 "$still"
+assert_contains "the resume reports what it swept" "$scratch/err13.log" "orphaned worker"
+
 if [ "$fail" -eq 0 ]; then echo "workflow resume: all phases passed"; fi
 exit "$fail"
