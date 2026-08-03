@@ -544,12 +544,23 @@ cases live, sequential).
 | **review panel** (sweep + 3–4 scalpels at sol/xhigh, verifier sol/high) | **17/17** | **1** | **3/3** | **20/20** |
 
 The predeclared bar was recall ≥ baseline AND FP ≤ baseline + 1: met,
-with the FP allowance fully spent. Per case 417–714 s and 6–7 workers;
-22 finder lanes all reported (no dead worker, no extraction failure);
-the verifier's postconditions held first try in all five cases, so the
-repair retry never fired live. Full adjudication mapping, the scoring
-sensitivity, and the two new fixture follow-ups are in
-`tests/review-bench/results/2026-08-03-panel-x1/`.
+with the FP allowance fully spent. **Caveats carried with the PASS:**
+it is n=1 with zero margin (the panel's own recall has not been
+stability-re-run the way X1 required of the baseline; a re-run landing
+at FP 2 would fail), and it is load-bearing on four unseeded-candidate
+exclusions whose strictest reading flips the verdict — the sensitivity
+analysis is recorded in the run's `scores.json`. Independent
+adjudication audit (2026-08-03) re-judged all 25 published findings
+and upheld the mappings, the FP count, and the exclusions. Per case
+417–714 s and 6–7 workers; 22 finder lanes all reported (no dead
+worker, no extraction failure); the verifier's postconditions held
+first try in all five cases, so the repair retry never fired live.
+Full adjudication mapping, the scoring sensitivity, and the two new
+fixture follow-ups are in
+`tests/review-bench/results/2026-08-03-panel-x1/`. The single FP
+(case3, finders xhigh / verifier high failing to refute what three
+earlier engines' verifiers refuted) is live input to Open Question 2's
+verifier-effort knob.
 
 ## Revision Notes
 
