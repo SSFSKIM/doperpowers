@@ -45,8 +45,11 @@ export async function runWorkflow(spec) {
   const journalPath = path.join(runDir, "journal.jsonl");
   const workersPath = path.join(runDir, "workers.json");
   const fpPath = path.join(runDir, "fingerprint");
-  // Once per run: repoFingerprint shells out per untracked file.
-  const fp = repoFingerprint(spec.cwd);
+  // Once per run: repoFingerprint shells out per untracked file. The script
+  // path rides extraPaths so editing an out-of-tree (ad-hoc) workflow script
+  // also refuses a stale-cache resume; in-tree scripts are covered twice,
+  // which is harmless.
+  const fp = repoFingerprint(spec.cwd, [path.resolve(spec.scriptPath)]);
   try {
     if (spec.resume) {
       const recorded = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
