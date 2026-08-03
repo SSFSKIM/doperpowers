@@ -108,6 +108,9 @@ async function handleSessionEnd(input) {
   const logFile = brokerSession?.logFile ?? null;
   const sessionDir = brokerSession?.sessionDir ?? null;
   const pid = brokerSession?.pid ?? null;
+  // Only the record that broker.json itself wrote can carry an instance stamp;
+  // the env-var fallback below has a pid of null anyway.
+  const pidStart = brokerSession?.pidStart ?? null;
 
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);
@@ -120,6 +123,7 @@ async function handleSessionEnd(input) {
     logFile,
     sessionDir,
     pid,
+    pidStart,
     killProcess: terminateProcessTree
   });
   clearBrokerSession(cwd);

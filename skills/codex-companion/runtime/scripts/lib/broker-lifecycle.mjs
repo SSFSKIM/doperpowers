@@ -6,6 +6,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
+import { pidInstanceAlive, processStartTime } from "./pid.mjs";
 import { resolveStateDir } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
@@ -123,6 +124,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile: existing.logFile ?? null,
       sessionDir: existing.sessionDir ?? null,
       pid: existing.pid ?? null,
+      pidStart: existing.pidStart ?? null,
       killProcess: options.killProcess ?? null
     });
     clearBrokerSession(cwd);
@@ -146,6 +148,10 @@ export async function ensureBrokerSession(cwd, options = {}) {
     env: options.env ?? process.env
   });
 
+  // Read at spawn time, while the pid indisputably belongs to the child we just
+  // created — this is the token every later reader compares against.
+  const pidStart = child.pid ? processStartTime(child.pid) : null;
+
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
     teardownBrokerSession({
@@ -154,6 +160,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile,
       sessionDir,
       pid: child.pid ?? null,
+      pidStart,
       killProcess: options.killProcess ?? null
     });
     return null;
@@ -164,14 +171,38 @@ export async function ensureBrokerSession(cwd, options = {}) {
     pidFile,
     logFile,
     sessionDir,
-    pid: child.pid ?? null
+    pid: child.pid ?? null,
+    pidStart
   };
   saveBrokerSession(cwd, session);
   return session;
 }
 
-export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
-  if (Number.isFinite(pid) && killProcess) {
+// The killProcess every caller passes is terminateProcessTree, which on POSIX
+// signals a process GROUP — and the broker is spawned detached, so it leads one.
+// The pid comes from broker.json, which survives reboots: after one, the endpoint
+// probe fails on the FIRST invocation and this runs against a number that now
+// belongs to a stranger's process tree. Signal only a pid this record can PROVE
+// is still its own broker; anything unverifiable is just a file to delete.
+//
+// "Unverifiable" includes a record written before stamps existed, and a platform
+// with no readable start time (Windows). The cost there is at most one leaked
+// broker process that is already unreachable; the cost of guessing wrong in the
+// other direction is somebody else's process group.
+function brokerInstanceIsOurs(pid, pidStart) {
+  return Number.isFinite(pid) && Boolean(pidStart) && pidInstanceAlive(pid, pidStart);
+}
+
+export function teardownBrokerSession({
+  endpoint = null,
+  pidFile,
+  logFile,
+  sessionDir = null,
+  pid = null,
+  pidStart = null,
+  killProcess = null
+}) {
+  if (killProcess && brokerInstanceIsOurs(pid, pidStart)) {
     try {
       killProcess(pid);
     } catch {
