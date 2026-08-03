@@ -28,6 +28,15 @@ const HEAD_RE = /^[ \t]*[-*]\s+(?:\[(P[0-3])\]\s*)?(.+)\s+—\s+(.+?):(\d+)(?:-(
 const ORPHAN_TAG_RE = /^[ \t]*(?:[-*]\s*)?\[P[0-3]\]/;
 const HEAD_SHAPE_RE = /^[ \t]*[-*]\s+.*\s—\s.*:\d+(?:-\d+)?\s*$/;
 
+// The third shape, and the one that closed the last hole: ANY top-level list
+// item that did not parse as a head. A finder's findings are its list items, so
+// a bullet in neither of the shapes above — no tag, no location, just prose —
+// is a finding whose head drifted past recognition, and it used to be absorbed
+// into the previous item's body. Beside the clean marker that made a lane with
+// a defect in it read CLEAN. Top level only (column 0): an INDENTED bullet is a
+// body listing its own points, which every render is entitled to write.
+const TOP_LEVEL_ITEM_RE = /^[-*]\s+\S/;
+
 // The one line that earns a clean verdict. Two sources, one string:
 //   - runtime/scripts/lib/render.mjs:263 (`renderReviewResult`, zero findings)
 //     emits it verbatim;
@@ -90,7 +99,7 @@ export function extractStubs(reviewText, finderId) {
 
   for (const line of lines) {
     const m = line.match(HEAD_RE);
-    if (!m && (ORPHAN_TAG_RE.test(line) || HEAD_SHAPE_RE.test(line))) malformedHeads += 1;
+    if (!m && (ORPHAN_TAG_RE.test(line) || HEAD_SHAPE_RE.test(line) || TOP_LEVEL_ITEM_RE.test(line))) malformedHeads += 1;
     if (m) {
       if (current) stubs.push(current);
       current = {
@@ -120,8 +129,16 @@ export function extractStubs(reviewText, finderId) {
   if (stubs.length > 0) {
     const real = stubs.filter((s) => !isMarkerTitle(s.title));
     // The marker ALONE is the clean verdict, and it carries no stub: it stands
-    // for "nothing found", not for something the verifier should judge.
-    if (real.length === 0) return { stubs: [], clean: true, failed: false };
+    // for "nothing found", not for something the verifier should judge. ALONE is
+    // literal — the instruction says exactly one marker, and a finder that filed
+    // it twice did not follow the instruction it was given, so nothing in that
+    // render says what it actually meant. A lane like that is failed, not clean:
+    // the clean verdict is the one answer this extractor may never guess at.
+    if (real.length === 0) {
+      return stubs.length === 1
+        ? { stubs: [], clean: true, failed: false }
+        : { stubs: [], clean: false, failed: true };
+    }
     // The marker BESIDE real findings is a finder that misread "if and only if".
     // Losing real findings to a stray marker would be the worst outcome, so the
     // marker is dropped and the findings kept. Ids stay as parsed — they are

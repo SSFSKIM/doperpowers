@@ -259,6 +259,67 @@ Full review comments:
 }
 
 // ---------------------------------------------------------------------------
+// The clean verdict is EXACTLY ONE marker finding and nothing else beside it.
+// Both fixtures here are variants of the captured marker-clean.md render (the
+// captured bytes are never edited): one grows a plain top-level bullet that
+// carries a real defect in no recognized head shape, the other files the marker
+// twice. A finder that emitted either did not follow the contract, and a clean
+// lane believed on that evidence is a false clean panel — the one failure this
+// extractor exists to prevent.
+// ---------------------------------------------------------------------------
+{
+  // A defect bullet with no [P#] tag and no `path:line` tail: it matches no head
+  // shape, so it used to be swallowed as the marker's body and the lane read
+  // clean.
+  assert.deepEqual(extractStubs(fx("marker-plus-bullet"), "lens-10"),
+    { stubs: [], clean: false, failed: true },
+    "a plain top-level bullet beside the marker is drift, never a clean lane");
+
+  // Two markers: the instruction says exactly one, and nothing in a render that
+  // ignored that says what the finder actually meant.
+  assert.deepEqual(extractStubs(fx("marker-twice"), "lens-10"),
+    { stubs: [], clean: false, failed: true },
+    "more than one marker finding fails the lane");
+
+  // Guard against passing for the wrong reason: the captured render both
+  // variants are grown from is genuinely clean on its own.
+  assert.deepEqual(extractStubs(fx("marker-clean"), "lens-10"),
+    { stubs: [], clean: true, failed: false });
+
+  // SYNTHETIC: the same shape with a blank line between, so the bullet is not
+  // even a continuation of the marker — and the same bullet beside a REAL
+  // finding, where the withheld stub is the whole point of the failure.
+  const spaced = [
+    "- [P3] NO-MATERIAL-FINDINGS — app.py:1",
+    "",
+    "- the retry loop can charge the lane twice"
+  ].join("\n");
+  assert.deepEqual(extractStubs(spaced, "f"), { stubs: [], clean: false, failed: true });
+
+  const beside = [
+    "- [P1] Charge the handoff to the source lane — dispatch.sh:169",
+    "  The destination lane is charged a worker it does not own.",
+    "",
+    "- the retry loop can charge the lane twice"
+  ].join("\n");
+  assert.deepEqual(extractStubs(beside, "f"), { stubs: [], clean: false, failed: true },
+    "a bullet nobody could parse makes the whole finder suspect, stubs and all");
+
+  // The rule is about TOP-LEVEL items only: an indented bullet is body text, and
+  // a body that lists its own points must not fail an otherwise healthy finder.
+  const bodyList = [
+    "- [P2] Guard the impact cursor — daemon-retire.sh:88-92",
+    "  Retirement corrupts the cursor:",
+    "  - _resolve_uuid resolves impact-scan as a daemon",
+    "  - the sweep then restarts from zero"
+  ].join("\n");
+  const bl = extractStubs(bodyList, "f");
+  assert.equal(classify(bl), "stubs");
+  assert.equal(bl.stubs.length, 1);
+  assert.ok(bl.stubs[0].body.includes("- _resolve_uuid resolves impact-scan as a daemon"));
+}
+
+// ---------------------------------------------------------------------------
 // partial-drift.md — r15 with the list marker stripped from the SECOND head
 // only. The first finding still parses; handing back that subset would silently
 // lose the second. One unconsumed [P#] line makes the whole finder suspect.
