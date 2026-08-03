@@ -67,6 +67,7 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.ignoredLines = 0;
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -123,8 +124,19 @@ class AppServerClientBase {
     let message;
     try {
       message = JSON.parse(line);
-    } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+    } catch {
+      // A line that is not JSON is not the end of the connection. The protocol
+      // is JSONL, but the process emitting it is a CLI: a wrapper's banner, a
+      // deprecation notice, an unbuffered log line all land on the same stdout.
+      // Routing that into handleExit rejects every pending RPC and fails a turn
+      // whose server is alive and still streaming — so skip the line and keep
+      // reading. exitPromise settles on a real exit, error, or socket close.
+      this.ignoredLines += 1;
+      if (this.ignoredLines === 1) {
+        process.stderr.write(
+          `[codex] ignoring non-JSON line on the app-server's stdout: ${line.slice(0, 200)}\n`
+        );
+      }
       return;
     }
 
