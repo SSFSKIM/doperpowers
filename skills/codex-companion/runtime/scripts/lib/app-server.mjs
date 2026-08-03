@@ -73,6 +73,14 @@ class AppServerClientBase {
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
+
+    // The transport's own end-of-stream, which is NOT the process exit: lines
+    // buffered in the pipe are still delivered after the exit event, and a
+    // reader that stops at the exit can lose the notification that completed a
+    // turn. This settles when there is genuinely nothing left to read.
+    this.streamClosed = new Promise((resolve) => {
+      this.resolveStreamClosed = resolve;
+    });
   }
 
   setNotificationHandler(handler) {
@@ -286,7 +294,6 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       target.args,
       appServerSpawnOptions({ cwd: this.cwd, env: this.options.env })
     );
-    this.options.onSpawn?.(this.proc.pid);
 
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
@@ -314,6 +321,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     this.readline.on("line", (line) => {
       this.handleLine(line);
     });
+    this.readline.on("close", () => {
+      this.resolveStreamClosed(undefined);
+    });
+
+    // Only once the exit handlers above are attached: onSpawn is caller code and
+    // may throw, and a process whose exit nobody is listening for can never be
+    // closed — close() would wait on an exitPromise that has no path to settle.
+    this.options.onSpawn?.(this.proc.pid);
 
     await this.request("initialize", {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
@@ -330,11 +345,18 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
 
     this.closed = true;
 
+    if (!this.proc) {
+      // spawn() itself threw: there is no process, and no exit event is coming.
+      this.handleExit(this.exitError);
+      await this.exitPromise;
+      return;
+    }
+
     if (this.readline) {
       this.readline.close();
     }
 
-    if (this.proc && !this.proc.killed) {
+    if (!this.proc.killed) {
       this.proc.stdin.end();
       setTimeout(() => {
         if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
@@ -390,6 +412,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
         this.handleExit(error);
       });
       this.socket.on("close", () => {
+        this.resolveStreamClosed(undefined);
         this.handleExit(this.exitError);
       });
     });
@@ -440,7 +463,16 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (error) {
+      // The process is spawned inside initialize(), so a failure after that
+      // point (a rejected initialize, a throwing onSpawn) leaves a live
+      // app-server that the caller can never close — it never received a client
+      // to close. Whoever spawned it owns it.
+      await client.close().catch(() => {});
+      throw error;
+    }
     return client;
   }
 }

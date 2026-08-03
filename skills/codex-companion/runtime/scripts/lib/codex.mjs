@@ -565,14 +565,41 @@ function applyTurnNotification(state, message) {
 // semaphore slot it holds and the whole workflow wait forever. The exit IS the
 // answer — fail the turn so the engine's transport retry gets its one attempt
 // and the slot comes back.
-const EXIT_DRAIN_MS = 50;
+//
+// The cap on the drain below. It is not the drain itself: the stdout stream
+// closing is what says no more lines are coming. This only bounds the case where
+// that never happens (a pipe held open by a surviving grandchild), so a leaf
+// costs seconds instead of the whole run.
+export const EXIT_DRAIN_CAP_MS = 2000;
 
-async function completionLostToExit(client, state) {
+// Waits for `promise`, but never longer than `capMs`. The timer is cleared on the
+// fast path and unref'd on the slow one: this runs inside a Promise.race that the
+// completion usually wins, and a pending 2s timer would otherwise hold the
+// process open past the work it was waiting for.
+function raceWithCap(promise, capMs) {
+  if (!promise) {
+    return Promise.resolve();
+  }
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, capMs);
+      timer.unref?.();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Exported for the test that pins the drain boundary — a buffered completion
+// arriving after the exit event is not observable through captureTurn alone.
+export async function completionLostToExit(client, state) {
   await client.exitPromise;
-  // Lines that were already in the pipe when the process exited can still be
-  // delivered after the exit event; give them a tick. If the completion lands in
-  // that window it simply wins the race below, and nothing here matters.
-  await new Promise((resolve) => setTimeout(resolve, EXIT_DRAIN_MS));
+  // The exit EVENT is not the boundary. Lines already in the pipe when the
+  // process died are delivered after it, and the completion for a turn that DID
+  // finish can be one of them; a fixed grace period is a guess about how long
+  // that takes, and under load the guess expires first and fails a completed
+  // turn. The STREAM's close is the real "nothing more is coming".
+  await raceWithCap(client.streamClosed, EXIT_DRAIN_CAP_MS);
   if (state.completed) {
     return state.completion;
   }

@@ -143,5 +143,42 @@ assert.deepEqual(
   "the review lane's overrides reach its own app-server"
 );
 
+// --- a failed setup leaves no app-server behind --------------------------------
+//
+// connect() spawns the process and THEN initializes it. If anything between
+// those two points throws — the caller's onSpawn, a rejected initialize — the
+// caller never receives a client, so its own `finally` has nothing to close: the
+// app-server stays alive for the rest of the session, holding a model connection
+// nobody is reading. Whoever spawned it closes it.
+const failing = [];
+await assert.rejects(
+  runAppServerTurn(repo, {
+    prompt: "hi",
+    connect: {
+      disableBroker: true,
+      onSpawn: (pid) => {
+        failing.push(pid);
+        throw new Error("setup exploded");
+      }
+    }
+  }),
+  /setup exploded/,
+  "the setup failure still reaches the caller"
+);
+assert.equal(failing.length, 1, "the app-server was spawned before the failure");
+const orphanDeadline = Date.now() + 5000;
+const gone = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+};
+while (!gone(failing[0]) && Date.now() < orphanDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+assert.equal(gone(failing[0]), true, "…and it was closed rather than left running");
+
 fs.rmSync(scratch, { recursive: true, force: true });
 console.log("test-connect-overrides: ok");

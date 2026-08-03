@@ -82,6 +82,68 @@ assert.equal(counter, 3, "exactly three turns were paid for: A, A's retry, B");
 assert.deepEqual(JSON.parse(fs.readFileSync(path.join(runDir, "workers.json"), "utf8")), [],
   "no worker pids left tracked after a mid-turn death");
 
+// --- the drain boundary is the STREAM's close, not a fixed grace period -------
+//
+// The child's exit event fires while its stdout may still hold buffered lines,
+// and the completion for a finished turn can be one of them. A fixed 50ms grace
+// period is a guess about how long the kernel takes to hand those over; under
+// load it expires first and a turn that DID complete is failed (or retried,
+// paying for a second one). The stream closing is the actual "nothing more is
+// coming" signal, so that is what is waited for — with a cap, so a wedged pipe
+// costs seconds rather than the whole run.
+const { completionLostToExit, EXIT_DRAIN_CAP_MS } = await import(
+  "../../skills/codex-companion/runtime/scripts/lib/codex.mjs"
+);
+
+{
+  let resolveStream;
+  const client = {
+    exitPromise: Promise.resolve(),
+    streamClosed: new Promise((resolve) => {
+      resolveStream = resolve;
+    }),
+    exitError: new Error("codex app-server exited unexpectedly (signal SIGKILL).")
+  };
+  const state = {
+    completed: false,
+    completion: null,
+    finalAnswerSeen: false,
+    pendingCollaborations: new Set(),
+    activeSubagentTurns: new Set()
+  };
+  // The buffered completion lands well after any fixed grace period would have
+  // expired, and still before the stream closes.
+  setTimeout(() => {
+    state.completed = true;
+    state.completion = { finalMessage: "buffered answer" };
+  }, 250);
+  setTimeout(() => resolveStream(), 400);
+
+  const drained = await completionLostToExit(client, state);
+  assert.deepEqual(drained, { finalMessage: "buffered answer" }, "a completion still in the pipe is not a lost turn");
+}
+
+{
+  // …and a stream that never closes cannot hang the leaf: the cap answers.
+  const client = {
+    exitPromise: Promise.resolve(),
+    streamClosed: new Promise(() => {}),
+    exitError: new Error("codex app-server exited unexpectedly (signal SIGKILL).")
+  };
+  const state = {
+    completed: false,
+    completion: null,
+    finalAnswerSeen: false,
+    pendingCollaborations: new Set(),
+    activeSubagentTurns: new Set()
+  };
+  const startedAt = Date.now();
+  await assert.rejects(completionLostToExit(client, state), /exited unexpectedly/, "a wedged pipe still fails the turn");
+  const waited = Date.now() - startedAt;
+  assert.ok(waited >= EXIT_DRAIN_CAP_MS, `the cap is waited out (waited ${waited}ms)`);
+  assert.ok(waited < EXIT_DRAIN_CAP_MS + 2000, `…and not much longer (waited ${waited}ms)`);
+}
+
 clearTimeout(watchdog);
 fs.rmSync(scratch, { recursive: true, force: true });
 console.log("test-exit-midturn: ok");
