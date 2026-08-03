@@ -217,7 +217,6 @@ export function repoFingerprintParts(cwd, extraPaths = []) {
   // was taken at is part of the identity. realpath so that a symlinked path and
   // its target are one checkout, not two.
   const canonical = (dir) => { try { return fs.realpathSync(dir); } catch { return path.resolve(dir); } };
-  const digest = fpDigest;
 
   // "Not a repository" is a determinable, STABLE answer, and the only one that
   // may skip the git reads. Everything after this probe is a real git read,
@@ -232,7 +231,7 @@ export function repoFingerprintParts(cwd, extraPaths = []) {
   try {
     run(["rev-parse", "--is-inside-work-tree"]);
   } catch {
-    return { repoPath: canonical(cwd), repoContent: FINGERPRINT_NOGIT, code: digest(hashExtras()) };
+    return { repoPath: canonical(cwd), repoContent: FINGERPRINT_NOGIT, code: fpDigest(hashExtras()) };
   }
 
   const root = canonical(run(["rev-parse", "--show-toplevel"]).trim());
@@ -252,8 +251,8 @@ export function repoFingerprintParts(cwd, extraPaths = []) {
   });
   return {
     repoPath: root,
-    repoContent: digest([head, diff, untrackedHashes.join("\n"), submoduleUntracked(cwd, run).join("\n")]),
-    code: digest(hashExtras())
+    repoContent: fpDigest([head, diff, untrackedHashes.join("\n"), submoduleUntracked(cwd, run).join("\n")]),
+    code: fpDigest(hashExtras())
   };
 }
 
@@ -277,7 +276,8 @@ function submoduleUntracked(cwd, run) {
     const subPath = m[2];
     const subDir = path.resolve(cwd, subPath);
     const sub = (args) =>
-      execFileSync("git", ["-C", subDir, ...args], { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
+      execFileSync("git", ["-C", subDir, ...args],
+        { cwd, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).toString();
     let files;
     try { files = sub(["ls-files", "--others", "--exclude-standard"]); }
     catch { out.push(`${subPath}:unreadable`); continue; }
