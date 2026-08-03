@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
+import { currentPidStamp, pidInstanceAlive } from "../pid.mjs";
+
 export function cacheKey(kind, label, payload) {
   const h = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
   // `|` is the field separator, so it is escaped in the fields: otherwise
@@ -47,10 +49,11 @@ export function loadJournal(journalPath) {
 
 function leasePath(runDir) { return path.join(runDir, "lease.json"); }
 
-function alive(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (err) { return err.code === "EPERM"; }   // EPERM: exists, owned by someone else
-}
+// pidInstanceAlive (lib/pid.mjs) is the one liveness rule: ESRCH or a start-time
+// mismatch is death, everything else is life. The mismatch is what stops a lease
+// left by a killed run from reading as live once its pid has been reissued —
+// which would make the run unresumable and unbreakable at the same time.
+const alive = (pid, pidStart) => pidInstanceAlive(pid, pidStart);
 
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
@@ -66,7 +69,8 @@ function inspect(p) {
   let rec = null;
   try { rec = JSON.parse(raw); } catch { /* corrupt */ }
   if (!rec?.pid) return { state: "corrupt" };
-  return { state: alive(rec.pid) ? "live" : "dead", pid: rec.pid };
+  // pidStart absent: a lease written before stamps existed — pid-only, as before.
+  return { state: alive(rec.pid, rec.pidStart ?? null) ? "live" : "dead", pid: rec.pid };
 }
 
 // Atomic create — the ONLY way to become the holder; never check-then-write.
@@ -77,7 +81,7 @@ function inspect(p) {
 function claim(p, tag) {
   const tmp = `${p}.${process.pid}.${tag}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx" });
+    fs.writeFileSync(tmp, JSON.stringify({ ...currentPidStamp(), at: Date.now() }), { flag: "wx" });
     fs.linkSync(tmp, p);
     return true;
   } catch (err) {
@@ -112,7 +116,7 @@ export function acquireLease(runDir) {
       // their lease) or died mid-break (clear the wedge so it cannot pin
       // acquisition forever).
       const breaker = readJson(token);
-      if (!breaker?.pid || !alive(breaker.pid)) {
+      if (!breaker?.pid || !alive(breaker.pid, breaker.pidStart ?? null)) {
         try { fs.rmSync(token, { force: true }); } catch { /* another retrier cleared it */ }
       }
       continue;

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { currentPidStamp, pidInstanceAlive } from "./pid.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -158,30 +159,37 @@ export function saveState(cwd, state) {
 // than around one verb's own writes — is what stops two concurrent runs from
 // losing each other's job records: an unlocked legacy writer would happily
 // overwrite a workflow's row with a ledger it loaded before that row existed.
-function readPidFile(filePath) {
+// A holder stamp is `{pid, pidStart}` — the pid alone cannot survive pid reuse
+// (see lib/pid.mjs). A bare number is the pre-stamp format and still reads:
+// old locks on disk must not become unreadable, they just stay pid-only.
+function readHolder(filePath) {
   let raw;
   try {
-    raw = fs.readFileSync(filePath, "utf8");
+    raw = fs.readFileSync(filePath, "utf8").trim();
   } catch (err) {
     if (err.code === "ENOENT") {
       return null;
     }
     throw err;
   }
-  const pid = Number(raw.trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : null;
+  let pid = null;
+  let pidStart = null;
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      pid = Number(parsed.pid);
+      pidStart = parsed.pidStart ?? null;
+    } catch {
+      return null; // torn or corrupt: not a holder anyone can prove dead
+    }
+  } else {
+    pid = Number(raw);
+  }
+  return Number.isInteger(pid) && pid > 0 ? { pid, pidStart } : null;
 }
 
-// ESRCH is the ONLY proof of death. EPERM means the process exists and belongs
-// to someone else, and any other errno is unexplained — both count as alive, so
-// an unexplained answer can never cost anyone their lock.
-function pidIsDead(pid) {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (err) {
-    return err.code === "ESRCH";
-  }
+function stampBody() {
+  return JSON.stringify(currentPidStamp());
 }
 
 // The four states a held lock can be in. Only "dead" may ever be broken:
@@ -189,20 +197,20 @@ function pidIsDead(pid) {
 // a lock being broken right now), and "corrupt" is a stamp nobody has proven
 // dead — both are contended, so a wrong read costs a wait, never a lock.
 function inspectLock(lockDir) {
-  const pid = readPidFile(path.join(lockDir, LOCK_HOLDER_FILE));
-  if (pid == null) {
+  const holder = readHolder(path.join(lockDir, LOCK_HOLDER_FILE));
+  if (holder == null) {
     if (!fs.existsSync(lockDir)) {
       return { state: "absent" };
     }
     return { state: fs.existsSync(path.join(lockDir, LOCK_HOLDER_FILE)) ? "corrupt" : "unstamped" };
   }
-  return { state: pidIsDead(pid) ? "dead" : "live", pid };
+  return { state: pidInstanceAlive(holder.pid, holder.pidStart) ? "live" : "dead", pid: holder.pid };
 }
 
 // Atomic create — the only way to own a break token.
 function claimToken(tokenPath) {
   try {
-    fs.writeFileSync(tokenPath, String(process.pid), { flag: "wx" });
+    fs.writeFileSync(tokenPath, stampBody(), { flag: "wx" });
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") {
@@ -225,8 +233,8 @@ function breakDeadLock(lockDir, observed) {
     // Token held: its owner is breaking right now (retry and we will see their
     // lock), or it died mid-break — clear that wedge so a dead breaker cannot
     // pin acquisition forever.
-    const breaker = readPidFile(tokenPath);
-    if (breaker == null || pidIsDead(breaker)) {
+    const breaker = readHolder(tokenPath);
+    if (breaker == null || !pidInstanceAlive(breaker.pid, breaker.pidStart)) {
       fs.rmSync(tokenPath, { force: true });
     }
     return false;
@@ -265,7 +273,7 @@ function withStateLock(cwd, fn) {
       // whole mechanism exists to remove, so a failed stamp gives the lock back
       // before the error propagates.
       try {
-        fs.writeFileSync(holderPath, String(process.pid), "utf8");
+        fs.writeFileSync(holderPath, stampBody(), "utf8");
       } catch (err) {
         fs.rmSync(lockDir, { recursive: true, force: true });
         throw err;
@@ -278,9 +286,9 @@ function withStateLock(cwd, fn) {
       continue; // retake through the same atomic mkdir every contender uses
     }
     if (Date.now() > deadline) {
-      const holder = readPidFile(holderPath);
+      const holder = readHolder(holderPath);
       throw new Error(
-        `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder}` : "holder unknown"})`
+        `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder.pid}` : "holder unknown"})`
       );
     }
     // Bounded synchronous backoff: the whole mutation API is sync, so there is

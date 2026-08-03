@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+import { currentPidStamp, pidInstanceAlive } from "../pid.mjs";
 import { listJobs, readJobFile, resolveJobFile, updateState, upsertJob, writeJobFile } from "../state.mjs";
 
 export const WORKFLOW_JOB_CLASS = "workflow";
@@ -76,10 +77,13 @@ export function workflowJobLifecycle(workspaceRoot, job) {
       return record;
     },
     register() {
+      // The pid is stamped with this process's start time: after a reboot or a
+      // pid wraparound the number alone would make a long-dead run read as
+      // running, and cancel would signal whatever inherited it.
       return persist({
         status: "running",
         phase: "running",
-        pid: process.pid,
+        ...currentPidStamp(),
         startedAt: record.startedAt ?? nowIso()
       });
     },
@@ -98,6 +102,7 @@ function finalizePatch(record, status, patch = {}) {
     status,
     phase: PHASE_BY_STATUS[status] ?? status,
     pid: null,
+    pidStart: null,
     completedAt: nowIso()
   };
   // Rendered eagerly so `result` shows the run directory on every terminal
@@ -106,21 +111,12 @@ function finalizePatch(record, status, patch = {}) {
   return next;
 }
 
-function pidAlive(pid) {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // ESRCH is the ONLY proof of death — same rule as the state lock and the run
-    // lease. EPERM means the process exists and belongs to someone else, and any
-    // other errno is unexplained; both count as alive, so an unexplained answer
-    // can never finalize a live run as failed.
-    return err.code !== "ESRCH";
-  }
-}
+// Same rule as the state lock and the run lease (lib/pid.mjs): ESRCH or a
+// start-time mismatch is death, everything else is life — so an unexplained
+// answer can never finalize a live run as failed, and a reused pid can never
+// keep a dead one alive. A row with no pidStart (written before stamps existed)
+// stays pid-only.
+const pidAlive = (pid, pidStart = null) => pidInstanceAlive(pid, pidStart);
 
 // `--resume <run-id>` reuses the run's job id, so a resume of a run that is
 // still going would overwrite that run's own record before the engine's lease
@@ -131,7 +127,7 @@ export function isWorkflowRunActive(workspaceRoot, runId) {
   // a lock, so it can never be torn, and this must not throw on a record some
   // killed writer left half-finished.
   const job = listJobs(workspaceRoot).find((row) => row.id === runId);
-  return Boolean(job) && job.status === "running" && pidAlive(job.pid);
+  return Boolean(job) && job.status === "running" && pidAlive(job.pid, job.pidStart);
 }
 
 // A per-job file written by a process that died mid-write (and every file
@@ -153,7 +149,7 @@ function isDeadWorkflowRow(job) {
   return (
     job.jobClass === WORKFLOW_JOB_CLASS &&
     (job.status === "running" || job.status === "queued") &&
-    !pidAlive(job.pid)
+    !pidAlive(job.pid, job.pidStart)
   );
 }
 
@@ -200,23 +196,33 @@ export function repairDeadWorkflowJobs(workspaceRoot) {
 // workers.json may be ABSENT rather than `[]` — a fully-cached resume never
 // spawns a worker — and a recorded pid may already have exited. Neither is an
 // error, and neither may throw: this runs from a signal handler.
+//
+// Entries are `{pid, pidStart}`; a bare number is the pre-stamp format and is
+// still honored (pid-only). The stamp is what keeps a cancel from SIGTERMing an
+// unrelated process that inherited a dead worker's pid — the run directory can
+// outlive a reboot, and cancel is exactly the path that signals what it finds.
 export function killWorkflowWorkers(runDir, signal = "SIGTERM") {
   if (!runDir) {
     return [];
   }
-  let pids;
+  let entries;
   try {
-    pids = JSON.parse(fs.readFileSync(path.join(runDir, "workers.json"), "utf8"));
+    entries = JSON.parse(fs.readFileSync(path.join(runDir, "workers.json"), "utf8"));
   } catch {
     return [];
   }
-  if (!Array.isArray(pids)) {
+  if (!Array.isArray(entries)) {
     return [];
   }
   const signalled = [];
-  for (const pid of pids) {
+  for (const entry of entries) {
+    const pid = typeof entry === "number" ? entry : entry?.pid;
+    const pidStart = typeof entry === "number" ? null : entry?.pidStart ?? null;
     if (typeof pid !== "number") {
       continue;
+    }
+    if (!pidAlive(pid, pidStart)) {
+      continue; // gone, or the number belongs to someone else now
     }
     try {
       process.kill(pid, signal);

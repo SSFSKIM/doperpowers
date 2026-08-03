@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAppServerTurn, runAppServerReview, parseStructuredOutput, resolveReviewTarget } from "../codex.mjs";
+import { processStartTime } from "../pid.mjs";
 import { validateSchema } from "./validate.mjs";
 import {
   cacheKey, appendEvent, loadJournal, sealJournal, acquireLease, releaseLease,
@@ -104,15 +105,19 @@ export async function runWorkflow(spec) {
       fs.writeFileSync(fpPath, fp);
     }
     const occurrences = new Map();          // base key → count issued this run
-    const liveWorkers = new Set();
-    const saveWorkers = () => fs.writeFileSync(workersPath, JSON.stringify([...liveWorkers]));
+    // pid → its process start time: cancel reads this file, possibly long after
+    // a reboot, and a bare pid there is a signal aimed at whoever inherited the
+    // number. Stamped at spawn, while the worker is certainly the one we mean.
+    const liveWorkers = new Map();
+    const saveWorkers = () =>
+      fs.writeFileSync(workersPath, JSON.stringify([...liveWorkers].map(([pid, pidStart]) => ({ pid, pidStart }))));
     const sem = new Semaphore(spec.maxConcurrency ?? 6);
     let agents = 0;
     const emit = spec.emit ?? (() => {});
 
     // A failed exec reports no pid; tracking that would leave a `null` in
     // workers.json for the cancel path to signal.
-    const trackSpawn = (pid) => { if (typeof pid !== "number") return; liveWorkers.add(pid); saveWorkers(); };
+    const trackSpawn = (pid) => { if (typeof pid !== "number") return; liveWorkers.set(pid, processStartTime(pid)); saveWorkers(); };
     const untrack = (pid) => { if (typeof pid !== "number") return; liveWorkers.delete(pid); saveWorkers(); };
 
     async function leafCall(kind, label, payload, exec) {

@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
+import { pidInstanceAlive } from "./lib/pid.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
@@ -67,6 +68,12 @@ function cleanupSessionJobs(cwd, sessionId) {
       }
       const stillRunning = job.status === "queued" || job.status === "running";
       if (!stillRunning) {
+        continue;
+      }
+      // Only if the pid is still the process this row named: terminateProcessTree
+      // signals a whole process GROUP, and a row that outlived a reboot points at
+      // whoever inherited the number.
+      if (!pidInstanceAlive(job.pid ?? Number.NaN, job.pidStart ?? null)) {
         continue;
       }
       try {

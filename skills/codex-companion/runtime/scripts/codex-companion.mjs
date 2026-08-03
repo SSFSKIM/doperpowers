@@ -25,6 +25,7 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { pidInstanceAlive } from "./lib/pid.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -1164,7 +1165,14 @@ async function handleCancel(argv) {
     );
   }
 
-  terminateProcessTree(job.pid ?? Number.NaN);
+  // Only signal a pid that is still the process this record named. A run
+  // directory and a ledger row outlive a reboot, and cancel is precisely the
+  // path that shoots at whatever it finds: a reused pid here is somebody else's
+  // process (and terminateProcessTree signals its whole GROUP).
+  const runPidIsOurs = pidInstanceAlive(job.pid ?? Number.NaN, job.pidStart ?? null);
+  if (runPidIsOurs) {
+    terminateProcessTree(job.pid ?? Number.NaN);
+  }
   if (job.jobClass === WORKFLOW_JOB_CLASS) {
     // A workflow run is a plain foreground child of whoever launched it, not a
     // process-group leader, so terminateProcessTree's group signal raises ESRCH
@@ -1172,7 +1180,7 @@ async function handleCancel(argv) {
     // the workers and finalizes — then sweep the recorded worker pids anyway,
     // which is the only cleanup left when the run process is already gone.
     const runDir = existing.runDir ?? job.runDir ?? null;
-    if (typeof job.pid === "number") {
+    if (typeof job.pid === "number" && runPidIsOurs) {
       try {
         process.kill(job.pid, "SIGTERM");
       } catch {
