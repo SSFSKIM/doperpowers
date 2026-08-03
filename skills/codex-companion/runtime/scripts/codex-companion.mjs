@@ -31,10 +31,19 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  resolveWorkflowRunDir,
   setConfig,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
+import { runWorkflow, WorkflowError } from "./lib/workflow/engine.mjs";
+import {
+  isWorkflowRunActive,
+  killWorkflowWorkers,
+  repairDeadWorkflowJobs,
+  workflowJobLifecycle,
+  WORKFLOW_JOB_CLASS
+} from "./lib/workflow/job.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -81,6 +90,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs workflow --script <path.mjs> [--args <json>] [--max-concurrency N] [--cwd <dir>] [--resume <run-id>]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -312,6 +322,9 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+    // Re-probed every poll, not just before the loop: a workflow run killed
+    // mid-wait would otherwise hold the caller until the timeout.
+    repairDeadWorkflowJobs(resolveWorkspaceRoot(cwd));
     snapshot = buildSingleJobSnapshot(cwd, reference);
   }
 
@@ -869,6 +882,136 @@ async function handleTaskWorker(argv) {
   );
 }
 
+function parseWorkflowArgs(raw) {
+  if (raw == null || raw === "") {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`--args must be a JSON value: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function parseMaxConcurrency(raw) {
+  if (raw == null) {
+    return undefined; // the engine owns the default (6)
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`--max-concurrency must be a positive integer (got "${raw}").`);
+  }
+  return value;
+}
+
+async function handleWorkflow(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["script", "args", "max-concurrency", "cwd", "resume"],
+    // stdout is JSON unconditionally for this verb; --json is accepted so the
+    // flag every other verb takes is not silently parsed as a positional.
+    booleanOptions: ["json"]
+  });
+
+  if (!options.script) {
+    throw new Error("Missing required --script for workflow.");
+  }
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const scriptPath = path.resolve(cwd, options.script);
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`Workflow script not found: ${scriptPath}`);
+  }
+  ensureCodexAvailable(cwd);
+
+  const args = parseWorkflowArgs(options.args);
+  const maxConcurrency = parseMaxConcurrency(options["max-concurrency"]);
+  const resume = Boolean(options.resume);
+  // The run id IS the job id: one run, one record, one directory — so
+  // `/codex:result <run-id>` and `--resume <run-id>` name the same thing.
+  const runId = options.resume ?? generateJobId("wf");
+  if (resume && isWorkflowRunActive(workspaceRoot, runId)) {
+    throw new Error(`Workflow run ${runId} is still active. Cancel it before resuming.`);
+  }
+  const runDir = resolveWorkflowRunDir(runId);
+  const logFile = createJobLogFile(workspaceRoot, runId, "Codex Workflow");
+
+  const lifecycle = workflowJobLifecycle(
+    workspaceRoot,
+    createJobRecord({
+      id: runId,
+      kind: "workflow",
+      kindLabel: "workflow",
+      title: "Codex Workflow",
+      workspaceRoot,
+      jobClass: WORKFLOW_JOB_CLASS,
+      summary: `${path.basename(scriptPath)}${resume ? " (resume)" : ""}`,
+      runId,
+      runDir,
+      scriptPath,
+      journalPath: path.join(runDir, "journal.jsonl"),
+      resultPath: path.join(runDir, "result.json"),
+      logFile
+    })
+  );
+  lifecycle.register();
+
+  const emit = (line) => {
+    process.stderr.write(`[workflow] ${line}\n`);
+    appendLogLine(logFile, line);
+  };
+
+  let cancelling = false;
+  const cancelRun = (signal) => {
+    if (cancelling) {
+      return;
+    }
+    cancelling = true;
+    // Workers are direct children in this process group, so nothing else will
+    // reap them: signal every tracked pid before this process goes away.
+    const signalled = killWorkflowWorkers(runDir);
+    emit(`cancelled by ${signal}; signalled ${signalled.length} worker(s)`);
+    lifecycle.finalize("cancelled", { errorMessage: `Cancelled by ${signal}.` });
+    process.exit(130);
+  };
+  process.on("SIGTERM", () => cancelRun("SIGTERM"));
+  process.on("SIGINT", () => cancelRun("SIGINT"));
+
+  try {
+    const outcome = await runWorkflow({
+      scriptPath,
+      args,
+      cwd,
+      maxConcurrency,
+      runDir,
+      resume,
+      emit
+    });
+    const payload = { runId, ...outcome };
+    lifecycle.finalize("completed", {
+      result: payload,
+      agents: outcome.agents,
+      durationMs: outcome.durationMs
+    });
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = error instanceof WorkflowError ? error.reason : null;
+    // Every failure path finalizes: an unwrapped script error would otherwise
+    // leave a record the liveness repair has to clean up after the fact. The one
+    // exception is lease-held — that record belongs to the run that owns the
+    // lease, and it will finalize it itself.
+    if (reason !== "lease-held") {
+      lifecycle.finalize("failed", { errorMessage: reason ? `${reason}: ${message}` : message });
+    }
+    if (!reason) {
+      throw error;
+    }
+    process.stderr.write(`[workflow] ${reason}: ${message}\n`);
+    process.exitCode = 2;
+  }
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -876,6 +1019,7 @@ async function handleStatus(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
+  repairDeadWorkflowJobs(resolveCommandWorkspace(options));
   const reference = positionals[0] ?? "";
   if (reference) {
     const snapshot = options.wait
@@ -903,6 +1047,7 @@ function handleResult(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
+  repairDeadWorkflowJobs(resolveCommandWorkspace(options));
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
@@ -956,6 +1101,8 @@ async function handleCancel(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
+  // A run that is already dead must not present as cancelable.
+  repairDeadWorkflowJobs(resolveCommandWorkspace(options));
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
@@ -973,6 +1120,25 @@ async function handleCancel(argv) {
   }
 
   terminateProcessTree(job.pid ?? Number.NaN);
+  if (job.jobClass === WORKFLOW_JOB_CLASS) {
+    // A workflow run is a plain foreground child of whoever launched it, not a
+    // process-group leader, so terminateProcessTree's group signal raises ESRCH
+    // and stops there. Signal the run process directly — its own handler kills
+    // the workers and finalizes — then sweep the recorded worker pids anyway,
+    // which is the only cleanup left when the run process is already gone.
+    const runDir = existing.runDir ?? job.runDir ?? null;
+    if (typeof job.pid === "number") {
+      try {
+        process.kill(job.pid, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }
+    const signalled = killWorkflowWorkers(runDir);
+    if (signalled.length > 0) {
+      appendLogLine(job.logFile, `Signalled ${signalled.length} workflow worker(s).`);
+    }
+  }
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
@@ -1031,6 +1197,9 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "workflow":
+      await handleWorkflow(argv);
       break;
     case "transfer":
       await handleTransfer(argv);

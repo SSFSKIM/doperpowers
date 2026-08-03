@@ -43,6 +43,16 @@ export function resolveStateDir(cwd) {
   return path.join(stateRoot, `${slug}-${hash}`);
 }
 
+// The plugin data root itself (state lives under `state/` inside it; workflow
+// run directories live under `workflows/`).
+function resolveDataRoot() {
+  return process.env[PLUGIN_DATA_ENV] ?? FALLBACK_STATE_ROOT_DIR;
+}
+
+export function resolveWorkflowRunDir(runId) {
+  return path.join(resolveDataRoot(), "workflows", runId);
+}
+
 export function resolveStateFile(cwd) {
   return path.join(resolveStateDir(cwd), STATE_FILE_NAME);
 }
@@ -111,14 +121,58 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  // Write-then-rename: a reader (status/result/cancel in another process) must
+  // never observe a half-written ledger, and a crash mid-write must not truncate
+  // the one it had.
+  const target = resolveStateFile(cwd);
+  const tmp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, target);
   return nextState;
 }
 
+// updateState is the single load-mutate-write choke point every writer flows
+// through (upsertJob, setConfig, and so every verb). Serializing HERE — rather
+// than around one verb's own writes — is what stops two concurrent runs from
+// losing each other's job records: an unlocked legacy writer would happily
+// overwrite a workflow's row with a ledger it loaded before that row existed.
+function withStateLock(cwd, fn) {
+  ensureStateDir(cwd);
+  const lockDir = `${resolveStateFile(cwd)}.lock`;
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") {
+        throw err;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`state lock timeout: ${lockDir} (stale lock?)`);
+      }
+      // Bounded synchronous backoff: the whole mutation API is sync, so there is
+      // no event loop to yield to.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      /* already released */
+    }
+  }
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveState(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {
