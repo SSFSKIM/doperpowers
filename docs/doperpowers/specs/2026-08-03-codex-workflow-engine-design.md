@@ -604,6 +604,37 @@ sentinel; the two deferred owner variants (main-session verifier,
 spec-context deriver); reviewing-prs convergence onto the panel as a
 natural M2 once stability is shown.
 
+### Dogfood round (2026-08-04)
+
+The panel's first production run reviewed its own PR (#43, 85 files):
+8 workers, 22.5 min, zero worker failures, all six lanes extracted —
+and returned verdict `incorrect` with 17 confirmed findings (11 P1)
+against the branch that built it. All 17 were fixed in three fix waves
+plus two review-driven follow-up waves (~28 commits), each wave
+adversarially reviewed. The waves' own reviews surfaced defects the
+panel had missed — notably the unguarded broker pid (group-kill on
+reused pid after reboot) and the Linux `ps lstart` instance token
+shifting under clock steps, which would have made *live* processes
+read as dead (liveness inverted exactly where fail-closed mattered).
+Structural outcomes: the run fingerprint became four named components
+(repo path, repo content, script+helpers, args) so refusals name what
+moved; `args.json` rides the run directory and `--resume` alone
+replays it; a no-git cwd is single-use (per-run nonce) rather than
+silently replayable; review leaves key on merge-base AND tip;
+`extract.mjs` fails a lane on any unparseable top-level bullet and
+requires the clean marker to stand alone; a refuted duplicate
+corroborates nothing; the panel pins its base to one resolved
+merge-base commit at start. Known residuals accepted and documented:
+no per-turn watchdog for a silent-but-alive worker (follow-up), Linux
+token-format upgrade window (one-time, fails safe), win32 spawn now
+resolves the codex shim but real-Windows behavior is untested. Panel
+extraction/verifier changes have NOT been re-scored on X1 — the
+stability re-run already tracked above should run on the fixed panel.
+
+A `watch` verb (live journal-driven progress tree, read-only, no
+--cwd needed) shipped separately on the stacked `workflow-watch`
+branch after proving itself against the dogfood run live.
+
 ## Revision Notes
 
 - 2026-08-03: v1 — initial design from the brainstorming round following

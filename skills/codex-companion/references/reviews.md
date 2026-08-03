@@ -55,10 +55,11 @@ defects. The trailing focus text is a lens, e.g.
     … adversarial-review --background look for race conditions and question the chosen approach
 
 For a multi-lens sweep of a big diff, launch several `adversarial-review`
-runs in parallel background Bash calls, one lens each — and give each run
-its own state root (e.g. `CLAUDE_PLUGIN_DATA=…/codex-companion-lens2`):
-the job ledger is an unlocked read-modify-write of one `state.json`, so
-concurrent runs sharing a root can silently drop each other's job records.
+runs in parallel background Bash calls, one lens each. Concurrent runs may
+share one state root: every ledger writer takes the state lock, so parallel
+runs no longer drop each other's job records. (The `workflow` verb's
+code-review panel is the structured alternative for big diffs —
+references/workflows.md.)
 
 Working-tree and adversarial reviews embed the contents of untracked
 files — following symlinks — into the review prompt before any sandbox
