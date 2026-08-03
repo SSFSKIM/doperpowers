@@ -68,8 +68,11 @@ new_case() { # name scenario-json
   echo "-- case: $1"
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/codex-wf-$1-XXXXXX")"
   # TMPDIR usually ends in a slash; node's path.join collapses the resulting
-  # `//`, so paths the runtime records would not match ours literally.
-  scratch="${scratch//\/\//\/}"
+  # `//`, so paths the runtime records would not match ours literally. `tr -s`
+  # rather than a bash replacement: bash 3.2 (the system bash on macOS) keeps the
+  # backslash from a `\/` replacement string, leaving a scratch path that node's
+  # pathToFileURL percent-encodes and then refuses to import.
+  scratch="$(printf '%s' "$scratch" | tr -s /)"
   scratches+=("$scratch")
   mock_env "$scratch"
   repo="$scratch/repo"

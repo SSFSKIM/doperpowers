@@ -37,10 +37,16 @@ whatever the script returned; stderr streams `[workflow]` progress — one line
 per leaf call (`start`/`done`/`fail`/`retry`/`cache`/`cache-skip`) plus anything
 the script sent to `log`. On a fan-out of any size that stream dwarfs the
 result, so redirect it (`2> <scratch>.events.log`) and parse stdout. The same
-lines are also appended to the job log. Exit codes: 0 on success, 2 for an
-engine refusal (`lease-held`, `fingerprint-mismatch`, `script-error` — the
-reason is printed to stderr), 1 for an error escaping the script, 130 on
-SIGINT/SIGTERM after the run has signalled its workers.
+lines are also appended to the job log. Exit codes: 0 on success; 130 on
+SIGINT/SIGTERM, after the run has signalled its workers; 2 for an engine
+refusal, which names its reason on stderr (`fingerprint-mismatch`,
+`script-error`, or `lease-held`); and 1 for everything the verb itself rejects —
+a missing `--script`, a bad `--args`, an error escaping the script, and the
+ordinary "run is still active" refusal when you resume a run that has not
+finished. Do NOT read 2 as "the refusal code": the common resume refusal is 1,
+and `lease-held` reaches 2 only when the ledger's liveness check could not see
+the live run (a resume from a different workspace, say) and the engine's lease
+was the last guard standing.
 
 ## The script
 
@@ -79,8 +85,9 @@ Hooks:
   its thread persists so the repair turn below can reuse it. `schema` goes to Codex as
   the turn's output schema AND is re-checked engine-side; a failing result gets
   ONE repair turn on the same thread, and a second failure is terminal — exactly
-  two turns, never a third. A schema without `type: "object"` at the root
-  validates nothing, silently.
+  two turns, never a third. A schema with no `type` at its root validates
+  nothing, silently — give the root a `type` (`object` and `array` roots both
+  recurse into `properties`/`items`).
 - `review({base, scope, model, effort, lens, label, cwd})` →
   `{reviewText, threadId, status}`. Target selection matches the `review` verb
   (`base`, or `scope` of `auto`/`working-tree`/`branch` — see
@@ -97,6 +104,11 @@ Hooks:
 - `log(message)` → journals the line and emits it on stderr.
 - `args` → the parsed `--args` value.
 
+Both worker hooks take a per-call `cwd` that overrides `--cwd` for that worker
+alone. It is handed to the spawn as given, so a RELATIVE one resolves against
+the process's own working directory, not against `--cwd` — pass absolute paths
+unless the two are the same place.
+
 Concurrency is the engine's, not the script's: bare `Promise.all` over fifty
 `agent` calls is fine, because the semaphore inside every leaf call is what
 holds the live worker count at `--max-concurrency`. Each leaf call also gets one
@@ -111,7 +123,10 @@ appended as it happens), `result.json`, `fingerprint`, `lease.json` while the
 run holds the directory, and `workers.json` tracking live worker pids. The run
 id IS the job id, so `status <run-id>`, `result <run-id>` and `cancel <run-id>`
 work exactly as in references/jobs.md; the job statuses are `running`,
-`completed`, `failed` and `cancelled`. A run killed hard (SIGKILL, reboot)
+`completed`, `failed` and `cancelled`. Run directories are global under the
+state root, but the job RECORD is filed per workspace — the one resolved from
+`--cwd` — so the job verbs need the same `--cwd` (or the same working directory)
+the run used, or they will not find it. A run killed hard (SIGKILL, reboot)
 leaves its record `running` forever; the read paths repair it to `failed` when
 they next look, so `result` reports the death instead of a phantom.
 
@@ -125,10 +140,13 @@ would make the lost result unrecoverable. Two guards sit in front of it. The
 lease: one process holds the run directory at a time, and a lease whose holder
 is provably gone is broken atomically, so a resume of a run that is still going
 is refused rather than racing it. The fingerprint: it hashes HEAD, the full
-content diff against HEAD and every untracked file's blob — content, not just
-paths — and a resume against a changed repo is refused outright, since the
-cached findings describe code that no longer exists. Re-run fresh instead. (In a
-directory with no git, the fingerprint is a constant and that guard is off.)
+content diff against HEAD, every untracked file's blob — content, not just
+paths — and the resolved workflow script's own path and content, so editing even
+an out-of-tree ad-hoc script between runs refuses the resume too. A resume
+against a changed repo or a changed script is refused outright, since the cached
+results describe code that no longer exists. Re-run fresh instead. (In a
+directory with no git, the fingerprint is a constant and the whole guard is off,
+script included.)
 
 A fully-cached resume spawns no workers at all, so `workers.json` may be absent
 rather than empty — `cancel` tolerates that.

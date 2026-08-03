@@ -55,7 +55,7 @@ export async function runWorkflow(spec) {
       const recorded = fs.existsSync(fpPath) ? fs.readFileSync(fpPath, "utf8") : null;
       if (recorded && recorded !== fp) {
         throw new WorkflowError("fingerprint-mismatch",
-          `repo changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
+          `repo or workflow script changed since the original run (${recorded} → ${fp}); re-run fresh instead of resuming`);
       }
       // A run interrupted before it recorded a fingerprint has nothing to compare
       // against. Record the current one now rather than leaving the drift guard

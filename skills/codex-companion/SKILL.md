@@ -56,7 +56,7 @@ Verbs, and where each is specified:
 - `task` — any prompt to a resumable Codex thread; one-shot delegation
   or a standing multi-turn partner (critique debates, steered execution);
   read-only unless `--write` → references/amigo.md
-- `workflow` — run a JS orchestration script fanning out codex workers
+- `workflow` — run a JS orchestration script fanning out Codex workers
   (agents + native reviews) as ONE process; read-only, resumable
   → references/workflows.md
 - `status` / `result` / `cancel` — job history and backgrounding

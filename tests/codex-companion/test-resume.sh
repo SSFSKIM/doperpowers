@@ -8,8 +8,9 @@
 # phase 3 tears the journal's last line the way a killed writer would, phase 4
 # resumes and proves the cache is keyed by call identity (the hole re-runs live,
 # the finished calls come back from the journal with their ORIGINAL values), and
-# phases 5-6 prove the two guards that refuse a resume: the run lease and the
-# repo fingerprint.
+# phases 5-7 prove the two guards that refuse a resume: the run lease, and the
+# fingerprint over both the repo (phase 6) and the workflow script itself
+# (phase 7).
 #
 # Everything is asserted against artifacts the verb, the engine and the mock
 # app-server actually wrote — the journal, result.json, the mock's scenario
@@ -47,8 +48,12 @@ assert_absent() { # desc file needle
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/codex-wf-resume-XXXXXX")"
 # TMPDIR usually ends in a slash; node's path.join collapses the resulting `//`,
-# so paths the runtime records would not match ours literally.
-scratch="${scratch//\/\//\/}"
+# so paths the runtime records would not match ours literally. `tr -s` rather
+# than a bash replacement: bash 3.2 (the system bash on macOS) keeps the
+# backslash from a `\/` replacement string, and a scratch path carrying a literal
+# backslash is invisible until something feeds it to node's pathToFileURL, which
+# percent-encodes it and rejects the import.
+scratch="$(printf '%s' "$scratch" | tr -s /)"
 mock_env "$scratch"
 repo="$scratch/repo"
 # A SECOND workspace sharing the same plugin data root: its ledger cannot see
@@ -288,13 +293,63 @@ node "$RUNTIME" workflow --script "$SCRIPT" --resume "$run_id" --cwd "$repo" \
   > "$scratch/out5.json" 2> "$scratch/refuse-fp.err" || rc=$?
 assert_ne "a drifted resume is refused" 0 "$rc"
 assert_contains "the refusal names the fingerprint" "$scratch/refuse-fp.err" "fingerprint-mismatch"
-assert_contains "the refusal explains the drift" "$scratch/refuse-fp.err" "repo changed since the original run"
+assert_contains "the refusal explains the drift" "$scratch/refuse-fp.err" "repo or workflow script changed since the original run"
 assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
 assert_eq "the earlier result is left intact" \
   "A-first B-live C-first D-live" \
   "$(jq -r '[.a, .b, .c, .d] | join(" ")' "$run_dir/result.json")"
 snapshot_status
 assert_eq "the refused resume finalized its own record" failed "$(listed_field "$run_id" status)"
+
+# ---------------------------------------------------------------------------
+# Phase 7: the SCRIPT moved on while the repo stood still. An ad-hoc workflow
+# script living outside the repo is invisible to a repo-only fingerprint, so a
+# resume would serve a cache recorded against different orchestration code. The
+# script's own content rides the fingerprint for exactly this case.
+#
+# The script here is a COPY in the scratch area, deliberately outside the repo:
+# an in-repo script is already covered as untracked (or diffed) content, so only
+# an out-of-tree one can tell the two fingerprints apart. Nothing about the repo
+# changes across this phase, which is what makes the refusal below attributable
+# to the script and to nothing else.
+# ---------------------------------------------------------------------------
+echo "-- phase 7: workflow script drift"
+adhoc="$scratch/adhoc-workflow.mjs"
+cp "$FIXTURES/fx-solo.mjs" "$adhoc"
+head_before="$(git -C "$repo" rev-parse HEAD)"
+
+reset_mock '{"turns":[{"finalMessage":"S-first"}]}'
+rc=0
+node "$RUNTIME" workflow --script "$adhoc" --cwd "$repo" \
+  > "$scratch/out6.json" 2> "$scratch/err6.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err6.log"
+assert_eq "the ad-hoc run exits 0" 0 "$rc"
+drift_id="$(jq -r '.runId' "$scratch/out6.json")"
+
+# Control leg: the UNEDITED script resumes and is served from the journal. Without
+# it, a fingerprint that simply never matches for out-of-tree scripts would pass
+# the refusal below for the wrong reason.
+reset_mock '{"turns":[{"finalMessage":"must-not-run"}]}'
+rc=0
+node "$RUNTIME" workflow --script "$adhoc" --resume "$drift_id" --cwd "$repo" \
+  > "$scratch/out7.json" 2> "$scratch/err7.log" || rc=$?
+[ "$rc" -eq 0 ] || cat "$scratch/err7.log"
+assert_eq "an unedited ad-hoc script still resumes" 0 "$rc"
+assert_eq "the cached result came back" S-first "$(jq -r '.result.one' "$scratch/out7.json")"
+assert_eq "no turn was spent on the cached resume" 0 "$(turns_taken)"
+
+printf '\n// edited between runs\n' >> "$adhoc"
+reset_mock '{"turns":[{"finalMessage":"must-not-run"}]}'
+rc=0
+node "$RUNTIME" workflow --script "$adhoc" --resume "$drift_id" --cwd "$repo" \
+  > "$scratch/out8.json" 2> "$scratch/refuse-script.err" || rc=$?
+assert_ne "an edited script refuses to resume" 0 "$rc"
+assert_contains "the refusal names the fingerprint" "$scratch/refuse-script.err" "fingerprint-mismatch"
+assert_contains "the refusal names the script as a cause" "$scratch/refuse-script.err" \
+  "repo or workflow script changed since the original run"
+assert_eq "no turn was spent on the refused resume" 0 "$(turns_taken)"
+assert_eq "the repo never moved during this phase" "$head_before" "$(git -C "$repo" rev-parse HEAD)"
+assert_eq "the repo is still clean" "" "$(git -C "$repo" status --porcelain)"
 
 if [ "$fail" -eq 0 ]; then echo "workflow resume: all phases passed"; fi
 exit "$fail"
