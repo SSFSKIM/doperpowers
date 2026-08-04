@@ -41,3 +41,17 @@ Caveat for scoring use: rounds 2-3 reviewed a diff that includes the panel's
 own extraction/verifier changes — the panel under test changed between
 rounds. These runs are evidence about the fix campaign, not a stability
 measurement (that is the still-tracked X1 stability re-run).
+
+## Closing sweep (plain native review, single worker, sol/xhigh)
+
+After the loop stopped, one plain `review --base main` sweep ran over the
+final branch state (`99ba41c3`) as an independent cross-check:
+`final-plain-sweep.md`. It returned 8 findings (2 P1, 6 P2) — every one a
+re-derivation of an item already in the round-3 backlog, none new. Two
+engines (panel and plain sweep) now agree on the residual set, which bounds
+it. The two P1s in that intersection are the highest-priority backlog items:
+the queued task-worker pid is persisted without its start-time stamp (so
+cancel cannot signal it and a `--write` task can keep running after being
+recorded cancelled), and broker teardown authorizes its kill with the
+fail-open liveness predicate instead of the fail-closed `pidInstanceVerified`
+used on every other signal path.
