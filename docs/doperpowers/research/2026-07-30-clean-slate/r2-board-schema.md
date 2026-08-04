@@ -73,6 +73,22 @@ the one lane that can hold a run there); and answers on *unbound*
 parks (birth parks, needs-info escalations) carry an explicit human
 disposition `to` that may never target an in-flight state.
 
+**A1 implementation flow-back (2026-08-05, Task 8 serve-gap ruling):**
+§3.2's claim pick draws from each lane's ready state — but §1's
+`in-review → in-progress` fix-wave hand-back is a lane crossing that
+*releases* the QAgent, leaving an unowned in-flight ticket no pick
+could draw and the successor seam rightly refuses (released ≠
+reclaimed). The pick therefore extends to **the lane's own unowned
+in-flight state** (implementer/spike/ops: unowned `in-progress`;
+architect: unowned `in-design`; qagent's `in-review` already is one).
+Answer-resumed tickets remain excluded structurally — the bound run
+keeps `owner_run` — preserving E1 v1.3's no-second-worker rule. The
+successor seam re-qualifies lane-state agreement
+(`LANE_INFLIGHT[predecessor.lane] = ticket.state`), and a bound-park
+answer renews the run's lease in the answer transaction (the answer
+is the resume; reclaim excludes bound-pause parks `needs-human` /
+`interactive-preferred` entirely — human answers run on human time).
+
 **Interim-board mechanisms that dissolve structurally here** (recorded
 so the decomposing run doesn't port them): `pre-park:` meta was a build
 forced by GitHub having no queryable event record — here the park
