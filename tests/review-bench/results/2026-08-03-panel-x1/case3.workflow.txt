@@ -1,0 +1,35 @@
+panel verdict: incorrect
+explanation: confirmed: Return the persisted revision from save_document; Require admin authorization for the bulk export; Bound or stream the all-tenant export
+run: runId=wf-msco3q0y-6xouso agents=7 durationMs=416934
+
+derived lenses (4):
+  scalpel-1: Scrutinize authorization and tenant-isolation assumptions in the new bulk-export route and authentication decorators.
+  scalpel-2: Verify the revision contract between conditional writes in `store.py` and the revision and ETag returned by `app.py`.
+  scalpel-3: Check pagination boundary arithmetic against the advertised `limit` and page metadata.
+  scalpel-4: Assess the CPU, memory, and I/O cost of loading and rendering every tenant’s documents into one bulk-export response.
+
+coverage (5/5 ok):
+  sweep: status=ok stubs=3 lens=(lens-free sweep)
+  scalpel-1: status=ok stubs=3 lens=Scrutinize authorization and tenant-isolation assumptions in the new bulk-export route and authentication decorators.
+  scalpel-2: status=ok stubs=3 lens=Verify the revision contract between conditional writes in `store.py` and the revision and ETag returned by `app.py`.
+  scalpel-3: status=ok stubs=3 lens=Check pagination boundary arithmetic against the advertised `limit` and page metadata.
+  scalpel-4: status=ok stubs=4 lens=Assess the CPU, memory, and I/O cost of loading and rendering every tenant’s documents into one bulk-export response.
+
+Full review comments (4):
+
+- [P1] Return the persisted revision from save_document — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/store.py:122-122
+  The failure is concrete: saving a new empty document writes revision 1 but returns 0; app.py reports revision 0 and ETag W/"0", and the next PUT with expected_revision=0 conflicts against the persisted current revision 1.
+  (raised by: scalpel-1, sweep, scalpel-2, scalpel-3, scalpel-4)
+
+- [P1] Require admin authorization for the bulk export — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py:206-207
+  README.md:24 explicitly marks /exports/all admin-only and :44-46 requires every cross-tenant route to be administrative. app.py:206 instead applies session-only @authenticated, after which :214-224 reads and renders every tenant's documents for a member caller.
+  (raised by: scalpel-4, sweep, scalpel-1, scalpel-2, scalpel-3)
+
+- [P1] Bound or stream the all-tenant export — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py:219-224
+  app.py:213-227 has no pagination or size bound: it synchronously loads and parses every document, renders every row, and retains all rendered strings in exports until completion. Since document and corpus sizes are unbounded and dispatch is explicitly single-request, a large export can monopolize service execution and exhaust process memory before producing a response.
+  (raised by: scalpel-4)
+
+- [P2] Cap each page at the reported limit — /var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py:103-103
+  At app.py:97-103, page p starts at (p-1)*limit but ends at first+limit inclusively. The response can therefore contain limit+1 names while metadata still reports limit, and the extra final name becomes the first name of the next page.
+  (raised by: scalpel-3, sweep, scalpel-1, scalpel-2, scalpel-4)
+

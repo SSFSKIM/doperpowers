@@ -1,0 +1,19 @@
+{
+  "runId": "wf-mscq8kpg-241rp2",
+  "result": {
+    "verdict": "correct",
+    "findings": [],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 0
+      }
+    ],
+    "lenses": [],
+    "explanation": "no confirmed findings (note: all finders returned zero findings — verify the diff target is what you intended)"
+  },
+  "agents": 2,
+  "durationMs": 69940
+}

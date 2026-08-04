@@ -3,7 +3,9 @@
 import fs from "node:fs";
 import process from "node:process";
 
+import { pidInstanceVerified } from "./lib/pid.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
+import { killWorkflowWorkers, WORKFLOW_JOB_CLASS } from "./lib/workflow/job.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
   clearBrokerSession,
@@ -13,7 +15,7 @@ import {
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { loadState, resolveStateFile, updateState } from "./lib/state.mjs";
 import { TRANSCRIPT_PATH_ENV } from "./lib/claude-session-transfer.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -50,27 +52,55 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
+  if (!loadState(workspaceRoot).jobs.some((job) => job.sessionId === sessionId)) {
     return;
   }
 
-  for (const job of removedJobs) {
-    const stillRunning = job.status === "queued" || job.status === "running";
-    if (!stillRunning) {
-      continue;
+  // This is a ledger WRITER, so it takes the same lock every other writer takes.
+  // An unlocked load-then-save could be renamed over a concurrent upsertJob's
+  // ledger — and saveState's pruning pass would then delete the job record and
+  // log that upsert had just added, reading them as dropped. The rows are
+  // re-read inside the lock: the snapshot above is only a cheap "is there
+  // anything to do at all".
+  updateState(workspaceRoot, (state) => {
+    for (const job of state.jobs) {
+      if (job.sessionId !== sessionId) {
+        continue;
+      }
+      const stillRunning = job.status === "queued" || job.status === "running";
+      if (!stillRunning) {
+        continue;
+      }
+      // Only a pid this row can PROVE is still its own process: terminateProcessTree
+      // signals a whole process GROUP, and a row that outlived a reboot points at
+      // whoever inherited the number. Unprovable (unstamped, or a platform with no
+      // readable start time) is never signalled — the same rule every kill path here
+      // follows.
+      if (!pidInstanceVerified(job.pid ?? Number.NaN, job.pidStart ?? null)) {
+        continue;
+      }
+      try {
+        // A workflow run is a plain foreground child of whoever launched it, not a
+        // process-group leader, so the group signal raises ESRCH and delivers
+        // nothing. Dropping the row on that would leave the run — and its workers —
+        // executing with nothing left addressing them, so this is the same direct
+        // signal + worker sweep that `cancel` does.
+        const outcome = terminateProcessTree(job.pid ?? Number.NaN);
+        if (!outcome.delivered) {
+          try {
+            process.kill(job.pid, "SIGTERM");
+          } catch {
+            /* already gone */
+          }
+        }
+      } catch {
+        // Ignore teardown failures during session shutdown.
+      }
+      if (job.jobClass === WORKFLOW_JOB_CLASS) {
+        killWorkflowWorkers(job.runDir ?? null);
+      }
     }
-    try {
-      terminateProcessTree(job.pid ?? Number.NaN);
-    } catch {
-      // Ignore teardown failures during session shutdown.
-    }
-  }
-
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
   });
 }
 
@@ -96,6 +126,9 @@ async function handleSessionEnd(input) {
   const logFile = brokerSession?.logFile ?? null;
   const sessionDir = brokerSession?.sessionDir ?? null;
   const pid = brokerSession?.pid ?? null;
+  // Only the record that broker.json itself wrote can carry an instance stamp;
+  // the env-var fallback below has a pid of null anyway.
+  const pidStart = brokerSession?.pidStart ?? null;
 
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);
@@ -108,6 +141,7 @@ async function handleSessionEnd(input) {
     logFile,
     sessionDir,
     pid,
+    pidStart,
     killProcess: terminateProcessTree
   });
   clearBrokerSession(cwd);

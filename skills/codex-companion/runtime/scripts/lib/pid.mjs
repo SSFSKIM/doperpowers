@@ -1,0 +1,241 @@
+// Process identity, not just a process number.
+//
+// Everything durable in this runtime records a pid: the workflow run lease, the
+// state lock's holder stamp, workers.json, and the job row that `status`,
+// `--resume` and `cancel` all act on. Pids are REUSED — trivially across a
+// reboot, eventually through wraparound on a long-lived machine — so a bare pid
+// cannot answer "is the process I recorded still alive". Two ways that hurts:
+// a stale lease or lock reads as live and nothing can ever break it (every later
+// writer times out), and cancel SIGTERMs whatever now owns the number.
+//
+// The process start time is the cheap instance discriminator: no privileges, no
+// bookkeeping, and stable for the life of the process.
+//
+// WHICH start time matters. On Linux the kernel's own field 22 of
+// /proc/<pid>/stat is jiffies since boot — a fixed number, immune to clock
+// steps. `ps -o lstart=` there is that number rendered against /proc/stat's
+// btime and the wall clock, so an NTP step or a suspend/resume MOVES it under a
+// live process: every stamp written before the step would then mismatch, and a
+// mismatch is read as death — live locks broken, live leases broken, live runs
+// finalized as failed. So Linux reads /proc directly; darwin has no /proc and
+// keeps `ps`, where lstart is a real (monotonic-enough) boot-relative wall time
+// with one-second granularity — for a false match there a machine would have to
+// reissue the same pid within the same second.
+//
+// Boot-relative is exactly the weakness a REBOOT exploits: jiffies restart at 0,
+// so a record written before one can match the same pid at the same tick after
+// it — and everything durable here (a run directory, a ledger row, broker.json)
+// outlives a reboot. The Linux token therefore carries the kernel's boot id,
+// which changes with every boot: `<boot-id>@<jiffies>`. Windows reads no start
+// time at all and records none; there the kill paths simply refuse to signal
+// (see pidInstanceVerified), which is why no Windows start-time reader is worth
+// building for an unsupported platform.
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
+
+// Reading a start time is a file read on linux and a fork on darwin, and ONE
+// caller asks in a burst: the state lock's retry loop re-inspects its holder
+// every ~15ms until it acquires or times out. That loop opts in.
+//
+// Nobody else may. A cached answer is a claim about a pid that is no longer
+// being observed, and the window it covers is precisely the one in which a
+// process exits and its number is reissued: a kill decision served from the
+// cache would authorize signalling the SUCCESSOR against its predecessor's
+// token, and a spawn stamp served from it would record the predecessor's. Both
+// are the reuse this module exists to detect, so both read fresh.
+const START_TIME_CACHE_TTL_MS = 250;
+const CACHE_SWEEP_AT = 64;
+const startTimeCache = new Map();
+
+// A FAILED read is never cached: "not readable right now" is not an answer, and
+// remembering it would keep handing back an absence after the cause is gone.
+function cachedStartTime(key, read) {
+  const now = Date.now();
+  const hit = startTimeCache.get(key);
+  if (hit && now - hit.at < START_TIME_CACHE_TTL_MS) {
+    return hit.value;
+  }
+  const value = read();
+  if (value) {
+    if (startTimeCache.size >= CACHE_SWEEP_AT) {
+      for (const [staleKey, entry] of startTimeCache) {
+        if (now - entry.at >= START_TIME_CACHE_TTL_MS) {
+          startTimeCache.delete(staleKey);
+        }
+      }
+    }
+    startTimeCache.set(key, { value, at: now });
+  }
+  return value;
+}
+
+// Field 22 (starttime) of /proc/<pid>/stat. Field 2 is `comm`, the executable
+// name as the kernel has it: unquoted, parenthesized, and free to contain both
+// spaces and parentheses — `(code x) (server)` is a legal comm. Counting fields
+// from the LAST ')' is the only parse that survives it.
+function readProcStartTime(pid, procRoot) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(procRoot, String(pid), "stat"), "utf8");
+  } catch {
+    return null;
+  }
+  const commEnd = raw.lastIndexOf(")");
+  if (commEnd === -1) {
+    return null;
+  }
+  // fields[0] is field 3 (state), so field 22 is fields[19].
+  const fields = raw.slice(commEnd + 1).trim().split(/\s+/);
+  const starttime = fields[19];
+  if (!/^\d+$/.test(starttime ?? "")) {
+    return null;
+  }
+  const boot = bootId(procRoot);
+  return boot ? `${boot}${TOKEN_SEP}${starttime}` : starttime;
+}
+
+// The boot id cannot change while this process runs — a new one means a reboot,
+// and nothing of ours survived it. Read once per root (the root is a parameter
+// so the Linux path stays assertable from a mac). An unreadable boot id is not
+// an error: the token falls back to bare jiffies, which is what every record
+// written before this looked like.
+const bootIds = new Map();
+function bootId(procRoot) {
+  if (!bootIds.has(procRoot)) {
+    let value = null;
+    try {
+      value = fs.readFileSync(path.join(procRoot, "sys", "kernel", "random", "boot_id"), "utf8").trim() || null;
+    } catch {
+      value = null;
+    }
+    bootIds.set(procRoot, value);
+  }
+  return bootIds.get(procRoot);
+}
+
+// `@` never appears in either token format's own text: darwin's lstart is a
+// date, linux's jiffies are digits.
+const TOKEN_SEP = "@";
+
+// Two tokens name the same instance. A token WITHOUT a boot id is either a
+// darwin lstart or a linux record written before the boot id was folded in —
+// and a live process must not start reading as dead the moment the runtime is
+// upgraded under it, so the halves the two formats share are what get compared.
+// The aliasing that costs is a reboot, and after one both sides are new-format.
+function sameInstanceToken(current, recorded) {
+  if (current === recorded) {
+    return true;
+  }
+  const currentHasBoot = current.includes(TOKEN_SEP);
+  if (currentHasBoot === recorded.includes(TOKEN_SEP)) {
+    return false;
+  }
+  const ticks = (token) => token.slice(token.indexOf(TOKEN_SEP) + 1);
+  return ticks(current) === ticks(recorded);
+}
+
+function readPsStartTime(pid) {
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8"
+    }).trim();
+    return out || null;
+  } catch {
+    return null; // the process is gone, or `ps` is unavailable: no claim either way
+  }
+}
+
+// Reads fresh unless `cache` is set — see START_TIME_CACHE_TTL_MS for who may
+// set it, and why nobody else may.
+//
+// `platform` and `procRoot` exist so the Linux path is assertable from a mac —
+// its parsing is the part with a real failure mode.
+export function processStartTime(pid, { platform = process.platform, procRoot = "/proc", cache = false } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+  const read =
+    platform === "linux"
+      ? { key: `linux\0${procRoot}\0${pid}`, run: () => readProcStartTime(pid, procRoot) }
+      : platform === "darwin"
+        ? { key: `darwin\0${pid}`, run: () => readPsStartTime(pid) }
+        : null;
+  if (!read) {
+    return null; // unknown here ⇒ no stamp is written, and liveness stays pid-only
+  }
+  return cache ? cachedStartTime(read.key, read.run) : read.run();
+}
+
+let selfStamp = null;
+
+// What a writer stamps its own records with. Memoized once it is KNOWN: our own
+// start time cannot change, and this is on the path of every job registration.
+// A failed read is not knowledge — memoizing it would leave this process writing
+// unstamped records for the rest of its life over one transient failure.
+export function currentPidStamp(options = {}) {
+  if (selfStamp) {
+    return { ...selfStamp };
+  }
+  const pidStart = processStartTime(process.pid, options);
+  if (!pidStart) {
+    return { pid: process.pid, pidStart: null };
+  }
+  selfStamp = { pid: process.pid, pidStart };
+  return { ...selfStamp };
+}
+
+// The one liveness rule for every persisted pid in the runtime.
+//
+// ESRCH is the ONLY proof of death by signal: EPERM means the process exists and
+// belongs to someone else, and any other errno is unexplained — both count as
+// alive, so an unexplained answer can never cost anyone their lock, lease or run.
+// A start-time MISMATCH is the second proof of death, and a real one: the number
+// is in use, but not by the process that was recorded.
+//
+// A record with no start time (written before stamps existed, or on a platform
+// that cannot read one) keeps the old pid-only behavior — old on-disk state must
+// not start reading as dead.
+export function pidInstanceAlive(pid, pidStart = null, options = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    if (err.code === "ESRCH") {
+      return false;
+    }
+  }
+  if (!pidStart) {
+    return true;
+  }
+  const current = processStartTime(pid, options);
+  if (!current) {
+    return true; // could not tell: never claim death on ignorance
+  }
+  return sameInstanceToken(current, pidStart);
+}
+
+// The rule for every path that SIGNALS a persisted pid — cancel, the workflow
+// worker sweep, the SessionEnd teardown, the broker teardown.
+//
+// It is the exact inverse of liveness above, and deliberately so. Liveness
+// decides who may keep a lock, a lease or a run, so ignorance must never cost
+// anyone theirs: unverifiable reads as alive. Signalling decides who gets a
+// SIGTERM (a process GROUP's worth of them, through terminateProcessTree), and
+// the thing at the other end of a stale pid is a stranger's process — so
+// ignorance may never authorize it. A record with no stamp (written before
+// stamps existed, or on Windows, where no start time is readable) and a stamp
+// that cannot be read back are both unprovable, and neither is signalled: the
+// cost is a leaked process that was already unreachable, against killing
+// somebody else's.
+export function pidInstanceVerified(pid, pidStart = null, options = {}) {
+  if (!pidStart || !Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  const current = processStartTime(pid, options);
+  return Boolean(current) && sameInstanceToken(current, pidStart);
+}

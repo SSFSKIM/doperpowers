@@ -1,0 +1,29 @@
+panel verdict: incorrect
+explanation: confirmed: Convert cents before formatting quick estimates; Restore positive finite validation in quoteShipment; Keep tier upper bounds inclusive
+run: runId=wf-mscnqzhk-44d0z4 agents=6 durationMs=593729
+
+derived lenses (3):
+  scalpel-1: Scrutinize the dollars-to-cents migration across rates, discounts, quote assembly, and API serialization. Verify unit conversions, rounding direction, and breakdown totals.
+  scalpel-2: Check pricing behavior at exact weight-tier boundaries. Also verify that removing validation from quoteShipment does not expose direct callers to invalid numeric inputs.
+  scalpel-3: Verify compatibility of the expanded quote response and renamed exported pricing interfaces. Pay attention to consumers that may still expect dollar-based fields or functions.
+
+coverage (4/4 ok):
+  sweep: status=ok stubs=3 lens=(lens-free sweep)
+  scalpel-1: status=ok stubs=3 lens=Scrutinize the dollars-to-cents migration across rates, discounts, quote assembly, and API serialization. Verify unit conversions, rounding direction, and breakdown totals.
+  scalpel-2: status=ok stubs=3 lens=Check pricing behavior at exact weight-tier boundaries. Also verify that removing validation from quoteShipment does not expose direct callers to invalid numeric inputs.
+  scalpel-3: status=ok stubs=4 lens=Verify compatibility of the expanded quote response and renamed exported pricing interfaces. Pay attention to consumers that may still expect dollar-based fields or functions.
+
+Full review comments (3):
+
+- [P1] Convert cents before formatting quick estimates — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Klx42T/api.ts:75-75
+  Concrete failure at api.ts:75: `baseRateFor("domestic", 2)` returns 590 cents, which `quickEstimate` renders as `"590.00"` rather than `"5.90"`. The cent-to-dollar conversion is missing.
+  (raised by: scalpel-2, sweep, scalpel-1, scalpel-3)
+
+- [P1] Restore positive finite validation in quoteShipment — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Klx42T/quote.ts:82-83
+  The base version validated `Number.isFinite(req.weightKg) && req.weightKg > 0` in `quoteShipment`; that guard is gone. Direct callers no longer receive `RangeError`, and `handleQuote` returns 200 for zero, negative, NaN, or infinite numeric inputs, contradicting the documented validation contract.
+  (raised by: scalpel-2, sweep, scalpel-1, scalpel-3)
+
+- [P1] Keep tier upper bounds inclusive — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Klx42T/rates.ts:42-42
+  Both the `WeightTier` interface and README explicitly define `maxKg` as inclusive, but rates.ts:42 uses `<`. Exact 1, 5, and 20 kg values are all assigned to the next tier and overcharged.
+  (raised by: scalpel-3, sweep, scalpel-1, scalpel-2)
+

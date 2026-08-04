@@ -1,0 +1,13 @@
+[workflow] start agent:lens-deriver
+[workflow] done agent:lens-deriver
+[workflow] log panel: sweep + 3 scalpels
+[workflow] start review:sweep
+[workflow] start review:scalpel-1
+[workflow] start review:scalpel-2
+[workflow] start review:scalpel-3
+[workflow] done review:scalpel-2
+[workflow] done review:sweep
+[workflow] done review:scalpel-1
+[workflow] done review:scalpel-3
+[workflow] start agent:verifier
+[workflow] done agent:verifier

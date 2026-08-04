@@ -1,0 +1,99 @@
+{
+  "run_id": "2026-08-03-panel-x1",
+  "engine": {
+    "name": "codex review panel (workflow engine)",
+    "invocation": "tests/review-bench/run-case-workflow.sh -> `workflow` verb on skills/codex-companion/workflows/code-review.mjs, args {\"base\":\"main\"}",
+    "shape": "one lens-deriver agent (sol/medium) + one lens-free native sweep + N diff-derived scalpel native reviews (sol/xhigh) + one binding verifier agent (sol/high)",
+    "codex_cli": "0.146.0",
+    "date": "2026-08-03"
+  },
+  "baseline": {
+    "run_id": "2026-07-26-c2-codex-r3",
+    "scores_file": "results/2026-07-26-c2-scores.json",
+    "engine": "single codex review through review-engine.sh, gpt-5.6-sol xhigh (production path)",
+    "seeded": {"recall": 17, "fp": 0},
+    "promoted": 3,
+    "full_denominator": "20/20",
+    "why_this_one": "the most recent codex run scored on the current post-#36 fixtures (truth denominator 20); the earlier baseline-r1/r2 pair was scored against the pre-maintenance fixtures"
+  },
+  "bar": {
+    "rule": "seeded recall >= baseline seeded recall AND total seeded-set FP <= baseline FP + 1",
+    "required": "recall >= 17 and FP <= 1"
+  },
+  "totals": {
+    "seeded": {"denominator": 17, "recall": 17, "fp": 1},
+    "promoted": {"denominator": 3, "recall": 3},
+    "full_denominator": "20/20",
+    "verdict": "PASS — recall 17/17 = baseline 17/17; FP 1 vs baseline 0 (+1, the maximum the bar allows)"
+  },
+  "per_case": {
+    "case1": {"secs": 519, "workers": 6, "lenses": 3, "coverage": "4/4 ok", "pool": 12, "published": 4,
+      "seeded": "3/3", "fp": 0, "panel_verdict": "incorrect"},
+    "case2": {"secs": 594, "workers": 6, "lenses": 3, "coverage": "4/4 ok", "pool": 13, "published": 3,
+      "seeded": "3/3", "fp": 0, "panel_verdict": "incorrect"},
+    "case3": {"secs": 417, "workers": 7, "lenses": 4, "coverage": "5/5 ok", "pool": 16, "published": 4,
+      "seeded": "3/3", "fp": 1, "panel_verdict": "incorrect"},
+    "case4": {"secs": 714, "workers": 7, "lenses": 4, "coverage": "5/5 ok", "pool": 30, "published": 9,
+      "seeded": "4/4", "promoted": "2/2", "fp": 0, "panel_verdict": "incorrect"},
+    "case5": {"secs": 621, "workers": 7, "lenses": 4, "coverage": "5/5 ok", "pool": 26, "published": 5,
+      "seeded": "4/4", "promoted": "1/1", "fp": 0, "panel_verdict": "incorrect"}
+  },
+  "adjudication": {
+    "rules_applied": "mechanism match against each case's truth.json (file+line overlap is evidence, mechanism is the criterion); one finding matches at most one truth entry; a flagged bait is an FP by construction; a finding that surfaces a genuine unseeded defect is credited to neither side and excluded from FP (X1 README).",
+    "case1": [
+      {"finding": "Subtract allowed lateness from each tenant watermark (windows.py:70)", "maps_to": "case1-b1", "why": "the cutoff sign inversion, exactly the seeded mechanism"},
+      {"finding": "Clear accumulated windows when flushing each batch (aggregate.py:85-87)", "maps_to": "case1-b2", "why": "the dropped _pending.clear() that stops windows retiring"},
+      {"finding": "Load tenant configuration once per run (pipeline.py:39-40)", "maps_to": "case1-b3", "why": "per-reading load_tenant_limits re-opening tenants.json"},
+      {"finding": "Validate tenant configuration before lookup (tenants.py:41-48)", "maps_to": "unseeded-genuine", "why": "a `default` entry of null makes entry.get raise, and a NaN max_value silently disables clipping (value > nan is always false) — real, in code this patch introduces, no truth entry, not one of the three baits. Same class as the 'null config entry crashes load_tenant_limits' candidate the C2 round already recorded and excluded."}
+    ],
+    "case2": [
+      {"finding": "Convert cents before formatting quick estimates (api.ts:75)", "maps_to": "case2-b2", "why": "the dollars/cents cross-file contract break in the untouched quickEstimate caller"},
+      {"finding": "Restore positive finite validation in quoteShipment (quote.ts:82-83)", "maps_to": "case2-b3", "why": "the RangeError guard lost in the move to buildBreakdown"},
+      {"finding": "Keep tier upper bounds inclusive (rates.ts:42)", "maps_to": "case2-b1", "why": "the < vs <= tier boundary against the documented inclusive maxKg"}
+    ],
+    "case3": [
+      {"finding": "Return the persisted revision from save_document (store.py:122)", "maps_to": "case3-b2", "why": "row count returned where the caller emits it as revision and ETag"},
+      {"finding": "Require admin authorization for the bulk export (app.py:206-207)", "maps_to": "case3-b1", "why": "@authenticated on the cross-tenant export route"},
+      {"finding": "Cap each page at the reported limit (app.py:103)", "maps_to": "case3-b3", "why": "the inclusive slice returning limit+1 names with a repeating boundary"},
+      {"finding": "Bound or stream the all-tenant export (app.py:219-224)", "maps_to": "FALSE POSITIVE", "why": "the endpoint's own docstring and README state it returns every document on the node for the nightly warehouse loader — the whole-node dump is the feature. Prior engines RAISED this candidate too (argus-high, argus-plain, /review) and every one of their verifiers REFUTED it on exactly those fixture-stated grounds; this panel's verifier confirmed it instead."}
+    ],
+    "case4": [
+      {"finding": "Parse all four manifest fields before pruning (snapshot.sh:101 / prune.sh:62)", "maps_to": "case4-b4", "why": "prune.sh still reads three fields of a v2 manifest"},
+      {"finding": "Treat zero as a disabled force flag (lib/common.sh:81)", "maps_to": "case4-b1", "why": "[ \"$force\" ] with callers passing the string 0"},
+      {"finding": "Restore unconditional staging cleanup (snapshot.sh:77)", "maps_to": "case4-b2", "why": "the dropped EXIT/INT/TERM trap around the staging dir"},
+      {"finding": "Quote remote destination values safely (lib/common.sh:98)", "maps_to": "case4-b3", "why": "label-derived name interpolated into the remote shell command"},
+      {"finding": "Publish remote archives only after transfer completion (lib/common.sh:98)", "maps_to": "case4-u1", "why": "the promoted defect: the comment claims cat cannot leave a partial file under the final name, but the redirect opens that name directly"},
+      {"finding": "Apply a private umask on the remote host (lib/common.sh:97-99)", "maps_to": "case4-u2", "why": "the promoted defect: the replica copy is created under the remote account's umask"},
+      {"finding": "Follow symlinked source directories in preflight (snapshot.sh:63)", "maps_to": "unseeded-genuine", "why": "already adjudicated genuine in the C2 round by cross-engine convergence (codex r3, argus plain r2, argus high r2); the codex BASELINE also found it, so excluding it is symmetric"},
+      {"finding": "Enforce space on the staging filesystem (snapshot.sh:75)", "maps_to": "unseeded-genuine", "why": "the guard measures BACKUP_ARCHIVE_DIR while the tarball is written to TMPDIR; recorded as a candidate in the C2 round (argus high r2 [P2] PLAUSIBLE)"},
+      {"finding": "Constrain retention to the exact label (prune.sh:40)", "maps_to": "unseeded-genuine", "why": "NEW candidate. list_archives matches \"$label\"-*.tar.gz, so label `nightly` sweeps `nightly-db-*` archives into its own KEEP budget. Pre-existing (the base glob had the identical prefix semantics), but this change's own README states the v2 manifest exists BECAUSE labels may contain `-`, which is what makes the collision reachable. Not a bait — bait (2) only claims the find rewrite preserves the glob's set, and it does."}
+    ],
+    "case5": [
+      {"finding": "Release the registry guard before awaiting keyed work (keylock.py:46-50)", "maps_to": "case5-b3", "why": "the whole hold() body moved inside the process-wide guard"},
+      {"finding": "Clear in-flight state when a factory fails (cache.py:130-133)", "maps_to": "case5-b2", "why": "no try/finally around the in-flight marker"},
+      {"finding": "Check expiry before extending the deadline (cache.py:77-80)", "maps_to": "case5-b1", "why": "sliding TTL applied before the expiry test"},
+      {"finding": "Update hit-rate consumers with the counter rename (cache.py:127-129 / jobqueue.py:202-210)", "maps_to": "case5-b4", "why": "cache.get.* producers vs cache.* consumers"},
+      {"finding": "Apply cache timeouts to in-flight joins (cache.py:110-111)", "maps_to": "case5-u1", "why": "the promoted defect: the join branch awaits pending.wait() before either timeout is resolved"}
+    ]
+  },
+  "false_positives": [
+    "case3: 'Bound or stream the all-tenant export' — the documented purpose of the endpoint; refuted by every prior engine's verifier"
+  ],
+  "unseeded_candidates_excluded": [
+    "case1: tenants.json validation gap (null default entry raises; NaN max_value silently disables clipping) — NEW, fixture follow-up",
+    "case4: source-dir symlink probe — already adjudicated genuine in C2 (found by the codex baseline too)",
+    "case4: staging-filesystem free-space gap — recorded as a C2 candidate",
+    "case4: prune label-prefix collision (`nightly` sweeps `nightly-db-*`) — NEW, fixture follow-up"
+  ],
+  "sensitivity": {
+    "note": "the PASS depends on the exclusions above; the strictest reading (counting every non-truth finding as an FP) puts the panel at FP 5 and the baseline codex r3 at FP 2, so the panel would fail. The symmetric reading — the X1 rule as written, applied to both engines' unseeded candidates alike — is the one scored here.",
+    "panel_excluded_candidates": 4,
+    "baseline_excluded_candidates": 2
+  },
+  "mechanics": {
+    "coverage": "22 finder lanes across 5 cases, all status=ok — zero dead workers, zero extraction failures",
+    "verifier_repairs": 0,
+    "clean_sentinel": "NOT EXERCISED — every one of the 22 finders returned at least two parsed findings, so no lane ever had to render a clean review. The sentinel contract remains unvalidated live in its positive direction; the negative direction (a clean-looking prose render mis-read as a failure) did not occur either.",
+    "render_format": "every finder rendered `- [P#] Title — path:line[-line]` heads with no orphan tags; extraction parsed 97 stubs total with zero partial-drift rejections"
+  }
+}

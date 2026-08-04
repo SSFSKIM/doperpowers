@@ -1,0 +1,255 @@
+{
+  "runId": "wf-msdiwn5d-867muh",
+  "result": {
+    "verdict": "incorrect",
+    "findings": [
+      {
+        "id": "sweep#1",
+        "priority": "P1",
+        "title": "Bypass the Windows shell for workflow overrides",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/app-server.mjs",
+        "lines": "192-193",
+        "comment": "app-server.mjs:192-198 passes the unescaped `developer_instructions=<lens>` argument to `spawn()` with a shell enabled on Windows. Shell metacharacters in a lens are therefore interpreted before Codex starts, causing startup failure or command execution outside the read-only Codex worker.",
+        "sources": [
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-1#1",
+        "priority": "P1",
+        "title": "Refuse journals that lack their original fingerprint",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "80-83",
+        "comment": "engine.mjs:69-90 writes the current fingerprint whenever the recorded file is absent, then loads and replays the existing journal. Deleting the fingerprint from a completed run and changing the repository therefore blesses the new repository state while serving successes produced against the old one; the existing test explicitly exercises deletion after cacheable history exists.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#2",
+        "priority": "P1",
+        "title": "Give repeated leaf calls stable workflow identities",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "104-107",
+        "comment": "Only leaf payload and current-run occurrence number form the key; the original workflow arguments are neither persisted nor compared. If changed args omit an earlier identical call, a later logical occurrence shifts to `#0` and receives the earlier call's independently generated result.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-2#1",
+        "priority": "P1",
+        "title": "Reject the leaf when its app-server exits mid-turn",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "132-132",
+        "comment": "captureTurn awaits only `state.completion`, which is settled by turn notifications. AppServerClientBase.handleExit rejects outstanding RPC requests but does not reject that completion promise; after the start request has returned, an app-server exit leaves the leaf, semaphore slot, and workflow pending indefinitely.",
+        "sources": [
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-2#2",
+        "priority": "P1",
+        "title": "Bind persisted PIDs to the process instance",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/job.mjs",
+        "lines": "191-193",
+        "comment": "Job rows, leases, state locks, and workers.json persist only numeric PIDs. After SIGKILL or reboot, PID reuse makes liveness checks accept an unrelated process; cancel can then SIGTERM the reused run PID and every reused worker PID, while stale locks and leases remain falsely live.",
+        "sources": [
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4",
+          "scalpel-5"
+        ]
+      },
+      {
+        "id": "scalpel-3#1",
+        "priority": "P1",
+        "title": "Reject path separators in resumed run IDs",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/state.mjs",
+        "lines": "56-57",
+        "comment": "`--resume ../state` resolves to the existing plugin state directory. resolveJobFile then normalizes `jobs/../state.json` to the shared workspace ledger; lifecycle.register first replaces it with a job record, and the following upsert reconstructs a ledger with previous jobs and configuration lost.",
+        "sources": [
+          "scalpel-3",
+          "sweep",
+          "scalpel-1",
+          "scalpel-4",
+          "scalpel-5"
+        ]
+      },
+      {
+        "id": "scalpel-3#2",
+        "priority": "P1",
+        "title": "Route session cleanup through the locked mutation API",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/state.mjs",
+        "lines": "131-134",
+        "comment": "session-lifecycle-hook.mjs:53-74 still performs loadState followed by unlocked saveState. A concurrent locked upsertJob or setConfig can be renamed over by the stale snapshot, and saveState's pruning pass can delete the newly added job's JSON and log artifacts.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-3#4",
+        "priority": "P1",
+        "title": "Revalidate dead workflow rows before finalizing",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/job.mjs",
+        "lines": "159-162",
+        "comment": "repairDeadWorkflowJobs reads the ledger outside the state lock and performs an unconditional two-file finalize. A resume can acquire the run lease and register a new PID after that read, after which repair overwrites the live per-job record and locked ledger row as failed.",
+        "sources": [
+          "scalpel-3",
+          "sweep",
+          "scalpel-2"
+        ]
+      },
+      {
+        "id": "scalpel-4#1",
+        "priority": "P1",
+        "title": "Reject clean markers accompanied by malformed review items",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/lib/extract.mjs",
+        "lines": "120-124",
+        "comment": "Malformed-head detection covers only tagged or full location-shaped lines. Direct execution showed a clean marker plus a plain top-level defect bullet returns `{clean:true, failed:false}`; multiple marker findings are likewise accepted as clean despite the exactly-one contract, enabling a false clean panel.",
+        "sources": [
+          "scalpel-4",
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-5#1",
+        "priority": "P1",
+        "title": "Pin the panel base before caching agent calls",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "134-136",
+        "comment": "The lens-deriver prompt contains only the literal base name, and agent cache identity lacks its resolved merge base. If `main` advances with unchanged HEAD/worktree, old lenses cache-hit while review calls key against and inspect the new diff, misaligning the panel's targeted coverage.",
+        "sources": [
+          "scalpel-5",
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-5#2",
+        "priority": "P1",
+        "title": "Execute reviews against the resolved commit",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "265-267",
+        "comment": "engine.mjs resolves `targetCommit` before keying but sends the movable symbolic `target` at lines 265-267. A ref movement during semaphore wait or between transport attempts makes the worker review a new range and journal it under the old commit key.",
+        "sources": [
+          "scalpel-5",
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-1#4",
+        "priority": "P2",
+        "title": "Bind each run fingerprint to its original repository",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "206-208",
+        "comment": "repoFingerprint hashes repository contents but not the canonical repository/worktree path. With the same external workflow script and equal HEAD/dirt state, a globally addressed run can be resumed from another clone and replay outputs that depend on that clone's cwd, ignored files, branch context, or local Git configuration.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#5",
+        "priority": "P2",
+        "title": "Disable cache replay when no Git fingerprint exists",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "189-193",
+        "comment": "repoFingerprint returns `no-git` at journal.mjs:189-193 before hashing `extraPaths`. All non-Git directory states and all versions of the workflow entry script therefore compare equal, allowing stale agent successes after either is edited.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#6",
+        "priority": "P2",
+        "title": "Fingerprint dirty submodule contents",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/journal.mjs",
+        "lines": "195-197",
+        "comment": "The fingerprint uses plain `git diff HEAD` and the parent repository's untracked list. For an unchanged submodule commit, distinct dirty submodule contents produce the same `-dirty` parent diff marker and are not enumerated as parent untracked files, so stale results can replay.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#7",
+        "priority": "P2",
+        "title": "Fingerprint transitive workflow dependencies",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs",
+        "lines": "63-65",
+        "comment": "Only `spec.scriptPath` is included as an extra fingerprint path. Imported helpers such as workflows/lib/extract.mjs and the workflow runtime can change outside `spec.cwd` without invalidating journal entries, mixing old leaf results with different orchestration semantics.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-3#6",
+        "priority": "P2",
+        "title": "Make state-lock claims atomically self-identifying",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/runtime/scripts/lib/state.mjs",
+        "lines": "249-250",
+        "comment": "There is a kill/crash window between mkdirSync(lockDir) and writing its holder stamp. A lock abandoned in that window is classified permanently as `unstamped`; inspectLock never breaks it, so every later state mutation times out until manual cleanup.",
+        "sources": [
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-4#2",
+        "priority": "P2",
+        "title": "Reject refuted nodes from duplicate chains",
+        "file": "/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/pr43-dogfood/skills/codex-companion/workflows/code-review.mjs",
+        "lines": "85-88",
+        "comment": "checkPostconditions allows a REFUTED verdict to carry duplicateOf when its target is confirmed. sourcesOf then traverses all duplicate nodes without filtering their verdict, so the published finding falsely credits the refuted candidate's reviewer as corroboration.",
+        "sources": [
+          "scalpel-4"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Scrutinize resume correctness across journal keys, repository fingerprints, and repeated identical leaf calls. Stale or misaligned cache hits must never substitute results from a different workflow state.",
+        "status": "ok",
+        "stubs": 8
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Trace workflow process lifecycle across leases, worker PID tracking, cancellation, crashes, and lazy job repair. Concurrent resume or PID reuse must not corrupt state or signal unrelated processes.",
+        "status": "ok",
+        "stubs": 3
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Review the new global state locking and atomic-write contract against every existing job and configuration writer. Dead-lock recovery must preserve concurrent updates without allowing live locks to be broken.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Stress the review panel’s extraction and verification boundary for malformed model output, clean-result markers, duplicate chains, and partial reviewer loss. Parser or verifier drift must fail visibly instead of producing a false clean verdict.",
+        "status": "ok",
+        "stubs": 4
+      },
+      {
+        "finder": "scalpel-5",
+        "lens": "Check that review targets, per-call working directories, model overrides, and private app-server connections retain the intended diff and isolation across retries and resumes.",
+        "status": "ok",
+        "stubs": 4
+      }
+    ],
+    "lenses": [
+      "Scrutinize resume correctness across journal keys, repository fingerprints, and repeated identical leaf calls. Stale or misaligned cache hits must never substitute results from a different workflow state.",
+      "Trace workflow process lifecycle across leases, worker PID tracking, cancellation, crashes, and lazy job repair. Concurrent resume or PID reuse must not corrupt state or signal unrelated processes.",
+      "Review the new global state locking and atomic-write contract against every existing job and configuration writer. Dead-lock recovery must preserve concurrent updates without allowing live locks to be broken.",
+      "Stress the review panel’s extraction and verification boundary for malformed model output, clean-result markers, duplicate chains, and partial reviewer loss. Parser or verifier drift must fail visibly instead of producing a false clean verdict.",
+      "Check that review targets, per-call working directories, model overrides, and private app-server connections retain the intended diff and isolation across retries and resumes."
+    ],
+    "explanation": "confirmed: Bypass the Windows shell for workflow overrides; Refuse journals that lack their original fingerprint; Give repeated leaf calls stable workflow identities"
+  },
+  "agents": 8,
+  "durationMs": 1350646
+}

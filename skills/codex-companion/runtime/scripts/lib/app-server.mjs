@@ -9,8 +9,9 @@
  */
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
@@ -67,9 +68,18 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.ignoredLines = 0;
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
+    });
+
+    // The transport's own end-of-stream, which is NOT the process exit: lines
+    // buffered in the pipe are still delivered after the exit event, and a
+    // reader that stops at the exit can lose the notification that completed a
+    // turn. This settles when there is genuinely nothing left to read.
+    this.streamClosed = new Promise((resolve) => {
+      this.resolveStreamClosed = resolve;
     });
   }
 
@@ -123,8 +133,19 @@ class AppServerClientBase {
     let message;
     try {
       message = JSON.parse(line);
-    } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+    } catch {
+      // A line that is not JSON is not the end of the connection. The protocol
+      // is JSONL, but the process emitting it is a CLI: a wrapper's banner, a
+      // deprecation notice, an unbuffered log line all land on the same stdout.
+      // Routing that into handleExit rejects every pending RPC and fails a turn
+      // whose server is alive and still streaming — so skip the line and keep
+      // reading. exitPromise settles on a real exit, error, or socket close.
+      this.ignoredLines += 1;
+      if (this.ignoredLines === 1) {
+        process.stderr.write(
+          `[codex] ignoring non-JSON line on the app-server's stdout: ${line.slice(0, 200)}\n`
+        );
+      }
       return;
     }
 
@@ -180,6 +201,80 @@ class AppServerClientBase {
   }
 }
 
+// NO SHELL, on any platform. The `-c` overrides a workflow worker passes carry
+// arbitrary prose — a review lens becomes `developer_instructions=<lens>` — and
+// a shell would interpret `$(…)`, backticks and `&&` in that prose before codex
+// ever starts: a startup failure at best, command execution outside the
+// read-only Codex worker at worst. Spawning the executable directly hands every
+// argument over verbatim, with no quoting rules to get right.
+//
+// `platform` is accepted and deliberately unused: the options are the same
+// everywhere, and a test that asks for the win32 shape on a mac is how that
+// stays true. What Windows needs instead is a resolved executable — see
+// resolveCodexSpawnTarget.
+export function appServerSpawnOptions({ cwd, env, platform: _platform = process.platform }) {
+  return {
+    cwd,
+    env: env ?? process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  };
+}
+
+function whereIs(command, env) {
+  try {
+    const out = execFileSync("where", [command], {
+      env: env ?? process.env,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      windowsHide: true
+    });
+    // `where` prints every match, best first.
+    return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// What to actually spawn for `codex`.
+//
+// Everywhere but Windows: the name, handed to execvp, unchanged. On Windows npm
+// installs codex as `codex.cmd`, a batch shim — and Node >= 18.20 refuses to
+// spawn a .cmd without a shell (EINVAL). cmd.exe is the only thing that would
+// take it, and cmd.exe RE-PARSES the command line it is handed: `&`, `|` and
+// `%VAR%` inside a config override (`developer_instructions=<lens>` is arbitrary
+// prose written by whoever wrote the workflow script) become separators and
+// expansions, no matter how carefully the argv elements were kept apart. There is
+// no argument-quoting discipline that closes that, so the shim is REFUSED rather
+// than interpreted: an .exe spawns directly, a .js runs under node, and a .cmd
+// asks the operator for a native binary. Windows is not a supported platform for
+// this fork — a hard refusal beats an injectable path.
+export function resolveCodexSpawnTarget({
+  command = "codex",
+  args,
+  platform = process.platform,
+  env = process.env,
+  which = whereIs
+} = {}) {
+  if (platform !== "win32") {
+    return { command, args };
+  }
+  const resolved = which(command, env);
+  if (!resolved) {
+    return { command, args }; // let the spawn fail with its own ENOENT
+  }
+  const extension = path.extname(resolved).toLowerCase();
+  if (extension === ".cmd" || extension === ".bat") {
+    throw new Error(
+      `codex resolves to a batch shim (${resolved}); install a native codex binary — the npm .cmd shim cannot be spawned safely.`
+    );
+  }
+  if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
+    return { command: process.execPath, args: [resolved, ...args] };
+  }
+  return { command: resolved, args };
+}
+
 class SpawnedCodexAppServerClient extends AppServerClientBase {
   constructor(cwd, options = {}) {
     super(cwd, options);
@@ -187,13 +282,18 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
-    this.proc = spawn("codex", ["app-server"], {
-      cwd: this.cwd,
-      env: this.options.env ?? process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
-      windowsHide: true
+    // Each configOverride is a `codex -c key=value` pair, so a caller that owns
+    // this server (a workflow worker) can differ from the session default.
+    const configArgs = (this.options.configOverrides ?? []).flatMap((kv) => ["-c", kv]);
+    const target = resolveCodexSpawnTarget({
+      args: [...configArgs, "app-server"],
+      env: this.options.env ?? process.env
     });
+    this.proc = spawn(
+      target.command,
+      target.args,
+      appServerSpawnOptions({ cwd: this.cwd, env: this.options.env })
+    );
 
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
@@ -221,6 +321,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     this.readline.on("line", (line) => {
       this.handleLine(line);
     });
+    this.readline.on("close", () => {
+      this.resolveStreamClosed(undefined);
+    });
+
+    // Only once the exit handlers above are attached: onSpawn is caller code and
+    // may throw, and a process whose exit nobody is listening for can never be
+    // closed — close() would wait on an exitPromise that has no path to settle.
+    this.options.onSpawn?.(this.proc.pid);
 
     await this.request("initialize", {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
@@ -237,17 +345,23 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
 
     this.closed = true;
 
+    if (!this.proc) {
+      // spawn() itself threw: there is no process, and no exit event is coming.
+      this.handleExit(this.exitError);
+      await this.exitPromise;
+      return;
+    }
+
     if (this.readline) {
       this.readline.close();
     }
 
-    if (this.proc && !this.proc.killed) {
+    if (!this.proc.killed) {
       this.proc.stdin.end();
       setTimeout(() => {
         if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          // On Windows with shell: true, the direct child is cmd.exe.
-          // Use terminateProcessTree to kill the entire tree including
-          // the grandchild node process.
+          // Windows has no process groups to signal, and a codex launcher may
+          // still have children of its own: taskkill /T is what reaches them.
           if (process.platform === "win32") {
             try {
               terminateProcessTree(this.proc.pid);
@@ -298,6 +412,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
         this.handleExit(error);
       });
       this.socket.on("close", () => {
+        this.resolveStreamClosed(undefined);
         this.handleExit(this.exitError);
       });
     });
@@ -348,7 +463,16 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (error) {
+      // The process is spawned inside initialize(), so a failure after that
+      // point (a rejected initialize, a throwing onSpawn) leaves a live
+      // app-server that the caller can never close — it never received a client
+      // to close. Whoever spawned it owns it.
+      await client.close().catch(() => {});
+      throw error;
+    }
     return client;
   }
 }

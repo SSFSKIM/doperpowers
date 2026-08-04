@@ -1,0 +1,169 @@
+{
+  "runId": "wf-mscoco60-e89pao",
+  "result": {
+    "verdict": "incorrect",
+    "findings": [
+      {
+        "id": "sweep#1",
+        "priority": "P1",
+        "title": "Parse all four manifest fields before pruning",
+        "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/snapshot.sh",
+        "lines": "101-101",
+        "comment": "snapshot.sh:101 emits label, epoch, bytes, and path, while prune.sh:62 reads only epoch, bytes, and path. Bash assigns the final variable `1234<TAB>/archive/...`, so prune.sh:65 rejects every v2 record as a missing file and rotation never runs.",
+        "sources": [
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "sweep#2",
+        "priority": "P1",
+        "title": "Follow symlinked source directories in preflight",
+        "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/snapshot.sh",
+        "lines": "63-63",
+        "comment": "The source validation and tar follow a directory symlink, but `find \"$BACKUP_SOURCE_DIR\"` does not follow a command-line symlink by default. This was reproduced with `/var`: find returned no entry while `/private/var` was populated, so snapshot.sh falsely exits 3 without making a backup; `du -sk /var` likewise reported 0.",
+        "sources": [
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-1#2",
+        "priority": "P1",
+        "title": "Constrain retention to the exact label",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/prune.sh",
+        "lines": "40-40",
+        "comment": "At prune.sh:40, the pattern for label `nightly` is `nightly-*.tar.gz`, which also matches `nightly-db-*.tar.gz`; this was reproduced directly. Once pruning is reached, the combined ordering can delete archives belonging to the longer label.",
+        "sources": [
+          "scalpel-1"
+        ]
+      },
+      {
+        "id": "scalpel-1#5",
+        "priority": "P1",
+        "title": "Apply a private umask on the remote host",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/lib/common.sh",
+        "lines": "97-99",
+        "comment": "common.sh:98 performs both mkdir and archive creation in the remote shell without setting a private umask or explicit modes. The local umask cannot protect these remote objects, so a typical 022 remote umask makes source-derived backup data world-readable.",
+        "sources": [
+          "scalpel-1",
+          "sweep",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-2#2",
+        "priority": "P1",
+        "title": "Treat zero as a disabled force flag",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/lib/common.sh",
+        "lines": "81-81",
+        "comment": "snapshot.sh:22 initializes FORCE to `0`, while common.sh:81 uses `[ \"$force\" ]`; in shell, `0` is a true nonempty string. Consequently both the default and BACKUP_FORCE=0 bypass the fatal free-space check.",
+        "sources": [
+          "scalpel-2",
+          "sweep",
+          "scalpel-1",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-2#3",
+        "priority": "P1",
+        "title": "Enforce space on the staging filesystem",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/snapshot.sh",
+        "lines": "75-75",
+        "comment": "The free-space query targets BACKUP_ARCHIVE_DIR at snapshot.sh:75, but the full tarball is first written to `${TMPDIR:-/tmp}` at lines 77-84. A separate, nearly full temp filesystem passes preflight and can still be exhausted.",
+        "sources": [
+          "scalpel-2",
+          "sweep"
+        ]
+      },
+      {
+        "id": "scalpel-3#1",
+        "priority": "P1",
+        "title": "Publish remote archives only after transfer completion",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/lib/common.sh",
+        "lines": "98-98",
+        "comment": "common.sh:98 opens `$BACKUP_REMOTE_DIR/$name` directly before reading the archive stream. SSH disconnection after any bytes have arrived leaves a truncated `.tar.gz` under its final name, contradicting the atomic-publication invariant stated at lines 89-92.",
+        "sources": [
+          "scalpel-3",
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-4#1",
+        "priority": "P1",
+        "title": "Restore unconditional staging cleanup",
+        "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/snapshot.sh",
+        "lines": "77-77",
+        "comment": "After STAGE is created at snapshot.sh:77, cleanup exists only at line 98 after successful replication and mv. Tar errors, missing remote configuration, SSH or move failures, and termination signals all leave STAGE and any archive data behind.",
+        "sources": [
+          "scalpel-4",
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "sweep#8",
+        "priority": "P2",
+        "title": "Quote remote destination values safely",
+        "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qbAfp9/lib/common.sh",
+        "lines": "98-98",
+        "comment": "common.sh:98 inserts BACKUP_REMOTE_DIR and the unrestricted label-derived filename directly inside single quotes in a remote-shell command. A valid value containing `'` breaks parsing, and a crafted operator-supplied value can append remote shell syntax.",
+        "sources": [
+          "sweep",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 8
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Verify the manifest-v2 contract across snapshot.sh, run-backup.sh, and prune.sh. Pay special attention to label parsing and retention scope.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Scrutinize free-space enforcement and --force semantics. Check both truth-value handling and the filesystem where staging actually occurs.",
+        "status": "ok",
+        "stubs": 5
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Examine replication for atomic remote publication and shell-safe path handling. Interrupted transfers must not appear under final archive names.",
+        "status": "ok",
+        "stubs": 6
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Trace staging-directory cleanup across every failure and signal path. Replication or archive failures must not leak large temporary files.",
+        "status": "ok",
+        "stubs": 5
+      }
+    ],
+    "lenses": [
+      "Verify the manifest-v2 contract across snapshot.sh, run-backup.sh, and prune.sh. Pay special attention to label parsing and retention scope.",
+      "Scrutinize free-space enforcement and --force semantics. Check both truth-value handling and the filesystem where staging actually occurs.",
+      "Examine replication for atomic remote publication and shell-safe path handling. Interrupted transfers must not appear under final archive names.",
+      "Trace staging-directory cleanup across every failure and signal path. Replication or archive failures must not leak large temporary files."
+    ],
+    "explanation": "confirmed: Parse all four manifest fields before pruning; Follow symlinked source directories in preflight; Constrain retention to the exact label"
+  },
+  "agents": 7,
+  "durationMs": 714099
+}

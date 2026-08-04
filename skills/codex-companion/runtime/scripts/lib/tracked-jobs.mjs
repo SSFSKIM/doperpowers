@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
+import { currentPidStamp } from "./pid.mjs";
 import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -145,7 +146,10 @@ export async function runTrackedJob(job, runner, options = {}) {
     status: "running",
     startedAt: nowIso(),
     phase: "starting",
-    pid: process.pid,
+    // Stamped with this process's start time: a bare pid in a record that
+    // outlives a reboot is a cancel (and a session-end teardown) aimed at
+    // whoever inherited the number.
+    ...currentPidStamp(),
     logFile: options.logFile ?? job.logFile ?? null
   };
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
@@ -161,6 +165,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       threadId: execution.threadId ?? null,
       turnId: execution.turnId ?? null,
       pid: null,
+      pidStart: null,
       phase: completionStatus === "completed" ? "done" : "failed",
       completedAt,
       result: execution.payload,
@@ -174,6 +179,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       summary: execution.summary,
       phase: completionStatus === "completed" ? "done" : "failed",
       pid: null,
+      pidStart: null,
       completedAt
     });
     appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
@@ -188,6 +194,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: "failed",
       errorMessage,
       pid: null,
+      pidStart: null,
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
     });
@@ -196,6 +203,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       status: "failed",
       phase: "failed",
       pid: null,
+      pidStart: null,
       errorMessage,
       completedAt
     });

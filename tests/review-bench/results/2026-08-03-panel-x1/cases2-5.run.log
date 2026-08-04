@@ -1,0 +1,13 @@
+=== case2 start Mon Aug  3 12:16:39 KST 2026
+engine=panel case=case2 secs=594 out=/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/e1-lane-split/tests/review-bench/results/2026-08-03-panel-x1/case2.workflow.txt
+=== case2 rc=0 end Mon Aug  3 12:26:33 KST 2026
+=== case3 start Mon Aug  3 12:26:33 KST 2026
+engine=panel case=case3 secs=418 out=/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/e1-lane-split/tests/review-bench/results/2026-08-03-panel-x1/case3.workflow.txt
+=== case3 rc=0 end Mon Aug  3 12:33:31 KST 2026
+=== case4 start Mon Aug  3 12:33:31 KST 2026
+engine=panel case=case4 secs=714 out=/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/e1-lane-split/tests/review-bench/results/2026-08-03-panel-x1/case4.workflow.txt
+=== case4 rc=0 end Mon Aug  3 12:45:25 KST 2026
+=== case5 start Mon Aug  3 12:45:25 KST 2026
+engine=panel case=case5 secs=621 out=/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/e1-lane-split/tests/review-bench/results/2026-08-03-panel-x1/case5.workflow.txt
+=== case5 rc=0 end Mon Aug  3 12:55:47 KST 2026
+ALL DONE Mon Aug  3 12:55:47 KST 2026

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { currentPidStamp, pidInstanceAlive } from "./pid.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -11,6 +12,10 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+// The lock directory is the atomic primitive; the file inside it names the
+// holder so a dead one can be broken instead of wedging every later writer.
+const LOCK_HOLDER_FILE = "holder";
+export const STATE_LOCK_TIMEOUT_MS = 5000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -41,6 +46,61 @@ export function resolveStateDir(cwd) {
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
   const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path.join(stateRoot, `${slug}-${hash}`);
+}
+
+// The plugin data root itself (state lives under `state/` inside it; workflow
+// run directories live under `workflows/`).
+function resolveDataRoot() {
+  return process.env[PLUGIN_DATA_ENV] ?? FALLBACK_STATE_ROOT_DIR;
+}
+
+// Every id here becomes a path segment — the run directory, the per-job record,
+// the job log — so an id that is not a BARE segment names something outside the
+// directory it was meant to name. `--resume ../state` is the expensive one: the
+// run directory resolves onto the plugin's state root (which exists, so the
+// nothing-to-resume guard passes), `jobs/../state.json` normalizes onto the
+// workspace ledger, and registering the run REPLACES that ledger — every other
+// job record and the whole config gone. Refuse at the resolver, so no caller can
+// forget: an id is either a single segment or it is not an id.
+export function assertPathSegment(id, label = "id") {
+  const value = String(id ?? "");
+  if (value === "" || value === "." || value === ".." || /[\\/\0]/.test(value)) {
+    throw new Error(
+      `Invalid ${label} ${JSON.stringify(value)}: it must be a single path segment (no separators, no "..").`
+    );
+  }
+  return value;
+}
+
+// The same question without the throw, for the paths that must SURVIVE a bad id
+// rather than refuse it. A ledger written before the check above existed can
+// carry one (`--resume ../state` wrote exactly that), and a row nobody can
+// resolve must not be able to fail every future write — a poisoned row would
+// otherwise be un-removable by the very pass whose job is removing rows.
+export function isPathSegment(id) {
+  try {
+    assertPathSegment(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let warnedAboutBadIds = false;
+
+function dropUnresolvableIds(jobs) {
+  const kept = jobs.filter((job) => isPathSegment(job?.id));
+  if (kept.length !== jobs.length && !warnedAboutBadIds) {
+    warnedAboutBadIds = true;
+    process.stderr.write(
+      "[codex] dropping job record(s) whose id is not a path segment; they name nothing this runtime can address.\n"
+    );
+  }
+  return kept;
+}
+
+export function resolveWorkflowRunDir(runId) {
+  return path.join(resolveDataRoot(), "workflows", assertPathSegment(runId, "run id"));
 }
 
 export function resolveStateFile(cwd) {
@@ -92,7 +152,7 @@ function removeFileIfExists(filePath) {
 export function saveState(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  const nextJobs = pruneJobs(dropUnresolvableIds(state.jobs ?? []));
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -107,18 +167,283 @@ export function saveState(cwd, state) {
     if (retainedIds.has(job.id)) {
       continue;
     }
+    if (!isPathSegment(job.id)) {
+      // The row is dropped from the ledger, but its id names nothing we are
+      // willing to resolve — and its logFile is whatever that writer recorded.
+      // Deleting on its say-so is the traversal all over again.
+      continue;
+    }
     removeJobFile(resolveJobFile(cwd, job.id));
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  // Write-then-rename: a reader (status/result/cancel in another process) must
+  // never observe a half-written ledger, and a crash mid-write must not truncate
+  // the one it had.
+  const target = resolveStateFile(cwd);
+  const tmp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, target);
   return nextState;
 }
 
+// updateState is the single load-mutate-write choke point every writer flows
+// through (upsertJob, setConfig, and so every verb). Serializing HERE — rather
+// than around one verb's own writes — is what stops two concurrent runs from
+// losing each other's job records: an unlocked legacy writer would happily
+// overwrite a workflow's row with a ledger it loaded before that row existed.
+// A holder stamp is `{pid, pidStart}` — the pid alone cannot survive pid reuse
+// (see lib/pid.mjs). A bare number is the pre-stamp format and still reads:
+// old locks on disk must not become unreadable, they just stay pid-only.
+function readHolder(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8").trim();
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
+  let pid = null;
+  let pidStart = null;
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      pid = Number(parsed.pid);
+      pidStart = parsed.pidStart ?? null;
+    } catch {
+      return null; // torn or corrupt: not a holder anyone can prove dead
+    }
+  } else {
+    pid = Number(raw);
+  }
+  return Number.isInteger(pid) && pid > 0 ? { pid, pidStart } : null;
+}
+
+function stampBody() {
+  return JSON.stringify(currentPidStamp());
+}
+
+// How long an unstamped lock may sit before it is treated as abandoned rather
+// than as the microsecond window it normally is. Far longer than any holder
+// could take to write one small file, and far longer than the lock timeout, so
+// nobody ever waits on this number — it only heals a wedge on some later call.
+const UNSTAMPED_LOCK_TTL_MS = 60_000;
+
+// The four states a held lock can be in. "corrupt" is a stamp nobody has proven
+// dead, so it is contended and a wrong read costs a wait, never a lock.
+// "unstamped" is normally the same: the one-syscall window between mkdir and the
+// stamp landing (or a lock being broken right now). But a holder killed INSIDE
+// that window leaves an unstamped lock forever, and every state mutation after
+// it would time out until someone deleted the directory by hand — so age is what
+// separates "someone is mid-claim" from "nobody is coming back".
+function inspectLock(lockDir) {
+  const holder = readHolder(path.join(lockDir, LOCK_HOLDER_FILE));
+  if (holder == null) {
+    let stat;
+    try {
+      stat = fs.statSync(lockDir);
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        return { state: "absent" };
+      }
+      throw err;
+    }
+    if (fs.existsSync(path.join(lockDir, LOCK_HOLDER_FILE))) {
+      return { state: "corrupt" };
+    }
+    // Nothing is ever added to an unstamped lock directory, so its mtime is when
+    // it was created.
+    return { state: "unstamped", ageMs: Date.now() - stat.mtimeMs };
+  }
+  // The one caller allowed a cached start-time read (lib/pid.mjs): this runs on
+  // every ~15ms retry of the acquisition loop, and it decides who WAITS, never
+  // who gets signalled.
+  return {
+    state: pidInstanceAlive(holder.pid, holder.pidStart, { cache: true }) ? "live" : "dead",
+    pid: holder.pid
+  };
+}
+
+function isBreakable(observed) {
+  return (
+    observed.state === "dead" ||
+    (observed.state === "unstamped" && observed.ageMs > UNSTAMPED_LOCK_TTL_MS)
+  );
+}
+
+// Publishing a record whose mere EXISTENCE is a claim — the lock's holder stamp,
+// a break token. An O_EXCL create followed by a separate write makes the file
+// VISIBLE while it is still empty, and everything that reads these records reads
+// the window as an absence of ownership: a holderless lock, or a break token
+// nobody owns, which the reader then deletes out from under a live breaker. So
+// the body goes to a private temp file (its name carries this process's pid, so
+// no other writer can be using it) and the hard link is what publishes it —
+// atomically, complete, exactly the pattern the run lease uses. EEXIST from the
+// link is the ordinary "someone else got there first".
+let tmpSeq = 0;
+function publishIdentityFile(target, body) {
+  const tmp = `${target}.${process.pid}-${tmpSeq++}.tmp`;
+  try {
+    fs.writeFileSync(tmp, body);
+    fs.linkSync(tmp, target);
+    return true;
+  } catch (err) {
+    if (err.code !== "EEXIST") {
+      throw err;
+    }
+    return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* best effort: the link, if it landed, is the record that matters */
+    }
+  }
+}
+
+// Atomic create — the only way to own a break token.
+function claimToken(tokenPath) {
+  return publishIdentityFile(tokenPath, stampBody());
+}
+
+// A holder SIGKILLed inside the critical section leaves its lock behind, and
+// without this every later writer blocks to the deadline and then fails —
+// forever. BREAKING MUST ALSO BE SERIALIZED: two breakers that both read the
+// same dead pid would take turns deleting each other's freshly created LIVE
+// lock. Same fix as the workflow run lease (workflow/journal.mjs): a break
+// token keyed to the observed holder, and a re-inspect UNDER that token so only
+// a still-breakable lock is ever removed.
+function breakStaleLock(lockDir, observed) {
+  const tokenPath = `${lockDir}.break-${observed.pid ?? "unstamped"}`;
+  if (!claimToken(tokenPath)) {
+    // Token held: its owner is breaking right now (retry and we will see their
+    // lock), or it died mid-break — clear that wedge so a dead breaker cannot
+    // pin acquisition forever.
+    const breaker = readHolder(tokenPath);
+    if (breaker == null || !pidInstanceAlive(breaker.pid, breaker.pidStart)) {
+      fs.rmSync(tokenPath, { force: true });
+    }
+    return false;
+  }
+  try {
+    if (!isBreakable(inspectLock(lockDir))) {
+      return false; // broken and retaken since the read that sent us here
+    }
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    return true;
+  } finally {
+    fs.rmSync(tokenPath, { force: true });
+  }
+}
+
+// Is the directory at this path still the one we created? A lock directory can
+// be broken and retaken between two of our own syscalls, and the path says
+// nothing about that — the inode does.
+function isSameDir(lockDir, identity) {
+  if (!identity) {
+    return false;
+  }
+  try {
+    const stat = fs.statSync(lockDir);
+    return stat.ino === identity.ino && stat.dev === identity.dev;
+  } catch {
+    return false;
+  }
+}
+
+function withStateLock(cwd, fn) {
+  ensureStateDir(cwd);
+  const lockDir = `${resolveStateFile(cwd)}.lock`;
+  const holderPath = path.join(lockDir, LOCK_HOLDER_FILE);
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  for (;;) {
+    let acquired = false;
+    try {
+      fs.mkdirSync(lockDir);
+      acquired = true;
+    } catch (err) {
+      if (err.code !== "EEXIST") {
+        throw err;
+      }
+    }
+
+    if (acquired) {
+      // Stamped immediately: until this lands the lock reads as "unstamped",
+      // which is unbreakable — the safe direction while we are alive to finish
+      // the job. But an unstamped lock we ABANDON is the permanent wedge this
+      // whole mechanism exists to remove, so a failed stamp gives the lock back
+      // before the error propagates.
+      //
+      // That window is also the one the unstamped TTL declares abandoned, so a
+      // claimer stalled past it (a stop signal, a paused VM) can wake to find
+      // its lock already broken and RETAKEN. Its stamp must not land in the
+      // successor's directory — that is two writers in one critical section.
+      // Two guards, because the successor may or may not have stamped yet: the
+      // link refuses to overwrite a stamp, and the directory identity catches
+      // the case where there is nothing yet to overwrite. Either way the claim
+      // is simply lost: NOTHING is removed, because everything here now belongs
+      // to the successor.
+      let identity = null;
+      try {
+        const stat = fs.statSync(lockDir);
+        identity = { ino: stat.ino, dev: stat.dev };
+      } catch {
+        identity = null; // already gone: the claim is lost below
+      }
+
+      let stamped = false;
+      try {
+        stamped = publishIdentityFile(holderPath, stampBody());
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          // A real write failure (ENOSPC, EACCES) on a directory that is still
+          // ours: give the lock back rather than abandon it unstamped.
+          if (isSameDir(lockDir, identity)) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+          }
+          throw err;
+        }
+      }
+
+      if (stamped && isSameDir(lockDir, identity)) {
+        break;
+      }
+      // Lost the race. Fall through to the wait below and contend for it again.
+    }
+
+    const observed = inspectLock(lockDir);
+    if (isBreakable(observed) && breakStaleLock(lockDir, observed)) {
+      continue; // retake through the same atomic mkdir every contender uses
+    }
+    if (Date.now() > deadline) {
+      const holder = readHolder(holderPath);
+      throw new Error(
+        `state lock timeout: ${lockDir} (${holder ? `held by live pid ${holder.pid}` : "holder unknown"})`
+      );
+    }
+    // Bounded synchronous backoff: the whole mutation API is sync, so there is
+    // no event loop to yield to.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      /* already released */
+    }
+  }
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveState(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {
@@ -166,7 +491,11 @@ export function getConfig(cwd) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  // Write-then-rename, same reason as the ledger: a process that dies mid-write
+  // must not leave a torn record for the next reader to choke on.
+  const tmp = `${jobFile}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, jobFile);
   return jobFile;
 }
 
@@ -181,11 +510,13 @@ function removeJobFile(jobFile) {
 }
 
 export function resolveJobLogFile(cwd, jobId) {
+  const id = assertPathSegment(jobId, "job id");
   ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.log`);
+  return path.join(resolveJobsDir(cwd), `${id}.log`);
 }
 
 export function resolveJobFile(cwd, jobId) {
+  const id = assertPathSegment(jobId, "job id");
   ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.json`);
+  return path.join(resolveJobsDir(cwd), `${id}.json`);
 }

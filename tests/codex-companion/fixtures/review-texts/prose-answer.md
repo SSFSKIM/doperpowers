@@ -1,0 +1,1 @@
+The supplied merge-base commit is the current HEAD, and the requested diff is empty with a clean working tree. There are no code changes to review.

@@ -1,0 +1,105 @@
+{
+  "runId": "wf-msco3q0y-6xouso",
+  "result": {
+    "verdict": "incorrect",
+    "findings": [
+      {
+        "id": "scalpel-1#2",
+        "priority": "P1",
+        "title": "Return the persisted revision from save_document",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/store.py",
+        "lines": "122-122",
+        "comment": "The failure is concrete: saving a new empty document writes revision 1 but returns 0; app.py reports revision 0 and ETag W/\"0\", and the next PUT with expected_revision=0 conflicts against the persisted current revision 1.",
+        "sources": [
+          "scalpel-1",
+          "sweep",
+          "scalpel-2",
+          "scalpel-3",
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-4#1",
+        "priority": "P1",
+        "title": "Require admin authorization for the bulk export",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py",
+        "lines": "206-207",
+        "comment": "README.md:24 explicitly marks /exports/all admin-only and :44-46 requires every cross-tenant route to be administrative. app.py:206 instead applies session-only @authenticated, after which :214-224 reads and renders every tenant's documents for a member caller.",
+        "sources": [
+          "scalpel-4",
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-3"
+        ]
+      },
+      {
+        "id": "scalpel-4#3",
+        "priority": "P1",
+        "title": "Bound or stream the all-tenant export",
+        "file": "/private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py",
+        "lines": "219-224",
+        "comment": "app.py:213-227 has no pagination or size bound: it synchronously loads and parses every document, renders every row, and retains all rendered strings in exports until completion. Since document and corpus sizes are unbounded and dispatch is explicitly single-request, a large export can monopolize service execution and exhaust process memory before producing a response.",
+        "sources": [
+          "scalpel-4"
+        ]
+      },
+      {
+        "id": "scalpel-3#3",
+        "priority": "P2",
+        "title": "Cap each page at the reported limit",
+        "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qDVVl1/app.py",
+        "lines": "103-103",
+        "comment": "At app.py:97-103, page p starts at (p-1)*limit but ends at first+limit inclusively. The response can therefore contain limit+1 names while metadata still reports limit, and the extra final name becomes the first name of the next page.",
+        "sources": [
+          "scalpel-3",
+          "sweep",
+          "scalpel-1",
+          "scalpel-2",
+          "scalpel-4"
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "finder": "sweep",
+        "lens": null,
+        "status": "ok",
+        "stubs": 3
+      },
+      {
+        "finder": "scalpel-1",
+        "lens": "Scrutinize authorization and tenant-isolation assumptions in the new bulk-export route and authentication decorators.",
+        "status": "ok",
+        "stubs": 3
+      },
+      {
+        "finder": "scalpel-2",
+        "lens": "Verify the revision contract between conditional writes in `store.py` and the revision and ETag returned by `app.py`.",
+        "status": "ok",
+        "stubs": 3
+      },
+      {
+        "finder": "scalpel-3",
+        "lens": "Check pagination boundary arithmetic against the advertised `limit` and page metadata.",
+        "status": "ok",
+        "stubs": 3
+      },
+      {
+        "finder": "scalpel-4",
+        "lens": "Assess the CPU, memory, and I/O cost of loading and rendering every tenant’s documents into one bulk-export response.",
+        "status": "ok",
+        "stubs": 4
+      }
+    ],
+    "lenses": [
+      "Scrutinize authorization and tenant-isolation assumptions in the new bulk-export route and authentication decorators.",
+      "Verify the revision contract between conditional writes in `store.py` and the revision and ETag returned by `app.py`.",
+      "Check pagination boundary arithmetic against the advertised `limit` and page metadata.",
+      "Assess the CPU, memory, and I/O cost of loading and rendering every tenant’s documents into one bulk-export response."
+    ],
+    "explanation": "confirmed: Return the persisted revision from save_document; Require admin authorization for the bulk export; Bound or stream the all-tenant export"
+  },
+  "agents": 7,
+  "durationMs": 416934
+}

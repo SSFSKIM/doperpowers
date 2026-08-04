@@ -40,6 +40,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { readJsonFile } from "./fs.mjs";
+// git.mjs resolves base/scope into a human-facing descriptor (mode, label, baseRef);
+// the wire target review/start takes is derived from it by nativeReviewTarget below.
+import { resolveReviewTarget as resolveReviewScope } from "./git.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
@@ -556,6 +559,60 @@ function applyTurnNotification(state, message) {
   }
 }
 
+// An app-server can die AFTER the start request has returned. By then there is
+// no outstanding RPC left for handleExit to reject, and state.completion is only
+// ever settled by a turn notification that will now never arrive: the leaf, the
+// semaphore slot it holds and the whole workflow wait forever. The exit IS the
+// answer — fail the turn so the engine's transport retry gets its one attempt
+// and the slot comes back.
+//
+// The cap on the drain below. It is not the drain itself: the stdout stream
+// closing is what says no more lines are coming. This only bounds the case where
+// that never happens (a pipe held open by a surviving grandchild), so a leaf
+// costs seconds instead of the whole run.
+export const EXIT_DRAIN_CAP_MS = 2000;
+
+// Waits for `promise`, but never longer than `capMs`. The timer is cleared on the
+// fast path and unref'd on the slow one: this runs inside a Promise.race that the
+// completion usually wins, and a pending 2s timer would otherwise hold the
+// process open past the work it was waiting for.
+function raceWithCap(promise, capMs) {
+  if (!promise) {
+    return Promise.resolve();
+  }
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, capMs);
+      timer.unref?.();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Exported for the test that pins the drain boundary — a buffered completion
+// arriving after the exit event is not observable through captureTurn alone.
+export async function completionLostToExit(client, state) {
+  await client.exitPromise;
+  // The exit EVENT is not the boundary. Lines already in the pipe when the
+  // process died are delivered after it, and the completion for a turn that DID
+  // finish can be one of them; a fixed grace period is a guess about how long
+  // that takes, and under load the guess expires first and fails a completed
+  // turn. The STREAM's close is the real "nothing more is coming".
+  await raceWithCap(client.streamClosed, EXIT_DRAIN_CAP_MS);
+  if (state.completed) {
+    return state.completion;
+  }
+  // A turn whose final answer already arrived with nothing outstanding is the
+  // completion the inference timer was about to make anyway — the server going
+  // away afterwards does not un-answer it.
+  if (state.finalAnswerSeen && state.pendingCollaborations.size === 0 && state.activeSubagentTurns.size === 0) {
+    completeTurn(state, null, { inferred: true });
+    return state.completion;
+  }
+  throw client.exitError ?? new Error("codex app-server exited before the turn completed.");
+}
+
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
@@ -603,14 +660,34 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       completeTurn(state, response.turn);
     }
 
-    return await state.completion;
+    return await Promise.race([state.completion, completionLostToExit(client, state)]);
   } finally {
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }
 
-async function withAppServer(cwd, fn) {
+/**
+ * @param {string} cwd
+ * @param {(client: CodexAppServerClient) => Promise<unknown>} fn
+ * @param {{ disableBroker?: boolean, configOverrides?: string[], onSpawn?: (pid: number) => void } | null} connect
+ *   When set, the caller owns the app-server: it is spawned directly with the
+ *   caller's config overrides and never shared through the session broker (so
+ *   there is nothing to fall back FROM, hence no broker-retry wrapper).
+ */
+async function withAppServer(cwd, fn, connect = null) {
+  if (connect) {
+    // disableBroker LAST: a connect option always means a private direct
+    // spawn — a caller's disableBroker:false would otherwise route to the
+    // broker and silently drop configOverrides and onSpawn.
+    const ownClient = await CodexAppServerClient.connect(cwd, { ...connect, disableBroker: true });
+    try {
+      return await fn(ownClient);
+    } finally {
+      await ownClient.close();
+    }
+  }
+
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd);
@@ -999,6 +1076,41 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
 }
 
+/**
+ * The `target` the built-in reviewer takes, derived from a resolved review
+ * descriptor. Returns null for a descriptor the built-in reviewer cannot express.
+ * @param {{ mode: string, baseRef?: string }} descriptor
+ * @returns {ReviewTarget | null}
+ */
+export function nativeReviewTarget(descriptor) {
+  if (descriptor.mode === "working-tree") {
+    return { type: "uncommittedChanges" };
+  }
+
+  if (descriptor.mode === "branch") {
+    return { type: "baseBranch", branch: descriptor.baseRef };
+  }
+
+  return null;
+}
+
+/**
+ * base/scope → the exact object `review/start` carries. Same resolution the
+ * `/codex:review` verb runs (explicit base wins; scope auto|working-tree|branch),
+ * so a caller that drives runAppServerReview itself reviews the same thing.
+ * @param {string} cwd
+ * @param {{ base?: string | null, scope?: string | null }} [options]
+ * @returns {ReviewTarget}
+ */
+export function resolveReviewTarget(cwd, options = {}) {
+  const descriptor = resolveReviewScope(cwd, options);
+  const target = nativeReviewTarget(descriptor);
+  if (!target) {
+    throw new Error(`This review target is not supported by the built-in reviewer: ${descriptor.label}.`);
+  }
+  return target;
+}
+
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -1052,7 +1164,7 @@ export async function runAppServerReview(cwd, options = {}) {
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
-  });
+  }, options.connect ?? null);
 }
 
 export async function importExternalAgentSession(cwd, options = {}) {
@@ -1156,7 +1268,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  });
+  }, options.connect ?? null);
 }
 
 export async function findLatestTaskThread(cwd) {
