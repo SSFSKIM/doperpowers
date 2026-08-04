@@ -11,7 +11,9 @@
 > per their track hint; each child spec opens by citing this document
 > (path + child id) — except a child that landed before this roadmap
 > was cut: it cannot cite forward, so the citation runs backward (its
-> child section and the Tracking Map point at its spec).
+> child section and the Tracking Map point at its spec). For a coupled
+> goal this document is doperpowers:brainstorming's approved design
+> spec extended in place — design up top, roadmap below, one document.
 
 ## Purpose
 
@@ -33,6 +35,21 @@ carry its sides.]
 counts, coverage, error rates. This is where the pipeline's grounding
 phase lands its numbers.]
 
+## Design *(thin or absent for an uncoupled bundle)*
+
+[The design as matured with everything in view — architecture,
+components, shared data models, interaction surfaces, failure
+semantics — at the depth the design session actually produced.
+Sub-structure freely: this section scales with the design, not the
+template. For a coupled goal this is doperpowers:brainstorming's
+approved design carried whole; the children below are derived from it.
+Grade the content: mark **[binding — <joint-view reason>]** on
+decisions the whole picture settled — children never re-litigate
+these. Everything unmarked is advisory inheritance a child may
+overturn with evidence via a dated Revision Note. Empirical unknowns
+the design could not answer are named here as delegated unknowns and
+assigned to the child or spike that will answer them.]
+
 ## Children
 
 ### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing]
@@ -49,6 +66,9 @@ phase lands its numbers.]
   still runs); conditional-on: C_n's gate outcome or
   external:<condition> when WHETHER it runs is contingent; blocks: C_m]
 - **Contracts:** [which Cross-Child Contracts it participates in, by id]
+- **Design inheritance:** [the Design sections/decisions that bear on
+  this child, by heading or decision id — authority grades travel with
+  them; delete if the Design section is absent]
 - **Required:** [required for parent acceptance | conditional — state the
   condition; per-gate flags when the child declares multiple gates]
 - **Status:** [not-dispatched (annotate which: dispatchable now |
@@ -83,9 +103,10 @@ foreseen.]
 
 [Two kinds — keep them apart. **Deferred (may return):** work that
 surfaced but belongs to the next unit — named reservations, not silent
-drops. **Explicitly out of scope (standing exclusions):** things this
-unit will never do; if one is also an invariant, cross-reference its
-contract id.]
+drops; on a board-run project these may also register as parked tickets
+citing this roadmap, so overflow outlives this list. **Explicitly out
+of scope (standing exclusions):** things this unit will never do; if
+one is also an invariant, cross-reference its contract id.]
 
 ## Tracking Map
 

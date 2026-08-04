@@ -10,13 +10,15 @@ description: Use when a goal is too big for one agent to reliably own as one uni
 Work is a tree of goals. Every node is a goal — a purpose with observable
 acceptance — whatever the project calls it: milestone, epic, phase, slice,
 ticket. doperpowers:brainstorming DEFINES one goal at a time, whatever its
-size; this skill DIVIDES a goal that fails the gate below into child goals
-one level down, and tends the tree as children land; the tracks
-(brainstorming → spec → plans, or doperpowers:execplan) EXECUTE the leaves.
-The product of one run is a parent **roadmap spec** per
-`references/roadmap-spec-template.md`: children with purpose, observable
-acceptance, and dependency edges; the contracts that cross them; and a
-living tail that tracks the unit to its retrospective.
+size — and for a goal whose pieces interact, MATURES the joint design
+before handing it here; this skill DIVIDES a goal that fails the gate
+below into child goals one level down, and tends the tree as children
+land; the tracks (brainstorming → spec → plans, or doperpowers:execplan)
+EXECUTE the leaves. The product of one run is a parent **roadmap spec**
+per `references/roadmap-spec-template.md`: the matured design where one
+exists; children with purpose, observable acceptance, and dependency
+edges; the contracts that cross them; and a living tail that tracks the
+unit to its retrospective.
 
 This is the deliberate sibling of doperpowers:organizing-sprints. That
 skill turns raw *testimony* (an ideadump that may misread the code) into a
@@ -86,14 +88,19 @@ there.
 
 ## The Frontier
 
-Divide at need in time as well as in size: one level per run, and a branch
-is divided only as it nears execution. Distant branches stay coarse — a
-child whose own division can wait carries the track hint "decomposing
-run at dispatch" and nothing more. The cut you would draw today for
-far-off work goes stale the same way approach sketches do; an undivided
-branch is cheap to re-cut when a landed sibling's discoveries move it. A
-roadmap is precise near the frontier and coarse in the distance — keep it
-that way.
+The frontier governs COMMITMENT, not capture. Divide one level per run,
+and cut a branch only as it nears execution: child boundaries, gates,
+and binding contracts drawn today for far-off work go stale as landed
+siblings move them, and an undivided branch is cheap to re-cut. A child
+whose own division can wait carries the track hint "decomposing run at
+dispatch" and nothing more. Design prose is the opposite case — whatever
+the joint view produced about a distant branch stays in the parent at
+the depth it was produced, as advisory inheritance (see the Derivation
+Contract): expected to be revised by the time the branch nears dispatch,
+and cheap to revise precisely because it was written down. A roadmap is
+BINDING near the frontier and advisory in the distance; staleness in
+advisory content costs a Revision Note, while an uncaptured insight is
+unrecoverable.
 
 ## Recomposition
 
@@ -128,11 +135,14 @@ Children read the parent's current state at dispatch — the dispatch
 machinery stamps `parent-pin:` (the parent, plus a hash of the parent's
 body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
-revises its own means freely; discovery that touches a parent-owned
-end — purpose, acceptance, a cross-child contract, an edge, the
-division itself — becomes a `[parent-impact]` comment on the child's
-own ticket (evidence + affected clauses; the child never edits the
-parent). The sweep returns the parent to `ready-for-architect`
+revises its own means freely — and overturning advisory inheritance is
+revising means: the child records the overturn itself as a dated
+Revision Note on the parent (evidence in a line) and moves on, no
+reconciliation. Discovery that touches a parent-owned end — purpose,
+acceptance, a cross-child contract, an edge, a BINDING design decision,
+the division itself — becomes a `[parent-impact]` comment on the child's
+own ticket (evidence + affected clauses; binding content the child
+never edits). The sweep returns the parent to `ready-for-architect`
 (`reconciliation-due`); the reconciling Architect judges materiality,
 updates the parent's living tail, and flags affected in-flight
 children. Purpose changes and material acceptance reductions go to the
@@ -144,31 +154,54 @@ explicitly irrelevant, or a corrective child.
 
 Create a task per phase; complete them in order.
 
+Intake has two shapes. A COUPLED goal arrives as a matured, approved
+design — doperpowers:brainstorming matured it precisely because its
+pieces interact; that design document is this run's primary input, and
+the roadmap sections extend it in place (one document: design up top,
+roadmap below). An UNCOUPLED bundle arrives undesigned — its pieces
+share no design surface, so there was nothing to mature jointly; phases
+2–3 do the defining work here, and the design sections stay thin.
+
 1. **Ground the goal** — explore the code and repo state it touches.
    Intent is trusted here, but a question the codebase can answer is
-   answered by reading, never asked.
-2. **Tentative child cut** — propose children as goals with ordering; get
-   the human's reaction BEFORE deep grilling. Over-merging hides
-   independent shippables; over-splitting loses coherence — ask when
-   unsure. Check each tentative child against the code for already-built
-   or partially-built reality: deliberate initiatives assume greenfield
-   more often than the code is.
-3. **Grill** — one question at a time, each with your recommended answer
-   (doperpowers:brainstorming's grill protocol): child boundaries,
-   dependency edges, cross-child contracts, and reservations that belong
-   to a later cut rather than this one.
+   answered by reading, never asked. For matured intake, verify the
+   design's load-bearing code claims rather than re-deriving them.
+2. **Derive or propose the cut** — from a matured design, derive
+   children along its natural seams and grade each design decision's
+   authority (binding with its joint-view reason; advisory otherwise —
+   see the Derivation Contract). For an uncoupled bundle, propose
+   tentative children as goals with ordering and get the human's
+   reaction BEFORE deep grilling. Either way, check each child against
+   the code for already-built or partially-built reality: deliberate
+   initiatives assume greenfield more often than the code is.
+   Over-merging hides independent shippables; over-splitting loses
+   coherence — ask when unsure.
+3. **Grill the residue** — one question at a time, each with your
+   recommended answer (doperpowers:brainstorming's grill protocol):
+   child boundaries, dependency edges, cross-child contracts, authority
+   grades, and reservations that belong to a later cut rather than this
+   one. A matured design has already answered its architectural
+   questions — don't re-grill them; an uncoupled bundle needs each
+   piece's purpose and acceptance grilled here.
 4. **Author the roadmap spec** — per `references/roadmap-spec-template.md`,
-   born landed: v1 already carries the grill's decisions, with the living
-   tail of doperpowers:execspec.
+   born landed: v1 already carries the design and the grill's decisions,
+   with the living tail of doperpowers:execspec. For matured intake,
+   extend the approved design spec in place rather than opening a
+   second document.
 5. **Self-review, then the human gate** — scan for placeholders and
    contradictions, and run the traceability check: every load-bearing
    declaration in the Decision Log has a counterpart slot in the children,
    contracts, or acceptance sections. Commit the spec; the human's
-   approval opens phase 6.
+   approval opens phase 6. (A design already approved in brainstorming
+   needs their eyes only on what this run added — the cut, the grades,
+   the contracts.)
 6. **Materialize onto the board (optional)** — when the project runs the
    board pipeline: children as tickets with typed edges via
    doperpowers:issue-tracker scripts, bodies fleshed to the pre-spec bar
-   and citing this roadmap (path + child id). Skip for document-only
+   and citing this roadmap (path + child id). Deferred entries that are
+   real work may register as parked tickets citing this roadmap, so
+   overflow from the design session keeps a durable home beyond the
+   Deferred list. Skip for document-only
    projects — the tracking map is the handoff contract either way. (A
    dispatched worker that finds its ticket gate-failing on scope runs this
    same division at board altitude — doperpowers:implementing's
@@ -188,24 +221,50 @@ Each child section of the roadmap fixes:
 - **Dependency edges** — what blocks it, what it blocks;
 - **Cross-child contracts** — the shared interfaces, invariants, and
   ordering rules it participates in;
+- **Design inheritance** — the parent design content that bears on this
+  child, each piece carrying its authority grade;
 - **Track hint** — controlled, autonomous, spike (deliverable is
   findings, never a merge), or another decomposing run at
   dispatch.
 
-At dispatch, the child treats its section as pre-landed grill input: it
-grills only the residue and never re-litigates landed decisions. The
-child's own spec opens by citing this roadmap (path + child id) — that
-citation is what keeps the flow-back channel alive when there is no
-board. Children read the parent document's *current* state at dispatch,
-never a frozen snapshot; when a Revision Note lands that touches an
-in-flight child's contract, flag that child.
+Everything the parent hands a child carries one of two authority
+grades:
 
-The parent fixes ends, never means: no technical-approach sketches for
-children — high-altitude approach sketches miss the depth the child will
-discover and go stale as earlier children land. When a child's work
-contradicts the parent, the discovery flows back into the parent's
-Revision Notes — never silent divergence. This is the
-doperpowers:execspec discipline one level up.
+- **Binding** — what only the joint view could settle: purpose,
+  acceptance, edges, cross-child contracts, and any design decision
+  that would come out differently without the whole picture in view
+  (shared data models, interface shapes, failure semantics that span
+  children). Children never re-litigate binding content; discovery that
+  contradicts it flows back as `[parent-impact]` (see Upward Revision),
+  never a local override.
+- **Advisory** — the parent's best full-picture thinking on matters
+  local to one child: approach sketches, sequencing suggestions,
+  anticipated pitfalls. The child inherits it as pre-landed grill
+  input — it starts there instead of from a blank page — and may
+  overturn it with evidence; the overturn lands as a dated Revision
+  Note on the parent, written by the child, not a reconciliation event.
+
+Advisory is the default grade; content is binding because the roadmap
+marks it so, with the joint-view reason attached. Capture is not
+commitment: the parent records everything the design session produced —
+the spec is the only durable memory this org has, and a stale written
+decision is detectably wrong at child time while an uncaptured insight
+is silently gone — but it binds only what the joint view actually
+settled. A parent that binds child-local means converts every child
+discovery into reconciliation traffic; a parent that withholds design
+to "let the child figure it out" throws away decisions that were only
+makeable with everything on the table.
+
+At dispatch, the child treats its section and its design inheritance as
+pre-landed grill input: it grills only the residue and never
+re-litigates landed decisions. The child's own spec opens by citing
+this roadmap (path + child id) — that citation is what keeps the
+flow-back channel alive when there is no board. Children read the
+parent document's *current* state at dispatch, never a frozen snapshot;
+when a Revision Note lands that touches an in-flight child's contract,
+flag that child. When a child's work contradicts the parent, the
+discovery flows back into the parent's Revision Notes — never silent
+divergence. This is the doperpowers:execspec discipline one level up.
 
 ## Common Mistakes
 
@@ -215,8 +274,10 @@ doperpowers:execspec discipline one level up.
 | Running on a raw ungrounded ideadump | Wrong skill — doperpowers:organizing-sprints grounds testimony first. |
 | A cut that yields one child | A gate misfire: either the goal was already a leaf (ceremony), or the cut found no seam where children land independently. Back to the gate. |
 | Forcing division because a goal is big | The gate asks reliably-ownable, not small. Big-but-coherent is one leaf. |
-| Dividing branches far from the frontier | Distant cuts go stale. Coarse until near execution. |
-| Sketching child approaches in the parent | The parent fixes purpose/acceptance/edges; means belong to the child. |
+| Dividing branches far from the frontier | Distant CUTS go stale — commitments stay coarse until near execution. Captured design prose stays, graded advisory. |
+| Withholding design so the child can "figure it out" | Joint-view insight uncaptured is unrecoverable; write it down as advisory inheritance. Staleness flows back; loss doesn't. |
+| Binding child-local means | Advisory is the default grade; binding needs a joint-view reason. Flat bindingness turns every child discovery into reconciliation traffic. |
+| Cutting a coupled goal undesigned | The interaction surface is designable only with everything in view — doperpowers:brainstorming matures it first. Early routing is for uncoupled bundles. |
 | Treating level names as structure | Milestone/Epic/Phase are project annotations. The gate is the only law; depth is an output. |
 | Closing a parent by bookkeeping | Recomposition is verification against the parent's own acceptance, not a status flip. |
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
