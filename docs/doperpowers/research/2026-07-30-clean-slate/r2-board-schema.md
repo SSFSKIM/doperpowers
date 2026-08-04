@@ -47,6 +47,16 @@ full event-log reconstruction claim (§0.1, §3.2); the `TimelineReader`
 access contract (§4); env-issue queue visibility (human decision queue
 only when `needs-human`); token-borne actor trust (§0.8).
 
+**A1 additions (2026-08-04, flow-back from the A1 design spec —
+arkho `docs/specs/2026-08-04-a1-board-service-design.md`):**
+`run.dispatch_nonce` (unique, never recycled — claim idempotency
+against commit-then-lost-response), `run.last_write_at` (third
+liveness source per roadmap X6), a `principal` table (human/automation
+token classes beside per-run bearers), and a one-ack-per-answer unique
+constraint (X6 wake delivery). The A1 spec also fixes the canonical
+per-ticket lock order (ticket row → decision-park row) and guards the
+§3.4 reclaim join with `store_ns IS NULL` = source not-applicable.
+
 **Interim-board mechanisms that dissolve structurally here** (recorded
 so the decomposing run doesn't port them): `pre-park:` meta was a build
 forced by GitHub having no queryable event record — here the park
