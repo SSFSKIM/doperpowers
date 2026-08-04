@@ -22,6 +22,15 @@ Target selection (shared by both):
 - default (`auto`) — working-tree changes when present, otherwise the
   branch against the detected default branch.
 
+Route by diff size: on a big diff — as a rule of thumb, 20+ files or a
+couple thousand changed lines — run the `workflow` verb's code-review
+panel instead of a single `review`. One reviewer's recall thins at that
+scale; the panel (diff-derived lenses + a lens-free sweep + a binding
+verifier) surfaced over twice the confirmed findings of a plain
+single-worker sweep on the same 85-file PR. Invocation and output
+contract: references/workflows.md. Expect ~8 workers and ~20 minutes;
+smaller, focused diffs stay with plain `review`.
+
 `review` is Codex's native reviewer, deliberately non-steerable: it errors
 on focus text and on staged-only/unstaged-only scopes. `--model` takes a
 literal model name only ; review forwards the value un-normalized, so an 
@@ -57,9 +66,7 @@ defects. The trailing focus text is a lens, e.g.
 For a multi-lens sweep of a big diff, launch several `adversarial-review`
 runs in parallel background Bash calls, one lens each. Concurrent runs may
 share one state root: every ledger writer takes the state lock, so parallel
-runs no longer drop each other's job records. (The `workflow` verb's
-code-review panel is the structured alternative for big diffs —
-references/workflows.md.)
+runs no longer drop each other's job records.
 
 Working-tree and adversarial reviews embed the contents of untracked
 files — following symlinks — into the review prompt before any sandbox

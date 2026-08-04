@@ -49,6 +49,32 @@ and `lease-held` reaches 2 only when the ledger's liveness check could not see
 the live run (a resume from a different workspace, say) and the engine's lease
 was the last guard standing.
 
+## The bundled code-review panel
+
+`<skill-base>/workflows/code-review.mjs` is a ready-made review workflow —
+the destination references/reviews.md routes big diffs to. One lens-free
+native sweep, up to five scalpel lenses a deriver reads off the diff, and
+one binding verifier over the merged candidate pool:
+
+    … workflow --script "<skill-base>/workflows/code-review.mjs" \
+      --args '{"base":"main"}' --cwd <repo> 2> <scratch>.events.log
+
+`base` is the only required arg. Optional: `lenses` (an array replacing the
+derived set), `finderModel`/`finderEffort` (default `gpt-5.6-sol`/`xhigh`),
+`verifierModel`/`verifierEffort` (default `gpt-5.6-sol`/`high`).
+
+The verb's stdout `result` is `{verdict, findings, coverage, lenses,
+explanation}`. `verdict` is `correct`, `incorrect`, or `interrupted`;
+`findings` carries only verifier-confirmed items —
+`{id, priority, title, file, lines, comment, sources}`, priority-sorted —
+so `incorrect` means confirmed defects, not raw candidates. `interrupted`
+means no verdict about this diff can be asserted: a lane was lost (sweep or
+verifier down, so a clean claim would be hollow) or the target moved — the
+panel pins `merge-base` AND `HEAD` at start and re-resolves both at
+assembly, so a commit landing on the reviewed branch mid-run withholds the
+verdict, with any findings attached as partial evidence. Don't commit to
+the branch under review while a round is in flight.
+
 ## The script
 
 An ES module with a default async function. It receives one object and returns
