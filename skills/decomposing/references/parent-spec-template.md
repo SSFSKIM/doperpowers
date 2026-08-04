@@ -1,4 +1,4 @@
-# [Goal Name] Roadmap (YYYY-MM-DD)
+# [Goal Name] (YYYY-MM-DD)
 
 > **Parent:** [path + child id of the parent this goal descends from, or
 > "root — the project's standing purpose", citing the CLAUDE.md top-goal
@@ -9,9 +9,9 @@
 > that participates in this unit's contracts or edges is a CHILD
 > (possibly already landed), not a Consumes entry]. Children dispatch
 > per their track hint; each child spec opens by citing this document
-> (path + child id) — except a child that landed before this roadmap
-> was cut: it cannot cite forward, so the citation runs backward (its
-> child section and the Tracking Map point at its spec). For a coupled
+> (path + child id) — except a child that landed before this cut: it
+> cannot cite forward, so the citation runs backward (its child section
+> and the Tracking Map point at its spec). For a coupled
 > goal this document is doperpowers:brainstorming's approved design
 > spec extended in place — design up top, roadmap below, one document.
 
@@ -104,7 +104,7 @@ foreseen.]
 [Two kinds — keep them apart. **Deferred (may return):** work that
 surfaced but belongs to the next unit — named reservations, not silent
 drops; on a board-run project these may also register as parked tickets
-citing this roadmap, so overflow outlives this list. **Explicitly out
+citing this parent spec, so overflow outlives this list. **Explicitly out
 of scope (standing exclusions):** things this unit will never do; if
 one is also an invariant, cross-reference its contract id.]
 

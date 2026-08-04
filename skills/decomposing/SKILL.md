@@ -14,8 +14,12 @@ size — and for a goal whose pieces interact, MATURES the joint design
 before handing it here; this skill DIVIDES a goal that fails the gate
 below into child goals one level down, and tends the tree as children
 land; the tracks (brainstorming → spec → plans, or doperpowers:execplan)
-EXECUTE the leaves. The product of one run is a parent **roadmap spec**
-per `references/roadmap-spec-template.md`: the matured design where one
+EXECUTE the leaves. The product of one run is a parent **spec** per
+`references/parent-spec-template.md` — the same species as any living
+spec (doperpowers:execspec), not a separate document type: design at
+the center, with the roadmap topology (children, edges, ordering)
+embedded as sections. "Parent spec" is a relational role — a parent
+spec's child can itself be one. It carries the matured design where one
 exists; children with purpose, observable acceptance, and dependency
 edges; the contracts that cross them; and a living tail that tracks the
 unit to its retrospective.
@@ -97,10 +101,10 @@ dispatch" and nothing more. Design prose is the opposite case — whatever
 the joint view produced about a distant branch stays in the parent at
 the depth it was produced, as advisory inheritance (see the Derivation
 Contract): expected to be revised by the time the branch nears dispatch,
-and cheap to revise precisely because it was written down. A roadmap is
-BINDING near the frontier and advisory in the distance; staleness in
-advisory content costs a Revision Note, while an uncaptured insight is
-unrecoverable.
+and cheap to revise precisely because it was written down. A parent
+spec is BINDING near the frontier and advisory in the distance;
+staleness in advisory content costs a Revision Note, while an
+uncaptured insight is unrecoverable.
 
 ## Recomposition
 
@@ -117,7 +121,7 @@ instead of closing — the only state an epic is dispatchable in — and an
 Architect issues the verdict. A non-code parent closes on its
 verification evidence directly. A code-bearing one — children that
 touched one executable surface, cross-child invariants, multi-repo
-composition, or a roadmap that marks review required — posts a closure
+composition, or a parent spec that marks review required — posts a closure
 package and goes to `in-review` for a SCALE REVIEW, whose clean verdict
 closes the parent and whose defects become corrective children (the
 parent waits and recomposes again). The shape of the unit gates which
@@ -125,7 +129,7 @@ path runs; nothing about it is a status flip.
 
 <HARD-GATE>
 Materialization onto the issue board is gated on the human approving the
-written roadmap spec. Registering a unit's worth of tickets is an
+written parent spec. Registering a unit's worth of tickets is an
 outward-facing batch action — do not touch the board before approval.
 </HARD-GATE>
 
@@ -183,7 +187,7 @@ share no design surface, so there was nothing to mature jointly; phases
    one. A matured design has already answered its architectural
    questions — don't re-grill them; an uncoupled bundle needs each
    piece's purpose and acceptance grilled here.
-4. **Author the roadmap spec** — per `references/roadmap-spec-template.md`,
+4. **Author the parent spec** — per `references/parent-spec-template.md`,
    born landed: v1 already carries the design and the grill's decisions,
    with the living tail of doperpowers:execspec. For matured intake,
    extend the approved design spec in place rather than opening a
@@ -198,8 +202,8 @@ share no design surface, so there was nothing to mature jointly; phases
 6. **Materialize onto the board (optional)** — when the project runs the
    board pipeline: children as tickets with typed edges via
    doperpowers:issue-tracker scripts, bodies fleshed to the pre-spec bar
-   and citing this roadmap (path + child id). Deferred entries that are
-   real work may register as parked tickets citing this roadmap, so
+   and citing this parent spec (path + child id). Deferred entries that
+   are real work may register as parked tickets citing this parent spec, so
    overflow from the design session keeps a durable home beyond the
    Deferred list. Skip for document-only
    projects — the tracking map is the handoff contract either way. (A
@@ -214,7 +218,7 @@ share no design surface, so there was nothing to mature jointly; phases
 
 ## The Derivation Contract
 
-Each child section of the roadmap fixes:
+Each child section of the parent spec fixes:
 
 - **Purpose** — one paragraph, the child's reason to exist;
 - **Observable acceptance** — behavior, not implementation;
@@ -244,8 +248,8 @@ grades:
   overturn it with evidence; the overturn lands as a dated Revision
   Note on the parent, written by the child, not a reconciliation event.
 
-Advisory is the default grade; content is binding because the roadmap
-marks it so, with the joint-view reason attached. Capture is not
+Advisory is the default grade; content is binding because the parent
+spec marks it so, with the joint-view reason attached. Capture is not
 commitment: the parent records everything the design session produced —
 the spec is the only durable memory this org has, and a stale written
 decision is detectably wrong at child time while an uncaptured insight
@@ -258,7 +262,7 @@ makeable with everything on the table.
 At dispatch, the child treats its section and its design inheritance as
 pre-landed grill input: it grills only the residue and never
 re-litigates landed decisions. The child's own spec opens by citing
-this roadmap (path + child id) — that citation is what keeps the
+this parent spec (path + child id) — that citation is what keeps the
 flow-back channel alive when there is no board. Children read the
 parent document's *current* state at dispatch, never a frozen snapshot;
 when a Revision Note lands that touches an in-flight child's contract,
