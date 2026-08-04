@@ -104,7 +104,7 @@ foreseen.]
 [Two kinds — keep them apart. **Deferred (may return):** work that
 surfaced but belongs to the next unit — named reservations, not silent
 drops; on a board-run project these may also register as parked tickets
-citing this parent spec, so overflow outlives this list. **Explicitly out
+citing this composite spec, so overflow outlives this list. **Explicitly out
 of scope (standing exclusions):** things this unit will never do; if
 one is also an invariant, cross-reference its contract id.]
 

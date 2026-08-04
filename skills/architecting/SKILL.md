@@ -240,7 +240,7 @@ lineage.
    tick after tick instead.
 4. **Code-bearing integration parent** (two-plus children touched one
    executable surface, cross-child invariants, multi-repo composition,
-   or the parent spec marks review required): assemble the closure package
+   or the composite spec marks review required): assemble the closure package
    as a comment on the epic — parent acceptance, child closing
    artifacts, exact base/head ranges, cross-child contracts, your
    recomposition evidence. Post that package as a
