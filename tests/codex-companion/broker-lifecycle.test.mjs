@@ -120,6 +120,38 @@ test("a broker record that still names its own process is torn down", () => {
   assert.deepEqual(killed, [process.pid], "a verified instance is still signalled");
 });
 
+// The gap a mismatch cannot expose: a stored stamp that is genuine, a pid that
+// answers signal 0, and a CURRENT start time that cannot be read right now.
+// Liveness answers "alive" there deliberately — ignorance must never cost a live
+// process its lock or its lease — but teardown SIGNALS, and terminateProcessTree
+// signals a whole process GROUP. If the durable broker pid has since been
+// reused, that same ignorance is what authorizes killing a stranger's tree.
+// `platform: "win32"` is how this suite says "no start time is readable here"
+// (pid.test.mjs uses it for exactly that).
+test("a broker record whose current instance cannot be read is deleted, never signalled", () => {
+  const sessionDir = makeTempDir("codex-brokersession-");
+  const pidFile = path.join(sessionDir, "broker.pid");
+  const logFile = path.join(sessionDir, "broker.log");
+  fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
+  fs.writeFileSync(logFile, "", "utf8");
+  const killed = [];
+
+  teardownBrokerSession({
+    endpoint: null,
+    pidFile,
+    logFile,
+    sessionDir,
+    pid: process.pid,
+    pidStart: processStartTime(process.pid),
+    killProcess: (pid) => killed.push(pid),
+    pidOptions: { platform: "win32" }
+  });
+
+  assert.deepEqual(killed, [], "an unreadable current instance is unprovable, and unprovable is never signalled");
+  assert.equal(fs.existsSync(pidFile), false, "…the record is still torn down, it is just never signalled");
+  assert.equal(fs.existsSync(logFile), false);
+});
+
 test("a live broker's record carries the instance that answers for its pid", async () => {
   await withPluginData(async () => {
     const workspace = makeTempDir("codex-brokerws-");

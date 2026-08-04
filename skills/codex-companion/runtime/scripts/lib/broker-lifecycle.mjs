@@ -6,7 +6,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { pidInstanceAlive, processStartTime } from "./pid.mjs";
+import { pidInstanceVerified, processStartTime } from "./pid.mjs";
 import { resolveStateDir } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
@@ -185,12 +185,20 @@ export async function ensureBrokerSession(cwd, options = {}) {
 // belongs to a stranger's process tree. Signal only a pid this record can PROVE
 // is still its own broker; anything unverifiable is just a file to delete.
 //
-// "Unverifiable" includes a record written before stamps existed, and a platform
-// with no readable start time (Windows). The cost there is at most one leaked
-// broker process that is already unreachable; the cost of guessing wrong in the
-// other direction is somebody else's process group.
-function brokerInstanceIsOurs(pid, pidStart) {
-  return Number.isFinite(pid) && Boolean(pidStart) && pidInstanceAlive(pid, pidStart);
+// "Unverifiable" includes a record written before stamps existed, a platform
+// with no readable start time (Windows), and a start time that simply could not
+// be read this time. That last one is why this asks pidInstanceVerified rather
+// than pidInstanceAlive: liveness answers "alive" when the current start time is
+// unreadable, because ignorance must never cost a live process its lock or its
+// lease — but this is a SIGNAL path, and there the same ignorance would hand a
+// reused pid's whole process group a SIGTERM. Every other kill path in the
+// runtime uses the fail-closed predicate; so does this one.
+//
+// The cost of refusing is at most one leaked broker process that is already
+// unreachable; the cost of guessing wrong in the other direction is somebody
+// else's process group.
+function brokerInstanceIsOurs(pid, pidStart, pidOptions) {
+  return Number.isFinite(pid) && pidInstanceVerified(pid, pidStart, pidOptions);
 }
 
 export function teardownBrokerSession({
@@ -200,9 +208,12 @@ export function teardownBrokerSession({
   sessionDir = null,
   pid = null,
   pidStart = null,
-  killProcess = null
+  killProcess = null,
+  // Only tests pass this — it is how "no start time is readable here" is
+  // expressed without an unreadable machine (see pid.mjs).
+  pidOptions = {}
 }) {
-  if (killProcess && brokerInstanceIsOurs(pid, pidStart)) {
+  if (killProcess && brokerInstanceIsOurs(pid, pidStart, pidOptions)) {
     try {
       killProcess(pid);
     } catch {
