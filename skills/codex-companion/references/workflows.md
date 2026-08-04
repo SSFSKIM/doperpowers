@@ -148,6 +148,24 @@ holds the live worker count at `--max-concurrency`. Each leaf call also gets one
 automatic transport retry on a fresh turn — the schema-repair exhaustion above
 is exempt, so it never buys a third model turn.
 
+## Watching a run
+
+`watch <run-id>` renders the journal as a progress tree — one row per worker
+(spinner/`✓`/`✗`, label, kind, elapsed, retry marks, result preview) with the
+script's `log()` lines interleaved as dividers where they happened. On a TTY it
+redraws in place every `--interval <ms>` (default 500) and exits on its own
+when the run leaves `running`; a non-TTY stdout (or `--once`) prints one
+snapshot and exits, so piping it is safe. It is a pure reader of the run
+directory's artifacts — journal, lease, `result.json` — and never touches the
+lease, so attaching to a live run risks nothing, and the same command renders
+a finished run post-mortem. Run directories are global under the state root,
+so unlike `status`/`result` it needs no `--cwd`: any terminal with the same
+`CLAUDE_PLUGIN_DATA` can attach. The header state derives from the artifacts
+alone — `result.json` present means completed, a live lease means running,
+neither means interrupted. Queued-but-unstarted calls are invisible: the
+journal's `started` fires when a semaphore slot is acquired, so a row appears
+when its worker actually spawns.
+
 ## Run state and `--resume`
 
 Everything about a run lives in `$CLAUDE_PLUGIN_DATA/workflows/<run-id>/`:

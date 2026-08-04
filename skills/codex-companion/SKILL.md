@@ -60,6 +60,8 @@ Verbs, and where each is specified:
 - `workflow` — run a JS orchestration script fanning out Codex workers
   (agents + native reviews) as ONE process; read-only, resumable
   → references/workflows.md
+- `watch` — live progress tree for a workflow run (or a post-mortem
+  snapshot); read-only, attach from any terminal → references/workflows.md
 - `status` / `result` / `cancel` — job history and backgrounding
   mechanics → references/jobs.md
 - `setup` — is codex installed and authenticated (assume it is in most case. diagnose only when blocked)?

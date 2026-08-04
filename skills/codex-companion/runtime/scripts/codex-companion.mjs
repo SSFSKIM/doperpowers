@@ -40,6 +40,7 @@ import {
 } from "./lib/state.mjs";
 import { runWorkflow, WorkflowError } from "./lib/workflow/engine.mjs";
 import { acquireLease } from "./lib/workflow/journal.mjs";
+import { watchLoop } from "./lib/workflow/watch.mjs";
 import {
   isWorkflowRunActive,
   killWorkflowWorkers,
@@ -94,6 +95,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs workflow --script <path.mjs> [--args <json>] [--max-concurrency N] [--cwd <dir>] [--resume <run-id>]",
+      "  node scripts/codex-companion.mjs watch <run-id> [--interval <ms>] [--once]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -945,6 +947,34 @@ function parseMaxConcurrency(raw) {
   return value;
 }
 
+async function handleWatch(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["interval"],
+    booleanOptions: ["once"]
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    throw new Error("Missing run id for watch.");
+  }
+  // Run directories are global under the state root, so unlike status/result
+  // this verb needs no --cwd: any terminal that shares CLAUDE_PLUGIN_DATA can
+  // attach. Watching is read-only — it never touches the lease.
+  const runDir = resolveWorkflowRunDir(runId);
+  if (!fs.existsSync(runDir)) {
+    throw new Error(`No workflow run directory for ${runId} under ${path.dirname(runDir)}.`);
+  }
+  const intervalMs = options.interval
+    ? Math.max(100, Number.parseInt(options.interval, 10) || 500)
+    : 500;
+  await watchLoop({
+    runDir,
+    runId,
+    out: process.stdout,
+    intervalMs,
+    once: Boolean(options.once)
+  });
+}
+
 async function handleWorkflow(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["script", "args", "max-concurrency", "cwd", "resume"],
@@ -1308,6 +1338,9 @@ async function main() {
       break;
     case "workflow":
       await handleWorkflow(argv);
+      break;
+    case "watch":
+      await handleWatch(argv);
       break;
     case "transfer":
       await handleTransfer(argv);
