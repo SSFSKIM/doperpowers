@@ -25,7 +25,7 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { pidInstanceVerified } from "./lib/pid.mjs";
+import { pidInstanceVerified, processStartTime } from "./lib/pid.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -691,11 +691,17 @@ function enqueueBackgroundTask(cwd, job, request) {
   appendLogLine(logFile, "Queued for background execution.");
 
   const child = spawnDetachedTaskWorker(cwd, job.id);
+  // Read at spawn time, while the pid indisputably belongs to the child we just
+  // created. Without it the queued row carries a bare number, and every kill
+  // path here is fail-closed: cancel could never signal a worker that has not
+  // reached `running` yet, and would still record the job as cancelled.
+  const pidStart = child.pid ? processStartTime(child.pid) : null;
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: child.pid ?? null,
+    pidStart,
     logFile,
     request
   };
@@ -854,6 +860,15 @@ async function handleTaskWorker(argv) {
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw new Error(`No stored job found for ${options["job-id"]}.`);
+  }
+
+  // enqueueBackgroundTask is the only thing that spawns this, and it always
+  // leaves the record `queued`. Anything else means the job was decided without
+  // us — cancelled while we were still starting up, or by a build that could not
+  // signal this worker at all — and running it anyway would walk the job back to
+  // `running` and let a --write task keep editing the repo after "cancelled".
+  if (storedJob.status !== "queued") {
+    throw new Error(`Job ${options["job-id"]} is ${storedJob.status ?? "unknown"}, no longer queued — not starting its worker.`);
   }
 
   const request = storedJob.request;

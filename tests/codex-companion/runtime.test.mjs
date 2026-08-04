@@ -970,6 +970,132 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+// A queued background task is a detached worker that has not started yet, and
+// its ledger row is the only handle anyone has on it. Every kill path in this
+// runtime is fail-closed — it signals only a pid it can PROVE still names the
+// recorded process — so a queued row that carries a bare pid and no instance
+// stamp is a row cancel can never act on: cancellation would record "cancelled"
+// while the worker woke up and kept writing to the repo.
+test("a queued background worker carries its instance stamp, so cancel can actually signal it", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  // Hold the detached worker at the starting line so "queued" is observable at
+  // all: a preload module runs before the main module, and this one only stalls
+  // the worker invocation, never the CLI invocations the test itself makes.
+  const stall = path.join(makeTempDir(), "stall-task-worker.cjs");
+  fs.writeFileSync(
+    stall,
+    [
+      "if (process.argv.includes('task-worker')) {",
+      "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);",
+      "}",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const env = { ...buildEnv(binDir), NODE_OPTIONS: `--require ${stall}` };
+
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the failing test"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const jobId = JSON.parse(launched.stdout).jobId;
+
+  const readRow = () => {
+    const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8"));
+    return state.jobs.find((job) => job.id === jobId);
+  };
+
+  const queued = readRow();
+  assert.equal(queued.status, "queued");
+  assert.equal(typeof queued.pid, "number");
+  t.after(() => {
+    try {
+      process.kill(-queued.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(queued.pid, "SIGKILL");
+      } catch {
+        // Ignore an already-dead worker.
+      }
+    }
+  });
+
+  assert.equal(
+    queued.pidStart,
+    processStartTime(queued.pid),
+    "the queued row must name the worker instance, not just its number"
+  );
+
+  const cancelled = run("node", [SCRIPT, "cancel", jobId, "--json"], { cwd: repo, env });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+  assert.equal(JSON.parse(cancelled.stdout).status, "cancelled");
+
+  await waitFor(() => {
+    try {
+      process.kill(queued.pid, 0);
+      return false;
+    } catch (error) {
+      return error?.code === "ESRCH";
+    }
+  });
+  assert.equal(readRow().status, "cancelled");
+});
+
+// The other half, and the one that also covers rows written by an older build:
+// even if nothing could signal the worker, the worker must not walk a cancelled
+// job back to running. A --write task that resumes after "cancelled" keeps
+// editing the repository.
+test("task-worker refuses a job that is no longer queued", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const logFile = path.join(jobsDir, "task-cancelled.log");
+  const jobFile = path.join(jobsDir, "task-cancelled.json");
+  fs.writeFileSync(logFile, "[2026-03-18T15:30:00.000Z] Queued for background execution.\n", "utf8");
+  const record = {
+    id: "task-cancelled",
+    status: "cancelled",
+    phase: "cancelled",
+    title: "Codex Task",
+    jobClass: "task",
+    workspaceRoot: workspace,
+    logFile,
+    // A cancelled row written by a build that could not signal its worker: the
+    // request payload is still sitting there, ready to be replayed.
+    request: { prompt: "rewrite every file", mode: "write" }
+  };
+  fs.writeFileSync(jobFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify({ version: 1, config: { stopReviewGate: false }, jobs: [record] }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const worker = run("node", [SCRIPT, "task-worker", "--cwd", workspace, "--job-id", "task-cancelled"], {
+    cwd: workspace
+  });
+
+  assert.equal(
+    JSON.parse(fs.readFileSync(jobFile, "utf8")).status,
+    "cancelled",
+    "a cancelled job must stay cancelled — the worker may not write over it"
+  );
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(state.jobs.find((job) => job.id === "task-cancelled").status, "cancelled");
+  assert.notEqual(worker.status, 0);
+  assert.match(worker.stderr, /no longer queued/i);
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
