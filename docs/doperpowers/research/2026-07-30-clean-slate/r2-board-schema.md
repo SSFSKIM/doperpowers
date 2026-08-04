@@ -57,6 +57,22 @@ constraint (X6 wake delivery). The A1 spec also fixes the canonical
 per-ticket lock order (ticket row → decision-park row) and guards the
 §3.4 reclaim join with `store_ns IS NULL` = source not-applicable.
 
+**A1 implementation flow-back (2026-08-04, Task 6 canon rulings):**
+§1's `needs-human` row gains two **human-disposition edges** —
+`→ ready-for-implementer` and `→ ready-for-architect` (note required,
+no PR). The v2 table derived needs-human exits from E1's *worker*
+flows; the interim board's humans route answered env-issue birth parks
+straight to a lane in one label move, and A1 enforces legality for all
+actors, so the omission made the designed birth-park resolution
+(§3.5's needs-human default → human answers → work queue) illegal.
+Worker exits stay impossible (actor-scoped park guard, unchanged).
+Park semantics addendum: an escalated `interactive-preferred →
+needs-human` park resumes its still-bound run to `in-progress` (the
+parking lane's in-flight state — §3.3's mapped-return rule applied to
+the one lane that can hold a run there); and answers on *unbound*
+parks (birth parks, needs-info escalations) carry an explicit human
+disposition `to` that may never target an in-flight state.
+
 **Interim-board mechanisms that dissolve structurally here** (recorded
 so the decomposing run doesn't port them): `pre-park:` meta was a build
 forced by GitHub having no queryable event record — here the park
@@ -158,7 +174,7 @@ the edge, **pr** = review artifact required):
 | `ready-for-implementer` | → `in-progress` (implementer gate/DIRECT, or plan-execution first write); → `ready-for-architect` (gate escalation, **note**, convergence-counted); → parks; → `wontfix`/`deferred` |
 | `in-progress` | → `in-review` (**pr** — leaf: PR URL; epic: closure-package event, §1a); → `ready-for-architect` (return park, **note**, convergence-counted); → parks (**note**); → `done` (non-PR work); → `wontfix`/`deferred` |
 | `in-review` | → `in-progress` (fix waves); → `confident-ready`; → `done` (**epic-guarded for workers** — only a QAgent scale-review claim whose stamped closure-package id matches the epic's current one; a leaf reaches `done` from review via `confident-ready` or a human write, per E2's worker-never-closes doctrine); → **`ready-for-architect` (review impasse, **note**, convergence-counted — the QAgent's third-address edge, E1 v1.3)**; → `needs-human`/`needs-info` (**note**); → `wontfix`/`deferred` |
-| `needs-human` | → `in-design` / `in-progress` / `in-review` (answer relay, lane-mapped — §3.3; the `in-review` return needs no fresh **pr**: the gate binds the `in-progress → in-review` edge only, per E1 v1.3.2); → other parks; → `done` (spike handoff, human); → `wontfix`/`deferred` |
+| `needs-human` | → `in-design` / `in-progress` / `in-review` (answer relay, lane-mapped — §3.3; the `in-review` return needs no fresh **pr**: the gate binds the `in-progress → in-review` edge only, per E1 v1.3.2); → `ready-for-implementer` / `ready-for-architect` (**human-disposition edges** for unbound parks — birth parks and needs-info escalations — **note**; A1 Task 6 flow-back); → other parks; → `done` (spike handoff, human); → `wontfix`/`deferred` |
 | `needs-info` | fold-and-recut only: → `ready-for-implementer` / `ready-for-architect` (answerer's lane-aware routing; no resume) |
 | `interactive-preferred` | human-authored exits (v8 semantics) |
 | `confident-ready` | → `done` |
