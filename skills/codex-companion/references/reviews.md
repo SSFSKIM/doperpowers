@@ -24,12 +24,10 @@ Target selection (shared by both):
 
 Route by diff size: on a big diff — as a rule of thumb, 20+ files or a
 couple thousand changed lines — run the `workflow` verb's code-review
-panel instead of a single `review`. One reviewer's recall thins at that
-scale; the panel (diff-derived lenses + a lens-free sweep + a binding
-verifier) surfaced over twice the confirmed findings of a plain
-single-worker sweep on the same 85-file PR. Invocation and output
-contract: references/workflows.md. Expect ~8 workers and ~20 minutes;
-smaller, focused diffs stay with plain `review`.
+panel instead of a single `review`; one reviewer's recall thins at that
+scale. Invocation and output contract: references/workflows.md. Expect
+~8 workers and ~20 minutes; smaller, focused diffs stay with plain
+`review`.
 
 `review` is Codex's native reviewer, deliberately non-steerable: it errors
 on focus text and on staged-only/unstaged-only scopes. `--model` takes a
