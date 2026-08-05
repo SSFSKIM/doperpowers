@@ -13,3 +13,12 @@ triage/
 # plugin, so the whole directory is ignored here.
 evals/
 __pycache__/
+
+# /teach personal learning workspace (not part of the plugin)
+/MISSION.md
+/RESOURCES.md
+/NOTES.md
+/lessons/
+/reference/
+/learning-records/
+/assets/
