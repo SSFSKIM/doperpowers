@@ -73,8 +73,10 @@ stay actor-blind:
    (a `board.principal` of kind automation with `dispatch` + `sweep`
    capabilities) and `BOARD_HUMAN_TOKEN` (the human principal). Which token a
    script uses is fixed per script, never guessed: sweep/dispatch/relay verbs
-   always automation; interactive verbs (`board-answer.sh`, hand-run
-   transitions) default human.
+   always automation; interactive verbs (hand-run transitions) default
+   human. One scripted exception: `board-answer.sh` is dual-principal
+   (§ Verb mapping) — human for the answer, automation for its inline
+   relay leg.
 
 ### The API client core (`_board_api.py`)
 
@@ -101,9 +103,10 @@ below it.
 
 | verb | API mode |
 |---|---|
-| `board-register.sh` | `POST /tickets` — lineage edges (`parent`/`spawnedBy`/`blockedBy`) ride the payload; birth classification, dedup, env-issue inversion, `repairPath` rules all server-side. Category map: `bug`/`enhancement` → `work`; `spike`/`env-issue` pass through |
-| `board-transition.sh` | `POST /tickets/:id/transition`; `fence` from `BOARD_RUN_FENCE` when the actor is a run; `pr`/`plan`/`branch` pass through |
-| `board-answer.sh` | `POST /tickets/:id/park-answer`, always naming `correlationId` from `GET /queue/decisions` (the contract's superseded-answer protection). Then runs the sweep's relay step inline once, so a hand-delivered answer resumes the worker immediately — the same blocking feel as gh mode |
+| `board-register.sh` | `POST /tickets` — lineage edges (`parent`/`spawnedBy`/`blockedBy`) ride the payload; birth classification, dedup, env-issue inversion, `repairPath` rules all server-side. Category map: `bug`/`enhancement` → `work`; `spike`/`env-issue` pass through. A park-state birth's `--note` (the question the human sees — gh mode requires it) has no API field: it is **prepended to `body`** as the opening line, and the contract-level fix (a question field rendered into the birth park) is a flow-back item on the A1 follow-up ticket. **Known divergence:** the API refuses `spike` born `ready-for-architect` (`409 illegal-birth`) while gh mode deliberately supports design-first spikes — the 409 is surfaced honestly, design-first spikes are gh-only until the flow-back ruling (§ Scope-outs) |
+| `board-transition.sh` | `POST /tickets/:id/transition`; `fence` from `BOARD_RUN_FENCE` when the actor is a run; `pr`/`plan`/`branch` pass through. The script prints the **response's** `to` (and the `converged` flag), never the requested state — the server transmutes on convergence, and echoing the request would mislead the worker and break the transcript drill |
+| `board-comment.sh` | **new verb, both modes** — gh: `gh issue comment`; API: `POST /tickets/:id/comment`. Default `kind: comment`; `--kind parent-impact\|closure-package\|parent-impact-consumed` with a typed `--body` JSON payload carries the E2 event ops (the comment route is their only API carrier; in gh mode these land as marker-prefixed comments). The worker protocols' raw `gh issue comment` call sites (implementing SKILL.md:82, architecting SKILL.md:56, reviewing-prs SKILL.md:277) are edited **once** to call this verb; after that substitution the prose is binding-neutral |
+| `board-answer.sh` | `POST /tickets/:id/park-answer`, always naming `correlationId` from `GET /queue/decisions` (the contract's superseded-answer protection). Then runs the sweep's relay step inline once, so a hand-delivered answer resumes the worker immediately — the same blocking feel as gh mode. **Dual-principal by design** — the one scripted exception to fixed-token-per-script: the answer leg speaks human, the relay/ack leg speaks automation (`unrelayed`/`ack-answer` admit automation only) |
 | `board-list.sh` / `board-show.sh` | `GET /tickets` (+ `GET /tickets/:id/timeline` for show). Human-facing dispatch-order ranking is rendered but informational — the server owns pick order |
 | `board-map.sh` | a snapshot adapter feeds the same BOARD.html/BOARD.md renderer from `GET /tickets` + timelines; serve/hot-reload machinery unchanged |
 | `board-reconcile.sh` | wake queue from `GET /queue/decisions`, orphans from `GET /runs/needing-resume`, dispatchables from `GET /tickets` |
@@ -121,28 +124,45 @@ daemon). Its API branch, in order:
    alive, `POST /runs/:id/renew` (15-minute default lease vs 5-minute tick =
    3× margin). Renewal is dispatch automation, never worker prose (X6).
    `409 run-ended` means the worker was reaped — route that run into the
-   resume path, don't error.
+   resume path, don't error. This phase also **repairs unconfirmed binds**:
+   a registry run whose bind-confirmed flag is unset gets its
+   `POST /runs/:id/bind` re-issued (a crash between resume and bind in
+   phase 3 lands here next tick).
 2. **Relay.** `GET /answers/unrelayed` → per answer: transcript-sentinel
    check → resume the bound session → `POST /answers/:id/ack`. Ack the page
    and read again to drain backlogs (500-row bound is contractual).
 3. **Resume-first.** `GET /runs/needing-resume` → `POST /runs/claim-successor`
-   (fresh nonce) → `daemon-resume` the predecessor's session with the
-   successor's bearer/fence injected and any unrelayed answers for that
-   ticket folded into the resume prompt (second relay vehicle) → ack those
-   answers → `POST /runs/:id/bind` the resumed session. Resume-before-start
+   (fresh nonce) → **persist the successor run id + session to the registry**
+   → `daemon-resume` the predecessor's session with the successor's
+   bearer/fence injected and any unrelayed answers for that ticket folded
+   into the resume prompt (second relay vehicle, **same sentinel per answer
+   id** — the sentinel is mandatory in every delivery vehicle) → ack those
+   answers → `POST /runs/:id/bind` and set the registry's bind-confirmed
+   flag. Crash analysis: before the registry persist, the successor claim's
+   nonce replays next tick; between resume and ack, the folded answers are
+   still unrelayed and phase 2's sentinel grep finds them delivered and
+   acks; before bind, phase 1's bind repair finishes it. Resume-before-start
    bounds work in progress (roadmap obligation).
 4. **Fresh claims, lane-disciplined.** `implement-dispatch.sh` claims
    `architect`, `implementer`, `spike`; `review-dispatch.sh` claims `qagent`;
    nobody claims `ops` (no plugin protocol runs that lane — lane discipline
-   is exactly this line). Each `POST /runs/claim` carries a fresh nonce and
-   the lane's existing cap knob as `laneCap`. A yield spawns the worker via
-   the same daemon-spawn ritual with run credentials in env and the claim's
-   `body` — the assignment, by contract the only route a run has to its own
-   ticket text — written into the bootstrap.
+   is exactly this line). **Cap semantics preserved:** the local dispatcher
+   enforces its existing combined cap (implement + spike share
+   `IMPLEMENT_MAX_CONCURRENT`) against its own registry **before** claiming,
+   exactly as gh mode does; `laneCap` is additionally passed with the same
+   value as a server-side belt (the server counts all dispatchers' open
+   runs in the lane, so the belt is looser — the local check is what
+   preserves single-host gh-mode concurrency). Each `POST /runs/claim`
+   carries a fresh nonce. A yield spawns the worker via the same
+   daemon-spawn ritual with run credentials in env and the claim's `body` —
+   the assignment, by contract the only route a run has to its own ticket
+   text — written into the bootstrap.
 
 Triggered dispatch (`implement-dispatch.sh <n>`) stays valid as a targeted
-claim; hand-running any phase is legal (nonce idempotency makes replays
-safe). The tick's phases are also individually invokable for the drill.
+claim; hand-running any phase is legal — each mints fresh nonces, and a
+persisted nonce is only ever replayed pre-spawn (see the nonce-lifecycle
+entry in the Decision Log). The tick's phases are also individually
+invokable for the drill.
 
 ### Relay idempotence — the transcript is the marker
 
@@ -152,8 +172,13 @@ set-once idempotent. The client's one obligation is **never double-resume**
 in the window between delivering to the session and committing the ack:
 
 - The relay resume prompt opens with a fixed sentinel carrying the answer
-  event id — `[board-relay answer:<answerEventId>]` — followed by the
-  replies verbatim.
+  event id — `[board-relay answer:<answerEventId>]` — followed by **the same
+  orientation preamble gh mode's relay carries** (re-state your gate verdict
+  against the answers, or park fresh if they reshape the work's scope — X5:
+  dropping it would change worker behavior across bindings) and the replies
+  verbatim. The sentinel is mandatory in **every** delivery vehicle: the
+  sweep's relay, phase 3's successor fold, and `board-answer.sh`'s inline
+  run.
 - Before resuming, the sweep greps the bound session's transcript (the
   registry knows its jsonl path) for the sentinel. Found → delivery already
   happened; skip to ack. Not found → resume, then ack.
@@ -179,17 +204,32 @@ humans and runs only), and that constraint is obeyed, not worked around:
 1. Resume-first with the predecessor's session (phase 3).
 2. If `daemon-resume` fails, **fresh spawn on the same successor bearer** — a
    successor is a fresh run by contract; the session resume is an
-   optimization, not the substance.
+   optimization, not the substance. The fresh-spawn bootstrap **directs the
+   worker to read its own timeline before proceeding** (`board-show.sh` /
+   the timeline read): the ticket's park/answer history — including answers
+   already delivered to the dead session and acked — lives there, and the
+   claim `body` alone would silently drop exactly the information the park
+   existed to obtain.
 3. Only when fresh spawns themselves keep dying (3 cycles, counted in the
    registry) does the sweep escalate: it **registers an env-issue ticket**
    (automation holds `register`; env-issues are born `needs-human`) naming
-   the stuck ticket. Human attention arrives through the decisions queue,
-   where it lives anyway.
+   the stuck ticket, and writes a **suppression record** to the registry —
+   `{ticket id, board state at suppression, env-issue ticket id}`. While a
+   suppression stands, phase 3 skips the ticket's resume entries; an
+   ordinary claim (phase 4) cannot filter by ticket, so a claim that yields
+   a suppressed ticket is immediately released (`POST /runs/:id/end`,
+   reason `abandoned`) and that lane draws no further claims this tick.
+   Suppression lifts when the ticket's board state no longer matches the
+   recorded one (someone moved it) or the env-issue ticket closes — both
+   checked each tick.
 
 ### Worker surface
 
-Nothing in the worker protocols (implementing / architecting / reviewing-prs
-SKILL.md) changes — that is the X5 deliverable. The bootstrap template gets
+The worker protocols (implementing / architecting / reviewing-prs SKILL.md)
+change in exactly **one mechanical way**: their raw `gh issue comment` call
+sites become `board-comment.sh` calls (§ Verb mapping) — after that
+substitution the prose is binding-neutral, which is the X5 deliverable. The
+bootstrap template gets
 API-mode substitutions: `TICKET_ID` in place of issue number/URL, the
 assignment body pinned to a file, and one line describing the credential env.
 Workers call the same verbs with the same arguments; `own-ticket` scoping,
@@ -227,6 +267,14 @@ re-reading is the next tick's job by construction.
   naming it.
 - **Flipping the doperpowers board itself to API binding is A5**, not A2.
   A2's acceptance runs on drill repos/boards.
+- **Design-first spike births** (`spike` → `ready-for-architect`) are
+  refused by A1 (`409 illegal-birth`) but deliberately supported by gh mode
+  — a canon divergence the fork's evolution created after A1 froze its
+  vocabulary. Ruled on the A1 follow-up ticket (flow-back item); until
+  then, API-mode register surfaces the 409 and design-first spikes are
+  gh-only. The birth-park question field (`--note` on park births has no
+  API home) rides the same ticket; A2 interim-maps the note into the body
+  head.
 - **Per-ticket engine routing** (`engine:codex` label) has no API home
   (tickets carry no labels); API mode routes engine from `$WORKER_ENGINE`
   only. Recorded as a limitation; a body-meta convention can add it later if
@@ -286,6 +334,14 @@ plan time.
   checkout; skipped with a loud notice when absent — the plugin repo never
   vendors the service.
 - **Live smoke (once, at finish):** acceptance 8.
+- **Read-scope audit (plan-time gate):** before declaring X5 held, audit the
+  worker protocols for board reads outside own-ticket + direct children
+  (grep for `board-list.sh` / `board-show.sh` / raw `gh issue view` in
+  worker-executed prose) — a run bearer's reads are scoped, and any
+  protocol read of an arbitrary ticket (a `blockedBy` target, a sibling)
+  403s or filters-to-empty under the API binding. Each hit is either
+  rewritten to an in-scope read or surfaced as a divergence before
+  implementation.
 
 ## Decision Log
 
@@ -326,13 +382,24 @@ plan time.
   presentation, ⚑-marked, approved) — hand-delivered answers resume
   immediately, matching gh mode's blocking feel; the sweep remains the
   guarantee, the inline run is latency.
+- **New `board-comment.sh` verb; protocols' raw `gh issue comment` sites
+  substituted once** (independent review F1). Rejected: folding comments
+  into another verb (comments are their own event family, and the E2 typed
+  ops need a `--kind`/`--body` surface); leaving protocols on raw `gh`
+  (breaks API mode outright — no comment lands, and acceptance 1's
+  "gh never invoked" assertion could not hold).
 - **Category collapse `bug`/`enhancement` → `work`** (silent decision,
   presented): dispatch keys on lanes/states, never on that distinction;
   A4's mirror owns any label round-trip.
 - **Nonces minted per claim attempt and persisted to the registry before
-  the request fires** (silent decision, presented): a crash between mint
-  and response replays the same nonce and recovers the claim instead of
-  orphaning it.
+  the request fires** (silent decision, presented; lifecycle sharpened by
+  independent review F7): the registry records the nonce, then the claim
+  response, then a **spawn-completed marker**. A persisted nonce is
+  replayed **only when spawn is unrecorded** — recovering a claim whose
+  response (or whose worker hand-off) was lost. After spawn-completed, the
+  nonce is never replayed: a replay rotates the bearer by contract, which
+  would revoke a live worker's credential mid-flight. Rejected: unqualified
+  "replays are safe" (true only before hand-off).
 
 ## Surprises & Discoveries
 
@@ -343,6 +410,16 @@ plan time.
 - The route matrix gives automation **no transition authority** — which
   invalidated a straight port of gh-mode's park-on-failure recovery and
   produced the env-issue escalation design instead.
+- **The toolkit had no comment verb** (independent review F1): worker
+  protocols post comments via raw `gh issue comment`, invisible to a
+  verb-level port until the reviewer caught it — and the comment route is
+  the only API carrier for the E2 event ops (`closure-package`,
+  `parent-impact`, `parent-impact-consumed`). Hence `board-comment.sh`.
+- **The fork's board canon has drifted past what A1 froze** (review F2):
+  gh mode deliberately supports design-first spike births that A1 refuses.
+  First concrete instance of the X1 "upstream canon, not re-litigable"
+  clause meeting a fork that kept evolving; resolved by flow-back ruling,
+  not by either side silently winning.
 
 ## Outcomes & Retrospective
 
@@ -352,3 +429,14 @@ Pending — written at finish.
 
 - v1.0 (2026-08-09): initial spec from the A2 brainstorming session
   (grill Q1–Q7 + one-pass design presentation, approved).
+- v1.1 (2026-08-09): independent Fable review — all 12 findings adopted.
+  New `board-comment.sh` verb (F1: no comment path existed; protocols'
+  raw `gh issue comment` sites get one mechanical substitution); spike
+  birth divergence surfaced + flow-back (F2); recovery suppression record
+  specified (F3); `board-answer.sh` declared dual-principal (F4); sentinel
+  mandated across all delivery vehicles + phase-3 crash analysis + bind
+  repair in phase 1 (F5); fresh-spawn timeline read (F6); nonce replay
+  lifecycle with spawn-completed marker (F7); park-birth note → body head
+  + flow-back (F8); transition prints response `to` (F9); cap semantics
+  pinned local-first (F10); relay prompt keeps gh orientation preamble
+  (F11); plan-time read-scope audit gate (F12).
