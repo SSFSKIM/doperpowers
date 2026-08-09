@@ -215,7 +215,7 @@ assert_contains "$WAVEBOARD" "dispatcher control directory" "ledger path is undi
 assert_contains "$WAVEBOARD" "ledger content fingerprint" "late ledger tampering is detected before push"
 assert_contains "$WAVEBOARD" "remote head differs from <push-base>" "unexpected remote movement blocks automatic salvage"
 assert_before "$WAVEBOARD" "fresh remote SHA" "git reset --hard <wave-base>" "remote publication is ruled out before local reset"
-assert_contains "$WAVEBOARD" "If this was wave 2" "wave-cap contamination parks instead of creating wave 3"
+assert_contains "$WAVEBOARD" "If this was the last wave the protocol's cap allows" "wave-cap contamination parks instead of exceeding the cap"
 assert_contains "$SKILL" "scratch control state" "orchestrator write whitelist covers safety artifacts"
 assert_contains "$SKILL" "do not rebase" "push rejection never asks the orchestrator to resolve code conflicts"
 assert_not_contains "$SKILL" "log it twice" "re-flag dedupe states the routing fact, not a prohibition tail"

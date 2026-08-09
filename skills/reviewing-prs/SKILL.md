@@ -326,23 +326,29 @@ The MERGE verdict requires ALL of:
   routed);
 - No unresolved PROTOCOL BLOCKER or SPEC FINDING;
 - every existing CI check green (gh pr checks {{PR_NUMBER}}) — a repo
-  with no checks merges on the review alone. Checks still running at
-  verdict time: arm GitHub auto-merge (gh pr merge --auto) rather than
-  wait — the merge completes when they pass and the PR's `Closes` link
-  finalizes the ticket; a repo that refuses auto-merge gets a bounded
-  wait, then a needs-human park. A FAILING check is an impasse: park
-  needs-human naming the check.
+  with no checks merges on the review alone. A FAILING check is an
+  impasse: park needs-human naming the check.
 
-If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge with the
-repo's default method (gh pr merge {{PR_NUMBER}}), post the review-trail
-comment, and finalize:
+If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge with
+the repo's default method, pinned to the head your final engine round
+reviewed (gh pr merge {{PR_NUMBER}} --match-head-commit <reviewed-head>
+— the pin makes a head that moved after your review fail the merge
+instead of landing unreviewed; on that failure park needs-human with
+both SHAs). Post the review-trail comment and finalize:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done
+Checks still RUNNING at verdict time: arm GitHub auto-merge instead
+(gh pr merge {{PR_NUMBER}} --auto --match-head-commit <reviewed-head>) —
+the merge completes when they pass and the PR's `Closes` link finalizes
+the ticket. A repo that refuses auto-merge gets a bounded wait, then a
+needs-human park.
 
-If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge. Post
-the review-trail comment stating the merge verdict WAS satisfied
-("auto-merge disabled — this is what I would have merged"), then park the
-merge as the human's action:
+If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge and
+do NOT arm auto-merge. Post the review-trail comment stating the merge
+verdict WAS satisfied ("auto-merge disabled — this is what I would have
+merged"), then park the merge as the human's action:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "review confident — auto-merge disabled; merging is yours"
+On a ticketless PR every board write is skipped (Role above) — there the
+trail comment IS the observation-mode record.
 
 PARKED tier — this ticket already sits at needs-human (a confirmed
 PROTOCOL BLOCKER, an unresolved SPEC FINDING, or blockers at the round

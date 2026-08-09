@@ -118,7 +118,8 @@ A fixer return is not proof that its task tree stopped. Before grading:
    blanket `git clean`). Verify HEAD equals `<wave-base>` and the worktree/index
    are clean. This is a sanctioned exception to fix-forward, scoped to
    UNPUSHED unauthorized-writer contamination; published history is never
-   rewritten. If this was wave 2, park at the wave cap. Otherwise re-wave with
+   rewritten. If this was the last wave the protocol's cap allows, park at
+   the wave cap. Otherwise re-wave with
    a fresh board with blank dispositions and the next wave number. Do not
    inherit or recommit the unauthorized writer's net diff.
 
