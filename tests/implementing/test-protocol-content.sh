@@ -74,7 +74,7 @@ assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -98,7 +98,7 @@ assert_contains "$bootstrap" "{{ROLE}}" "bootstrap: one parameterized bootstrap 
 assert_not_contains "$bootstrap" "ISSUE_BODY" "bootstrap: no inlined ticket body (the worker reads its ticket via gh)"
 assert_not_contains "$bootstrap" "REPO_FACTS" "bootstrap: no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-block binding (the doctrine lives in the protocol)"
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}}"
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -223,15 +223,11 @@ sweepdoc="$(cat "$REPO_ROOT/skills/issue-tracker/references/sweep-setup.md")"
 assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the macOS path"
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
-assert_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: runner-day land template named"
-for tpl in "$REPO_ROOT/skills/implementing/references/issue-dispatch.yml" \
-           "$REPO_ROOT/skills/reviewing-prs/references/land-on-approve.yml"; do
-  tname="$(basename "$tpl")"
-  tbody="$(cat "$tpl")"
-  assert_contains "$tbody" "permissions: {}" "$tname: zero-permission job"
-  assert_not_contains "$tbody" "uses: actions/checkout" "$tname: never checks out repo code"
-  assert_not_contains "$tbody" ".title" "$tname: no title/body interpolation (injection surface)"
-done
+assert_not_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: retired land template stays absent"
+tbody="$(cat "$REPO_ROOT/skills/implementing/references/issue-dispatch.yml")"
+assert_contains "$tbody" "permissions: {}" "issue-dispatch.yml: zero-permission job"
+assert_not_contains "$tbody" "uses: actions/checkout" "issue-dispatch.yml: never checks out repo code"
+assert_not_contains "$tbody" ".title" "issue-dispatch.yml: no title/body interpolation (injection surface)"
 
 echo "architecting protocol (Architect worker, E1 skill split):"
 [ -f "$ARCHITECT" ] || { echo "missing $ARCHITECT"; exit 1; }

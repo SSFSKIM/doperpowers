@@ -19,8 +19,8 @@
 #            not, it holds the destination lane's slot).
 #   CANCEL   live implement/spike workers whose ticket reached a terminal
 #            state (done/wontfix) → retire + a [board] termination comment.
-#            Park states never cancel (park = pause); review-pr-*,
-#            review-epic-* and land-pr-* workers own their own lifecycle
+#            Park states never cancel (park = pause); review-pr-* and
+#            review-epic-* workers own their own lifecycle
 #            (the reviewer IS what put the ticket in its terminal state)
 #            and are never board-cancelled.
 #   IMPACT   children in ANY state whose ticket carries a [parent-impact]
@@ -41,10 +41,6 @@
 #            can comment.
 #   DISPATCH implement-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
-#   LAND     open confident-ready PRs with a human APPROVED review or a
-#            `land` label, and NO land-pr-<n> meta yet → land-dispatch.sh.
-#            One sweep attempt per PR — a dead lander is a wake item, not a
-#            retry loop.
 #   RELAY    needs-human tickets with a bound idle session whose newest
 #            REPO-SIDE issue comment (authorAssociation OWNER/MEMBER/
 #            COLLABORATOR) is newer than the session's last activity and is
@@ -62,9 +58,9 @@
 #   SWEEP_STALL_MINUTES             silence threshold for a live worker (45)
 #   SWEEP_RECOVERY_CAP              lifetime sweep resumes per daemon (3)
 #   IMPLEMENT_MAX_CONCURRENT WORKER_ENGINE CLODEX_* AUTO_MERGE_ENABLED
-#   LAND_ENABLED                    exported through to the lanes
+#                                   exported through to the lanes
 #   SWEEP_LOG                       log file (default $DAEMON_HOME/sweep.log)
-#   IMPLEMENT_DISPATCH_CMD REVIEW_DISPATCH_CMD LAND_DISPATCH_CMD
+#   IMPLEMENT_DISPATCH_CMD REVIEW_DISPATCH_CMD
 #   BOARD_ANSWER_CMD RECONCILE_CMD DAEMON_SCRIPTS DAEMON_HOME  (test seams)
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -84,7 +80,6 @@ export LOCAL_REPO
 cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exit 1; }
 IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scripts/implement-dispatch.sh}"
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
-LAND_DISPATCH_CMD="${LAND_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/land-dispatch.sh}"
 BOARD_ANSWER_CMD="${BOARD_ANSWER_CMD:-$SCRIPT_DIR/board-answer.sh}"
 RECONCILE_CMD="${RECONCILE_CMD:-$SCRIPT_DIR/board-reconcile.sh}"
 SWEEP_LOG="${SWEEP_LOG:-$DAEMON_HOME/sweep.log}"
@@ -559,42 +554,6 @@ except OSError as e:
 PY
 }
 
-pass_land() {
-  local acted=0 rows pr
-  rows="$(gh pr list -R "$BOARD_REPO" --state open --label confident-ready \
-            --json number,reviewDecision,labels 2>/dev/null)" || rows="[]"
-  while IFS= read -r pr; do
-    [ -n "$pr" ] || continue
-    if python3 - "$pr" <<'PY'
-import glob, json, os, sys
-name = "land-pr-" + sys.argv[1]
-for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
-    if p.endswith(".reply.json"):
-        continue
-    try:
-        if json.load(open(p)).get("name") == name:
-            sys.exit(1)
-    except Exception:
-        continue
-sys.exit(0)
-PY
-    then
-      log "[sweep] LAND: PR #$pr approved and unlanded — dispatching land worker"
-      "$LAND_DISPATCH_CMD" "$pr" >>"$SWEEP_LOG" 2>&1 \
-        || log "[sweep] LAND: PR #$pr land dispatch failed (see log)"
-      acted=$((acted+1))
-    fi
-  done <<EOF
-$(printf '%s' "$rows" | python3 -c '
-import json, sys
-for p in json.load(sys.stdin):
-    labels = [l.get("name", "") for l in (p.get("labels") or [])]
-    if p.get("reviewDecision") == "APPROVED" or "land" in labels:
-        print(p["number"])' 2>/dev/null || true)
-EOF
-  log "[sweep] LAND: $acted acted"
-}
-
 pass_relay() {
   local acted=0 state tk uuid status current recov fin tx turn_end verdict cid
   while IFS='|' read -r state tk uuid status current _ recov is_epic; do
@@ -672,7 +631,6 @@ pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
   || log "[sweep] DISPATCH pass errored (continuing)"
 "$REVIEW_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] REVIEW pass errored (continuing)"
-pass_land     || log "[sweep] LAND pass errored (continuing)"
 pass_relay    || log "[sweep] RELAY pass errored (continuing)"
 "$RECONCILE_CMD" 2>&1 | tee -a "$SWEEP_LOG" >/dev/null \
   || log "[sweep] REPORT pass errored (continuing)"

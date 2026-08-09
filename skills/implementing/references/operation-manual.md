@@ -7,8 +7,8 @@ bootstrapped onto that file and never needs this manual.
 ## Overview
 
 The implement-side mirror of doperpowers:reviewing-prs: where the review
-loop puts its rigor gate at the END of the pipeline (confident-ready before
-merge), this loop puts its rigor gate at the START — **a worker may not
+loop puts its rigor gate at the END of the pipeline (a confident review
+verdict before merge), this loop puts its rigor gate at the START — **a worker may not
 write code until the ticket passes the Ticket Gate**. There is NO
 orchestrator: a worker's escalation targets are the board itself (states,
 notes, comments) and the human on their next wake; turn-end messages are
@@ -166,15 +166,11 @@ Rules, generalized from risk-surfaces:
 - **BASE-ref discipline** where a PR exists: review dispatch reads it from
   the PR's base, so a PR cannot rewrite the facts its own review checks
   against. Implement/spike dispatch reads it from the default branch.
-- **Self-protecting**: `repo-facts.md` is itself an always-on risk surface
-  (alongside `risk-surfaces.md`) — touching it disqualifies self-merge and
-  land-worker conflict resolution.
 - Consumers: implement workers (Bootstrap first; Validation defines the
   evidence ladder's "relevant check"; add-ons bind the PR body), spike
   workers (Bootstrap + Validation), review workers (cross-check claimed
   evidence against declared commands; a diff hitting an add-on class
-  without the required evidence is a finding). The land worker never
-  consumes it — CI owns post-approval proof.
+  without the required evidence is a finding).
 
 ## Worker authority
 

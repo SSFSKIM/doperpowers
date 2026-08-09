@@ -21,7 +21,7 @@ from typing import NoReturn
 #    split into ready-for-architect / in-design / ready-for-implementer) ──
 OPEN_STATES = ("ready-for-architect", "in-design", "ready-for-implementer",
                "in-progress", "needs-human", "needs-info",
-               "interactive-preferred", "in-review", "confident-ready",
+               "interactive-preferred", "in-review",
                "deferred")
 TERMINAL = ("done", "wontfix")
 STATES = OPEN_STATES + TERMINAL
@@ -125,13 +125,8 @@ LEGAL = {
     # ready-for-architect from in-review: the QAgent's design-gap
     # escalation (E1 third address; convergence-counted).
     "in-review":             {"in-progress", "ready-for-architect",
-                              "confident-ready", "done", "wontfix",
+                              "done", "wontfix",
                               "deferred", "needs-info", "needs-human"},
-    # confident-ready: PR rigorously reviewed by the reviewing-prs loop.
-    # Reachable ONLY from in-review (a review verdict presupposes an open PR);
-    # deliberately NOT in ACTIVE — a confident-ready ticket whose PRs all
-    # merged SHOULD surface as a close candidate (the finalize cue).
-    "confident-ready": {"in-progress", "in-review", "done", "wontfix", "deferred"},
     "deferred":        {"ready-for-architect", "ready-for-implementer",
                         "needs-info", "needs-human", "interactive-preferred",
                         "wontfix"},
@@ -150,7 +145,6 @@ STATUS_COLORS = {  # ensure_labels palette (hex, no '#')
     "ready-for-implementer": "0e8a16",
     "in-progress":     "1d76db",
     "in-review":       "5319e7",
-    "confident-ready": "008672",
     "needs-human":     "d93f0b",
     "interactive-preferred": "d4c5f9",
     "needs-info":      "fbca04",
