@@ -97,6 +97,20 @@ t "the park keeps its run bound — it is a pause, not a death" "owner=$RUN" own
 t "and the question reaches the decisions queue" "\"ticket_id\":$TID" \
   api human GET /queue/decisions
 
+# THE PARK IS THE HUMAN'S TO ANSWER — and nothing local enforces that.
+# board-answer.sh does NOT unset BOARD_RUN_TOKEN on its human legs, so a worker
+# that ran the verb from inside its own run context speaks as the RUN on every
+# one of them. The whole safety of that rests on the server, which is what these
+# two probes confirm live rather than taking on API.md's word.
+t "the answer verb run as the RUN is refused, not quietly re-signed" \
+  "refused: forbidden" worker "$SCRIPTS/board-answer.sh" "$TID" "I answer my own park"
+# The verb dies on its first human leg — the decisions queue admits no run
+# either — so the route the deferral actually named is probed head-on. A refused
+# call writes nothing: no answer event, no ack, no state change.
+t "and park-answer itself admits no run principal" "run may not park-answer" \
+  api "$BEARER" POST "/tickets/$TID/park-answer" '{"replies":["I answer my own park"]}'
+t "so the park still stands, unanswered" "needs-human" ticket_state "$TID"
+
 # ---- the human answers; the relay resumes the BOUND session ----------------
 OUT_A="$DRILL_TMP/answer.out"
 in_repo "$SCRIPTS/board-answer.sh" "$TID" "sqlite" >"$OUT_A" 2>&1 || true
