@@ -113,8 +113,13 @@ def alive(pid):
     return True
 
 
+# The plan rows are 0x1f-separated, not tab-separated: TAB IS IFS WHITESPACE,
+# so a run of tabs collapses into one delimiter and every column after an empty
+# one shifts left — and these rows carry empty columns by design (a replayed
+# claim has no run, a held one no daemon). 0x1f is IFS-non-whitespace and
+# cannot occur in a nonce, a lane, a run id or a pid.
 for p in blind:
-    print("unreadable\t%s\t\t\t" % p)
+    print("unreadable\x1f%s\x1f\x1f\x1f" % p)
 for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     try:
         j = json.load(open(p))
@@ -123,7 +128,7 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         # left alone: a journal nobody can read is not a journal anybody may
         # act on. Its lane is unknowable too, so no lane filter can apply —
         # both dispatchers report it and neither touches it.
-        print("unreadable\t%s\t\t\t" % p)
+        print("unreadable\x1f%s\x1f\x1f\x1f" % p)
         continue
     if j.get("spawn_completed") or j.get("lane") not in lanes:
         continue
@@ -137,7 +142,7 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
-        print("repaired\t%s\t%s\t%s\t" % (nonce, lane, run))
+        print("repaired\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
     elif run and daemon and daemon in names:
         # A session by that name exists but no meta carries the run: the spawn
         # landed and the bind did not. The worker is alive with its bearer in
@@ -146,16 +151,16 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
-        print("orphaned\t%s\t%s\t%s\t%s" % (nonce, lane, run, daemon))
+        print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, daemon))
     elif run and blind:
-        print("held\t%s\t%s\t%s\t" % (nonce, lane, run))
+        print("held\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
     elif (time.time() - os.path.getmtime(p) < grace) and alive(j.get("pid")):
         # Another dispatch process is mid-handover on this nonce right now.
-        print("inflight\t%s\t%s\t%s\t%s" % (nonce, lane, run or "", j.get("pid")))
+        print("inflight\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run or "", j.get("pid")))
     elif run:
-        print("end\t%s\t%s\t%s\t" % (nonce, lane, run))
+        print("end\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
     else:
-        print("replay\t%s\t%s\t\t" % (nonce, lane))
+        print("replay\x1f%s\x1f%s\x1f\x1f" % (nonce, lane))
 PY
 )" || { echo "claim reconciliation failed — skipping it this tick" >&2; return 0; }
   [ -n "$actions" ] || return 0
@@ -168,7 +173,7 @@ PY
     [ -n "$line" ] && lines+=("$line")
   done <<<"$actions"
   for line in ${lines[@]+"${lines[@]}"}; do
-    IFS=$'\t' read -r act nonce lane run extra <<<"$line"
+    IFS=$'\x1f' read -r act nonce lane run extra <<<"$line"
     case "$act" in
       unreadable)
         echo "reconcile: unreadable json at $nonce — left untouched; no claim under it can be reconciled until it is repaired or removed by hand" >&2 ;;

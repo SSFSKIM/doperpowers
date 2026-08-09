@@ -69,6 +69,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/43/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/40/renew","status":409,
   "body":{"error":{"code":"run-ended","message":"reaped"}}},
+ {"method":"POST","path":"/runs/50/renew","status":409,
+  "body":{"error":{"code":"run-ended","message":"reclaimed mid-tick"}}},
  {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101",
@@ -456,5 +458,63 @@ nt "and without the gh tick's passes"     "RECOVER:"                 cat "$TDIR/
 ghrepo="$(mkrepo)"
 wrong_binding() { ( cd "$ghrepo" && HOME="$TESTHOME" DAEMON_HOME="$DH" "$SCRIPTS/_sweep_api.sh" renew ); }
 t "a gh-bound repo is refused loudly" "runs only under an api binding" wrong_binding
+
+# =========================================================================
+# THE LOCK OWNER IS A PROCESS, NOT A NUMBER. A stale lock is stolen only when
+# its owner is provably gone — and a pid alone cannot say that: pids are
+# recycled, and after a reboot the crashed sweep's number is very likely a live
+# long-running process. `kill -0` then answers yes forever, nothing ever steals
+# the lock, and every later api sweep exits at once (no renewal, no relay, no
+# resume, no dispatch). The recorded process START TIME is what separates the
+# owner from its number's next tenant.
+# =========================================================================
+: > "$FIX.log"
+LK="$DH/.sweep-api.lock"
+lock_as() {  # lock_as <pid> <recorded start> — plant a lock and age it past stale
+  rm -rf "$LK"; mkdir "$LK"
+  printf '%s\n' "$1" > "$LK/owner"
+  printf '%s\n' "$2" > "$LK/owner-start"
+  touch -t 200001010000 "$LK"
+}
+# This test process is unquestionably alive, and its pid stands in for the
+# recycled one: the recorded start belongs to the sweep that died, not to it.
+lock_as "$$" "Thu Jan  1 00:00:00 2000"
+t  "a stale lock whose pid was recycled is stolen" \
+   "stole a stale api sweep lock"                       SW renew
+# ...and the live-owner half still holds: same pid, and this time the start
+# time really is its own, so the lock is its and must not be taken.
+lock_as "$$" "$(ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
+t  "a live owner is never robbed, however old its lock" \
+   "another api sweep holds the lock"                   SW renew
+# A lock from before the start file existed names no start: the pid answer is
+# all the evidence there is, exactly as before.
+rm -f "$LK/owner-start"
+t  "a startless lock still obeys a live pid" \
+   "another api sweep holds the lock"                   SW renew
+rm -rf "$LK"
+
+# =========================================================================
+# A RENEWAL THAT ENDS THE CANDIDATE'S RUN CANCELS THE DELIVERY. The relay picks
+# its candidate, then renews every lease ahead of a delivery that may block —
+# and that renewal is exactly where a reclaimed run answers 409 run-ended and
+# _retire_run_locally strips run, bearer and fence off this very meta. Resuming
+# on the locals read before it forks the predecessor with REVOKED credentials,
+# moments before the resume phase gives the ticket a real successor.
+# =========================================================================
+meta u-8 '{"uuid":"u-8","current":"u-8","status":"working","run_id":50,"fence":2,
+           "lane":"implementer","bind_confirmed":true,"ticket":"99","run_bearer":"tok-w8"}'
+: > "$FIX.log"
+before_8="$(wc -l < "$RESUME_LOG")"
+OUTR="$TDIR/relay-renew-retired.out"
+SWB relay > "$OUTR" 2>&1 || true
+after_8="$(wc -l < "$RESUME_LOG")"
+resumes_8() { echo "delta=$((after_8 - before_8))"; }
+t  "a run ended by the pre-delivery renewal cancels the relay" \
+   "ended under the renewal that preceded this delivery"  cat "$OUTR"
+t  "the retirement did land on that meta"  "run_ended_at"  cat "$DH/u-8.json"
+t  "and the session is not resumed on revoked credentials" "delta=0" resumes_8
+nt "nor is the answer acked"               "/answers/120/ack"        cat "$FIX.log"
+nt "and the pass does not hang"            "TIMEOUT"                 cat "$OUTR"
+rm -f "$DH/u-8.json"
 
 finish

@@ -163,6 +163,12 @@ cat > "$FIX" <<'JSON'
           {"id":90,"state":"done","priority":null,"title":"stuck resume"},
           {"id":91,"state":"needs-human","priority":null,"title":"stuck resume 2"}]},
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,
+  "body":{"runId":70,"ticketId":16,"fence":1,"bearer":"tok-arch","predecessorRun":69,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-arch"},
+          "plan":null,"body":"the architect assignment"}},
+ {"method":"POST","path":"/runs/70/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
 ]
 JSON
@@ -527,5 +533,82 @@ mkdir "$DH/.sweep-api.lock"
 t  "a held lock skips the tick"  "holds the lock"  SW resume
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
 rmdir "$DH/.sweep-api.lock"
+
+# =========================================================================
+# THE PREDECESSOR'S LANE SURVIVES ITS RUN. By the time a ticket reaches this
+# feed its predecessor's run is normally already RETIRED — the renew that
+# answered 409 run-ended is what put it there — and _retire_run_locally strips
+# run/bearer/fence while keeping ticket and lane. A lane read through the
+# run-carrying registry scan therefore sees NO predecessor at all: every
+# recovery fell back to a generic implementer, so an architect's ticket got an
+# implementer's protocol on the implementer's model. Here #16's predecessor is
+# in exactly that shape: bound to the ticket, stamped `architect`, no run.
+# =========================================================================
+: > "$FIX.log"; : > "$SPAWN_LOG"
+printf '%s\n' '{"uuid":"u-arch","current":"u-arch","status":"working",
+ "lane":"architect","role":"ARCHITECT","ticket":"16","run_ended_at":"2026-08-09T00:00:00Z"}' \
+ > "$DH/u-arch.json"
+# Reached through reconciliation rather than the feed: a successor claim whose
+# response was lost is replayed under its own nonce, and that replay runs the
+# same recovery the feed does.
+mkdir -p "$DH/board-claims"
+printf '%s\n' '{"lane":"successor","run_id":null,"spawn_completed":false,"ticket":"16"}' \
+  > "$DH/board-claims/n-lane.json"
+OUTL="$TDIR/resume-lane.out"
+RESUME_MUST_FAIL=1 SW resume > "$OUTL" 2>&1 || true
+t  "the successor inherits a RETIRED predecessor's lane" \
+   "SPAWN name=16-successor-architect"                  cat "$SPAWN_LOG"
+t  "and that lane's own model"        "model=fable"     cat "$SPAWN_LOG"
+t  "and that lane's own protocol"     "architecting/SKILL.md"  cat "$SPAWN_LOG"
+t  "and that lane's own role"         "ARCHITECT."             cat "$SPAWN_LOG"
+rm -f "$DH/u-arch.json" "$DH/board-claims/n-lane.json"
+
+# =========================================================================
+# A HISTORICAL DAEMON NAME IS NOT SPAWN PROOF, and successor names are
+# deterministic per ticket and lane. daemon-retire keeps the meta unless
+# --purge, so a name left by an earlier recovery matched the new journal:
+# reconciliation called the crash `orphaned`, closed the journal as complete,
+# and left the run just claimed owning the ticket with nobody able to speak for
+# it until the lease expired. Only a WORKING or BLOCKED session is evidence —
+# the rule _claim_journal.sh already applies on the dispatchers' side.
+#
+# And beside it: a release that FAILS must keep its journal. It is the only
+# retry handle there is; deleted, the run stays open, owns the ticket, and no
+# later tick can retry — "retried next tick" was never true.
+# =========================================================================
+: > "$FIX.log"
+printf '%s\n' '{"uuid":"u-hist","current":"u-hist","status":"idle",
+ "name":"12-successor-retired"}' > "$DH/u-hist.json"
+printf '%s\n' '{"lane":"successor","run_id":99,"spawn_completed":false,
+ "ticket":"12","daemon":"12-successor-retired"}' > "$DH/board-claims/n-hist.json"
+# No /runs/98/end fixture exists: the mock answers 404, which is what a
+# transport or service outage looks like from here.
+printf '%s\n' '{"lane":"successor","run_id":98,"spawn_completed":false,
+ "ticket":"12"}' > "$DH/board-claims/n-fail.json"
+OUTJ="$TDIR/resume-journal.out"
+SW resume > "$OUTJ" 2>&1 || true
+nt "a retired session's name is not read as a spawn" \
+   "but never bound it"                                 cat "$OUTJ"
+t  "so the undelivered run is released instead"  '"path": "/runs/99/end"' cat "$FIX.log"
+journal_gone() { [ -e "$DH/board-claims/n-hist.json" ] && echo "journal kept" || echo "journal removed"; }
+t  "and its journal is closed out"     "journal removed"  journal_gone
+t  "a release that FAILED keeps its journal" \
+   "the journal is KEPT so the next tick can retry"      cat "$OUTJ"
+journal_kept() { [ -e "$DH/board-claims/n-fail.json" ] && echo "journal kept" || echo "journal removed"; }
+t  "the retry handle survives on disk"  "journal kept"    journal_kept
+rm -f "$DH/u-hist.json" "$DH/board-claims/n-fail.json"
+
+# =========================================================================
+# THE WHOLE-TICK BUDGET BOUNDS THE TICK, INCLUDING FRESH CLAIMS. Relay and
+# resume stopped taking new items at the budget and then handed the tick to the
+# dispatchers anyway — which claim fresh implement and review work, review
+# barrier wait included, inside the same lock a spent tick is still holding.
+# =========================================================================
+: > "$FIX.log"
+OUTB="$TDIR/budget.out"
+BOARD_SWEEP_TICK_BUDGET=0 SW all > "$OUTB" 2>&1 || true
+t  "an exhausted budget stops fresh dispatch" \
+   "tick budget exhausted — fresh claims ride the next tick"  cat "$OUTB"
+nt "so no fresh claim goes out"        '"path": "/runs/claim"' cat "$FIX.log"
 
 finish

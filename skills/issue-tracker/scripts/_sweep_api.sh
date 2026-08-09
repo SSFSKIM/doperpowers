@@ -95,18 +95,39 @@ LOCK="$DAEMON_HOME/.sweep-api.lock"
 # and two ticks then interleaved the sentinel check with its resume — the exact
 # double delivery this lock exists to prevent; and the robbed owner's
 # unconditional EXIT rmdir went on to delete the REPLACEMENT owner's lock.
+#
+# A PID IS NOT AN IDENTITY. Pids are recycled, and after a crash — above all
+# across a REBOOT, where low numbers are handed straight back out — the dead
+# sweep's number very plausibly belongs to some long-lived process. `kill -0`
+# then answers "alive" forever, the lock is never stolen, and every later api
+# sweep exits at once: no renewal, no relay, no resume, no dispatch, until a
+# human notices. So the owner's PROCESS START TIME is recorded beside its pid
+# and both must match before the owner counts as live. `ps -o lstart=` is the
+# portable form of that (macOS bash 3.2 and Linux procps both print it).
+_proc_start() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true; }
 _take_lock() {
   mkdir "$LOCK" 2>/dev/null || return 1
   printf '%s\n' "$$" > "$LOCK/owner"
+  _proc_start "$$" > "$LOCK/owner-start"
+}
+# The owner is live only when its pid answers AND that pid is still the SAME
+# process the lock was taken by. A lock written before this file existed names
+# no start time; there the pid answer is all the evidence there is, which is
+# exactly the behaviour it already had.
+_owner_live() {  # <pid> <recorded start ('' = unknown)>
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -n "$2" ] || return 0
+  [ "$(_proc_start "$1")" = "$2" ]
 }
 if ! _take_lock; then
   _lock_owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  _lock_start="$(cat "$LOCK/owner-start" 2>/dev/null || true)"
   # BOTH halves are required to steal: old enough that a crash is plausible,
   # AND an owner that is provably gone (or a lock too old to name one — the
   # pre-owner-token shape). Idempotence is the real safety, so a stolen lock is
   # recoverable; a stolen-from-a-live-owner lock is not.
   if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +"${SWEEP_LOCK_STALE:-30}" 2>/dev/null)" ] \
-     && { [ -z "$_lock_owner" ] || ! kill -0 "$_lock_owner" 2>/dev/null; }; then
+     && { [ -z "$_lock_owner" ] || ! _owner_live "$_lock_owner" "$_lock_start"; }; then
     rm -rf "$LOCK" 2>/dev/null || true
     _take_lock || { echo "another api sweep holds the lock — exiting"; exit 0; }
     echo "stole a stale api sweep lock (owner ${_lock_owner:-unnamed} is gone)" >&2
@@ -158,10 +179,20 @@ SCAN_RC="$SCRATCH/scan-rc"
 # which HIDES this function's exit status — a python3 that died would read as
 # an empty registry, i.e. a phase that silently did nothing. The status is
 # parked in $SCAN_RC and every caller checks it with _scan_ok.
-_registry_metas() {
+#
+# `all` ADMITS RUNLESS METAS, and one caller family needs it. _retire_run_locally
+# strips run/bearer/fence off a meta whose run the server ended while KEEPING
+# ticket, lane and pending_short — so between the renew that retires a reclaimed
+# predecessor and the successor that replaces it, the only record of that
+# ticket's lane and of an unresolved fork on it is a meta the default scan
+# filters out. Read through the default scan, the recovery path saw no
+# predecessor at all: it fell back to IMPLEMENT for an architect/spike/qagent
+# ticket, and re-resumed a fork it should have refused.
+_registry_metas() {  # [all]
   local rc=0
-  T_DHOME="$DAEMON_HOME" python3 - <<'PY' || rc=$?
+  T_DHOME="$DAEMON_HOME" T_ALL="${1:-}" python3 - <<'PY' || rc=$?
 import glob, json, os
+keep_runless = os.environ.get("T_ALL") == "all"
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if p.endswith(".reply.json"):
         continue
@@ -169,7 +200,7 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
         m = json.load(open(p))
     except Exception:
         continue
-    if not m.get("run_id"):
+    if not m.get("run_id") and not keep_runless:
         continue
     # The meta FILENAME is the daemon identity every other tool resolves by
     # (board-bind resolves the same way); the uuid FIELD only mirrors it, and
@@ -435,8 +466,12 @@ EOF
 # the successor that actually holds the run. Taking the first glob match would
 # hand the answer to the dead one. Server-confirmed binds are emitted first,
 # and the caller takes the first LIVE candidate.
-_metas_for_ticket() {
-  _registry_metas | awk -F$'\x1f' -v t="$1" -v s=$'\x1f' '
+#
+# $2 = `all` includes RUNLESS metas — not delivery candidates (a meta with no
+# run holds no bearer to speak with), but the fork guard reads this same list
+# and an unresolved fork survives its run's end.
+_metas_for_ticket() {  # <ticket> [all]
+  _registry_metas "${2:-}" | awk -F$'\x1f' -v t="$1" -v s=$'\x1f' '
     $4 != t { next }
     { row = $1 s $5 s $2 s $6
       if ($3 == "True" || $3 == "true") print row; else rest[++n] = row }
@@ -517,6 +552,19 @@ phase_relay() {
       # Every live run's lease, refreshed ahead of a delivery that may block for
       # the whole bound — including the runs this answer has nothing to do with.
       _tick_renew
+      # THAT RENEWAL MAY HAVE JUST ENDED THIS CANDIDATE'S RUN. A run the server
+      # reclaimed answers renew with 409 run-ended, and _retire_run_locally then
+      # strips run id, bearer and fence from exactly this meta — while the four
+      # locals read above still hold the pre-renew values. Resuming on them
+      # injects REVOKED credentials into the predecessor and forks it, moments
+      # before the resume phase gives the ticket a real successor. The candidate
+      # is re-resolved from the meta, and only a meta that still names the same
+      # run is delivered to; anything else leaves the answer on the feed for the
+      # successor to pick up.
+      if [ "$(_meta_field "$DAEMON_HOME/$uuid.json" run_id)" != "$run" ]; then
+        echo "relay: #$tid answer $aid — run $run ended under the renewal that preceded this delivery (the session no longer speaks for it); nothing delivered or acked, the successor path takes it" >&2
+        continue
+      fi
       transcript="$(_transcript_for_uuid "$uuid")"
       # The ack is gated on PROVEN delivery (Codex review F1): the sentinel is
       # already in the transcript, or a resume returned success. A failed
@@ -672,9 +720,12 @@ EOF
 # Architect's ticket to an implementer, on the wrong model, with no plan-
 # authorship protocol anywhere in its context. The lane is read off the meta the
 # dispatcher stamped it on (the predecessor's), which survives the run's end —
-# see _retire_run_locally.
+# see _retire_run_locally. Which is why the scan is the `all` one: by the time a
+# successor is claimed the predecessor's run is normally already RETIRED (the
+# renew that answered run-ended is what put the ticket on this feed), so the
+# run-carrying scan no longer shows it and every recovery read lane "".
 _lane_for_ticket() {  # <ticket> — the lane stamped on a meta bound to it, or ''
-  _registry_metas | awk -F$'\x1f' -v t="$1" '$4 == t && $7 != "" { print $7; exit }'
+  _registry_metas all | awk -F$'\x1f' -v t="$1" '$4 == t && $7 != "" { print $7; exit }'
 }
 _role_for_lane() {
   case "$1" in architect) echo ARCHITECT ;; spike) echo SPIKE ;;
@@ -820,7 +871,15 @@ for p in glob.glob(os.path.join(home, "*.json")):
         continue
     if m.get("run_id"):
         live.add(str(m["run_id"]))
-    if m.get("name"):
+    # ONLY A RUNNING SESSION IS EVIDENCE OF A SPAWN — the same rule
+    # _claim_journal.sh already applies on the dispatchers' side. Successor
+    # names are deterministic per ticket and lane (`<ticket>-successor-<lane>`)
+    # and daemon-retire keeps the meta unless --purge, so a HISTORICAL entry
+    # from an earlier recovery matched the new journal's name: the crash was
+    # misread as `orphaned`, the journal was closed as complete, and the run
+    # just claimed owned the ticket with nobody able to speak for it until the
+    # lease expired.
+    if m.get("name") and m.get("status") in ("working", "blocked"):
         names.add(str(m["name"]))
 for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     try:
@@ -835,12 +894,20 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     run = j.get("run_id")
     row = (nonce, str(run or ""), str(j.get("ticket") or ""),
            str(j.get("session") or ""), str(j.get("daemon") or ""))
+    # 0x1f, NOT tab, for the same reason the registry rows use it: TAB IS IFS
+    # WHITESPACE, so a run of tabs collapses into one delimiter and every field
+    # after an empty column shifts left. Three of these five columns are
+    # routinely empty — `run` is empty for EVERY replay row, by definition —
+    # so the replay arm read the ticket out of the run column, found it empty,
+    # and silently did nothing at all; a settle row with no session read the
+    # daemon name as the session. 0x1f is IFS-non-whitespace and cannot occur
+    # in a nonce, a ticket id or a daemon name.
     if not run:
-        print("replay\t%s\t%s\t%s\t%s\t%s" % row)
+        print("replay\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
     elif row[4] and row[4] in names:
-        print("orphaned\t%s\t%s\t%s\t%s\t%s" % row)
+        print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
     else:
-        print("settle\t%s\t%s\t%s\t%s\t%s" % row)
+        print("settle\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
 PY
 )" || { echo "resume: successor journal reconciliation failed — skipped this tick" >&2; return 0; }
   [ -n "$plan" ] || return 0
@@ -852,7 +919,7 @@ PY
     [ -n "$line" ] && lines+=("$line")
   done <<<"$plan"
   for line in ${lines[@]+"${lines[@]}"}; do
-    IFS=$'\t' read -r act nonce run tid sess daemon <<<"$line"
+    IFS=$'\x1f' read -r act nonce run tid sess daemon <<<"$line"
     case "$act" in
       replay)
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
@@ -876,7 +943,14 @@ PY
           _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess"
         else
           echo "resume: successor run $run was claimed for #$tid and never delivered — releasing it so the ticket returns to needing-resume"
-          T_RUN="$run" _api_py - <<'PY' || echo "resume: releasing successor run $run failed — retried next tick" >&2
+          # THE JOURNAL IS THE ONLY RETRY HANDLE. A transport or service outage
+          # fails the release while the run stays open and keeps owning the
+          # ticket — and deleting the journal anyway removed the one record any
+          # later tick could retry from, so "retried next tick" was never true
+          # and recovery stalled until the lease reclaimed the run. It goes only
+          # on a release that actually landed (a typed run-ended answer counts:
+          # the run is already over).
+          if T_RUN="$run" _api_py - <<'PY'
 import os
 import _board_api as A
 try:
@@ -884,7 +958,11 @@ try:
 except A.RunEnded:
     pass
 PY
-          rm -f "$CLAIMS_DIR/$nonce.json"
+          then
+            rm -f "$CLAIMS_DIR/$nonce.json"
+          else
+            echo "resume: releasing successor run $run failed — the journal is KEPT so the next tick can retry the release" >&2
+          fi
         fi ;;
     esac
   done
@@ -908,12 +986,18 @@ _resume_one() {
     [ "$(_liveness "$f_uuid")" = forked ] || continue
     echo "resume: #$tid — the bound session $f_uuid carries an UNRESOLVED FORK (status=error + pending_short); no successor claimed and no cycle charged until it resolves — recover the fork by hand (its meta names it in pending_short) or retire the session" >&2
     return 1
-  done < <(_metas_for_ticket "$tid")
+  done < <(_metas_for_ticket "$tid" all)
   _scan_ok || { echo "resume: #$tid — registry scan failed; the fork guard cannot run, so this ticket is left for the next tick" >&2; return 1; }
   # The predecessor's lane/role, for the fresh-spawn fallback and the successor
   # meta stamp below. Read here, while the predecessor meta is still the one
-  # bound to this ticket.
+  # bound to this ticket — and read through the `all` scan, because that meta
+  # has usually already lost its run to _retire_run_locally.
   lane="$(_lane_for_ticket "$tid")"; role="$(_role_for_lane "$lane")"
+  # A FAILED SCAN IS NOT AN EMPTY LANE. "" is also what a scan that never ran
+  # returns, and it routes an architect/spike/qagent ticket to a generic
+  # implementer on the wrong model with the wrong protocol. Left for the next
+  # tick instead, exactly as the fork guard above does.
+  _scan_ok || { echo "resume: #$tid — registry scan failed; the predecessor's lane is unreadable, so this ticket is left for the next tick rather than recovered as an implementer" >&2; return 1; }
   # A nonce handed in by reconciliation is a REPLAY of a claim that may already
   # have landed: the server answers it with the same run rather than a second.
   [ -n "$nonce" ] || nonce="$(uuidgen)"
@@ -1357,6 +1441,14 @@ case "${1:-all}" in
   relay) phase_relay ;;
   resume) phase_resume ;;
   dispatch) phase_dispatch ;;
-  all) phase_renew || true; phase_relay || true; phase_resume || true; phase_dispatch || true ;;
+  # THE BUDGET BOUNDS THE WHOLE TICK, so the phase that starts the most new
+  # work is gated by it too. Relay and resume stopped taking new items and then
+  # handed the tick to the dispatchers anyway, which claim fresh implement and
+  # review work — including a review barrier wait — inside the same lock: a tick
+  # that had already spent its 900 seconds went on to spend more. A phase asked
+  # for BY NAME is its own tick with its own clock and is never gated here.
+  all) phase_renew || true; phase_relay || true; phase_resume || true
+       if _budget_left; then phase_dispatch || true
+       else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
   *) die "usage: _sweep_api.sh [renew|relay|resume|dispatch|all]" ;;
 esac
