@@ -103,7 +103,7 @@ below it.
 
 | verb | API mode |
 |---|---|
-| `board-register.sh` | `POST /tickets` — lineage edges (`parent`/`spawnedBy`/`blockedBy`) ride the payload; birth classification, dedup, env-issue inversion, `repairPath` rules all server-side. Category map: `bug`/`enhancement` → `work`; `spike`/`env-issue` pass through. A park-state birth's `--note` (the question the human sees — gh mode requires it) has no API field: it is **prepended to `body`** as the opening line, and the contract-level fix (a question field rendered into the birth park) is a flow-back item on the A1 follow-up ticket. **Known divergence:** the API refuses `spike` born `ready-for-architect` (`409 illegal-birth`) while gh mode deliberately supports design-first spikes — the 409 is surfaced honestly, design-first spikes are gh-only until the flow-back ruling (§ Scope-outs) |
+| `board-register.sh` | `POST /tickets` — lineage edges (`parent`/`spawnedBy`/`blockedBy`) ride the payload; birth classification, dedup, env-issue inversion, `repairPath` rules all server-side. Category map: `bug`/`enhancement` → `work`; `spike`/`env-issue` pass through. A park-state birth's `--note` (the question the human sees — gh mode requires it) has no API field: it is **prepended to `body`** as the opening line, and the contract-level fix (a question field rendered into the birth park) is a flow-back item on arkho#7. **Known divergence:** the API refuses `spike` born `ready-for-architect` (`409 illegal-birth`) while gh mode deliberately supports design-first spikes — the 409 is surfaced honestly, design-first spikes are gh-only until the flow-back ruling (§ Scope-outs) |
 | `board-transition.sh` | `POST /tickets/:id/transition`; `fence` from `BOARD_RUN_FENCE` when the actor is a run; `pr`/`plan`/`branch` pass through. The script prints the **response's** `to` (and the `converged` flag), never the requested state — the server transmutes on convergence, and echoing the request would mislead the worker and break the transcript drill |
 | `board-comment.sh` | **new verb, both modes** — gh: `gh issue comment`; API: `POST /tickets/:id/comment`. Default `kind: comment`; `--kind parent-impact\|closure-package\|parent-impact-consumed` with a typed `--body` JSON payload carries the E2 event ops (the comment route is their only API carrier; in gh mode these land as marker-prefixed comments). The worker protocols' raw `gh issue comment` call sites (implementing SKILL.md:82, architecting SKILL.md:56, reviewing-prs SKILL.md:277) are edited **once** to call this verb; after that substitution the prose is binding-neutral |
 | `board-answer.sh` | `POST /tickets/:id/park-answer`, always naming `correlationId` from `GET /queue/decisions` (the contract's superseded-answer protection). Then runs the sweep's relay step inline once, so a hand-delivered answer resumes the worker immediately — the same blocking feel as gh mode. **Dual-principal by design** — the one scripted exception to fixed-token-per-script: the answer leg speaks human, the relay/ack leg speaks automation (`unrelayed`/`ack-answer` admit automation only) |
@@ -112,7 +112,7 @@ below it.
 | `board-reconcile.sh` | wake queue from `GET /queue/decisions`, orphans from `GET /runs/needing-resume`, dispatchables from `GET /tickets` |
 | `board-lint.sh` | thin: the server enforces its own schema; API-mode lint checks only what the server cannot see — local registry↔board drift (bound runs whose daemon is gone; daemons bound to ended runs) |
 | `board-bind.sh` | registry write as today, plus `POST /runs/:id/bind` with the local session locator |
-| `board-edge.sh` / `board-priority.sh` / `board-relate.sh` | **fail loud** naming the A1 follow-up ticket (§ Scope-outs) — never silent, never a gh fallback |
+| `board-edge.sh` / `board-priority.sh` / `board-relate.sh` | **fail loud** naming arkho#7 (§ Scope-outs) — never silent, never a gh fallback |
 | `board-migrate-gh.sh` | gh-only by nature; refuses in API mode (import/cutover is A5's instrument) |
 
 ### Dispatch and the sweep — the four-phase tick
@@ -259,18 +259,18 @@ re-reading is the next tick's job by construction.
 - **Human board-management routes** — post-birth edge re-cut, priority
   change, relates, body edit — have no API counterpart (A1's matrix is
   worker-protocol-complete; these verbs aren't on the worker path). Flowed
-  back to the arkho board as an A1 follow-up ticket — "A1 follow-up: human
-  board-management routes (edge re-cut, priority, relates, body edit)",
-  spawned-by arkho#1; its number is recorded in Revision Notes (registration
-  was queued behind a GitHub rate-limit window at spec time). API-mode
-  `board-edge.sh` / `board-priority.sh` / `board-relate.sh` fail loud
-  naming it.
+  back to the arkho board as
+  [arkho#7](https://github.com/SSFSKIM/arkho/issues/7) ("A1 follow-up:
+  human board-management routes", spawned-by arkho#1), which also carries
+  the spike-birth ruling and the birth-park question field (review F2/F8).
+  API-mode `board-edge.sh` / `board-priority.sh` / `board-relate.sh` fail
+  loud naming arkho#7.
 - **Flipping the doperpowers board itself to API binding is A5**, not A2.
   A2's acceptance runs on drill repos/boards.
 - **Design-first spike births** (`spike` → `ready-for-architect`) are
   refused by A1 (`409 illegal-birth`) but deliberately supported by gh mode
   — a canon divergence the fork's evolution created after A1 froze its
-  vocabulary. Ruled on the A1 follow-up ticket (flow-back item); until
+  vocabulary. Ruled on arkho#7 (flow-back item); until
   then, API-mode register surfaces the 409 and design-first spikes are
   gh-only. The birth-park question field (`--note` on park births has no
   API home) rides the same ticket; A2 interim-maps the note into the body
