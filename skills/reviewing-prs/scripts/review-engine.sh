@@ -114,4 +114,19 @@ fi
 rc=0
 node "$companion/scripts/with-effort.mjs" --effort "$effort" -- \
   "${verb_args[@]}" > "$out" 2> "$out.events.log" || rc=$?
+
+# Fail closed when the engine's own fs sandbox never worked. Observed live
+# (ida-worker-1, 2026-08-09): a host that blocks unprivileged userns makes
+# every probe fail (`bwrap: loopback: Failed RTM_NEWADDR`), yet codex exits 0
+# and renders findings anyway — 22 consecutive runs across 6 review workers
+# passed as "clean" or fabricated defects from the lens text. The events log
+# is the only reliable trace, so its sandbox-failure markers turn the run
+# into a hard error. Skipped under an OUTER codex sandbox (CODEX_SANDBOX):
+# there probe confinement is expected and the degraded diff-only render is
+# the documented behavior (warned above).
+if [ "$rc" -eq 0 ] && [ -z "${CODEX_SANDBOX:-}" ] && \
+   grep -qE 'RTM_NEWADDR|shell is unavailable|fs sandbox helper failed' "$out.events.log" 2>/dev/null; then
+  echo "review-engine: fs sandbox unavailable during run — findings in $out are untrustworthy (see $out.events.log); treat as ENGINE-UNAVAILABLE" >&2
+  exit 3
+fi
 exit "$rc"
