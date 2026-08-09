@@ -36,7 +36,7 @@ registered children, not a half-answer, are this turn's deliverable.
 
 VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
-  then: gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — {{ENGINE_NAME}}/spike: <the question as you will answer it, incl. anything you supplied>"
+  then: {{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} "[gate] pass — {{ENGINE_NAME}}/spike: <the question as you will answer it, incl. anything you supplied>"
 - Fail → the park, with the required note, plus a 3–6 line orientation
   summary.
 

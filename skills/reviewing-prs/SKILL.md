@@ -274,8 +274,8 @@ substance and route.
   describing the scope fork instead — board writes are skipped.
 - LOG — valid non-blocker: append a
   structured comment to the standing tech-debt issue
-  (gh issue comment {{TECH_DEBT_ISSUE}}) — finding, file:line, severity,
-  why deferred. When TECH_DEBT_ISSUE is "none", write these into the
+  ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
+  file:line, severity, why deferred. When TECH_DEBT_ISSUE is "none", write these into the
   review-trail comment's deferred-findings section instead.
 - INVALID — assigned only by grading a fixer's REFUTED disposition; you
   never refute from the finding text alone. The rebuttal comment on the

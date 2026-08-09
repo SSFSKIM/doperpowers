@@ -53,7 +53,7 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-design
   then a one-line gate comment:
-  gh issue comment {{ISSUE_NUMBER}} --body "[gate] pass — architect: <one line>"
+  {{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} "[gate] pass — architect: <one line>"
 - Fail → the park state with its required note, classified against the
   park discriminant (doperpowers:issue-tracker owns the single copy),
   plus the 3–6 line orientation summary every park carries.
