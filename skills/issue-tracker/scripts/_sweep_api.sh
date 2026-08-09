@@ -20,6 +20,9 @@
 # Env:
 #   DAEMON_HOME DAEMON_SCRIPTS   registry + daemon toolkit (test seams)
 #   SWEEP_LOCK_STALE             minutes before a held tick lock is stolen (30)
+#   BOARD_RELAY_RESUME_TIMEOUT   DAEMON_TIMEOUT for a relay resume (300 → a
+#                                wait of ≤150 polls), so one long worker turn
+#                                cannot hold the tick lock past a lease
 #   BOARD_API_URL BOARD_CREDENTIALS_FILE   resolved by _binding.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,6 +31,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ "$BOARD_BINDING" = api ] || {
   echo "error: _sweep_api.sh runs only under an api binding" >&2; exit 1; }
 die() { echo "error: $*" >&2; exit 1; }
+# THE TICK IS AUTOMATION, FULL STOP. The client's token() hands back
+# BOARD_RUN_TOKEN for whatever principal is asked once one is in env, so a
+# tick inherited from a worker's shell would renew, ack and unrelayed-read as
+# that worker — against runs it does not own (spec § phase 1: "Renewal is
+# dispatch automation, never worker prose") — and, worse, a bind repair would
+# hand board-bind.sh the foreign bearer to stamp into a DIFFERENT run's meta,
+# after which every later resume of that run authenticates as someone else.
+# The ONLY place a run token legitimately appears in this script is the
+# explicit env prefix on the relay's resume call, read from that run's meta.
+unset BOARD_RUN_TOKEN
 # The delivery marker, from the client module rather than a second copy of the
 # literal: what the relay WRITES into a transcript and what it later greps for
 # have to be the same string as anyone else keying on it (the resume path, the
@@ -58,7 +71,11 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     echo "another api sweep holds the lock — exiting"; exit 0
   fi
 fi
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"; rmdir "$LOCK" 2>/dev/null || true' EXIT
+# Where _registry_metas parks its exit status. The status, never the rows: the
+# rows carry the run bearer, and that secret does not touch disk here.
+SCAN_RC="$SCRATCH/scan-rc"
 
 # Registry metas that carry a run, one row each, US-separated (0x1f):
 #   uuid  run_id  bind_confirmed  ticket  run_bearer  fence  lane  status  path
@@ -70,8 +87,14 @@ trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 # The bearer is a secret at rest (0600): it rides this pipeline into a shell
 # variable and from there into a child's ENVIRONMENT — it is never logged,
 # echoed, or written anywhere.
+#
+# Both callers consume these rows through a pipe or a process substitution,
+# which HIDES this function's exit status — a python3 that died would read as
+# an empty registry, i.e. a phase that silently did nothing. The status is
+# parked in $SCAN_RC and every caller checks it with _scan_ok.
 _registry_metas() {
-  T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+  local rc=0
+  T_DHOME="$DAEMON_HOME" python3 - <<'PY' || rc=$?
 import glob, json, os
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if p.endswith(".reply.json"):
@@ -82,15 +105,18 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
         continue
     if not m.get("run_id"):
         continue
-    # The meta FILENAME is the daemon identity every other tool resolves by;
-    # the uuid field only mirrors it.
-    uuid = m.get("uuid") or os.path.basename(p)[:-5]
+    # The meta FILENAME is the daemon identity every other tool resolves by
+    # (board-bind resolves the same way); the uuid FIELD only mirrors it, and
+    # a stale mirror would name a session nothing else can reach.
+    uuid = os.path.basename(p)[:-5] or m.get("uuid") or ""
     cols = [uuid] + [str(m.get(k, "")) for k in
                      ("run_id", "bind_confirmed", "ticket", "run_bearer",
                       "fence", "lane", "status")]
     print("\x1f".join(cols) + "\x1f" + p)
 PY
+  echo "$rc" > "$SCAN_RC"
 }
+_scan_ok() { [ "$(cat "$SCAN_RC" 2>/dev/null || echo 1)" = 0 ]; }
 
 # One field out of one meta. Used where a value must NOT travel through the
 # row pipeline above (and for `current`, which the row layout does not carry).
@@ -125,9 +151,12 @@ _alive() { [ "$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$1" 2>/dev/null || echo ab
 
 # ---- phase 1: lease renewal + bind repair ----------------------------------
 phase_renew() {
-  # Every column gets its own name, including the ones this phase ignores: in
-  # bash 3.2 a repeated placeholder name in `read` collapses and silently
-  # SHIFTS every field after it (fence read back as the lane, observed).
+  # Every column gets its own name, including the ones this phase ignores.
+  # Not because repeated `_` placeholders misbehave — they are fine in bash
+  # 3.2 — but because named columns are what makes the row layout auditable
+  # against the 0x1f contract above, which is where the real field-shift bug
+  # lived (tab as IFS whitespace collapsed the empty bearer column and the
+  # fence came back as the lane).
   local uuid run bindc ticket bearer fence lane status path
   # shellcheck disable=SC2034  # the trailing names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status path; do
@@ -164,6 +193,7 @@ PY
       esac
     fi
   done < <(_registry_metas)
+  _scan_ok || die "registry scan failed — renew phase saw no metas it can trust"
 }
 
 # ---- phase 2: answer relay -------------------------------------------------
@@ -183,10 +213,18 @@ $2
 EOF
 }
 
-# uuid, bearer, run_id, fence (0x1f-separated) for the bound meta of ticket $1
-_meta_for_ticket() {
-  _registry_metas | awk -F$'\x1f' -v t="$1" -v s=$'\x1f' \
-    '$4 == t { print $1 s $5 s $2 s $6; exit }'
+# uuid, bearer, run_id, fence (0x1f-separated) for every meta bound to ticket
+# $1 — CANDIDATES, not one answer. Two metas can name the same ticket for a
+# window: a reclaimed predecessor whose ticket-strip has not landed yet, beside
+# the successor that actually holds the run. Taking the first glob match would
+# hand the answer to the dead one. Server-confirmed binds are emitted first,
+# and the caller takes the first LIVE candidate.
+_metas_for_ticket() {
+  _registry_metas | awk -F$'\x1f' -v t="$1" -v s=$'\x1f' '
+    $4 != t { next }
+    { row = $1 s $5 s $2 s $6
+      if ($3 == "True" || $3 == "true") print row; else rest[++n] = row }
+    END { for (i = 1; i <= n; i++) print rest[i] }'
 }
 
 # One page of the unrelayed feed, spilled to files under $1 (id/ticket in
@@ -209,9 +247,10 @@ PY
 
 phase_relay() {
   local dir n i acked aid tid replies uuid bearer run fence transcript
-  dir="$(mktemp -d)"
-  # shellcheck disable=SC2064  # $dir is expanded now, on purpose
-  trap "rm -rf '$dir'; rmdir '$LOCK' 2>/dev/null || true" EXIT
+  local c_uuid c_bearer c_run c_fence
+  # Under $SCRATCH, so the EXIT trap installed beside the lock cleans it up —
+  # no second trap here to chain the lock's rmdir into.
+  dir="$(mktemp -d "$SCRATCH/relay.XXXXXX")"
   while :; do
     rm -f "$dir"/*.meta "$dir"/*.replies 2>/dev/null || true
     n="$(_unrelayed_dump "$dir")" || break
@@ -224,8 +263,13 @@ phase_relay() {
       replies="$(cat "$dir/$i.replies")"
       i=$((i + 1))
       uuid=""; bearer=""; run=""; fence=""
-      IFS=$'\x1f' read -r uuid bearer run fence < <(_meta_for_ticket "$tid") || true
-      if [ -z "$uuid" ] || ! _alive "$uuid"; then
+      while IFS=$'\x1f' read -r c_uuid c_bearer c_run c_fence; do
+        _alive "$c_uuid" || continue
+        uuid="$c_uuid"; bearer="$c_bearer"; run="$c_run"; fence="$c_fence"
+        break
+      done < <(_metas_for_ticket "$tid")
+      _scan_ok || die "registry scan failed — cannot resolve the session bound to #$tid"
+      if [ -z "$uuid" ]; then
         # NEVER ack-and-drop: the answer stays on the feed so the successor
         # this ticket gets (resume phase) delivers it instead.
         echo "relay: #$tid answer $aid — no live bound session; successor path will deliver"
@@ -237,8 +281,19 @@ phase_relay() {
       # resume acks nothing — the answer stays on the feed for the next tick.
       if [ -n "$transcript" ] && grep -qF "$(_sentinel "$aid")" "$transcript" 2>/dev/null; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
+      # DAEMON_TIMEOUT is bounded here on purpose. daemon-resume's default is
+      # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
+      # the whole-tick lock throughout: one long turn would starve lease
+      # renewal past the 15-minute lease and A1 would reclaim runs that are
+      # very much alive. Bounding it is safe because daemon-resume advances
+      # the meta's `current` to the new turn and injects this prompt BEFORE it
+      # blocks: a timed-out resume exits nonzero, so nothing is acked this
+      # tick, and the next tick's sentinel grep finds the marker in the new
+      # transcript and acks WITHOUT re-delivering (the replay case the test
+      # pins on u-3/u-3-cur). The delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" \
+        DAEMON_TIMEOUT="${BOARD_RELAY_RESUME_TIMEOUT:-300}" \
         "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
@@ -258,7 +313,6 @@ PY
     [ "$acked" -gt 0 ] || break
   done
   rm -rf "$dir"
-  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 }
 
 phase_resume() { :; }    # Task 10

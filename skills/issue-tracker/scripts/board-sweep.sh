@@ -181,8 +181,16 @@ m = json.load(open(p))
 kv = os.environ["M_KV"].splitlines()
 for k, v in zip(kv[0::2], kv[1::2]):
     m[k] = v
+# A meta holding the run bearer is 0600 from creation — recreating it at the
+# default umask would republish that secret, if only for the width of one
+# write. Any other meta keeps the mode it already had. (Today the api tick
+# execs away before this helper is reachable, so no bearer meta arrives here;
+# the guard costs two lines and does not depend on that staying true.)
+mode = 0o600 if m.get("run_bearer") else os.stat(p).st_mode & 0o777
 tmp = p + ".tmp"
-json.dump(m, open(tmp, "w"), indent=2)
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+    json.dump(m, f, indent=2)
+os.chmod(tmp, mode)   # umask narrowing, and a tmp left by an earlier crash
 os.replace(tmp, p)
 PY
 }

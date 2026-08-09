@@ -199,6 +199,17 @@ in the window between delivering to the session and committing the ack:
   retries. Between resume and ack → the sentinel is in the transcript
   (written by the same act that delivered the prompt); next tick skips the
   resume and acks. After ack → the feed no longer serves it.
+- **The resume's wait is bounded** (`BOARD_RELAY_RESUME_TIMEOUT`, default 300
+  → a `daemon-resume` watcher of ≤150 polls). `daemon-resume` otherwise
+  blocks for `DAEMON_TIMEOUT/2` — hours at the 18000 default — while this
+  tick holds the whole-tick lock, so one long worker turn would starve lease
+  renewal past the 15-minute lease and A1 would reclaim runs that are alive.
+  Bounding it costs nothing the delivery gate needs: `daemon-resume` advances
+  the meta's `current` to the forked turn and injects the sentinel-bearing
+  prompt **before** it blocks, so a timed-out resume exits nonzero, acks
+  nothing, and lands on the row above — the next tick's sentinel grep finds
+  the marker in the new transcript and acks **without re-delivering**. Only
+  the ack is late; the answer is never lost and never doubled.
 
 No new state file: the durable record of delivery is the delivery itself.
 
@@ -489,3 +500,17 @@ Pending — written at finish.
   meant: the state-machine half is never *exercised*, and the banned state
   is a divergent second client-side copy of legality/pick-order —
   imported-for-pure-display is the opposite of that hazard.
+- v1.2.3 (2026-08-10): Task 9 review — **the relay's resume wait is bounded**
+  (`BOARD_RELAY_RESUME_TIMEOUT`, default 300). The plan had the sweep call
+  `daemon-resume` synchronously with the daemon toolkit's own unbounded
+  default, which blocks for `DAEMON_TIMEOUT/2` (hours) while the tick holds
+  its whole-tick lock: renewal starves past the 15-minute lease and A1
+  reclaims live runs. Sentinel-ack-next-tick is the named degrade path — the
+  prompt and the meta's `current` are both committed before the wait, so a
+  timed-out resume acks nothing and the next tick acks off the sentinel
+  without re-delivering (see the Relay idempotence section). Also recorded, no
+  design change: the tick **unsets `BOARD_RUN_TOKEN`** at entry, since
+  `token()` returns any run token in env for every principal — a tick
+  inherited from a worker shell would otherwise renew/ack as that worker
+  (violating "Renewal is dispatch automation, never worker prose") and a bind
+  repair would stamp the foreign bearer into another run's meta.

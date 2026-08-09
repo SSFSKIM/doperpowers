@@ -10,10 +10,17 @@
 #
 # RELAY pins: the answer reaches the worker through daemon-resume with the run
 # credentials re-injected from the meta (ENV, never argv — daemon-resume forks
-# a fresh process from the caller's environment); the ack fires only on PROVEN
-# delivery — the sentinel already in the transcript, or a resume that returned
-# success; a dead-session or failed delivery acks NOTHING and breaks the drain
-# loop instead of spinning on the same page.
+# a fresh process from the caller's environment); the resume's blocking wait is
+# BOUNDED, because the whole tick holds the lock while it runs; the ack fires
+# only on PROVEN delivery — the sentinel already in the transcript, or a resume
+# that returned success; a dead-session or failed delivery acks NOTHING and
+# breaks the drain loop instead of spinning on the same page.
+#
+# PRINCIPAL ISOLATION pins: an ambient BOARD_RUN_TOKEN — this tick launched
+# from a worker's shell — never becomes the sweep's voice. The client's
+# token() hands back the run token for ANY principal once one is in env, so
+# without an explicit unset the tick would renew and ack as that worker, and a
+# bind repair would stamp the foreign bearer into a DIFFERENT run's meta.
 #
 # The transcript is resolved the way orchestrating-daemons' own tooling does
 # (the CURRENT turn's session jsonl under $HOME/.claude/projects) — no meta
@@ -41,6 +48,7 @@ except subprocess.TimeoutExpired:
     print("TIMEOUT"); sys.exit(124)' "$@"; }
 
 TDIR="$(mktemp -d)"
+trap 'rm -rf "$TDIR"' EXIT
 CREDS="$TDIR/creds.env"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
 
 # ---- the wire ---------------------------------------------------------------
@@ -82,7 +90,7 @@ cat > "$FIX" <<'JSON'
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
-trap 'kill $MOCK 2>/dev/null' EXIT
+trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
@@ -131,10 +139,14 @@ meta u-4 '{"uuid":"u-4","current":"u-4","status":"working","run_id":44,"fence":1
 meta u-5 '{"uuid":"u-5","current":"u-5","status":"working","name":"review-pr-3"}'
 
 RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
+# The stub records its ENVIRONMENT, not just its argv: both the run
+# credentials and the resume's wait bound are passed that way, and neither is
+# observable any other place.
 cat > "$DS/daemon-resume.sh" <<EOF
 #!/usr/bin/env bash
 { echo "RESUME uuid=\$1"
   echo "ARGV: \$*"
+  echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
   env | grep '^BOARD_' | sort || true; } >> "$RESUME_LOG"
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
 printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
@@ -152,6 +164,13 @@ SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+SWEVIL() {  # the same, but launched from a WORKER's environment: a run token
+            # is already exported, as it would be for a tick started by hand
+            # inside a dispatched session's shell.
+  ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      BOARD_RUN_TOKEN=tok-evil "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 SWB() {  # the same, time-bounded (used where a hang is the failure mode)
   ( cd "$r" || exit 1
@@ -179,6 +198,27 @@ nt "a confirmed bind is not re-bound"       "/runs/43/bind"            cat "$FIX
 nt "the api tick never invokes gh"          "GH-CALLED"                cat "$MARKER"
 
 # =========================================================================
+# Principal isolation — an inherited run token is not the sweep's voice.
+# Two distinct harms, both pinned here: speaking on the wire as a worker that
+# owns none of these runs (spec: "Renewal is dispatch automation, never worker
+# prose"), and cross-run credential contamination — a bind repair for run 41
+# writing the FOREIGN bearer into u-1's meta, after which every later resume
+# of u-1 authenticates as the wrong run.
+# =========================================================================
+: > "$FIX.log"
+# Re-arm the bind-repair path: the pass above already confirmed u-1.
+meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
+           "lane":"implementer","bind_confirmed":false,"ticket":"7"}'
+SWEVIL renew > "$TDIR/renew-evil.out" 2>&1 || true
+t  "renew still speaks as automation under an ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
+nt "an ambient run token never reaches the wire"  "tok-evil"     cat "$FIX.log"
+# Report the field, never the meta: a bearer that leaked here would otherwise
+# be printed by the failure path.
+u1_bearer() { python3 -c 'import json, sys
+print("run_bearer=%s" % (json.load(open(sys.argv[1])).get("run_bearer") or "none"))' "$DH/u-1.json"; }
+t  "bind repair stamps no foreign bearer into the meta" "run_bearer=none" u1_bearer
+
+# =========================================================================
 # Phase 2 — relay
 # =========================================================================
 OUT2="$TDIR/relay.out"
@@ -196,6 +236,10 @@ t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "
 t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RESUME_LOG"
 t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RESUME_LOG"
 t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RESUME_LOG"
+# daemon-resume blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
+# while THIS tick holds the whole-tick lock, so renewal would starve past the
+# 15-minute lease and A1 would reclaim live runs. The relay bounds it.
+t  "the resume's wait is bounded"      "DAEMON_TIMEOUT=300"                cat "$RESUME_LOG"
 argv_only() { grep '^ARGV:' "$RESUME_LOG"; }
 nt "the bearer never rides on argv"    "tok-w3"                            argv_only
 # #99 has no bound session: never ack-and-drop — the successor path delivers.
@@ -222,15 +266,21 @@ prompt_is_exact() { diff "$EXPECT" "$TX" && echo "prompt=exact"; }
 t "the delivered prompt is byte-exact" "prompt=exact" prompt_is_exact
 
 # ---- replay: the same answer served again, sentinel already present --------
+# This is also the degrade path for a resume whose bounded wait expires:
+# daemon-resume injects the sentinel-bearing prompt BEFORE it blocks, so a
+# timed-out resume exits nonzero and acks nothing this tick — and the NEXT
+# tick lands exactly here, finding the sentinel and acking without
+# re-delivering. Run hostile: the ack must speak automation too.
 : > "$FIX.log"
 before="$(grep -c "board-relay" "$TX")"
-SW relay > "$TDIR/relay2.out" 2>&1 || true
+SWEVIL relay > "$TDIR/relay2.out" 2>&1 || true
 after="$(grep -c "board-relay" "$TX")"
 delta() { echo "delta=$((after - before))"; }
-resumes() { grep -c "RESUME uuid=" "$RESUME_LOG"; }
 t "no double-resume on replay"          "delta=0"                    delta
 t "the replay is recognized as delivered" "already delivered (sentinel)" cat "$TDIR/relay2.out"
 t "and re-acks (ack is set-once)"       '"path": "/answers/118/ack"'  cat "$FIX.log"
+t  "the ack speaks automation, not the ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
+nt "no ambient run token on the relay wire" "tok-evil"                cat "$FIX.log"
 
 # ---- a failed delivery acks nothing and stops the pass ---------------------
 : > "$FIX.log"
