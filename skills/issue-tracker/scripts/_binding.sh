@@ -2,6 +2,11 @@
 # _binding.sh — per-repo board-binding resolution (A2). Side-effect-free:
 # sourceable from ANY entry point BEFORE gh-mode initialization. Defines
 # BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py.
+# BOARD_ROOT is honored if the sourcing shell already set it (that is how
+# _lib.sh hands over its own root, same process) but is deliberately NOT
+# exported: an exported root would be inherited by every descendant process,
+# and a dispatch script that sources this file from a DIFFERENT repo would
+# then silently resolve board.json and credentials against its parent's repo.
 # .doperpowers/board.json selects the substrate: absent or {"binding":"gh"}
 # -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...} -> the
 # toolkit speaks the Arkho board API and gh is neither required nor invoked.
@@ -31,7 +36,7 @@ PY
   esac
 fi
 BOARD_CREDENTIALS_FILE="${BOARD_CREDENTIALS_FILE:-$HOME/.arkho-board/$(basename "$BOARD_ROOT").env}"
-export BOARD_BINDING BOARD_API_URL BOARD_CREDENTIALS_FILE BOARD_ROOT
+export BOARD_BINDING BOARD_API_URL BOARD_CREDENTIALS_FILE
 
 # Run an inline python3 board operation with the API client importable and the
 # binding env visible. _BINDING_DIR: this file's own directory, so non-board

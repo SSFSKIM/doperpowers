@@ -12,6 +12,13 @@ t() {  # t <name> <expected-substring> cmd...
   if grep -qF -- "$want" <<<"$out"; then echo "ok   $name"
   else echo "FAIL $name — wanted '$want' in:"; sed 's/^/     /' <<<"$out"; FAILS=$((FAILS+1)); fi
 }
+nt() {  # nt <name> <forbidden-substring> cmd... — the inverse of t
+  local name="$1" bad="$2"; shift 2 || { echo "nt: bad call"; exit 2; }
+  local out; out="$("$@" 2>&1)" || true
+  if grep -qF -- "$bad" <<<"$out"; then echo "FAIL $name — '$bad' must NOT appear, but:"
+    sed 's/^/     /' <<<"$out"; FAILS=$((FAILS+1))
+  else echo "ok   $name"; fi
+}
 mkrepo() {  # fresh throwaway git repo, prints its path
   local d; d="$(mktemp -d)"; git -C "$d" init -q; echo "$d"
 }
