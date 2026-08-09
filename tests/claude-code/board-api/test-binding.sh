@@ -51,16 +51,34 @@ nt "env url override never invokes gh" "GH_INVOKED" \
 # The other half of the guard: it must not suppress the gh probe in gh mode.
 t "gh mode without BOARD_REPO still probes gh" "GH_INVOKED" probe "$r1"
 
-# BOARD_ROOT must not be exported. A board script resolves BOARD_ROOT for its
-# own repo; a descendant that sources only _binding.sh from a DIFFERENT repo
-# would inherit it through the honor-if-set branch and bind board.json and
-# credentials to the parent's repo.
+# Nothing repo-scoped may be exported. A board script resolves the binding for
+# its OWN repo; a descendant that sources only _binding.sh from a DIFFERENT repo
+# must re-resolve everything. BOARD_ROOT would come back through the
+# honor-if-set branch; BOARD_CREDENTIALS_FILE and BOARD_API_URL would come back
+# the same way and leave the child reading its own board.json while holding the
+# parent's token file and API URL — a mismatched half-bound state.
 CHILD="$STUB/child-root.sh"
-printf '#!/usr/bin/env bash\n. "%s/_binding.sh"\nbasename "$BOARD_ROOT"\n' "$SCRIPTS" > "$CHILD"
+printf '#!/usr/bin/env bash\n. "%s/_binding.sh"\nprintf "root=%%s\\ncreds=%%s\\nurl=%%s\\n" \\\n  "$(basename "$BOARD_ROOT")" "$(basename "$BOARD_CREDENTIALS_FILE")" "${BOARD_API_URL:-}"\n' \
+  "$SCRIPTS" > "$CHILD"
 PARENT="$STUB/parent-root.sh"
 printf '#!/usr/bin/env bash\n. "%s/_lib.sh"\ncd "$1" || exit 1\nexec "%s"\n' "$SCRIPTS" "$CHILD" > "$PARENT"
 chmod +x "$CHILD" "$PARENT"
-t "BOARD_ROOT does not leak into a child in another repo" "$(basename "$r2")" \
-  bash -c "cd '$r1' && BOARD_REPO=o/r exec '$PARENT' '$r2'"
+# Parent binds r2 (api, url set), child crosses into r1 (gh, no url).
+cross() { bash -c "cd '$r2' && exec '$PARENT' '$r1'"; }
+t "BOARD_ROOT does not leak into a child in another repo"             "root=$(basename "$r1")"       cross
+t "BOARD_CREDENTIALS_FILE does not leak into a child in another repo" "creds=$(basename "$r1").env" cross
+nt "BOARD_API_URL does not leak into a child in another repo"         "b.example"                   cross
+
+# Linked worktrees: the credentials slug must name the REPO, not the checkout
+# directory. `git rev-parse --show-toplevel` in a worktree is the worktree dir —
+# usually a branch name — so a slug taken from it points at a file that was
+# never written. The stable identity is the main checkout's directory.
+r5="$(mkrepo)"
+git -C "$r5" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+WT="$(mktemp -d)/some-feature-branch"
+git -C "$r5" worktree add -q "$WT" -b some-feature-branch
+t "worktree credentials slug is the main repo, not the worktree dir" \
+  "$(basename "$r5").env" \
+  bash -c "cd '$WT' && . '$SCRIPTS/_binding.sh' && basename \"\$BOARD_CREDENTIALS_FILE\""
 
 finish

@@ -2,11 +2,10 @@
 # _binding.sh — per-repo board-binding resolution (A2). Side-effect-free:
 # sourceable from ANY entry point BEFORE gh-mode initialization. Defines
 # BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py.
-# BOARD_ROOT is honored if the sourcing shell already set it (that is how
-# _lib.sh hands over its own root, same process) but is deliberately NOT
-# exported: an exported root would be inherited by every descendant process,
-# and a dispatch script that sources this file from a DIFFERENT repo would
-# then silently resolve board.json and credentials against its parent's repo.
+# BOARD_ROOT, BOARD_API_URL and BOARD_CREDENTIALS_FILE are honored if the
+# sourcing shell already set them (that is how _lib.sh hands over its own root,
+# same process, and how a user overrides either value) but none of the three is
+# exported — see the export note below.
 # .doperpowers/board.json selects the substrate: absent or {"binding":"gh"}
 # -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...} -> the
 # toolkit speaks the Arkho board API and gh is neither required nor invoked.
@@ -35,8 +34,21 @@ PY
                                          return 1 2>/dev/null || exit 1; } ;;
   esac
 fi
-BOARD_CREDENTIALS_FILE="${BOARD_CREDENTIALS_FILE:-$HOME/.arkho-board/$(basename "$BOARD_ROOT").env}"
-export BOARD_BINDING BOARD_API_URL BOARD_CREDENTIALS_FILE
+# Credentials slug: the repo's stable identity, NOT the checkout directory.
+# In a linked worktree --show-toplevel is the worktree dir (usually a branch
+# name), which would name a token file nobody ever wrote; --git-common-dir is
+# always <main-checkout>/.git, and in a plain checkout it is "$BOARD_ROOT/.git",
+# so the same expression serves both. An inherited/exported override still wins.
+if [ -z "${BOARD_CREDENTIALS_FILE:-}" ]; then
+  _board_common_dir="$(git -C "$BOARD_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+  BOARD_CREDENTIALS_FILE="$HOME/.arkho-board/$(basename "$(dirname "$_board_common_dir")").env"
+fi
+# Only the binding is exported. BOARD_ROOT, BOARD_API_URL and
+# BOARD_CREDENTIALS_FILE are repo-scoped: exporting them would let a descendant
+# that sources this file from a DIFFERENT repo resolve its own board.json while
+# holding the parent's URL and token file. _api_py passes both to python3
+# explicitly, so nothing downstream depends on them being in the environment.
+export BOARD_BINDING
 
 # Run an inline python3 board operation with the API client importable and the
 # binding env visible. _BINDING_DIR: this file's own directory, so non-board
