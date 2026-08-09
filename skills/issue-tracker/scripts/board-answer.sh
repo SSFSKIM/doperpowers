@@ -70,11 +70,19 @@ tid = os.environ["T_ID"].lstrip("#")
 # park alongside its board park, and only the board one is answerable here.
 cid = next((q["correlation_id"] for q in A.queue_decisions()
             if str(q["ticket_id"]) == tid and q.get("species") == "board"), None)
+if cid is None:
+    # No name, no answer. Sending it unnamed is exactly the failure the
+    # comment above forbids — the server would bind it to whatever question
+    # is standing when it lands, which is worst in this case: the ticket's
+    # board park is already gone (answered, superseded, or never raised).
+    A.die("#%s has no standing board park in the decisions queue — nothing to "
+          "answer here. Re-read the queue (GET /queue/decisions, or "
+          "board-list.sh needs-human) and answer the park it names." % tid)
 out = A.park_answer(tid, [os.environ["T_ANSWERS"]],
                     to=os.environ["T_TO"] or None, correlation_id=cid)
 if out.get("superseded"):
     A.die("#%s: answer superseded — the standing question changed; re-read the queue" % tid)
-print("answered #%s → %s" % (tid, out["returnedTo"]))
+print("answered #%s → %s" % (tid, out.get("returnedTo", "?")))
 PY
   # Inline relay: the human's answer resumes the worker NOW, not on the next
   # tick — the same blocking feel as gh mode's direct resume. Delivery and its

@@ -67,7 +67,9 @@ cat > "$FIX" <<'JSON'
           {"correlation_id":"evt-201","ticket_id":13,"species":"board",
            "state":"needs-human","raised_at":"2026-08-09T04:00:00Z"},
           {"correlation_id":"evt-401","ticket_id":14,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T05:00:00Z"}]},
+           "state":"needs-human","raised_at":"2026-08-09T05:00:00Z"},
+          {"correlation_id":"sdk-888","ticket_id":15,"species":"sdk-decision",
+           "state":"needs-human","raised_at":"2026-08-09T06:00:00Z"}]},
  {"method":"POST","path":"/tickets/12/park-answer","status":200,
   "body":{"answered":true,"returnedTo":"in-progress","answerEventId":118}},
  {"method":"POST","path":"/tickets/13/park-answer","status":409,"once":true,
@@ -212,6 +214,23 @@ t  "a superseded answer dies"            "answer superseded"   cat "$OUT14"
 t  "naming the queue as the way back"    "re-read the queue"   cat "$OUT14"
 t  "and exits nonzero"                   "rc14=1"              show_rc14
 nt "a superseded answer relays nothing"  "/answers/unrelayed"  cat "$FIX.log"
+
+# =========================================================================
+# Decoy-only queue: #15 carries a park, but not a `board` one — there is no
+# name to send. An unnamed answer is the one thing this leg may never do (the
+# server would bind it to whatever question is standing when it lands), so the
+# refusal is CLIENT-SIDE: nothing goes on the wire past the queue read.
+# =========================================================================
+: > "$FIX.log"
+OUT15="$TDIR/answer15.out"
+rc15=0; ANS 15 "answer to a question nobody is asking" > "$OUT15" 2>&1 || rc15=$?
+show_rc15() { echo "rc15=$rc15"; }
+t  "no standing board park is refused" "no standing board park" cat "$OUT15"
+t  "pointing at the decisions queue"   "GET /queue/decisions"    cat "$OUT15"
+t  "and exits nonzero"                 "rc15=1"                  show_rc15
+t  "after reading the queue as the human" '"auth": "Bearer h"'   cat "$FIX.log"
+nt "no unnamed answer reaches the wire"   "park-answer"          cat "$FIX.log"
+nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
 
 # =========================================================================
 # gh mode is untouched: --to has no gh half, and says so instead of being
