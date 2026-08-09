@@ -33,9 +33,21 @@ variant of this protocol you run:
   the PR number out of the URL and use it wherever `{{PR_NUMBER}}` appears;
   your worktree starts on the repo's current head, not the PR's, so checking
   out the head under review is yours to do. **Resolve the PR's own base and
-  head before ORIENT** — `gh pr view <n> --json
-  baseRefName,headRefName,headRefOid` — and use those wherever `{{BASE_REF}}`,
-  `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear, above all in START ENGINE's
+  head, and FETCH them, before ORIENT** — `gh pr view <n> --json
+  baseRefName,headRefName,headRefOid` names them, `git fetch origin
+  <baseRefName> <headRefName>` is what puts them in THIS clone, and
+  `git checkout --detach <headRefOid>` is where you review from. That fetch is
+  not a formality: `gh` returns GitHub's metadata and moves no ref here, and
+  the clone is long-lived, so an unfetched base is either absent (every later
+  `origin/<base>` revision fails outright) or stale (you review a range the PR
+  does not propose) — and a stacked PR's integration base is precisely the ref
+  this clone is least likely to already carry. A fetch that fails is a hard
+  stop: never fall back to the default branch, nor to whatever
+  `origin/<base>` already points at — park with
+  `board-transition.sh {{ISSUE_NUMBER}} needs-human` naming the ref that would
+  not fetch. Then use the resolved names wherever `{{BASE_REF}}`,
+  `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear — `{{BASE_REF}}` being the
+  freshly-fetched `origin/<baseRefName>` — above all in START ENGINE's
   `--base origin/{{BASE_REF}}` and in the self-merge tier's base-is-default
   clause (base-is-default is then `<resolved base> = {{DEFAULT_BRANCH}}`, not
   the `unresolved` your prompt binds). The board carries no PR base, so

@@ -32,7 +32,12 @@ worktree starts on the repo's current head, so checking out the head you are
 reviewing is yours to do — and so is resolving what that PR MERGES INTO. The
 board carries no PR base, so `BASE_REF` and `BASE_IS_DEFAULT` below are
 UNRESOLVED: read them off the PR (`gh pr view <n> --json
-baseRefName,headRefName,headRefOid`) before ORIENT and use those values
+baseRefName,headRefName,headRefOid`), then `git fetch origin <baseRefName>
+<headRefName>` and `git checkout --detach <headRefOid>`, all before ORIENT.
+`gh` moves no ref in this long-lived clone, so a base you did not fetch is
+either absent or stale and the range you review is not the one the PR
+proposes; a fetch that fails is a hard stop, never a fallback to the default
+branch. Use those values
 wherever this protocol says `BASE_REF` / `HEAD_REF` / `HEAD_SHA`. The two
 manifest snapshots below were taken at `MANIFEST_REF`; if the PR's base is a
 different branch, re-read them from it
