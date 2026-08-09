@@ -428,6 +428,17 @@ plan time.
   First concrete instance of the X1 "upstream canon, not re-litigable"
   clause meeting a fork that kept evolving; resolved by flow-back ruling,
   not by either side silently winning.
+- **The plan's error envelope was the wrong shape** (Task 2, implementation
+  time): every fixture and the client's own error mapping assumed a flat
+  `{"error": "fence-mismatch", "message": "…"}`, but API.md §1 and
+  `src/server.js` both write it **nested** —
+  `{"error": {"code": "…", "message": "…"}}`. API.md wins per the Global
+  Constraints, so the client unwraps `error.code`. Two consequences worth
+  carrying: the error identifier is what every `die` message and the
+  `RunEnded` routing key on, so a flat reader would have degraded *every*
+  contract refusal to an opaque `http-409` and never raised `RunEnded` at
+  all; and the plan's later task bodies still carry flat-shaped 409
+  fixtures, which are asserting against a shape the service never sends.
 
 ## Outcomes & Retrospective
 
@@ -460,3 +471,8 @@ Pending — written at finish.
   in code order; binding resolution as a pre-gh sourceable in every entry
   point; claim-journal startup reconciliation + real daemon-spawn output
   parsing; interactive verbs default to the human principal.
+- v1.2.1 (2026-08-09): contract-conformance record, no design change —
+  Task 2 found the plan's error envelope flat where API.md §1 and the
+  shipped `src/server.js` write it nested (`{"error": {"code", "message"}}`).
+  Logged under Surprises; `_board_api.py` unwraps `error.code`, and the
+  remaining task bodies' flat 409 fixtures need the same correction.
