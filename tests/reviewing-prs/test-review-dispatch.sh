@@ -1263,7 +1263,12 @@ assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prom
 gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:claude label overrides env"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "claude route spawns without the gateway settings, at effort high"
+if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
+    pass "claude route pins the QAgent model to opus"
+else
+    fail "claude route pins the QAgent model to opus"
+fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
 assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
 
@@ -1273,7 +1278,12 @@ assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the s
 gh_pr 44 OPEN 0 ""
 env -u WORKER_ENGINE "$DISPATCH" 44
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "built-in default route is plain Claude (no gateway settings)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "built-in default route is plain Claude (no gateway settings) at effort high"
+if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
+    pass "built-in default pins the QAgent model to opus"
+else
+    fail "built-in default pins the QAgent model to opus"
+fi
 
 echo "codex reviewer liveness in dedupe:"
 sleep 300 & LIVEPID=$!
@@ -1684,7 +1694,7 @@ PY
 : > "$SPAWN_LOG"
 out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-30" "the labelled epic gets its scale reviewer"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "engine:claude on the EPIC routes its scale review through the claude harness"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "engine:claude on the EPIC routes its scale review through the claude harness at effort high"
 # ...and an unlabelled epic still takes the environment default (the gateway
 # route), which is what the block above already exercised on #20.
 reset_state

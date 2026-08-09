@@ -28,7 +28,9 @@
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
 #   REVIEW_MODEL        optional model override for the review daemon
-#                       (gateway route defaults to fable, claude route to inherit)
+#                       (claude route defaults to opus, gateway route to fable)
+#   REVIEW_EFFORT       reasoning effort for the claude route (default high —
+#                       the QAgent tier is opus/high by design)
 #   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: claude|codex
 #                       (default claude). Every worker is a Claude-harness
 #                       daemon; "claude" means plain Claude models, "codex"
@@ -666,7 +668,12 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
       "${REVIEW_MODEL:-fable}")" \
       || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
-    spawn_out="$("$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" "${REVIEW_MODEL:-}")" \
+    # The QAgent tier is opus/high by design — pinned, not inherited, so the
+    # operator's own session model never silently sets the review lane's
+    # price. daemon-spawn persists effort into the meta; resumes keep it.
+    spawn_out="$(DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" \
+      "${REVIEW_MODEL:-opus}")" \
       || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
