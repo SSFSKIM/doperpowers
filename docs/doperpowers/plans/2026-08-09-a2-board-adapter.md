@@ -4,7 +4,7 @@
 
 **Goal:** The issue-tracker toolkit and dispatch scripts speak the Arkho board
 API as a per-repo binding (gh mode untouched and default), per
-`docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` v1.1.
+`docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` v1.2.
 
 **Architecture:** Verb-level thin client — each `board-*.sh` branches on
 `BOARD_BINDING` at the top; in API mode the verb is a thin HTTP call through a
@@ -21,7 +21,7 @@ on local Postgres for the integration tier (gated by `ARKHO_DIR`).
 
 ## Global Constraints
 
-- **The spec is the contract:** `docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` (v1.1). The API contract is `$ARKHO_DIR/board-service/API.md` — when this plan and API.md disagree on a payload, API.md wins and the divergence goes in the spec's Revision Notes.
+- **The spec is the contract:** `docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` (v1.2). The API contract is `$ARKHO_DIR/board-service/API.md` — when this plan and API.md disagree on a payload, API.md wins and the divergence goes in the spec's Revision Notes.
 - Binding file: `.doperpowers/board.json` at the consumer repo root, shape `{"binding": "api", "url": "https://…"}`. Absent or `"binding": "gh"` → gh mode, byte-identical behavior to pre-A2.
 - Credentials file: `~/.arkho-board/<repo-slug>.env` (override: `$BOARD_CREDENTIALS_FILE`), carrying `BOARD_AUTOMATION_TOKEN` and `BOARD_HUMAN_TOKEN`. Never checked in, never logged.
 - Worker env contract (injected at spawn): `BOARD_RUN_TOKEN`, `BOARD_RUN_ID`, `BOARD_RUN_FENCE`, `BOARD_API_URL`.
@@ -60,8 +60,10 @@ Interfaces threaded through every task (fixed here, verbatim):
 ```
 # _board_api.py — module-level functions (all die() on mapped API errors):
 api_url() -> str
-request(method, path, body=None, principal="auto", ok=(200,)) -> dict|list
+request(method, path, body=None, principal="auto", ok=(200,), retry=None) -> dict|list
 #   principal: "auto" (run token if set, else die), "automation", "human"
+#   token() returns the env run token FIRST whatever the principal — worker
+#   contexts get the run principal automatically; defaults serve operators.
 claim(lane, nonce, lease_minutes=None, lane_cap=None) -> dict
 claim_successor(ticket_id, nonce, lease_minutes=None) -> dict
 needing_resume() -> list
@@ -70,12 +72,12 @@ ack(answer_event_id) -> dict
 renew(run_id) -> dict                    # 409 run-ended -> raises RunEnded
 bind(run_id, store_ns, project_key, session_id) -> dict
 end_run(run_id, reason="completed") -> dict
-register(payload: dict) -> dict          # {"id": N, "state": "..."}
-transition(tid, to, note=None, pr=None, plan=None, branch=None, fence=None) -> dict
-comment(tid, kind, text=None, body=None) -> dict   # {"eventId": N}
+register(payload: dict, principal="human") -> dict   # {"id": N, "state": "..."}
+transition(tid, to, note=None, pr=None, plan=None, branch=None, fence=None, principal="human") -> dict
+comment(tid, kind="comment", text=None, body=None, principal="human") -> dict   # {"eventId": N}
 park_answer(tid, replies, to=None, correlation_id=None) -> dict
-tickets(state=None, category=None) -> list
-timeline(tid) -> dict                    # {"records": [...]}
+tickets(state=None, category=None, principal="human") -> list
+timeline(tid, principal="human") -> dict # {"records": [...]}
 queue_decisions() -> list
 class RunEnded(Exception): ...
 SENTINEL = "[board-relay answer:%s]"     # % answerEventId
@@ -92,7 +94,7 @@ _api_py                  like _py but also exports the three above
 ```
 # Registry meta additions (daemon JSON, written by dispatch/sweep):
 run_id, fence, nonce, spawn_completed (bool), bind_confirmed (bool),
-resume_attempts (int)
+resume_attempts (int), run_bearer (secret — registry file must be 0600)
 # Claim journal: $DAEMON_HOME/board-claims/<nonce>.json
 #   {"lane": "...", "run_id": N|null, "spawn_completed": bool}
 # Suppression: $DAEMON_HOME/board-suppress/<ticket>.json
