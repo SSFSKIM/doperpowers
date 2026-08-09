@@ -14,9 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # No API-mode counterpart yet (A1 route gap), so refuse rather than silently
 # writing through a gh path that a board-API repo does not have.
-[ "$BOARD_BINDING" != api ] || die "this verb has no API-mode counterpart yet — \
-edge re-cut/priority/relates/body edits are A1 follow-up routes, tracked as arkho#7 \
-(https://github.com/SSFSKIM/arkho/issues/7); until it lands, run these against a gh-bound repo only"
+_refuse_no_api_route "recording a relates-to link"
 
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 a="$1" b="$2"

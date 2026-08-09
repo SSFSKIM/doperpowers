@@ -507,7 +507,14 @@ phase_relay() {
         "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        echo "relay: #$tid answer $aid — resume FAILED; not acked, retried next tick"
+        # NOT NECESSARILY A FAILURE. daemon-resume also exits nonzero when its
+        # bounded watcher expires on a turn it already injected the prompt into
+        # — the ORDINARY outcome for a long worker turn, since the bound exists
+        # to keep this tick from starving lease renewal. Either way nothing is
+        # acked, and the next tick's sentinel check settles which it was without
+        # re-delivering. Calling it FAILED trained the reader to expect a broken
+        # relay on every long turn.
+        echo "relay: #$tid answer $aid — the resume returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
         continue
       fi
       # PROGRESS IS A SUCCESSFUL ACK, and the ack has to be checked explicitly.
@@ -1155,7 +1162,15 @@ except A.RunEnded:
     pass
 PY
   fi
-  echo "resume: #$1 — recovery cycle $n of 3 failed"
+  # "cycle 4 of 3" is what the plain label printed once an escalation deferred
+  # itself (an unreadable board state holds the counter rather than resetting
+  # it), which reads as a broken counter rather than the pending escalation it
+  # actually is.
+  if [ "$n" -le 3 ]; then
+    echo "resume: #$1 — recovery cycle $n of 3 failed"
+  else
+    echo "resume: #$1 — recovery cycle $n failed; the 3-cycle ladder is done and the escalation is still pending (it defers until the board can name the state it would freeze)"
+  fi
   [ "$n" -ge 3 ] || return 0
   _escalate "$1"
 }

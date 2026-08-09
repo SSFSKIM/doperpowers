@@ -129,9 +129,11 @@ TX="$PROJ/u-3-cur.jsonl"; : > "$TX"
 meta() {  # meta <uuid> <json>
   printf '%s\n' "$2" > "$DH/$1.json"
 }
-# alive, run 41, bind never confirmed by the server -> renew + bind repair
+# alive, run 41, bind never confirmed by the server -> renew + bind repair.
+# It holds its OWN bearer: the repair speaks as the run it is repairing, and a
+# meta with no bearer at all is refused by board-bind rather than confirmed.
 meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
-           "lane":"implementer","bind_confirmed":false,"ticket":"7"}'
+           "lane":"implementer","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
 # alive, but the server already reaped run 40 -> routed, not fatal
 meta u-2 '{"uuid":"u-2","current":"u-2","status":"working","run_id":40,"fence":2,
            "lane":"implementer","bind_confirmed":true,"ticket":"8"}'
@@ -240,7 +242,7 @@ t "a live run keeps its slot"               "run=41 lane=implementer"  slot_for 
 : > "$FIX.log"
 # Re-arm the bind-repair path: the pass above already confirmed u-1.
 meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
-           "lane":"implementer","bind_confirmed":false,"ticket":"7"}'
+           "lane":"implementer","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
 SWEVIL renew > "$TDIR/renew-evil.out" 2>&1 || true
 t  "renew still speaks as automation under an ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
 nt "an ambient run token never reaches the wire"  "tok-evil"     cat "$FIX.log"
@@ -248,7 +250,18 @@ nt "an ambient run token never reaches the wire"  "tok-evil"     cat "$FIX.log"
 # be printed by the failure path.
 u1_bearer() { python3 -c 'import json, sys
 print("run_bearer=%s" % (json.load(open(sys.argv[1])).get("run_bearer") or "none"))' "$DH/u-1.json"; }
-t  "bind repair stamps no foreign bearer into the meta" "run_bearer=none" u1_bearer
+t  "bind repair keeps the meta's OWN bearer, not the ambient one" "run_bearer=tok-w1" u1_bearer
+
+# ...and a meta with no bearer at all is not repairable: confirming that bind
+# would declare it complete while every later resume of the run could not speak
+# as it. Refused loudly, and the run is left for the lease to reclaim.
+: > "$FIX.log"
+meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
+           "lane":"implementer","bind_confirmed":false,"ticket":"7"}'
+SW renew > "$TDIR/renew-nobearer.out" 2>&1 || true
+t  "a bearerless bind repair is refused"   "bind refused for run 41" cat "$TDIR/renew-nobearer.out"
+t  "and the tick reports the failed repair" "bind repair FAILED"     cat "$TDIR/renew-nobearer.out"
+nt "nothing is confirmed"                   '"bind_confirmed": true' cat "$DH/u-1.json"
 
 # =========================================================================
 # Phase 2 — relay
@@ -334,7 +347,8 @@ nt "and does not hang"                   "TIMEOUT"                   cat "$OUTAC
 : > "$FIX.log"
 OUT3="$TDIR/relay3.out"
 RESUME_MUST_FAIL=1 SWB relay > "$OUT3" 2>&1 || true
-t  "a failed resume is reported"        "resume FAILED"          cat "$OUT3"
+t  "a resume that reported no delivery is not called a failure" \
+   "the resume returned no delivery"                              cat "$OUT3"
 nt "a failed delivery acks nothing"     "/answers/121/ack"       cat "$FIX.log"
 nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
 

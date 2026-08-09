@@ -69,7 +69,11 @@ cat > "$FIX" <<'JSON'
           {"correlation_id":"evt-401","ticket_id":14,"species":"board",
            "state":"needs-human","raised_at":"2026-08-09T05:00:00Z"},
           {"correlation_id":"sdk-888","ticket_id":15,"species":"sdk-decision",
-           "state":"needs-human","raised_at":"2026-08-09T06:00:00Z"}]},
+           "state":"needs-human","raised_at":"2026-08-09T06:00:00Z"},
+          {"correlation_id":"evt-501","ticket_id":16,"species":"board",
+           "state":"needs-human","raised_at":"2026-08-09T07:00:00Z"}]},
+ {"method":"POST","path":"/tickets/16/park-answer","status":200,
+  "body":{"answered":true,"returnedTo":"in-progress","answerEventId":161}},
  {"method":"POST","path":"/tickets/12/park-answer","status":200,
   "body":{"answered":true,"returnedTo":"in-progress","answerEventId":118}},
  {"method":"POST","path":"/tickets/13/park-answer","status":409,"once":true,
@@ -231,6 +235,21 @@ t  "and exits nonzero"                 "rc15=1"                  show_rc15
 t  "after reading the queue as the human" '"auth": "Bearer h"'   cat "$FIX.log"
 nt "no unnamed answer reaches the wire"   "park-answer"          cat "$FIX.log"
 nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
+
+# =========================================================================
+# A HELD TICK LOCK IS NOT A DELIVERY. The sweep exits 0 when another tick holds
+# its lock — correct for the sweep, and read as success here it told the human
+# their answer had been relayed when the inline wake never ran at all. The
+# answer IS on the board either way; what changes is what this command claims.
+# =========================================================================
+: > "$FIX.log"
+mkdir "$DH/.sweep-api.lock"
+OUTLOCK="$TDIR/answer-lockheld.out"
+ANS 16 "under a held lock" > "$OUTLOCK" 2>&1 || true
+t  "a held sweep lock is surfaced, not swallowed" "the inline wake did not run" cat "$OUTLOCK"
+t  "and the answer is still reported as recorded" "recorded on the board"       cat "$OUTLOCK"
+nt "no delivery is claimed"                       "delivered to"                cat "$OUTLOCK"
+rmdir "$DH/.sweep-api.lock"
 
 # =========================================================================
 # gh mode is untouched: --to has no gh half, and says so instead of being

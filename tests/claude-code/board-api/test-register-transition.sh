@@ -25,6 +25,11 @@ FIX="$(mktemp)"; : > "$FIX.log"
 # of the register calls below must stay in lockstep.
 cat > "$FIX" <<'JSON'
 [
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
+           "owner_run":null,"plan":null,"pr_url":null},
+          {"id":9,"state":"in-review","priority":"P1","title":"under review",
+           "owner_run":null,"plan":null,"pr_url":null}]},
  {"method":"POST","path":"/tickets/9/transition","status":200,
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
@@ -91,6 +96,10 @@ t "park birth body pins birth + note-as-body-head" \
 
 EMPTY_BODY="$(mktemp)"   # a regular empty file, not /dev/null: the body-file
                          # guard is `[ -f ]`, which a character device fails
+SPEC="$(mktemp)"; printf 'the spec' > "$SPEC"   # a real statement of work: a
+                         # BODYLESS registration is no longer dispatchable (see
+                         # the pre-spec rung at the end of this file), so every
+                         # assertion about something else carries one
 
 # The arkho#7 pointer is a claim about CANON — "this birth is illegal here" —
 # and it may only ride the server saying exactly that. An outage on the same
@@ -132,17 +141,19 @@ t "implicit env-issue birth carries the note as the body head" \
 # lane, so its --note is not a park question and stays off the body. Whole-body
 # pin — the absence of a "body" key is the assertion, which a fix that simply
 # prepended whenever --note is set would break.
-V board-register.sh "wire it up" enhancement P2 --state ready-for-implementer --note "fyi only" >/dev/null
+V board-register.sh "wire it up" enhancement P2 --state ready-for-implementer --note "fyi only" \
+  --body-file "$SPEC" >/dev/null
 t "explicit non-park birth still keeps the note off the body" \
-  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer"}' \
+  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer", "body": "the spec"}' \
   last_register_body
 
 # Edge keys are wire contract, and a camelCase slip drops an edge in silence —
 # the server would accept the payload and just not draw the relation. Pinned
 # whole, with both accepted ref spellings (`7` and `#8`) and a comma list.
-V board-register.sh "edged one" enhancement P3 --parent 7 --spawned-by '#8' --blocked-by '9,#10' >/dev/null
+V board-register.sh "edged one" enhancement P3 --parent 7 --spawned-by '#8' --blocked-by '9,#10' \
+  --body-file "$SPEC" >/dev/null
 t "edges ride as parent / spawnedBy / blockedBy integers" \
-  '{"title": "edged one", "category": "work", "priority": "P3", "parent": 7, "spawnedBy": 8, "blockedBy": [9, 10]}' \
+  '{"title": "edged one", "category": "work", "priority": "P3", "body": "the spec", "parent": 7, "spawnedBy": 8, "blockedBy": [9, 10]}' \
   last_register_body
 
 # A junk ref is a caller mistake, not a server matter: it must die with the gh
@@ -153,16 +164,16 @@ nt "a non-numeric parent raises no traceback" "Traceback" \
   V board-register.sh "bad ref" enhancement P2 --blocked-by 4,xyz
 
 t "category maps bug->work" '\"category\": \"work\"' \
-  bash -c "V board-register.sh 'a bug' bug P1 >/dev/null; cat '$FIX.log'"
+  bash -c "V board-register.sh 'a bug' bug P1 --body-file '$SPEC' >/dev/null; cat '$FIX.log'"
 # ...and the map assert above passes on ANY earlier enhancement→work request in
 # the log, so the bug birth is pinned whole too — including that an implicit
 # birth state stays server-side (no "birth" key).
 t "bug birth body pins the mapped category and omits birth" \
-  '{"title": "a bug", "category": "work", "priority": "P1"}' \
+  '{"title": "a bug", "category": "work", "priority": "P1", "body": "the spec"}' \
   last_register_body
 
 t "register prints id + url" "30 http://127.0.0.1:$PORT/tickets/30" \
-  V board-register.sh "plain one" enhancement P2
+  V board-register.sh "plain one" enhancement P2 --body-file "$SPEC"
 for verb in board-edge.sh board-priority.sh board-relate.sh board-migrate-gh.sh; do
   t "$verb fails loud naming arkho#7" "arkho#7" V "$verb" 1 --block 2
 done
@@ -172,9 +183,70 @@ done
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
 nt "api register never invokes gh" "GH-CALLED" \
   bash -c "cd '$r' && PATH='$gdir:$PATH' BOARD_CREDENTIALS_FILE='$CREDS' BOARD_RUN_TOKEN=rt \
-    '$SCRIPTS/board-register.sh' 'no gh here' enhancement P2"
+    '$SCRIPTS/board-register.sh' 'no gh here' enhancement P2 --body-file '$SPEC'"
 nt "api transition never invokes gh" "GH-CALLED" \
   bash -c "cd '$r' && PATH='$gdir:$PATH' BOARD_CREDENTIALS_FILE='$CREDS' BOARD_RUN_TOKEN=rt \
     '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+
+# =========================================================================
+# A BODYLESS TICKET IS NEVER DISPATCHABLE. gh mode seeds a pre-spec skeleton
+# when no --body-file is given, then refuses an EXPLICIT birth into a lane state
+# and demotes the DEFAULT one to needs-info. A1 stores an empty body and
+# defaults to ready-for-implementer, so the same call produced a dispatchable
+# ticket with no statement of work — a claim would hand a worker an empty
+# assignment. The ruling is mirrored; the skeleton is not (A1's body IS the
+# assignment and this client has no body-edit route).
+# =========================================================================
+V board-register.sh "no spec here" enhancement P2 >/dev/null
+t "a bodyless default birth is demoted out of the implement queue" \
+  '"birth": "needs-info"' last_register_body
+t "and says what to do about it" "re-register with --body-file" last_register_body
+t "a bodyless EXPLICIT lane birth is refused" \
+  "cannot be born into a dispatchable lane state" \
+  V board-register.sh "no spec, named lane" enhancement P2 --state ready-for-implementer
+# An explicitly EMPTY --body-file is the registrar saying so, exactly as in gh
+# mode — the rule keys on "no body-file was given", not on an empty string.
+nt "an explicitly empty body-file is still the registrar's call" \
+  "cannot be born into a dispatchable lane state" \
+  V board-register.sh "empty on purpose" enhancement P2 --state ready-for-implementer \
+    --body-file "$EMPTY_BODY"
+
+# A PARK IS A QUESTION. A1 falls back to the TITLE as the decision question when
+# the body is empty, so a note-less park birth produced a standing question that
+# was a ticket name; gh mode requires the note for exactly this reason.
+t "a park birth with no note and no body is refused" \
+  "--note is required for state needs-human" \
+  V board-register.sh "silent park" enhancement P2 --state needs-human
+
+# A1 requires repairPath for an env-issue explicitly born into an agent lane,
+# and the CLI had no way to send it — so every documented invocation of that
+# birth was rejected.
+V board-register.sh "flaky runner" env-issue P1 --state ready-for-implementer \
+  --repair-path "re-register the self-hosted runner" --body-file "$SPEC" >/dev/null
+t "an env-issue agent-lane birth carries its repair path" \
+  '"repairPath": "re-register the self-hosted runner"' last_register_body
+t "and --repair-path is refused in gh mode" "api-binding-only" \
+  bash -c "cd '$(mkrepo)' && BOARD_REPO=o/r '$SCRIPTS/board-register.sh' t enhancement P2 --repair-path x"
+
+# =========================================================================
+# A PLAN PIN IS A GATE, NOT A FIELD. It authorizes gate-free PLAN-EXECUTION,
+# and A1 stores whatever primitive arrives on whatever legal edge — so the
+# client is the only fence there is on this side. gh mode's checks, mirrored.
+# =========================================================================
+PIN_OUT="$(mktemp)"
+V board-transition.sh 9 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" \
+  > "$PIN_OUT" 2>&1 || true
+t "a plan pin off the Architect handoff edge is refused" \
+  "rides the Architect handoff edge" cat "$PIN_OUT"
+nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
+V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@deadbeef" \
+  > "$PIN_OUT" 2>&1 || true
+t "a short-sha pin is refused as mutable" "immutable pin" cat "$PIN_OUT"
+V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" \
+  > "$PIN_OUT" 2>&1 || true
+t "a pin with no branch is refused" "needs a branch the sha is reachable from" cat "$PIN_OUT"
+V board-transition.sh 8 ready-for-implementer "n" --branch nope \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+t "an unverifiable branch fails CLOSED" "names no commit in this checkout" cat "$PIN_OUT"
 
 finish

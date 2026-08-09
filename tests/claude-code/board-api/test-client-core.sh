@@ -87,11 +87,19 @@ t "claim body pins dispatchNonce and leaseMinutes" \
   '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
   last_body runs/claim
 
-run_py "$CREDS" "$CORE
+# A bind speaks as the RUN, not as automation: it is only ever posted for a run
+# whose bearer the caller holds, and a bind posted as the fleet would confirm an
+# ownership no later resume could exercise.
+run_py_run tok-w "$CREDS" "$CORE
 A.bind(41, 'ns-a', 'proj-b', 'sess-c')" > /dev/null 2>&1 || true
 t "bind body pins storeNs, projectKey and sessionId" \
   '{"storeNs": "ns-a", "projectKey": "proj-b", "sessionId": "sess-c"}' \
   last_body runs/41/bind
+t "the bind speaks as the run" '"auth": "Bearer tok-w"' last_log runs/41/bind
+BIND_NO_RUN="$(run_py "$CREDS" "$CORE
+A.bind(41, 'ns-a', 'proj-b', 'sess-c')" 2>&1 || true)"
+t "and refuses to fall back to a fleet credential" \
+  "the caller demanded the run principal" echo "$BIND_NO_RUN"
 
 run_py "$CREDS" "$CORE
 A.park_answer(12, ['yes'], correlation_id='evt-101')" > /dev/null 2>&1 || true

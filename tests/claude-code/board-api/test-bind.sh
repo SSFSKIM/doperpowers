@@ -78,6 +78,8 @@ printf '{"uuid":"u-dead","name":"impl-12-prev","status":"working","ticket":"12",
   > "$DH/u-dead.json"
 chmod 600 "$DH/u-dead.json"
 
+printf '{"uuid":"u-nob","name":"nob","status":"working"}' > "$DH/u-nob.json"
+
 bind() {  # bind <uuid-or-prefix> <ticket> [VAR=val ...] — resets the gh marker
   local q="$1" tid="$2"; shift 2
   : > "$MARKER"
@@ -168,6 +170,19 @@ t "bind without BOARD_RUN_ID dies naming it" "BOARD_RUN_ID" \
   bind u-nor 14
 nt "bind without BOARD_RUN_ID confirms nothing" "bind_confirmed" cat "$DH/u-nor.json"
 nt "bind without BOARD_RUN_ID moves no ownership" "ticket" cat "$DH/u-nor.json"
+
+# NO BEARER, NO BIND. bind_confirmed is a claim that this meta is COMPLETE —
+# that a later relay or successor can rehydrate the worker out of it — and a
+# meta holding no run bearer can do none of that. Written anyway, the claim
+# silenced the one repair path that could have noticed; the honest answer is a
+# loud refusal, before anything reaches the wire.
+NOTOK="$(mktemp)"
+( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" DAEMON_HOME="$DH" \
+    BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 \
+    "$SCRIPTS/board-bind.sh" u-nob 16 ) > "$NOTOK" 2>&1 || true
+t  "a bearerless bind is refused"           "bind refused for run 41"  cat "$NOTOK"
+nt "and confirms nothing"                   "bind_confirmed"           cat "$DH/u-nob.json"
+nt "and moves no ownership"                 '"ticket"'                 cat "$DH/u-nob.json"
 
 # The other half of the branch guard: gh mode is untouched by all of the above.
 # No board.json, no run env — and the snapshot is still what runs, which is

@@ -62,9 +62,18 @@ def write_meta(path, meta):
     default umask would republish that secret."""
     mode = 0o600 if meta.get("run_bearer") else os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+    # The mode argument applies only to an inode this open CREATES. A .tmp left
+    # by an earlier crash is an EXISTING inode at whatever mode it had (0644
+    # under the default umask): it would be truncated, handed the run bearer,
+    # and only chmod'ed afterwards — a disclosure window, and a permanent
+    # exposure if the process dies mid-write. Unlink first, create exclusively.
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
         json.dump(meta, f, indent=2)
-    os.chmod(tmp, mode)   # umask narrowing, and a tmp left by an earlier crash
+    os.chmod(tmp, mode)   # umask narrowing
     os.replace(tmp, path)
 
 
@@ -127,6 +136,20 @@ try:
         # from here with the registry untouched: an incumbent owner keeps its
         # ticket, and the refused caller is handed nothing. The run id is
         # converted first, so a malformed one never reaches the wire either.
+        #
+        # NO BEARER, NO BIND. bind_confirmed is a claim that this meta is
+        # COMPLETE — that a later relay or successor can rehydrate the worker
+        # out of it — and a meta holding no run bearer can do none of that:
+        # every resume of that run would speak as somebody else, or as nobody.
+        # Written anyway, the claim silenced the one repair path that could have
+        # noticed. Refused loudly instead, before anything reaches the wire; the
+        # lease expiring and a successor taking the ticket IS the recovery.
+        if not env.get("BOARD_RUN_TOKEN"):
+            B.die("bind refused for run %s: no run bearer in the environment. "
+                  "Confirming this bind would declare %s.json complete while "
+                  "every later resume of the run could not speak as it — let "
+                  "the lease expire and take a successor instead."
+                  % (env["T_RUN"], os.path.basename(target)[:-5]))
         run_id = int(env["T_RUN"])
         B.bind(run_id, "local:" + socket.gethostname(),
                os.path.basename(env["T_ROOT"]), os.path.basename(target)[:-5])

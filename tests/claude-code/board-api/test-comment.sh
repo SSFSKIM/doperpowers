@@ -84,7 +84,13 @@ t "a leading positional names the text, flags may follow" \
 t "a mistyped option dies" "unknown option: --kimd" \
   run_verb 12 --kimd parent-impact --json '{}'
 nt "the mistyped option never became comment text" '\"text\": \"--kimd\"' cat "$FIX.log"
-t "an extra positional dies" "unexpected argument: stray" \
+# Comment text legitimately starts with a dash ("--plan is void on this edge"),
+# and without an end-of-options marker there was no way to say it at all.
+dash_text() { run_verb 12 -- '--plan is void here' >/dev/null 2>&1; cat "$FIX.log"; }
+t "-- lets dash-leading text through" '\"text\": \"--plan is void here\"' dash_text
+t "text given twice is refused, not silently last-wins" \
+  "the comment text was given twice" run_verb 12 --text a --text b
+t "an extra positional dies" "the comment text was given twice: stray" \
   run_verb 12 "real text" stray
 nt "the extra positional never reached the wire" '\"text\": \"real text\"' cat "$FIX.log"
 

@@ -5,6 +5,7 @@
 #   board-comment.sh <number> <text>                       # plain comment
 #   board-comment.sh <number> --kind <k> --json '<payload>' [--text <text>]
 #     k: parent-impact | closure-package | parent-impact-consumed
+#   board-comment.sh <number> -- <text>   # text that starts with a dash
 #
 # gh mode: `gh issue comment` (typed kinds land as "[<kind>] <json>" marker
 # comments — the sweep's IMPACT scan reads that convention). API mode:
@@ -21,11 +22,24 @@ kind="comment" text="" json="" have_text=0
 # bare token is the text. Anything else dies — every parse error here would
 # otherwise land as a SUCCESSFUL board write carrying the wrong content.
 while [ $# -gt 0 ]; do case "$1" in
+  # `--` ends the options: comment text legitimately starts with a dash
+  # ("--plan is void here"), and without an escape that text was refused as an
+  # unknown option — with no way to say it at all.
+  --) shift
+      while [ $# -gt 0 ]; do
+        [ "$have_text" -eq 0 ] || die "the comment text was given twice: $1"
+        text="$1"; have_text=1; shift
+      done ;;
   --kind) _need_arg "$1" "${2:-}"; kind="$2"; shift 2 ;;
   --json) _need_arg "$1" "${2:-}"; json="$2"; shift 2 ;;
-  --text) _need_arg "$1" "${2:-}"; text="$2"; have_text=1; shift 2 ;;
-  --*) die "unknown option: $1" ;;
-  *) [ "$have_text" -eq 0 ] || die "unexpected argument: $1"
+  # LAST-WINS IS NOT A POLICY HERE. `--text a --text b`, or a bare token beside
+  # a --text, silently posted one of them and dropped the other; a board write
+  # carrying half of what the caller said is worse than a refusal.
+  --text) _need_arg "$1" "${2:-}"
+          [ "$have_text" -eq 0 ] || die "the comment text was given twice: --text $2"
+          text="$2"; have_text=1; shift 2 ;;
+  --*) die "unknown option: $1 (put -- ahead of comment text that starts with a dash)" ;;
+  *) [ "$have_text" -eq 0 ] || die "the comment text was given twice: $1"
      text="$1"; have_text=1; shift ;;
 esac; done
 case "$kind" in

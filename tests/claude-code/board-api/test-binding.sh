@@ -81,4 +81,13 @@ t "worktree credentials slug is the main repo, not the worktree dir" \
   "$(basename "$r5").env" \
   bash -c "cd '$WT' && . '$SCRIPTS/_binding.sh' && basename \"\$BOARD_CREDENTIALS_FILE\""
 
+# AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling through
+# left BOARD_BINDING=gh, so a typo silently sent every read and every mutation
+# to GitHub — against a repo whose board lives somewhere else entirely.
+r6="$(mkrepo)"; mkdir -p "$r6/.doperpowers"
+printf '{"binding":"arkho","url":"http://b.example"}' > "$r6/.doperpowers/board.json"
+typo_binding() { ( cd "$r6" && . "$SCRIPTS/_binding.sh" && echo "binding=$BOARD_BINDING" ); }
+t  "an unknown binding fails loud" 'unknown binding "arkho"' typo_binding
+nt "and never silently falls back to gh" "binding=gh"        typo_binding
+
 finish

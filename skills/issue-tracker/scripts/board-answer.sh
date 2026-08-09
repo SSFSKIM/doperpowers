@@ -87,7 +87,18 @@ PY
   # Inline relay: the human's answer resumes the worker NOW, not on the next
   # tick — the same blocking feel as gh mode's direct resume. Delivery and its
   # delivery-gated ack are the sweep's, never a second copy of that logic here.
-  "$SCRIPT_DIR/_sweep_api.sh" relay
+  #
+  # A HELD TICK LOCK IS NOT A DELIVERY. The sweep exits 0 when another tick
+  # holds it — correct for the sweep, and read as success here it told the
+  # human their answer had been relayed when the wake had not run at all. The
+  # promise is downgraded to what actually happened: the answer IS recorded
+  # (that write already landed above), and the wake rides the next tick.
+  _relay_out="$("$SCRIPT_DIR/_sweep_api.sh" relay 2>&1)" || true
+  printf '%s\n' "$_relay_out"
+  case "$_relay_out" in
+    *"holds the lock"*)
+      echo "note: another sweep tick holds the lock, so the inline wake did not run — #$tid's answer is recorded on the board and the next tick delivers it (that tick is the same relay, and the ack is delivery-gated either way)." ;;
+  esac
   exit 0
 fi
 [ -z "$to" ] || die "--to is api-binding-only: in gh mode the return state comes from the ticket's pre-park meta (or the bound worker's lane)"

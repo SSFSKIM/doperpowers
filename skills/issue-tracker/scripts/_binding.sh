@@ -32,6 +32,13 @@ PY
             [ -n "$BOARD_API_URL" ] || BOARD_API_URL="${_binding_line#api|}"
             [ -n "$BOARD_API_URL" ] || { echo "error: .doperpowers/board.json names binding=api but no url" >&2
                                          return 1 2>/dev/null || exit 1; } ;;
+    gh\|*) : ;;
+    # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling
+    # through left BOARD_BINDING=gh, so a typo (`"api "`, `"API"`, `"arkho"`)
+    # silently sent every read and every mutation to GitHub — against a repo
+    # whose board lives somewhere else entirely.
+    *) echo "error: .doperpowers/board.json: unknown binding \"${_binding_line%%|*}\" — expected \"gh\" or \"api\"" >&2
+       return 1 2>/dev/null || exit 1 ;;
   esac
 fi
 # Credentials slug: the repo's stable identity, NOT the checkout directory.

@@ -18,7 +18,11 @@ cat > "$FIX" <<'JSON'
 [
  {"method":"GET","path":"/tickets/12/timeline","status":200,
   "body":{"records":[{"source":"board","cursor":"5","observedAt":"t","sourceTime":null,
-    "runId":1,"kind":"transition","body":{"note":"n1","from":"a","to":"b","actor":"run:1","actor_kind":"worker"}}]}},
+    "runId":1,"kind":"transition","body":{"note":"n1","from":"a","to":"b","actor":"run:1","actor_kind":"worker"}},
+   {"source":"human","cursor":"6","observedAt":"t","sourceTime":null,
+    "runId":null,"kind":"answer","body":{"replies":["ship it","and squash the fixups"]}},
+   {"source":"board","cursor":"7","observedAt":"t","sourceTime":null,
+    "runId":2,"kind":"closure-package","body":{"pr":"none","evidence":"suite green"}}]}},
  {"method":"GET","path":"/tickets","status":200,
   "body":[{"id":12,"title":"T one","category":"work","state":"in-progress",
            "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null},
@@ -71,6 +75,16 @@ map_html() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracke
 # ── the brief's five ───────────────────────────────────────────────────────
 t "list renders server rows" "#12 in-progress P1 T one" V board-list.sh
 t "show prints timeline record" "[board:5] transition n1" V board-show.sh 12
+# A1's event bodies are TYPED, not one `note` field. Rendering `note` alone
+# printed every human answer, parent impact and closure package BLANK — and
+# "read your own ticket timeline FIRST" is a successor's first instruction,
+# with this as the only place that history exists.
+t "an answer's replies are rendered, not dropped"  "ship it"              V board-show.sh 12
+t "including every reply line"                     "and squash the fixups" V board-show.sh 12
+t "a typed comment payload is rendered too"        "suite green"          V board-show.sh 12
+# One record, one entry: a multi-line reply is INDENTED under its header rather
+# than run together, so a continuation cannot read as another record.
+t "the continuation is indented under its record"  "    and squash the fixups" V board-show.sh 12
 t "reconcile shows wake queue" "pick one" V board-reconcile.sh
 t "map --write renders BOARD.md" "T one" map_md
 t "lint API mode reports thin scope" "server-enforced" V board-lint.sh

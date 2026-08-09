@@ -155,9 +155,15 @@ def renew(run_id):
 
 
 def bind(run_id, store_ns, project_key, session_id):
+    # `auto`, not `automation`: a bind is only ever posted for a run whose
+    # bearer the caller holds (board-bind.sh refuses without one), and token()
+    # hands back the run token for whatever principal is named once one is in
+    # env — so naming `automation` here was dead text that read as a fallback
+    # this route does not have. Demanding the run principal makes the missing
+    # bearer a refusal rather than a bind posted as the whole fleet.
     return request("POST", "/runs/%s/bind" % int(run_id),
                    {"storeNs": store_ns, "projectKey": project_key,
-                    "sessionId": session_id}, "automation")
+                    "sessionId": session_id}, "auto")
 
 
 def end_run(run_id, reason="completed"):
