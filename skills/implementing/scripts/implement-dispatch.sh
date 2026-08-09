@@ -318,8 +318,10 @@ PY
 
   # The prompt carries bindings only — the worker reads its ticket (and the
   # repo's .doperpowers/repo-facts.md, if any) from gh / its own worktree.
+  et="$(gh issue list -R "$BOARD_REPO" --label env-tracker --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
     P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_ENGINE_NAME="$engine" P_PROTOCOL_FILE="$protocol_file" \
     P_DECOMPOSE_DOC="$decompose" \
     python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'

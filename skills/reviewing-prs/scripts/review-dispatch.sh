@@ -368,6 +368,7 @@ PY
 
   # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
+  et="$(gh issue list -R "$BOARD_REPO" --label env-tracker --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
 
   # DETACHED worktree at the PR head SHA — the PR branch is usually checked
   # out in the implementer's worktree, and git forbids a second checkout;
@@ -419,6 +420,7 @@ PY
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
+    P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
@@ -523,6 +525,7 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
   git -C "$LOCAL_REPO" show "origin/$base_ref:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
     || : > "$tmp/facts.md"
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
+  et="$(gh issue list -R "$BOARD_REPO" --label env-tracker --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
 
   wt="$LOCAL_REPO/.claude/worktrees/$name"
   if [ -e "$wt" ]; then
@@ -556,6 +559,7 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
     P_SCALE_RANGE_NOTE="$range_note" \
     P_ISSUE_NUMBER="$etid" P_ISSUE_LIST="$etid" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
+    P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \

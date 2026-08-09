@@ -197,9 +197,12 @@ reconciliation and an Architect judges it. Fire-and-continue:
 never edit or transition the parent, never wait for the outcome — keep
 building under the contract you have.
 
-**Environmental friction (env-issue).** Non-blocking environmental
-friction you routed around (missing tool in the image, flaky registry,
-broken fixture) MAY be filed as its own ticket — search the board first,
+**Environmental friction (env-issue).** Environmental friction you hit —
+routed around or not — gets one comment on the standing tracker, issue
+#{{ENV_TRACKER_ISSUE}} (check its recent comments first; on a match, +1
+that thread instead of duplicating; "none" → record in your final report
+instead). The tracker is the record; friction that needs an intervention
+MAY additionally be filed as its own ticket — search the board first,
 then
 {{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
 State the friction, what you attempted, why your permissions cannot

@@ -40,6 +40,7 @@ Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
 - startup barrier: {{BIND_READY_FILE}}
 - standing tech-debt issue: #{{TECH_DEBT_ISSUE}}
+- standing env-friction tracker: #{{ENV_TRACKER_ISSUE}}
 - primary ticket: #{{ISSUE_NUMBER}} — when this is "none", skip EVERY board
   write below; escalation lands on the PR alone (label + comment).
 - secondary linked issues ({{ISSUE_LIST}}): audit and board writes target
@@ -416,9 +417,12 @@ do not rebase, resolve conflicts, or salvage the local chain — that would mix
 unreviewed remote provenance or make you edit code. Park needs-human with both
 SHAs; the explicit PR event can dispatch a fresh review.
 
-**Environmental friction (env-issue).** Non-blocking environmental
-friction you routed around (missing tool in the image, flaky registry,
-broken fixture) MAY be filed as its own ticket — search the board first,
+**Environmental friction (env-issue).** Environmental friction you hit —
+routed around or not — gets one comment on the standing tracker, issue
+#{{ENV_TRACKER_ISSUE}} (check its recent comments first; on a match, +1
+that thread instead of duplicating; "none" → record in the review trail
+instead). The tracker is the record; friction that needs an intervention
+MAY additionally be filed as its own ticket — search the board first,
 then
 {{BOARD_SCRIPTS}}/board-register.sh "<title>" env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note "<intervention requested>" --body-file <full report>
 (drop --spawned-by on a ticketless PR). State the friction, what you
