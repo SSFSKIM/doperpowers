@@ -16,20 +16,32 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 tid="${1#\#}"; shift
-kind="comment" text="" json=""
-if [ "${1:-}" != "--kind" ]; then text="$1"; shift
-else
-  while [ $# -gt 0 ]; do case "$1" in
-    --kind) _need_arg "$1" "${2:-}"; kind="$2"; shift 2 ;;
-    --json) _need_arg "$1" "${2:-}"; json="$2"; shift 2 ;;
-    --text) _need_arg "$1" "${2:-}"; text="$2"; shift 2 ;;
-    *) die "unknown option: $1" ;;
-  esac; done
-fi
+kind="comment" text="" json="" have_text=0
+# One unconditional loop: options are options wherever they sit, and the first
+# bare token is the text. Anything else dies — every parse error here would
+# otherwise land as a SUCCESSFUL board write carrying the wrong content.
+while [ $# -gt 0 ]; do case "$1" in
+  --kind) _need_arg "$1" "${2:-}"; kind="$2"; shift 2 ;;
+  --json) _need_arg "$1" "${2:-}"; json="$2"; shift 2 ;;
+  --text) _need_arg "$1" "${2:-}"; text="$2"; have_text=1; shift 2 ;;
+  --*) die "unknown option: $1" ;;
+  *) [ "$have_text" -eq 0 ] || die "unexpected argument: $1"
+     text="$1"; have_text=1; shift ;;
+esac; done
 case "$kind" in
   comment|parent-impact|closure-package|parent-impact-consumed) ;;
   *) die "kind must be one of comment|parent-impact|closure-package|parent-impact-consumed" ;;
 esac
+# Validated once, ahead of the binding branch: gh mode interpolates the payload
+# into a marker comment rather than parsing it, so without this the same
+# malformed input would die in one binding and post in the other.
+if [ -n "$json" ]; then
+  _json_err="$(T_JSON="$json" python3 -c 'import json, os, sys
+try:
+    json.loads(os.environ["T_JSON"])
+except ValueError as e:
+    sys.exit(str(e))' 2>&1)" || die "--json is not valid JSON: $_json_err"
+fi
 
 if [ "$BOARD_BINDING" = api ]; then
   T_ID="$tid" T_KIND="$kind" T_TEXT="$text" T_JSON="$json" _api_py - <<'PY'
