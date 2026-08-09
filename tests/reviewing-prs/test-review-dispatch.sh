@@ -276,6 +276,12 @@ chmod +x "$STUB_BOARD/board-transition.sh"
 # in beside the stub: board-bind stays stubbed, the snapshot is genuine and
 # runs against the mock `gh` below.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
+# The dispatcher resolves its board BINDING before anything gh-mode-specific
+# (that is what makes the API path reachable without gh), and it sources that
+# resolver out of $BOARD_SCRIPTS — so the stub dir needs the real one. It is
+# side-effect-free and, with no .doperpowers/board.json in these fixtures,
+# resolves gh mode: every case below is the gh path, unchanged.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$STUB_BOARD/_binding.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
@@ -487,6 +493,10 @@ PY
 FAIL_BOARD="$TEST_ROOT/fail-board"; mkdir -p "$FAIL_BOARD"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_BOARD/board-bind.sh"
 chmod +x "$FAIL_BOARD/board-bind.sh"
+# Only the BIND fails here: the binding resolver is sourced from the same dir
+# and its absence would abort the run before a reviewer was ever spawned —
+# the assertions below are about what happens to a spawned one.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$FAIL_BOARD/_binding.sh"
 reset_state
 if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
     fail "bind failure aborts review dispatch"

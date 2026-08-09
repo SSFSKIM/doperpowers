@@ -48,8 +48,14 @@
 #                       and judges the tier but routes self-merge-eligible PRs
 #                       to confident-ready instead of merging). Supplied as a
 #                       skill runtime binding; the dispatch layer never merges.
-#   DEFAULT_BRANCH      repo default branch (default: resolved via gh); the
-#                       worker never self-merges a PR whose base is this branch
+#   DEFAULT_BRANCH      repo default branch (default: resolved via gh, or from
+#                       the local clone's origin/HEAD in API mode); the worker
+#                       never self-merges a PR whose base is this branch
+#   REVIEW_MAX_CONCURRENT  API mode only: qagent-lane slot cap (default 3),
+#                       enforced against the local registry before claiming and
+#                       sent as the server-side `laneCap`. gh mode has no cap —
+#                       its work list is the open-PR listing itself, which is
+#                       finite; a claim loop has no such natural end.
 #   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
 #   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
 #   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
@@ -112,7 +118,6 @@ BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 # The board scripts this run invokes bare (board-bind, board-transition, …)
 # anchor _lib.sh's BOARD_ROOT on the CURRENT directory and die at source time
@@ -125,22 +130,44 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
 
-if [ -z "${BOARD_REPO:-}" ]; then
-  BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
+# THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
+# implement-dispatch resolves it there: an api-bound repo never invokes gh at
+# all, so requiring the CLI before knowing the binding would make the whole API
+# path unreachable on a machine that has no gh. Everything above is
+# mode-independent; the gh-mode initialization starts below.
+# shellcheck source=../../issue-tracker/scripts/_binding.sh
+. "$BOARD_SCRIPTS/_binding.sh"
+
+REVIEW_CAP="${REVIEW_MAX_CONCURRENT:-3}"
+
+if [ "$BOARD_BINDING" = api ]; then
+  # No gh, so neither of gh mode's two repo facts is resolvable the usual way.
+  # BOARD_REPO becomes the project key board-bind posts (the board's own name
+  # for this repo); the default branch comes off the clone's own origin/HEAD,
+  # falling back to main when the clone has no remote-tracking head.
+  BOARD_REPO="${BOARD_REPO:-$(basename "$BOARD_ROOT")}"
+  if [ -z "${DEFAULT_BRANCH:-}" ]; then
+    DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+  fi
+else
+  command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
+  if [ -z "${BOARD_REPO:-}" ]; then
+    BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
+  fi
+  [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
+  # Repo-wide config injected into every worker prompt (constant across PRs):
+  #   DEFAULT_BRANCH — self-merge is forbidden onto it (main-exclusion).
+  DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
 fi
-[ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
 # EXPORTED, not just set: the scale-review passes shell out to python that
 # imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep it
 # arrives exported already and the miss is invisible; run directly — the
 # documented path — an unexported value made every scale epic die
 # "BOARD_REPO is unset" inside the subprocess and be silently skipped.
 export BOARD_REPO
-
-# Repo-wide config injected into every worker prompt (constant across PRs):
-#   DEFAULT_BRANCH — self-merge is forbidden onto it (main-exclusion).
-#   AUTO_MERGE_DISPLAY — the staged-rollout gate as the worker sees it.
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
+# AUTO_MERGE_DISPLAY — the staged-rollout gate as the worker sees it.
 case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;
@@ -653,8 +680,13 @@ PY
 # barrier closed; the caller's own guards handle everything before this.
 # On success the spawned identity is left in REVIEWER_UUID for callers that
 # stamp their own bookkeeping onto the fresh meta.
-_spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir>
+_spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir> [worktree-name]
   local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
+  # gh mode hands daemon-spawn a cwd it prepared itself (the detached PR/epic
+  # worktree) and no worktree NAME, so the daemon runs right there. The API
+  # path has no PR to detach at — it hands over the repo and lets daemon-spawn
+  # cut the isolated worktree, which is the same shape implement-dispatch uses.
+  local wt_name="${7:-}"
   local bind_ready="$control_dir/bind-ready.json"
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
@@ -668,21 +700,31 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "$wt_name" \
       "${REVIEW_MODEL:-fable}")" \
       || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
     # operator's own session model never silently sets the review lane's
     # price. daemon-spawn persists effort into the meta; resumes keep it.
-    spawn_out="$(DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "" \
+    # The gateway settings are CLEARED, not merely unset by us: this
+    # dispatcher can itself run inside a gateway-routed daemon whose
+    # environment exports them, daemon-spawn would inherit and persist them,
+    # and every later resume would ride the gateway while the log said claude.
+    spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
+      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "$wt_name" \
       "${REVIEW_MODEL:-opus}")" \
       || { echo "$name: review worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
   REVIEWER_UUID="$uuid"
+  # API mode only: the claim journal's spawn_completed marker belongs exactly
+  # HERE — after the spawn, before the bind — so a crash anywhere downstream
+  # finds a journal that says the handoff already happened and reconciliation
+  # never ends a run whose worker is alive. Unset in gh mode, where no claim
+  # journal exists at all.
+  [ -z "${CLAIM_JOURNAL:-}" ] || _api_mark_spawned
 
   # The worker's first protocol action waits on bind_ready. Publish it only
   # after the new registry meta exists and (for ticketed work) board-bind has
@@ -1011,6 +1053,306 @@ sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-lab
   esac
   echo "epic #$etid: $verdict"
 }
+
+# ---- API binding: claim-based qagent dispatch ----------------------------------
+# The SERVER owns pick order, eligibility and the lease; this side owns local
+# concurrency, the crash-recoverable claim journal, and the worker handover.
+# There is no PR listing here, no board snapshot, and no gh call anywhere below:
+# the review lane is drawn one ticket at a time out of `POST /runs/claim`.
+# The shape is implement-dispatch's, deliberately duplicated — the two scripts
+# share no library today and extracting one is not this change.
+
+# Open workers in a lane, counted off the registry: the local cap. A
+# just-claimed worker's meta exists long before the board could show its first
+# write, which is the same window gh mode's registry-first dedupe closes.
+_api_registry_count() {  # <lane[,lane...]>
+  T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
+import glob, json, os
+lanes = set(os.environ["T_LANES"].split(","))
+n = 0
+for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("lane") in lanes and m.get("status") in ("working", "blocked", "idle"):
+        n += 1
+print(n)
+PY
+}
+
+# The sweep's resume phase suppresses a ticket it has escalated to an env-issue
+# (it writes these files; we only read them). A claim is the only way to learn
+# WHICH ticket the server picked, so suppression can only be honored after the
+# fact — by handing the run straight back.
+_api_suppressed() { [ -f "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}/$1.json" ]; }
+
+_api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
+  T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
+import os
+import _board_api as A
+try:
+    A.end_run(os.environ["T_RUN"], os.environ["T_REASON"])
+except A.RunEnded:
+    pass
+PY
+}
+
+# The handoff is done: the journal may no longer be replayed, only observed.
+# Called from inside _spawn_reviewer, between the spawn and the bind.
+_api_mark_spawned() {
+  printf '{"lane": "%s", "run_id": %s, "spawn_completed": true}\n' \
+    "$CLAIM_LANE" "$CLAIM_RUN" > "$CLAIM_JOURNAL"
+}
+
+_api_drop_journal() {  # <nonce>
+  rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
+}
+
+# Claim one ticket on the qagent lane under <nonce> and hand it to a fresh
+# review worker. rc 1 = nothing dispatched (lane empty, claim refused, ticket
+# suppressed, or the handover failed) — the caller stops claiming this tick.
+_claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
+  local lane="$1" nonce="$2" cap="$3" claims_dir="$DAEMON_HOME/board-claims"
+  local body_file="$claims_dir/$nonce.body.md" exports
+  mkdir -p "$claims_dir"
+  # The nonce is journalled BEFORE the POST. A crash between the two leaves a
+  # record reconciliation can replay, and the server answers a repeated nonce
+  # with the same claim rather than a second one.
+  printf '{"lane": "%s", "run_id": null, "spawn_completed": false}\n' "$lane" > "$claims_dir/$nonce.json"
+  # One process for the whole exchange: claim, write the assignment body, hand
+  # back shell-quoted facts. The run bearer crosses exactly one boundary.
+  local C_CLAIMED=0 C_RUN_ID="" C_TICKET="" C_FENCE="" C_BEARER=""
+  exports="$(T_LANE="$lane" T_NONCE="$nonce" T_CAP="$cap" T_BODY="$body_file" _api_py - <<'PY'
+import os, shlex
+import _board_api as A
+out = A.claim(os.environ["T_LANE"], os.environ["T_NONCE"],
+              lane_cap=int(os.environ["T_CAP"]))
+def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
+# An empty lane answers {"claimed": false}; a grant answers with the run. Any
+# other falsy value for that key is read as "no claim" — when bytes from a
+# foreign process are ambiguous, the safe direction is not to spawn.
+# (Apostrophes are avoided in this heredoc on purpose: bash 3.2 rescans a
+# heredoc body nested in $( ) for quoting, and a lone one is a parse error.)
+if not out.get("claimed", True):
+    q("C_CLAIMED", 0)
+    raise SystemExit(0)
+fields = (("C_RUN_ID", "runId"), ("C_TICKET", "ticketId"),
+          ("C_FENCE", "fence"), ("C_BEARER", "bearer"))
+missing = [f for _, f in fields if f not in out]
+if missing:
+    # Never echo the payload back: it carries the run bearer.
+    A.die("claim answered without %s — the run cannot be handed to a worker"
+          % ", ".join(missing))
+q("C_CLAIMED", 1)
+for var, field in fields:
+    q(var, out[field])
+with open(os.environ["T_BODY"], "w") as f:
+    f.write(out.get("body") or "")
+PY
+)" || {
+    # The journal STAYS: a claim that died on the wire may still have landed,
+    # and the replay is the only thing that can recover it.
+    echo "claim on lane $lane failed — journal $nonce kept for replay" >&2
+    return 1
+  }
+  eval "$exports"
+  if [ "$C_CLAIMED" != 1 ]; then
+    _api_drop_journal "$nonce"
+    return 1
+  fi
+  if _api_suppressed "$C_TICKET"; then
+    echo "#$C_TICKET is suppressed — releasing run $C_RUN_ID; lane $lane stands down this tick"
+    _api_end_run "$C_RUN_ID" abandoned
+    _api_drop_journal "$nonce"
+    return 1
+  fi
+  printf '{"lane": "%s", "run_id": %s, "spawn_completed": false}\n' "$lane" "$C_RUN_ID" \
+    > "$claims_dir/$nonce.json"
+
+  local name engine tmp control_dir prompt
+  name="$C_TICKET-api-$lane"
+  # No labels reach a claim response, so the per-ticket engine override gh mode
+  # reads off the ticket has no API-mode source; the environment is the whole
+  # resolution order here.
+  engine="${WORKER_ENGINE:-claude}"
+  tmp="$(mktemp -d)"
+  # Same BASE-ref manifest discipline as a PR review: the snapshots come from
+  # the branch the reviewed work merges into, never from the reviewed work.
+  git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
+    || : > "$tmp/risk.md"
+  git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
+    || : > "$tmp/facts.md"
+  control_dir="$(mktemp -d "$DAEMON_HOME/$name-control.XXXXXX")" \
+    || { echo "#$C_TICKET: control dir allocation failed — releasing run $C_RUN_ID" >&2
+         rm -rf "$tmp"; _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
+  if ! chmod 700 "$control_dir" \
+    || ! printf '{"push_base":"","commits":{}}\n' > "$control_dir/accepted-commits.json" \
+    || ! chmod 600 "$control_dir/accepted-commits.json"; then
+    echo "#$C_TICKET: control state initialization failed — releasing run $C_RUN_ID" >&2
+    rm -rf "$tmp" "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
+    _api_drop_journal "$nonce"; return 1
+  fi
+
+  # BASE_IS_DEFAULT is "yes" by construction: the API board carries no PR base,
+  # so the default branch is the base this reviewer is told to measure against —
+  # which is also the main-exclusion the self-merge tier keys on.
+  prompt="$(P_REVIEW_MODE=api P_WORKER_NAME="$name" \
+    P_REPO="$BOARD_REPO" P_BASE_REF="$DEFAULT_BRANCH" \
+    P_ISSUE_NUMBER="$C_TICKET" P_ISSUE_LIST="$C_TICKET" \
+    P_TICKET_BODY_FILE="$body_file" \
+    P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT=yes \
+    P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
+    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
+    _render_prompt)" \
+    || { echo "#$C_TICKET: prompt render failed — releasing run $C_RUN_ID" >&2
+         rm -rf "$tmp" "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
+         _api_drop_journal "$nonce"; return 1; }
+  rm -rf "$tmp"
+  [ -n "$prompt" ] || { echo "#$C_TICKET: empty prompt — releasing run $C_RUN_ID" >&2
+                        rm -rf "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
+                        _api_drop_journal "$nonce"; return 1; }
+
+  # The run credentials are exported ONLY across this call: daemon-spawn puts
+  # them in the worker's environment (its only way to speak for its run), and
+  # board-bind — which _spawn_reviewer calls — needs the same three to post the
+  # session locator and to store the bearer at rest for every later resume.
+  # CLAIM_* is the journal hook: _spawn_reviewer marks spawn_completed between
+  # the spawn and the bind.
+  BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
+  BOARD_API_URL="$BOARD_API_URL" CLAIM_JOURNAL="$claims_dir/$nonce.json" \
+  CLAIM_LANE="$lane" CLAIM_RUN="$C_RUN_ID" \
+    _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
+      "$control_dir" "$name" \
+    || { echo "#$C_TICKET: handover failed — releasing run $C_RUN_ID" >&2
+         _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
+
+  # Lane, role and nonce into the registry meta: the lane is what the cap above
+  # counts, the role is what a lane-aware resume reads back, and the nonce is
+  # the link from a live worker to the journal entry that made it.
+  T_UUID="$REVIEWER_UUID" T_LANE="$lane" T_ROLE=QAGENT T_NONCE="$nonce" \
+  T_DHOME="$DAEMON_HOME" python3 - <<'PY' || echo "#$C_TICKET: lane meta write failed (non-fatal)" >&2
+import fcntl, json, os
+home = os.environ["T_DHOME"]
+path = os.path.join(home, os.environ["T_UUID"] + ".json")
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    with open(path) as f:
+        m = json.load(f)
+    m["lane"] = os.environ["T_LANE"]
+    m["role"] = os.environ["T_ROLE"]
+    m["nonce"] = os.environ["T_NONCE"]
+    tmp = path + ".tmp"
+    # The meta already holds the run bearer (board-bind wrote it): recreate it
+    # at the mode it has, never at the umask default.
+    mode = os.stat(path).st_mode & 0o777
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+  echo "claimed #$C_TICKET run=$C_RUN_ID lane=$lane → $REVIEWER_UUID"
+}
+
+_claim_one() { _claim_one_with_nonce "$1" "$(uuidgen)" "$2"; }
+
+# Startup pass over the claim journal: every qagent entry a crash could have
+# left mid-handoff is either finished or released. One python pass classifies
+# them against the registry; the shell performs only the two actions that leave
+# this machine.
+#
+# THE JOURNAL DIRECTORY IS SHARED with implement-dispatch, and every entry
+# names its lane. Only qagent entries are this script's — replaying a foreign
+# lane here would hand an implement assignment a reviewer's prompt, and ending
+# a foreign run would strand that dispatcher's ticket.
+_reconcile_claims() {
+  local actions act nonce lane run
+  actions="$(T_DHOME="$DAEMON_HOME" T_LANES=qagent python3 - <<'PY'
+import glob, json, os
+home = os.environ["T_DHOME"]
+lanes = set(os.environ["T_LANES"].split(","))
+live = set()
+for p in glob.glob(os.path.join(home, "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if m.get("run_id"):
+        live.add(str(m["run_id"]))
+for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
+    try:
+        j = json.load(open(p))
+    except Exception:
+        continue
+    if j.get("spawn_completed") or j.get("lane") not in lanes:
+        continue
+    nonce = os.path.basename(p)[:-5]
+    run = j.get("run_id")
+    if run and str(run) in live:
+        # the spawn DID complete — its worker is in the registry — and only
+        # the marker write was lost. Repair it in place; nothing to send.
+        j["spawn_completed"] = True
+        with open(p, "w") as f:
+            json.dump(j, f)
+        print("repaired\t%s\t%s\t%s" % (nonce, j.get("lane") or "", run))
+    elif run:
+        print("end\t%s\t%s\t%s" % (nonce, j.get("lane") or "", run))
+    else:
+        print("replay\t%s\t%s\t" % (nonce, j.get("lane") or ""))
+PY
+)" || { echo "claim reconciliation failed — skipping it this tick" >&2; return 0; }
+  [ -n "$actions" ] || return 0
+  while IFS=$'\t' read -r act nonce lane run; do
+    case "$act" in
+      repaired)
+        echo "reconcile: $nonce did spawn (run $run) — marker repaired" ;;
+      end)
+        # Claimed but never handed off. The response WAS received, so a replay
+        # would rotate nothing; the lease would otherwise strand the ticket
+        # until the server's own reclaim.
+        echo "reconcile: $nonce claimed run $run but never spawned — ending it"
+        _api_end_run "$run" abandoned
+        _api_drop_journal "$nonce" ;;
+      replay)
+        # The nonce persisted but no run id ever did: the response was lost in
+        # flight. Replaying THIS nonce is the only legal replay there is.
+        echo "reconcile: $nonce never reached a run — replaying the claim"
+        _claim_one_with_nonce "$lane" "$nonce" "$REVIEW_CAP" || true ;;
+    esac
+  done <<<"$actions"
+}
+
+dispatch_api() {
+  mkdir -p "$DAEMON_HOME/board-claims"
+  _reconcile_claims
+  # Local cap first (the registry), the server's laneCap as the belt: if a lane
+  # stamp is ever lost the count cannot rise, and laneCap is then the only
+  # thing that ends the loop.
+  while [ "$(_api_registry_count qagent)" -lt "$REVIEW_CAP" ]; do
+    _claim_one qagent "$REVIEW_CAP" || break
+  done
+}
+
+if [ "$BOARD_BINDING" = api ]; then
+  case "${1:-}" in
+    --sweep) dispatch_api; exit 0 ;;
+    ''|--*)  die "usage: review-dispatch.sh <pr-number> | --sweep" ;;
+    *) die "API-mode review dispatch is claim-based — the server owns pick order, the board has no PR listing to trigger off, and the contract has no claim-by-ticket route; use --sweep. Targeted claim is a flow-back candidate recorded on arkho#7 (spec Revision Notes v1.2)." ;;
+  esac
+fi
 
 if [ "${1:-}" = "--sweep" ]; then
   # Extend the one list call with the same fields dispatch_one resolves the
