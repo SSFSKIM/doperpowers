@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             echo "Tests:"
             echo "  test-subagent-driven-development.sh  Test skill loading and requirements"
             echo "  board-api/test-*.sh                  A2 board-API toolkit suites (fixture mock)"
-            echo "  board-api/integration/*.sh           A2 vs. a real A1 service (needs \$ARKHO_DIR)"
+            echo "  board-api/integration/test-*.sh      A2 vs. a real A1 service (needs \$ARKHO_DIR)"
             echo ""
             echo "Integration Tests (use --integration):"
             echo "  test-subagent-driven-development-integration.sh  Full workflow execution"
@@ -96,8 +96,19 @@ tests=(
     # The integration tier carries its OWN gate rather than living under
     # --integration: it needs $ARKHO_DIR plus a container runtime for the
     # scratch Postgres, and skips loudly (exit 0) when either is missing. On a
-    # machine that has them it is ~20s, not the 10-30 minutes below.
+    # machine that has them the smoke test is ~20s and the five fast drills are
+    # ~30s each — each boots and tears down its own scratch database, so they
+    # are independent in any order. test-lease-renewal.sh is the outlier at
+    # ~4 minutes: its subject IS the clock (A1's write-freshness window is 120s
+    # and not configurable), so it cannot be made shorter without ceasing to
+    # drill what it drills.
     "board-api/integration/test-harness-smoke.sh"
+    "board-api/integration/test-protocol-walk.sh"
+    "board-api/integration/test-transcript-diff.sh"
+    "board-api/integration/test-crash-boundaries.sh"
+    "board-api/integration/test-resume-first.sh"
+    "board-api/integration/test-escalation.sh"
+    "board-api/integration/test-lease-renewal.sh"
 )
 
 # Integration tests (slow, full execution)
