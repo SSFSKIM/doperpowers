@@ -1225,7 +1225,7 @@ assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-f
 assert_contains "$P10" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true binds auto-merge on"
 assert_contains "$P10" '`BASE_IS_DEFAULT`: no' "base (main) != default branch (develop) → not main-excluded"
 
-# ---- engine switch (label → WORKER_ENGINE → codex) + codex liveness ------------
+# ---- engine switch (label → WORKER_ENGINE → claude) + codex liveness -----------
 # Canned PR on feat/x (labels overridable) + a thin wrapper over $DISPATCH, so
 # an env-var prefix (e.g. `WORKER_ENGINE=codex run_dispatch 41`) reaches the
 # script for exactly one call.
@@ -1248,7 +1248,7 @@ reset_state
 : > "$SPAWN_LOG"
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
 WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "default-codex env spawns the one-harness daemon"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
@@ -1266,6 +1266,14 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:cla
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
 assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
+
+# The built-in default (no label, no WORKER_ENGINE in the environment) is the
+# plain-Claude route — the clodex gateway is opt-in only.
+: > "$SPAWN_LOG"
+gh_pr 44 OPEN 0 ""
+env -u WORKER_ENGINE "$DISPATCH" 44
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "built-in default route is plain Claude (no gateway settings)"
 
 echo "codex reviewer liveness in dedupe:"
 sleep 300 & LIVEPID=$!

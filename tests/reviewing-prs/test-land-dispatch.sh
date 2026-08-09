@@ -486,6 +486,9 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-s
 reset_state
 "$DISPATCH" 5 > /dev/null      # suite default WORKER_ENGINE=claude
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "claude route spawns without the gateway settings"
+reset_state
+env -u WORKER_ENGINE "$DISPATCH" 5 > /dev/null   # built-in default: no env, no label
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=" "built-in default route is plain Claude (no gateway settings)"
 
 # ---- merge-method resolution ----------------------------------------------------------------
 echo "merge method:"

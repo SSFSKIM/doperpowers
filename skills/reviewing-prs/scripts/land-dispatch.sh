@@ -23,11 +23,11 @@
 # Env:
 #   LOCAL_REPO      canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO      owner/name (default: resolved from LOCAL_REPO via gh)
-#   WORKER_ENGINE   which MODEL ROUTE the land daemon uses: codex|claude
-#                   (default codex). Every worker is a Claude-harness daemon;
-#                   "codex" rides the clodex gateway settings (GPT models via
-#                   the local proxy), "claude" = plain Claude models. An
-#                   engine:* PR label wins over the env.
+#   WORKER_ENGINE   which MODEL ROUTE the land daemon uses: claude|codex
+#                   (default claude). Every worker is a Claude-harness daemon;
+#                   "claude" = plain Claude models, "codex" opts into the
+#                   clodex gateway settings (GPT models via the local proxy).
+#                   An engine:* PR label wins over the env.
 #   CLODEX_SETTINGS gateway settings file for the codex route
 #                   (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT   reasoning effort for the codex route (default xhigh)
@@ -156,7 +156,7 @@ q("LINKED_ISSUES", " ".join(linked))
 PY
 )" || die "#$pr: PR json parse failed"
 eval "$exports"
-engine="${ENGINE_LABEL:-${WORKER_ENGINE:-codex}}"
+engine="${ENGINE_LABEL:-${WORKER_ENGINE:-claude}}"
 
 [ "$PR_STATE" = "OPEN" ] || die "#$pr: not open ($PR_STATE) — nothing to land"
 [ "$PR_DRAFT" = "0" ] || die "#$pr: draft — nothing to land"
@@ -311,9 +311,10 @@ PY
 [ -n "$prompt" ] || { rm -rf "$control_dir"; die "#$pr: empty prompt — not dispatching"; }
 
 # ONE worker species, two model routes (mirrors review-dispatch.sh): the
-# default "codex" engine is a GATEWAY worker — the same Claude-harness daemon
-# pointed at the local gateway (GPT models) via --settings. engine:claude
-# opts a PR into plain Claude models. No path spawns a codex-CLI worker.
+# default "claude" engine is a plain Claude-model daemon. engine:codex opts
+# a PR into the GATEWAY route — the same Claude-harness daemon pointed at
+# the local gateway (GPT models) via --settings. No path spawns a codex-CLI
+# worker.
 if [ "$engine" = "codex" ]; then
   spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
     DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \

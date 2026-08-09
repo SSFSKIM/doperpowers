@@ -29,13 +29,13 @@
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
 #   REVIEW_MODEL        optional model override for the review daemon
 #                       (gateway route defaults to fable, claude route to inherit)
-#   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: codex|claude
-#                       (default codex). Every worker is a Claude-harness
-#                       daemon; "codex" means the gateway settings ride the
-#                       spawn (GPT models via the local proxy), "claude" means
-#                       plain Claude models. Resolution order per PR: an
-#                       `engine:claude`/`engine:codex` label wins, else this
-#                       env var, else codex.
+#   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: claude|codex
+#                       (default claude). Every worker is a Claude-harness
+#                       daemon; "claude" means plain Claude models, "codex"
+#                       opts the spawn into the clodex gateway settings (GPT
+#                       models via the local proxy). Resolution order per PR:
+#                       an `engine:claude`/`engine:codex` label wins, else
+#                       this env var, else claude.
 #   CLODEX_SETTINGS     gateway settings file for the codex route
 #                       (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
@@ -356,7 +356,7 @@ q("LINKED_ISSUES", " ".join(linked))
 PY
 )" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
   eval "$exports"
-  engine="${ENGINE_LABEL:-${WORKER_ENGINE:-codex}}"
+  engine="${ENGINE_LABEL:-${WORKER_ENGINE:-claude}}"
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
@@ -449,7 +449,7 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
   # path resolves it. Scale review is a QAgent route, and per-ticket engine
   # overrides apply to every QAgent route — the X4 exemption covers ARCHITECT
   # dispatch only, where plan authorship is deliberately never label-routed.
-  engine="${eng_label:-${WORKER_ENGINE:-codex}}"
+  engine="${eng_label:-${WORKER_ENGINE:-claude}}"
   # Two different refs, and conflating them cost the engine its whole range:
   #   int_ref  — the epic's integration branch, where the worktree sits (the
   #              aggregate of the children's merged work).
@@ -654,11 +654,11 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   local spawn_out uuid ack
   REVIEWER_UUID=""
 
-  # ONE worker harness, two model routes. The default "codex" engine is a
-  # GATEWAY worker: the same Claude-harness daemon pointed at the local
-  # gateway (GPT models) via --settings — the codex CLI survives only as the
-  # review engine inside the worker. engine:claude opts a PR into plain
-  # Claude models. The codex-CLI-as-worker species is retired from this loop.
+  # ONE worker harness, two model routes. The default "claude" engine is a
+  # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
+  # route: the same Claude-harness daemon pointed at the local gateway (GPT
+  # models) via --settings — the codex CLI survives only as the review
+  # engine inside the worker. The codex-CLI-as-worker species is retired.
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \

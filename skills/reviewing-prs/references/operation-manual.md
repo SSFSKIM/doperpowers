@@ -26,7 +26,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 
 | piece | what |
 |---|---|
-| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route rides the clodex gateway settings, `engine:claude` opts into plain Claude models) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
+| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
 | `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
@@ -274,7 +274,8 @@ self-review bias: the entity that grades the fixes never wrote them.
 9. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
 10. The `codex` CLI installed and authed (`codex login`) on the runner
     machine — it is the review engine inside every worker. The default
-    worker route additionally needs the clodex gateway settings
-    (`~/.claude/clodex-settings.json`, override via `CLODEX_SETTINGS`) and
-    the local gateway running; set `WORKER_ENGINE=claude` (env) or label
-    `engine:claude` to route a repo/PR onto plain Claude models instead.
+    worker route is plain Claude models and needs nothing else; setting
+    `WORKER_ENGINE=codex` (env) or labeling `engine:codex` opts a
+    repo/PR onto the clodex gateway route instead, which additionally
+    needs the gateway settings (`~/.claude/clodex-settings.json`,
+    override via `CLODEX_SETTINGS`) and the local gateway running.
