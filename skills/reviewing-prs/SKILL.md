@@ -32,8 +32,19 @@ variant of this protocol you run:
 - **a pull-request URL** → the PR variant, exactly as written below. Resolve
   the PR number out of the URL and use it wherever `{{PR_NUMBER}}` appears;
   your worktree starts on the repo's current head, not the PR's, so checking
-  out the head under review is yours to do. Everything downstream is
-  unchanged, with two substitutions: the board half of every step is a
+  out the head under review is yours to do. **Resolve the PR's own base and
+  head before ORIENT** — `gh pr view <n> --json
+  baseRefName,headRefName,headRefOid` — and use those wherever `{{BASE_REF}}`,
+  `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear, above all in START ENGINE's
+  `--base origin/{{BASE_REF}}` and in the self-merge tier's base-is-default
+  clause (base-is-default is then `<resolved base> = {{DEFAULT_BRANCH}}`, not
+  the `unresolved` your prompt binds). The board carries no PR base, so
+  dispatch cannot know it: a stacked PR onto an integration branch reviewed
+  against the default branch is the whole stack, not this PR's work. Your
+  manifest snapshots came from `{{MANIFEST_REF}}`; when the resolved base is a
+  different branch, re-read both from it
+  (`git show origin/<base>:.doperpowers/risk-surfaces.md`) and use those.
+  Everything downstream is unchanged, with two substitutions: the board half of every step is a
   {{BOARD_SCRIPTS}} call rather than a label or an issue comment (the API
   board has no labels — a state IS a transition, and a typed event IS
   `board-comment.sh --kind`), while the GitHub half — the PR, its diff, its

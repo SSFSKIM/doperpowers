@@ -29,7 +29,15 @@ artifact under review is the ticket's `pr` binding, which
 `{{BOARD_SCRIPTS}}/board-show.sh {{ISSUE_NUMBER}}` prints: a pull-request URL
 for an ordinary ticket, or a closure-package event id for an epic. Your
 worktree starts on the repo's current head, so checking out the head you are
-reviewing is yours to do.
+reviewing is yours to do — and so is resolving what that PR MERGES INTO. The
+board carries no PR base, so `BASE_REF` and `BASE_IS_DEFAULT` below are
+UNRESOLVED: read them off the PR (`gh pr view <n> --json
+baseRefName,headRefName,headRefOid`) before ORIENT and use those values
+wherever this protocol says `BASE_REF` / `HEAD_REF` / `HEAD_SHA`. The two
+manifest snapshots below were taken at `MANIFEST_REF`; if the PR's base is a
+different branch, re-read them from it
+(`git show origin/<base>:.doperpowers/risk-surfaces.md`, same for
+`repo-facts.md`) and use those instead.
 <!-- /mode:api -->
 
 Use doperpowers:reviewing-prs. Your protocol for this run is the
@@ -86,8 +94,28 @@ Runtime bindings (dispatcher-owned):
 - `CODEX_REVIEW_MODEL`: {{CODEX_REVIEW_MODEL}}
 - `CODEX_REVIEW_EFFORT`: {{CODEX_REVIEW_EFFORT}}
 
+<!-- mode:api -->
+- `MANIFEST_REF`: {{MANIFEST_REF}} (the ref the two snapshots below came from)
+<!-- /mode:api -->
+
+<!-- mode:pr -->
 ---- RISK_MANIFEST binding ({{REPO}} @ base {{BASE_REF}}) ----
+<!-- /mode:pr -->
+<!-- mode:scale -->
+---- RISK_MANIFEST binding ({{REPO}} @ base {{BASE_REF}}) ----
+<!-- /mode:scale -->
+<!-- mode:api -->
+---- RISK_MANIFEST binding ({{REPO}} @ {{MANIFEST_REF}}) ----
+<!-- /mode:api -->
 {{RISK_MANIFEST}}
 
+<!-- mode:pr -->
 ---- REPO_FACTS binding ({{REPO}} @ base {{BASE_REF}}) ----
+<!-- /mode:pr -->
+<!-- mode:scale -->
+---- REPO_FACTS binding ({{REPO}} @ base {{BASE_REF}}) ----
+<!-- /mode:scale -->
+<!-- mode:api -->
+---- REPO_FACTS binding ({{REPO}} @ {{MANIFEST_REF}}) ----
+<!-- /mode:api -->
 {{REPO_FACTS}}

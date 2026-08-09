@@ -1209,8 +1209,11 @@ PY
   # resolution order here.
   engine="${WORKER_ENGINE:-claude}"
   tmp="$(mktemp -d)"
-  # Same BASE-ref manifest discipline as a PR review: the snapshots come from
-  # the branch the reviewed work merges into, never from the reviewed work.
+  # Same manifest discipline as a PR review — a snapshot from outside the
+  # reviewed work — but taken from the DEFAULT BRANCH, the only ref this
+  # dispatcher can name (see the BASE_REF note below). MANIFEST_REF tells the
+  # worker which ref these copies came from, so it can re-read them itself when
+  # the PR's real base turns out to be a different branch.
   git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
     || : > "$tmp/risk.md"
   git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
@@ -1226,16 +1229,27 @@ PY
     _api_drop_journal "$nonce"; return 1
   fi
 
-  # BASE_IS_DEFAULT is "yes" by construction: the API board carries no PR base,
-  # so the default branch is the base this reviewer is told to measure against —
-  # which is also the main-exclusion the self-merge tier keys on.
+  # BASE_REF IS NOT KNOWABLE HERE, and saying `$DEFAULT_BRANCH` was not a
+  # conservative default — it was a wrong answer. A claim carries no PR: the
+  # ticket's `pr` value is read by the WORKER, and a ticket whose PR targets an
+  # integration branch (a stacked PR) then had its engine run
+  # `--base origin/<default>`, i.e. review its whole stack rather than its own
+  # commits, against manifests from the wrong ref. Resolving it here would mean
+  # a `gh` call, and this dispatcher deliberately never invokes gh — that is why
+  # the binding is resolved ahead of the gh probe, so an api-bound board works
+  # on a machine with no GitHub CLI at all. So the binding says UNRESOLVED and
+  # the protocol makes the worker (which does have gh, and already resolves the
+  # PR number and checks out its head) resolve base and head before ORIENT. The
+  # sentinel is deliberately not a ref: a worker that skipped the step gets
+  # `fatal: bad revision` from git, not a quietly wrong review range.
   prompt="$(P_REVIEW_MODE=api P_WORKER_NAME="$name" \
-    P_REPO="$BOARD_REPO" P_BASE_REF="$DEFAULT_BRANCH" \
+    P_REPO="$BOARD_REPO" P_BASE_REF=UNRESOLVED-resolve-from-the-PR \
     P_ISSUE_NUMBER="$C_TICKET" P_ISSUE_LIST="$C_TICKET" \
     P_TICKET_BODY_FILE="$body_file" \
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT=yes \
+    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT=unresolved \
+    P_MANIFEST_REF="$DEFAULT_BRANCH" \
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \

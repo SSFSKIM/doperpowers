@@ -215,6 +215,18 @@ t  "the barrier file is bound"                   '`BIND_READY_FILE`: ' prompt
 nt "no PR framing reaches an api reviewer"       "You are a REVIEW worker for PR" prompt
 nt "no scale framing either"                     "SCALE REVIEWER"     prompt
 nt "nothing was left unrendered"                 "{{"                 prompt
+# THE BASE OF AN API REVIEW IS NOT KNOWABLE AT CLAIM TIME. The board carries no
+# PR — the ticket's `pr` value is read by the WORKER — so binding the default
+# branch as BASE_REF was not a safe default but a wrong answer: a PR stacked
+# onto an integration branch then had the engine run `--base origin/<default>`,
+# reviewing the whole stack instead of its own commits, against manifests from
+# the wrong ref. The binding says UNRESOLVED (a sentinel that is not a ref, so a
+# worker that skipped the resolution gets `fatal: bad revision`, never a quietly
+# wrong range) and the prompt hands the worker the resolution.
+t  "the base binding says it is unresolved"      '`BASE_REF`: UNRESOLVED' prompt
+t  "and so does base-is-default"                 '`BASE_IS_DEFAULT`: unresolved' prompt
+t  "the worker is told to read the base off the PR" "gh pr view <n> --json" prompt
+t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
 
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
