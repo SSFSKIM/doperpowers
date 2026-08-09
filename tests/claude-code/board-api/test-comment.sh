@@ -44,6 +44,26 @@ t "typed op carries body json" '\"closure-package\"' \
   bash -c "cd '$r' && BOARD_CREDENTIALS_FILE='$CREDS' BOARD_RUN_TOKEN=run-tok \
     '$SCRIPTS/board-comment.sh' 12 --kind closure-package --json '{\"evidence\":\"e\"}' >/dev/null; cat '$FIX.log'"
 
+# What went ON THE WIRE, whole-body: a substring match on `"kind"` survives a
+# verb that dropped the text, sent the payload under the wrong key, or bolted on
+# an extra one. Pinned leading brace to trailing brace, so any of those fails.
+last_body() {
+  grep "$1" "$FIX.log" | tail -1 |
+    python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
+}
+run_verb 12 "plain ascii line" > /dev/null 2>&1 || true
+t "plain comment body pins kind and text" \
+  '{"kind": "comment", "text": "plain ascii line"}' last_body comment
+run_verb 12 --kind parent-impact --text "#7 clause" --json '{"parent": 7}' > /dev/null 2>&1 || true
+t "typed body pins kind, text and the json payload" \
+  '{"kind": "parent-impact", "text": "#7 clause", "body": {"parent": 7}}' \
+  last_body comment
+# --json alone sends no text key at all (the service distinguishes absent from
+# empty), so the typed-op-without-text form must not smuggle "text": "".
+run_verb 12 --kind closure-package --json '{"evidence": "e"}' > /dev/null 2>&1 || true
+t "a typed op with no text omits the key" \
+  '{"kind": "closure-package", "body": {"evidence": "e"}}' last_body comment
+
 t "unknown kind refused client-side" "kind must be one of" \
   run_verb 12 --kind bogus --json '{}'
 # A client-side refusal must not have touched the wire on its way to dying.
