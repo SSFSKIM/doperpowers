@@ -159,7 +159,16 @@ cat > "$DS/daemon-resume.sh" <<EOF
   echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
   env | grep '^BOARD_' | sort || true; } >> "$RESUME_LOG"
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
-printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
+# A REAL transcript line. The delivery proof reads user-role JSONL entries
+# whose content is a plain string — a delivered PROMPT — never the raw bytes:
+# tool results ride the same \`user\` type as a content LIST, which is how
+# arbitrary text (a file the worker cat-ed, a pasted answer) gets into the file.
+T_P="$TX" T_C="\$2" python3 - <<'PYX'
+import json, os
+with open(os.environ["T_P"], "a") as f:
+    f.write(json.dumps({"type": "user",
+                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
+PYX
 EOF
 chmod +x "$DS/daemon-resume.sh"
 # Liveness, as daemon-finalize actually reports it: `absent` when the session is
@@ -265,10 +274,26 @@ nt "nothing is confirmed"                   '"bind_confirmed": true' cat "$DH/u-
 
 # =========================================================================
 # Phase 2 — relay
+#
+# The transcript is POISONED first: a tool-result entry carrying answer 118s
+# sentinel as DATA — a worker that cat-ed a file, a human who pasted an earlier
+# answer back. A fixed-string grep over the raw bytes reads that as proof of
+# delivery and acks an answer nobody ever saw; only a user-role entry whose
+# content is a plain STRING is a prompt that was actually injected.
 # =========================================================================
+python3 - "$TX" <<'PYPOISON'
+import json, sys
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "content":
+         "here is what the file said: [board-relay answer:118] ..."}]}}) + "\n")
+PYPOISON
 OUT2="$TDIR/relay.out"
 SW relay > "$OUT2" 2>&1 || true
 
+t "a sentinel quoted as tool-result data is not delivery proof" \
+  "RESUME uuid=u-3"                                                        cat "$RESUME_LOG"
+nt "so the answer is not acked undelivered"  "already delivered (sentinel)" cat "$OUT2"
 t "the sentinel reaches the worker"    "[board-relay answer:118]"          cat "$TX"
 t "so does the protocol instruction"   "Re-state your gate verdict"        cat "$TX"
 t "and the answers, verbatim"          "---- answers (verbatim) ----"      cat "$TX"
@@ -307,7 +332,13 @@ build on momentum past an answer that changed the work's shape.
 ship it
 and squash the fixups
 EOF
-prompt_is_exact() { diff "$EXPECT" "$TX" && echo "prompt=exact"; }
+delivered_content() { python3 -c 'import json, sys
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    c = r.get("message", {}).get("content")
+    if r.get("type") == "user" and isinstance(c, str):
+        sys.stdout.write(c + "\n")' "$TX"; }
+prompt_is_exact() { delivered_content | diff "$EXPECT" - && echo "prompt=exact"; }
 t "the delivered prompt is byte-exact" "prompt=exact" prompt_is_exact
 
 # ---- replay: the same answer served again, sentinel already present --------

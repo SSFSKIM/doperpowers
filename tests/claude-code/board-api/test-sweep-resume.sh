@@ -220,7 +220,14 @@ json.dump(m, open(sys.argv[1], "w"), indent=2)' "$DH/u-old.json" "\$RESUME_PENDI
   exit 1
 fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
-printf '%s\n' "\$2" >> "$TRANSCRIPT"   # delivery IS the transcript write
+# A REAL transcript line: the delivery proof reads user-role JSONL entries whose
+# content is a plain string (a delivered prompt), never the raw bytes.
+T_P="$TRANSCRIPT" T_C="\$2" python3 - <<'PYX'
+import json, os
+with open(os.environ["T_P"], "a") as f:
+    f.write(json.dumps({"type": "user",
+                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
+PYX
 # The real daemon-resume forks the turn and INJECTS the prompt before it
 # blocks, then exits 1 when its watcher bound expires. That is what a slow
 # (i.e. ordinary) successor turn looks like from here.

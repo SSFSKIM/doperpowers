@@ -210,6 +210,38 @@ _transcript_for_uuid() {
   find "$HOME/.claude/projects" -name "$cur.jsonl" 2>/dev/null | head -1
 }
 
+# DELIVERY PROOF READS DELIVERED PROMPTS, not the whole file. The transcript is
+# JSONL and holds everything the session ever saw — tool results, file contents,
+# the worker's own prose — so a fixed-string grep over the raw bytes accepts a
+# marker that merely appeared as DATA (a worker cat-ing this script, a human
+# pasting an earlier answer back) as proof the answer was delivered, and acks it
+# undelivered. A DELIVERED PROMPT is a user-role entry whose content is a plain
+# string; tool results ride the same `user` type but arrive as a content LIST,
+# which is exactly the channel arbitrary bytes come back through.
+_delivered() {  # <transcript path> <marker>
+  [ -n "${1:-}" ] || return 1
+  T_PATH="$1" T_NEEDLE="$2" python3 - <<'PY'
+import json, os, sys
+needle = os.environ["T_NEEDLE"]
+try:
+    f = open(os.environ["T_PATH"], errors="replace")
+except OSError:
+    sys.exit(1)
+with f:
+    for line in f:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") != "user":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if isinstance(content, str) and needle in content:
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # The liveness verdict for a bound session, in ONE word. THREE outcomes, not
 # two, because the middle one is real and collapsing it into either extreme is
 # a defect this branch already paid for twice:
@@ -489,7 +521,7 @@ phase_relay() {
       # The ack is gated on PROVEN delivery (Codex review F1): the sentinel is
       # already in the transcript, or a resume returned success. A failed
       # resume acks nothing — the answer stays on the feed for the next tick.
-      if [ -n "$transcript" ] && grep -qF "$(_sentinel "$aid")" "$transcript" 2>/dev/null; then
+      if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
       # DAEMON_TIMEOUT is bounded here on purpose. daemon-resume's default is
       # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
@@ -839,8 +871,7 @@ PY
         fi
         transcript=""
         [ -z "$sess" ] || transcript="$(_transcript_for_uuid "$sess")"
-        if [ -n "$transcript" ] \
-           && grep -qF "$(_successor_marker "$run")" "$transcript" 2>/dev/null; then
+        if _delivered "$transcript" "$(_successor_marker "$run")"; then
           echo "resume: successor run $run was delivered to $sess but never recorded — closing the journal; phase 1 completes the bind"
           _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess"
         else
@@ -968,8 +999,7 @@ PY
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
-       && [ -n "$transcript" ] \
-       && grep -qF "$(_successor_marker "$C_RUN")" "$transcript" 2>/dev/null; then
+       && _delivered "$transcript" "$(_successor_marker "$C_RUN")"; then
     # A BOUNDED WAIT IS NOT A FAILED DELIVERY. daemon-resume forks the turn,
     # advances the meta and injects this prompt BEFORE it blocks, then exits 1
     # when its watcher expires — and a successor turn routinely runs longer

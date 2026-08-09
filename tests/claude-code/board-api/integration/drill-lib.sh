@@ -217,7 +217,16 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "status": "working"
           open(os.path.join(os.environ["T_DH"], u + ".json"), "w"))
 PY
 : > "$PROJECTS/\$uuid.jsonl"
-printf '%s\n' "\$task" >> "$PROJECTS/\$uuid.jsonl"
+# A REAL transcript line: the delivery proof reads user-role JSONL entries whose
+# content is a plain string (a delivered prompt), never the raw bytes — tool
+# results ride the same \`user\` type as a content LIST, which is how arbitrary
+# text gets back into the file.
+T_P="$PROJECTS/\$uuid.jsonl" T_C="\$task" python3 - <<'PYX'
+import json, os
+with open(os.environ["T_P"], "a") as f:
+    f.write(json.dumps({"type": "user",
+                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
+PYX
 # The spawn is detached and already surviving by the time the banner prints —
 # so a crash HERE is a crash between the spawn and the bind.
 [ -z "\${SPAWN_KILL_PARENT:-}" ] || kill -9 "\$PPID" 2>/dev/null || true
@@ -245,7 +254,12 @@ cur="\$(T_P="$DAEMON_HOME/\$uuid.json" python3 -c 'import json,os
 try: print(json.load(open(os.environ["T_P"])).get("current") or "")
 except Exception: print("")')"
 [ -n "\$cur" ] || cur="\$uuid"
-printf '%s\n' "\$prompt" >> "$PROJECTS/\$cur.jsonl"
+T_P="$PROJECTS/\$cur.jsonl" T_C="\$prompt" python3 - <<'PYX'
+import json, os
+with open(os.environ["T_P"], "a") as f:
+    f.write(json.dumps({"type": "user",
+                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
+PYX
 # Death AFTER the injection but before the caller could ack.
 [ -z "\${RESUME_DIE_AFTER:-}" ] || exit 137
 exit 0
