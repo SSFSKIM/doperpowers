@@ -1282,6 +1282,18 @@ fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
 assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
 
+: > "$SPAWN_LOG"
+gh_pr 43 OPEN 0 "engine:claude"
+# The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
+# itself be running inside a gateway-routed daemon whose environment exports
+# these, daemon-spawn would inherit them AND persist them into the registry
+# meta, and every later resume of this reviewer would ride the gateway while
+# the log said claude.
+DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
+    run_dispatch 43
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on the claude route"
+assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient gateway settings file never reaches the spawned reviewer"
+
 # The built-in default (no label, no WORKER_ENGINE in the environment) is the
 # plain-Claude route — the clodex gateway is opt-in only.
 : > "$SPAWN_LOG"

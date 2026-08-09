@@ -252,6 +252,21 @@ printf '{"uuid":"cccc0001","current":"cccc0001","name":"9-api-qagent","status":"
 #     that dispatcher's ticket. Neither is this script's business.
 printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-d.json"
+# (e) THE SPAWN LANDED, THE BIND DID NOT — a crash inside the spawn/ack window,
+#     which is many seconds wide and leaves the session detached and running.
+#     The run id reaches a meta only via board-bind, so this journal is
+#     byte-for-byte the shape of (b) except for the daemon name written before
+#     the spawn — and that name is in the registry, alive. Ending this run
+#     would kill a live reviewer and hand its ticket to a second one.
+printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false, "ticket": "33", "daemon": "33-api-qagent"}\n' \
+  > "$DH2/board-claims/nonce-e.json"
+printf 'live review assignment\n' > "$DH2/board-claims/nonce-e.body.md"
+printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-qagent","status":"working"}' \
+  > "$DH2/dddd0001.json"
+# (f) a journal no reader can parse — a half-written file, or the truncated
+#     record a crash mid-write leaves. Skipping it silently hides a claimed run
+#     forever, every tick, with nothing on any log to say so.
+printf '{"lane": "qagent", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-f.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -271,6 +286,19 @@ t "so is its orphaned assignment body"    "gone" gone "$DH2/board-claims/nonce-b
 t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
 t "another lane's journal is left untouched" '"run_id": 77, "spawn_completed": false' \
   cat "$DH2/board-claims/nonce-d.json"
+# --- (e) a spawned-but-unbound run is never ended --------------------------
+nt "a live unbound run is NOT ended" '"path": "/runs/66/end"' cat "$FIX2.log"
+t  "its journal is kept, closed to replay" '"spawn_completed": true' \
+  cat "$DH2/board-claims/nonce-e.json"
+t  "and the orphaned session is reported by name" "33-api-qagent" cat "$OUT2"
+t  "the report says the run was not ended"        "is NOT being ended" cat "$OUT2"
+# The ticket must not reach a second reviewer: no end means the server lease
+# still holds #33, and reconcile itself spawns nothing for it.
+nt "the ticket is not re-dispatched" "name=33-api-qagent" cat "$DH2/spawn-capture.txt"
+# --- (f) a corrupt journal is loud, not invisible ---------------------------
+t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
+t "it names the file"                  "nonce-f.json"       cat "$OUT2"
+t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-f.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, and the stranded run's end. Nothing more — the reconciled worker plus
 # the replayed one fill the cap of 2, so the fresh-claim loop never opens. A
@@ -284,5 +312,55 @@ wire_summary() {
     "$(grep -cF '\"lane\": \"implementer\"' "$FIX2.log" || true)"
 }
 t "reconcile sends only what it must" "posts=3 ends51=0 ends77=0 foreign=0" wire_summary
+
+# =========================================================================
+# Scenario 3 — a REGISTRY meta nobody can read. A meta is the only evidence
+# that a session exists, so one unreadable meta means no absence of a session
+# can be proven anywhere: every end this tick downgrades to a hold and the
+# server's lease reclaim — not this dispatcher — resolves the run.
+# =========================================================================
+PORT3="$(free_port)"
+FIX3="$(mktemp)"; : > "$FIX3.log"
+cat > "$FIX3" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX3" "$PORT3" & MOCK3=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 2>/dev/null' EXIT
+wait_for_port "$PORT3" || { echo "FAIL mock server never listened on $PORT3"; exit 1; }
+
+r3="$(apirepo "$PORT3")"
+DH3="$(mktemp -d)"; mkdir -p "$DH3/board-claims"
+# The same shape as scenario 2's (b) — claimed, no session, nothing to prove it
+# alive — which on a readable registry is ended. Here it must NOT be.
+printf '{"lane": "qagent", "run_id": 99, "spawn_completed": false}\n' \
+  > "$DH3/board-claims/nonce-g.json"
+printf 'held review assignment\n' > "$DH3/board-claims/nonce-g.body.md"
+printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-qage' \
+  > "$DH3/eeee0001.json"
+
+OUT3="$(mktemp)"
+( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH3" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r3" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
+
+nt "a run is NOT ended while a meta is unreadable" '"path": "/runs/99/end"' cat "$FIX3.log"
+t  "the hold is reported"         "holding it"           cat "$OUT3"
+t  "and names who owns it"        "server lease reclaim" cat "$OUT3"
+t  "the unreadable meta is named" "eeee0001.json"        cat "$OUT3"
+t  "the held journal stays on disk, open" '"spawn_completed": false' \
+  cat "$DH3/board-claims/nonce-g.json"
+t  "and its assignment body is not dropped" "still-there" gone "$DH3/board-claims/nonce-g.body.md"
+held_wire() {
+  printf 'posts=%s ends=%s\n' \
+    "$(grep -c '"method"' "$FIX3.log" || true)" \
+    "$(grep -c '/end' "$FIX3.log" || true)"
+}
+# One empty qagent claim and nothing else.
+t "a held run sends nothing" "posts=1 ends=0" held_wire
 
 finish

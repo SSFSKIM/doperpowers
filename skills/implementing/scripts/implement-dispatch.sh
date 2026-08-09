@@ -361,11 +361,18 @@ _claim_one() { _claim_one_with_nonce "$1" "$(uuidgen)" "$2"; }
 # the ticket for a second worker. The daemon name in the journal closes that
 # window; anything else the registry cannot speak to is held, and the server
 # lease reclaim — not this dispatcher — resolves it.
+#
+# THE JOURNAL DIRECTORY IS SHARED with review-dispatch, and every entry names
+# its lane. Only this script's three lanes are its own — replaying a qagent
+# nonce here would hand a review assignment an implementer prompt, and ending a
+# qagent run would strand the review dispatcher's ticket. A lane nobody
+# recognizes is skipped for the same reason: not acting is the safe direction.
 _reconcile_claims() {
   local actions lines line act nonce lane run extra cap claims_dir="$DAEMON_HOME/board-claims"
-  actions="$(T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+  actions="$(T_DHOME="$DAEMON_HOME" T_LANES=architect,implementer,spike python3 - <<'PY'
 import glob, json, os
 home = os.environ["T_DHOME"]
+lanes = set(os.environ["T_LANES"].split(","))
 live = set()
 names = set()
 blind = []
@@ -391,10 +398,11 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     except Exception:
         # Silently skipping this hid a claimed run forever. It is reported and
         # left alone: a journal nobody can read is not a journal anybody may
-        # act on.
+        # act on. Its lane is unknowable too, so no lane filter can apply —
+        # both dispatchers report it and neither touches it.
         print("unreadable\t%s\t\t\t" % p)
         continue
-    if j.get("spawn_completed"):
+    if j.get("spawn_completed") or j.get("lane") not in lanes:
         continue
     nonce = os.path.basename(p)[:-5]
     lane = j.get("lane") or ""
@@ -455,6 +463,9 @@ PY
         # The nonce persisted but no run id ever did: the response was lost in
         # flight. Replaying THIS nonce is the only legal replay there is.
         echo "reconcile: $nonce never reached a run — replaying the claim"
+        # The cap is the REPLAYED journal's own lane cap, not this tick's: the
+        # lane filter above admits architect, implementer and spike and nothing
+        # else, and those three are exactly what this pair of knobs covers.
         cap="$CAP"; [ "$lane" != architect ] || cap="$ARCH_CAP"
         _claim_one_with_nonce "$lane" "$nonce" "$cap" || true ;;
     esac

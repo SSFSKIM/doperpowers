@@ -225,6 +225,13 @@ printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-implementer","sta
 #     record a crash mid-write leaves. Skipping it silently hid a claimed run
 #     forever, every tick, with nothing on any log to say so.
 printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
+# (f) THE REVIEW DISPATCHER'S JOURNAL. The claims directory is shared, and every
+#     entry names its lane. Replaying a qagent nonce here would hand a review
+#     assignment an implementer prompt; ending its run would strand the review
+#     dispatcher's ticket. Anything outside architect|implementer|spike is not
+#     this script's to touch.
+printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false}\n' \
+  > "$DH2/board-claims/nonce-f.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -254,6 +261,11 @@ nt "the ticket is not re-dispatched" "name=33-api-implementer" cat "$DH2/spawn-c
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-e.json"       cat "$OUT2"
 t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-e.json"
+# --- (f) another dispatcher's lane is not this script's to reconcile --------
+nt "a foreign lane's run is never ended" '"path": "/runs/66/end"' cat "$FIX2.log"
+t  "a foreign lane's journal is left byte-identical" \
+  '{"lane": "qagent", "run_id": 66, "spawn_completed": false}' cat "$DH2/board-claims/nonce-f.json"
+nt "and no foreign lane is claimed from here" '\"lane\": \"qagent\"' cat "$FIX2.log"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, the stranded run's end, and the two empty implement lanes. A repaired
 # marker sends nothing (no end for its live run 41), and the architect lane —
@@ -267,5 +279,54 @@ wire_summary() {
     "$(grep -cF "$ARCH_ON_WIRE" "$FIX2.log" || true)"
 }
 t "reconcile sends only what it must" "posts=5 ends41=0 arch=0" wire_summary
+
+# =========================================================================
+# Scenario 3 — a REGISTRY meta nobody can read. A meta is the only evidence
+# that a session exists, so one unreadable meta means no absence of a session
+# can be proven anywhere: every end this tick downgrades to a hold and the
+# server's lease reclaim — not this dispatcher — resolves the run.
+# =========================================================================
+PORT3="$(free_port)"
+FIX3="$(mktemp)"; : > "$FIX3.log"
+cat > "$FIX3" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX3" "$PORT3" & MOCK3=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 2>/dev/null' EXIT
+wait_for_port "$PORT3" || { echo "FAIL mock server never listened on $PORT3"; exit 1; }
+
+r3="$(apirepo "$PORT3")"
+DH3="$(mktemp -d)"; mkdir -p "$DH3/board-claims"
+# The same shape as scenario 2's (b) — claimed, no session, nothing to prove it
+# alive — which on a readable registry is ended. Here it must NOT be.
+printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
+  > "$DH3/board-claims/nonce-g.json"
+printf 'held assignment\n' > "$DH3/board-claims/nonce-g.body.md"
+printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-imple' \
+  > "$DH3/eeee0001.json"
+
+OUT3="$(mktemp)"
+( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH3" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r3" \
+    BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
+    "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
+
+nt "a run is NOT ended while a meta is unreadable" '"path": "/runs/99/end"' cat "$FIX3.log"
+t  "the hold is reported"        "holding it"        cat "$OUT3"
+t  "and names who owns it"       "server lease reclaim" cat "$OUT3"
+t  "the unreadable meta is named" "eeee0001.json"    cat "$OUT3"
+t  "the held journal stays on disk, open" '"spawn_completed": false' \
+  cat "$DH3/board-claims/nonce-g.json"
+t  "and its assignment body is not dropped" "still-there" gone "$DH3/board-claims/nonce-g.body.md"
+held_wire() {
+  printf 'posts=%s ends=%s\n' \
+    "$(grep -c '"method"' "$FIX3.log" || true)" \
+    "$(grep -c '/end' "$FIX3.log" || true)"
+}
+# Three empty lane claims and nothing else: architect, implementer, spike.
+t "a held run sends nothing" "posts=3 ends=0" held_wire
 
 finish
