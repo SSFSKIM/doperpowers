@@ -65,8 +65,13 @@ preflight() {
   local major
   major="$(node -p 'process.versions.node.split(".")[0]')"
   [ "$major" -ge 22 ] || skip "node $major is older than board-service's engines>=22"
+  # `docker` on PATH is already checked above, so this is specifically the
+  # DAEMON — the common case on a laptop where Docker Desktop simply is not
+  # started, and the one the reader can act on in one gesture.
   docker info >/dev/null 2>&1 \
-    || skip "the Docker daemon is not running (this machine has no local Postgres either)"
+    || skip "the \`docker\` CLI is installed but its daemon is not answering \
+(start Docker Desktop, or \`colima start\`) — this tier's Postgres is a throwaway \
+container and this machine has no local cluster to fall back on"
 }
 
 # psql, from inside the scratch container — there is no client on the host.
@@ -139,7 +144,14 @@ start() {
   # service process), so every failure exit has to tear them down — otherwise
   # the next run inherits somebody's half-built cluster. Released on success.
   trap stop_quiet EXIT
-  wait_for 60 "the scratch Postgres" pg_ready
+  # A Postgres that never comes up says WHY in the container log, and without it
+  # the operator is handed a bare timeout for a bad image, an ARM/x86 mismatch
+  # or a port collision alike.
+  wait_for 60 "the scratch Postgres" pg_ready || {
+    echo "harness: the scratch Postgres never answered —" >&2
+    docker logs --tail 40 "$PG_CONTAINER" 2>&1 | sed 's/^/  | /' >&2
+    exit 1
+  }
 
   local pgport dsn
   pgport="$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')"
@@ -204,6 +216,11 @@ CREDS
 export BOARD_API_URL='$SERVICE_URL'
 export BOARD_CREDENTIALS_FILE='$STATE/creds.env'
 export ADMIN_TOKEN='$admin_token'
+# BOARD_PG_DSN is a SUPERUSER dsn onto the throwaway cluster, exported for the
+# drills that have to arrange a state the API has no route for (expiring a
+# lease, minting a principal). It is a test seam and nothing else: no toolkit
+# script reads it, and nothing outside this directory may — a verb that reached
+# past the API would stop testing the client that ships.
 export BOARD_PG_DSN='$dsn'
 export BOARD_HARNESS_DIR='$STATE'
 ENV

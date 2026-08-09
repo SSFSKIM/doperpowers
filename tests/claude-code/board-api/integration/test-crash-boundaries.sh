@@ -72,7 +72,7 @@ OUT_A="$DRILL_TMP/relay-a.out"
 in_repo RESUME_DIE_BEFORE=1 "$SCRIPTS/board-answer.sh" "$T1" "sqlite" >"$OUT_A" 2>&1 || true
 t  "the human's answer is recorded even though the relay dies" \
    "answered #$T1 → in-progress"                       cat "$OUT_A"
-t  "the failed delivery is reported, not swallowed"    "resume FAILED"   cat "$OUT_A"
+t  "the failed delivery is reported, not swallowed"    "returned no delivery"   cat "$OUT_A"
 t  "an undelivered answer stays on the feed"           "\"ticketId\":$T1" \
    api automation GET /answers/unrelayed
 t  "and nothing reached the worker"                    "sentinels=0"     sentinels "$TRANSCRIPT"
@@ -81,7 +81,7 @@ t  "and nothing reached the worker"                    "sentinels=0"     sentine
 OUT_B="$DRILL_TMP/relay-b.out"
 in_repo RESUME_DIE_AFTER=1 "$SCRIPTS/_sweep_api.sh" relay >"$OUT_B" 2>&1 || true
 t  "a death after the injection still reports a failed resume" \
-   "resume FAILED"                                     cat "$OUT_B"
+   "returned no delivery"                                     cat "$OUT_B"
 t  "the prompt landed exactly once"                    "sentinels=1"     sentinels "$TRANSCRIPT"
 t  "and the answer is STILL unacked — never ack-and-drop" "\"ticketId\":$T1" \
    api automation GET /answers/unrelayed
@@ -151,7 +151,6 @@ OUT_F2="$DRILL_TMP/dispatch-f2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_F2" 2>&1 || true
 t  "a spawned-but-unbound session is reported"         "but never bound it" cat "$OUT_F2"
 t  "and explicitly NOT ended"                          "is NOT being ended" cat "$OUT_F2"
-owner_line() { echo "owner=$(ticket_owner "$1")"; }
 t  "the live run still owns its ticket"                "owner=$RUN_F" owner_line "$T4"
 after_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
 t  "and no second worker is spawned onto it"           "spawns=$before_f" \

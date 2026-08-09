@@ -224,9 +224,21 @@ t "the API answers with the contract identifier alone"      \
 GH_PROMPT="$PROJECTS/$GH_SESS.jsonl"
 API_PROMPT="$(grep -l 'board-relay answer:' "$PROJECTS"/*.jsonl 2>/dev/null | head -1)"
 [ -n "$API_PROMPT" ] || { echo "FAIL $(basename "$0") — the API relay delivered no prompt"; exit 1; }
-# Compared FLATTENED: the two prompts wrap at different columns, and a line
-# break is not something the worker reads as content.
-flat() { tr '\n' ' ' <"$1" | tr -s ' '; }
+# Compared FLATTENED, and out of the JSONL: a transcript line is a RECORD, and
+# the prompt is the `content` string inside a user-role one — the same thing the
+# sweep's delivery proof reads. The two prompts also wrap at different columns,
+# and a line break is not something the worker reads as content.
+flat() { python3 -c 'import json, sys
+out = []
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        r = json.loads(line)
+    except ValueError:
+        out.append(line); continue
+    c = (r.get("message") or {}).get("content")
+    if r.get("type") == "user" and isinstance(c, str):
+        out.append(c)
+sys.stdout.write(" ".join(" ".join(x.split()) for x in out))' "$1"; }
 for side in gh api; do
   file="$GH_PROMPT"; [ "$side" = gh ] || file="$API_PROMPT"
   t "the $side relay tells the worker its park was answered" \

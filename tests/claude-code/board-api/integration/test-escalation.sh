@@ -67,9 +67,13 @@ arm_cycle() {
 update board.run set lease_expires_at = now() - interval '5 minutes', last_write_at = null
  where id = $run;
 SQL
+  # The token rides the ENVIRONMENT, never the command line: a `bash -c` string
+  # holding it is visible in `ps` to every process on the box for as long as the
+  # poll runs, and this loop runs for up to thirty seconds a cycle.
   wait_until 30 "the service to reclaim run $run (cycle $CYCLE)" \
-    bash -c "curl -s -H 'authorization: Bearer $AUTOMATION_TOKEN' \
-      '$BOARD_API_URL/runs/needing-resume' | grep -q '\"ticketId\":$TID'" || exit 1
+    env T_TOK="$AUTOMATION_TOKEN" T_URL="$BOARD_API_URL" T_TID="$TID" bash -c \
+      'curl -s -H "authorization: Bearer $T_TOK" "$T_URL/runs/needing-resume" \
+         | grep -q "\"ticketId\":$T_TID"' || exit 1
 }
 broken_resume() { in_repo RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 "$SCRIPTS/_sweep_api.sh" resume; }
 owner_line() { echo "owner=$(ticket_owner "$1")"; }

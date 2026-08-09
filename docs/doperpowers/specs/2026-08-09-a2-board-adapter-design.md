@@ -777,3 +777,38 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
   `board-list.sh` read is outside the audit's grep set and outside X5's bite
   (dispatcher principal, not a run bearer), recorded so it is not later
   rediscovered as a missed violation.
+- v1.2.7 (2026-08-10): final whole-branch review — the v1.2.3 bound is
+  **amended**, and two protocol lines are substituted. The arithmetic in v1.2.3
+  never closed: the 300-second bound is PER ITEM (one relayed answer, one
+  successor recovery) while ONE renewal pass covered the whole serial tick, so
+  four worst-case deliveries out-run A1's 15-minute lease and the server
+  reclaims runs that are very much alive — including runs this tick is not
+  touching at all. **Renewal is now interleaved between items** rather than run
+  once ahead of them: `_tick_renew` re-runs the whole renew phase before each
+  relay delivery and before each resume, so no live run's lease ever ages more
+  than a single item's bound. Renewal is one cheap idempotent POST per live run,
+  which is what makes per-item affordable. A **whole-tick budget**
+  (`BOARD_SWEEP_TICK_BUDGET`, default 900s) rides alongside, and it is a
+  different property: it does not protect leases (the interleaved renewal does)
+  — it stops the serial phases taking NEW items so the tick lock is not held
+  past a plausible crash window. The item in flight always finishes, so the
+  worst case is one bounded wait past the budget, and 900 + 300 still sits under
+  the 30-minute lock-stale threshold. `BOARD_RELAY_RESUME_TIMEOUT` is now
+  **clamped at 2** and validated as an integer: a resume waits
+  `DAEMON_TIMEOUT / 2` polls and `_poll_until_done` reads 0 as UNLIMITED, so an
+  operator setting 1 turned the bound into its exact opposite.
+
+  Protocol substitutions in the same wave (worker-visible, so recorded here):
+  the implement / architect / spike ticket read becomes `board-show.sh <n>`
+  with the BODY gap stated rather than worked around, and the `[parent-impact]`
+  proposal becomes `board-comment.sh <n> --kind parent-impact --text "#<parent>
+  …"` — one call that renders the gh sweep's marker AND records the API board's
+  typed event. The Architect's proposal MARK is **not** unified: gh's
+  `[board-epic] reconcile:` comment and the API board's
+  `--kind parent-impact-consumed` are different mechanisms, each reconciler
+  reads only its own, and the protocol now says so instead of implying a single
+  verb bridges them. The recomposition lineage check is marked gh-only for the
+  same reason it always was (it hashes the parent's BODY, and A1 exposes no
+  body route — arkho#7), with the API-side substitute named: the pin is a
+  CURSOR the claim hands each child, and a child that recorded none leaves that
+  leg unverifiable, which the Architect states rather than assumes.
