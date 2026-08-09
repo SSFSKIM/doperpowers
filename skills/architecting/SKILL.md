@@ -16,8 +16,14 @@ at the plan**: you write no implementation code, and you never review
 the Implementer's output — the review loop (doperpowers:reviewing-prs)
 owns that, and no orchestrator-judge exists in this pipeline. Your
 escalation targets are the board itself and the human on their next
-wake. Read your ticket first (gh issue view {{ISSUE_NUMBER}} — body and
-comments); that brief is the source of truth.
+wake. Read your ticket first: `{{BOARD_SCRIPTS}}/board-show.sh
+{{ISSUE_NUMBER}}` is the binding-neutral read — the ticket's state and pins
+in either binding, and under an API board its whole event timeline. The
+ticket BODY is the one thing it does not carry: under an API board the claim
+delivered it and your bootstrap names the file; in gh mode it is
+`gh issue view {{ISSUE_NUMBER}}`, which also prints the comment trail. (A1
+has no ticket-body read route — an arkho#7 flow-back, not a gap to work
+around.) That brief is the source of truth.
 
 A dispatch onto an EPIC (a ticket with children) is a recomposition
 claim, not a design claim — read **Recomposition claims** below before
@@ -162,10 +168,13 @@ parent contract this design inherited. Designing freely INSIDE that
 contract is the job; concluding that a parent-owned END is wrong — its
 purpose, its acceptance, a cross-child contract, an edge, the division that
 produced your ticket — is not yours to write into the parent. Post ONE
-comment on YOUR OWN ticket, `[parent-impact] #<parent> <affected clauses>:
-<the evidence, and the parent change you propose>`. The board sweep returns
-the parent for reconciliation, and the Architect who claims it reads your
-proposal (**Recomposition claims** below is that reader's side).
+typed event on YOUR OWN ticket:
+{{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} --kind parent-impact --text "#<parent> <affected clauses>: <the evidence, and the parent change you propose>"
+One verb, both bindings — gh renders the `[parent-impact] #<parent> …` marker
+the sweep IMPACT scan reads, the API board records the typed event its
+reconciler joins on, and a hand-written marker is invisible to the second.
+The board returns the parent for reconciliation, and the Architect who claims
+it reads your proposal (**Recomposition claims** below is that reader's side).
 Fire-and-continue: never edit or transition the parent, never wait for the
 outcome — finish your own design under the contract you have.
 
@@ -198,6 +207,13 @@ lineage.
    bookkeeping stripped, so the board's own writes never read as a
    contract change) — against your contract today:
    gh issue view {{ISSUE_NUMBER}} -R {{REPO}} --json body | PYTHONPATH={{BOARD_SCRIPTS}} python3 -c "import json,sys,_board as B; print(B.contract_hash(json.load(sys.stdin)['body']))"
+   This hash comparison is GH-ONLY: it reads the parent's body, and the API
+   board exposes no ticket-body route at all (arkho#7). Under an API board the
+   pin is a CURSOR, not a hash — `#<parent> @ event <n>`, handed to each child
+   by its own claim — so the equivalent check is what each child carried
+   forward into its `parent-impact` events, and a child that recorded none
+   leaves that leg unverifiable. Say so in the verdict rather than assuming
+   lineage held; do not synthesize a body read.
    Equal hashes mean the child executed the contract you are holding and
    there is nothing to reconcile from the pin. Otherwise read what
    changed; every material change is incorporated, explicitly
@@ -206,9 +222,14 @@ lineage.
    marked consumed or not — and give each the same disposition; the
    sweep's `[board-epic] reconcile:` marker is a dispatch dedupe, not
    proof anyone acted. Before you release the claim (ANY exit — handoff,
-   park, verdict), mark every proposal you just dispositioned: one
-   comment on the epic per proposal, in exactly the sweep's format,
-   `[board-epic] reconcile: #<child>@<comment-id>`. The sweep leaves
+   park, verdict), mark every proposal you just dispositioned. The mark is
+   the binding's own, and the two are NOT interchangeable — each
+   reconciler reads only its own. Under a gh board it is one comment on the
+   epic per proposal, in exactly the sweep's format,
+   `[board-epic] reconcile: #<child>@<comment-id>`; under an API board it is
+   the typed consumption event that reconciler anti-joins on,
+   {{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} --kind parent-impact-consumed --json '{"proposal_event_id": <the proposal event id>}'
+   Both mean the same thing: this proposal has been read. The sweep leaves
    proposals unmarked while an Architect holds the claim — nobody had
    read them yet — so an unmarked one re-triggers a whole reconciliation
    cycle the moment you exit, for work you already did.
