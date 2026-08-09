@@ -28,7 +28,11 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/41/renew","status":409,
   "body":{"error":{"code":"run-ended","message":"run 41 has ended"}}},
  {"method":"POST","path":"/runs/99/renew","status":502,
-  "body":{"error":"upstream is down"}}
+  "body":{"error":"upstream is down"}},
+ {"method":"POST","path":"/runs/41/bind","status":200,
+  "body":{"ok":true}},
+ {"method":"POST","path":"/tickets/12/park-answer","status":200,
+  "body":{"eventId":200}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
@@ -57,6 +61,13 @@ run_py_run() {  # run_py_run <run-token> <credentials-file> <python> — worker 
   BOARD_RUN_TOKEN="$1" run_py "$2" "$3"
 }
 last_log() { grep "$1" "$FIX.log" | tail -1; }
+# The request body as the client actually serialized it, unwrapped out of the
+# log line's JSON string escaping — so a body assertion reads as the wire bytes
+# ({"storeNs": ...}) rather than as backslash soup ({\"storeNs\": ...}).
+last_body() {
+  grep "$1" "$FIX.log" | tail -1 |
+    python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
+}
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=auto-tok\nBOARD_HUMAN_TOKEN=human-tok\n' > "$CREDS"
 
@@ -64,6 +75,29 @@ t "claim returns dict + auth header sent" "41" \
   run_py "$CREDS" "$CORE
 print(A.claim('implementer','n-1')['runId'])"
 t "automation token on claim" '"auth": "Bearer auto-tok"' last_log runs/claim
+
+# What the client PUTS ON THE WIRE, not what it returns. The service reads
+# camelCase keys; a typo in one of them is invisible to every return-value
+# assertion in this file and fails only on first contact with the real API.
+# Each body is pinned whole (leading brace to trailing brace), so an extra,
+# renamed, or reordered key fails the match.
+run_py "$CREDS" "$CORE
+A.claim('implementer', 'n-7', lease_minutes=45)" > /dev/null 2>&1 || true
+t "claim body pins dispatchNonce and leaseMinutes" \
+  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
+  last_body runs/claim
+
+run_py "$CREDS" "$CORE
+A.bind(41, 'ns-a', 'proj-b', 'sess-c')" > /dev/null 2>&1 || true
+t "bind body pins storeNs, projectKey and sessionId" \
+  '{"storeNs": "ns-a", "projectKey": "proj-b", "sessionId": "sess-c"}' \
+  last_body runs/41/bind
+
+run_py "$CREDS" "$CORE
+A.park_answer(12, ['yes'], correlation_id='evt-101')" > /dev/null 2>&1 || true
+t "park-answer body pins correlationId" \
+  '{"replies": ["yes"], "correlationId": "evt-101"}' \
+  last_body park-answer
 
 t "run token wins over files" "tok-999" \
   run_py_run tok-999 "$CREDS" "$CORE
@@ -83,6 +117,17 @@ nt "a refusal never leaks a token" "human-tok" \
   run_py "$CREDS" "$CORE
 try: A.transition(12, 'in-review', fence=2)
 except SystemExit: pass"
+
+# transition's optional arguments are omitted, not sent as null: the service
+# distinguishes "no fence supplied" from "fence: null", so the two halves of
+# this pair — present when given, absent when None — must both hold.
+t "transition body carries an optional argument when given" \
+  '{"to": "in-review", "fence": 2}' last_body transition
+run_py "$CREDS" "$CORE
+try: A.transition(12, 'in-review', note='hi')
+except SystemExit: pass" > /dev/null 2>&1 || true
+t "transition body omits every None argument" \
+  '{"to": "in-review", "note": "hi"}' last_body transition
 
 # A body that is not the contract envelope (a proxy's 502, an empty 404) must
 # still die diagnostically. Unwrapping it blind raises AttributeError on the
