@@ -19,10 +19,14 @@
 #      an optimization), and that bootstrap directs the worker to read its own
 #      timeline, where the park/answer history the claim body cannot carry
 #      lives;
+#   3b. a resume that forked but never resolved a session uuid is AMBIGUOUS,
+#      not failed — no fresh spawn, no cycle charged;
 #   4. three failed cycles escalate: an env-issue ticket registered as
 #      automation plus a suppression record. Automation has NO transition
 #      authority in API mode, so the stuck ticket is never parked — the test
-#      pins that no transition is ever attempted;
+#      pins that no transition is ever attempted. An escalation that cannot
+#      read the ticket's state does not happen at all: a record holding
+#      `"state": ""` would self-lift on the next tick and spam the human;
 #   5. a standing suppression skips the ticket in phase 3 and lifts when the
 #      board state moved OR the env-issue closed — both halves pinned.
 #
@@ -81,7 +85,15 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":43}]},
  {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
-  "body":{"runId":45,"ticketId":12,"fence":5,"bearer":"tok-s2","predecessorRun":43,
+  "body":{"runId":49,"ticketId":12,"fence":9,"bearer":"tok-amb","predecessorRun":43,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":49}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":45,"ticketId":12,"fence":5,"bearer":"tok-s2","predecessorRun":49,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
           "plan":null,"body":"the assignment text a successor cannot reach any other way"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
@@ -115,6 +127,17 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"POST","path":"/runs/48/end","status":200,"body":{"ended":true}},
  {"method":"GET","path":"/tickets","status":200,"once":true,
+  "body":[{"id":13,"state":"in-progress","priority":"P2","title":"a listing #12 has fallen out of"}]},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":48}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":50,"ticketId":12,"fence":9,"bearer":"tok-s6","predecessorRun":48,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
+ {"method":"POST","path":"/runs/50/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/tickets","status":200,"once":true,
   "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]},
  {"method":"POST","path":"/tickets","status":200,"once":true,
   "body":{"id":90,"state":"needs-human"}},
@@ -123,7 +146,7 @@ cat > "$FIX" <<'JSON'
   "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
           {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]},
  {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
-  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":48}]},
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":50}]},
 
  {"method":"POST","path":"/runs/claim","status":200,"once":true,
   "body":{"claimed":true,"runId":60,"ticketId":14,"fence":1,"bearer":"tok-x",
@@ -181,6 +204,17 @@ env | grep '^BOARD_' | sort > "$DH/resume-env.txt" || true
 { echo "RESUME uuid=\$1"
   echo "ARGV: \$*"
   echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"; } >> "$RESUME_LOG"
+# The residual double-spawn shape: the real daemon-resume LAUNCHED a fork but
+# _poll_uuid never yielded a usable session uuid, so it stamps status=error +
+# pending_short and exits 1 WITHOUT advancing \`current\`. The fork may well be
+# alive on the run — nothing local can name its session yet.
+if [ -n "\${RESUME_PENDING_SHORT:-}" ]; then
+  python3 -c 'import json, sys
+m = json.load(open(sys.argv[1]))
+m["status"] = "error"; m["pending_short"] = sys.argv[2]
+json.dump(m, open(sys.argv[1], "w"), indent=2)' "$DH/u-old.json" "\$RESUME_PENDING_SHORT"
+  exit 1
+fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
 printf '%s\n' "\$2" >> "$TRANSCRIPT"   # delivery IS the transcript write
 # The real daemon-resume forks the turn and INJECTS the prompt before it
@@ -275,6 +309,10 @@ nt "the api tick never invokes gh"         "GH-CALLED"                 cat "$MAR
 # a second worker onto a run the first one is actively holding.
 # =========================================================================
 : > "$FIX.log"
+# Truncated HERE, not relied on being pristine: the no-second-worker assert
+# below is only meaningful against a log this rung alone could have written,
+# and a rung added ahead of it later would otherwise silently defang it.
+: > "$SPAWN_LOG"
 OUTW="$TDIR/resume-wait.out"
 RESUME_WAIT_EXPIRES=1 SW resume > "$OUTW" 2>&1 || true
 t  "an expired wait whose delivery landed is not a failure" \
@@ -282,6 +320,26 @@ t  "an expired wait whose delivery landed is not a failure" \
 nt "so no second worker is spawned onto the live run"       "SPAWN"  cat "$SPAWN_LOG"
 t  "and the successor is bound as delivered"                "/runs/43/bind" cat "$FIX.log"
 nt "and no recovery cycle is charged"                       "recovery cycle" cat "$OUTW"
+
+# =========================================================================
+# Phase 3, rung 2b — AN AMBIGUOUS FORK IS NOT A FAILED DELIVERY EITHER.
+# daemon-resume can launch the fork and still exit 1 when the new session uuid
+# never resolves: it stamps status=error + pending_short and deliberately keeps
+# `current` on the OLD turn. The marker check then reads the predecessor's
+# transcript, finds nothing, and — before this guard — fresh-spawned a SECOND
+# worker onto a run a live fork may already be holding. The delivery is
+# unknown, so this tick does nothing and charges nothing; the next tick's
+# marker/current resolution settles it.
+# =========================================================================
+: > "$FIX.log"
+: > "$SPAWN_LOG"
+OUTA="$TDIR/resume-ambiguous.out"
+RESUME_PENDING_SHORT=amb01 SW resume > "$OUTA" 2>&1 || true
+t  "an unresolved fork is reported as ambiguous" "delivery is AMBIGUOUS"  cat "$OUTA"
+nt "and no second worker is spawned onto the held run" "SPAWN" cat "$SPAWN_LOG"
+nt "no recovery cycle is charged for an unknown delivery" "recovery cycle" cat "$OUTA"
+nt "and the successor run is not released out from under the fork" \
+   '"path": "/runs/49/end"'                                 cat "$FIX.log"
 
 # =========================================================================
 # Phase 3, rung 3 — the resume fails with NOTHING delivered; the SAME
@@ -310,9 +368,11 @@ t  "and its bearer lands at rest for the next relay" "run_bearer=tok-s2" new_bea
 nt "a delivered cycle ends no run"         '"path": "/runs/45/end"'    cat "$FIX.log"
 
 # =========================================================================
-# Phase 3, rung 4 — three cycles where NEITHER vehicle delivers. The failed
+# Phase 3, rung 4 — cycles where NEITHER vehicle delivers. The failed
 # successor run is released each time (it must not squat the ticket), nothing
-# is acked, and the third cycle escalates.
+# is acked, and the third cycle escalates — unless the board cannot name the
+# state it is freezing, in which case the escalation waits for a cycle that
+# can (the empty-read rung below).
 # =========================================================================
 : > "$FIX.log"
 OUT3="$TDIR/resume3.out"
@@ -327,6 +387,23 @@ OUT4="$TDIR/resume4.out"
 RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 SW resume > "$OUT4" 2>&1 || true
 t  "cycle 2 is counted"                    "recovery cycle 2 of 3"     cat "$OUT4"
 nt "and still escalates nothing"           "env-issue"                 cat "$OUT4"
+
+# Cycle 3 reaches the escalation, but the board answers with a listing this
+# ticket has fallen out of. A record written from that empty read would say
+# `"state": ""`, and the lift check — moved = current != recorded — then reads
+# ANY value as movement, so the suppression would lift on the very next tick
+# and the whole ladder would run again, spamming the human an env-issue every
+# three cycles. An escalation that cannot name the state it froze does not
+# happen at all; the counter stands and the next tick retries.
+: > "$FIX.log"
+OUT4B="$TDIR/resume4b.out"
+RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 SW resume > "$OUT4B" 2>&1 || true
+t  "cycle 3 is counted"                    "recovery cycle 3 of 3"     cat "$OUT4B"
+t  "an escalation whose board state reads empty is refused" \
+   "board state came back empty"                                       cat "$OUT4B"
+nt "it registers no env-issue"             '\"category\": \"env-issue\"' cat "$FIX.log"
+suppression_for() { cat "$DH/board-suppress/$1.json" 2>/dev/null || echo "no suppression record"; }
+t  "and writes no suppression record"      "no suppression record"     suppression_for 12
 
 : > "$FIX.log"
 OUT5="$TDIR/resume5.out"

@@ -374,6 +374,15 @@ PY
 # Files rather than one delimited line: the replies are multi-line by nature,
 # and an empty id column ahead of them is exactly the field collapse the 0x1f
 # row layout above exists to avoid.
+#
+# TEXT BEFORE IDS, and that order is the whole safety property. The caller acks
+# whatever `ids` names, and only the prompt built from `text` delivers those
+# answers — so a death between the two writes decides which way the pair fails.
+# ids-first leaves ids populated beside an empty text: the prompt carries no
+# answers, the delivery still succeeds, and the ack fires on answers nobody
+# ever saw. text-first fails the other way — answers ride the prompt, nothing
+# is acked, and the feed re-serves them next tick (the sentinel makes the
+# duplicate visible). Never-ack is the recoverable direction.
 _fold_answers() {  # <ticket> <dir>
   T_TID="$1" T_DIR="$2" _api_py - <<'PY'
 import os
@@ -381,11 +390,11 @@ import _board_api as A
 tid = os.environ["T_TID"]
 d = os.environ["T_DIR"]
 mine = [a for a in A.unrelayed() if str(a.get("ticketId")) == tid]
-with open(os.path.join(d, "ids"), "w") as f:
-    f.write(",".join(str(a["answerEventId"]) for a in mine))
 with open(os.path.join(d, "text"), "w") as f:
     f.write("\n\n".join(A.SENTINEL % a["answerEventId"] + "\n" +
                         "\n".join(a.get("replies") or []) for a in mine))
+with open(os.path.join(d, "ids"), "w") as f:
+    f.write(",".join(str(a["answerEventId"]) for a in mine))
 PY
 }
 
@@ -487,6 +496,7 @@ PY
 # explicitly.
 _resume_one() {
   local tid="$1" nonce dir exports ids text prompt transcript delivered=""
+  local pre_pending="" post_pending=""
   local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS=""
   nonce="$(uuidgen)"
   mkdir -p "$CLAIMS_DIR"
@@ -545,6 +555,11 @@ PY
   [ -z "$C_SESS" ] || _persist_successor "$C_SESS" "$C_RUN" "$C_FENCE" "$C_BEARER" "$tid" \
     || echo "resume: #$tid — registry persist FAILED; delivering anyway" >&2
 
+  # The pending-fork watermark, read BEFORE the resume so the fallback below
+  # can tell a fork THIS call launched from a stale one an earlier tick left
+  # behind — a leftover pending_short must not wedge the ticket forever.
+  [ -z "$C_SESS" ] || pre_pending="$(_meta_field "$DAEMON_HOME/$C_SESS.json" pending_short)"
+
   # daemon-resume forks a fresh process from OUR env, so the successor
   # credentials ride the invocation or the worker can write nothing. The wait
   # is bounded for the same reason phase 2 bounds it: this tick holds the
@@ -568,6 +583,21 @@ PY
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
   else
+    # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. daemon-resume has a third
+    # outcome beside delivered and failed: the fork LAUNCHED, but its session
+    # uuid never resolved, so it stamps status=error + pending_short and
+    # deliberately leaves `current` on the old turn. The marker check above
+    # then reads the PREDECESSOR's transcript, finds nothing, and fresh-spawning
+    # on that would put a second worker onto a run a live fork may already be
+    # holding — the same double-spawn the expired-wait branch exists to prevent,
+    # by the other door. Delivery is unknown, so this tick neither spawns nor
+    # charges a cycle: next tick reads a resolved `current` (or the operator
+    # recovers the fork through pending_short) and settles it.
+    [ -z "$C_SESS" ] || post_pending="$(_meta_field "$DAEMON_HOME/$C_SESS.json" pending_short)"
+    if [ -n "$post_pending" ] && [ "$post_pending" != "$pre_pending" ]; then
+      echo "resume: #$tid run $C_RUN → the resume forked a turn whose session never resolved; delivery is AMBIGUOUS — no fresh spawn this tick"
+      return 0
+    fi
     # FRESH SPAWN ON THE SAME SUCCESSOR BEARER. A successor is a fresh run by
     # contract; resuming the predecessor session is an optimization, not the
     # substance. The assignment body rides along — by contract it is the only
@@ -666,6 +696,16 @@ print(next((t["state"] for t in A.tickets(principal="automation")
             if str(t["id"]) == tid), ""))
 PY
 )" || { echo "resume: #$tid — board state unreadable; escalation deferred" >&2; return 1; }
+  # AN EMPTY READ IS NOT A STATE. A ticket absent from the listing answers
+  # through a SUCCESSFUL exit with "", and a record written from it would say
+  # `"state": ""` — against which _check_lift's `moved = current != recorded`
+  # is true for every value the board can ever return. The suppression would
+  # lift on the very next tick, the ladder would run again, and the human would
+  # collect a fresh env-issue every three cycles. The counter stands, so the
+  # next tick retries the escalation with a state it can actually name.
+  [ -n "$state" ] || {
+    echo "resume: #$tid — board state came back empty (ticket not in the listing); escalation deferred" >&2
+    return 1; }
   eid="$(T_TID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
