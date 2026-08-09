@@ -495,7 +495,13 @@ plan time.
   `skills/reviewing-prs/SKILL.md`'s post-gate timestamp-drift check reads
   GitHub's `Issue.userContentEdits`, and since A1 offers no body-edit route,
   the drift it hunts cannot occur there — the check is vacuous in API mode,
-  not broken.
+  not broken. One read sits outside the audit's grep set and is recorded here
+  so it is not later rediscovered as a violation the audit missed:
+  `skills/triaging-feedback/SKILL.md`'s *Worker mode* fetches a whole-board
+  snapshot with `board-list.sh`, which is a read of arbitrary tickets. It is
+  outside X5's bite rather than a breach of it — the triage worker is
+  explicitly also the dispatcher and holds a dispatcher principal, not a run
+  bearer, and X5's read limit scopes what a *run* may read.
 
 ## Outcomes & Retrospective
 
@@ -504,7 +510,8 @@ both dispatchers now speak the Arkho board API as a per-repo binding, and gh
 mode is untouched and still the default. Fourteen tasks landed on
 `feature/a2-board-adapter`: the binding resolver and credential/principal
 precedence (`_binding.sh`, `_lib.sh`), the single HTTP surface
-(`_board_api.py`, 18 routes, nested error envelope, transport-only retry), a
+(`_board_api.py`, 15 route wrappers over 14 distinct A1 paths — `POST` and
+`GET /tickets` share one — nested error envelope, transport-only retry), a
 new `board-comment.sh` verb with the protocols' raw `gh issue comment` sites
 substituted, API modes for register/transition/answer/show/list/map/lint/
 reconcile/bind, claim-side dispatch for the implementer, spike, architect and
@@ -524,7 +531,8 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
 2. *Transcript-diff drill.* `test-transcript-diff.sh` + `transcript-compare.py`
    run the same scripted walk in both bindings and compare. Argv and exit
    status were identical on all 14 steps — including every refusal — and all
-   13 output-text divergences across 6 tags were individually pinned with
+   13 output-text divergences — eight distinct tag strings, six families once
+   the three `refusal-wording-*` tags are read as one — were individually pinned with
    their transport reason (`VERDICT: accounted`). The two-level claim is what
    acceptance 2 now says; see Revision Note v1.2.4 for why the literal empty
    diff was unachievable without making the binding worse.
@@ -548,16 +556,21 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
    into that runner and were run explicitly, all passing:
    `tests/issue-tracker/test-board-scripts.sh`,
    `tests/issue-tracker/test-board-sweep.sh`,
-   `tests/implementing/test-implement-dispatch.sh`. A repo with no binding
-   file taking the gh path byte-for-byte is asserted in
-   `board-api/test-binding.sh`. `scripts/lint-shell.sh` over all 45 shell
+   `tests/implementing/test-implement-dispatch.sh`. Those three suites plus
+   the unchanged runner pass set are what actually fence the claim that a repo
+   with no binding file behaves as it did before A2; `board-api/test-binding.sh`
+   asserts the narrower thing its name says — that an absent binding file
+   *resolves* to gh mode, and that gh mode without `BOARD_REPO` still probes
+   `gh` — not output parity against pre-A2. `scripts/lint-shell.sh` over all 45 shell
    files this branch touched is clean (the `--all` baseline's 9 warnings are
    in four files A2 never touched).
 8. *Live smoke.* One walk against `https://arkho-board-service.onrender.com`
    on 2026-08-09T20:08Z, from a scratch repo bound outside this checkout.
    `GET /healthz` answered `200` in 0.24s with a verified TLS chain and
    `{"ok":true,"lastPassAt":"2026-08-09T20:08:42.911Z"}` — the deployed
-   reconciler passing seconds earlier. All 45 assertions passed, `gh` was
+   reconciler passing seconds earlier. Every assertion passed — 43 of them in
+   the transcript kept with the task report, plus the `healthz` probe reported
+   separately above it — `gh` was
    never invoked, and the whole real network path (Render → Supavisor →
    Supabase Postgres) carried the protocol unchanged: the claim delivered the
    body, the server confirmed the bind, a wrong fence was refused
@@ -578,6 +591,39 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
    `a2-live-smoke-automation-20260809T200844Z` (retiring it is an UPDATE).
    Its token was minted randomly, never written anywhere but a 0600 scratch
    file, and A2 consumers need an automation principal on that board anyway.
+
+   *The architect-verdict leg.* That first walk stopped one edge short of what
+   this acceptance says: it proved children-terminal → parent back to
+   `ready-for-architect`, then closed the epic with a **human**
+   `ready-for-architect → wontfix`, which is a different edge with a different
+   authority from the recomposition verdict. The verdict A1 defines is a
+   **run-actor** edge — `in-design → done|wontfix`, guarded in
+   `src/transitions.js` on the ticket having children *and* the run holding the
+   `architect` lane — so it is only reachable by claiming the epic on that lane.
+   A second drill (2026-08-09T20:33Z, same deployed service, `healthz` `200`
+   with `lastPassAt` `2026-08-09T20:32:58.013Z`) exercised exactly that, 30
+   assertions, all passing, `gh` never invoked, and no new principal: it reused
+   the automation principal the first drill minted. Epic **#5** and child **#6**
+   were registered; #6 was claimed by the implementer lane and walked
+   `in-progress → in-review → confident-ready → done`; the deployed reconciler
+   pulled #5 `ready-for-implementer → in-progress` (marker `epic-pull`, cursor
+   36) and returned it `in-progress → ready-for-architect` (marker
+   `recomposition-due`, cursor 42). `POST /runs/claim` with `lane: architect`
+   then took #5 — **run 4, fence 1**, recorded on the epic's own timeline at
+   cursor 43 as an automation-actor `claim` naming the architect lane — and left
+   the state at `ready-for-architect`, a claim being no transition. As that run
+   the drill wrote `ready-for-architect → in-design` (cursor 44,
+   `actor_kind: worker`, `actor: run:4`) and then the verdict itself,
+   `in-design → wontfix` with note `A2 live smoke` (cursor 45, same worker
+   actor). Both writes were refused `fence-mismatch` when replayed with a
+   deliberately wrong fence, and the epic held its state across each refusal.
+   The verdict ended the run on the server's own authority: a `release` event at
+   cursor 46, `owner_run` back to null, and the run's bearer answering
+   `unauthenticated` on the next read — so no explicit `POST /runs/:id/end` was
+   needed. Residue: #5 is terminal at `wontfix`; #6 is terminal at `done` for
+   the same missing-edge reason as #2 and #4 and carries the same "A2 live
+   smoke" comment. Nothing claimable remains on the board. With this, all three
+   legs of acceptance 8 are exercised against the live board.
 
 **Gaps carried forward.**
 
@@ -691,7 +737,8 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
   second read per transition), a gh list derives its tags from a whole-board
   snapshot the API deliberately doesn't fetch, and `show` renders a snapshot
   node vs a server timeline. The drill (`test-transcript-diff.sh` +
-  `transcript-compare.py`) pins 13 divergences across 6 tags; argv and exit
+  `transcript-compare.py`) pins 13 divergences under eight tag strings (six
+  families, counting the three `refusal-wording-*` tags as one); argv and exit
   parity — the drift fence that catches a second legality table — held
   strict on all 14 steps. Recorded alongside, unfenced: gh-mode `LEGAL` and
   A1 `LEGAL_ROWS` disagree on 13 edges (12 gh-only, 1 A1-only) — real X5
@@ -710,3 +757,23 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
   A1.G3 epic-recomposition return; drill residue closed, one scratch
   automation principal left behind by the INSERT-only rule (named in
   Outcomes).
+- v1.2.6 (2026-08-10): Task 14 review fixes — evidence precision only, no
+  design change. Acceptance 8's **architect-verdict leg is now exercised**
+  against the deployed board: the first drill closed its epic with a human
+  `ready-for-architect → wontfix`, which is not the run-actor recomposition
+  verdict the acceptance names, so a second drill claimed the recomposed epic
+  on the `architect` lane and wrote `ready-for-architect → in-design →
+  wontfix` as that run, with the fence refusing a wrong-fence replay at each
+  edge (epic #5, child #6, run 4, fence 1; ids and timeline cursors in
+  Outcomes item 8). It reused the existing automation principal, so no new
+  production row. Four counts and attributions corrected in the same pass:
+  `_board_api.py` is 15 route wrappers over 14 A1 paths, not 18 routes; the
+  gh-path regression fence for acceptance 7 is the three gh-mode suites plus
+  the runner pass set, while `test-binding.sh` asserts binding *resolution*
+  only; the first live smoke's assertion count is stated as what its
+  transcript records (43, plus the separately reported `healthz` probe); and
+  the transcript drill's 13 divergences carry eight tag strings, six families.
+  Surprises gains one clause: `triaging-feedback`'s Worker-mode whole-board
+  `board-list.sh` read is outside the audit's grep set and outside X5's bite
+  (dispatcher principal, not a run bearer), recorded so it is not later
+  rediscovered as a missed violation.
