@@ -82,6 +82,18 @@ export LOCAL_REPO
 # would stamp its at-most-once guard and then lose the answer the same
 # way). Run the whole tick from the consumer repo.
 cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exit 1; }
+
+# THE BINDING IS RESOLVED BEFORE THE gh PROBE, as in the lane dispatchers: an
+# api-bound repo runs an entirely different tick (four phases against the board
+# API, gh never invoked), so resolving BOARD_REPO through gh first would make
+# that tick unreachable on a machine without the CLI. It sits AFTER the cd for
+# the same reason the cd exists: _binding.sh reads .doperpowers/board.json from
+# the git root of the CURRENT directory, and under launchd/cron the invocation
+# cwd is not a repo at all.
+# shellcheck source=_binding.sh
+. "$SCRIPT_DIR/_binding.sh" || exit 1
+if [ "$BOARD_BINDING" = api ]; then exec "$SCRIPT_DIR/_sweep_api.sh" all; fi
+
 IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scripts/implement-dispatch.sh}"
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
 LAND_DISPATCH_CMD="${LAND_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/land-dispatch.sh}"
