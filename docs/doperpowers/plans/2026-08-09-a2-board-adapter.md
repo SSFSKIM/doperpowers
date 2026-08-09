@@ -337,6 +337,11 @@ HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
 `tests/claude-code/board-api/test-client-core.sh`:
 
 ```bash
+# NOTE (implementation contact, Task 2): the error envelope is NESTED —
+# {"error":{"code":…,"message":…}} — per API.md §1 and the live server; the
+# flat shape this plan's first draft carried is wrong. Spec Revision Notes
+# v1.2.1 records the divergence. Later tasks' 409 fixtures follow the nested
+# shape too.
 #!/usr/bin/env bash
 . "$(dirname "$0")/helpers.sh"
 PORT=8471
@@ -347,11 +352,11 @@ cat > "$FIX" <<'JSON'
   "body":{"runId":41,"ticketId":12,"fence":3,"bearer":"tok-abc","plan":null,
           "body":"do the thing","parentPin":null}},
  {"method":"POST","path":"/tickets/12/transition","status":409,
-  "body":{"error":"fence-mismatch","message":"fence 2 != 3"}},
+  "body":{"error":{"code":"fence-mismatch","message":"fence 2 != 3"}}},
  {"method":"GET","path":"/answers/unrelayed","status":200,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101","replies":["yes"]}]},
  {"method":"POST","path":"/runs/41/renew","status":409,
-  "body":{"error":"run-ended","message":"run 41 has ended"}}
+  "body":{"error":{"code":"run-ended","message":"run 41 has ended"}}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" $PORT & MOCK=$!
@@ -812,7 +817,7 @@ cat > "$FIX" <<'JSON'
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":31,"state":"needs-human"},"once":true},
  {"method":"POST","path":"/tickets","status":409,
-  "body":{"error":"illegal-birth","message":"spike may not be born ready-for-architect"},"once":true},
+  "body":{"error":{"code":"illegal-birth","message":"spike may not be born ready-for-architect"}},"once":true},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":30,"state":"ready-for-implementer"}}
 ]
 JSON
@@ -1520,7 +1525,7 @@ FIX="$(mktemp)"; : > "$FIX.log"
 cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/runs/41/renew","status":200,"body":{"renewed":true}},
- {"method":"POST","path":"/runs/40/renew","status":409,"body":{"error":"run-ended","message":"reaped"}},
+ {"method":"POST","path":"/runs/40/renew","status":409,"body":{"error":{"code":"run-ended","message":"reaped"}}},
  {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101","replies":["ship it"]}]},
