@@ -50,6 +50,54 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$body_file" ] || [ -f "$body_file" ] || die "no such file: $body_file"
 
+# API mode: the server owns birth legality (the state machine, the pre-spec
+# refusal, the env-issue inversion), so the client assembles the payload and
+# reports what came back — none of the gh path's client-side adjudication runs.
+if [ "$BOARD_BINDING" = api ]; then
+  T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
+  T_STATE_EXPLICIT="$state_explicit" T_NOTE="$note" T_PARENT="$parent" \
+  T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" T_BODY_FILE="$body_file" _api_py - <<'PY'
+import os
+import _board_api as A
+env = os.environ
+title = " ".join(env["T_TITLE"].split())
+CATEGORY_MAP = {"bug": "work", "enhancement": "work",
+                "spike": "spike", "env-issue": "env-issue"}
+if env["T_CATEGORY"] not in CATEGORY_MAP:
+    A.die("category must be %s" % "|".join(CATEGORY_MAP))
+body = open(env["T_BODY_FILE"]).read() if env["T_BODY_FILE"] else ""
+note = env["T_NOTE"]
+state = env["T_STATE"]
+if note and state in ("needs-human", "needs-info", "interactive-preferred"):
+    # No API note field for the birth question (arkho#7): body head carries it.
+    body = note + ("\n\n" + body if body else "")
+payload = {"title": title, "category": CATEGORY_MAP[env["T_CATEGORY"]],
+           "priority": env["T_PRIORITY"]}
+if env["T_STATE_EXPLICIT"] == "1":
+    payload["birth"] = state
+if body:
+    payload["body"] = body
+if env["T_PARENT"]:
+    payload["parent"] = int(env["T_PARENT"].lstrip("#"))
+if env["T_SPAWNED"]:
+    payload["spawnedBy"] = int(env["T_SPAWNED"].lstrip("#"))
+if env["T_BLOCKED"]:
+    payload["blockedBy"] = [int(b.lstrip("#")) for b in env["T_BLOCKED"].split(",") if b]
+try:
+    out = A.register(payload)
+except SystemExit:
+    # A spike birth into ready-for-architect is a known canon divergence:
+    # the server's 409 illegal-birth already printed; add the pointer.
+    if env["T_CATEGORY"] == "spike" and state == "ready-for-architect":
+        print("note: design-first spikes are gh-only until the arkho#7 ruling "
+              "(https://github.com/SSFSKIM/arkho/issues/7)", flush=True)
+    raise
+print("%s %s/tickets/%s" % (out["id"], os.environ["BOARD_API_URL"], out["id"]))
+PY
+  _rerender_if_serving
+  exit 0
+fi
+
 T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
 T_STATE_EXPLICIT="$state_explicit" \
 T_NOTE="$note" T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \

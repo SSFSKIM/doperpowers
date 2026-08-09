@@ -44,6 +44,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# API mode: legality, the convergence rule, the note/PR/plan requirements and
+# every sweep above live server-side — the client sends the edge and reports
+# the state the server wrote.
+if [ "$BOARD_BINDING" = api ]; then
+  T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _api_py - <<'PY'
+import os
+import _board_api as A
+env = os.environ
+fence = os.environ.get("BOARD_RUN_FENCE") or None
+out = A.transition(env["T_ID"].lstrip("#"), env["T_TO"],
+                   note=env["T_NOTE"] or None, pr=env["T_PR"] or None,
+                   plan=env["T_PLAN"] or None, branch=env["T_BRANCH"] or None,
+                   fence=int(fence) if fence else None)
+# Print the state the server WROTE — convergence can transmute the target.
+suffix = " (converged)" if out.get("converged") else ""
+print("#%s: → %s%s" % (env["T_ID"].lstrip("#"), out["to"], suffix))
+PY
+  _rerender_if_serving
+  exit 0
+fi
+
 T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _py - <<'PY'
 import json as _json_
 import os
