@@ -103,8 +103,14 @@ LOCK="$DAEMON_HOME/.sweep-api.lock"
 # sweep exits at once: no renewal, no relay, no resume, no dispatch, until a
 # human notices. So the owner's PROCESS START TIME is recorded beside its pid
 # and both must match before the owner counts as live. `ps -o lstart=` is the
-# portable form of that (macOS bash 3.2 and Linux procps both print it).
-_proc_start() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true; }
+# portable form of that (macOS bash 3.2 and Linux procps both print it) — but
+# it is a RENDERED date, and the renderer reads the environment: the month and
+# day names come from the locale and the clock from the zone. A lock written by
+# a launchd tick and checked by one started from a shell with its own LC_ALL or
+# TZ would compare two spellings of the same instant and call them different
+# processes. Both sides go through this one function, and it pins both knobs, so
+# the token means the same thing to every writer and every reader.
+_proc_start() { LC_ALL=C TZ=UTC ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true; }
 _take_lock() {
   mkdir "$LOCK" 2>/dev/null || return 1
   printf '%s\n' "$$" > "$LOCK/owner"
@@ -114,10 +120,23 @@ _take_lock() {
 # process the lock was taken by. A lock written before this file existed names
 # no start time; there the pid answer is all the evidence there is, which is
 # exactly the behaviour it already had.
+#
+# THE START COMPARISON HAS THREE ANSWERS, NOT TWO, and the third one decides
+# which way this fails. `ps` can come back EMPTY — a lost race with the process
+# table, a form some later OS renders differently — and empty is not evidence
+# of death: `kill -0` has ALREADY said this pid answers. Compared as a plain
+# string, empty simply mismatches, so the lock is taken from a live owner and
+# two ticks interleave the sentinel check with its resume — the double delivery
+# this lock exists to prevent. An unreadable start is UNKNOWN, and unknown
+# keeps the owner: the age rule alone never overrides a live pid, and the cost
+# of holding is one skipped tick against a duplicated answer.
 _owner_live() {  # <pid> <recorded start ('' = unknown)>
+  local now
   kill -0 "$1" 2>/dev/null || return 1
   [ -n "$2" ] || return 0
-  [ "$(_proc_start "$1")" = "$2" ]
+  now="$(_proc_start "$1")"
+  [ -n "$now" ] || return 0
+  [ "$now" = "$2" ]
 }
 if ! _take_lock; then
   _lock_owner="$(cat "$LOCK/owner" 2>/dev/null || true)"

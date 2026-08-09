@@ -482,8 +482,10 @@ lock_as "$$" "Thu Jan  1 00:00:00 2000"
 t  "a stale lock whose pid was recycled is stolen" \
    "stole a stale api sweep lock"                       SW renew
 # ...and the live-owner half still holds: same pid, and this time the start
-# time really is its own, so the lock is its and must not be taken.
-lock_as "$$" "$(ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
+# time really is its own, so the lock is its and must not be taken. Recorded
+# the way _take_lock records it — `lstart` is a RENDERED date, so the locale
+# and the zone are pinned on both sides or the same process reads as two.
+lock_as "$$" "$(LC_ALL=C TZ=UTC ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
 t  "a live owner is never robbed, however old its lock" \
    "another api sweep holds the lock"                   SW renew
 # A lock from before the start file existed names no start: the pid answer is
@@ -491,6 +493,22 @@ t  "a live owner is never robbed, however old its lock" \
 rm -f "$LK/owner-start"
 t  "a startless lock still obeys a live pid" \
    "another api sweep holds the lock"                   SW renew
+# ...and `ps` has a THIRD answer: none at all. A hiccup, a process table read
+# that loses a race, a ps that some later OS renders differently — the current
+# start comes back EMPTY, and empty is not evidence of death. Compared as a
+# plain string it reads as a mismatch, so the lock is stolen from an owner
+# `kill -0` just said is alive, and two ticks then interleave the sentinel
+# check with its resume: the exact double delivery this lock exists to prevent.
+# UNKNOWN FAILS CLOSED — the stale-age rule alone never overrides a live pid.
+cat > "$STUB/ps" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$STUB/ps"
+lock_as "$$" "Thu Jan  1 00:00:00 2000"
+t  "an unreadable current start never steals from a live owner" \
+   "another api sweep holds the lock"                   SW renew
+rm -f "$STUB/ps"
 rm -rf "$LK"
 
 # =========================================================================
