@@ -34,10 +34,12 @@ BOARD_ROOT="$(_board_root)"
 BOARD_DIR="$BOARD_ROOT/doperpowers/issue-tracker"   # render cache only (gitignored)
 BOARD_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# The target repo (owner/name): $BOARD_REPO wins, else the checkout's repo.
-# Resolved once; fail-loud when gh is missing/unauthenticated/offline — the
-# board has no offline fallback by design.
-if [ -z "${BOARD_REPO:-}" ]; then
+# shellcheck source=_binding.sh
+. "$BOARD_SCRIPTS/_binding.sh"
+
+# The target repo (owner/name) — gh mode only: $BOARD_REPO wins, else the
+# checkout's repo. Fail-loud when gh is missing/unauthenticated/offline.
+if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
   command -v gh >/dev/null 2>&1 || die "\`gh\` not found — the board lives on GitHub"
   BOARD_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
     || die "cannot resolve the GitHub repo (gh auth status? set BOARD_REPO=owner/name)"
