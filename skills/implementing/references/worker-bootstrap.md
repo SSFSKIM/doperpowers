@@ -13,3 +13,5 @@ Runtime bindings (dispatcher-owned):
 - `BOARD_SCRIPTS`: {{BOARD_SCRIPTS}}
 - `ENGINE_NAME`: {{ENGINE_NAME}}
 - `DECOMPOSE_DOC`: {{DECOMPOSE_DOC}}
+- `ENV_TRACKER_ISSUE`: {{ENV_TRACKER_ISSUE}} — standing env-friction tracker
+  ("none" when the board has no open issue labeled `env-tracker`)
