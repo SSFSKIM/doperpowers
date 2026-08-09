@@ -45,7 +45,7 @@ unattended repos).
 |---|---|---|
 | **Architect worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | doperpowers:architecting |
 | **Implement worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | doperpowers:implementing |
-| **Review worker** (daemon, one PR) | its PR's ticket (`confident-ready` / `needs-human` / `ready-for-architect`); finding-tickets; post-merge finalize; a scale review's clean `done` on a recomposition epic | doperpowers:reviewing-prs |
+| **Review worker** (daemon, one PR) | its PR's ticket (`needs-human` / `ready-for-architect`); finding-tickets; the merge itself + post-merge finalize on a confident verdict; a scale review's clean `done` on a recomposition epic | doperpowers:reviewing-prs |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
@@ -76,8 +76,9 @@ reporter never parks its own ticket over friction it routed around.
 
 The architect lane's happy path is `ready-for-architect → in-design →
 ready-for-implementer → in-progress → in-review → done`; a direct
-ticket starts at `ready-for-implementer`. Under the review loop a PR
-passes through `confident-ready` between `in-review` and `done`.
+ticket starts at `ready-for-implementer`. Under the review loop the
+review worker's confident verdict merges the PR, and the merge itself
+closes the ticket to `done`.
 
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
@@ -89,7 +90,6 @@ passes through `confident-ready` between `in-review` and `done`.
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
 | `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it); on an epic, the recomposition closure package rides the same `pr:` slot and draws a scale review | PR link (epic: package link) |
-| `confident-ready` | open + `status:confident-ready` | PR rigorously reviewed (reviewing-prs loop); merge/close with confidence | optional |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |

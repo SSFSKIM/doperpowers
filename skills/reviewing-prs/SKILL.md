@@ -112,7 +112,9 @@ is a TOOL invocation, not a nested agent. Never add
    as the broad sweep and give each other run a LENS: a structural focus
    mandate you derive from the diff itself (e.g. actor/authz assumptions
    in the changed routes; ordering/atomicity of the new writes;
-   consumers of a changed field) — never ticket/spec content. Write each
+   consumers of a changed field) — never ticket/spec content. The repo's
+   risk-surface manifest (in your dispatch prompt) marks validated hot
+   paths: a diff touching one is a strong lens candidate. Write each
    mandate to `<review-tmp>/lens-<k>.txt` with your file-writing tool
    and set `CODEX_REVIEW_LENS_FILE=<review-tmp>/lens-<k>.txt` on that
    run's command — never inline the mandate text into a shell command
@@ -292,15 +294,14 @@ its whole task tree to quiesce, snapshot the submitted
 board, and grade every disposition (an empty slot is a failed item: re-wave
 once, then needs-human). An unauthorized writer restores the recorded
 wave boundary before re-wave — none of its work is inherited. On acceptance,
-remove stale confidence (`gh pr edit {{PR_NUMBER}} --remove-label confident-ready`)
-and then push the graded fixes (you are on a detached HEAD).
-Maximum 2 waves per review.
+push the graded fixes (you are on a detached HEAD).
+Maximum 4 waves per review.
 
 ## RE-REVIEW
 
 After a wave that fixed anything, rerun the engine — same run-count
 judgment (a single plain run is the norm after a small wave), fresh
---out files, in the background again; max 3 engine rounds total. The
+--out files, in the background again; max 5 engine rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
@@ -320,46 +321,35 @@ set the ticket to needs-human with the impasse summary and end your turn.
 
 ## ESCALATE
 
-The SELF-MERGE tier requires ALL of:
+The MERGE verdict requires ALL of:
 - final verdict approve (or only non-blocker findings, each explicitly
   routed);
 - No unresolved PROTOCOL BLOCKER or SPEC FINDING;
-- post-fix diff ≤ ~150 changed lines AND ≤ 5 files;
-- the PR base ({{BASE_REF}}) is NOT the repo default branch
-  ({{DEFAULT_BRANCH}}); base-is-default: {{BASE_IS_DEFAULT}}. Self-merge
-  lands only on integration branches — a PR targeting the default branch
-  is ALWAYS human tier;
-- zero touches on any RISK SURFACE: every path/pattern in this repo's
-  risk-surface manifest (rendered in your dispatch prompt), and ALWAYS,
-  manifest or not: CI/workflows, auth/security, migrations/schema,
-  release/versioning, and the manifest files themselves
-  (.doperpowers/risk-surfaces.md, .doperpowers/repo-facts.md). The
-  manifest only ADDS surfaces;
-- every CI check green (gh pr checks {{PR_NUMBER}}) — a repo with NO
-  checks disqualifies self-merge, no exceptions.
+- every existing CI check green (gh pr checks {{PR_NUMBER}}) — a repo
+  with no checks merges on the review alone. Checks still running at
+  verdict time: arm GitHub auto-merge (gh pr merge --auto) rather than
+  wait — the merge completes when they pass and the PR's `Closes` link
+  finalizes the ticket; a repo that refuses auto-merge gets a bounded
+  wait, then a needs-human park. A FAILING check is an impasse: park
+  needs-human naming the check.
 
 If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge with the
 repo's default method (gh pr merge {{PR_NUMBER}}), post the review-trail
 comment, and finalize:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done
 
-If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge. Take
-the HUMAN-tier actions below and state in the trail that the self-merge
-tier WAS satisfied, naming the clauses it met ("auto-merge disabled — this
-is what I would have merged").
+If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge. Post
+the review-trail comment stating the merge verdict WAS satisfied
+("auto-merge disabled — this is what I would have merged"), then park the
+merge as the human's action:
+  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "review confident — auto-merge disabled; merging is yours"
 
 PARKED tier — this ticket already sits at needs-human (a confirmed
 PROTOCOL BLOCKER, an unresolved SPEC FINDING, or blockers at the round
 cap) or was just routed to ready-for-architect (the seam-clustered
-impasse above): NEVER grant confident-ready over a park. Do not add the
-label, do not transition the ticket — post the review-trail comment
-(including everything the waves fixed) and end your turn with the park
-intact.
-
-HUMAN tier — anything else, or observation mode above:
-  gh pr edit {{PR_NUMBER}} --add-label confident-ready
-  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} confident-ready "<one-line review summary>"
-  — post the review-trail comment, end your turn.
+impasse above): NEVER merge over a park. Do not transition the ticket —
+post the review-trail comment (including everything the waves fixed) and
+end your turn with the park intact.
 
 ## Scale review (recomposition epics)
 
@@ -394,8 +384,8 @@ artifact that cannot exist is never a finding.
 Which findings force a corrective child is your blocker routing,
 unchanged: TRIAGE still bins the round's findings, and a non-blocker
 still LOGs to the tech-debt issue rather than holding the epic open.
-The ESCALATE tier ladder does not apply to a scale run: it
-never grants `confident-ready` and never merges, so the two verdicts
+The ESCALATE ladder does not apply to a scale run: it
+never merges, so the two verdicts
 above are its only closing verdicts. A park is still a park — an impasse
 that needs the human goes needs-human with the summary, exactly as
 elsewhere.
@@ -403,9 +393,9 @@ elsewhere.
 ## AUTHORITY
 
 Yours: ticket #{{ISSUE_NUMBER}}'s open states via board-transition.sh
-(confident-ready / needs-human / ready-for-architect — notes required
+(needs-human / ready-for-architect — notes required
 for the parks and the escalation); registering finding-tickets; pushing
-fixer-produced commits; merging ONLY in the self-merge tier AND only
+fixer-produced commits; merging ONLY on the MERGE verdict AND only
 when auto-merge on; done ONLY as post-merge finalize, or as a scale
 run's clean verdict on its epic (Scale review above — that path has no
 merge to finalize). NEVER: wontfix,

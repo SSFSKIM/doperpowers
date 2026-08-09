@@ -176,12 +176,8 @@ board re-waves with one instruction: redo the fixer's own UNPUSHED commits
 without the board file. This sanctioned exception to fix-forward is scoped to
 unpublished history; published history is never rewritten.
 
-On a clean push, expire stale confidence BEFORE publishing the new head:
-inspect labels; if `confident-ready` is present, remove it; only after
-successful inspection/removal run `git push origin
-HEAD:<head-branch>`. If label inspection/removal fails, do not push. If the
+On a clean push, run `git push origin HEAD:<head-branch>`. If the
 remote head differs from <push-base> or the push is rejected, do not rebase
-or salvage the local chain: park needs-human with both SHAs. This fail-safe
-ordering leaves no window where a new SHA carries confidence earned by the old
-one. After a successful push, the new remote HEAD becomes the next push base
+or salvage the local chain: park needs-human with both SHAs. After a
+successful push, the new remote HEAD becomes the next push base
 and the ledger resets. Record per-item outcomes in the review trail.
