@@ -85,7 +85,8 @@ cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/runs/claim","status":200,"once":true,
   "body":{"runId":41,"ticketId":12,"fence":3,"bearer":"tok-w","plan":null,
-          "body":"# assignment\nbuild it","parentPin":null}},
+          "body":"# assignment\nbuild it",
+          "parentPin":{"parent_id":7,"parent_event_cursor":118}}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}}
 ]
@@ -100,7 +101,8 @@ cat > "$FIX2" <<'JSON'
           "body":"replayed work","parentPin":null}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/55/bind","status":200,"body":{"bound":true}},
- {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}}
+ {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/78/end","status":200,"body":{"ended":true}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX2" "$PORT2" & MOCK2=$!
@@ -111,8 +113,20 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
+# instant it runs and then execs the real one. Ordering is only observable from
+# INSIDE that window — after the fact every order looks the same.
+BSOVL="$(mktemp -d)"
+for _f in "$SCRIPTS"/*; do ln -s "$_f" "$BSOVL/$(basename "$_f")"; done
+rm -f "$BSOVL/board-bind.sh"
+cat > "$BSOVL/board-bind.sh" <<EOF
+#!/usr/bin/env bash
+cp -R "\$DAEMON_HOME/board-claims" "\$DAEMON_HOME/claims-at-bind" 2>/dev/null || true
+exec "$SCRIPTS/board-bind.sh" "\$@"
+EOF
+chmod +x "$BSOVL/board-bind.sh"
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" \
+    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" BOARD_SCRIPTS="$BSOVL" \
     BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
     DAEMON_CLAUDE_SETTINGS="$STUB/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=high \
     "$DISPATCH" --sweep ) > "$OUT" 2>&1 || true
@@ -138,6 +152,24 @@ t "claim journal carries the run id"       '"run_id": 41' \
   bash -c "cat '$DH'/board-claims/*.json"
 t "claim journal carries the lane"         '"lane": "architect"' \
   bash -c "cat '$DH'/board-claims/*.json"
+# THE HANDOFF IS DONE ONLY AFTER THE BIND. Marked ahead of it, a crash in that
+# window left a journal saying "handed off" over a meta holding no run
+# credential and no locator — reconciliation skips a completed journal, so
+# nothing ever renewed that lease and the still running worker overlapped the
+# replacement the server's reclaim handed the ticket to.
+t "the journal is still open while the bind runs" '"spawn_completed": false' \
+  bash -c "cat '$DH'/claims-at-bind/*.json"
+t "and the daemon name is already in it"          '"daemon": "12-api-architect"' \
+  bash -c "cat '$DH'/claims-at-bind/*.json"
+
+# --- the parent pin: a run-specific fact no worker read can reach -----------
+# A1 hands `parentPin` back on the claim and stores it on the run; the worker's
+# own bearer cannot read its parent's timeline, so this cursor travels with the
+# dispatch or not at all.
+t "the parent pin reaches the worker prompt" "#7 @ event 118" \
+  cat "$DH/prompt-12-api-architect.md"
+t "and lands in the registry meta"          '"parent_pin": "#7 @ event 118"' \
+  bash -c "grep -l parent_pin '$DH'/*.json | head -1 | xargs cat"
 t "assignment body written beside it"      "build it" \
   bash -c "cat '$DH'/board-claims/*.body.md"
 # The journal filename IS the nonce that went on the wire — that identity is
@@ -232,6 +264,22 @@ printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonc
 #     this script's to touch.
 printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-f.json"
+# (g) A REUSED DAEMON NAME IS NOT PROOF OF A SPAWN. Names are deterministic per
+#     ticket and lane, and a retired daemon keeps its meta — so a HISTORICAL
+#     entry into the same lane left a name that read as "spawned, live,
+#     unbound" for the NEXT claim, closing its journal and leaving the run
+#     ownerless until the lease expired. Only a RUNNING session is evidence.
+printf '{"lane": "implementer", "run_id": 78, "spawn_completed": false, "ticket": "34", "daemon": "34-api-implementer"}\n' \
+  > "$DH2/board-claims/nonce-g.json"
+printf '{"uuid":"gggg0001","current":"gggg0001","name":"34-api-implementer","status":"retired"}' \
+  > "$DH2/gggg0001.json"
+# (h) A JOURNAL WHOSE WRITER IS STILL ALIVE IS NOT A CRASH. Nothing serializes
+#     two dispatch processes, and a peer journals its nonce BEFORE the POST —
+#     so replaying it while that response is in flight makes A1 rotate the
+#     bearer under the peer and both callers spawn from their own answers.
+#     This test's own shell is the live writer.
+printf '{"lane": "implementer", "run_id": null, "spawn_completed": false, "pid": %s}\n' "$$" \
+  > "$DH2/board-claims/nonce-h.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -266,6 +314,14 @@ nt "a foreign lane's run is never ended" '"path": "/runs/66/end"' cat "$FIX2.log
 t  "a foreign lane's journal is left byte-identical" \
   '{"lane": "qagent", "run_id": 66, "spawn_completed": false}' cat "$DH2/board-claims/nonce-f.json"
 nt "and no foreign lane is claimed from here" '\"lane\": \"qagent\"' cat "$FIX2.log"
+# --- (g) a retired daemon's name proves nothing ----------------------------
+t  "a run whose only witness is a RETIRED daemon is ended" '"path": "/runs/78/end"' cat "$FIX2.log"
+t  "its journal is dropped"                     "gone" gone "$DH2/board-claims/nonce-g.json"
+# --- (h) a peer's in-flight claim is left alone ----------------------------
+nt "an in-flight nonce is not replayed"  '\"dispatchNonce\": \"nonce-h\"' cat "$FIX2.log"
+t  "and it is reported as in flight"     "nonce-h is in flight"           cat "$OUT2"
+t  "its journal stays open for its own writer" '"spawn_completed": false' \
+  cat "$DH2/board-claims/nonce-h.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, the stranded run's end, and the two empty implement lanes. A repaired
 # marker sends nothing (no end for its live run 41), and the architect lane —
@@ -278,7 +334,7 @@ wire_summary() {
     "$(grep -c '/runs/41/end' "$FIX2.log" || true)" \
     "$(grep -cF "$ARCH_ON_WIRE" "$FIX2.log" || true)"
 }
-t "reconcile sends only what it must" "posts=5 ends41=0 arch=0" wire_summary
+t "reconcile sends only what it must" "posts=6 ends41=0 arch=0" wire_summary
 
 # =========================================================================
 # Scenario 3 — a REGISTRY meta nobody can read. A meta is the only evidence
