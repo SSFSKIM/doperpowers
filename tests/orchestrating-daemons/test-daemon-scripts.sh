@@ -164,6 +164,36 @@ assert_contains "$LIB_OUT" "resolve_full=11111111-aaaa-4000-8000-000000000000" "
 assert_contains "$LIB_OUT" "resolve_short=22222222-bbbb-4000-8000-000000000000" "_resolve_uuid resolves a short id"
 assert_contains "$LIB_OUT" "resolve_missing_rc=1" "_resolve_uuid fails on unknown id"
 
+# _meta_set recreates the meta file (tmp + os.replace), so it decides that
+# file's mode on EVERY write. An API-bound meta carries the board run bearer and
+# board-bind creates it 0600; daemon-mark / daemon-reply / daemon-finalize all
+# go through _meta_set, so recreating at the umask republished that secret
+# world-readable on the worker's first status update. Mode is preserved, and a
+# meta carrying a bearer is pinned to 0600 regardless.
+mode_of() { python3 -c 'import os, sys; print("%04o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+BEARER_UUID="44444444-dddd-4000-8000-000000000000"
+BEARER_META="$DAEMON_HOME/$BEARER_UUID.json"
+printf '{"uuid":"%s","name":"bearer-one","status":"working","run_bearer":"tok-fake"}' \
+  "$BEARER_UUID" > "$BEARER_META"
+chmod 600 "$BEARER_META"
+PLAIN_UUID="66666666-ffff-4000-8000-000000000000"
+PLAIN_META="$DAEMON_HOME/$PLAIN_UUID.json"
+printf '{"uuid":"%s","name":"plain-one","status":"working"}' "$PLAIN_UUID" > "$PLAIN_META"
+chmod 640 "$PLAIN_META"   # deliberately NOT the umask default, so the assert discriminates
+(source "$SCRIPTS_DIR/_lib.sh"
+ _meta_set "$BEARER_UUID" status blocked
+ _meta_set "$PLAIN_UUID" status blocked)
+assert_equals "$(mode_of "$BEARER_META")" "0600" "_meta_set keeps a bearer-carrying meta at 0600"
+assert_equals "$(mode_of "$PLAIN_META")" "0640" "_meta_set preserves a plain meta's mode"
+assert_equals "$(source "$SCRIPTS_DIR/_lib.sh"; _meta_get "$BEARER_UUID" status)" "blocked" \
+  "_meta_set still writes the field on a bearer meta"
+# Presence, never the value: a bearer belongs in no test output.
+bearer_present() {
+  if [ -n "$(source "$SCRIPTS_DIR/_lib.sh"; _meta_get "$1" run_bearer)" ]
+  then echo present; else echo absent; fi
+}
+assert_equals "$(bearer_present "$BEARER_UUID")" "present" "the bearer survives the write"
+
 # A daemon can end a turn blocked on an AskUserQuestion tool call (observed
 # live: `claude agents` shows state=blocked, and the question text lives in the
 # tool_use input, not in any text block). _transcript_reply must surface it —

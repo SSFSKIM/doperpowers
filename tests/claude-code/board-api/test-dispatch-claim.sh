@@ -210,6 +210,21 @@ printf '{"lane": "architect", "run_id": 41, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-c.json"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","status":"working","run_id":41,"lane":"architect","ticket":"12"}' \
   > "$DH2/cccc0001.json"
+# (d) THE SPAWN LANDED, THE BIND DID NOT — a crash inside daemon-spawn uuid
+#     poll window, which is seconds wide and leaves the session detached and
+#     running. The run id reaches a meta only via board-bind, so this journal
+#     is byte-for-byte the shape of (b) except for the daemon name written
+#     before the spawn — and that name is in the registry, alive. Ending this
+#     run would kill a live worker and hand its ticket to a second one.
+printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-implementer"}\n' \
+  > "$DH2/board-claims/nonce-d.json"
+printf 'live assignment\n' > "$DH2/board-claims/nonce-d.body.md"
+printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-implementer","status":"working"}' \
+  > "$DH2/dddd0001.json"
+# (e) a journal no reader can parse — a half-written file, or the truncated
+#     record a crash mid-write leaves. Skipping it silently hid a claimed run
+#     forever, every tick, with nothing on any log to say so.
+printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -226,6 +241,19 @@ gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"      "gone" gone "$DH2/board-claims/nonce-b.json"
 t "so is its orphaned assignment body"   "gone" gone "$DH2/board-claims/nonce-b.body.md"
 t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
+# --- (d) a spawned-but-unbound run is never ended --------------------------
+nt "a live unbound run is NOT ended" '"path": "/runs/77/end"' cat "$FIX2.log"
+t  "its journal is kept, closed to replay" '"spawn_completed": true' \
+  cat "$DH2/board-claims/nonce-d.json"
+t  "and the orphaned session is reported by name" "33-api-implementer" cat "$OUT2"
+t  "the report says the run was not ended"        "is NOT being ended"  cat "$OUT2"
+# The ticket must not reach a second worker: no end means the server lease
+# still holds #33, and reconcile itself spawns nothing for it.
+nt "the ticket is not re-dispatched" "name=33-api-implementer" cat "$DH2/spawn-capture.txt"
+# --- (e) a corrupt journal is loud, not invisible ---------------------------
+t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
+t "it names the file"                  "nonce-e.json"       cat "$OUT2"
+t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-e.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, the stranded run's end, and the two empty implement lanes. A repaired
 # marker sends nothing (no end for its live run 41), and the architect lane —

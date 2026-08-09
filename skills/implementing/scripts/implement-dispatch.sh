@@ -143,6 +143,35 @@ PY
 # fact — by handing the run straight back.
 _api_suppressed() { [ -f "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}/$1.json" ]; }
 
+# The claim journal is written through json.dump, never printf: the run id is
+# whatever the server sent, and a non-integer one (a string id, a null slipping
+# through) rendered into a bare `"run_id": %s` slot produces a file no reader
+# can parse — and an unparseable journal is a claimed run nobody can reconcile.
+# `ticket` and `daemon` land BEFORE the spawn on purpose; see _reconcile_claims.
+_journal_write() {  # <path> <lane> <run-id ('' = null)> <spawn-completed 0|1> [ticket] [daemon]
+  J_PATH="$1" J_LANE="$2" J_RUN="$3" J_DONE="$4" J_TICKET="${5:-}" J_DAEMON="${6:-}" \
+  python3 - <<'PY'
+import json, os
+e = os.environ
+run = e["J_RUN"]
+if run == "":
+    run = None
+else:
+    try:
+        run = int(run)
+    except ValueError:
+        pass
+j = {"lane": e["J_LANE"], "run_id": run, "spawn_completed": e["J_DONE"] == "1"}
+if e["J_TICKET"]:
+    j["ticket"] = e["J_TICKET"]
+if e["J_DAEMON"]:
+    j["daemon"] = e["J_DAEMON"]
+with open(e["J_PATH"], "w") as f:
+    json.dump(j, f)
+    f.write("\n")
+PY
+}
+
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
 import os
@@ -164,7 +193,7 @@ _claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
   # The nonce is journalled BEFORE the POST. A crash between the two leaves a
   # record reconciliation can replay, and the server answers a repeated nonce
   # with the same claim rather than a second one.
-  printf '{"lane": "%s", "run_id": null, "spawn_completed": false}\n' "$lane" > "$claims_dir/$nonce.json"
+  _journal_write "$claims_dir/$nonce.json" "$lane" '' 0
   # One process for the whole exchange (the _ticket_exports idiom above):
   # claim, write the assignment body, hand back shell-quoted facts. The run
   # bearer crosses exactly one boundary.
@@ -210,13 +239,16 @@ PY
     return 1
   fi
   if _api_suppressed "$C_TICKET"; then
+    # This BLOCKS the lane for the tick — head-of-line, not a skip. The server
+    # picks; we can only refuse what it handed us, so the suppressed ticket is
+    # still the head of that lane on the next claim and every ticket behind it
+    # waits. Server-side suppression (a claim that never offers the ticket) is
+    # the real fix — recorded on arkho#7.
     echo "#$C_TICKET is suppressed — releasing run $C_RUN_ID; lane $lane stands down this tick"
     _api_end_run "$C_RUN_ID" abandoned
     rm -f "$claims_dir/$nonce.json" "$body_file"
     return 1
   fi
-  printf '{"lane": "%s", "run_id": %s, "spawn_completed": false}\n' "$lane" "$C_RUN_ID" \
-    > "$claims_dir/$nonce.json"
 
   local role protocol_file decompose model name prompt spawn_out uuid
   case "$lane" in
@@ -228,6 +260,15 @@ PY
                 model="${IMPLEMENT_MODEL:-opus}" ;;
   esac
   name="$C_TICKET-api-$lane"
+  # Ticket and daemon name are journalled BEFORE the spawn, not after it. The
+  # run id reaches a registry meta only through board-bind, which runs at the
+  # END of the handover — so a crash anywhere in the spawn (the uuid poll is
+  # seconds wide, and the session is already detached and surviving) leaves a
+  # journal with a run id that no meta knows, indistinguishable from a run that
+  # never spawned at all. The daemon name is the only evidence of that session
+  # that exists before the bind, and reconciliation needs it to tell "never
+  # spawned" from "spawned, live, unbound".
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name"
   # ENGINE_NAME is claude here and the engine label plays no part: a claim
   # response carries the assignment, not the ticket's labels, so there is
   # nothing to route on. ENV_TRACKER_ISSUE is "none" for the same reason —
@@ -261,8 +302,7 @@ PY
                       _api_end_run "$C_RUN_ID" abandoned
                       rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
   # The handoff is done: the journal may no longer be replayed, only observed.
-  printf '{"lane": "%s", "run_id": %s, "spawn_completed": true}\n' "$lane" "$C_RUN_ID" \
-    > "$claims_dir/$nonce.json"
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 1 "$C_TICKET" "$name"
 
   # The bearer goes to board-bind so it lands in the meta at 0600: the sweep's
   # renew/relay/resume phases read it back out of there, and a worker whose
@@ -312,48 +352,98 @@ _claim_one() { _claim_one_with_nonce "$1" "$(uuidgen)" "$2"; }
 # against the registry (a journal that names a run the registry knows was in
 # fact handed off); the shell performs only the two actions that leave this
 # machine.
+#
+# ENDING A RUN IS THE ONLY DESTRUCTIVE ACTION HERE, and it is taken only when
+# the evidence says no session exists. A run id alone never proves that: it
+# reaches a meta through board-bind, the LAST step of the handover, so the
+# whole spawn window shows up as "run claimed, registry silent" while a
+# detached worker is already running. Ending there kills a live run and frees
+# the ticket for a second worker. The daemon name in the journal closes that
+# window; anything else the registry cannot speak to is held, and the server
+# lease reclaim — not this dispatcher — resolves it.
 _reconcile_claims() {
-  local actions act nonce lane run cap claims_dir="$DAEMON_HOME/board-claims"
+  local actions lines line act nonce lane run extra cap claims_dir="$DAEMON_HOME/board-claims"
   actions="$(T_DHOME="$DAEMON_HOME" python3 - <<'PY'
 import glob, json, os
 home = os.environ["T_DHOME"]
 live = set()
+names = set()
+blind = []
 for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
         continue
     try:
         m = json.load(open(p))
     except Exception:
+        # A meta we cannot read is a session we cannot rule out. Say so, and
+        # let every end below downgrade to a hold.
+        blind.append(p)
         continue
     if m.get("run_id"):
         live.add(str(m["run_id"]))
+    if m.get("name"):
+        names.add(str(m["name"]))
+for p in blind:
+    print("unreadable\t%s\t\t\t" % p)
 for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     try:
         j = json.load(open(p))
     except Exception:
+        # Silently skipping this hid a claimed run forever. It is reported and
+        # left alone: a journal nobody can read is not a journal anybody may
+        # act on.
+        print("unreadable\t%s\t\t\t" % p)
         continue
     if j.get("spawn_completed"):
         continue
     nonce = os.path.basename(p)[:-5]
+    lane = j.get("lane") or ""
     run = j.get("run_id")
+    daemon = j.get("daemon") or ""
     if run and str(run) in live:
         # the spawn DID complete — its worker is in the registry — and only
         # the marker write was lost. Repair it in place; nothing to send.
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
-        print("repaired\t%s\t%s\t%s" % (nonce, j.get("lane") or "", run))
+        print("repaired\t%s\t%s\t%s\t" % (nonce, lane, run))
+    elif run and daemon and daemon in names:
+        # A session by that name exists but no meta carries the run: the spawn
+        # landed and the bind did not. The worker is alive with its bearer in
+        # its environment, so the run is NOT ended and the ticket is NOT freed.
+        # The journal is closed to replay and left as the record.
+        j["spawn_completed"] = True
+        with open(p, "w") as f:
+            json.dump(j, f)
+        print("orphaned\t%s\t%s\t%s\t%s" % (nonce, lane, run, daemon))
+    elif run and blind:
+        print("held\t%s\t%s\t%s\t" % (nonce, lane, run))
     elif run:
-        print("end\t%s\t%s\t%s" % (nonce, j.get("lane") or "", run))
+        print("end\t%s\t%s\t%s\t" % (nonce, lane, run))
     else:
-        print("replay\t%s\t%s\t" % (nonce, j.get("lane") or ""))
+        print("replay\t%s\t%s\t\t" % (nonce, lane))
 PY
 )" || { echo "claim reconciliation failed — skipping it this tick" >&2; return 0; }
   [ -n "$actions" ] || return 0
-  while IFS=$'\t' read -r act nonce lane run; do
+  # Read the whole plan BEFORE acting on it. The actions below run children
+  # (a replayed claim, an end, a spawn) that inherit this stdin, and one of
+  # them consuming the rest of the plan would silently drop reconciliation
+  # steps — the class of bug that is invisible until the tick that needed them.
+  lines=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && lines+=("$line")
+  done <<<"$actions"
+  for line in ${lines[@]+"${lines[@]}"}; do
+    IFS=$'\t' read -r act nonce lane run extra <<<"$line"
     case "$act" in
+      unreadable)
+        echo "reconcile: unreadable json at $nonce — left untouched; no claim under it can be reconciled until it is repaired or removed by hand" >&2 ;;
       repaired)
         echo "reconcile: $nonce did spawn (run $run) — marker repaired" ;;
+      orphaned)
+        echo "reconcile: $nonce spawned $extra for run $run but never bound it — the session is live and is NOT being ended; it has no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" ;;
+      held)
+        echo "reconcile: $nonce claimed run $run — holding it; the registry has an unreadable meta, so a live session cannot be ruled out. The server lease reclaim owns this one." >&2 ;;
       end)
         # Claimed but never handed off. The response WAS received, so a replay
         # would rotate nothing; the lease would otherwise strand the ticket
@@ -368,7 +458,7 @@ PY
         cap="$CAP"; [ "$lane" != architect ] || cap="$ARCH_CAP"
         _claim_one_with_nonce "$lane" "$nonce" "$cap" || true ;;
     esac
-  done <<<"$actions"
+  done
 }
 
 dispatch_api() {
