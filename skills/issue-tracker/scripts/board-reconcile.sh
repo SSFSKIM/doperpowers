@@ -14,6 +14,37 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
+# API mode: the same three questions, answered by the server rather than
+# re-derived here. The wake queue and the resume backlog are first-class
+# endpoints; "dispatchable" is a lane state with no owning run (the server
+# hands out the actual pick — this is the report, not the dispatcher).
+if [ "$BOARD_BINDING" = api ]; then
+  _api_py - <<'PY'
+import _board_api as A
+
+print("== wake queue (standing parks) ==")
+for q in A.queue_decisions():
+    print("#%s [%s] %s" % (q["ticket_id"], q["state"],
+                           (q.get("question") or {}).get("note") or ""))
+print("== needing resume ==")
+for e in A.needing_resume():
+    print("#%s %s (predecessor run %s)" % (e["ticketId"], e["state"],
+                                           e["predecessorRunId"]))
+print("== dispatchables ==")
+for t in A.tickets(principal="automation"):
+    if t["state"] in ("ready-for-architect", "ready-for-implementer") \
+       and not t.get("owner_run"):
+        print("#%s %s %s %s" % (t["id"], t["state"],
+                                t.get("priority") or "-", t["title"]))
+PY
+  # The local half of the report: gh mode flags daemons bound to ticket numbers
+  # the board does not have, and API mode would otherwise say nothing at all
+  # about the registry. lint owns that check in both bindings; its exit code is
+  # its own, so a drift finding must not fail this read-only report.
+  "$SCRIPT_DIR/board-lint.sh" || true
+  exit 0
+fi
+
 T_DHOME="$DAEMON_HOME" _py - <<'PY'
 import glob
 import json

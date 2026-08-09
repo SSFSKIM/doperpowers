@@ -12,10 +12,31 @@
 # last), issue number as tiebreaker — the top ELIGIBLE row is the next pick.
 # Off-machine label states surface as untracked / conflict (fix via
 # board-transition.sh; board-lint.sh names them all).
+# API mode is thinner and says so: rows come back in the server's order (which
+# is not dispatch order — the header line says as much) as
+# `#<id> <state> <priority> <title>`, with no tags.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
+
+# API mode: the server owns the queue. It computes eligibility and hands back
+# rows in its own order, so this prints them as given — no local re-derivation
+# of ELIGIBLE/waiting/CLOSE? tags, which here would be a second, weaker opinion
+# about a decision the board already made (and blocked-by edges and PR linkage,
+# which those tags read, are not in the v1 payload at all).
+if [ "$BOARD_BINDING" = api ]; then
+  T_STATE="${1:-}" _api_py - <<'PY'
+import os
+import _board_api as A
+
+rows = A.tickets(state=os.environ["T_STATE"] or None, principal="automation")
+print("# dispatch order is server-owned in API mode")
+for t in rows:
+    print("#%s %s %s %s" % (t["id"], t["state"], t.get("priority") or "-", t["title"]))
+PY
+  exit 0
+fi
 
 T_FILTER="${1:-}" _py - <<'PY'
 import os
