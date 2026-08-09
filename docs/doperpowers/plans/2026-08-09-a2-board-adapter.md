@@ -1188,8 +1188,13 @@ Add to the test: the spawn env includes `BOARD_RUN_TOKEN=tok-w`; assert
 (`stat -f %Lp` on darwin / `stat -c %a` on linux — the helper picks by
 `uname`).
 
-Also export `BOARD_ROOT` from `_lib.sh` (one line: `export BOARD_ROOT` after it
-is computed) so the heredoc above can read it.
+Do NOT export `BOARD_ROOT` from `_lib.sh` — the Task 1 review closed that as a
+wrong-repo inheritance trap (a child sourcing `_binding.sh` in another repo
+would inherit the parent's root), and `test-binding.sh` now has a leak
+assertion that fails if the export comes back. Instead pass it per-call, the
+same way `T_UUID`/`T_RUN`/`T_DHOME` already ride the invocation:
+`T_ROOT="$BOARD_ROOT" _api_py …` and read `os.environ.get("T_ROOT")` in the
+heredoc above (replacing the `BOARD_ROOT` read at the `project_key` line).
 
 - [ ] **Step 4: Run tests** — `bash tests/claude-code/board-api/test-bind.sh` → `PASS`.
 
