@@ -67,7 +67,12 @@ stay actor-blind:
 1. **Run context wins:** `BOARD_RUN_TOKEN` set in env (injected by the
    dispatcher at spawn, alongside `BOARD_RUN_ID`, `BOARD_RUN_FENCE`,
    `BOARD_API_URL`) → speak as the run. Server-side `own-run` / `own-ticket`
-   scoping and fence checks apply.
+   scoping and fence checks apply. **Resume rehydration:** `daemon-resume`
+   forks a fresh process from the caller's environment, so every resume
+   (relay, successor, inline) re-injects the `BOARD_RUN_*` set — sourced
+   from the run's bearer stored in the daemon registry meta at bind time
+   (local plaintext, file mode 0600; same exposure class as the session
+   transcripts stored beside it, and the server holds only the hash).
 2. **Operator context:** no run token → load
    `~/.arkho-board/<repo-slug>.env`, which carries `BOARD_AUTOMATION_TOKEN`
    (a `board.principal` of kind automation with `dispatch` + `sweep`
@@ -158,8 +163,11 @@ daemon). Its API branch, in order:
    the assignment, by contract the only route a run has to its own ticket
    text — written into the bootstrap.
 
-Triggered dispatch (`implement-dispatch.sh <n>`) stays valid as a targeted
-claim; hand-running any phase is legal — each mints fresh nonces, and a
+Triggered dispatch (`implement-dispatch.sh <n>`) is **gh-only**: the API
+exposes no claim-by-ticket route (`claim-successor` serves reclaim markers,
+not arbitrary targeting), so in API mode the `<n>` form fails loud naming
+the gap — a targeted-claim route is a flow-back candidate recorded on
+arkho#7. Hand-running any phase is legal — each mints fresh nonces, and a
 persisted nonce is only ever replayed pre-spawn (see the nonce-lifecycle
 entry in the Decision Log). The tick's phases are also individually
 invokable for the drill.
@@ -440,3 +448,15 @@ Pending — written at finish.
   + flow-back (F8); transition prints response `to` (F9); cap semantics
   pinned local-first (F10); relay prompt keeps gh orientation preamble
   (F11); plan-time read-scope audit gate (F12).
+- v1.2 (2026-08-09): plan-time hostile read + Codex adversarial plan review
+  (gpt-5.6-sol, 6/6 adopted). Two spec changes: **triggered dispatch is
+  gh-only** — the API has no claim-by-ticket route, so the `<n>` form fails
+  loud in API mode and targeted claim joins arkho#7 as a flow-back
+  candidate (replaces "stays valid as a targeted claim"); **bearer-at-rest
+  rehydration** — daemon-resume forks from the caller's env, so run
+  credentials are stored in the daemon registry meta (0600) at bind time
+  and re-injected on every resume. Plan-level adoptions (no spec change):
+  ack gated on proven delivery + sweep lock; persist-before-resume enforced
+  in code order; binding resolution as a pre-gh sourceable in every entry
+  point; claim-journal startup reconciliation + real daemon-spawn output
+  parsing; interactive verbs default to the human principal.

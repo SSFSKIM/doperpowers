@@ -110,7 +110,7 @@ resume_attempts (int)
 
 **Interfaces:**
 - Consumes: nothing (first task).
-- Produces: `BOARD_BINDING`, `BOARD_API_URL`, `BOARD_CREDENTIALS_FILE`, `_api_py` (see File Structure block — later tasks rely on these exact names).
+- Produces: `skills/issue-tracker/scripts/_binding.sh` — a SIDE-EFFECT-FREE sourceable that resolves `BOARD_BINDING`, `BOARD_API_URL`, `BOARD_CREDENTIALS_FILE`, `BOARD_ROOT` and defines `_api_py`; it never touches gh. `_lib.sh` sources it; the dispatch scripts and `board-sweep.sh` (Tasks 7-9) source it EARLY — before any gh initialization — which is what makes their API branches reachable without gh installed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -181,15 +181,27 @@ Expected: FAIL lines (BOARD_BINDING is unset today — probes print nothing matc
 
 - [ ] **Step 3: Implement**
 
-In `_lib.sh`, replace lines 36-45 (the whole `BOARD_REPO` resolution block) with:
+Create `skills/issue-tracker/scripts/_binding.sh` — deliberately a separate
+sourceable, NOT part of `_lib.sh`: the dispatch scripts (Tasks 7-9) must
+resolve the binding before their gh-mode initialization runs, and sourcing all
+of `_lib.sh` there would collide with their own `die`/env definitions. It must
+be safe to source from any script (no `set` changes, no gh, computes
+`BOARD_ROOT` itself if unset):
 
 ```bash
-# Per-repo board binding (A2): .doperpowers/board.json selects the substrate.
-# Absent or {"binding":"gh"} -> gh mode, byte-identical to pre-A2. With
-# {"binding":"api","url":...} the toolkit speaks the Arkho board API and gh
-# is neither required nor ever invoked.
+#!/usr/bin/env bash
+# _binding.sh — per-repo board-binding resolution (A2). Side-effect-free:
+# sourceable from ANY entry point BEFORE gh-mode initialization. Defines
+# BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py.
+# .doperpowers/board.json selects the substrate: absent or {"binding":"gh"}
+# -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...} -> the
+# toolkit speaks the Arkho board API and gh is neither required nor invoked.
 BOARD_BINDING=gh
 BOARD_API_URL="${BOARD_API_URL:-}"
+if [ -z "${BOARD_ROOT:-}" ]; then
+  BOARD_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "error: not inside a git repo" >&2; return 1 2>/dev/null || exit 1; }
+fi
 if [ -f "$BOARD_ROOT/.doperpowers/board.json" ]; then
   _binding_line="$(python3 - "$BOARD_ROOT/.doperpowers/board.json" <<'PY'
 import json, sys
@@ -201,14 +213,32 @@ print("%s|%s" % (cfg.get("binding", "gh"), cfg.get("url", "")))
 PY
 )"
   case "$_binding_line" in
-    parse-error*) die ".doperpowers/board.json: ${_binding_line#parse-error: }" ;;
+    parse-error*) echo "error: .doperpowers/board.json: ${_binding_line#parse-error: }" >&2
+                  return 1 2>/dev/null || exit 1 ;;
     api\|*) BOARD_BINDING=api
             [ -n "$BOARD_API_URL" ] || BOARD_API_URL="${_binding_line#api|}"
-            [ -n "$BOARD_API_URL" ] || die ".doperpowers/board.json names binding=api but no url" ;;
+            [ -n "$BOARD_API_URL" ] || { echo "error: .doperpowers/board.json names binding=api but no url" >&2
+                                         return 1 2>/dev/null || exit 1; } ;;
   esac
 fi
 BOARD_CREDENTIALS_FILE="${BOARD_CREDENTIALS_FILE:-$HOME/.arkho-board/$(basename "$BOARD_ROOT").env}"
-export BOARD_BINDING BOARD_API_URL BOARD_CREDENTIALS_FILE
+export BOARD_BINDING BOARD_API_URL BOARD_CREDENTIALS_FILE BOARD_ROOT
+
+# Run an inline python3 board operation with the API client importable and the
+# binding env visible. _BINDING_DIR: this file's own directory, so non-board
+# entry points (dispatch scripts) get the right PYTHONPATH without BOARD_SCRIPTS.
+_BINDING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_api_py() { PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  BOARD_API_URL="$BOARD_API_URL" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  python3 "$@"; }
+```
+
+Then in `_lib.sh`, replace lines 36-45 (the whole `BOARD_REPO` resolution
+block) with:
+
+```bash
+# shellcheck source=_binding.sh
+. "$BOARD_SCRIPTS/_binding.sh"
 
 # The target repo (owner/name) — gh mode only: $BOARD_REPO wins, else the
 # checkout's repo. Fail-loud when gh is missing/unauthenticated/offline.
@@ -218,15 +248,11 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
     || die "cannot resolve the GitHub repo (gh auth status? set BOARD_REPO=owner/name)"
 fi
 export BOARD_REPO
-
-# Run an inline python3 board operation with the API client importable and the
-# binding env visible (the plain _py below stays for gh-mode callers).
-_api_py() { PYTHONPATH="$BOARD_SCRIPTS${PYTHONPATH:+:$PYTHONPATH}" \
-  BOARD_API_URL="$BOARD_API_URL" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
-  python3 "$@"; }
 ```
 
-(Keep the existing `_py`, `DAEMON_HOME`, render-cache and server-pid helpers exactly as they are; only the BOARD_REPO block changes and `_api_py` is appended near `_py`.)
+(`BOARD_SCRIPTS` is defined a few lines above the replaced block; keep the
+existing `_py`, `DAEMON_HOME`, render-cache and server-pid helpers exactly as
+they are.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -240,8 +266,8 @@ Expected: same pass set as on the parent commit.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add skills/issue-tracker/scripts/_lib.sh tests/claude-code/board-api/
-git commit -m "feat(a2): per-repo board binding resolution in _lib.sh"
+git add skills/issue-tracker/scripts/_binding.sh skills/issue-tracker/scripts/_lib.sh tests/claude-code/board-api/
+git commit -m "feat(a2): per-repo board binding resolution (_binding.sh, sourceable pre-gh)"
 ```
 
 ---
@@ -518,12 +544,12 @@ def end_run(run_id, reason="completed"):
                    {"reason": reason}, "automation")
 
 
-def register(payload, principal="auto"):
+def register(payload, principal="human"):
     return request("POST", "/tickets", payload, principal)
 
 
 def transition(tid, to, note=None, pr=None, plan=None, branch=None,
-               fence=None, principal="auto"):
+               fence=None, principal="human"):
     body = {"to": to}
     for k, v in (("note", note), ("pr", pr), ("plan", plan),
                  ("branch", branch), ("fence", fence)):
@@ -532,7 +558,7 @@ def transition(tid, to, note=None, pr=None, plan=None, branch=None,
     return request("POST", "/tickets/%s/transition" % int(tid), body, principal)
 
 
-def comment(tid, kind="comment", text=None, body=None, principal="auto"):
+def comment(tid, kind="comment", text=None, body=None, principal="human"):
     payload = {"kind": kind}
     if text is not None:
         payload["text"] = text
@@ -550,14 +576,14 @@ def park_answer(tid, replies, to=None, correlation_id=None):
     return request("POST", "/tickets/%s/park-answer" % int(tid), body, "human")
 
 
-def tickets(state=None, category=None, principal="auto"):
+def tickets(state=None, category=None, principal="human"):
     qs = "&".join("%s=%s" % (k, v) for k, v in
                   (("state", state), ("category", category)) if v)
     return request("GET", "/tickets" + ("?" + qs if qs else ""),
                    principal=principal)
 
 
-def timeline(tid, principal="auto"):
+def timeline(tid, principal="human"):
     return request("GET", "/tickets/%s/timeline" % int(tid), principal=principal)
 
 
@@ -565,9 +591,26 @@ def queue_decisions():
     return request("GET", "/queue/decisions", principal="human")
 ```
 
-Note on principals: read helpers default `principal="auto"` so a worker's env
-token wins; operator-context scripts pass `principal="automation"` or
-`"human"` explicitly per the Global Constraints table.
+Note on principals (Codex review F5): `token()` returns the env run token
+FIRST whatever the principal argument — so the ticket-facing helpers
+(`register`/`transition`/`comment`/`tickets`/`timeline`) default
+`principal="human"`, which gives worker contexts the run principal
+automatically and hand-run operator commands the human token instead of a
+death. `"auto"` (die without a run token) remains for verbs that are
+worker-only by contract. Sweep/dispatch call sites pass `"automation"`
+explicitly. Add to the unit test (Step 2's file) an operator-context case —
+no `BOARD_RUN_TOKEN` in env:
+
+```bash
+t "operator context falls back to human token" '"auth": "Bearer human-tok"' \
+  bash -c "run_py() { PYTHONPATH='$SCRIPTS' BOARD_API_URL='http://127.0.0.1:$PORT' \
+    BOARD_CREDENTIALS_FILE='\$1' python3 -c \"\$2\"; }; \
+    run_py '$CREDS' 'import _board_api as A
+A.comment(12, text=\"hello\")' >/dev/null 2>&1; grep comment '$FIX.log' | tail -1"
+```
+
+(plus a `POST /tickets/12/comment` fixture row; the implementer wires it into
+the same fixtures file.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -723,6 +766,12 @@ with
 (`{{BOARD_SCRIPTS}}` is already a bootstrap-substituted placeholder in all
 three protocols — verify with `grep -n BOARD_SCRIPTS` in each file; if a file
 renders it under a different name, use that file's existing placeholder.)
+
+Then sweep for stragglers (Codex review F3): `grep -rn "gh issue comment" skills/*/SKILL.md skills/*/references/*.md`
+— every WORKER-executed hit (the spike protocol's findings/gate comments
+included) gets the same `board-comment.sh` substitution; dispatcher- or
+human-context hits (wake-ritual prose, `gh issue view --comments` guidance)
+are left for Task 14's read-scope audit to classify.
 
 - [ ] **Step 6: Run the full existing suite** — `tests/claude-code/run-skill-tests.sh` → same pass set (protocol text changes must not break bootstrap render tests).
 
@@ -1087,7 +1136,7 @@ DH="$(mktemp -d)"
 printf '{"uuid":"u-1234","name":"w","status":"working"}' > "$DH/w.json"
 
 ( cd "$r" && DAEMON_HOME="$DH" BOARD_CREDENTIALS_FILE="$CREDS" \
-  BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 "$SCRIPTS/board-bind.sh" u-1234 12 )
+  BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 BOARD_RUN_TOKEN=tok-w "$SCRIPTS/board-bind.sh" u-1234 12 )
 t "bind hits the API with locator" '\"storeNs\": \"local:' cat "$FIX.log"
 t "registry meta gains run fields" '"run_id": 41' cat "$DH/w.json"
 t "bind_confirmed recorded" '"bind_confirmed": true' cat "$DH/w.json"
@@ -1117,12 +1166,25 @@ for p in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
     if m.get("uuid") == env["T_UUID"]:
         m["run_id"] = int(env["T_RUN"])
         if env["T_FENCE"]: m["fence"] = int(env["T_FENCE"])
+        if os.environ.get("BOARD_RUN_TOKEN"):
+            # Bearer at rest for resume rehydration (Codex review F2):
+            # daemon-resume forks a fresh process from the CALLER's env, so
+            # every later resume (relay, successor, inline) re-injects
+            # BOARD_RUN_* from this meta. Local plaintext, 0600 — same
+            # posture as the session transcripts beside it.
+            m["run_bearer"] = os.environ["BOARD_RUN_TOKEN"]
         m["bind_confirmed"] = True
         json.dump(m, open(p, "w"), indent=1)
+        os.chmod(p, 0o600)
         break
 PY
 fi
 ```
+
+Add to the test: the spawn env includes `BOARD_RUN_TOKEN=tok-w`; assert
+`'"run_bearer": "tok-w"'` lands in the meta and the file mode is 600
+(`stat -f %Lp` on darwin / `stat -c %a` on linux — the helper picks by
+`uname`).
 
 Also export `BOARD_ROOT` from `_lib.sh` (one line: `export BOARD_ROOT` after it
 is computed) so the heredoc above can read it.
@@ -1205,6 +1267,23 @@ number argument is advisory in API mode — the server picks):
 
 ```bash
 # ---- API-mode dispatch: claim-based, lane-disciplined (spec § four-phase) ---
+# EARLY BINDING BOOTSTRAP (Codex review F3): source _binding.sh at the TOP of
+# implement-dispatch.sh — immediately after SCRIPT_DIR/SKILL_DIR are computed
+# and BEFORE any gh probe or gh-derived env resolution — and route to the API
+# path right there:
+#     . "$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)/_binding.sh"
+#     if [ "$BOARD_BINDING" = api ]; then
+#       # (the dispatch_api definitions below are loaded; then:)
+#       case "${1:-}" in
+#         --sweep) dispatch_api; exit 0 ;;
+#         ''|--*)  die "usage: implement-dispatch.sh <issue-number> | --sweep" ;;
+#         *) die "API-mode dispatch is claim-based — the server owns pick order, \
+# and the contract has no claim-by-ticket route; use --sweep. Targeted claim is \
+# a flow-back candidate recorded on arkho#7 (spec Revision Notes v1.2)." ;;
+#       esac
+#     fi
+# The gh-mode body (including its `command -v gh` checks) runs only below this
+# branch. Same pattern in review-dispatch.sh (Task 8).
 _api_registry_count() {  # open bound workers by lane-set, from registry metas
   T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
 import glob, json, os
@@ -1254,13 +1333,19 @@ PY
   esac
   name="$ticket-api-$lane"
   prompt="$(render_bootstrap_api "$ticket" "$role" "$protocol" "$body_file")"
-  local uuid
-  uuid="$(BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run_id" BOARD_RUN_FENCE="$fence" \
+  local uuid spawn_out
+  spawn_out="$(BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run_id" BOARD_RUN_FENCE="$fence" \
           BOARD_API_URL="$BOARD_API_URL" \
           "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
-          "$([ "$lane" = architect ] && echo "${ARCHITECT_MODEL:-fable}" || echo "${IMPLEMENT_MODEL:-opus}")" \
-          | sed -n 's/^uuid: //p')"
-  [ -n "$uuid" ] || die "daemon-spawn printed no uuid for #$ticket"
+          "$([ "$lane" = architect ] && echo "${ARCHITECT_MODEL:-fable}" || echo "${IMPLEMENT_MODEL:-opus}")")"
+  # UUID extraction (Codex review F4): daemon-spawn does NOT print "uuid: …" —
+  # extract it EXACTLY the way this script's gh-mode body already does (see the
+  # spawn block around implement-dispatch.sh:348-370 and reuse that parsing
+  # verbatim; if it resolves via the registry rather than stdout, do the same
+  # here). The test stub must then emit the REAL daemon-spawn output format —
+  # copy a genuine `daemon-spawn.sh --no-wait` output line into the stub.
+  uuid="$(extract_spawn_uuid <<<"$spawn_out")"   # the helper the gh path uses / this task factors out
+  [ -n "$uuid" ] || die "could not extract uuid from daemon-spawn output for #$ticket: $spawn_out"
   printf '{"lane": "%s", "run_id": %s, "spawn_completed": true}\n' "$lane" "$run_id" > "$claims_dir/$nonce.json"
   BOARD_RUN_ID="$run_id" BOARD_RUN_FENCE="$fence" "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$ticket"
   # stamp lane into the registry meta for cap-counting and the answer relay
@@ -1276,7 +1361,46 @@ PY
   echo "claimed #$ticket run=$run_id lane=$lane → $uuid"
 }
 
+_reconcile_claims() {  # startup pass (Codex review F4): finish or release
+  local f                # journals a crash left with spawn_completed=false
+  for f in "$DAEMON_HOME"/board-claims/*.json; do
+    [ -e "$f" ] || continue
+    local done run_id nonce lane
+    done="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["spawn_completed"])' "$f")"
+    [ "$done" = "False" ] || continue
+    nonce="$(basename "$f" .json)"
+    run_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run_id") or "")' "$f")"
+    if [ -n "$run_id" ] && _registry_has_run "$run_id"; then
+      # spawn actually completed, only the marker write was lost — repair it
+      python3 -c 'import json,sys; p=sys.argv[1]; m=json.load(open(p)); m["spawn_completed"]=True; json.dump(m, open(p,"w"))' "$f"
+    elif [ -n "$run_id" ]; then
+      # claimed but never handed off: the lease would strand until reclaim —
+      # end the run now and drop the journal (never replay: the response was
+      # received, so a replay would rotate nothing useful)
+      T_RUN="$run_id" _api_py - <<'PY' || true
+import os
+import _board_api as A
+try: A.end_run(os.environ["T_RUN"], "abandoned")
+except A.RunEnded: pass
+PY
+      rm -f "$f" "${f%.json}.body.md"
+    else
+      # nonce persisted, response lost: replay recovers the claim (pre-spawn
+      # replay is the ONLY legal replay); route it through _claim_one's spawn
+      lane="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lane"])' "$f")"
+      rm -f "$f"
+      _claim_one_with_nonce "$lane" "$nonce" || true
+    fi
+  done
+}
+
+# _claim_one is factored as _claim_one_with_nonce "$lane" "$(uuidgen)" so the
+# reconciliation replay path and the fresh path share one body.
+_registry_has_run() { _registry_metas 2>/dev/null | awk -F'\t' -v r="$1" '$2 == r {found=1} END {exit !found}'; }
+
 dispatch_api() {
+  mkdir -p "$DAEMON_HOME/board-claims"
+  _reconcile_claims
   local impl_cap="${IMPLEMENT_MAX_CONCURRENT:-5}" arch_cap="${ARCHITECT_MAX_CONCURRENT:-1}"
   # local cap first (registry), server laneCap as belt — spec § tick phase 4
   while [ "$(_api_registry_count architect)" -lt "$arch_cap" ]; do
@@ -1287,6 +1411,10 @@ dispatch_api() {
   done
 }
 ```
+
+(`_registry_metas` here is the same helper Task 9 defines for `_sweep_api.sh`
+— this script defines its own copy; the two-line duplication beats a shared
+lib neither script has today.)
 
 `render_bootstrap_api` renders the SAME bootstrap template with API-mode
 substitutions: `{{ISSUE_NUMBER}}` → the ticket id, `{{ISSUE_URL}}` →
@@ -1303,15 +1431,11 @@ board scripts use them automatically. Your board reads reach your own ticket
 and its direct children only.
 ```
 
-Route both entry modes at the bottom of the script:
-
-```bash
-if [ "$BOARD_BINDING" = api ]; then dispatch_api; exit 0; fi
-```
-
-(placed before the existing gh-mode `--sweep`/`<n>` handling at line ~411;
+Routing lives at the TOP of the script (the early-bootstrap comment block at
+the head of this step): binding resolved before any gh probe, `--sweep` →
+`dispatch_api`, a bare `<n>` → fail loud naming the arkho#7-recorded gap.
 `ARCHITECT_PROTOCOL` is the existing architecting SKILL.md path variable — if
-the script names it differently, reuse its name.)
+the script names it differently, reuse its name.
 
 - [ ] **Step 4: Run tests** — `bash tests/claude-code/board-api/test-dispatch-claim.sh` → `PASS`; full suite unchanged.
 
@@ -1462,12 +1586,19 @@ called again, ack still fired.)
 #   guarded; each invokable alone: _sweep_api.sh [renew|relay|resume|dispatch|all]
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=_lib.sh
-. "$SCRIPT_DIR/_lib.sh"
-[ "$BOARD_BINDING" = api ] || die "_sweep_api.sh runs only under an api binding"
+# shellcheck source=_binding.sh
+. "$SCRIPT_DIR/_binding.sh"
+[ "$BOARD_BINDING" = api ] || { echo "error: _sweep_api.sh runs only under an api binding" >&2; exit 1; }
+die() { echo "error: $*" >&2; exit 1; }
+DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$SCRIPT_DIR/../../orchestrating-daemons/scripts}"
 
-_registry_metas() {  # prints "path<TAB>uuid<TAB>run_id<TAB>bind_confirmed<TAB>ticket<TAB>transcript<TAB>lane<TAB>status"
+# One sweep at a time (Codex review F1): overlapping ticks would race the
+# sentinel check between its grep and its resume.
+exec 9>"$DAEMON_HOME/.sweep-api.lock"
+flock -n 9 || exit 0
+
+_registry_metas() {  # prints "uuid<TAB>run_id<TAB>bind_confirmed<TAB>ticket<TAB>bearer<TAB>fence<TAB>lane<TAB>status<TAB>path"
   T_DHOME="$DAEMON_HOME" python3 - <<'PY'
 import glob, json, os
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
@@ -1476,16 +1607,25 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     except Exception: continue
     if not m.get("run_id"): continue
     print("\t".join(str(m.get(k, "")) for k in
-          ("uuid", "run_id", "bind_confirmed", "ticket", "transcript", "lane", "status")), end="")
+          ("uuid", "run_id", "bind_confirmed", "ticket", "run_bearer", "fence", "lane", "status")), end="")
     print("\t" + p)
 PY
 }
 
+# Transcript path for a session (Codex review F1): the registry meta has NO
+# transcript field — resolve it the way orchestrating-daemons' own tooling
+# does. IMPLEMENTER: read daemon-resume.sh / daemon-list.sh and factor their
+# session-jsonl path derivation (the daemon's project dir + current session
+# uuid) into this helper; the unit-test fixtures must then use the SAME
+# convention (a meta whose derived path exists), never a fabricated
+# `transcript` field.
+_transcript_for_uuid() { :; }  # implemented from the real convention, above
+
 _alive() { [ "$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$1" 2>/dev/null || echo absent)" != absent ]; }
 
 phase_renew() {
-  local uuid run bindc ticket transcript lane status path
-  while IFS=$'\t' read -r uuid run bindc ticket transcript lane status path; do
+  local uuid run bindc ticket bearer fence lane status path
+  while IFS=$'\t' read -r uuid run bindc ticket bearer fence lane status path; do
     [ -n "$run" ] || continue
     if _alive "$uuid"; then
       if T_RUN="$run" _api_py - <<'PY'
@@ -1520,12 +1660,12 @@ $2
 EOF
 }
 
-_meta_for_ticket() {  # prints uuid<TAB>transcript for the bound meta of ticket $1
-  _registry_metas | awk -F'\t' -v t="$1" '$4 == t { print $1 "\t" $5; exit }'
+_meta_for_ticket() {  # prints uuid<TAB>bearer<TAB>run_id<TAB>fence for the bound meta of ticket $1
+  _registry_metas | awk -F'\t' -v t="$1" '$4 == t { print $1 "\t" $5 "\t" $2 "\t" $6; exit }'
 }
 
 phase_relay() {
-  local page
+  local page acked_this_pass
   while :; do
     page="$(_api_py - <<'PY'
 import json
@@ -1534,6 +1674,7 @@ print(json.dumps(A.unrelayed()))
 PY
 )"
     [ "$page" != "[]" ] || break
+    acked_this_pass=0
     local n
     n="$(printf '%s' "$page" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
     local i=0
@@ -1542,25 +1683,37 @@ PY
       aid="$(printf '%s' "$page" | python3 -c "import json,sys; print(json.load(sys.stdin)[$i]['answerEventId'])")"
       tid="$(printf '%s' "$page" | python3 -c "import json,sys; print(json.load(sys.stdin)[$i]['ticketId'])")"
       replies="$(printf '%s' "$page" | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)[$i]['replies']))")"
-      local bound uuid transcript
-      bound="$(_meta_for_ticket "$tid")"
-      uuid="${bound%%$'\t'*}"; transcript="${bound#*$'\t'}"
+      local uuid bearer run fence transcript
+      IFS=$'\t' read -r uuid bearer run fence < <(_meta_for_ticket "$tid")
       if [ -z "$uuid" ] || ! _alive "$uuid"; then
         echo "relay: #$tid answer $aid — no live bound session; successor path will deliver"
       else
+        transcript="$(_transcript_for_uuid "$uuid")"
+        # Ack is gated on PROVEN delivery (Codex review F1): sentinel already
+        # present, or a resume call that returned success. A failed resume
+        # acks nothing — the answer stays on the feed for the next tick.
         if [ -n "$transcript" ] && grep -qF "[board-relay answer:$aid]" "$transcript" 2>/dev/null; then
           echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
+        elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
+             BOARD_API_URL="$BOARD_API_URL" \
+             "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
+          :  # delivered
         else
-          "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$(_relay_prompt "$aid" "$replies")"
+          echo "relay: #$tid answer $aid — resume FAILED; not acked, retried next tick"
+          i=$((i+1)); continue
         fi
         _api_py - <<PY
 import _board_api as A
 A.ack($aid)
 PY
+        acked_this_pass=$((acked_this_pass+1))
       fi
       i=$((i+1))
     done
-    # acked the page; read again to drain (level-triggered by contract)
+    # level-triggered drain: re-read only while progress is being made —
+    # a pass that acked nothing (all entries dead-session/failed) must break
+    # or this loop spins on the same page forever
+    [ "$acked_this_pass" -gt 0 ] || break
   done
 }
 
@@ -1577,17 +1730,22 @@ case "${1:-all}" in
 esac
 ```
 
-And at the top of `board-sweep.sh`, right after `_lib.sh` is sourced:
+And at the very TOP of `board-sweep.sh` — before its own env/gh
+initialization, mirroring the dispatch scripts (Codex review F3):
 
 ```bash
+. "$SCRIPT_DIR/_binding.sh"
 if [ "$BOARD_BINDING" = api ]; then exec "$SCRIPT_DIR/_sweep_api.sh" all; fi
 ```
 
-Note the undeliverable-answer branch: **no ack** — the answer stays on the
-feed for the successor path (spec: never ack-and-drop). The dead-session page
-therefore never drains for those entries; the drain loop must break after a
-pass that acked nothing new (guard: compare page content or count acks; break
-when zero acks happened this pass — implement with a counter in `phase_relay`).
+Test-fixture honesty (Codex review F1): the Task-9 test's registry metas must
+NOT carry a fabricated `transcript` field — set up each fake session so that
+`_transcript_for_uuid` (the real derivation) resolves to the test's transcript
+file, i.e. create the file at the path the orchestrating-daemons convention
+derives for that uuid. Adjust the test scaffolding shown in Step 1
+accordingly when implementing the helper. The undeliverable/dead-session
+branch acks nothing by design (never ack-and-drop) — the drain loop breaks on
+a zero-ack pass, as coded above.
 
 - [ ] **Step 4: Run tests** — `bash tests/claude-code/board-api/test-sweep-renew-relay.sh` → `PASS`.
 
@@ -1631,6 +1789,12 @@ t "successor claimed for the feed entry" "/runs/claim-successor" cat "$FIX.log"
 t "folded answer delivered with sentinel" "[board-relay answer:121]" cat "$TRANSCRIPT"
 t "folded answer acked" "/answers/121/ack" cat "$FIX.log"
 t "successor bound" "/runs/44/bind" cat "$FIX.log"
+# persist-before-resume: the resume stub CAPTURES the registry meta at the
+# moment it runs (copy the meta file inside the stub); assert the copy already
+# carries run_id 44, the successor bearer, and bind_confirmed false
+t "registry persisted before resume" '"run_id": 44' cat "$DH/meta-at-resume.json"
+# env injection: the resume stub also dumps its BOARD_* env
+t "successor creds on resume env" "BOARD_RUN_TOKEN=tok-s" cat "$DH/resume-env.txt"
 # failure path: point daemon-resume at 'exit 1', re-serve the feed 3x with
 # fresh successor claims (runIds 45,46,47) and a fresh-spawn stub that also fails;
 # after cycle 3:
@@ -1731,7 +1895,33 @@ protocol.${text:+
 
 $text}"
   local delivered=""
-  if [ -n "$sess" ] && "$DAEMON_SCRIPTS/daemon-resume.sh" "$sess" "$prompt" 2>/dev/null; then
+  # Persist BEFORE resume (spec + Codex review F2): the successor's run
+  # identity must be durable before any delivery attempt — a crash after
+  # resume but before bind is repaired by phase 1 only if the registry
+  # already names run_id/bearer/fence. Update the predecessor session's meta
+  # in place (it is the session being resumed).
+  if [ -n "$sess" ]; then
+    T_UUID="$sess" T_RUN="$run" T_FENCE="$fence" T_BEARER="$bearer" T_TID="$tid" \
+    T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+import glob, json, os
+env = os.environ
+for p in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
+    if p.endswith(".reply.json"): continue
+    try: m = json.load(open(p))
+    except Exception: continue
+    if m.get("uuid") == env["T_UUID"]:
+        m.update(run_id=int(env["T_RUN"]), fence=int(env["T_FENCE"]),
+                 run_bearer=env["T_BEARER"], ticket=env["T_TID"],
+                 bind_confirmed=False)
+        json.dump(m, open(p, "w"), indent=1); os.chmod(p, 0o600)
+        break
+PY
+  fi
+  # daemon-resume forks a fresh process from OUR env (Codex review F2): the
+  # successor credentials ride the invocation or the worker writes nothing.
+  if [ -n "$sess" ] && BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" \
+       BOARD_RUN_FENCE="$fence" BOARD_API_URL="$BOARD_API_URL" \
+       "$DAEMON_SCRIPTS/daemon-resume.sh" "$sess" "$prompt" 2>/dev/null; then
     delivered="$sess"
   else
     # fresh spawn on the same successor bearer — session resume is optimization
@@ -2116,5 +2306,6 @@ git commit -m "feat(a2): final verification — acceptance 1-8 evidence, read-sc
 - **Spec coverage:** binding (T1), client core+errors+retry (T2), comment verb + protocol substitution (T3), register/transition + fail-loud + spike-409 + park-note (T4), read verbs incl. map/lint thinning (T5), bind/locator (T6), claim dispatch + nonce lifecycle + env injection + bootstrap (T7), qagent (T8), renew+bind-repair+relay sentinel (T9), resume-first + fold + suppression + escalation + phase-4 wiring (T10), board-answer dual-principal + inline relay + `--to` disposition (T11), local instance (T12), acceptance drills 1-6 (T13), read-scope audit + acceptance 7-8 + Outcomes (T14). Engine-routing limitation and A5 non-flip are scope-outs — no task, correctly.
 - **Known intentional gaps:** `board-map.sh` API mode renders parent edges only (`GET /tickets` v1 exposes no blocked-by) — noted in T5 and honest in the render; `board-list.sh` API mode drops `ELIGIBLE`/`CLOSE?` tags (server owns pick; close candidacy is a gh-PR concept) — the transcript drill only covers worker-visible surface, and workers don't call list in protocols.
 - **Type consistency:** `_board_api` function names/signatures fixed in File Structure and used identically in T4-T13; registry field names (`run_id`, `bind_confirmed`, `lane`, `spawn_completed`) consistent across T6/T7/T9/T10; sentinel format single-sourced as `A.SENTINEL` and the literal in `_relay_prompt` (T9) — implementer keeps them equal.
-- **Spec drift found while planning:** none that contradicts the spec; one refinement — the spec's "board-answer refuses `--posted`" behavior wasn't explicit (spec says answers ARE the record); T11 pins the refusal message. No Revision Note needed (consistent with spec text).
+- **Spec drift found while planning:** one — the spec's "triggered dispatch stays valid as a targeted claim" is not implementable: the API exposes no claim-by-ticket route (`claim-successor` serves reclaim markers only). Resolved: API-mode `implement-dispatch.sh <n>` fails loud naming the gap; targeted claim recorded as a flow-back candidate on arkho#7; spec Revision Notes v1.2 carries the change. Also pinned by review: `board-answer --posted` refusal (consistent with spec text, no revision).
+- **Codex adversarial review (gpt-5.6-sol) folded in:** all 6 findings adopted — ack gated on proven delivery + zero-ack drain break + sweep flock (F1); persist-before-resume + credential env injection on every resume + bearer-at-rest in registry meta 0600 (F2); `_binding.sh` sourceable pre-gh in every entry point + raw `gh issue view`/spike-protocol audit extended (F3); real daemon-spawn output parsing + claim-journal startup reconciliation (F4); interactive helpers default `principal="human"` + operator-context tests (F5); triggered dispatch fails loud, spec revised (F6).
 
