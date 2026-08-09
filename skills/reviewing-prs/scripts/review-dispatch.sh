@@ -57,6 +57,14 @@
 #                       ticket-bind retries (defaults 3 attempts, 2s delay)
 #   REVIEW_ACK_POLLS / REVIEW_ACK_DELAY
 #                       startup-barrier acknowledgement wait (600 x 0.2s)
+#   WORKTREE_BOOTSTRAP_CMD
+#                       optional project bootstrap run inside each fresh review
+#                       worktree before the worker spawns (e.g. `npm run
+#                       setup:worktree`). Unset = no bootstrap (prior behavior).
+#                       Failure logs to $DAEMON_HOME/<name>.bootstrap.log and
+#                       never blocks dispatch.
+#   WORKTREE_BOOTSTRAP_TIMEOUT
+#                       bootstrap time budget in seconds (default 900)
 #
 # Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
 # in the target repo declares the repo's validated hot paths/patterns —
@@ -324,6 +332,27 @@ sys.exit(1)
 PY
 }
 
+# ---- worktree bootstrap (optional, config-driven) ------------------------------
+# Detached review worktrees start bare — no dependencies, no local env files —
+# which made reviewers' verification runs fail red or pass vacuously (the env
+# tracker's dominant thread). When WORKTREE_BOOTSTRAP_CMD is set, run it inside
+# the fresh worktree BEFORE the worker spawns, so the environment is ready by
+# the time the reviewer's first verification command runs. Failure is recorded
+# but never fatal: the reviewer can finish bootstrap by hand, and blocking the
+# whole review on a provisioning hiccup would trade a known-bad env for no
+# review at all.
+_bootstrap_worktree() {  # <worktree-path> <worker-name>
+  [ -n "${WORKTREE_BOOTSTRAP_CMD:-}" ] || return 0
+  local wt="$1" wname="$2" log rc=0
+  log="$DAEMON_HOME/$wname.bootstrap.log"
+  ( cd "$wt" && timeout "${WORKTREE_BOOTSTRAP_TIMEOUT:-900}" \
+      bash -lc "$WORKTREE_BOOTSTRAP_CMD" ) >"$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "$wname: worktree bootstrap failed rc=$rc (see $log) — dispatching anyway" >&2
+  fi
+  return 0
+}
+
 # ---- per-PR dispatch (dedupe already decided by the caller) --------------------
 # Every step is explicitly guarded: in sweep mode this function runs behind
 # `||` (which suspends errexit through the WHOLE call subtree), so an
@@ -394,6 +423,7 @@ PY
   git -C "$LOCAL_REPO" worktree prune
   git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
     || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
+  _bootstrap_worktree "$wt" "review-pr-$pr"
 
   # Startup barrier + orchestrator-only control state. The worker receives only
   # the ready-file path; fixers receive neither it nor the sibling ledger path.
@@ -526,6 +556,7 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
   git -C "$LOCAL_REPO" worktree prune
   git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$int_ref" \
     || { echo "$name: worktree add failed (origin/$int_ref)" >&2; rm -rf "$tmp"; return 1; }
+  _bootstrap_worktree "$wt" "$name"
 
   control_dir="$(mktemp -d "$DAEMON_HOME/$name-control.XXXXXX")" \
     || { echo "$name: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }

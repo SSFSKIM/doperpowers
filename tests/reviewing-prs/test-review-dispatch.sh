@@ -518,6 +518,30 @@ assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "
 # set -e is suspended beneath the per-PR `||` wrapper.
 assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "control-state setup has a fail-closed guard"
 
+# ---- worktree bootstrap hook ---------------------------------------------------
+# WORKTREE_BOOTSTRAP_CMD runs inside the fresh worktree before the worker
+# spawns; its failure is reported but never blocks the dispatch.
+echo "worktree bootstrap:"
+reset_state
+out="$(WORKTREE_BOOTSTRAP_CMD='touch .bootstrapped && echo deps-ready' "$DISPATCH" 5)"
+WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
+assert_file_exists "$WT/.bootstrapped" "bootstrap command ran inside the fresh worktree"
+assert_contains "$(cat "$DAEMON_HOME/review-pr-5.bootstrap.log" 2>/dev/null || true)" "deps-ready" "bootstrap output lands in the registry log"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "bootstrapped dispatch still spawns"
+
+reset_state
+out="$(WORKTREE_BOOTSTRAP_CMD='echo boom >&2; exit 7' "$DISPATCH" 5 2>&1)"
+assert_contains "$out" "bootstrap failed rc=7" "failed bootstrap is reported with its exit code"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "failed bootstrap never blocks dispatch"
+
+reset_state
+out="$("$DISPATCH" 5)"
+if [ -f "$LOCAL_REPO/.claude/worktrees/review-pr-5/.bootstrapped" ]; then
+    fail "unset WORKTREE_BOOTSTRAP_CMD keeps prior behavior (no bootstrap)"
+else
+    pass "unset WORKTREE_BOOTSTRAP_CMD keeps prior behavior (no bootstrap)"
+fi
+
 # ---- skips --------------------------------------------------------------------
 echo "skips:"
 reset_state
