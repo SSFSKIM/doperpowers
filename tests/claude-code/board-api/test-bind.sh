@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# test-bind.sh — board-bind.sh's API branch: the session LOCATOR it posts and
+# the run fields it writes back into the daemon registry meta.
+#
+# Two halves, both asserted against a real socket: what went on the wire (the
+# fixture mock's request log) and what landed on disk (the registry meta,
+# including its file mode — the meta holds a bearer token at rest).
+. "$(dirname "$0")/helpers.sh"
+
+# A free port, not a fixed one: this file must survive running beside anything
+# else on the machine (same reason as test-register-transition.sh).
+PORT="$(python3 -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+
+FIX="$(mktemp)"; : > "$FIX.log"
+# The refusal body carries the NESTED envelope the service actually writes:
+# {"error": {"code": ..., "message": ...}} (API.md §1).
+cat > "$FIX" <<'JSON'
+[
+ {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/77/bind","status":409,
+  "body":{"error":{"code":"fence-stale","message":"run 77 is not current"}}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
+trap 'kill $MOCK 2>/dev/null' EXIT
+
+wait_for_port() {  # poll rather than sleep — a fixed nap is a flake
+  local tries=200
+  while [ "$tries" -gt 0 ]; do
+    if python3 -c "import socket, sys
+sys.exit(0 if socket.socket().connect_ex(('127.0.0.1', $1)) == 0 else 1)"; then
+      return 0
+    fi
+    tries=$((tries - 1))
+    sleep 0.05
+  done
+  return 1
+}
+wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
+
+# A `gh` stub earlier on PATH than any real gh: API mode must never reach it,
+# and board-bind's gh-mode half opens with a full board snapshot, so this is
+# the assertion that the binding branch actually took. It records into a FILE
+# rather than on stdout — _board.gh() captures its child's stdout, so a stub
+# that only echoed would be invisible to every assertion here.
+STUB="$(mktemp -d)"; MARKER="$STUB/gh-invoked"
+cat > "$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+echo GH-CALLED >> "$GH_STUB_MARKER"
+exit 1
+EOF
+chmod +x "$STUB/gh"
+
+statmode() {  # portable "what are this file's permission bits"
+  case "$(uname)" in
+    Darwin|*BSD) stat -f %Lp "$1" ;;
+    *) stat -c %a "$1" ;;
+  esac
+}
+
+CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
+r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+
+# DAEMON_HOME is pinned to a temp dir in every case below — a test that fell
+# through to the default would read (and rewrite) the operator's real registry.
+DH="$(mktemp -d)"
+printf '{"uuid":"u-1234","name":"impl-12","status":"working"}' > "$DH/u-1234.json"
+# The predecessor a successor claim hands over from: still marked working,
+# still holding the ticket, because the run it belonged to was reaped rather
+# than finished. gh mode calls that a live owner and refuses; API mode must
+# not, or the recovery path can never rebind the ticket the server just
+# reassigned.
+# It also still holds ITS bearer at 0600 — the strip below rewrites this file,
+# and a rewrite at the default umask would republish that secret.
+printf '{"uuid":"u-dead","name":"impl-12-prev","status":"working","ticket":"12","run_bearer":"tok-prev"}' \
+  > "$DH/u-dead.json"
+chmod 600 "$DH/u-dead.json"
+
+bind() {  # bind <uuid-or-prefix> <ticket> [VAR=val ...] — resets the gh marker
+  local q="$1" tid="$2"; shift 2
+  : > "$MARKER"
+  ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" DAEMON_HOME="$DH" \
+      BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RUN_TOKEN=tok-w "$@" \
+      "$SCRIPTS/board-bind.sh" "$q" "$tid" )
+}
+
+OUT="$(mktemp)"
+bind u-12 12 BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 > "$OUT" 2>&1 || true
+
+t  "bind still reports the registry write in API mode" "bound #12 ← u-1234" cat "$OUT"
+nt "api bind never invokes gh"                         "GH-CALLED"          cat "$MARKER"
+
+# The locator pinned WHOLE: a substring match on one key survives a payload
+# that renamed a key, dropped the session id, or sent the query prefix
+# (`u-12`) instead of the resolved daemon uuid.
+HOST="$(python3 -c 'import socket; print(socket.gethostname())')"
+PROJ="$(basename "$(cd "$r" && git rev-parse --show-toplevel)")"
+last_bind_body() {
+  grep "\"path\": \"/runs/$1/bind\"" "$FIX.log" | tail -1 |
+    python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
+}
+t "locator body pins storeNs / projectKey / sessionId" \
+  "{\"storeNs\": \"local:$HOST\", \"projectKey\": \"$PROJ\", \"sessionId\": \"u-1234\"}" \
+  last_bind_body 41
+# A run context always speaks as the run (the client's token() rule) — the
+# locator must not arrive under the automation identity.
+t "bind speaks with the run bearer" '"auth": "Bearer tok-w"' cat "$FIX.log"
+
+t "registry meta gains run_id"        '"run_id": 41'         cat "$DH/u-1234.json"
+t "registry meta gains the fence"     '"fence": 3'           cat "$DH/u-1234.json"
+t "bind_confirmed recorded"           '"bind_confirmed": true' cat "$DH/u-1234.json"
+t "the run bearer is stored at rest"  '"run_bearer": "tok-w"' cat "$DH/u-1234.json"
+t "ticket ownership still recorded"   '"ticket": "12"'       cat "$DH/u-1234.json"
+# The bearer at rest is why the mode matters: the meta sits beside the session
+# transcripts and must be no more readable than they are.
+t "the meta holding a bearer is 0600" "600" statmode "$DH/u-1234.json"
+
+# The successor handover, the other half of the reaped-predecessor case above:
+# the old owner is stripped rather than allowed to veto the rebind.
+nt "a reaped predecessor loses the ticket" '"ticket"' cat "$DH/u-dead.json"
+t  "stripping a predecessor never widens its bearer meta" "600" \
+  statmode "$DH/u-dead.json"
+
+# The renew path rebinds a meta whose bind never confirmed, so the ownership
+# write runs over a file that ALREADY holds a bearer. End-state pins only: the
+# transient widening inside the ownership write is closed by construction
+# (mode preservation), and no assertion from outside the process can observe a
+# window that narrows again before the command returns.
+bind u-1234 12 BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 >/dev/null 2>&1 || true
+t "a re-bind leaves the bearer meta at 0600" "600" statmode "$DH/u-1234.json"
+t "a re-bind still confirms"                 '"bind_confirmed": true' cat "$DH/u-1234.json"
+
+# A refused bind is not a bind: the meta may not claim confirmation the server
+# never gave, or a resume would rehydrate a locator the board does not hold.
+printf '{"uuid":"u-77","name":"impl-13","status":"working"}' > "$DH/u-77.json"
+RC=0
+bind u-77 13 BOARD_RUN_ID=77 >/dev/null 2>&1 || RC=$?
+t  "the refused bind did reach the server" '"path": "/runs/77/bind"' cat "$FIX.log"
+t  "a refused bind exits nonzero"                "rc=1"             echo "rc=$RC"
+nt "a refused bind records no confirmation"      "bind_confirmed"   cat "$DH/u-77.json"
+nt "a refused bind stores no bearer"             "run_bearer"       cat "$DH/u-77.json"
+
+# BOARD_RUN_ID is the dispatcher's half of the contract. Binding without it
+# would silently skip the locator POST — the ticket would look bound locally
+# while the board could never reach the session.
+printf '{"uuid":"u-nor","name":"impl-14","status":"working"}' > "$DH/u-nor.json"
+t "bind without BOARD_RUN_ID dies naming it" "BOARD_RUN_ID" \
+  bind u-nor 14
+nt "bind without BOARD_RUN_ID confirms nothing" "bind_confirmed" cat "$DH/u-nor.json"
+
+# The other half of the branch guard: gh mode is untouched by all of the above.
+# No board.json, no run env — and the snapshot is still what runs, which is
+# only observable through the stub's marker.
+r2="$(mkrepo)"
+DH2="$(mktemp -d)"
+printf '{"uuid":"g-1","name":"gh-one","status":"working"}' > "$DH2/g-1.json"
+ghbind() {
+  : > "$MARKER"
+  ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" DAEMON_HOME="$DH2" \
+      BOARD_REPO=o/r "$SCRIPTS/board-bind.sh" g-1 9 ) || :
+  cat "$MARKER"
+}
+t "gh mode still goes through gh" "GH-CALLED" ghbind
+
+finish
