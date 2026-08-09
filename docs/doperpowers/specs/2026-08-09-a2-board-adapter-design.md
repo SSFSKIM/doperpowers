@@ -320,8 +320,15 @@ plan time.
    asserted by the test harness).
 2. **Transcript-diff drill:** the same scripted protocol walk run once in gh
    mode and once in API mode, diffed on the worker-visible surface (script
-   invocations + stdout/refusals, transport-specific ids normalized) — the
-   diff is empty. This is "indistinguishable modulo transport", executable.
+   invocations + stdout/refusals, transport-specific ids normalized) — a
+   two-level claim: script invocations and exit statuses are identical on
+   every step (including refusals — the legality answer never diverges), and
+   every output-text divergence is individually pinned in the drill with the
+   transport reason it cannot converge (e.g. the API transition response
+   carries no from-state; a gh list derives tags from a whole-board
+   snapshot). An unpinned divergence — or a pinned one that stops
+   happening — fails the drill. This is "indistinguishable modulo
+   transport", executable.
 3. **Crash-at-boundary drill:** the relay is killed at each boundary —
    before resume, between resume and ack, after ack — and in every case the
    answered park is re-polled, never lost, never double-resumed (asserted
@@ -514,3 +521,18 @@ Pending — written at finish.
   inherited from a worker shell would otherwise renew/ack as that worker
   (violating "Renewal is dispatch automation, never worker prose") and a bind
   repair would stamp the foreign bearer into another run's meta.
+- v1.2.4 (2026-08-10): Task 13 implementation contact — **acceptance 2's
+  "the diff is empty" replaced with the two-level claim** (argv + exit
+  status identical on every step; output-text divergences individually
+  pinned with their transport reasons, unpinned divergence fails). The
+  literal empty diff is unachievable without making the API binding worse:
+  the transition response carries no from-state (printing it would cost a
+  second read per transition), a gh list derives its tags from a whole-board
+  snapshot the API deliberately doesn't fetch, and `show` renders a snapshot
+  node vs a server timeline. The drill (`test-transcript-diff.sh` +
+  `transcript-compare.py`) pins 13 divergences across 6 tags; argv and exit
+  parity — the drift fence that catches a second legality table — held
+  strict on all 14 steps. Recorded alongside, unfenced: gh-mode `LEGAL` and
+  A1 `LEGAL_ROWS` disagree on 13 edges (12 gh-only, 1 A1-only) — real X5
+  drift, follow-up ticket at finish (a table-to-table fence needs either a
+  DB read or a service-source checkout, both out of tier).
