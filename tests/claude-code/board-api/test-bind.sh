@@ -130,25 +130,44 @@ t  "stripping a predecessor never widens its bearer meta" "600" \
 # window that narrows again before the command returns.
 bind u-1234 12 BOARD_RUN_ID=41 BOARD_RUN_FENCE=3 >/dev/null 2>&1 || true
 t "a re-bind leaves the bearer meta at 0600" "600" statmode "$DH/u-1234.json"
+# bind_confirmed is already true from the first bind, so it proves nothing about
+# THIS run. Count the POSTs instead: only a second server round-trip can produce
+# a second /runs/41/bind line in the request log.
+bind_posts() { echo "posts=$(grep -c "\"path\": \"/runs/$1/bind\"" "$FIX.log")"; }
+t "a re-bind round-trips the server again"   "posts=2" bind_posts 41
 t "a re-bind still confirms"                 '"bind_confirmed": true' cat "$DH/u-1234.json"
 
 # A refused bind is not a bind: the meta may not claim confirmation the server
 # never gave, or a resume would rehydrate a locator the board does not hold.
+# The incumbent is the sharp half — a live daemon already owning #13. The
+# server refuses this bind, so the local registry must not have moved either:
+# ownership handover is a consequence of the server's verdict, never a
+# precondition of asking for it.
 printf '{"uuid":"u-77","name":"impl-13","status":"working"}' > "$DH/u-77.json"
+printf '{"uuid":"u-inc","name":"impl-13-live","status":"working","ticket":"13"}' \
+  > "$DH/u-inc.json"
+ticket_of() {  # parsed, not grepped — an untouched file and a rewritten one
+  python3 -c 'import json, sys; print("ticket=%s" % json.load(open(sys.argv[1])).get("ticket"))' "$1"
+}
 RC=0
 bind u-77 13 BOARD_RUN_ID=77 >/dev/null 2>&1 || RC=$?
 t  "the refused bind did reach the server" '"path": "/runs/77/bind"' cat "$FIX.log"
 t  "a refused bind exits nonzero"                "rc=1"             echo "rc=$RC"
 nt "a refused bind records no confirmation"      "bind_confirmed"   cat "$DH/u-77.json"
 nt "a refused bind stores no bearer"             "run_bearer"       cat "$DH/u-77.json"
+t  "a refused bind leaves the incumbent owning #13" "ticket=13" ticket_of "$DH/u-inc.json"
+nt "a refused bind hands the caller no ticket"      "ticket"    cat "$DH/u-77.json"
 
 # BOARD_RUN_ID is the dispatcher's half of the contract. Binding without it
 # would silently skip the locator POST — the ticket would look bound locally
-# while the board could never reach the session.
+# while the board could never reach the session. Dying is only half the job:
+# the same rule as the refusal above applies, so the registry may not carry a
+# handover for a bind that never happened.
 printf '{"uuid":"u-nor","name":"impl-14","status":"working"}' > "$DH/u-nor.json"
 t "bind without BOARD_RUN_ID dies naming it" "BOARD_RUN_ID" \
   bind u-nor 14
 nt "bind without BOARD_RUN_ID confirms nothing" "bind_confirmed" cat "$DH/u-nor.json"
+nt "bind without BOARD_RUN_ID moves no ownership" "ticket" cat "$DH/u-nor.json"
 
 # The other half of the branch guard: gh mode is untouched by all of the above.
 # No board.json, no run env — and the snapshot is still what runs, which is
