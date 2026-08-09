@@ -44,7 +44,8 @@ variant of this protocol you run:
   manifest snapshots came from `{{MANIFEST_REF}}`; when the resolved base is a
   different branch, re-read both from it
   (`git show origin/<base>:.doperpowers/risk-surfaces.md`) and use those.
-  Everything downstream is unchanged, with two substitutions: the board half of every step is a
+  Everything downstream is unchanged, with two substitutions: the board half
+  of every step is a
   {{BOARD_SCRIPTS}} call rather than a label or an issue comment (the API
   board has no labels — a state IS a transition, and a typed event IS
   `board-comment.sh --kind`), while the GitHub half — the PR, its diff, its

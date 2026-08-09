@@ -94,28 +94,12 @@ Runtime bindings (dispatcher-owned):
 - `CODEX_REVIEW_MODEL`: {{CODEX_REVIEW_MODEL}}
 - `CODEX_REVIEW_EFFORT`: {{CODEX_REVIEW_EFFORT}}
 
-<!-- mode:api -->
-- `MANIFEST_REF`: {{MANIFEST_REF}} (the ref the two snapshots below came from)
-<!-- /mode:api -->
+- `MANIFEST_REF`: {{MANIFEST_REF}} (the ref the two snapshots below came from
+  — the base for a PR or scale run; under `api`, where the base is not
+  knowable at dispatch, the repo default branch)
 
-<!-- mode:pr -->
----- RISK_MANIFEST binding ({{REPO}} @ base {{BASE_REF}}) ----
-<!-- /mode:pr -->
-<!-- mode:scale -->
----- RISK_MANIFEST binding ({{REPO}} @ base {{BASE_REF}}) ----
-<!-- /mode:scale -->
-<!-- mode:api -->
 ---- RISK_MANIFEST binding ({{REPO}} @ {{MANIFEST_REF}}) ----
-<!-- /mode:api -->
 {{RISK_MANIFEST}}
 
-<!-- mode:pr -->
----- REPO_FACTS binding ({{REPO}} @ base {{BASE_REF}}) ----
-<!-- /mode:pr -->
-<!-- mode:scale -->
----- REPO_FACTS binding ({{REPO}} @ base {{BASE_REF}}) ----
-<!-- /mode:scale -->
-<!-- mode:api -->
 ---- REPO_FACTS binding ({{REPO}} @ {{MANIFEST_REF}}) ----
-<!-- /mode:api -->
 {{REPO_FACTS}}
