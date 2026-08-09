@@ -29,6 +29,14 @@
 # dim dashed one a satisfied dependency; labeled dashed lines carry
 # spawned/relates lineage; each epic is a labeled box around its members
 # (click the epic's card to collapse).
+#
+# API mode renders the same two files from a thinner snapshot: the v1 ticket
+# payload carries no blocked-by edges, no PR linkage and no timestamps, so the
+# graph draws parent edges only, no arrow classes appear, and the ELIGIBLE cue
+# degrades to lane state (epics still take their recomposition carve-out; the
+# reconciliation-due half of it cannot fire, since v1 exposes no note). BOARD.md
+# says all of that in a line above the table rather than letting an edge-free
+# graph pass for "nothing blocks anything".
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -142,13 +150,18 @@ def state_label(tid, n):
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
 
 # The fallback table: stdout always; BOARD.md on --write.
+# API v1 carries no timestamps, so `updated` is empty there — the clause drops
+# out entirely rather than rendering "Board updated  · N tickets".
+stamp = "updated %s · " % updated if updated else "· "
 md = ["# Issue Board", "",
-      "_Board updated %s · %d tickets · full interactive graph in "
-      "`BOARD.html` (open in a browser)_" % (updated, len(tickets)), ""]
+      "_Board %s%d tickets · full interactive graph in "
+      "`BOARD.html` (open in a browser)_" % (stamp, len(tickets)), ""]
 if API:
     md += ["_blocked-by: (not exposed by API v1) — the graph draws parent edges "
            "only, and ELIGIBLE reflects lane state alone (the server owns the "
-           "pick)._", ""]
+           "pick), except that an epic still takes its recomposition carve-out; "
+           "the reconciliation-due half of that carve-out is dead here, since "
+           "API v1 exposes no note field._", ""]
 md += ["| ticket | priority | state | title | PR |", "|---|---|---|---|---|"]
 for tid in order:
     n = tickets[tid]

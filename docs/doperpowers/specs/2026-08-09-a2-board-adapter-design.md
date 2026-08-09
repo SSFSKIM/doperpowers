@@ -35,9 +35,14 @@ refusing to fight that:
 
 So the adapter boundary is **verb-level**: each user-facing script keeps its
 exact CLI and branches internally; in API mode the verb is a thin HTTP call
-and `_board.py`'s state-machine half is never imported. No second client-side
-copy of the state machine exists in API mode — the X5 drift risk is fenced by
-the transcript-diff drill (§ Testing), not by shared code.
+and `_board.py`'s state-machine half is never **exercised** — no legality
+check, no mutation, no pick order runs client-side. The banned state is a
+*divergent second client-side copy* of legality/pick-order, not the import
+statement: a read verb that imports `_board` to reuse the one existing pure
+derivation for display (`board-map.sh` calling `B.eligible` to label a node)
+is the opposite of that hazard, since a re-implementation is exactly what
+would drift. The X5 drift risk is fenced by the transcript-diff drill
+(§ Testing) plus that single-source reuse, not by refusing to link the file.
 
 ## Design
 
@@ -476,3 +481,11 @@ Pending — written at finish.
   shipped `src/server.js` write it nested (`{"error": {"code", "message"}}`).
   Logged under Surprises; `_board_api.py` unwraps `error.code`, and the
   remaining task bodies' flat 409 fixtures need the same correction.
+- v1.2.2 (2026-08-10): premise wording precision from Task 5 implementation
+  contact, no design change — the structural premise said `_board.py` "is
+  never imported in API mode", which the read verbs break for a legitimate
+  reason (`board-map.sh` imports `_board` to reuse the one existing pure
+  display derivation, `B.eligible`). Reworded to the invariant actually
+  meant: the state-machine half is never *exercised*, and the banned state
+  is a divergent second client-side copy of legality/pick-order —
+  imported-for-pure-display is the opposite of that hazard.

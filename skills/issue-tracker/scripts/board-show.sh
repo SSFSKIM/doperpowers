@@ -5,9 +5,6 @@
 #
 # The daemon binding lives in the daemon registry (a `ticket` key in the
 # daemon's meta JSON — see board-bind.sh), never on the issue.
-# API mode prints the ticket row followed by its server-side timeline, one
-# record per line as `[<source>:<cursor>] <kind> <note-or-empty>` — the
-# timeline IS the ticket's history there, so there is nothing else to show.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -17,6 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -eq 1 ] || { usage_from_header "$0" >&2; exit 2; }
 
 if [ "$BOARD_BINDING" = api ]; then
+  # API mode prints the ticket row followed by its server-side timeline, one
+  # record per line as `[<source>:<cursor>] <kind> <note-or-empty>` — the
+  # timeline IS the ticket's history there, so there is nothing else to show.
+  # This note is indented into the branch rather than sitting in the header
+  # block on purpose: usage_from_header echoes every column-0 `#` line, and a
+  # bad invocation should print the usage, not the binding essay.
   T_ID="$1" _api_py - <<'PY'
 import os
 import _board_api as A

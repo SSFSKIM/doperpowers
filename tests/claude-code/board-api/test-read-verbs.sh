@@ -111,6 +111,11 @@ nt "reconcile never calls an in-flight ticket dispatchable" \
   "#12 in-progress P1 T one" V board-reconcile.sh
 nt "reconcile never calls an owned lane ticket dispatchable" \
   "#14 ready-for-architect - T three" V board-reconcile.sh
+# The API branch ends by chaining board-lint.sh (parity with the gh branch),
+# which is how the local-registry half of the report gets into an otherwise
+# server-only answer. Nothing else in this file reads that chain, so deleting
+# the line would be invisible; lint's API-mode banner is its signature.
+t "reconcile ends with a lint pass" "server-enforced" V board-reconcile.sh
 
 # ── lint ───────────────────────────────────────────────────────────────────
 t "lint FAILs a daemon bound to an absent ticket" \

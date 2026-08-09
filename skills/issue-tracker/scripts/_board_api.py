@@ -2,8 +2,12 @@
 
 Thin by design (spec: verb-level thin client): request assembly, principal
 resolution, contract error mapping, retry. No state-machine logic — the
-server enforces legality; _board.py's upper half is never imported in API
-mode.
+server enforces legality, and _board.py's state-machine half (legality
+table, mutation, epic pulls, pick order) is never EXERCISED in API mode.
+That is the invariant, not "_board is never imported": a read verb may still
+import it for a pure derivation it renders (board-map.sh calls B.eligible to
+label a node), which shares the single source of that derivation rather than
+forking a second, drifting copy of it.
 """
 import json
 import os

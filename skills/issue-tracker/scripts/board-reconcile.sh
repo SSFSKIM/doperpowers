@@ -9,6 +9,13 @@
 # pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
 # register child/follow-up tickets directly (doperpowers:implementing).
+#
+# API mode answers the same three questions from the server, and the middle one
+# differently: run liveness is server-owned there, so there is no local scan for
+# in-progress/in-design tickets missing a bound daemon — `/runs/needing-resume`
+# is the server's own expression of that condition, and it is what prints.
+# The wake queue is `/queue/decisions`; dispatchable is a lane state with no
+# owning run. Both bindings finish with the same board-lint pass.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
