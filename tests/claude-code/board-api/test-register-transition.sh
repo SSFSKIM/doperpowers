@@ -20,14 +20,22 @@ FIX="$(mktemp)"; : > "$FIX.log"
 # `/tickets/9/transition` — the transition route needs a standing fixture of
 # its own after the `once` one, or a later transition eats a register fixture
 # and every downstream response shifts by one.
+# The `once` entries for one path are a QUEUE: the Nth registration in this
+# file consumes the Nth unused /tickets fixture, so fixture order and the order
+# of the register calls below must stay in lockstep.
 cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/tickets/9/transition","status":200,
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":31,"state":"needs-human"},"once":true},
+ {"method":"POST","path":"/tickets","status":500,
+  "body":{"error":{"code":"internal","message":"upstream exploded"}},"once":true},
  {"method":"POST","path":"/tickets","status":409,
   "body":{"error":{"code":"illegal-birth","message":"spike may not be born ready-for-architect"}},"once":true},
+ {"method":"POST","path":"/tickets","status":200,"body":{"id":32,"state":"needs-human"},"once":true},
+ {"method":"POST","path":"/tickets","status":200,"body":{"id":33,"state":"ready-for-implementer"},"once":true},
+ {"method":"POST","path":"/tickets","status":200,"body":{"id":34,"state":"ready-for-implementer"},"once":true},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":30,"state":"ready-for-implementer"}}
 ]
 JSON
@@ -81,16 +89,68 @@ t "park birth body pins birth + note-as-body-head" \
   '{"title": "pick color", "category": "work", "priority": "P2", "birth": "needs-human", "body": "which color?"}' \
   last_register_body
 
+EMPTY_BODY="$(mktemp)"   # a regular empty file, not /dev/null: the body-file
+                         # guard is `[ -f ]`, which a character device fails
+
+# The arkho#7 pointer is a claim about CANON — "this birth is illegal here" —
+# and it may only ride the server saying exactly that. An outage on the same
+# command (500, auth reject, connection refused) is the identical local shape:
+# a SystemExit out of the client. Blaming canon divergence for a down service
+# sends the reader to the wrong ticket.
+OUTAGE_OUT="$(mktemp)"
+V board-register.sh "probe 500" spike P2 --state ready-for-architect --body-file "$EMPTY_BODY" \
+  > "$OUTAGE_OUT" 2>&1 || true
+nt "a 500 on a spike birth does not blame arkho#7" "arkho/issues/7" cat "$OUTAGE_OUT"
+t "a 500 on a spike birth still surfaces the failure" "internal" cat "$OUTAGE_OUT"
+# ...and the same run pins the spike category pass-through whole: a typo in
+# CATEGORY_MAP or a renamed birth key drops the lane silently otherwise.
+t "spike category + explicit birth ride the payload whole" \
+  '{"title": "probe 500", "category": "spike", "priority": "P2", "birth": "ready-for-architect"}' \
+  last_register_body
+
 # One refused birth, two things to check — and the 409 fixture is consumed on
 # first use, so the run is captured once and both asserts read the capture.
 SPIKE_OUT="$(mktemp)"; SPIKE_RC=0
-EMPTY_BODY="$(mktemp)"   # a regular empty file, not /dev/null: the body-file
-                         # guard is `[ -f ]`, which a character device fails
 V board-register.sh "probe x" spike P2 --state ready-for-architect --body-file "$EMPTY_BODY" \
   > "$SPIKE_OUT" 2>&1 || SPIKE_RC=$?
 t "spike->architect surfaces 409 + arkho#7" "illegal-birth" cat "$SPIKE_OUT"
 t "spike 409 carries the arkho#7 pointer" "arkho/issues/7" cat "$SPIKE_OUT"
 t "a refused birth exits nonzero" "rc=1" echo "rc=$SPIKE_RC"
+
+# An IMPLICIT birth is the case the requested-state gate cannot see. Here the
+# SERVER inverts an env-issue to needs-human (E2), so this IS a park birth by
+# outcome — and gh mode makes the note MANDATORY for exactly this command. The
+# shell default `ready-for-implementer` is in no park tuple, so gating on the
+# requested state discarded mandatory human input. Pinned whole-body: the note
+# must be the body's opening line, and `env-issue` must survive the map.
+V board-register.sh "disk is full" env-issue P1 --note "need ops to grow the volume" >/dev/null
+t "implicit env-issue birth carries the note as the body head" \
+  '{"title": "disk is full", "category": "env-issue", "priority": "P1", "body": "need ops to grow the volume"}' \
+  last_register_body
+
+# The other half of the rule, unchanged: an EXPLICIT non-park birth states a
+# lane, so its --note is not a park question and stays off the body. Whole-body
+# pin — the absence of a "body" key is the assertion, which a fix that simply
+# prepended whenever --note is set would break.
+V board-register.sh "wire it up" enhancement P2 --state ready-for-implementer --note "fyi only" >/dev/null
+t "explicit non-park birth still keeps the note off the body" \
+  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer"}' \
+  last_register_body
+
+# Edge keys are wire contract, and a camelCase slip drops an edge in silence —
+# the server would accept the payload and just not draw the relation. Pinned
+# whole, with both accepted ref spellings (`7` and `#8`) and a comma list.
+V board-register.sh "edged one" enhancement P3 --parent 7 --spawned-by '#8' --blocked-by '9,#10' >/dev/null
+t "edges ride as parent / spawnedBy / blockedBy integers" \
+  '{"title": "edged one", "category": "work", "priority": "P3", "parent": 7, "spawnedBy": 8, "blockedBy": [9, 10]}' \
+  last_register_body
+
+# A junk ref is a caller mistake, not a server matter: it must die with the gh
+# path's message rather than an uncaught ValueError traceback.
+t "a non-numeric parent dies like the gh path" "not an issue number: abc" \
+  V board-register.sh "bad ref" enhancement P2 --parent abc
+nt "a non-numeric parent raises no traceback" "Traceback" \
+  V board-register.sh "bad ref" enhancement P2 --blocked-by 4,xyz
 
 t "category maps bug->work" '\"category\": \"work\"' \
   bash -c "V board-register.sh 'a bug' bug P1 >/dev/null; cat '$FIX.log'"

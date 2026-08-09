@@ -57,7 +57,10 @@ if [ "$BOARD_BINDING" = api ]; then
   T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
   T_STATE_EXPLICIT="$state_explicit" T_NOTE="$note" T_PARENT="$parent" \
   T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" T_BODY_FILE="$body_file" _api_py - <<'PY'
+import contextlib
+import io
 import os
+import sys
 import _board_api as A
 env = os.environ
 title = " ".join(env["T_TITLE"].split())
@@ -68,30 +71,62 @@ if env["T_CATEGORY"] not in CATEGORY_MAP:
 body = open(env["T_BODY_FILE"]).read() if env["T_BODY_FILE"] else ""
 note = env["T_NOTE"]
 state = env["T_STATE"]
-if note and state in ("needs-human", "needs-info", "interactive-preferred"):
-    # No API note field for the birth question (arkho#7): body head carries it.
+explicit = env["T_STATE_EXPLICIT"] == "1"
+# No API note field for the birth question (arkho#7): the body head carries it.
+# The condition is about which births can END UP parked, not which state was
+# asked for. An IMPLICIT birth has no requested state at all — `state` here is
+# only the shell's default — and the server decides: an env-issue inverts to
+# needs-human (E2), a pre-spec skeleton demotes to needs-info. Both are park
+# births by outcome, and gh mode makes the note MANDATORY on the first of them,
+# so keying on the requested state discarded required human input. An EXPLICIT
+# birth is the registrar naming the lane, and only the park states there make
+# the note a question the body must carry.
+if note and (not explicit or state in ("needs-human", "needs-info",
+                                       "interactive-preferred")):
     body = note + ("\n\n" + body if body else "")
+
+
+def ref(raw):
+    """A ticket ref for an edge — '#42'/'42' → 42, same refusal as gh mode."""
+    n = raw.lstrip("#")
+    if not n.isdigit():
+        A.die("not an issue number: %s" % raw)
+    return int(n)
+
+
 payload = {"title": title, "category": CATEGORY_MAP[env["T_CATEGORY"]],
            "priority": env["T_PRIORITY"]}
-if env["T_STATE_EXPLICIT"] == "1":
+if explicit:
     payload["birth"] = state
 if body:
     payload["body"] = body
 if env["T_PARENT"]:
-    payload["parent"] = int(env["T_PARENT"].lstrip("#"))
+    payload["parent"] = ref(env["T_PARENT"])
 if env["T_SPAWNED"]:
-    payload["spawnedBy"] = int(env["T_SPAWNED"].lstrip("#"))
+    payload["spawnedBy"] = ref(env["T_SPAWNED"])
 if env["T_BLOCKED"]:
-    payload["blockedBy"] = [int(b.lstrip("#")) for b in env["T_BLOCKED"].split(",") if b]
+    payload["blockedBy"] = [ref(b) for b in env["T_BLOCKED"].split(",") if b]
+# The pointer below is a claim about CANON, so it may only ride the server
+# saying so. Every refusal and every outage leaves the same local shape — a
+# SystemExit out of the client — and the identifier lives in the message the
+# client already printed, so capture that stream and re-emit it verbatim.
+err = io.StringIO()
 try:
-    out = A.register(payload)
-except SystemExit:
-    # A spike birth into ready-for-architect is a known canon divergence:
-    # the server's 409 illegal-birth already printed; add the pointer.
-    if env["T_CATEGORY"] == "spike" and state == "ready-for-architect":
+    with contextlib.redirect_stderr(err):
+        out = A.register(payload)
+except BaseException:
+    sys.stderr.write(err.getvalue())
+    sys.stderr.flush()
+    # A spike birth into ready-for-architect is a known canon divergence — but
+    # only when the server actually refused it as one. A 500, an auth reject or
+    # a dead socket is an outage, and blaming divergence for it sends the reader
+    # to the wrong ticket.
+    if ("illegal-birth" in err.getvalue()
+            and env["T_CATEGORY"] == "spike" and state == "ready-for-architect"):
         print("note: design-first spikes are gh-only until the arkho#7 ruling "
               "(https://github.com/SSFSKIM/arkho/issues/7)", flush=True)
     raise
+sys.stderr.write(err.getvalue())
 print("%s %s/tickets/%s" % (out["id"], os.environ["BOARD_API_URL"], out["id"]))
 PY
   _rerender_if_serving
