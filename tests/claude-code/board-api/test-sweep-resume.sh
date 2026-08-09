@@ -92,6 +92,10 @@ cat > "$FIX" <<'JSON'
 
  {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":49}]},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":49}]},
+ {"method":"POST","path":"/runs/49/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
   "body":{"runId":45,"ticketId":12,"fence":5,"bearer":"tok-s2","predecessorRun":49,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
@@ -239,9 +243,21 @@ json.dump({"uuid": sys.argv[2], "current": sys.argv[2], "status": "working",
 echo "daemon spawned (no-wait): \$1  [abc1234 / $NEWUUID]  status=working  (reply: daemon-reply.sh abc1234)"
 EOF
 chmod +x "$DS/daemon-spawn.sh"
-cat > "$DS/daemon-finalize.sh" <<'EOF'
+# Liveness as daemon-finalize actually reports it: `noop` for an ALREADY-
+# TERMINAL meta (it never re-inspects one), `live` for a running turn. Driven
+# off the meta the way the real script is, so a status the resume path writes —
+# notably the status=error + pending_short an unresolved fork leaves — is
+# visible to the sweep's own liveness read.
+cat > "$DS/daemon-finalize.sh" <<EOF
 #!/usr/bin/env bash
-echo live
+python3 - "$DH/\$1.json" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    print("absent"); raise SystemExit(0)
+print("live" if m.get("status") in ("working", "blocked") else "noop")
+PY
 EOF
 chmod +x "$DS/daemon-finalize.sh"
 cat > "$DS/daemon-retire.sh" <<'EOF'
@@ -340,6 +356,37 @@ nt "and no second worker is spawned onto the held run" "SPAWN" cat "$SPAWN_LOG"
 nt "no recovery cycle is charged for an unknown delivery" "recovery cycle" cat "$OUTA"
 nt "and the successor run is not released out from under the fork" \
    '"path": "/runs/49/end"'                                 cat "$FIX.log"
+
+# =========================================================================
+# Phase 3, rung 2c — AND THE NEXT TICK MUST NOT RE-FORK IT. `current` still
+# names the superseded turn, so every transcript read lands on the old one:
+# resuming again forks a SECOND zombie turn onto the same run, and the tick
+# before this guard did exactly that on every pass — a fresh unresolved fork
+# and a fresh successor claim per tick, forever. The ticket is skipped before
+# any successor is claimed, nothing is released out from under the possibly
+# live fork, and no cycle is charged (nothing was attempted).
+# =========================================================================
+: > "$FIX.log"
+: > "$SPAWN_LOG"
+before_2c="$(wc -l < "$RESUME_LOG")"
+OUT2C="$TDIR/resume-fork-guard.out"
+SW resume > "$OUT2C" 2>&1 || true
+after_2c="$(wc -l < "$RESUME_LOG")"
+resumes_2c() { echo "delta=$((after_2c - before_2c))"; }
+t  "an unresolved fork blocks the next recovery" "UNRESOLVED FORK"   cat "$OUT2C"
+nt "no second successor is claimed for it"  "/runs/claim-successor"  cat "$FIX.log"
+t  "and the stranded successor journal is held, not released" \
+   "HELD"                                                            cat "$OUT2C"
+nt "so its run is not ended under the fork"  '"path": "/runs/49/end"' cat "$FIX.log"
+t  "the session is not resumed again"       "delta=0"                resumes_2c
+nt "and no second worker is spawned"        "SPAWN"                  cat "$SPAWN_LOG"
+nt "no recovery cycle is charged"           "recovery cycle"         cat "$OUT2C"
+
+# The operator (or the fork resolving itself) clears it: status back off `error`
+# is what "resolved" means to daemon-resume and therefore to the sweep.
+python3 -c 'import json, sys
+m = json.load(open(sys.argv[1])); m["status"] = "working"; m.pop("pending_short", None)
+json.dump(m, open(sys.argv[1], "w"), indent=2)' "$DH/u-old.json"
 
 # =========================================================================
 # Phase 3, rung 3 — the resume fails with NOTHING delivered; the SAME

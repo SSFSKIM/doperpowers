@@ -81,8 +81,16 @@ cat > "$FIX" <<'JSON'
            "replies":["ship it","and squash the fixups"]}]},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
+  "body":[{"answerEventId":123,"ticketId":12,"correlationId":"evt-105",
+           "replies":["delivered, but the ack will not land"]}]},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":121,"ticketId":12,"correlationId":"evt-103",
            "replies":["try again"]}]},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
+  "body":[{"answerEventId":124,"ticketId":77,"correlationId":"evt-106",
+           "replies":["for the forked session"]},
+          {"answerEventId":125,"ticketId":78,"correlationId":"evt-107",
+           "replies":["for the bearerless session"]}]},
  {"method":"GET","path":"/answers/unrelayed","status":200,
   "body":[{"answerEventId":120,"ticketId":99,"correlationId":"evt-104",
            "replies":["still nobody"]}]},
@@ -152,11 +160,21 @@ cat > "$DS/daemon-resume.sh" <<EOF
 printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
 EOF
 chmod +x "$DS/daemon-resume.sh"
-# Liveness, as daemon-finalize reports it: `noop` is what an already-terminal
-# (idle) meta answers, and it means the session is still there.
-cat > "$DS/daemon-finalize.sh" <<'EOF'
+# Liveness, as daemon-finalize actually reports it: `absent` when the session is
+# gone from the harness, `noop` for an ALREADY-TERMINAL meta (idle or error —
+# it never re-inspects one), `live` for a running turn. Driven off the meta the
+# way the real script is, so a status the sweep writes is visible here.
+cat > "$DS/daemon-finalize.sh" <<EOF
 #!/usr/bin/env bash
-case "$1" in u-4) echo absent ;; u-3) echo noop ;; *) echo live ;; esac
+[ "\$1" != u-4 ] || { echo absent; exit 0; }
+python3 - "$DH/\$1.json" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    print("absent"); raise SystemExit(0)
+print("live" if m.get("status") in ("working", "blocked") else "noop")
+PY
 EOF
 chmod +x "$DS/daemon-finalize.sh"
 
@@ -196,6 +214,20 @@ t  "an unconfirmed bind is repaired"        '"path": "/runs/41/bind"'  cat "$FIX
 t  "the repair records the confirmation"    '"bind_confirmed": true'   cat "$DH/u-1.json"
 nt "a confirmed bind is not re-bound"       "/runs/43/bind"            cat "$FIX.log"
 nt "the api tick never invokes gh"          "GH-CALLED"                cat "$MARKER"
+
+# An ENDED run is over locally too. Left alone, the meta keeps its run id and
+# its lane, and the dispatchers' local cap counts it — so a normally released
+# run occupies a dispatch slot forever while never appearing in needing-resume.
+# The lane deliberately STAYS (a successor inherits it); the run association is
+# what goes, and the bearer with it.
+slot_for() { python3 -c 'import json, sys
+m = json.load(open(sys.argv[1]))
+print("run=%s lane=%s bearer=%s" % (m.get("run_id") or "none", m.get("lane") or "none",
+                                    "set" if m.get("run_bearer") else "none"))' "$DH/$1.json"; }
+t "an ended run releases its local dispatch slot" "run=none lane=implementer bearer=none" \
+  slot_for u-2
+t "and the retirement is recorded"          "run_ended_at"             cat "$DH/u-2.json"
+t "a live run keeps its slot"               "run=41 lane=implementer"  slot_for u-1
 
 # =========================================================================
 # Principal isolation — an inherited run token is not the sweep's voice.
@@ -282,6 +314,22 @@ t "and re-acks (ack is set-once)"       '"path": "/answers/118/ack"'  cat "$FIX.
 t  "the ack speaks automation, not the ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
 nt "no ambient run token on the relay wire" "tok-evil"                cat "$FIX.log"
 
+# ---- a failed ACK is not progress ------------------------------------------
+# This whole phase runs behind `|| true` in the `all` case, which suspends
+# errexit through its entire subtree — so a failed ack does not abort the loop,
+# it falls THROUGH to the progress counter. Counted as progress, the level-
+# triggered drain re-reads a feed still carrying the same unacked answer and
+# re-reads it again, inside the whole-tick lock. There is no ack fixture for
+# 123, so the mock answers 404.
+: > "$FIX.log"
+OUTACK="$TDIR/relay-ack.out"
+SWB relay > "$OUTACK" 2>&1 || true
+t  "the delivery itself landed"          "[board-relay answer:123]"  cat "$TX"
+t  "a failed ack is reported"            "DELIVERED but the ack FAILED" cat "$OUTACK"
+ack_feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed"' "$FIX.log")"; }
+t  "and buys no further feed read"       "reads=1"                   ack_feed_reads
+nt "and does not hang"                   "TIMEOUT"                   cat "$OUTACK"
+
 # ---- a failed delivery acks nothing and stops the pass ---------------------
 : > "$FIX.log"
 OUT3="$TDIR/relay3.out"
@@ -289,6 +337,37 @@ RESUME_MUST_FAIL=1 SWB relay > "$OUT3" 2>&1 || true
 t  "a failed resume is reported"        "resume FAILED"          cat "$OUT3"
 nt "a failed delivery acks nothing"     "/answers/121/ack"       cat "$FIX.log"
 nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
+
+# ---- candidates the relay must REFUSE to speak to --------------------------
+# Two shapes that read as "live and bound" to a naive selection loop and are
+# not deliverable at all:
+#
+#   u-6  an UNRESOLVED FORK — daemon-resume launched a turn whose session uuid
+#        never resolved, so it stamped status=error + pending_short and left
+#        `current` on the superseded turn. The sentinel check then reads the
+#        WRONG transcript, finds nothing, and resumes: a second zombie turn on
+#        the same run, every tick, forever.
+#   u-7  NO RUN BEARER — resuming it injects an EMPTY BOARD_RUN_TOKEN, and the
+#        client falls back to the configured human/automation credentials the
+#        moment the run token is blank, so the worker would speak with broader
+#        authority than its own run and outside its fence.
+meta u-6 '{"uuid":"u-6","current":"u-6","status":"error","pending_short":"fk01",
+           "run_id":46,"fence":1,"lane":"implementer","bind_confirmed":true,
+           "ticket":"77","run_bearer":"tok-w6"}'
+meta u-7 '{"uuid":"u-7","current":"u-7","status":"idle","run_id":47,"fence":1,
+           "lane":"implementer","bind_confirmed":false,"ticket":"78"}'
+: > "$FIX.log"
+OUTC="$TDIR/relay-candidates.out"
+before_c="$(wc -l < "$RESUME_LOG")"
+SWB relay > "$OUTC" 2>&1 || true
+after_c="$(wc -l < "$RESUME_LOG")"
+resumes_delta() { echo "delta=$((after_c - before_c))"; }
+t  "an unresolved fork is refused, not re-forked" "UNRESOLVED FORK"   cat "$OUTC"
+t  "a bearerless session is refused too"    "holds no run bearer"     cat "$OUTC"
+t  "neither is resumed"                     "delta=0"                 resumes_delta
+nt "and neither answer is acked"            "/answers/124/ack"        cat "$FIX.log"
+nt "nor the other"                          "/answers/125/ack"        cat "$FIX.log"
+rm -f "$DH/u-6.json" "$DH/u-7.json"
 
 # ---- a pass that acks nothing at all breaks the drain loop -----------------
 # The feed now answers with the same undeliverable page forever; only the

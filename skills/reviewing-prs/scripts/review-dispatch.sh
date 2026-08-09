@@ -1077,7 +1077,12 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
         m = json.load(open(p))
     except Exception:
         continue
-    if m.get("lane") in lanes and m.get("status") in ("working", "blocked", "idle"):
+    # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
+    # the server has since ended (the sweep strips run_id from such a meta and
+    # deliberately keeps the lane, which is what a successor inherits), so a
+    # normally finished worker held a dispatch slot forever.
+    if (m.get("run_id") and m.get("lane") in lanes
+            and m.get("status") in ("working", "blocked", "idle")):
         n += 1
 print(n)
 PY
