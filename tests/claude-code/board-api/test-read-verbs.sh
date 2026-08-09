@@ -129,14 +129,16 @@ else echo "FAIL lint must exit zero when clean"; FAILS=$((FAILS+1)); fi
 
 # ── map ────────────────────────────────────────────────────────────────────
 t "map renders the ticket row" "| #12 | P1 | in-progress | T one |" map_md
-# Honesty about the thinner snapshot: API v1 exposes no blocked-by, so the DAG is
-# parent edges only and the table has to say so — a silently edge-free graph reads
-# as "nothing blocks anything", which is a different claim entirely.
+# Honesty about the thinner snapshot: API v1 exposes no blocked-by, spawned or
+# relates edges, so the DAG draws no lines at all and the table has to say so — a
+# silently edge-free graph reads as "nothing blocks anything", which is a
+# different claim entirely.
 t "map declares the missing edge class" "blocked-by: (not exposed by API v1)" map_md
 t "map writes BOARD.html too" "T one" map_html
-# The parent edge survives normalization: #13's parent is #12, so #12 renders as
-# an epic box. An empty epics array means the parent field was dropped.
-nt "map keeps the parent edge" '"epics": []' map_html
+# Parenthood survives normalization, and it renders as an epic BOX rather than an
+# edge: #13's parent is #12, so #12 shows up in the `epics` payload. An empty
+# epics array means the parent field was dropped.
+nt "map renders parenthood as epic boxes" '"epics": []' map_html
 
 # ── the binding constraint ─────────────────────────────────────────────────
 all_verbs() {

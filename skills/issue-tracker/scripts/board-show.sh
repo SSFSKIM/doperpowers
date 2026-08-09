@@ -9,8 +9,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
-# The arity guard sits ahead of the binding branch so both bindings answer a
-# bad invocation the same way (usage on stderr, exit 2).
+ # The arity guard sits ahead of the binding branch so both bindings answer a
+ # bad invocation the same way (usage on stderr, exit 2). Indented off column 0:
+ # usage_from_header echoes every column-0 `#` line, so a bad invocation should
+ # print the usage block, not this note.
 [ $# -eq 1 ] || { usage_from_header "$0" >&2; exit 2; }
 
 if [ "$BOARD_BINDING" = api ]; then
