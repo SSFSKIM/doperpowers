@@ -3,7 +3,8 @@
 #
 # Usage:
 #   board-answer.sh <number> <answers>    # post answers as an [answers] comment, then relay
-#   board-answer.sh <number> --posted     # answers already commented by hand — relay a pointer
+#   board-answer.sh <number> --posted     # answers already commented by hand — relay a pointer (gh mode)
+#   board-answer.sh <number> <answers> --to <state>   # API mode, UNBOUND park only: the disposition
 #
 # The wake ritual's needs-human path: park = pause, not death. The answers
 # land on the TICKET first (the ticket is the record), the ticket returns to
@@ -13,6 +14,14 @@
 # relayed verbatim — the worker keeps its orientation and re-states its gate
 # verdict before proceeding. No judge is reintroduced: the relay is
 # mechanical, the human is the author, the ticket is the record.
+#
+# API binding: the park-answer call IS the record (no separate comment), and
+# the RETURN STATE IS THE SERVER'S — it reads the bound run's lane, so none of
+# the pre-park / role derivation below applies. A park nobody is bound to has
+# no lane to return to: the server answers `409 no-return-mapping` and the
+# human re-runs naming a disposition with --to (which the server refuses on a
+# bound park, `answer-target-not-allowed` — the disagreement is surfaced, never
+# silently resolved).
 #
 # Fresh-dispatch fallback (this script refuses; do it by hand): no bound
 # session, a dead/retired session, or answers that reshape the ticket's scope
@@ -27,10 +36,54 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
-[ $# -eq 2 ] || { usage_from_header "$0" >&2; exit 2; }
-tid="$1" answers="$2" posted=""
-if [ "$answers" = "--posted" ]; then posted=1 answers=""; fi
+[ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
+tid="$1"; shift
+answers="" posted="" to=""
+# One unconditional loop (board-comment.sh's parser): options are options
+# wherever they sit, the first bare token is the answers, and anything else
+# dies — a mistyped flag that became the answer text would relay cleanly.
+while [ $# -gt 0 ]; do case "$1" in
+  --posted) posted=1; shift ;;
+  --to) _need_arg "$1" "${2:-}"; to="$2"; shift 2 ;;
+  --*) die "unknown option: $1" ;;
+  *) [ -z "$answers" ] || die "unexpected argument: $1"
+     answers="$1"; shift ;;
+esac; done
+[ -z "$posted" ] || [ -z "$answers" ] || \
+  die "--posted takes no answers text — it relays a pointer to what is already on the ticket"
 [ -n "$posted" ] || [ -n "$answers" ] || die "empty answers"
+
+# ---- API binding: the answer IS the record ---------------------------------
+# Dual-principal, the one scripted exception to fixed-token-per-script: the
+# answer leg speaks HUMAN (`park-answer` admits no other principal), the relay
+# and its ack speak AUTOMATION (`unrelayed`/`ack-answer` admit no human).
+if [ "$BOARD_BINDING" = api ]; then
+  [ -z "$posted" ] || die "--posted is gh-mode-only: an API park-answer IS the record — pass the answers"
+  T_ID="$tid" T_ANSWERS="$answers" T_TO="$to" _api_py - <<'PY'
+import os
+import _board_api as A
+tid = os.environ["T_ID"].lstrip("#")
+# Name the park being answered. Unnamed, the server answers whichever question
+# happens to be STANDING when the request lands — so a delayed answer lands as
+# the human's reply to a question nobody wrote it for. The queue publishes the
+# name; the species filter matters because one ticket can carry an sdk-decision
+# park alongside its board park, and only the board one is answerable here.
+cid = next((q["correlation_id"] for q in A.queue_decisions()
+            if str(q["ticket_id"]) == tid and q.get("species") == "board"), None)
+out = A.park_answer(tid, [os.environ["T_ANSWERS"]],
+                    to=os.environ["T_TO"] or None, correlation_id=cid)
+if out.get("superseded"):
+    A.die("#%s: answer superseded — the standing question changed; re-read the queue" % tid)
+print("answered #%s → %s" % (tid, out["returnedTo"]))
+PY
+  # Inline relay: the human's answer resumes the worker NOW, not on the next
+  # tick — the same blocking feel as gh mode's direct resume. Delivery and its
+  # delivery-gated ack are the sweep's, never a second copy of that logic here.
+  "$SCRIPT_DIR/_sweep_api.sh" relay
+  exit 0
+fi
+[ -z "$to" ] || die "--to is api-binding-only: in gh mode the return state comes from the ticket's pre-park meta (or the bound worker's lane)"
+
 DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$SCRIPT_DIR/../../orchestrating-daemons/scripts}"
 [ -d "$DAEMON_SCRIPTS" ] || die "orchestrating-daemons scripts not found at $DAEMON_SCRIPTS (set DAEMON_SCRIPTS)"
 
