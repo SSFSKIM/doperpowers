@@ -183,6 +183,10 @@ is a TOOL invocation, not a nested agent. Never add
      --args '{"base":"origin/{{BASE_REF}}","finderModel":"{{CODEX_REVIEW_MODEL}}","finderEffort":"{{CODEX_REVIEW_EFFORT}}","verifierModel":"{{CODEX_REVIEW_MODEL}}"}' \
      > <review-tmp>/findings-rN.json 2> <review-tmp>/findings-rN.events.log
 
+   Nothing after JOIN reads the round's engine home, so remove each
+   round's `eng_home` once its findings are read; a park preserves
+   `<review-tmp>` alone.
+
    Keep the task handle. Leave it running and the findings unread — the
    protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
    JOIN step is the only place engine output is read.

@@ -180,6 +180,7 @@ else
     pass "engine-blocks dir is retired (engine text lives in SKILL.md)"
 fi
 assert_contains "$SKILL" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
+assert_contains "$SKILL" '`eng_home` once its findings are read' "the per-round engine home is removed, not leaked across rounds"
 assert_not_contains "$SKILL" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
 assert_contains "$SKILL" "the only place engine output is read" "audit independence keeps its positive statement"
 assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (audit runs concurrently)"
