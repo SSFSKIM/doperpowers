@@ -138,6 +138,8 @@ assert_contains "$SKILL" "unrun portion remains an unresolved SPEC FINDING" "sub
 assert_contains "$SKILL" "transition needs-human immediately, before JOIN" "protocol blocker parks early while fixing continues"
 assert_contains "$SKILL" "Never describe intended behavior as observed behavior" "human questions during a live wave are answered from evidence"
 assert_contains "$SKILL" "auto-merge on" "self-merge authority remains gated by auto-merge"
+assert_contains "$SKILL" "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed" "the worker resolves a noninteractive merge method before merging"
+assert_contains "$SKILL" "board sweep's FINALIZE pass" "a deferred auto-merge hands ticket finalize to the sweep"
 assert_contains "$SKILL" "needs-human" "human park route remains in the runtime skill"
 assert_not_contains "$SKILL" "needs-info" "review-loop parks remain human-unparked"
 assert_not_contains "$SKILL" "→ blocked" "retired blocked vocabulary stays absent"

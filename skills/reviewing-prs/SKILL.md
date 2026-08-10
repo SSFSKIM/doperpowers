@@ -329,18 +329,22 @@ The MERGE verdict requires ALL of:
   with no checks merges on the review alone. A FAILING check is an
   impasse: park needs-human naming the check.
 
-If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge with
-the repo's default method, pinned to the head your final engine round
-reviewed (gh pr merge {{PR_NUMBER}} --match-head-commit <reviewed-head>
+If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge,
+pinned to the head your final engine round reviewed. Headless gh never
+picks a merge method itself — resolve the repo's first (gh repo view
+--json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed; first
+allowed of --squash / --merge / --rebase), then
+gh pr merge {{PR_NUMBER}} <method-flag> --match-head-commit <reviewed-head>
 — the pin makes a head that moved after your review fail the merge
 instead of landing unreviewed; on that failure park needs-human with
-both SHAs). Post the review-trail comment and finalize:
+both SHAs. Post the review-trail comment and finalize:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done
 Checks still RUNNING at verdict time: arm GitHub auto-merge instead
-(gh pr merge {{PR_NUMBER}} --auto --match-head-commit <reviewed-head>) —
-the merge completes when they pass and the PR's `Closes` link finalizes
-the ticket. A repo that refuses auto-merge gets a bounded wait, then a
-needs-human park.
+(gh pr merge {{PR_NUMBER}} --auto <method-flag> --match-head-commit <reviewed-head>)
+— the merge completes when they pass, the PR's `Closes` link closes the
+ticket, and the board sweep's FINALIZE pass finishes what your ended
+turn cannot (label strip, terminal sweeps). A repo that refuses
+auto-merge gets a bounded wait, then a needs-human park.
 
 If ALL hold BUT auto-merge is off: OBSERVATION MODE — do NOT merge and
 do NOT arm auto-merge. Post the review-trail comment stating the merge

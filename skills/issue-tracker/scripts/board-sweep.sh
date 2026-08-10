@@ -23,6 +23,12 @@
 #            review-epic-* workers own their own lifecycle
 #            (the reviewer IS what put the ticket in its terminal state)
 #            and are never board-cancelled.
+#   FINALIZE closed tickets still carrying a status:* label — an armed
+#            auto-merge lands after the review worker's turn ended, so the
+#            PR's "Closes #N" closed the issue but board-transition's
+#            terminal path (label strip, terminal sweeps, epic
+#            recomposition) never ran → re-run the terminal transition
+#            (board-transition's idempotent finalize path).
 #   IMPACT   children in ANY state whose ticket carries a [parent-impact]
 #            proposal the parent it NAMES has not yet consumed (the format
 #            pins that parent; a reparented child's proposal still belongs to
@@ -293,6 +299,38 @@ pass_cancel() {
 $(_bound_rows | grep -E '^(done|wontfix)\|' || true)
 EOF
   log "[sweep] CANCEL: $acted acted"
+}
+
+# An armed auto-merge lands after the review worker's turn ended: the PR's
+# "Closes #N" closes the ticket, but the label strip, terminal sweeps, and
+# epic recomposition run only through board-transition — the issue sits
+# closed with a residual status:* label (lint flags it) and its parent
+# never recomposes. Re-derive the list from the live board and re-run the
+# terminal transition; the finalize path is idempotent, so racing a
+# reviewer that is still writing its own `done` is harmless.
+pass_finalize() {
+  local acted=0 tk st
+  while IFS='|' read -r tk st; do
+    [ -n "$tk" ] || continue
+    log "[sweep] FINALIZE: #$tk closed as $st with residual status labels — finalizing"
+    if "$BOARD_SCRIPTS/board-transition.sh" "$tk" "$st" >>"$SWEEP_LOG" 2>&1; then
+      acted=$((acted+1))
+    else
+      log "[sweep] FINALIZE: #$tk board-transition failed (see log)"
+    fi
+  done <<EOF
+$(python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
+import _board as B
+tickets = B.snapshot()
+for t, n in sorted(tickets.items(), key=lambda kv: int(kv[0])):
+    if n["state"] in B.TERMINAL and n["status_labels"]:
+        print("%s|%s" % (t, n["state"]))
+PY
+)
+EOF
+  log "[sweep] FINALIZE: $acted acted"
 }
 
 pass_impact() {
@@ -626,6 +664,7 @@ EOF
 
 pass_recover  || log "[sweep] RECOVER pass errored (continuing)"
 pass_cancel   || log "[sweep] CANCEL pass errored (continuing)"
+pass_finalize || log "[sweep] FINALIZE pass errored (continuing)"
 pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
 "$IMPLEMENT_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] DISPATCH pass errored (continuing)"
