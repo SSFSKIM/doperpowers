@@ -234,7 +234,7 @@ _codex_launch() {
       if [ -f "$_cert" ]; then export SSL_CERT_FILE="$_cert"; break; fi
     done
   fi
-  # A NESTED codex (e.g. review-engine.sh run by a codex worker) resolves
+  # A NESTED codex (e.g. a review run driven by a codex worker) resolves
   # its code-mode command host to /usr/local/bin (absent here) instead of
   # ~/.local/bin — export the explicit path so nested engine calls can run
   # commands. Only when unset and the host binary exists.

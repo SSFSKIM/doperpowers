@@ -19,7 +19,7 @@
 #   seeded:  base/ + patch.diff (+ truth.json, case.md, intent.md)
 #   real:    case.json {"repo": "<owner/name-or-local-path>", "head": "<sha>", "base": "<sha>"}
 #
-# Env: CODEX_REVIEW_MODEL / CODEX_REVIEW_EFFORT pass through to review-engine.sh.
+# Env: CODEX_REVIEW_MODEL / CODEX_REVIEW_EFFORT pick the codex model/effort.
 #      ARGUS_TIMEOUT (default 2700s) bounds the argus run; codex is bounded the same.
 #      ARGUS_LEVEL (default plain) pins the argus effort level.
 #      CR_LEVEL (default medium) pins the code-review effort level.
@@ -84,8 +84,12 @@ cd "$scratch"
 started="$(date +%s)"
 case "$engine" in
   codex)
-    "$bench_root/../../skills/reviewing-prs/scripts/review-engine.sh" \
-      --base main --out "$out"
+    # The production single-review path (review-engine.sh is retired): the
+    # with-effort wrapper serving the native review verb, findings on stdout.
+    node "$bench_root/../../skills/codex-companion/scripts/with-effort.mjs" \
+      --effort "${CODEX_REVIEW_EFFORT:-xhigh}" -- \
+      review --base main --wait --model "${CODEX_REVIEW_MODEL:-gpt-5.6-sol}" \
+      > "$out" 2> "$out.events.log"
     ;;
   argus)
     # Headless path (C1.G3): base-branch target with precomputed merge base —
