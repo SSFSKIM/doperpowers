@@ -520,7 +520,9 @@ assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "cont
 
 # ---- worktree bootstrap hook ---------------------------------------------------
 # WORKTREE_BOOTSTRAP_CMD runs inside the fresh worktree before the worker
-# spawns; its failure is reported but never blocks the dispatch.
+# spawns; its failure is reported but never blocks the dispatch. The command
+# executes with the worktree at the TRUSTED base ref — never the PR head —
+# and the worktree lands on the PR head afterwards.
 echo "worktree bootstrap:"
 reset_state
 out="$(WORKTREE_BOOTSTRAP_CMD='touch .bootstrapped && echo deps-ready' "$DISPATCH" 5)"
@@ -528,11 +530,38 @@ WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_file_exists "$WT/.bootstrapped" "bootstrap command ran inside the fresh worktree"
 assert_contains "$(cat "$DAEMON_HOME/review-pr-5.bootstrap.log" 2>/dev/null || true)" "deps-ready" "bootstrap output lands in the registry log"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "bootstrapped dispatch still spawns"
+assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "bootstrapped worktree still ends at the PR head SHA"
+
+# Trust invariant: f.txt exists only on the PR head (feat/x), not on main —
+# a bootstrap that could see it would be executing PR-controlled state.
+reset_state
+out="$(WORKTREE_BOOTSTRAP_CMD='if [ -f f.txt ]; then touch .saw-pr-head; else touch .ran-on-base; fi' "$DISPATCH" 5)"
+assert_file_exists "$WT/.ran-on-base" "bootstrap executed against the trusted base ref"
+if [ -f "$WT/.saw-pr-head" ]; then
+    fail "bootstrap never sees PR-head files"
+else
+    pass "bootstrap never sees PR-head files"
+fi
+assert_file_exists "$WT/f.txt" "worktree carries the PR head after the bootstrap"
 
 reset_state
 out="$(WORKTREE_BOOTSTRAP_CMD='echo boom >&2; exit 7' "$DISPATCH" 5 2>&1)"
 assert_contains "$out" "bootstrap failed rc=7" "failed bootstrap is reported with its exit code"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "failed bootstrap never blocks dispatch"
+
+# Budget overrun: TERM (then KILL) fires and the dispatch still completes —
+# never hangs for the sleep's full 300s.
+reset_state
+t0=$SECONDS
+out="$(WORKTREE_BOOTSTRAP_CMD='sleep 300' WORKTREE_BOOTSTRAP_TIMEOUT=1 "$DISPATCH" 5 2>&1)"
+elapsed=$((SECONDS - t0))
+assert_contains "$out" "bootstrap failed" "overrunning bootstrap is killed and reported"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "killed bootstrap never blocks dispatch"
+if [ "$elapsed" -lt 60 ]; then
+    pass "budget enforcement is prompt (${elapsed}s)"
+else
+    fail "budget enforcement is prompt (${elapsed}s)"
+fi
 
 reset_state
 out="$("$DISPATCH" 5)"
@@ -540,6 +569,32 @@ if [ -f "$LOCAL_REPO/.claude/worktrees/review-pr-5/.bootstrapped" ]; then
     fail "unset WORKTREE_BOOTSTRAP_CMD keeps prior behavior (no bootstrap)"
 else
     pass "unset WORKTREE_BOOTSTRAP_CMD keeps prior behavior (no bootstrap)"
+fi
+
+# ---- per-worker dispatch lock ---------------------------------------------------
+# A concurrent dispatch (PR event + sweep overlapping a long bootstrap) is
+# skipped while the lock is fresh; a stale lock is stolen, not obeyed.
+echo "dispatch lock:"
+reset_state
+mkdir "$DAEMON_HOME/review-pr-5.dispatch.lock"
+out="$("$DISPATCH" 5)"
+assert_contains "$out" "concurrent dispatch holds the lock — skip" "fresh lock skips the second dispatch"
+assert_equals "$(cat "$SPAWN_LOG")" "" "locked dispatch spawns nothing"
+rmdir "$DAEMON_HOME/review-pr-5.dispatch.lock"
+
+reset_state
+mkdir "$DAEMON_HOME/review-pr-5.dispatch.lock"
+python3 - "$DAEMON_HOME/review-pr-5.dispatch.lock" <<'PY'
+import os, sys, time
+t = time.time() - 3600
+os.utime(sys.argv[1], (t, t))
+PY
+out="$("$DISPATCH" 5)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "stale lock is stolen and dispatch proceeds"
+if [ -d "$DAEMON_HOME/review-pr-5.dispatch.lock" ]; then
+    fail "lock is released after dispatch"
+else
+    pass "lock is released after dispatch"
 fi
 
 # ---- skips --------------------------------------------------------------------
