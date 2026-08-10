@@ -692,6 +692,152 @@ assert_file_contains "$PROMPT3" "SPIKE worker for ticket #3" "a spike out of rea
 assert_not_contains "$(mock_issue_body 12)" "parent-pin:" \
   "a parentless epic gets no stamp"
 
+echo "implement-dispatch: surface serialization"
+
+# Fresh board: four tickets sharing surface:recommend-rpc across the lanes.
+# Labels are seeded directly (registration matching is the register script's
+# concern; the dispatcher reads labels alone — no surfaces.md needed here).
+seed_surface_board() {  # <state-of-22>
+python3 - "$1" <<'PY'
+import json, os, sys
+def issue(num, title, labels):
+    return {"number": num, "id": "ID_%d" % num, "title": title,
+            "body": "body", "state": "OPEN", "stateReason": None,
+            "labels": labels, "assignees": [], "parent": None,
+            "blockedBy": [], "closesPRs": [], "xrefPRs": [], "comments": [],
+            "createdAt": "2026-08-10T00:00:00Z", "updatedAt": "2026-08-10T00:00:00Z",
+            "url": "https://github.com/test/repo/issues/%d" % num}
+s = {"next": 30, "labels": [], "issues": {
+    "20": issue(20, "First rewrite", ["status:ready-for-implementer", "priority:P1",
+                                      "surface:recommend-rpc"]),
+    "21": issue(21, "Second rewrite", ["status:ready-for-implementer", "priority:P2",
+                                       "surface:recommend-rpc"]),
+    "22": issue(22, "Occupant", ["status:%s" % sys.argv[1], "priority:P1",
+                                 "surface:recommend-rpc"]),
+    "23": issue(23, "Consolidation design", ["status:ready-for-architect", "priority:P0",
+                                             "surface:recommend-rpc"]),
+    "24": issue(24, "Read-only probe", ["status:ready-for-implementer", "priority:P0",
+                                        "spike", "surface:recommend-rpc"]),
+}}
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+}
+
+# T9b: WITHOUT a surfaces.md registry, a surface label is ignored — the
+# leftover-label case must not queue eligible work forever (the no-registry
+# inertness contract covers the dispatcher too).
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board in-progress
+out="$(run 20)"
+assert_contains "$out" "dispatched #20" \
+  "no registry: a surface label does not serialize (inertness holds)"
+
+# The registry lands on the clone's default branch (what production reads:
+# origin/HEAD, freshly fetched); every scenario below runs with it present.
+mkdir -p "$CLONE/.doperpowers"
+printf '## recommend-rpc\n- paths: sql/*recommend*.sql\n- identifiers: recommend_for_student\n' \
+  > "$CLONE/.doperpowers/surfaces.md"
+git -C "$CLONE" add .doperpowers/surfaces.md
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m surfaces
+git -C "$CLONE" push -q origin main
+
+# T10: a board-state occupant (in-progress) blocks the implement lane only —
+# the architect (resolver) and the spike (read-only) still dispatch.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board in-progress
+out="$(run --sweep)"
+assert_contains "$out" "surface recommend-rpc occupied by #22 — #20 queued" \
+  "surface occupant blocks an implement dispatch with a named reason"
+assert_contains "$out" "surface recommend-rpc occupied by #22 — #21 queued" \
+  "every queued implement ticket on the surface reports, none spawns"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "blocked ticket #20 did not spawn"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 23-" "architect lane is never surface-blocked"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 24-" "spike lane is never surface-blocked"
+
+# T11: the registry arm — an occupant whose board state still lags (fresh
+# spawn: ready-for-implementer + live working meta) must still occupy.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board ready-for-implementer
+python3 - <<'PY'
+import json, os
+json.dump({"uuid": "ffff0001-0000-4000-8000-000000000000", "current": "x",
+           "name": "22-occupant", "ticket": "22", "status": "working",
+           "updated": "2026-08-10T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "ffff0001-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$out" "surface recommend-rpc occupied by #22 — #20 queued" \
+  "a live bound worker occupies before its first board write (registry arm)"
+
+# T12: in-tick claim — two eligible same-surface tickets in ONE sweep yield
+# exactly one dispatch; the second names the in-tick claim. The architect and
+# spike rows are removed: an architect dispatch would claim the surface first
+# (it occupies by design), which is T14's scenario, not this one.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board "done"   # 22 out of the way (terminal states never occupy)
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+del s["issues"]["23"], s["issues"]["24"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "first same-surface ticket dispatches (priority order)"
+assert_contains "$out" "surface recommend-rpc occupied by #20 — #21 queued" \
+  "second same-surface ticket waits in the same tick (registry arm names the fresh spawn; the in-tick claim set is its belt)"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "in-tick claim held: #21 did not spawn"
+
+# T13: occupancy clears → the queued ticket dispatches on the next sweep.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board "done"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+del s["issues"]["20"], s["issues"]["23"], s["issues"]["24"]   # nothing occupies now
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "queued ticket dispatches once the surface is free"
+
+# T14: an architect mid-design (in-design) occupies against implementers —
+# patch work waits while the consolidation redesign runs.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board "done"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["23"]["labels"] = ["status:in-design", "priority:P0", "surface:recommend-rpc"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$out" "surface recommend-rpc occupied by #23 — #20 queued" \
+  "an in-design architect ticket occupies the surface against implementers"
+
+# T14b: a spike-category ticket routed ARCHITECT by state (in-design)
+# occupies — the spike exemption is lane-scoped, not category-scoped.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board "done"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+del s["issues"]["23"]
+s["issues"]["24"]["labels"] = ["status:in-design", "priority:P0", "spike",
+                               "surface:recommend-rpc"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$out" "surface recommend-rpc occupied by #24 — #20 queued" \
+  "a design-phase spike (architect-routed by state) occupies the surface"
+
+# T15: SURFACE_OVERRIDE=1 — deliberate bypass, loudly logged.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board in-progress
+out="$(SURFACE_OVERRIDE=1 run 20)"
+assert_contains "$out" "SURFACE_OVERRIDE=1: dispatching #20 onto occupied surface recommend-rpc (occupant #22)" \
+  "override dispatches with a loud line (triggered mode shares the guard)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "override actually spawned"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"

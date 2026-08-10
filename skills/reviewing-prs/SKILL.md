@@ -353,8 +353,13 @@ substance and route.
   Birth classification applies: the default is `ready-for-implementer`;
   a finding that is missing DESIGN (not just missing work) passes
   `--state ready-for-architect`.
+  A seam-search hit that says the finding IS an existing open ticket:
+  comment your evidence on that ticket instead of registering — the one
+  sanctioned cross-ticket write in this protocol (an explicit exception
+  to "board writes target the primary ticket").
   NEVER wave it. On a ticketless PR, post a structured PR comment
-  describing the scope fork instead — board writes are skipped.
+  describing the scope fork instead — board writes are skipped, the
+  cross-ticket exception included.
 - LOG — valid non-blocker: append a
   structured comment to the standing tech-debt issue
   ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
@@ -409,6 +414,12 @@ The MERGE verdict requires ALL of:
 - every existing CI check green (gh pr checks {{PR_NUMBER}}) — a repo
   with no checks merges on the review alone. A FAILING check is an
   impasse: park needs-human naming the check.
+
+These three are the WHOLE gate. The risk-surface manifest feeds
+scrutiny, never merge authority — and repo prose reserving merges for
+humans does not override the auto-merge binding below: the binding IS
+your human partner's standing authorization, set where the dispatcher
+runs.
 
 If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge,
 pinned to the head your final engine round reviewed. Headless gh never

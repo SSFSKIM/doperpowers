@@ -153,6 +153,56 @@ for tid in sorted(tickets, key=int):
              "(done if landed / wontfix if superseded), or re-scope"
              % len(n["prs"]))
 
+# Surfaces (closed vocabulary — inert when no registry exists).
+reg = B.surfaces_registry()
+if reg is not None:
+    for bad in sorted(n for n in reg if not B.SURFACE_NAME_RE.match(n) or len(n) > 40):
+        fails += 1
+        print("FAIL surfaces.md entry %r: name must be kebab-case, <= 40 chars "
+              "(it becomes the surface:%s label)" % (bad, bad))
+        print("     FIX: rename the entry in .doperpowers/surfaces.md")
+    depth = {}
+    for tid in sorted(tickets, key=int):
+        n = tickets[tid]
+        for s in n["surfaces"]:
+            if s not in reg:
+                fail(tid, "surface label with no registry entry: %s%s"
+                     % (B.SURFACE_PREFIX, s),
+                     "board-surface.sh %s --remove %s — or land a "
+                     ".doperpowers/surfaces.md entry for it" % (tid, s))
+            if n["state"] not in B.TERMINAL:
+                depth[s] = depth.get(s, 0) + 1
+        # Drift: a labeled ticket whose linked PR diffs never touch the
+        # surface's paths — stale over-declaration (add-only labeling never
+        # removes; a human clears it). Only tickets WITH linked PRs are
+        # checkable, and only fetched here, so cost is bounded by the
+        # labeled set.
+        if n["surfaces"] and n["prs"] and n["state"] not in B.TERMINAL:
+            paths = []
+            for pr in n["prs"]:
+                try:
+                    import json as _json
+                    pages = _json.loads(B.gh(["api", "--paginate", "--slurp",
+                                              "repos/%s/pulls/%s/files"
+                                              % (B.repo(), pr["num"])]))
+                    files = [f for page in pages or [] for f in page or []]
+                    for f in files:
+                        paths.append(f.get("filename") or "")
+                        if f.get("previous_filename"):
+                            paths.append(f["previous_filename"])
+                except (SystemExit, ValueError):
+                    paths = None
+                    break
+            if paths is not None:
+                for s in n["surfaces"]:
+                    if s in reg and reg[s]["paths"] \
+                            and not B.match_paths({s: reg[s]}, paths):
+                        warn(tid, "surface:%s declared but no linked PR diff "
+                             "touches its paths (stale? board-surface.sh %s "
+                             "--remove %s)" % (s, tid, s))
+    for s in sorted(depth):
+        print("SURFACE %s: %d open ticket(s)" % (s, depth[s]))
+
 # Dependency cycles (GitHub does not forbid mutual blocking).
 color = {}
 def visit(t, path):

@@ -4,7 +4,7 @@
 # Usage:
 #   board-register.sh <title> <category> <priority> [--state S] [--note TEXT]
 #                     [--parent N] [--blocked-by N[,N...]] [--spawned-by N]
-#                     [--body-file F] [--repair-path TEXT]
+#                     [--body-file F] [--repair-path TEXT] [--surface HINT]...
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
 #             findings comment, never a merge — see doperpowers:implementing)
@@ -21,6 +21,10 @@
 #   --body-file seeds the issue body (else a pre-spec skeleton is used).
 #   --repair-path names the agent-executable repair that licenses an env-issue
 #   into an agent lane (API binding only — A1 requires it for that birth).
+#   --surface (repeatable) hints a contested surface the ticket touches — a
+#   registry name or a file path. Matching against .doperpowers/surfaces.md
+#   (identifiers in title/body + hints) auto-labels the ticket surface:<name>
+#   and relates it to open label-mates; without a registry it is a no-op.
 #
 # A pre-spec skeleton is never implementable: explicit birth into a
 # dispatchable lane state without a real body is refused, and a DEFAULT birth
@@ -38,7 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 3 ] || { usage_from_header "$0" >&2; exit 2; }
 title="$1" category="$2" priority="$3"
 shift 3
-state="ready-for-implementer" state_explicit=0 note="" parent="" blocked_by="" spawned_by="" body_file="" repair_path=""
+state="ready-for-implementer" state_explicit=0 note="" parent="" blocked_by="" spawned_by="" body_file="" repair_path="" surface_hints=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --state) _need_arg "$1" "${2:-}"; state="$2"; state_explicit=1; shift 2 ;;
@@ -48,6 +52,7 @@ while [ $# -gt 0 ]; do
     --spawned-by) _need_arg "$1" "${2:-}"; spawned_by="$2"; shift 2 ;;
     --body-file) _need_arg "$1" "${2:-}"; body_file="$2"; shift 2 ;;
     --repair-path) _need_arg "$1" "${2:-}"; repair_path="$2"; shift 2 ;;
+    --surface) _need_arg "$1" "${2:-}"; surface_hints="$surface_hints$2"$'\n'; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -63,6 +68,8 @@ done
 # refusal, the env-issue inversion), so the client assembles the payload and
 # reports what came back — none of the gh path's client-side adjudication runs.
 if [ "$BOARD_BINDING" = api ]; then
+  [ -z "$surface_hints" ] \
+    || echo "note: --surface is gh-mode only (surface-aware pick order is a server-side A2 requirement) — hint(s) ignored" >&2
   T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
   T_STATE_EXPLICIT="$state_explicit" T_NOTE="$note" T_PARENT="$parent" \
   T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" T_BODY_FILE="$body_file" \
@@ -189,7 +196,7 @@ fi
 T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
 T_STATE_EXPLICIT="$state_explicit" \
 T_NOTE="$note" T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \
-T_BODY_FILE="$body_file" _py - <<'PY'
+T_BODY_FILE="$body_file" T_SURFACE_HINTS="$surface_hints" _py - <<'PY'
 import os
 import re
 import _board as B
@@ -270,10 +277,35 @@ if note:
     meta["note"] = note
 body = B.render_body(body, meta)
 
+# Surface matching (spec "Matching moment 1"): declared hints + title/body
+# identifiers against the registry. The matched labels ride the CREATE call
+# itself, so the ticket is never observable unlabeled. No registry → no-op
+# (the opt-in contract).
+reg = B.surfaces_registry()
+surfaces = []
+if reg is not None:
+    hints = [h for h in env.get("T_SURFACE_HINTS", "").splitlines() if h]
+    matched = set(B.match_identifiers(reg, title + "\n" + B.strip_meta(body)))
+    for h in hints:
+        if h in reg:
+            matched.add(h)
+        else:
+            matched |= set(B.match_paths(reg, [h]))
+    surfaces = sorted(matched)
+    for s_ in surfaces:
+        B.ensure_surface_label(s_)
+elif env.get("T_SURFACE_HINTS", "").strip():
+    import sys as _sys
+    print("note: --surface ignored — no .doperpowers/surfaces.md on the "
+          "default branch (surfaces are opt-in per repo)", file=_sys.stderr)
+
 B.ensure_labels()
+labels = "%s,%s%s,%s%s" % (category, B.STATUS_PREFIX, state,
+                           B.PRIORITY_PREFIX, priority)
+if surfaces:
+    labels += "," + ",".join(B.SURFACE_PREFIX + s_ for s_ in surfaces)
 out = B.gh(["issue", "create", "-R", B.repo(), "--title", title,
-            "--label", "%s,%s%s,%s%s" % (category, B.STATUS_PREFIX, state,
-                                         B.PRIORITY_PREFIX, priority),
+            "--label", labels,
             "--body-file", "-"], input_text=body)
 m = re.search(r"/issues/(\d+)\s*$", out.strip())
 if not m:
@@ -295,6 +327,71 @@ if note:
     B.comment(num, "[board] %s: %s" % (state, note))
 
 print("%s %s" % (num, url))
+
+# Auto-relate to open label-mates (spec "Matching moment 1"): the relates web
+# is how a reader sees the cluster. Capped at the 8 newest mates plus any
+# open architect-lane mate (the consolidation ticket, when one exists). A
+# mate with a live bound worker is skipped — update_meta is a full-body
+# read-modify-write that must never race the worker's own meta writes — and
+# the sweep SURFACE pass adds that edge later.
+if surfaces:
+    # The relate writes are full-body RMWs on tickets an issue-event
+    # dispatch may be binding workers to RIGHT NOW (the new ticket
+    # included — event dispatch fires on creation). Take the same
+    # per-surface locks the dispatcher holds across its check-to-bind
+    # window and re-check liveness UNDER them; contention or a live
+    # worker defers the edge to the sweep's SURFACE pass.
+    lock_root = os.path.join(
+        os.environ.get("DAEMON_HOME",
+                       os.path.expanduser("~/.claude/orchestrating-daemons")),
+        "surface-locks")
+    os.makedirs(lock_root, exist_ok=True)
+    held = []
+    for s_ in surfaces:
+        try:
+            os.mkdir(os.path.join(lock_root, s_))
+            held.append(s_)
+        except OSError:
+            pass
+    locked = set(held) == set(surfaces)
+    try:
+        live = B.live_bound_tickets() if locked else None
+        new_node = {"body": body}
+        new_rel = []
+        for s_ in surfaces:
+            mates = [t for t in tickets
+                     if s_ in tickets[t]["surfaces"]
+                     and tickets[t]["state"] not in B.TERMINAL]
+            if not mates:
+                print("surface %s: no open label-mates" % s_)
+                continue
+            arch = [t for t in mates
+                    if tickets[t]["state"] in ("ready-for-architect",
+                                               "in-design")]
+            rest = sorted((t for t in mates if t not in arch), key=int,
+                          reverse=True)[:8]
+            take = sorted(set(arch + rest), key=int)
+            deferred = []
+            for t in take:
+                if not locked or t in live or num in live:
+                    deferred.append(t)
+                    continue
+                if t in new_rel:
+                    continue
+                B.update_meta(t, tickets[t], **{"relates-to": " ".join(
+                    "#%s" % r for r in tickets[t]["relates_to"] + [num])})
+                new_rel.append(t)
+            print("surface %s: open label-mates %s%s" % (
+                s_, " ".join("#%s" % t for t in take),
+                " (relate deferred to sweep: %s)"
+                % " ".join("#%s" % t for t in deferred) if deferred else ""))
+        if new_rel and num not in (live or ()):
+            B.update_meta(num, new_node, **{"relates-to": " ".join(
+                "#%s" % r for r in new_rel)})
+    finally:
+        for s_ in held:
+            os.rmdir(os.path.join(lock_root, s_))
+
 PY
 
 _rerender_if_serving

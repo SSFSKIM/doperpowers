@@ -166,6 +166,23 @@ def main():
             return
         die("unhandled issue view fields: %s" % " ".join(argv))
 
+    # REST: pulls/<n>/files — the surface sweep/lint diff read. Files come
+    # from the state's optional "pr_files" map; an entry is a plain path or
+    # {"filename": ..., "previous_filename": ...} (a rename). An unlisted PR
+    # has no files, which is also what a just-opened empty PR answers.
+    m_files = None
+    if argv[:1] == ["api"]:
+        rest = [a for a in argv[1:] if not a.startswith("-")]
+        if rest:
+            m_files = re.match(r"repos/[^/]+/[^/]+/pulls/(\d+)/files$", rest[0])
+    if m_files:
+        out = []
+        for f in (s.get("pr_files") or {}).get(m_files.group(1), []):
+            out.append({"filename": f} if isinstance(f, str) else f)
+        # --slurp wraps pages in one outer array (the mock is single-page)
+        print(json.dumps([out] if "--slurp" in argv else out))
+        return
+
     # REST endpoints the board verifies a plan pin against. Both are driven by
     # $MOCK_GH_REFS (JSON): {"compare": {"<branch>...<sha>": "identical"},
     # "contents": ["<path>@<sha>", ...], "fail": ["<substring>", ...]}.

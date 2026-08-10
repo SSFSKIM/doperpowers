@@ -198,11 +198,25 @@ PY
 
 _transcript() { find "$HOME/.claude/projects" -name "$1.jsonl" 2>/dev/null | head -1; }
 
-# File mtime as UTC ISO-8601 (BSD stat first, GNU fallback) — the turn-end
-# ordering signal for the relay pass.
+# File mtime as epoch seconds — GNU stat first, BSD fallback. The BSD-first
+# order was NOT portable: GNU `stat -f %m` treats -f as filesystem mode and
+# %m as a filename, so it dumps the surviving file's filesystem status to
+# stdout while exiting nonzero — the fallback's number lands AFTER that
+# garbage, and arithmetic saw `File:` (every RECOVER tick with a live
+# worker crashed: "line 261: File: unbound variable"). GNU `stat -c` on BSD
+# fails cleanly to stderr, so this order composes; the numeric guard drops
+# anything else.
+_mtime_epoch() {
+  local e
+  e="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$e"
+}
+
+# File mtime as UTC ISO-8601 — the turn-end ordering signal for the relay pass.
 _mtime_iso() {
   local e
-  e="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null)" || return 1
+  e="$(_mtime_epoch "$1")" || return 1
   date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
 }
 
@@ -258,7 +272,7 @@ pass_recover() {
           live)
             tx="$(_transcript "$current")"
             if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx") ) / 60 ))"
+              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 _recover "$tk" "$uuid" "$recov" "silent for ${age}m (stall threshold ${STALL_MIN}m)"
                 acted=$((acted+1))
@@ -287,7 +301,7 @@ pass_recover() {
             # meta's `updated` is bumped by the finalize just above).
             tx="$(_transcript "$current")"
             if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx") ) / 60 ))"
+              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 log "[sweep] RECOVER: #$tk worker $uuid is live but silent for ${age}m (threshold ${STALL_MIN}m) on a handed-off $state ticket — retiring the binding; it owns no further writes here"
                 "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
@@ -682,10 +696,177 @@ EOF
   log "[sweep] RELAY: $acted acted"
 }
 
+# SURFACE — the PR-diff matching moment (spec: surface topology). Ordered
+# BEFORE dispatch: a diff-derived label must exist before dispatch decisions
+# read it, or it always arrives one dispatch too late. Three jobs, all inert
+# without a .doperpowers/surfaces.md registry on the default branch:
+#   1. add-only labeling from open linked PR diffs (removal is never
+#      automatic — an early-WIP diff must not un-serialize a mid-flight
+#      ticket; stale labels are lint WARNs a human clears);
+#   2. retroactive relates edges between label-mates, only when NEITHER side
+#      has a live bound worker (update_meta is a full-body RMW), capped per
+#      tick — the remainder lands next tick;
+#   3. queue-depth watch: >= 3 open implement-lane tickets on one surface
+#      with no open architect-lane ticket carrying it → REGISTER a
+#      consolidation ticket (ready-for-architect) naming the members. The
+#      label on that ticket is the structural dedupe — its existence
+#      suppresses re-registration; no marker to drift.
+pass_surface() {
+  local line surface members bodyf out num
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      CONSOLIDATE\ *)
+        surface="$(printf '%s' "$line" | cut -d' ' -f2)"
+        members="$(printf '%s' "$line" | cut -d' ' -f3-)"
+        bodyf="$(mktemp)"
+        { printf '## Problem & intent\n\n'
+          printf 'The surface `%s` (see `.doperpowers/surfaces.md`) carries %s open implement-lane tickets: %s.\n' \
+            "$surface" "$(printf '%s\n' "$members" | wc -w | tr -d ' ')" "$members"
+          printf 'Three or more parallel tickets on one contested seam means patch-wise work has outgrown the seam — parallel rewrites of one body revert each other silently. This ticket owns the unified redesign: one contract, the members re-cut as its slices or closed.\n\n'
+          printf '## Constraints\n\n- Registered mechanically by the board sweep (queue-depth watch). The member list is the evidence; verify it against the live board before designing.\n\n'
+          printf '## Success criteria\n\n- A single contract for the surface exists and every member ticket is a slice of it or is closed with a reason.\n'
+        } > "$bodyf"
+        out="$("$SCRIPT_DIR/board-register.sh" "surface $surface: consolidation redesign (queue-depth auto)" \
+                enhancement P1 --state ready-for-architect --surface "$surface" --body-file "$bodyf" 2>&1)" \
+          && num="${out%% *}" \
+          && log "[sweep] SURFACE: consolidation #$num registered for $surface (members: $members)" \
+          || log "[sweep] SURFACE: consolidation register failed for $surface"
+        rm -f "$bodyf"
+        ;;
+      *) log "$line" ;;
+    esac
+  done <<EOF
+$(BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+import json
+import os
+import sys
+sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
+import _board as B
+reg = B.surfaces_registry()
+if reg is None:
+    print("[sweep] SURFACE: no registry — skipped")
+    raise SystemExit(0)
+tickets = B.snapshot()
+live = B.live_bound_tickets()
+epics = {t for t in tickets if any(
+    tickets[c].get("parent") == t for c in tickets)}
+labeled = 0
+for tid in sorted(tickets, key=int):
+    n = tickets[tid]
+    if n["state"] in B.TERMINAL:
+        continue
+    open_prs = [p for p in n["prs"] if p["state"] == "OPEN"]
+    if not open_prs:
+        continue
+    paths = []
+    for p in open_prs:
+        try:
+            # --slurp wraps each page in one outer array — without it a
+            # multi-page diff is concatenated arrays json.loads rejects,
+            # and the silent skip would leave the PR unserialized.
+            pages = json.loads(B.gh(["api", "--paginate", "--slurp",
+                                     "repos/%s/pulls/%s/files"
+                                     % (B.repo(), p["num"])]))
+        except (SystemExit, ValueError):
+            continue
+        files = [f for page in pages or [] for f in page or []]
+        for f in files:
+            # A rename contributes BOTH names: previous_filename is how a
+            # file renamed OUT of a surface still marks the ticket.
+            paths.append(f.get("filename") or "")
+            if f.get("previous_filename"):
+                paths.append(f["previous_filename"])
+    for s in [x for x in B.match_paths(reg, paths) if x not in n["surfaces"]]:
+        B.ensure_surface_label(s)
+        B.edit_labels(tid, add=(B.SURFACE_PREFIX + s,))
+        n["surfaces"].append(s)
+        labeled += 1
+        print("[sweep] SURFACE: #%s += surface:%s (PR diff)" % (tid, s))
+# Retroactive relates between label-mates — the backstop for edges the
+# register moment deferred (live workers) or never saw (diff-derived
+# labels). Bounded per tick: body writes are the expensive, racy resource.
+writes = 0
+lock_root = os.path.join(os.environ.get("DAEMON_HOME",
+    os.path.expanduser("~/.claude/orchestrating-daemons")), "surface-locks")
+os.makedirs(lock_root, exist_ok=True)
+# Registered names only, here and in the queue-depth watch below: an
+# orphaned label (entry deleted, or invented — lint FAILs it) must not
+# drive body writes, and a CONSOLIDATE on it would register with a
+# --surface hint that matches nothing — an unlabeled consolidation the
+# structural dedupe can never see, duplicated every tick.
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]} & set(reg)):
+    mates = [t for t in tickets if s in tickets[t]["surfaces"]
+             and tickets[t]["state"] not in B.TERMINAL]
+    if len(mates) < 2:
+        continue
+    # The dispatcher holds this same lock across its occupancy-check →
+    # spawn window (including the parent-pin body stamp) — taking it here
+    # is what keeps these relates RMWs from racing a dispatch. Contention
+    # or a fresh live worker → skip; next tick converges.
+    lock = os.path.join(lock_root, s)
+    try:
+        os.mkdir(lock)
+    except OSError:
+        continue
+    try:
+        live_now = B.live_bound_tickets()
+        for i, a in enumerate(mates):
+            for b in mates[i + 1:]:
+                if writes >= 8:
+                    break
+                # Each SIDE is checked and repaired independently — a
+                # one-sided edge (a crashed prior tick) must converge, not
+                # be skipped as "already related".
+                for src_t, dst in ((a, b), (b, a)):
+                    if dst in tickets[src_t]["relates_to"]:
+                        continue
+                    if src_t in live_now:
+                        continue
+                    B.update_meta(src_t, tickets[src_t],
+                                  **{"relates-to": " ".join(
+                                      "#%s" % r for r in
+                                      tickets[src_t]["relates_to"] + [dst])})
+                    tickets[src_t]["relates_to"].append(dst)
+                    writes += 1
+                    print("[sweep] SURFACE: related #%s -> #%s (%s)"
+                          % (src_t, dst, s))
+    finally:
+        os.rmdir(lock)
+# Members = every ticket still in the rewrite race. Parks COUNT — a
+# needs-human/needs-info rewrite resumes into its lane without another
+# registration or search; only deferred, terminal, spike, epic, and the
+# architect lane (the resolver) are out.
+ARCH_STATES = ("ready-for-architect", "in-design")
+OUT_STATES = B.TERMINAL + ARCH_STATES + ("deferred",)
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]} & set(reg)):
+    members = [t for t in sorted(tickets, key=int)
+               if s in tickets[t]["surfaces"]
+               and tickets[t]["state"] not in OUT_STATES
+               and tickets[t]["category"] != "spike" and t not in epics]
+    if len(members) < 3:
+        continue
+    # Structural dedupe covers the consolidation's WHOLE open lifecycle:
+    # architect states before decompose, epic-with-children after (decompose
+    # moves it to ready-for-implementer while members stay open — arch-states
+    # alone re-registered every tick from that moment).
+    if any(s in tickets[t]["surfaces"]
+           and tickets[t]["state"] not in B.TERMINAL
+           and (tickets[t]["state"] in ARCH_STATES or t in epics)
+           for t in tickets):
+        continue
+    print("CONSOLIDATE %s %s" % (s, " ".join("#%s" % m for m in members)))
+print("[sweep] SURFACE: %d labeled" % labeled)
+PY
+)
+EOF
+}
+
 pass_recover  || log "[sweep] RECOVER pass errored (continuing)"
 pass_cancel   || log "[sweep] CANCEL pass errored (continuing)"
 pass_finalize || log "[sweep] FINALIZE pass errored (continuing)"
 pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
+pass_surface  || log "[sweep] SURFACE pass errored (continuing)"
 "$IMPLEMENT_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] DISPATCH pass errored (continuing)"
 "$REVIEW_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
