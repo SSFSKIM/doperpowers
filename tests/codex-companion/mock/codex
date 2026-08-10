@@ -187,6 +187,13 @@ rl.on("line", (line) => {
     fs.appendFileSync(path.join(MOCK, "turns.jsonl"),
       JSON.stringify({ method: msg.method, params: msg.params, pid: process.pid }) + "\n");
     const b = lensBehavior() ?? nextTurnBehavior();
+    // stderrLine: a line on the server's STDERR — the real server's sandbox
+    // helper complains there (bwrap RTM_NEWADDR et al.); written before `die`
+    // so a dying server can leave the diagnostic behind, exactly like the
+    // real failure. The client buffers it into client.stderr either way.
+    if (b.stderrLine) {
+      fs.writeSync(2, `${b.stderrLine}\n`);
+    }
     if (b.die) process.exit(1);
 
     const isReview = msg.method === "review/start";
@@ -225,13 +232,6 @@ rl.on("line", (line) => {
     // to skip the line, not treat it as the end of the connection.
     if (b.banner) {
       process.stdout.write(`${b.banner}\n`);
-    }
-
-    // stderrLine: a line on the server's STDERR mid-turn — the real server's
-    // sandbox helper complains there (bwrap RTM_NEWADDR et al.) while the turn
-    // still exits 0; the client buffers it into client.stderr.
-    if (b.stderrLine) {
-      process.stderr.write(`${b.stderrLine}\n`);
     }
 
     const finish = () => {

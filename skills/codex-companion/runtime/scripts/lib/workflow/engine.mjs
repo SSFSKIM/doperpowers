@@ -181,6 +181,10 @@ export async function runWorkflow(spec) {
           out = await attempt();
         } catch (e1) {
           if (e1?.terminal) throw e1;            // schema-repair exhaustion etc: NEVER a third attempt
+          // A dead app-server's protocol error carries the child's buffered
+          // stderr — forward sandbox markers from it too, or a dying worker's
+          // diagnostics never reach the consumers' fail-closed guards.
+          emitSandboxDiagnostics(label, String(e1?.message ?? e1));
           appendEvent(journalPath, { type: "retry", key, error: String(e1?.message ?? e1) });
           emit(`retry ${kind}:${label ?? ""}`);
           out = await attempt();                 // one automatic transport retry, fresh turn
@@ -189,6 +193,7 @@ export async function runWorkflow(spec) {
         emit(`done ${kind}:${label ?? ""}`);
         return out;
       } catch (err) {
+        emitSandboxDiagnostics(label, String(err?.message ?? err));
         appendEvent(journalPath, { type: "finished", key, error: String(err?.message ?? err) });
         emit(`fail ${kind}:${label ?? ""}`);
         throw err;

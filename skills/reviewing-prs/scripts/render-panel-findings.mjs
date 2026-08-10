@@ -4,32 +4,55 @@
 // the rendered-findings text the reviewing-prs worker reads at JOIN, so the
 // panel route and the single-review route land in --out with one contract.
 //
-// `interrupted` exits 4: the panel withheld its verdict (lost lane, no
-// contract-valid verifier set, or the reviewed head moved), so there is no
-// findings file to write — the caller treats it like any other engine
-// failure (retry, then the ENGINE-UNAVAILABLE fallback). Any partial
+// FAIL CLOSED on anything but a well-formed verdict: the worker derives its
+// approval from unresolved critical/high findings, so a malformed result
+// rendered as "0 findings" would read as clean. `interrupted` and every
+// malformed/inconsistent shape exit 4 — the caller treats that like any
+// engine failure (retry, then the ENGINE-UNAVAILABLE fallback). Any partial
 // evidence stays in the .panel.json beside --out for the review trail.
 //
 // Usage: render-panel-findings.mjs <panel.json>   (findings text on stdout)
 import { readFileSync } from "node:fs";
 
-const raw = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const refuse = (why) => { console.error(`panel result rejected: ${why}`); process.exit(4); };
+
+let raw;
+try {
+  raw = JSON.parse(readFileSync(process.argv[2], "utf8"));
+} catch (e) {
+  refuse(`unreadable panel JSON (${e.message})`);
+}
 const r = raw?.result ?? {};
 if (r.verdict === "interrupted") {
   console.error(`panel interrupted: ${r.explanation ?? "no explanation"}`);
   process.exit(4);
 }
 if (r.verdict !== "correct" && r.verdict !== "incorrect") {
-  console.error(`panel returned no verdict (got ${JSON.stringify(r.verdict)})`);
-  process.exit(4);
+  refuse(`no verdict (got ${JSON.stringify(r.verdict)})`);
+}
+if (!Array.isArray(r.findings)) refuse("findings is not an array");
+for (const f of r.findings) {
+  if (typeof f?.priority !== "string" || typeof f?.title !== "string" || typeof f?.file !== "string") {
+    refuse(`malformed finding ${JSON.stringify(f).slice(0, 120)}`);
+  }
+}
+// The panel constructs the verdict FROM the findings (incorrect ⟺ confirmed
+// findings exist), so a disagreement here is a mangled result, not a verdict.
+if ((r.verdict === "incorrect") !== (r.findings.length > 0)) {
+  refuse(`verdict ${r.verdict} inconsistent with ${r.findings.length} findings`);
 }
 
-const findings = r.findings ?? [];
-const lenses = (r.lenses ?? []).length;
+const findings = r.findings;
 const out = [];
+// Participation from COVERAGE (what actually ran), never from the configured
+// lens list — a dead lane must not be rendered as a participant in the trail.
+const coverage = Array.isArray(r.coverage) ? r.coverage : [];
+const lanes = coverage.length
+  ? ` (lanes: ${coverage.map((c) => `${c.finder} ${c.status}`).join(", ")})`
+  : "";
 out.push(
   `Panel verdict: ${r.verdict} — ${findings.length} verifier-confirmed ` +
-  `finding${findings.length === 1 ? "" : "s"} (sweep + ${lenses} lens${lenses === 1 ? "" : "es"} + verifier)`
+  `finding${findings.length === 1 ? "" : "s"}${lanes}`
 );
 if (r.explanation) out.push("", String(r.explanation).trim());
 for (const f of findings) {

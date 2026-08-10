@@ -88,7 +88,9 @@ else console.log(JSON.stringify({ runId: "wf_stub", result: {
   findings: [{ id: "sweep#1", priority: "P1", title: "stub panel finding",
     file: "a.ts", lines: "10-12", comment: "why it is wrong",
     sources: ["sweep", "lens-1"] }],
-  coverage: [], lenses: ["l1", "l2"], explanation: "confirmed: stub panel finding" } }));
+  coverage: [{ finder: "sweep", status: "ok" }, { finder: "lens-1", status: "ok" },
+    { finder: "lens-2", status: "worker-failed" }],
+  lenses: ["l1", "l2"], explanation: "confirmed: stub panel finding" } }));
 process.exit(Number(e.STUB_RC ?? 0));
 STUB
 export REVIEW_COMPANION_DIR="$COMPANION"
@@ -154,6 +156,8 @@ assert_contains "$LOG" '\"finderEffort\":\"xhigh\"' "panel args carry the finder
 assert_not_contains "$LOG" "WITH_EFFORT" "panel route does not also run a single review"
 OUT="$(cat "$TEST_ROOT/out.txt")"
 assert_contains "$OUT" "Panel verdict: incorrect" "panel verdict rendered into --out"
+assert_contains "$OUT" "lanes: sweep ok, lens-1 ok, lens-2 worker-failed" \
+  "participation is rendered from coverage — a dead lane shows as dead"
 assert_contains "$OUT" "- [P1] stub panel finding (a.ts:10-12)" "confirmed finding rendered with priority and location"
 assert_contains "$OUT" "raised independently by: sweep, lens-1" "multi-source findings carry their lanes"
 assert_equals "$([ -s "$TEST_ROOT/out.txt.panel.json" ] && echo yes)" "yes" "raw panel result kept beside --out"
@@ -189,6 +193,16 @@ rc=0; CODEX_REVIEW_PANEL=always STUB_PANEL_FILE="$TEST_ROOT/interrupted.json" \
 assert_equals "$rc" "4" "interrupted panel verdict is an engine failure (rc 4)"
 assert_contains "$(cat "$TEST_ROOT/err.txt")" "panel interrupted: the lens-free sweep did not complete" \
   "interruption reason surfaces on stderr"
+
+echo "panel malformed result (fail closed):"
+reset
+cat > "$TEST_ROOT/malformed.json" <<'JSON'
+{"runId":"wf_stub","result":{"verdict":"incorrect"}}
+JSON
+rc=0; CODEX_REVIEW_PANEL=always STUB_PANEL_FILE="$TEST_ROOT/malformed.json" \
+  "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>"$TEST_ROOT/err.txt" || rc=$?
+assert_equals "$rc" "4" "an incorrect verdict with no findings array is rejected, not rendered clean"
+assert_contains "$(cat "$TEST_ROOT/err.txt")" "panel result rejected" "the rejection names itself"
 
 echo "rc passthrough:"
 reset
