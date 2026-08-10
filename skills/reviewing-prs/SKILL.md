@@ -133,10 +133,10 @@ its own.
 
 ## START ENGINE
 
-REVIEW ENGINE — the native codex review engine (the
-doperpowers:codex-companion runtime, driven through {{REVIEW_ENGINE}}),
-run as a PURE correctness review: it receives no ticket or spec input of
-any kind.
+REVIEW ENGINE — the native codex review runtime (the
+doperpowers:codex-companion runtime at {{COMPANION_DIR}}, driven per
+doperpowers:requesting-review), run as a PURE correctness review: it
+receives no ticket or spec input of any kind.
 Ticket/spec compliance is YOUR audit, not the engine's. The engine call
 is a TOOL invocation, not a nested agent. Never add
 --dangerously-bypass-approvals-and-sandbox / --yolo to anything.
@@ -145,61 +145,91 @@ is a TOOL invocation, not a nested agent. Never add
    once. Treat the returned path as `<review-tmp>` for this invocation and
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
-   turn reads them.
-2. Judge the diff shape and choose this round's engine-run count — most
-   PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
-   runs, whole-branch scale up to 4. From the worktree root, start each
-   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
-   empty lens assignments are deliberate — they shield the plain run
-   from any inherited host value):
+   turn reads them. A park preserves the boards, never engine state, so
+   `rm -rf <review-tmp>/codex-home.*` runs on every exit including a
+   park — nothing after JOIN reads the engine home, and it holds a
+   symlink to the real `auth.json`.
+2. Choose the round's route — YOUR judgment, by
+   doperpowers:requesting-review's doctrine: a single native review by
+   default; the code-review panel on a big diff (~20+ files or a couple
+   thousand changed lines, where one reviewer's recall thins) or on a
+   smaller diff whose weight concentrates on declared risk surfaces
+   (your dispatch manifest). A panel round runs ~8 workers and can take
+   ~20 minutes. Then, from the worktree root, start the round's ONE
+   review run IN THE BACKGROUND (round N writes findings-rN.*). Both
+   forms share the preamble: codex must WRITE session state, the
+   worker's default home may be read-only under the outer sandbox, and
+   that state must stay out of the reviewed tree — so it goes to a
+   throwaway home INSIDE `<review-tmp>`, with login symlinked over
+   (step 1's removal is then the only cleanup this state needs, and it
+   reclaims every round's home even when a run dies early or you kill a
+   hung one); a nested codex also needs
+   TLS trust anchors as a FILE bundle and an explicit code-mode host
+   path (it resolves that command host to /usr/local/bin, not
+   ~/.local/bin, so it must be pointed at the real one).
 
-   CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
-   CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
-   CODEX_REVIEW_LENS= CODEX_REVIEW_LENS_FILE= \
-     {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --out <review-tmp>/findings-r1-1.txt
+   eng_home="$(mktemp -d "<review-tmp>/codex-home.XXXXXX")" && \
+   { [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || ln -s "${CODEX_HOME:-$HOME/.codex}/auth.json" "$eng_home/auth.json"; } && \
+   export CODEX_HOME="$eng_home" CLAUDE_PLUGIN_DATA="$eng_home/companion-state" && \
+   { [ -n "${SSL_CERT_FILE:-}" ] || { [ -f /etc/ssl/cert.pem ] && export SSL_CERT_FILE=/etc/ssl/cert.pem; } || { [ -f /etc/ssl/certs/ca-certificates.crt ] && export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt; } || true; } && \
+   { [ -n "${CODEX_CODE_MODE_HOST_PATH:-}" ] || { [ -x "$HOME/.local/bin/codex-code-mode-host" ] && export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"; } || true; } && \
+   <ONE of the two commands below>
 
-   A single run takes no lens. When fanning out, keep one run lens-free
-   as the broad sweep and give each other run a LENS: a structural focus
-   mandate you derive from the diff itself (e.g. actor/authz assumptions
-   in the changed routes; ordering/atomicity of the new writes;
-   consumers of a changed field) — never ticket/spec content. The repo's
-   risk-surface manifest (in your dispatch prompt) marks validated hot
-   paths: a diff touching one is a strong lens candidate. Write each
-   mandate to `<review-tmp>/lens-<k>.txt` with your file-writing tool
-   and set `CODEX_REVIEW_LENS_FILE=<review-tmp>/lens-<k>.txt` on that
-   run's command — never inline the mandate text into a shell command
-   (it is generated prose; interpolation is an injection surface). A
-   lensed run narrows hard — a scalpel beside the sweep, not a second
-   sweep; it runs the engine's challenge-review rubric along the lens,
-   so its findings may question structure and assumptions, not only
-   defects — triage them with the same judgment. Use your harness's background execution for these commands and
-   keep the task handles. Leave them running and the findings unread —
-   the protocol's COMPLIANCE AUDIT runs while the engine reviews, and
-   its JOIN step is the only place engine output is read.
-3. At JOIN: wait for all of the round's background tasks. Bound the
-   wait — an engine task that has neither completed nor failed
-   45 minutes after start is hung: kill it. The lens-free sweep is the
-   round's required whole-range review: if IT failed, the round failed
-   (the fallback below owns retries and the outage path) — only lensed
-   runs' failures are tolerable. When the sweep succeeded, proceed on
-   the successful outputs and record any failed lensed runs in the
-   review trail.
-4. Read the findings file(s) — the round's findings are their union;
-   overlapping findings collapse into one triaged item (keep the
-   highest-priority duplicate as the anchor).
-   Correctness review of the whole range is the engine's job; your own
-   reading serves the audit and the triage, not a second review.
+   Single review:
+
+   node {{COMPANION_DIR}}/scripts/with-effort.mjs \
+     --effort {{CODEX_REVIEW_EFFORT}} -- \
+     review --base origin/{{BASE_REF}} --wait --model {{CODEX_REVIEW_MODEL}} \
+     > <review-tmp>/findings-rN.txt 2> <review-tmp>/findings-rN.events.log
+
+   Panel:
+
+   node {{COMPANION_DIR}}/runtime/scripts/codex-companion.mjs workflow \
+     --script {{COMPANION_DIR}}/workflows/code-review.mjs \
+     --args '{"base":"origin/{{BASE_REF}}","finderModel":"{{CODEX_REVIEW_MODEL}}","finderEffort":"{{CODEX_REVIEW_EFFORT}}","verifierModel":"{{CODEX_REVIEW_MODEL}}"}' \
+     > <review-tmp>/findings-rN.json 2> <review-tmp>/findings-rN.events.log
+
+   `{{BASE_REF}}` reached these commands as a branch NAME rendered into a
+   shell word (the panel's is inside a single-quoted JSON blob), and git
+   accepts refs carrying a quote, `$`, or a backtick — such a ref is
+   shell syntax here, not a ref, and this loop runs unattended. Run
+   nothing until the rendered ref is plain (letters, digits, `.`, `_`,
+   `/`, `-`); anything else is the same hard stop as a base that will not
+   fetch — park needs-human naming the ref.
+
+   Keep the task handle. Leave it running and the findings unread — the
+   protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
+   JOIN step is the only place engine output is read.
+3. At JOIN: wait for the round's background task. Bound the wait — an
+   engine task that has neither completed nor failed 45 minutes after
+   start is hung: kill it. If the run failed, the round failed (the
+   fallback below owns retries and the outage path).
+4. Read the findings. A single review's findings-rN.txt is rendered
+   text. A panel's findings-rN.json is one JSON object: read
+   `.result.verdict` and `.result.findings` (verifier-confirmed only,
+   priority-sorted) plus `.result.coverage` for the trail. A verdict of
+   `interrupted` is an engine failure, not a judgment about the diff —
+   retry the panel once with fresh output files; a second interruption
+   fails the round. An interrupted attempt still carries any confirmed
+   findings it reached, and they remain this round's evidence: carry
+   them into TRIAGE alongside the retry's. Correctness review of the
+   whole range is the engine's job; your own reading serves the audit
+   and the triage, not a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
-critical/high finding remains unresolved; needs-attention otherwise. On
-RE-REVIEW rounds the same run-count judgment applies — after a small fix
-wave a single plain run is the norm — with fresh --out files, again in
-the background.
+critical/high finding remains unresolved; needs-attention otherwise.
+RE-REVIEW rounds repeat the route judgment and run a fresh command with
+fresh output files, again in the background.
 
 ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
-If the engine script fails (codex missing — rc 127, auth failure, or
-API errors), retry twice with a short backoff. Still failing:
+If the run fails — codex missing, auth failure, API errors — retry twice
+with a short backoff. Two kinds of failure skip that budget and take the outage
+path below on first occurrence: the runtime's sandbox-unavailable
+rejection, terminal by construction because a blocked sandbox does not
+heal between attempts and only the host can fix it; and a panel round
+whose step 4 retry failed at all, interrupted again or otherwise — it
+has already spent step 4's retry, at ~8 workers and ~20 minutes a round.
+Still failing:
 - post the review-trail comment recording the outage ("engine
   unavailable: <error>");
 - touch NO board state — the ticket stays in-review. An infra outage is
@@ -295,11 +325,10 @@ itself a finding.
 
 ## JOIN
 
-Wait for ALL of the round's background engine tasks per the engine
-block's bound; a failed lens-free sweep fails the round (the fallback
-block owns retries and the outage path — lensed-run failures alone do
-not). Read every successful run's compact findings file — the round's
-findings are their union — and your already-written audit together.
+Wait for the round's background engine task per the engine block's
+bound; a failed run fails the round (the fallback block owns retries
+and the outage path). Read the round's compact findings file and your
+already-written audit together.
 From here on, command-backed evidence checks may run whenever nothing
 else holds the worktree — never while an engine round or a fixer wave
 is live.
@@ -356,9 +385,9 @@ Maximum 4 waves per review.
 
 ## RE-REVIEW
 
-After a wave that fixed anything, rerun the engine — same run-count
-judgment (a single plain run is the norm after a small wave), fresh
---out files, in the background again; max 5 engine rounds total. The
+After a wave that fixed anything, rerun the engine — the round's one
+command again, redirected to fresh round-numbered findings files, in
+the background again; max 5 engine rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
@@ -428,8 +457,9 @@ end your turn with the park intact.
 
 A `review-epic-<n>` dispatch is the E2 scale review: the ticket is an
 EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
-`CLOSURE_PACKAGE` binding names it). Same engine machinery — whole-range
-codex runs, lenses derived from the cross-child contracts: your worktree
+`CLOSURE_PACKAGE` binding names it). Same engine machinery — a
+whole-range codex run per range (an epic-scale diff warrants the panel
+by size, judged as any diff is): your worktree
 sits at the epic's integration branch and START ENGINE's
 `--base origin/{{BASE_REF}}` reviews it against the branch it merges
 into. When your dispatch prompt instead says this epic has NO aggregate
@@ -507,8 +537,9 @@ what the contract permits separately from what the evidence shows actually ran.
 ## REVIEW TRAIL
 
 The review-trail comment on the PR records: engine and rounds run — for
-a fan-out round, every run (its lens mandate verbatim, or lens-free) with
-the findings it contributed, written BEFORE `<review-tmp>` cleanup; the
+a panel round, the panel's verdict line and its lens/coverage summary
+(from findings-rN.json's `.result`), written BEFORE
+`<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board
 outcomes; deferred findings inline when the tech-debt issue is "none";
@@ -516,7 +547,8 @@ secondary linked issues if any; and the tier judgment with the rubric
 clauses it satisfied. A scale run has no PR to post it on: its trail goes
 on the EPIC ISSUE, the same thread its closure package lives in.
 
-Cleanup: a needs-human park preserves `<review-tmp>` and the dispatcher control
+Cleanup: a needs-human park preserves `<review-tmp>` (minus the engine homes
+step 1 removes on every exit) and the dispatcher control
 directory (parent of `{{BIND_READY_FILE}}`) for resume. Any non-park terminal
 outcome removes both after the trail is posted; never leave the accepted ledger
 behind when no reviewer will resume it.

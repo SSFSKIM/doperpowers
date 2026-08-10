@@ -23,6 +23,7 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
+import { assertSandboxUsable } from "./lib/sandbox.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { pidInstanceVerified, processStartTime } from "./lib/pid.mjs";
@@ -379,6 +380,11 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    // Fail closed BEFORE rendering: a review whose fs sandbox never worked
+    // renders hollow findings (see lib/sandbox.mjs for the observed incident).
+    assertSandboxUsable(reviewName, result.stderr, {
+      onDiagnostic: (line) => process.stderr.write(`[codex] sandbox-diagnostic: ${line}\n`)
+    });
     const payload = {
       review: reviewName,
       target,
@@ -421,6 +427,10 @@ async function executeReviewRun(request) {
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
+  });
+  // Same fail-closed guard as the native branch: no verdict from a broken sandbox.
+  assertSandboxUsable(reviewName, result.stderr, {
+    onDiagnostic: (line) => process.stderr.write(`[codex] sandbox-diagnostic: ${line}\n`)
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
     status: result.status,

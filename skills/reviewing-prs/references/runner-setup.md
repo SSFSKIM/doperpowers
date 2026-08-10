@@ -76,6 +76,6 @@ Declare the repo's validated hot paths in
 `.doperpowers/risk-surfaces.md` on the branch(es) reviewers
 target. It's a plain list of globs and prose path/content rules the review
 worker reads against the diff — auth files, migration dirs, privileged
-routes, security-sensitive SQL — as lens-derivation input for the engine
-fan-out. It is read from the PR's **base ref** (never HEAD). Absent file →
-reviewers derive lenses from the diff alone.
+routes, security-sensitive SQL — to sharpen its audit and triage
+scrutiny; it never moves merge authority (surfaces are not a merge gate).
+It is read from the PR's **base ref** (never HEAD).

@@ -29,8 +29,13 @@ One case, one engine (from anywhere; scratch repos are ephemeral):
 
 Both engines review the identical committed `bench-change` branch
 against `main` in a materialized scratch repo. The codex engine runs
-through the loop's own `review-engine.sh` (env `CODEX_REVIEW_MODEL`,
-`CODEX_REVIEW_EFFORT` pass through; defaults match the live loop). The
+the loop's single-review path — the companion's with-effort wrapper
+serving the native review verb, under the loop's engine preamble
+(throwaway `CODEX_HOME` with login symlinked over, isolated
+`CLAUDE_PLUGIN_DATA`, TLS bundle and code-mode-host fallbacks), so a
+nested or read-only host benches the same environment production runs
+in (env `CODEX_REVIEW_MODEL`, `CODEX_REVIEW_EFFORT` pass through;
+defaults match the live loop). The
 argus engine ALWAYS runs through the headless invocation path (`claude
 -p` slash invocation, `--permission-mode auto` — the C1.G3 probe
 mechanism), because that is the context C4 deploys; benching argus

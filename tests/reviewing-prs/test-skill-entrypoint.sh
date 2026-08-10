@@ -154,7 +154,7 @@ echo "runtime skill — placeholder set:"
 # MANIFEST_REF is the API binding's addition: dispatch there cannot know the
 # PR's base, so it names the ref the two manifest snapshots were taken from and
 # the worker re-reads them when the base it resolves turns out to differ.
-want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{COMPANION_DIR}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -180,9 +180,21 @@ else
     pass "engine-blocks dir is retired (engine text lives in SKILL.md)"
 fi
 assert_contains "$SKILL" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
+assert_contains "$SKILL" 'eng_home="$(mktemp -d "<review-tmp>/' "the engine home is created INSIDE <review-tmp>, so cleanup needs no JOIN-time handle on a background shell's variable"
+assert_contains "$SKILL" 'rm -rf <review-tmp>/codex-home.*' "the engine home (codex session state + the auth.json symlink) is removed by glob on every exit"
+assert_contains "$SKILL" "every exit including a" "...park included — the park carve-out preserves wave boards, never engine state"
 assert_not_contains "$SKILL" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
 assert_contains "$SKILL" "the only place engine output is read" "audit independence keeps its positive statement"
 assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (audit runs concurrently)"
+assert_contains "$SKILL" "CODEX_CODE_MODE_HOST_PATH" "the engine preamble points a nested codex at the code-mode host it cannot resolve"
+assert_contains "$SKILL" "doperpowers:requesting-review" "the route judgment is delegated to the requesting-review skill"
+assert_contains "$SKILL" "retry the panel once" "an interrupted panel verdict retries within the round"
+assert_not_contains "$SKILL" "or a twice-interrupted panel" "the already-retried panel is not re-entered into the fallback's generic retry budget"
+assert_contains "$SKILL" "spent step 4's retry" "a panel whose step 4 retry failed takes the outage path directly (requesting-review's retry-once-then-outage contract)"
+assert_contains "$SKILL" "interrupted again or otherwise" "...however that retry died — a nonzero exit does not re-enter the generic budget"
+assert_contains "$SKILL" "rejection, terminal by construction" "the runtime's terminal sandbox rejection is never retried (the host, not the reviewer, fixes it)"
+assert_not_contains "$SKILL" "--out" "the retired engine's --out flag is absent — round output comes from redirection"
+assert_contains "$SKILL" "shell syntax here, not a ref" "the rendered base ref is checked for shell metacharacters before it is pasted into an engine command"
 assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
 assert_contains "$SKILL" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
 assert_contains "$SKILL" "stays in-review" "engine-down never parks needs-human"
@@ -288,7 +300,7 @@ assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a 
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
 # ...plus TICKET_BODY_FILE, the api-mode block's assignment file: a claim
 # response is the only route a run has to its own ticket text.
-want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{COMPANION_DIR}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

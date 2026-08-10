@@ -6,9 +6,9 @@ The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
 background daemon (`orchestrating-daemons`) that runs TWO review tracks at
-once: the native Codex engine (the doperpowers:codex-companion runtime via
-review-engine.sh, in the background) reviews pure code correctness, while
-the worker itself audits
+once: the native Codex engine (the doperpowers:codex-companion runtime,
+invoked per doperpowers:requesting-review in the background) reviews pure
+code correctness, while the worker itself audits
 implementer protocol/spec compliance against the linked ticket. The worker
 never fixes anything: it triages the joined findings on its own judgment
 (the engine's native severity is the starting rank),
@@ -27,7 +27,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
-| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
+| the review runtime | one review run per round, pure correctness — no ticket/spec input of any kind. The worker drives the doperpowers:codex-companion runtime directly, following doperpowers:requesting-review: a single native review (per-run effort via the with-effort wrapper) by default, the companion's code-review panel (sweep + diff-derived scalpel lenses + binding verifier) on a big or risk-concentrated diff — the route is the worker's judgment. The runtime itself fails closed on a broken fs sandbox |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
@@ -77,9 +77,10 @@ human to merge" state.
 **Risk surfaces feed scrutiny, not a merge gate.** A repo may declare
 concrete hot paths in an optional `.doperpowers/risk-surfaces.md` — a
 plain list of globs and prose path/content rules the worker reads against
-the diff; a diff touching one is a strong lens candidate for the engine
-fan-out. The dispatch layer injects it from the PR's **base ref, never
-HEAD**, so a PR cannot delist a surface it touches in the same commit.
+the diff; a diff touching one earns the worker's sharpest audit and
+triage attention. The dispatch layer injects it from the PR's **base ref,
+never HEAD**, so a PR cannot delist a surface it touches in the same
+commit.
 
 **Repo facts feed the cross-check.** The optional
 `.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing)
@@ -126,23 +127,23 @@ produce evidence, the review side verifies the claims were real.
 ## Review engine (pure correctness) + worker audit (compliance)
 
 Review responsibility is split between two concurrent tracks with one owner
-each. The ENGINE — the native codex review run by
-`scripts/review-engine.sh` through the doperpowers:codex-companion runtime
-(plain run = the non-steerable `review` verb; lensed run = the
-`adversarial-review` verb with the lens as focus) — receives no ticket,
-spec, or policy input of
-any kind: coupling spec policy into the native reviewer measurably weakened
-its correctness review, so the interface is `--base` + `--out` plus the
-optional `CODEX_REVIEW_LENS` env — a structural focus mandate the worker
-derives from the diff itself (never from the ticket/spec) when it fans out
-to 2–4 parallel runs on a large diff; a bench-validated lens recovered a
-confirmed authz defect two plain runs had missed
-(`tests/review-bench/results/2026-07-28-pr752-lenscell/`). The worker
-starts the round's runs in the background, and each returns a compact
-structured verdict file; the PR diff never enters the worker's own
-context. A hung engine (no result within 45 minutes) is killed and treated
-as a failure; a failed lens-free sweep fails the round (it is the required
-whole-range review), while failed lensed runs are merely recorded.
+each. The ENGINE — the native codex review, driven directly through the
+doperpowers:codex-companion runtime — receives no ticket, spec, or policy
+input of any kind: coupling spec policy into the native reviewer measurably
+weakened its correctness review, so the run is a pure `--base` diff review.
+The route is the worker's judgment per doperpowers:requesting-review: a
+big diff (~20+ files or ~2k changed lines — one reviewer's recall thins at
+that scale; on the PR752 benchmark the best single run found 10 of 13
+confirmed defects while a multi-run union found all 13) or a smaller diff
+concentrated on declared risk surfaces warrants the companion's
+code-review panel — one lens-free sweep, up to five diff-derived scalpel
+lenses, one binding verifier (an `interrupted` panel verdict is an engine
+failure, retried once, never a judgment about the diff). Other diffs run
+the single non-steerable `review` verb. The worker starts the round's run
+in the background and reads the findings back at JOIN; the PR diff never
+enters the worker's own context. The runtime fails closed when its fs
+sandbox was broken during the run. A hung engine (no result within 45
+minutes) is killed and treated as a failure; a failed run fails the round.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
@@ -155,8 +156,11 @@ PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
 progress), SPEC FINDING (fix-required; waves with native blockers), and
 AUDIT NOTE (trail-only). The two streams JOIN before triage.
 
-There is NO second engine: on engine failure the worker retries twice, then
-posts the trail comment, leaves the ticket in-review, and ends its turn
+There is NO second engine: on engine failure the worker retries twice —
+except for two terminal kinds, a sandbox-unavailable rejection and a panel
+round that has already spent its own retry, which take the outage path on
+first occurrence — then posts the trail comment, leaves the ticket
+in-review, and ends its turn
 with the `ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it
 (capped; see the outage cap above). `needs-human` is never written for an
 infra outage. The review-trail comment names the engine that reviewed.
@@ -212,7 +216,8 @@ self-review bias: the entity that grades the fixes never wrote them.
    `tech-debt` label).
 5. (Optional) Add `.doperpowers/risk-surfaces.md` listing the repo's
    validated hot paths — auth files, migration dirs, privileged routes,
-   security-sensitive SQL; reviewers read it for lens derivation. Commit
+   security-sensitive SQL; reviewers read it to sharpen audit and triage
+   scrutiny. Commit
    it on the branch(es) reviewers target (it is read from the base).
 6. Start in observation mode: leave `AUTO_MERGE_ENABLED` unset/false in the
    workflow env. Flip it to `true` only after the trail comments show the

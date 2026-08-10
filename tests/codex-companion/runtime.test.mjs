@@ -15,6 +15,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "..", "skills", "codex-companion", "runtime");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
+const WITH_EFFORT = path.join(ROOT, "..", "skills", "codex-companion", "scripts", "with-effort.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
 
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
@@ -156,6 +157,107 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Reviewed uncommitted changes/);
   assert.match(result.stdout, /No material issues found/);
+});
+
+test("review fails closed when the sandbox-failure marker rides the server's stderr", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_APP_SERVER_ENDPOINT: "unix:/nonexistent/no-broker.sock" }
+  });
+
+  assert.notEqual(result.status, 0, "a clean render from a broken sandbox must not exit 0");
+  assert.match(result.stderr, /fs sandbox unavailable/);
+  assert.doesNotMatch(result.stdout, /No material issues found/);
+});
+
+test("adversarial review fails closed on the same marker", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_APP_SERVER_ENDPOINT: "unix:/nonexistent/no-broker.sock" }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /fs sandbox unavailable/);
+});
+
+test("review under an outer codex sandbox keeps the degraded render", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_APP_SERVER_ENDPOINT: "unix:/nonexistent/no-broker.sock", CODEX_SANDBOX: "seatbelt" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No material issues found/);
+});
+
+test("with-effort fails closed when its private app-server reports a broken sandbox", () => {
+  // On this path the verb's client talks to a socket, so the child's stderr is
+  // visible only to with-effort itself — the wrapper owns the guard here.
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [WITH_EFFORT, "--effort", "medium", "--", "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /with-effort: fs sandbox unavailable/);
+});
+
+test("with-effort fails closed on a marker that never got a trailing newline", () => {
+  // The marker can be the last, unterminated thing the app-server writes; a
+  // scanner that only judges completed lines would leave it buffered and let
+  // the clean verb exit stand.
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken-fragment");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [WITH_EFFORT, "--effort", "medium", "--", "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /with-effort: fs sandbox unavailable/);
 });
 
 test("task runs when the active provider does not require OpenAI login", () => {

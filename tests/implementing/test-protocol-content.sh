@@ -289,8 +289,11 @@ done
 # writing-plans prescribes, so the two cannot drift apart again.
 assert_not_contains "$arch" "plan-reviewer" \
     "the council never dispatches the deleted plan-reviewer agent"
-assert_contains "$arch" "doperpowers:codex-companion's \`adversarial-review\` verb" \
+assert_contains "$arch" "doperpowers:requesting-review's adversarial review" \
     "the plan gets the independent review writing-plans prescribes, by its real mechanism"
+plans="$(cat "$REPO_ROOT/skills/writing-plans/SKILL.md")"
+assert_contains "$plans" "doperpowers:requesting-review's adversarial review" \
+    "...and writing-plans names that same mechanism (the two cannot drift apart)"
 assert_contains "$arch" "buildable by an engineer with" \
     "...focused on the same bar (same voice as writing-plans, not a bespoke variant)"
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"

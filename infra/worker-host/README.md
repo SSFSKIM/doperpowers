@@ -129,9 +129,11 @@ dogfood cell end-to-end on the VM and check, in order:
 
 1. `codex exec` smoke turn — auth.json accepted, Landlock sandbox active
    (kernel ≥5.13; Ubuntu 24.04 is 6.8).
-2. Nested-codex TLS — `SSL_CERT_FILE` resolves (`_codex_launch` and
-   `review-engine.sh` probe `/etc/ssl/certs/ca-certificates.crt` since
-   2026-07-12); a review-engine call from inside a worker completes.
+2. Nested-codex TLS — `SSL_CERT_FILE` resolves (`_codex_launch` and the
+   review worker's START ENGINE preamble in
+   `skills/reviewing-prs/SKILL.md` probe `/etc/ssl/certs/ca-certificates.crt`
+   since 2026-07-12); that preamble's review invocation, run from inside a
+   worker, completes.
 3. Board write under env `GH_TOKEN` — a `board-transition.sh` against a test
    issue; push from a worktree uses the remote-wired credential.
 4. Full cell: dispatch an implement worker on a toy ticket → PR → review

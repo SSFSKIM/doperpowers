@@ -48,12 +48,10 @@ land on stderr, so keep the file and check it only on a nonzero exit.
 
 Verbs, and where each is specified:
 
-- `review` — Codex's native code review of the working tree or a branch
-  (`--base <ref>`); non-steerable by design; reasoning effort is choosable
-  via the `scripts/with-effort.mjs` wrapper; big diffs (~20+ files) route
-  to the `workflow` code-review panel instead → references/reviews.md
-- `adversarial-review` — challenge review of design and assumptions;
-  trailing text is a lens, parallel lenses for big diffs → references/reviews.md
+- `review` / `adversarial-review` — the independent-review job, owned by
+  the sibling skill doperpowers:requesting-review: routing between a
+  single review, an adversarial challenge, and the big-diff code-review
+  panel, plus every invocation and output contract, live there
 - `task` — any prompt to a resumable Codex thread; one-shot delegation
   or a standing multi-turn partner (critique debates, steered execution);
   read-only unless `--write` → references/amigo.md

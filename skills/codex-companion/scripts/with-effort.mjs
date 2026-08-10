@@ -21,6 +21,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { SANDBOX_FAILURE_MARKERS } from "../runtime/scripts/lib/sandbox.mjs";
 
 const RUNTIME_ENTRY = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -65,11 +66,30 @@ const socketPath = path.join(os.tmpdir(), `codex-effort-${process.pid}.sock`);
 fs.rmSync(socketPath, { force: true });
 
 let connections = 0;
+// The private app-server's stderr is the only trace of the observed fs-sandbox
+// failure (bwrap RTM_NEWADDR: codex exits 0 and renders findings anyway — see
+// runtime/scripts/lib/sandbox.mjs). The verb's own client never sees a socket
+// server's stderr, so THIS process owns the fail-closed check on that channel:
+// forward the stream unchanged, and remember any marker line.
+let sandboxMarkerLine = null;
 const server = net.createServer((conn) => {
   connections += 1;
   const child = spawn("codex", codexArgs, {
     cwd: process.cwd(),
-    stdio: ["pipe", "pipe", "inherit"]
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  let pending = "";
+  child.stderr.on("data", (chunk) => {
+    process.stderr.write(chunk);
+    pending += chunk.toString();
+    const lines = pending.split("\n");
+    pending = lines.pop();
+    // The trailing fragment is scanned too: a marker can be the last thing the
+    // child ever writes, and the exit decision cannot wait for a newline that
+    // is not coming.
+    for (const line of [...lines, pending]) {
+      if (sandboxMarkerLine === null && SANDBOX_FAILURE_MARKERS.test(line)) sandboxMarkerLine = line;
+    }
   });
   conn.pipe(child.stdin);
   child.stdout.pipe(conn);
@@ -98,6 +118,16 @@ server.listen(socketPath, () => {
     }
     server.close();
     fs.rmSync(socketPath, { force: true });
+    // Fail closed: a clean verb exit over a broken sandbox is the false-clean
+    // incident shape. Under an OUTER codex sandbox (CODEX_SANDBOX) confinement
+    // is expected and the degraded render is documented behavior.
+    if (code === 0 && !signal && sandboxMarkerLine !== null && !process.env.CODEX_SANDBOX) {
+      console.error(
+        `with-effort: fs sandbox unavailable during the run: ${sandboxMarkerLine.trim()} — ` +
+        "findings would be untrustworthy; treat as an engine failure"
+      );
+      process.exit(3);
+    }
     process.exit(signal ? 1 : code ?? 1);
   });
 });

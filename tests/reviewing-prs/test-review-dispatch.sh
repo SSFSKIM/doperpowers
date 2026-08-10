@@ -445,7 +445,7 @@ assert_contains "$PROMPT" "Use doperpowers:reviewing-prs" "prompt names the Revi
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/reviewing-prs/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
-assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
+assert_contains "$PROMPT" '`COMPANION_DIR`: '"$REPO_ROOT/skills/codex-companion" "prompt binds the companion runtime dir"
 assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"
 
@@ -1440,7 +1440,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "WORKER_ENG
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
-assert_contains "$prompt" "review-engine.sh" "prompt binds the engine script path"
+assert_contains "$prompt" '`COMPANION_DIR`:' "prompt binds the companion runtime dir"
 assert_contains "$prompt" '`BASE_REF`: main' "prompt binds the base ref the engine call uses"
 assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
 assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
@@ -1458,7 +1458,7 @@ else
     fail "claude route pins the QAgent model to opus"
 fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
+assert_contains "$prompt42" '`COMPANION_DIR`:' "claude route binds the same single runtime (no per-route fork)"
 
 : > "$SPAWN_LOG"
 gh_pr 43 OPEN 0 "engine:claude"

@@ -296,6 +296,91 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
 }
 
+// --- a sandbox-failure marker on the server's stderr FAILS the leaf ----------
+// The app-server buffers stderr and surfaces it only on a nonzero exit, but the
+// observed fs-sandbox failure (bwrap RTM_NEWADDR) exits 0 and renders findings
+// anyway. The engine fails closed on the buffered markers (lib/sandbox.mjs):
+// the leaf fails terminally — no transport retry, since a blocked sandbox does
+// not heal between attempts — and the diagnostic still reaches emit.
+{
+  const c = newCase("sandbox-fail-closed", [{
+    reviewText: "# Sweep\n\nlooks clean",
+    stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+  }]);
+  const lines = [];
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-review-fail.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir,
+    emit: (l) => lines.push(l)
+  });
+  assert.deepEqual(out.result, [null], "a clean-looking report from a broken sandbox is not a result");
+  assert.equal(counter(c.mockDir), 1, "terminal: the transport retry never buys a second attempt");
+  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  assert.match(fin[0].error, /fs sandbox unavailable/, "the sandbox guard is what rejected it");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic sweep:") && l.includes("RTM_NEWADDR")),
+    "the marker from the worker's buffered stderr still reaches emit"
+  );
+}
+
+// --- under an OUTER codex sandbox the guard stands down ----------------------
+// CODEX_SANDBOX set means probe confinement is expected (nested run); the leaf
+// succeeds and the marker is journaled as a diagnostic only.
+{
+  const c = newCase("sandbox-nested-ok", [{
+    reviewText: "# Sweep\n\nlooks clean",
+    stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+  }]);
+  const lines = [];
+  process.env.CODEX_SANDBOX = "seatbelt";
+  let out;
+  try {
+    out = await runWorkflow({
+      scriptPath: path.join(FIXTURES, "fx-review.mjs"),
+      args: {},
+      cwd: c.repo,
+      runDir: c.runDir,
+      emit: (l) => lines.push(l)
+    });
+  } finally {
+    delete process.env.CODEX_SANDBOX;
+  }
+  assert.equal(out.result.reviewText, "# Sweep\n\nlooks clean", "the nested leaf still succeeds");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic sweep:") && l.includes("RTM_NEWADDR")),
+    "…with the marker forwarded to emit as a diagnostic"
+  );
+}
+
+// --- sandbox diagnostics survive a leaf that THROWS --------------------------
+// A dying app-server never returns a result to inspect, but its protocol error
+// carries the buffered stderr — the retry/fail paths must forward markers from
+// the error text, or a dead scalpel hides exactly the diagnostic that matters.
+// Diagnostic only: an error message can also be model-authored (a rejected
+// request quotes the command back), so unlike the *.stderr sites this one must
+// keep RETRYING — a live lane was once killed by a marker a model had quoted.
+{
+  const c = newCase("sandbox-diag-throw", [
+    { die: true, stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" },
+    { finalMessage: "recovered" }
+  ]);
+  const lines = [];
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-solo.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir,
+    emit: (l) => lines.push(l)
+  });
+  assert.equal(out.result.one, "recovered", "the transport retry still recovers the leaf");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic") && l.includes("RTM_NEWADDR")),
+    "the marker from the dying worker's protocol error is forwarded to emit"
+  );
+}
+
 // --- a review whose turn failed is not a review ------------------------------
 {
   const c = newCase("review-fail", [

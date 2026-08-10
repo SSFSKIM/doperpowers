@@ -193,7 +193,7 @@ case "${AUTO_MERGE_ENABLED:-false}" in
 esac
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
-REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
+COMPANION_DIR="$(cd "$SCRIPT_DIR/../../codex-companion" && pwd)"
 
 # Newest registry entry for worker name <1> (review-pr-<n> or review-epic-<n>)
 # → "uuid|status|current|engine|pid|host|boot" (empty if none).
@@ -618,7 +618,7 @@ PY
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_COMPANION_DIR="$COMPANION_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
@@ -769,7 +769,7 @@ _dispatch_epic_locked() {
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_COMPANION_DIR="$COMPANION_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "$name: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
@@ -1476,7 +1476,7 @@ PY
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_COMPANION_DIR="$COMPANION_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "#$C_TICKET: prompt render failed — releasing run $C_RUN_ID" >&2

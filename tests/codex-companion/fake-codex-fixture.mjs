@@ -248,6 +248,9 @@ function taskPayload(prompt, resume) {
 }
 
 const args = process.argv.slice(2);
+// with-effort.mjs spawns \`codex -c key=value … app-server\`; strip the
+// override pairs so the fake serves that spawn shape too.
+while (args[0] === "-c") args.splice(0, 2);
 if (args[0] === "--version") {
   console.log("codex-cli test");
   process.exit(0);
@@ -405,6 +408,16 @@ rl.on("line", (line) => {
       }
 
       case "review/start": {
+        if (BEHAVIOR === "sandbox-broken") {
+          // The real server's sandbox helper writes this to ITS stderr while the
+          // review still completes cleanly — the false-clean incident signature.
+          process.stderr.write("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\\n");
+        }
+        if (BEHAVIOR === "sandbox-broken-fragment") {
+          // The same signature as the last, UNTERMINATED thing on the channel:
+          // a scanner that only reads completed lines never sees it.
+          process.stderr.write("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted");
+        }
         const thread = ensureThread(state, message.params.threadId);
         let reviewThread = thread;
         if (message.params.delivery === "detached") {
@@ -437,6 +450,9 @@ rl.on("line", (line) => {
       }
 
 	      case "turn/start": {
+	        if (BEHAVIOR === "sandbox-broken") {
+	          process.stderr.write("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\\n");
+	        }
 	        const thread = ensureThread(state, message.params.threadId);
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")

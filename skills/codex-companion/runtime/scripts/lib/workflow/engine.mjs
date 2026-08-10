@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAppServerTurn, runAppServerReview, parseStructuredOutput, resolveReviewTarget } from "../codex.mjs";
+import { assertSandboxUsable, sandboxFailureLines } from "../sandbox.mjs";
 import { processStartTime } from "../pid.mjs";
 import { validateSchema } from "./validate.mjs";
 import {
@@ -181,6 +182,18 @@ export async function runWorkflow(spec) {
           out = await attempt();
         } catch (e1) {
           if (e1?.terminal) throw e1;            // schema-repair exhaustion etc: NEVER a third attempt
+          // A dead app-server's protocol error carries the child's buffered
+          // stderr — forward sandbox markers from it too, or a dying worker's
+          // diagnostics never reach the consumers' fail-closed guards.
+          // Diagnostic ONLY, never guardSandbox: unlike the *.stderr sites, an
+          // error message is not exclusively the machine channel — a rejected
+          // request quotes back the command the model asked to run, so a leaf
+          // reviewing this repo can put a marker here by reading its own test
+          // fixtures. Observed 2026-08-11: a command-policy rejection quoting
+          // `bwrap: … RTM_NEWADDR` out of tests/codex-companion/ killed a live
+          // review lane whose sandbox was fine. Fail closed only where the text
+          // cannot be model-authored.
+          emitSandboxDiagnostics(label, String(e1?.message ?? e1));
           appendEvent(journalPath, { type: "retry", key, error: String(e1?.message ?? e1) });
           emit(`retry ${kind}:${label ?? ""}`);
           out = await attempt();                 // one automatic transport retry, fresh turn
@@ -189,6 +202,7 @@ export async function runWorkflow(spec) {
         emit(`done ${kind}:${label ?? ""}`);
         return out;
       } catch (err) {
+        emitSandboxDiagnostics(label, String(err?.message ?? err));
         appendEvent(journalPath, { type: "finished", key, error: String(err?.message ?? err) });
         emit(`fail ${kind}:${label ?? ""}`);
         throw err;
@@ -243,6 +257,22 @@ export async function runWorkflow(spec) {
       return { ...stamped, uncacheable: runNonce };
     };
 
+    // The app-server buffers its child's stderr and surfaces it only on a
+    // nonzero exit, but the observed fs-sandbox failure (bwrap RTM_NEWADDR —
+    // ida-worker-1, 2026-08-09) exits 0 and renders findings anyway. Every
+    // leaf therefore fails closed on that buffered stderr (lib/sandbox.mjs) —
+    // checked BEFORE the leaf's own success check, so a "successful" turn
+    // whose sandbox never worked becomes a terminal leaf failure instead of a
+    // false-clean result. In the panel that failure surfaces as a lost lane,
+    // i.e. an `interrupted` verdict, never `correct`.
+    const emitSandboxDiagnostics = (label, text) => {
+      for (const line of sandboxFailureLines(text)) emit(`sandbox-diagnostic ${label ?? ""}: ${line}`);
+    };
+    const guardSandbox = (label, stderr) =>
+      assertSandboxUsable(label, stderr, {
+        onDiagnostic: (line) => emit(`sandbox-diagnostic ${label ?? ""}: ${line}`)
+      });
+
     const hooks = {
       args: spec.args,
       log: (m) => { appendEvent(journalPath, { type: "log", message: String(m) }); emit(`log ${m}`); },
@@ -256,6 +286,7 @@ export async function runWorkflow(spec) {
             sandbox: "read-only", persistThread: true,
             outputSchema: opts.schema ?? null, connect
           });
+          guardSandbox(opts.label, turn.stderr);
           assertTurnUsable(turn, "agent turn");
           if (!opts.schema) {
             if (!turn.finalMessage?.trim()) throw new Error("agent turn returned no output");
@@ -270,6 +301,7 @@ export async function runWorkflow(spec) {
             model: opts.model, effort: opts.effort, sandbox: "read-only",
             outputSchema: opts.schema, connect
           });
+          guardSandbox(opts.label, repair.stderr);
           assertTurnUsable(repair, "schema repair turn");
           parsed = parseStructuredOutput(repair.finalMessage);
           errors = parsed.parseError ? [parsed.parseError] : validateSchema(parsed.parsed, opts.schema);
@@ -316,6 +348,7 @@ export async function runWorkflow(spec) {
             model: opts.model, target,
             connect: { disableBroker: true, configOverrides: overrides, onSpawn }
           });
+          guardSandbox(opts.label, res.stderr);
           assertTurnUsable(res, "review");
           if (!res.reviewText?.trim()) throw new Error("review returned no output");
           // review/start takes the SYMBOLIC target — it has no commit parameter —
