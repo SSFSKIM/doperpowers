@@ -674,6 +674,25 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
   was written to check — but the same pass surfaced two body-read holes that
   no scope question would have asked about.
 
+**Post-verification addendum (final review waves + main reconciliation).**
+After the acceptance evidence above, the branch went through a five-round
+external review loop (Codex panel + native reviews, gpt-5.6-sol): 33 confirmed
+findings adjudicated (32 fixed, 1 rejected against the live-verified
+park-answer fence), then 8, 3, 3, and 1 in successive convergence rounds —
+every fix RED-proved, all tiers re-green after each round. The wave hardened
+the sweep's recovery paths (runless-meta recovery reads, post-renew candidate
+re-resolution, versioned lock-owner identity with an explicit seven-case
+comparison ladder, budget-gated dispatch, journaled successor replay on the
+0x1f plan format) and the dispatchers' handoff ordering, and extracted the
+claim-journal machinery into `_claim_journal.sh`. `origin/main`'s PR #48
+(confident-ready retired, land lane deleted) was then merged and reconciled:
+drills rerouted onto edges both canons hold, the closing verdict now
+`in-review → done`. That merge surfaced the successor to the legality-drift
+follow-up's headline: post-#48 the gh review worker closes with a run-actor
+`in-review → done`, an edge A1 refuses for leaf tickets (epic-guard) — so the
+API-mode review protocol cannot complete its final edge against A1 as shipped.
+A1-side work, tracked in the drift follow-up.
+
 ## Revision Notes
 
 - v1.0 (2026-08-09): initial spec from the A2 brainstorming session
@@ -812,3 +831,10 @@ resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
   body route — arkho#7), with the API-side substitute named: the pin is a
   CURSOR the claim hands each child, and a child that recorded none leaves that
   leg unverifiable, which the Architect states rather than assumes.
+- v1.2.8 (2026-08-10): finish — Outcomes gains the post-verification addendum
+  (five-round external review loop 33→8→3→3→1, all fixes RED-proved; PR #48
+  merge reconciliation, drills rerouted onto both-canon edges). New drift item
+  recorded: post-#48 the run-actor `in-review → done` close is refused by A1
+  for leaf tickets (epic-guard) — API-mode review workers cannot write their
+  final edge until A1 rules; joins the legality-drift follow-up as its
+  headline item.
