@@ -354,27 +354,64 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   );
 }
 
-// --- sandbox diagnostics survive a leaf that THROWS --------------------------
+// --- a leaf that THROWS with a sandbox marker fails closed too ---------------
 // A dying app-server never returns a result to inspect, but its protocol error
-// carries the buffered stderr — the retry/fail paths must forward markers from
-// the error text, or a dead scalpel hides exactly the diagnostic that matters.
+// carries the buffered stderr. That marker is the same structural failure the
+// returning paths reject, so the throw path fails closed on it as well: the
+// diagnostic reaches emit AND the transport retry is skipped — a retry that
+// happens to succeed would journal a result produced with the sandbox broken.
 {
   const c = newCase("sandbox-diag-throw", [
     { die: true, stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" },
     { finalMessage: "recovered" }
   ]);
   const lines = [];
-  const out = await runWorkflow({
-    scriptPath: path.join(FIXTURES, "fx-solo.mjs"),
-    args: {},
-    cwd: c.repo,
-    runDir: c.runDir,
-    emit: (l) => lines.push(l)
-  });
-  assert.equal(out.result.one, "recovered", "the transport retry still recovers the leaf");
+  await assert.rejects(
+    runWorkflow({
+      scriptPath: path.join(FIXTURES, "fx-solo.mjs"),
+      args: {},
+      cwd: c.repo,
+      runDir: c.runDir,
+      emit: (l) => lines.push(l)
+    }),
+    /fs sandbox unavailable/,
+    "the marker in the protocol error is a terminal sandbox failure, not a retryable transport one"
+  );
+  assert.equal(counter(c.mockDir), 1, "the recovering second turn was available and deliberately not taken");
+  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  assert.match(fin[0].error, /fs sandbox unavailable/, "the sandbox guard is what rejected it");
   assert.ok(
     lines.some((l) => l.startsWith("sandbox-diagnostic") && l.includes("RTM_NEWADDR")),
     "the marker from the dying worker's protocol error is forwarded to emit"
+  );
+}
+
+// --- …but under an OUTER codex sandbox the throw path still retries ----------
+// CODEX_SANDBOX set means probe confinement is expected, so the same marker is
+// a diagnostic only and the dead worker gets its ordinary transport retry.
+{
+  const c = newCase("sandbox-diag-throw-nested", [
+    { die: true, stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" },
+    { finalMessage: "recovered" }
+  ]);
+  const lines = [];
+  process.env.CODEX_SANDBOX = "seatbelt";
+  let out;
+  try {
+    out = await runWorkflow({
+      scriptPath: path.join(FIXTURES, "fx-solo.mjs"),
+      args: {},
+      cwd: c.repo,
+      runDir: c.runDir,
+      emit: (l) => lines.push(l)
+    });
+  } finally {
+    delete process.env.CODEX_SANDBOX;
+  }
+  assert.equal(out.result.one, "recovered", "the transport retry still recovers the leaf");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic") && l.includes("RTM_NEWADDR")),
+    "…with the marker forwarded to emit as a diagnostic"
   );
 }
 
