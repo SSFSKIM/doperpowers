@@ -413,6 +413,11 @@ rl.on("line", (line) => {
           // review still completes cleanly — the false-clean incident signature.
           process.stderr.write("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\\n");
         }
+        if (BEHAVIOR === "sandbox-broken-fragment") {
+          // The same signature as the last, UNTERMINATED thing on the channel:
+          // a scanner that only reads completed lines never sees it.
+          process.stderr.write("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted");
+        }
         const thread = ensureThread(state, message.params.threadId);
         let reviewThread = thread;
         if (message.params.delivery === "detached") {

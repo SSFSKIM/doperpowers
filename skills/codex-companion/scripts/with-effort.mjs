@@ -84,7 +84,10 @@ const server = net.createServer((conn) => {
     pending += chunk.toString();
     const lines = pending.split("\n");
     pending = lines.pop();
-    for (const line of lines) {
+    // The trailing fragment is scanned too: a marker can be the last thing the
+    // child ever writes, and the exit decision cannot wait for a newline that
+    // is not coming.
+    for (const line of [...lines, pending]) {
       if (sandboxMarkerLine === null && SANDBOX_FAILURE_MARKERS.test(line)) sandboxMarkerLine = line;
     }
   });

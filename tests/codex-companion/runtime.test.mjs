@@ -238,6 +238,28 @@ test("with-effort fails closed when its private app-server reports a broken sand
   assert.match(result.stderr, /with-effort: fs sandbox unavailable/);
 });
 
+test("with-effort fails closed on a marker that never got a trailing newline", () => {
+  // The marker can be the last, unterminated thing the app-server writes; a
+  // scanner that only judges completed lines would leave it buffered and let
+  // the clean verb exit stand.
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "sandbox-broken-fragment");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 1;\n");
+  run("git", ["add", "a.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.js"), "export const value = 2;\n");
+
+  const result = run("node", [WITH_EFFORT, "--effort", "medium", "--", "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /with-effort: fs sandbox unavailable/);
+});
+
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
