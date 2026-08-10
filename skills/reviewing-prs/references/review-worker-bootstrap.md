@@ -67,6 +67,12 @@ through gh. Only what a reviewed artifact must not be able to edit rides this
 prompt: the runtime bindings and the two BASE-ref manifest snapshots below.
 <!-- /mode:api -->
 
+Your worktree may have been pre-bootstrapped by the dispatcher (log:
+`~/.claude/orchestrating-daemons/{{WORKER_NAME}}.bootstrap.log`, if it ran).
+Either way, before trusting any red/green verification result, confirm the
+worktree actually supports it (dependencies installed, env files present) —
+a bare worktree produces false reds and vacuous greens.
+
 Runtime bindings (dispatcher-owned):
 - `REVIEW_MODE`: {{REVIEW_MODE}}
 - `WORKER_NAME`: {{WORKER_NAME}} (your registry identity)

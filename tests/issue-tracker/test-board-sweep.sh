@@ -306,8 +306,15 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
 s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
-                            "status:in-design", "status:ready-for-architect"], "issues": {
+                            "status:in-design", "status:ready-for-architect",
+                            "status:in-review"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
+    # FINALIZE: an armed auto-merge landed after the reviewer's turn ended —
+    # "Closes #40" closed the issue, the terminal transition never ran, so
+    # the status label is residual. 13/14 (closed, labels already stripped)
+    # pin the pass's no-op side.
+    "40": issue(40, "ticket auto-closed by an armed merge", ["status:in-review"],
+                state="CLOSED", reason="COMPLETED"),
     "11": issue(11, "worker beyond recovery", ["status:in-progress"]),
     "12": issue(12, "stalled worker", ["status:in-progress"]),
     "13": issue(13, "cancelled underneath its worker", [], state="CLOSED", reason="COMPLETED"),
@@ -602,6 +609,16 @@ print(' / '.join(s['issues']['13']['comments']))")"
 assert_contains "$c13" "[board] sweep" "cancel posts a termination comment"
 assert_not_contains "$log" "retire:aaaa0014" "land workers are never board-cancelled"
 assert_not_contains "$log" "retire:aaaa0039" "a live scale reviewer survives the terminal ticket its own verdict produced"
+
+# FINALIZE — the deferred auto-merge close: "Closes #40" closed the issue
+# outside the machine, the sweep re-runs the terminal transition.
+assert_contains "$out" "FINALIZE: #40 closed as done" "a closed ticket with a residual status label is finalized"
+lab40="$(python3 -c "
+import json, os
+s = json.load(open(os.environ['MOCK_GH_STATE']))
+print(','.join(s['issues']['40']['labels']))")"
+assert_equals "$lab40" "" "the residual status label is stripped"
+assert_not_contains "$out" "FINALIZE: #13" "a closed ticket already label-stripped is not re-finalized"
 
 # DISPATCH + REVIEW lanes
 assert_contains "$log" "impl-dispatch:--sweep" "implement lane sweeps"

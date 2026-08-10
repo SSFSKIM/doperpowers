@@ -31,6 +31,9 @@ jobs:
   dispatch:
     if: github.event.pull_request.draft == false && github.actor == github.repository_owner
     runs-on: [self-hosted, claude-review]
+    # Bounds the whole triggered dispatch, including any WORKTREE_BOOTSTRAP_CMD
+    # run (its default budget, 480s, is deliberately below this cap — raise
+    # both together, never just one).
     timeout-minutes: 10
     env:
       LOCAL_REPO: /CHANGE/ME/absolute/path/to/local/clone

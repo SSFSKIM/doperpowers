@@ -65,8 +65,10 @@ confident verdict: final verdict approve (or only non-blocker findings by
 the worker's own routing, each explicitly routed); no unresolved PROTOCOL
 BLOCKER or SPEC FINDING from the worker's own compliance audit; every
 EXISTING CI check green (a repo with no checks merges on the review
-alone; pending checks arm GitHub auto-merge). Every merge — immediate or
-armed — is pinned to the reviewed head (`--match-head-commit`), so a
+alone; pending checks arm GitHub auto-merge — when that merge lands after
+the worker's turn ended, the board sweep's FINALIZE pass completes the
+ticket bookkeeping the PR's `Closes` link cannot). Every merge — immediate
+or armed — is pinned to the reviewed head (`--match-head-commit`), so a
 push after the review fails the merge instead of landing unreviewed. A
 failing check, a park, or any unresolved blocker goes `needs-human` with
 the impasse named — there is no intermediate "reviewed, waiting for the
