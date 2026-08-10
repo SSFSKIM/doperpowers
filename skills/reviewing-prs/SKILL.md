@@ -324,8 +324,13 @@ substance and route.
   Birth classification applies: the default is `ready-for-implementer`;
   a finding that is missing DESIGN (not just missing work) passes
   `--state ready-for-architect`.
+  A seam-search hit that says the finding IS an existing open ticket:
+  comment your evidence on that ticket instead of registering — the one
+  sanctioned cross-ticket write in this protocol (an explicit exception
+  to "board writes target the primary ticket").
   NEVER wave it. On a ticketless PR, post a structured PR comment
-  describing the scope fork instead — board writes are skipped.
+  describing the scope fork instead — board writes are skipped, the
+  cross-ticket exception included.
 - LOG — valid non-blocker: append a
   structured comment to the standing tech-debt issue
   ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
