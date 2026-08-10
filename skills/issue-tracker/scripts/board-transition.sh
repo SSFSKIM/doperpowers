@@ -44,6 +44,76 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# API mode: legality, the convergence rule, the note/PR/plan requirements and
+# every sweep above live server-side — the client sends the edge and reports
+# the state the server wrote.
+if [ "$BOARD_BINDING" = api ]; then
+  # A PLAN PIN IS A GATE, NOT A FIELD. It authorizes gate-free PLAN-EXECUTION,
+  # and A1 stores whatever primitive arrives on whatever legal edge — so on this
+  # side the CLIENT is the only fence there is. "Thin client" was never a licence
+  # to drop a gate the other binding enforces: transcript parity cuts both ways,
+  # and an arbitrary --plan value here bought a worker the right to skip its gate
+  # entirely. gh mode's four checks, mirrored:
+  if [ -n "$plan" ]; then
+    # 1. THE EDGE, not just the destination. Only an Architect finishing a
+    #    design pass may mint a pin; every other legal promotion into
+    #    ready-for-implementer (a park return) would otherwise mint one too, and
+    #    there is no legitimate re-supply case — plan meta survives park
+    #    round-trips untouched.
+    _cur="$(T_ID="$tid" _api_py - <<'PY'
+import os
+import _board_api as A
+tid = os.environ["T_ID"].lstrip("#")
+print(next((t["state"] for t in A.tickets() if str(t["id"]) == tid), ""))
+PY
+)" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
+    [ -n "$_cur" ] || die "--plan: #$tid is not in a listing this principal can read — the handoff edge cannot be checked, and an unverifiable pin is not a pin"
+    { [ "$_cur" = in-design ] && [ "$to" = ready-for-implementer ]; } \
+      || die "--plan rides the Architect handoff edge (in-design → ready-for-implementer) only (#$tid is $_cur → $to)"
+    if [ "$plan" != pre-spec ]; then
+      # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
+      #    or a short sha that can move under the worker.
+      [[ "$plan" =~ ^[^[:space:]]+@[0-9a-f]{40}$ ]] \
+        || die "--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec"
+      # 3. A RECORDED BRANCH the sha is reachable from. A PLAN-EXECUTION worker
+      #    starts from a fresh cattle clone: without one there is nothing to
+      #    fetch and the pin cannot serve the reclaim contract it exists for.
+      #    A1's ticket projection carries no branch column, so unlike gh mode
+      #    there is no recorded value to fall back on — --branch is required.
+      [ -n "$branch" ] \
+        || die "a pinned plan needs a branch the sha is reachable from; pass --branch (the API board records none to fall back on)"
+      # 4. ...and "recorded" is not "fetchable". gh mode asks GitHub; there is no
+      #    gh here, so the same question is put to the local checkout — which is
+      #    the Architect's own, the one that just pushed the plan. Fail CLOSED on
+      #    anything unverifiable: an unverifiable pin is not a pin.
+      _sha="${plan##*@}" _path="${plan%@*}" _ref=""
+      for _cand in "origin/$branch" "$branch"; do
+        git -C "$BOARD_ROOT" rev-parse --verify --quiet "$_cand^{commit}" >/dev/null && { _ref="$_cand"; break; }
+      done
+      [ -n "$_ref" ] || die "branch $branch names no commit in this checkout — fetch it, then retry (the pin is refused until it verifies)"
+      git -C "$BOARD_ROOT" merge-base --is-ancestor "$_sha" "$_ref" 2>/dev/null \
+        || die "plan sha ${_sha:0:12} is not on branch $branch — a PLAN-EXECUTION worker fetches the sha from that branch and would find nothing; push the commit to it and retry"
+      git -C "$BOARD_ROOT" cat-file -e "$_sha:$_path" 2>/dev/null \
+        || die "the plan path $_path does not exist at ${_sha:0:12} — the pin names an artifact the worker cannot read; fix the path or the sha and retry"
+    fi
+  fi
+  T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _api_py - <<'PY'
+import os
+import _board_api as A
+env = os.environ
+fence = os.environ.get("BOARD_RUN_FENCE") or None
+out = A.transition(env["T_ID"].lstrip("#"), env["T_TO"],
+                   note=env["T_NOTE"] or None, pr=env["T_PR"] or None,
+                   plan=env["T_PLAN"] or None, branch=env["T_BRANCH"] or None,
+                   fence=int(fence) if fence else None)
+# Print the state the server WROTE — convergence can transmute the target.
+suffix = " (converged)" if out.get("converged") else ""
+print("#%s: → %s%s" % (env["T_ID"].lstrip("#"), out["to"], suffix))
+PY
+  _rerender_if_serving
+  exit 0
+fi
+
 T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _py - <<'PY'
 import json as _json_
 import os

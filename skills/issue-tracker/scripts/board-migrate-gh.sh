@@ -27,6 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
+# No API-mode counterpart yet (A1 route gap), so refuse rather than silently
+# writing through a gh path that a board-API repo does not have.
+_refuse_no_api_route "migrating a v6 board.json into GitHub issues"
+
 board="$BOARD_DIR/board.json" apply=0
 while [ $# -gt 0 ]; do
   case "$1" in

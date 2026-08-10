@@ -4,7 +4,7 @@
 
 **Goal:** The issue-tracker toolkit and dispatch scripts speak the Arkho board
 API as a per-repo binding (gh mode untouched and default), per
-`docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` v1.1.
+`docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` v1.2.
 
 **Architecture:** Verb-level thin client — each `board-*.sh` branches on
 `BOARD_BINDING` at the top; in API mode the verb is a thin HTTP call through a
@@ -21,7 +21,7 @@ on local Postgres for the integration tier (gated by `ARKHO_DIR`).
 
 ## Global Constraints
 
-- **The spec is the contract:** `docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` (v1.1). The API contract is `$ARKHO_DIR/board-service/API.md` — when this plan and API.md disagree on a payload, API.md wins and the divergence goes in the spec's Revision Notes.
+- **The spec is the contract:** `docs/doperpowers/specs/2026-08-09-a2-board-adapter-design.md` (v1.2). The API contract is `$ARKHO_DIR/board-service/API.md` — when this plan and API.md disagree on a payload, API.md wins and the divergence goes in the spec's Revision Notes.
 - Binding file: `.doperpowers/board.json` at the consumer repo root, shape `{"binding": "api", "url": "https://…"}`. Absent or `"binding": "gh"` → gh mode, byte-identical behavior to pre-A2.
 - Credentials file: `~/.arkho-board/<repo-slug>.env` (override: `$BOARD_CREDENTIALS_FILE`), carrying `BOARD_AUTOMATION_TOKEN` and `BOARD_HUMAN_TOKEN`. Never checked in, never logged.
 - Worker env contract (injected at spawn): `BOARD_RUN_TOKEN`, `BOARD_RUN_ID`, `BOARD_RUN_FENCE`, `BOARD_API_URL`.
@@ -60,8 +60,10 @@ Interfaces threaded through every task (fixed here, verbatim):
 ```
 # _board_api.py — module-level functions (all die() on mapped API errors):
 api_url() -> str
-request(method, path, body=None, principal="auto", ok=(200,)) -> dict|list
+request(method, path, body=None, principal="auto", ok=(200,), retry=None) -> dict|list
 #   principal: "auto" (run token if set, else die), "automation", "human"
+#   token() returns the env run token FIRST whatever the principal — worker
+#   contexts get the run principal automatically; defaults serve operators.
 claim(lane, nonce, lease_minutes=None, lane_cap=None) -> dict
 claim_successor(ticket_id, nonce, lease_minutes=None) -> dict
 needing_resume() -> list
@@ -70,12 +72,12 @@ ack(answer_event_id) -> dict
 renew(run_id) -> dict                    # 409 run-ended -> raises RunEnded
 bind(run_id, store_ns, project_key, session_id) -> dict
 end_run(run_id, reason="completed") -> dict
-register(payload: dict) -> dict          # {"id": N, "state": "..."}
-transition(tid, to, note=None, pr=None, plan=None, branch=None, fence=None) -> dict
-comment(tid, kind, text=None, body=None) -> dict   # {"eventId": N}
+register(payload: dict, principal="human") -> dict   # {"id": N, "state": "..."}
+transition(tid, to, note=None, pr=None, plan=None, branch=None, fence=None, principal="human") -> dict
+comment(tid, kind="comment", text=None, body=None, principal="human") -> dict   # {"eventId": N}
 park_answer(tid, replies, to=None, correlation_id=None) -> dict
-tickets(state=None, category=None) -> list
-timeline(tid) -> dict                    # {"records": [...]}
+tickets(state=None, category=None, principal="human") -> list
+timeline(tid, principal="human") -> dict # {"records": [...]}
 queue_decisions() -> list
 class RunEnded(Exception): ...
 SENTINEL = "[board-relay answer:%s]"     # % answerEventId
@@ -92,7 +94,7 @@ _api_py                  like _py but also exports the three above
 ```
 # Registry meta additions (daemon JSON, written by dispatch/sweep):
 run_id, fence, nonce, spawn_completed (bool), bind_confirmed (bool),
-resume_attempts (int)
+resume_attempts (int), run_bearer (secret — registry file must be 0600)
 # Claim journal: $DAEMON_HOME/board-claims/<nonce>.json
 #   {"lane": "...", "run_id": N|null, "spawn_completed": bool}
 # Suppression: $DAEMON_HOME/board-suppress/<ticket>.json
@@ -335,6 +337,11 @@ HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
 `tests/claude-code/board-api/test-client-core.sh`:
 
 ```bash
+# NOTE (implementation contact, Task 2): the error envelope is NESTED —
+# {"error":{"code":…,"message":…}} — per API.md §1 and the live server; the
+# flat shape this plan's first draft carried is wrong. Spec Revision Notes
+# v1.2.1 records the divergence. Later tasks' 409 fixtures follow the nested
+# shape too.
 #!/usr/bin/env bash
 . "$(dirname "$0")/helpers.sh"
 PORT=8471
@@ -345,11 +352,11 @@ cat > "$FIX" <<'JSON'
   "body":{"runId":41,"ticketId":12,"fence":3,"bearer":"tok-abc","plan":null,
           "body":"do the thing","parentPin":null}},
  {"method":"POST","path":"/tickets/12/transition","status":409,
-  "body":{"error":"fence-mismatch","message":"fence 2 != 3"}},
+  "body":{"error":{"code":"fence-mismatch","message":"fence 2 != 3"}}},
  {"method":"GET","path":"/answers/unrelayed","status":200,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101","replies":["yes"]}]},
  {"method":"POST","path":"/runs/41/renew","status":409,
-  "body":{"error":"run-ended","message":"run 41 has ended"}}
+  "body":{"error":{"code":"run-ended","message":"run 41 has ended"}}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" $PORT & MOCK=$!
@@ -810,7 +817,7 @@ cat > "$FIX" <<'JSON'
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":31,"state":"needs-human"},"once":true},
  {"method":"POST","path":"/tickets","status":409,
-  "body":{"error":"illegal-birth","message":"spike may not be born ready-for-architect"},"once":true},
+  "body":{"error":{"code":"illegal-birth","message":"spike may not be born ready-for-architect"}},"once":true},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":30,"state":"ready-for-implementer"}}
 ]
 JSON
@@ -1186,8 +1193,13 @@ Add to the test: the spawn env includes `BOARD_RUN_TOKEN=tok-w`; assert
 (`stat -f %Lp` on darwin / `stat -c %a` on linux — the helper picks by
 `uname`).
 
-Also export `BOARD_ROOT` from `_lib.sh` (one line: `export BOARD_ROOT` after it
-is computed) so the heredoc above can read it.
+Do NOT export `BOARD_ROOT` from `_lib.sh` — the Task 1 review closed that as a
+wrong-repo inheritance trap (a child sourcing `_binding.sh` in another repo
+would inherit the parent's root), and `test-binding.sh` now has a leak
+assertion that fails if the export comes back. Instead pass it per-call, the
+same way `T_UUID`/`T_RUN`/`T_DHOME` already ride the invocation:
+`T_ROOT="$BOARD_ROOT" _api_py …` and read `os.environ.get("T_ROOT")` in the
+heredoc above (replacing the `BOARD_ROOT` read at the `project_key` line).
 
 - [ ] **Step 4: Run tests** — `bash tests/claude-code/board-api/test-bind.sh` → `PASS`.
 
@@ -1513,7 +1525,7 @@ FIX="$(mktemp)"; : > "$FIX.log"
 cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/runs/41/renew","status":200,"body":{"renewed":true}},
- {"method":"POST","path":"/runs/40/renew","status":409,"body":{"error":"run-ended","message":"reaped"}},
+ {"method":"POST","path":"/runs/40/renew","status":409,"body":{"error":{"code":"run-ended","message":"reaped"}}},
  {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101","replies":["ship it"]}]},

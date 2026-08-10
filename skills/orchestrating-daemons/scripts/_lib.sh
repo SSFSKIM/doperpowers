@@ -99,8 +99,25 @@ try:
     for i in range(0, len(args), 2):
         data[args[i]] = args[i + 1]
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
+    # Recreate the meta at the mode it already has, never at the umask: a
+    # bookkeeping write (daemon-mark, daemon-reply, daemon-finalize) on an
+    # API-bound meta would otherwise republish the run bearer world-readable,
+    # undoing what board-bind set to 0600 — on the first status update the
+    # worker makes. A meta carrying a bearer is forced to 0600 either way.
+    # A meta that does not exist yet keeps the old umask default.
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = None
+    if data.get("run_bearer"):
+        mode = 0o600
+    if mode is None:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+    else:
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+            json.dump(data, f, indent=2)
+        os.chmod(tmp, mode)   # umask narrowing, and a tmp left by an earlier crash
     os.replace(tmp, path)
 finally:
     fcntl.flock(lf, fcntl.LOCK_UN)

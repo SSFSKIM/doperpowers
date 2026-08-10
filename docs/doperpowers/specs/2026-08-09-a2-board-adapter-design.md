@@ -35,9 +35,14 @@ refusing to fight that:
 
 So the adapter boundary is **verb-level**: each user-facing script keeps its
 exact CLI and branches internally; in API mode the verb is a thin HTTP call
-and `_board.py`'s state-machine half is never imported. No second client-side
-copy of the state machine exists in API mode — the X5 drift risk is fenced by
-the transcript-diff drill (§ Testing), not by shared code.
+and `_board.py`'s state-machine half is never **exercised** — no legality
+check, no mutation, no pick order runs client-side. The banned state is a
+*divergent second client-side copy* of legality/pick-order, not the import
+statement: a read verb that imports `_board` to reuse the one existing pure
+derivation for display (`board-map.sh` calling `B.eligible` to label a node)
+is the opposite of that hazard, since a re-implementation is exactly what
+would drift. The X5 drift risk is fenced by the transcript-diff drill
+(§ Testing) plus that single-source reuse, not by refusing to link the file.
 
 ## Design
 
@@ -194,6 +199,17 @@ in the window between delivering to the session and committing the ack:
   retries. Between resume and ack → the sentinel is in the transcript
   (written by the same act that delivered the prompt); next tick skips the
   resume and acks. After ack → the feed no longer serves it.
+- **The resume's wait is bounded** (`BOARD_RELAY_RESUME_TIMEOUT`, default 300
+  → a `daemon-resume` watcher of ≤150 polls). `daemon-resume` otherwise
+  blocks for `DAEMON_TIMEOUT/2` — hours at the 18000 default — while this
+  tick holds the whole-tick lock, so one long worker turn would starve lease
+  renewal past the 15-minute lease and A1 would reclaim runs that are alive.
+  Bounding it costs nothing the delivery gate needs: `daemon-resume` advances
+  the meta's `current` to the forked turn and injects the sentinel-bearing
+  prompt **before** it blocks, so a timed-out resume exits nonzero, acks
+  nothing, and lands on the row above — the next tick's sentinel grep finds
+  the marker in the new transcript and acks **without re-delivering**. Only
+  the ack is late; the answer is never lost and never doubled.
 
 No new state file: the durable record of delivery is the delivery itself.
 
@@ -304,8 +320,15 @@ plan time.
    asserted by the test harness).
 2. **Transcript-diff drill:** the same scripted protocol walk run once in gh
    mode and once in API mode, diffed on the worker-visible surface (script
-   invocations + stdout/refusals, transport-specific ids normalized) — the
-   diff is empty. This is "indistinguishable modulo transport", executable.
+   invocations + stdout/refusals, transport-specific ids normalized) — a
+   two-level claim: script invocations and exit statuses are identical on
+   every step (including refusals — the legality answer never diverges), and
+   every output-text divergence is individually pinned in the drill with the
+   transport reason it cannot converge (e.g. the API transition response
+   carries no from-state; a gh list derives tags from a whole-board
+   snapshot). An unpinned divergence — or a pinned one that stops
+   happening — fails the drill. This is "indistinguishable modulo
+   transport", executable.
 3. **Crash-at-boundary drill:** the relay is killed at each boundary —
    before resume, between resume and ack, after ack — and in every case the
    answered park is re-polled, never lost, never double-resumed (asserted
@@ -428,10 +451,247 @@ plan time.
   First concrete instance of the X1 "upstream canon, not re-litigable"
   clause meeting a fork that kept evolving; resolved by flow-back ruling,
   not by either side silently winning.
+- **The plan's error envelope was the wrong shape** (Task 2, implementation
+  time): every fixture and the client's own error mapping assumed a flat
+  `{"error": "fence-mismatch", "message": "…"}`, but API.md §1 and
+  `src/server.js` both write it **nested** —
+  `{"error": {"code": "…", "message": "…"}}`. API.md wins per the Global
+  Constraints, so the client unwraps `error.code`. Two consequences worth
+  carrying: the error identifier is what every `die` message and the
+  `RunEnded` routing key on, so a flat reader would have degraded *every*
+  contract refusal to an opaque `http-409` and never raised `RunEnded` at
+  all; and the plan's later task bodies still carry flat-shaped 409
+  fixtures, which are asserting against a shape the service never sends.
+
+- **The read-scope audit found no scope violation and two transport holes**
+  (Task 14, the plan-time gate discharged at finish). Eight worker-executed
+  board reads exist across the three protocols; every one of them names the
+  worker's OWN ticket or a DIRECT child, so X5's read scope holds and no
+  protocol line was rewritten. What the audit did surface is a different
+  thing: **A1 exposes no route that returns a ticket body.** API.md §4.2 is
+  explicit — "`body` is the assignment. Nothing else a run bearer may call
+  hands it over": `GET /tickets` answers projection columns and
+  `GET /tickets/:id/timeline` answers events. Two protocol steps depend on
+  reading a body that is not the caller's own claim payload, and both are
+  therefore gh-only today:
+  - the **Architect's epic lineage check** (`skills/architecting/SKILL.md`,
+    Recomposition claims step 1) compares each child's `parent-pin:` meta
+    against `contract_hash` of the epic's body. The epic's own body arrives
+    with the claim (`{{TICKET_BODY_FILE}}`), but a *child's* body is
+    unreachable, so the pin comparison cannot run in API mode. The rest of
+    that step survives: children's `[parent-impact]` proposals are timeline
+    events, and the timeline admits direct children.
+  - the **decomposition procedure** (`references/implement-decompose.md`
+    step 2) fleshes out each child body with `gh issue edit`, and A1 has no
+    ticket-edit route at all. Workable without a protocol change:
+    `board-register.sh --body-file` seeds the body at birth, so an API-mode
+    decomposer writes the pre-spec first and registers once.
+
+  Neither was rewritten. The prose is single-sourced across bindings on
+  purpose (a mode-forked protocol is the thing the adapter boundary exists to
+  avoid), and the real repair is an A1 route — a body read scoped to
+  own-ticket + direct children — which belongs on the flow-back ticket, not
+  in a fork-local workaround. One related hit is benign rather than a hole:
+  `skills/reviewing-prs/SKILL.md`'s post-gate timestamp-drift check reads
+  GitHub's `Issue.userContentEdits`, and since A1 offers no body-edit route,
+  the drift it hunts cannot occur there — the check is vacuous in API mode,
+  not broken. One read sits outside the audit's grep set and is recorded here
+  so it is not later rediscovered as a violation the audit missed:
+  `skills/triaging-feedback/SKILL.md`'s *Worker mode* fetches a whole-board
+  snapshot with `board-list.sh`, which is a read of arbitrary tickets. It is
+  outside X5's bite rather than a breach of it — the triage worker is
+  explicitly also the dispatcher and holds a dispatcher principal, not a run
+  bearer, and X5's read limit scopes what a *run* may read.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What shipped.** The purpose held: the doperpowers issue-tracker toolkit and
+both dispatchers now speak the Arkho board API as a per-repo binding, and gh
+mode is untouched and still the default. Fourteen tasks landed on
+`feature/a2-board-adapter`: the binding resolver and credential/principal
+precedence (`_binding.sh`, `_lib.sh`), the single HTTP surface
+(`_board_api.py`, 15 route wrappers over 14 distinct A1 paths — `POST` and
+`GET /tickets` share one — nested error envelope, transport-only retry), a
+new `board-comment.sh` verb with the protocols' raw `gh issue comment` sites
+substituted, API modes for register/transition/answer/show/list/map/lint/
+reconcile/bind, claim-side dispatch for the implementer, spike, architect and
+qagent lanes with nonce lifecycle and credential injection, and the four-phase
+sweep (`_sweep_api.sh`: lease renewal + bind repair, sentinel relay,
+resume-first fold, suppression and env-issue escalation). Released as v7.42.0.
+
+**Acceptance evidence.**
+
+1. *Full protocol walk.* `tests/claude-code/board-api/integration/test-protocol-walk.sh`
+   drives register → claim → spawn → bind → gate verdict → park → human
+   answer → relay resume → in-review → done against a real board-service on
+   scratch Postgres, entirely through the unchanged verbs. It passed in the
+   full runner (10s). Its own closing assertion is the acceptance's: a `gh`
+   stub sits ahead of any real one on `PATH` for the whole walk and its
+   invocation log is empty at the end.
+2. *Transcript-diff drill.* `test-transcript-diff.sh` + `transcript-compare.py`
+   run the same scripted walk in both bindings and compare. Argv and exit
+   status were identical on all 14 steps — including every refusal — and all
+   13 output-text divergences — eight distinct tag strings, six families once
+   the three `refusal-wording-*` tags are read as one — were individually pinned with
+   their transport reason (`VERDICT: accounted`). The two-level claim is what
+   acceptance 2 now says; see Revision Note v1.2.4 for why the literal empty
+   diff was unachievable without making the binding worse.
+3. *Crash-at-boundary drill.* `test-crash-boundaries.sh` kills the relay before
+   resume, between resume and ack, and after ack; in each case the answered
+   park is re-polled and the sentinel count in the session transcript stays at
+   one. Passed.
+4. *Resume-first ordering.* `test-resume-first.sh` — with a reclaimed in-flight
+   ticket and a ready-queue ticket both present, the sweep's sequence log shows
+   the resume ahead of any fresh claim. Passed.
+5. *Lease renewal.* `test-lease-renewal.sh` (210s — it really does sit through
+   the lease windows) holds a live local worker with an empty session store
+   un-reclaimed across the renewal cycles, then kills one and watches its run
+   reclaimed onto `needing-resume`. Passed.
+6. *Recovery escalation.* `test-escalation.sh` forces resumes and fresh spawns
+   to fail; the third cycle registers an env-issue born `needs-human` naming
+   the stuck ticket, and the sweep stops churning it. Passed.
+7. *gh-mode regression.* `tests/claude-code/run-skill-tests.sh` with
+   `ARKHO_DIR` set: **21 passed, 0 failed, 0 skipped** — the same pass set as
+   the parent commit of Task 1. The three gh-mode board suites are not wired
+   into that runner and were run explicitly, all passing:
+   `tests/issue-tracker/test-board-scripts.sh`,
+   `tests/issue-tracker/test-board-sweep.sh`,
+   `tests/implementing/test-implement-dispatch.sh`. Those three suites plus
+   the unchanged runner pass set are what actually fence the claim that a repo
+   with no binding file behaves as it did before A2; `board-api/test-binding.sh`
+   asserts the narrower thing its name says — that an absent binding file
+   *resolves* to gh mode, and that gh mode without `BOARD_REPO` still probes
+   `gh` — not output parity against pre-A2. `scripts/lint-shell.sh` over all 45 shell
+   files this branch touched is clean (the `--all` baseline's 9 warnings are
+   in four files A2 never touched).
+8. *Live smoke.* One walk against `https://arkho-board-service.onrender.com`
+   on 2026-08-09T20:08Z, from a scratch repo bound outside this checkout.
+   `GET /healthz` answered `200` in 0.24s with a verified TLS chain and
+   `{"ok":true,"lastPassAt":"2026-08-09T20:08:42.911Z"}` — the deployed
+   reconciler passing seconds earlier. Every assertion passed — 43 of them in
+   the transcript kept with the task report, plus the `healthz` probe reported
+   separately above it — `gh` was
+   never invoked, and the whole real network path (Render → Supavisor →
+   Supabase Postgres) carried the protocol unchanged: the claim delivered the
+   body, the server confirmed the bind, a wrong fence was refused
+   `fence-mismatch`, the park reached `GET /queue/decisions`, the run
+   principal was refused its own `park-answer` (`forbidden`), the human answer
+   relayed the sentinel into the bound session and drained
+   `GET /answers/unrelayed`, and the ended run's bearer came back
+   `unauthenticated`. The epic-recomposition drill (A1.G3) ran on real
+   tickets: parent #3 registered `ready-for-implementer`, pulled to
+   `in-progress` when child #4 went in-flight, and returned to
+   `ready-for-architect` carrying a `recomposition-due` marker once the child
+   reached `done`. Residue: tickets #2 and #4 are terminal at `done` — A1's
+   legality table has no `done → wontfix` edge, so each carries an
+   "A2 live smoke" comment instead; #3 was closed `wontfix` with note
+   "A2 live smoke". No drill ticket is live, and nothing on the board is
+   claimable. One row remains in production that the drill created and could
+   not remove under an INSERT-only rule: the automation principal
+   `a2-live-smoke-automation-20260809T200844Z` (retiring it is an UPDATE).
+   Its token was minted randomly, never written anywhere but a 0600 scratch
+   file, and A2 consumers need an automation principal on that board anyway.
+
+   *The architect-verdict leg.* That first walk stopped one edge short of what
+   this acceptance says: it proved children-terminal → parent back to
+   `ready-for-architect`, then closed the epic with a **human**
+   `ready-for-architect → wontfix`, which is a different edge with a different
+   authority from the recomposition verdict. The verdict A1 defines is a
+   **run-actor** edge — `in-design → done|wontfix`, guarded in
+   `src/transitions.js` on the ticket having children *and* the run holding the
+   `architect` lane — so it is only reachable by claiming the epic on that lane.
+   A second drill (2026-08-09T20:33Z, same deployed service, `healthz` `200`
+   with `lastPassAt` `2026-08-09T20:32:58.013Z`) exercised exactly that, 30
+   assertions, all passing, `gh` never invoked, and no new principal: it reused
+   the automation principal the first drill minted. Epic **#5** and child **#6**
+   were registered; #6 was claimed by the implementer lane and walked
+   `in-progress → in-review → confident-ready → done`; the deployed reconciler
+   pulled #5 `ready-for-implementer → in-progress` (marker `epic-pull`, cursor
+   36) and returned it `in-progress → ready-for-architect` (marker
+   `recomposition-due`, cursor 42). `POST /runs/claim` with `lane: architect`
+   then took #5 — **run 4, fence 1**, recorded on the epic's own timeline at
+   cursor 43 as an automation-actor `claim` naming the architect lane — and left
+   the state at `ready-for-architect`, a claim being no transition. As that run
+   the drill wrote `ready-for-architect → in-design` (cursor 44,
+   `actor_kind: worker`, `actor: run:4`) and then the verdict itself,
+   `in-design → wontfix` with note `A2 live smoke` (cursor 45, same worker
+   actor). Both writes were refused `fence-mismatch` when replayed with a
+   deliberately wrong fence, and the epic held its state across each refusal.
+   The verdict ended the run on the server's own authority: a `release` event at
+   cursor 46, `owner_run` back to null, and the run's bearer answering
+   `unauthenticated` on the next read — so no explicit `POST /runs/:id/end` was
+   needed. Residue: #5 is terminal at `wontfix`; #6 is terminal at `done` for
+   the same missing-edge reason as #2 and #4 and carries the same "A2 live
+   smoke" comment. Nothing claimable remains on the board. With this, all three
+   legs of acceptance 8 are exercised against the live board.
+
+**Gaps carried forward.**
+
+- **Legality-table drift, unfenced.** gh-mode `LEGAL` and A1 `LEGAL_ROWS`
+  disagree on 13 edges (12 gh-only, 1 A1-only). The transcript drill fences
+  argv and exit status, not the tables themselves; a table-to-table fence
+  needs a route that publishes A1's table or a vendored copy that would itself
+  drift. Follow-up ticket at finish.
+- **Bootstrap prompts are not compared** between bindings — the drill covers
+  the worker-visible *verb* surface, and the api-mode bootstrap blocks are
+  deliberately different text.
+- **No body read in API mode** (above): the Architect's child `parent-pin:`
+  lineage comparison and `gh issue edit`-style child body fleshing are gh-only
+  until A1 grows an own-ticket + direct-children body route.
+- **`board-map.sh` renders parent edges only** in API mode — `GET /tickets` v1
+  exposes no blocked-by — and the render is honest about it.
+- **`board-list.sh` drops the `ELIGIBLE` / `CLOSE?` tags** in API mode: the
+  server owns pick order, and close candidacy is a gh-PR concept. Workers
+  never call list in the protocols, so the drill's worker-visible surface is
+  unaffected.
+- **Triggered dispatch is gh-only** — the API has no claim-by-ticket route;
+  `implement-dispatch.sh <n>` fails loud in API mode (Revision Note v1.2).
+- **Per-ticket engine routing** has no API home; `$WORKER_ENGINE` is the only
+  router there (scope-out, unchanged).
+
+**Lessons.**
+
+- *Read the counterparty's contract before writing the caller's fixtures.*
+  Task 2 found every planned fixture asserting a flat `{"error", "message"}`
+  envelope the service never sends. The error identifier is what every `die`
+  message and the `RunEnded` routing key on, so a flat reader would have
+  degraded every contract refusal to an opaque `http-409` and never raised
+  `RunEnded` at all — a whole recovery path silently absent.
+- *An "empty diff" acceptance is a claim about the world, not a target.* Held
+  literally it would have forced a second read per transition and a
+  whole-board fetch per list, making the binding worse to make a test greener.
+  Replacing it with argv/exit parity plus individually-pinned, reasoned
+  divergences keeps the drift fence — an unpinned divergence still fails —
+  while letting the transports differ where they honestly do.
+- *A synchronous call inside a lock inherits the callee's timeout.* Task 9's
+  relay called `daemon-resume` with the daemon toolkit's unbounded default
+  while holding the whole-tick lock; renewal would have starved past the
+  15-minute lease and A1 would have reclaimed live runs. The general shape —
+  borrowed default × held lock × external deadline — is worth looking for
+  anywhere the sweep calls out.
+- *An audit gate is worth running even when you expect it to pass.* The
+  read-scope audit found exactly zero scope violations, which is the answer it
+  was written to check — but the same pass surfaced two body-read holes that
+  no scope question would have asked about.
+
+**Post-verification addendum (final review waves + main reconciliation).**
+After the acceptance evidence above, the branch went through a five-round
+external review loop (Codex panel + native reviews, gpt-5.6-sol): 33 confirmed
+findings adjudicated (32 fixed, 1 rejected against the live-verified
+park-answer fence), then 8, 3, 3, and 1 in successive convergence rounds —
+every fix RED-proved, all tiers re-green after each round. The wave hardened
+the sweep's recovery paths (runless-meta recovery reads, post-renew candidate
+re-resolution, versioned lock-owner identity with an explicit seven-case
+comparison ladder, budget-gated dispatch, journaled successor replay on the
+0x1f plan format) and the dispatchers' handoff ordering, and extracted the
+claim-journal machinery into `_claim_journal.sh`. `origin/main`'s PR #48
+(confident-ready retired, land lane deleted) was then merged and reconciled:
+drills rerouted onto edges both canons hold, the closing verdict now
+`in-review → done`. That merge surfaced the successor to the legality-drift
+follow-up's headline: post-#48 the gh review worker closes with a run-actor
+`in-review → done`, an edge A1 refuses for leaf tickets (epic-guard) — so the
+API-mode review protocol cannot complete its final edge against A1 as shipped.
+A1-side work, tracked in the drift follow-up.
 
 ## Revision Notes
 
@@ -460,3 +720,121 @@ Pending — written at finish.
   in code order; binding resolution as a pre-gh sourceable in every entry
   point; claim-journal startup reconciliation + real daemon-spawn output
   parsing; interactive verbs default to the human principal.
+- v1.2.1 (2026-08-09): contract-conformance record, no design change —
+  Task 2 found the plan's error envelope flat where API.md §1 and the
+  shipped `src/server.js` write it nested (`{"error": {"code", "message"}}`).
+  Logged under Surprises; `_board_api.py` unwraps `error.code`, and the
+  remaining task bodies' flat 409 fixtures need the same correction.
+- v1.2.2 (2026-08-10): premise wording precision from Task 5 implementation
+  contact, no design change — the structural premise said `_board.py` "is
+  never imported in API mode", which the read verbs break for a legitimate
+  reason (`board-map.sh` imports `_board` to reuse the one existing pure
+  display derivation, `B.eligible`). Reworded to the invariant actually
+  meant: the state-machine half is never *exercised*, and the banned state
+  is a divergent second client-side copy of legality/pick-order —
+  imported-for-pure-display is the opposite of that hazard.
+- v1.2.3 (2026-08-10): Task 9 review — **the relay's resume wait is bounded**
+  (`BOARD_RELAY_RESUME_TIMEOUT`, default 300). The plan had the sweep call
+  `daemon-resume` synchronously with the daemon toolkit's own unbounded
+  default, which blocks for `DAEMON_TIMEOUT/2` (hours) while the tick holds
+  its whole-tick lock: renewal starves past the 15-minute lease and A1
+  reclaims live runs. Sentinel-ack-next-tick is the named degrade path — the
+  prompt and the meta's `current` are both committed before the wait, so a
+  timed-out resume acks nothing and the next tick acks off the sentinel
+  without re-delivering (see the Relay idempotence section). Also recorded, no
+  design change: the tick **unsets `BOARD_RUN_TOKEN`** at entry, since
+  `token()` returns any run token in env for every principal — a tick
+  inherited from a worker shell would otherwise renew/ack as that worker
+  (violating "Renewal is dispatch automation, never worker prose") and a bind
+  repair would stamp the foreign bearer into another run's meta.
+- v1.2.4 (2026-08-10): Task 13 implementation contact — **acceptance 2's
+  "the diff is empty" replaced with the two-level claim** (argv + exit
+  status identical on every step; output-text divergences individually
+  pinned with their transport reasons, unpinned divergence fails). The
+  literal empty diff is unachievable without making the API binding worse:
+  the transition response carries no from-state (printing it would cost a
+  second read per transition), a gh list derives its tags from a whole-board
+  snapshot the API deliberately doesn't fetch, and `show` renders a snapshot
+  node vs a server timeline. The drill (`test-transcript-diff.sh` +
+  `transcript-compare.py`) pins 13 divergences under eight tag strings (six
+  families, counting the three `refusal-wording-*` tags as one); argv and exit
+  parity — the drift fence that catches a second legality table — held
+  strict on all 14 steps. Recorded alongside, unfenced: gh-mode `LEGAL` and
+  A1 `LEGAL_ROWS` disagree on 13 edges (12 gh-only, 1 A1-only) — real X5
+  drift, follow-up ticket at finish (a table-to-table fence needs either a
+  DB read or a service-source checkout, both out of tier).
+- v1.2.5 (2026-08-10): Task 14 finish — acceptance 1–8 all met, Outcomes &
+  Retrospective written, released v7.42.0. No design change. The plan-time
+  **read-scope audit is discharged**: zero worker-executed reads outside
+  own-ticket + direct children, so X5 holds and no protocol line was
+  rewritten; the same pass surfaced that A1 exposes **no ticket-body read**
+  (API.md §4.2), which makes the Architect's child `parent-pin:` lineage
+  comparison and `implement-decompose`'s `gh issue edit` body fleshing gh-only
+  until A1 grows an own-ticket + direct-children body route — both logged
+  under Surprises as flow-back candidates rather than worked around in the
+  fork. Acceptance 8 ran live against the deployed instance including the
+  A1.G3 epic-recomposition return; drill residue closed, one scratch
+  automation principal left behind by the INSERT-only rule (named in
+  Outcomes).
+- v1.2.6 (2026-08-10): Task 14 review fixes — evidence precision only, no
+  design change. Acceptance 8's **architect-verdict leg is now exercised**
+  against the deployed board: the first drill closed its epic with a human
+  `ready-for-architect → wontfix`, which is not the run-actor recomposition
+  verdict the acceptance names, so a second drill claimed the recomposed epic
+  on the `architect` lane and wrote `ready-for-architect → in-design →
+  wontfix` as that run, with the fence refusing a wrong-fence replay at each
+  edge (epic #5, child #6, run 4, fence 1; ids and timeline cursors in
+  Outcomes item 8). It reused the existing automation principal, so no new
+  production row. Four counts and attributions corrected in the same pass:
+  `_board_api.py` is 15 route wrappers over 14 A1 paths, not 18 routes; the
+  gh-path regression fence for acceptance 7 is the three gh-mode suites plus
+  the runner pass set, while `test-binding.sh` asserts binding *resolution*
+  only; the first live smoke's assertion count is stated as what its
+  transcript records (43, plus the separately reported `healthz` probe); and
+  the transcript drill's 13 divergences carry eight tag strings, six families.
+  Surprises gains one clause: `triaging-feedback`'s Worker-mode whole-board
+  `board-list.sh` read is outside the audit's grep set and outside X5's bite
+  (dispatcher principal, not a run bearer), recorded so it is not later
+  rediscovered as a missed violation.
+- v1.2.7 (2026-08-10): final whole-branch review — the v1.2.3 bound is
+  **amended**, and two protocol lines are substituted. The arithmetic in v1.2.3
+  never closed: the 300-second bound is PER ITEM (one relayed answer, one
+  successor recovery) while ONE renewal pass covered the whole serial tick, so
+  four worst-case deliveries out-run A1's 15-minute lease and the server
+  reclaims runs that are very much alive — including runs this tick is not
+  touching at all. **Renewal is now interleaved between items** rather than run
+  once ahead of them: `_tick_renew` re-runs the whole renew phase before each
+  relay delivery and before each resume, so no live run's lease ever ages more
+  than a single item's bound. Renewal is one cheap idempotent POST per live run,
+  which is what makes per-item affordable. A **whole-tick budget**
+  (`BOARD_SWEEP_TICK_BUDGET`, default 900s) rides alongside, and it is a
+  different property: it does not protect leases (the interleaved renewal does)
+  — it stops the serial phases taking NEW items so the tick lock is not held
+  past a plausible crash window. The item in flight always finishes, so the
+  worst case is one bounded wait past the budget, and 900 + 300 still sits under
+  the 30-minute lock-stale threshold. `BOARD_RELAY_RESUME_TIMEOUT` is now
+  **clamped at 2** and validated as an integer: a resume waits
+  `DAEMON_TIMEOUT / 2` polls and `_poll_until_done` reads 0 as UNLIMITED, so an
+  operator setting 1 turned the bound into its exact opposite.
+
+  Protocol substitutions in the same wave (worker-visible, so recorded here):
+  the implement / architect / spike ticket read becomes `board-show.sh <n>`
+  with the BODY gap stated rather than worked around, and the `[parent-impact]`
+  proposal becomes `board-comment.sh <n> --kind parent-impact --text "#<parent>
+  …"` — one call that renders the gh sweep's marker AND records the API board's
+  typed event. The Architect's proposal MARK is **not** unified: gh's
+  `[board-epic] reconcile:` comment and the API board's
+  `--kind parent-impact-consumed` are different mechanisms, each reconciler
+  reads only its own, and the protocol now says so instead of implying a single
+  verb bridges them. The recomposition lineage check is marked gh-only for the
+  same reason it always was (it hashes the parent's BODY, and A1 exposes no
+  body route — arkho#7), with the API-side substitute named: the pin is a
+  CURSOR the claim hands each child, and a child that recorded none leaves that
+  leg unverifiable, which the Architect states rather than assumes.
+- v1.2.8 (2026-08-10): finish — Outcomes gains the post-verification addendum
+  (five-round external review loop 33→8→3→3→1, all fixes RED-proved; PR #48
+  merge reconciliation, drills rerouted onto both-canon edges). New drift item
+  recorded: post-#48 the run-actor `in-review → done` close is refused by A1
+  for leaf tickets (epic-guard) — API-mode review workers cannot write their
+  final edge until A1 rules; joins the legality-drift follow-up as its
+  headline item.

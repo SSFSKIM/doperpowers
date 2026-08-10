@@ -20,6 +20,57 @@ and comments); the repo manifests (risk surfaces, repo facts) ride your
 dispatch prompt as BASE-ref snapshots the PR cannot edit — use those
 copies, never the worktree's.
 
+When your `REVIEW_MODE` binding reads `api` you were not dispatched from a
+PR at all: the board claimed you onto ticket #{{ISSUE_NUMBER}} in its
+`qagent` lane, so there is no `PR_NUMBER` / `PR_URL` / `HEAD_SHA` binding and
+no `gh issue view` — every board read and write goes through
+{{BOARD_SCRIPTS}}, which speaks for your run. Your entry artifact is the
+ticket's `pr` value, printed by
+`{{BOARD_SCRIPTS}}/board-show.sh {{ISSUE_NUMBER}}`, and it decides which
+variant of this protocol you run:
+
+- **a pull-request URL** → the PR variant, exactly as written below. Resolve
+  the PR number out of the URL and use it wherever `{{PR_NUMBER}}` appears;
+  your worktree starts on the repo's current head, not the PR's, so checking
+  out the head under review is yours to do. **Resolve the PR's own base and
+  head, and FETCH them, before ORIENT** — `gh pr view <n> --json
+  baseRefName,headRefName,headRefOid` names them, `git fetch origin
+  <baseRefName> <headRefName>` is what puts them in THIS clone, and
+  `git checkout --detach <headRefOid>` is where you review from. That fetch is
+  not a formality: `gh` returns GitHub's metadata and moves no ref here, and
+  the clone is long-lived, so an unfetched base is either absent (every later
+  `origin/<base>` revision fails outright) or stale (you review a range the PR
+  does not propose) — and a stacked PR's integration base is precisely the ref
+  this clone is least likely to already carry. A fetch that fails is a hard
+  stop: never fall back to the default branch, nor to whatever
+  `origin/<base>` already points at — park with
+  `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human` naming
+  the ref that would not fetch. Then use the resolved names wherever
+  `{{BASE_REF}}`, `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear — `{{BASE_REF}}` is
+  the BRANCH NAME `baseRefName`, never `origin/` anything: this protocol adds
+  the remote itself wherever it needs the tracking ref your fetch just moved —
+  above all in START ENGINE's `--base origin/{{BASE_REF}}`.
+  The board carries no PR base, so
+  dispatch cannot know it: a stacked PR onto an integration branch reviewed
+  against the default branch is the whole stack, not this PR's work. Your
+  manifest snapshots came from `{{MANIFEST_REF}}`; when the resolved base is a
+  different branch, re-read both from it
+  (`git show origin/<base>:.doperpowers/risk-surfaces.md`) and use those.
+  Everything downstream is unchanged, with two substitutions: the board half
+  of every step is a
+  {{BOARD_SCRIPTS}} call rather than a label or an issue comment (the API
+  board has no labels — a state IS a transition, and a typed event IS
+  `board-comment.sh --kind`), while the GitHub half — the PR, its diff, its
+  review comments, the push chain — is still plain `gh` and `git`.
+- **an event id, not a URL** → the ticket is an epic carrying a
+  closure-package event, i.e. the scale review. That variant is NOT
+  executable under an API board today: it needs `CLOSURE_PACKAGE` and
+  `INTEGRATION_REF` bindings the claim does not carry, and the board exposes
+  no branch column to derive the integration ref from. Do not improvise one.
+  Park the ticket with `board-transition.sh {{ISSUE_NUMBER}} needs-human` and
+  a note naming this gap; a scale review belongs on a gh-bound repo until the
+  bindings exist.
+
 When your `REVIEW_MODE` binding reads `scale` there is no PR at all: you
 are the scale reviewer of recomposition epic #{{ISSUE_NUMBER}}, and
 **Scale review (recomposition epics)** below governs your entry
@@ -276,8 +327,8 @@ substance and route.
   describing the scope fork instead — board writes are skipped.
 - LOG — valid non-blocker: append a
   structured comment to the standing tech-debt issue
-  (gh issue comment {{TECH_DEBT_ISSUE}}) — finding, file:line, severity,
-  why deferred. When TECH_DEBT_ISSUE is "none", write these into the
+  ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
+  file:line, severity, why deferred. When TECH_DEBT_ISSUE is "none", write these into the
   review-trail comment's deferred-findings section instead.
 - INVALID — assigned only by grading a fixer's REFUTED disposition; you
   never refute from the finding text alone. The rebuttal comment on the

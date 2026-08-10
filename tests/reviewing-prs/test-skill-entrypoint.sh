@@ -151,7 +151,10 @@ assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 
 echo "runtime skill — placeholder set:"
-want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+# MANIFEST_REF is the API binding's addition: dispatch there cannot know the
+# PR's base, so it names the ref the two manifest snapshots were taken from and
+# the worker re-reads them when the base it resolves turns out to differ.
+want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -283,7 +286,9 @@ assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds t
 assert_contains "$BOOTSTRAP" "SCALE REVIEWER of recomposition epic" "bootstrap carries the scale variant's own opening"
 assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
-want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+# ...plus TICKET_BODY_FILE, the api-mode block's assignment file: a claim
+# response is the only route a run has to its own ticket text.
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

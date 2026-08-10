@@ -22,10 +22,61 @@
 #   WARN close candidate: open issue whose linked PRs all merged/closed with
 #        at least one merged (skips in-progress/in-review — mid-flight tickets
 #        legitimately have a part-1 PR merged). Verify & close, or re-scope.
+#
+# API mode drops every check above (the server enforces the schema at the write)
+# and keeps one the server cannot make: a local daemon still bound to a ticket
+# the board has closed or never had.
+#
+#   FAIL daemon <uuid> bound to closed/absent ticket #<n>
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
+
+# API mode collapses nearly all of the above: the board schema is a server
+# invariant there (labels, note requirements, cycles and priority grades are
+# enforced at the write, not repaired after the fact), so re-checking it from a
+# client would only ever report the client's own misreading. What survives is
+# the one thing no server can see — the LOCAL daemon registry drifting away
+# from the board: a daemon still bound to a ticket the board has closed or
+# never had.
+if [ "$BOARD_BINDING" = api ]; then
+  echo "# board schema is server-enforced in API mode; checking local registry drift only"
+  T_DHOME="$DAEMON_HOME" _api_py - <<'PY'
+import glob
+import json
+import os
+import _board_api as A
+
+# int() on the server's id, not a bare take: this is the one comparison in the
+# check, and the local side of it is parsed out of a registry file as text. A
+# type mismatch here would silently match nothing and report a clean board.
+open_ids = {int(t["id"]) for t in A.tickets(principal="automation")
+            if t["state"] not in ("done", "wontfix")}
+fails = 0
+for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        with open(p) as f:
+            m = json.load(f)
+    except (ValueError, OSError):
+        continue
+    tid = str(m.get("ticket", "")).lstrip("#")
+    # run_id is the API-era binding (board-bind.sh writes it): a meta without
+    # one predates the binding or names no run, and has no board claim to drift
+    # from. A non-numeric `ticket` is registry garbage, not board drift.
+    if not tid.isdigit() or not m.get("run_id"):
+        continue
+    if int(tid) not in open_ids:
+        print("FAIL daemon %s bound to closed/absent ticket #%s FIX: daemon-retire"
+              % (m.get("uuid", "?")[:8], tid))
+        fails += 1
+print("board-lint: %d open ticket(s), %d FAIL" % (len(open_ids), fails))
+raise SystemExit(1 if fails else 0)
+PY
+  exit $?
+fi
 
 _py - <<'PY'
 import _board as B

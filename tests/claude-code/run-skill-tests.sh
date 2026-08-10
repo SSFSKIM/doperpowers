@@ -59,6 +59,8 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Tests:"
             echo "  test-subagent-driven-development.sh  Test skill loading and requirements"
+            echo "  board-api/test-*.sh                  A2 board-API toolkit suites (fixture mock)"
+            echo "  board-api/integration/test-*.sh      A2 vs. a real A1 service (needs \$ARKHO_DIR)"
             echo ""
             echo "Integration Tests (use --integration):"
             echo "  test-subagent-driven-development-integration.sh  Full workflow execution"
@@ -77,6 +79,36 @@ tests=(
     "test-worktree-path-policy.sh"
     "test-sdd-workspace.sh"
     "test-subagent-driven-development.sh"
+    # board-api (A2): hermetic and fast — every suite below drives the toolkit's
+    # verbs against the fixture mock in board-api/mock-server.py, no network and
+    # no gh. They ran only by hand until this list picked them up.
+    "board-api/test-binding.sh"
+    "board-api/test-client-core.sh"
+    "board-api/test-read-verbs.sh"
+    "board-api/test-register-transition.sh"
+    "board-api/test-comment.sh"
+    "board-api/test-answer.sh"
+    "board-api/test-bind.sh"
+    "board-api/test-dispatch-claim.sh"
+    "board-api/test-review-dispatch-claim.sh"
+    "board-api/test-sweep-renew-relay.sh"
+    "board-api/test-sweep-resume.sh"
+    # The integration tier carries its OWN gate rather than living under
+    # --integration: it needs $ARKHO_DIR plus a container runtime for the
+    # scratch Postgres, and skips loudly (exit 0) when either is missing. On a
+    # machine that has them the smoke test is ~20s and the five fast drills are
+    # ~30s each — each boots and tears down its own scratch database, so they
+    # are independent in any order. test-lease-renewal.sh is the outlier at
+    # ~4 minutes: its subject IS the clock (A1's write-freshness window is 120s
+    # and not configurable), so it cannot be made shorter without ceasing to
+    # drill what it drills.
+    "board-api/integration/test-harness-smoke.sh"
+    "board-api/integration/test-protocol-walk.sh"
+    "board-api/integration/test-transcript-diff.sh"
+    "board-api/integration/test-crash-boundaries.sh"
+    "board-api/integration/test-resume-first.sh"
+    "board-api/integration/test-escalation.sh"
+    "board-api/integration/test-lease-renewal.sh"
 )
 
 # Integration tests (slow, full execution)
@@ -145,6 +177,10 @@ for test in "${tests[@]}"; do
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "  [PASS] (${duration}s)"
+            # A gated tier that skipped exits 0 like a pass. Non-verbose mode
+            # captures output and only prints it on failure, which would turn
+            # every skip into a silent pass — so surface the reason it printed.
+            grep '^SKIP' <<<"$output" | sed 's/^/    /' || true
             passed=$((passed + 1))
         else
             exit_code=$?

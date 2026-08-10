@@ -12,6 +12,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
+# No API-mode counterpart yet (A1 route gap), so refuse rather than silently
+# writing through a gh path that a board-API repo does not have.
+_refuse_no_api_route "recording a relates-to link"
+
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 a="$1" b="$2"
 shift 2

@@ -65,15 +65,363 @@ CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is not a git repo: $LOCAL_REPO"
 # Bare board-script calls anchor _lib.sh's BOARD_ROOT on the CURRENT directory
 # and die at source time when it is not a checkout. Our own git calls use
 # `git -C`, so cwd would otherwise never be corrected. Every path above is
-# already absolute, so this is safe to do here.
+# already absolute, so this is safe to do here. It is also what makes the
+# binding resolution below read the TARGET repo's board.json rather than
+# whatever checkout the operator happened to invoke us from.
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
+
+# THE BINDING IS RESOLVED BEFORE THE gh PROBE. An api-bound repo never invokes
+# gh at all, so requiring the CLI before knowing the binding would make the
+# whole API path unreachable on a machine that has no gh. Everything above is
+# mode-independent; the gh-mode half starts below the api branch.
+# shellcheck source=../../issue-tracker/scripts/_binding.sh
+. "$BOARD_SCRIPTS/_binding.sh"
+
+# The uuid daemon-spawn --no-wait prints, from its banner line:
+#   daemon spawned (no-wait): <name>  [<short> / <uuid>]  status=working
+# Both dispatch paths hand that uuid to board-bind, so both parse it here.
+extract_spawn_uuid() { sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1; }
+
+# Render the worker bootstrap from the P_* variables in scope (P_FOO fills
+# {{FOO}}); an unrendered placeholder is a hard error, never a prompt shipped
+# with a hole in it. The template carries one api-only region: under the API
+# binding the claim DELIVERS the assignment as a file, which gh mode has no
+# equivalent for, so that block is dropped there rather than rendered with a
+# value nothing could satisfy.
+_render_bootstrap() {
+  P_BINDING="$BOARD_BINDING" python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
+import os, re, sys
+t = open(sys.argv[1]).read()
+keep = os.environ.get("P_BINDING") == "api"
+t = re.sub(r"(?s)<!-- api-only[^>]*-->\n(.*?)<!-- /api-only -->\n",
+           lambda m: m.group(1) if keep else "", t)
+subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
+out = re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), m.group(0)), t)
+left = sorted(set(re.findall(r"\{\{[A-Z_]+\}\}", out)))
+if left:
+    sys.stderr.write("unrendered placeholder(s): %s\n" % " ".join(left))
+    sys.exit(1)
+print(out)
+PY
+}
+
+# ---- API binding: claim-based dispatch -----------------------------------------
+# The SERVER owns pick order, eligibility and the lease; this side owns local
+# concurrency, the crash-recoverable claim journal, and the worker handover.
+# There is no board snapshot here and no gh call anywhere below.
+#
+# The journal and its reconciliation are SHARED with review-dispatch (they were
+# verbatim copies): _claim_journal.sh owns both, and this side supplies the
+# lanes, the per-lane cap and the journal-drop.
+CLAIM_LANES=architect,implementer,spike
+_claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
+_claim_drop_journal() {  # <nonce>
+  rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
+}
+_claim_retire_worker() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
+# shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
+. "$BOARD_SCRIPTS/_claim_journal.sh"
+
+# The sweep's tick deadline, when it set one. A single budget check ahead of
+# the whole dispatch phase admitted every loop below in full — and, on the
+# review side, a barrier wait per candidate — inside the sweep's global lock,
+# so a tick with one second left could spend minutes more. Checked before each
+# FRESH claim; a replay from reconciliation is recovery, not new work, and is
+# never gated. Absent or unparseable = no gate: a direct --sweep and the
+# by-name `dispatch` phase are their own tick with their own clock.
+_tick_deadline_left() {
+  case "${BOARD_TICK_DEADLINE:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(date +%s)" -lt "$BOARD_TICK_DEADLINE" ]
+}
+
+# Open workers in a lane-set, counted off the registry: the local cap. A
+# just-claimed worker's meta exists long before the board could show its first
+# write, which is the same window the gh path's registry-first rule closes.
+_api_registry_count() {  # <lane[,lane...]>
+  T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
+import glob, json, os
+lanes = set(os.environ["T_LANES"].split(","))
+n = 0
+for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
+    # the server has since ended (the sweep strips run_id from such a meta and
+    # deliberately keeps the lane, which is what a successor inherits), so a
+    # normally finished worker held a dispatch slot forever.
+    if (m.get("run_id") and m.get("lane") in lanes
+            and m.get("status") in ("working", "blocked", "idle")):
+        n += 1
+print(n)
+PY
+}
+
+# The sweep's resume phase suppresses a ticket it has escalated to an env-issue
+# (it writes these files; we only read them). A claim is the only way to learn
+# WHICH ticket the server picked, so suppression can only be honored after the
+# fact — by handing the run straight back.
+_api_suppressed() { [ -f "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}/$1.json" ]; }
+
+_api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
+  T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
+import os
+import _board_api as A
+try:
+    A.end_run(os.environ["T_RUN"], os.environ["T_REASON"])
+except A.RunEnded:
+    pass
+PY
+}
+
+# Claim one ticket on <lane> under <nonce> and hand it to a fresh worker.
+#   rc 0  claimed and handed off
+#   rc 1  nothing dispatched and NOTHING IS OUTSTANDING — the lane was empty,
+#         the claim was refused, the ticket is suppressed, or the handover
+#         failed and its run was released. Another lane may be tried.
+#   rc 2  the claim may have LANDED and its journal is kept for replay. No
+#         further claim may be made this tick: reconciliation owns the replay,
+#         and a second lane claimed now would run beside the replayed one,
+#         over the combined cap.
+_claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
+  local lane="$1" nonce="$2" cap="$3" claims_dir="$DAEMON_HOME/board-claims"
+  local body_file="$claims_dir/$nonce.body.md" exports
+  mkdir -p "$claims_dir"
+  # The nonce is journalled BEFORE the POST. A crash between the two leaves a
+  # record reconciliation can replay, and the server answers a repeated nonce
+  # with the same claim rather than a second one.
+  _journal_write "$claims_dir/$nonce.json" "$lane" '' 0
+  # One process for the whole exchange (the _ticket_exports idiom above):
+  # claim, write the assignment body, hand back shell-quoted facts. The run
+  # bearer crosses exactly one boundary.
+  local C_CLAIMED=0 C_RUN_ID="" C_TICKET="" C_FENCE="" C_BEARER="" C_PARENT_PIN=""
+  exports="$(T_LANE="$lane" T_NONCE="$nonce" T_CAP="$cap" T_BODY="$body_file" _api_py - <<'PY'
+import os, shlex
+import _board_api as A
+out = A.claim(os.environ["T_LANE"], os.environ["T_NONCE"],
+              lane_cap=int(os.environ["T_CAP"]))
+def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
+# An empty lane answers {"claimed": false}; a grant answers with the run. Any
+# other falsy value for that key is read as "no claim" — when bytes from a
+# foreign process are ambiguous, the safe direction is not to spawn.
+# (Apostrophes are avoided in this heredoc on purpose: bash 3.2 rescans a
+# heredoc body nested in $( ) for quoting, and a lone one is a parse error.)
+if not out.get("claimed", True):
+    q("C_CLAIMED", 0)
+    raise SystemExit(0)
+fields = (("C_RUN_ID", "runId"), ("C_TICKET", "ticketId"),
+          ("C_FENCE", "fence"), ("C_BEARER", "bearer"))
+missing = [f for _, f in fields if f not in out]
+if missing:
+    # Never echo the payload back: it carries the run bearer.
+    A.die("claim answered without %s — the run cannot be handed to a worker"
+          % ", ".join(missing))
+q("C_CLAIMED", 1)
+for var, field in fields:
+    q(var, out[field])
+# The parent-contract window this claim was cut against: A1 answers
+# `{"parent_id": N, "parent_event_cursor": C}` (or null) and stores it on the
+# run. It is the run-specific cursor the recomposing Architect needs, and no
+# read a worker may make hands it over — so it travels with the dispatch or
+# not at all. Flattened to one line; there is nothing to parse downstream.
+pin = out.get("parentPin") or {}
+q("C_PARENT_PIN",
+  "#%s @ event %s" % (pin.get("parent_id"), pin.get("parent_event_cursor"))
+  if pin.get("parent_id") is not None else "")
+with open(os.environ["T_BODY"], "w") as f:
+    f.write(out.get("body") or "")
+PY
+)" || {
+    # The journal STAYS: a claim that died on the wire may still have landed,
+    # and the replay is the only thing that can recover it. A permanently
+    # refused claim retries once per tick, loudly, which is the cheaper side
+    # of this trade than silently dropping a granted run's only record.
+    echo "claim on lane $lane failed — journal $nonce kept for replay" >&2
+    return 2
+  }
+  eval "$exports"
+  if [ "$C_CLAIMED" != 1 ]; then
+    rm -f "$claims_dir/$nonce.json" "$body_file"
+    return 1
+  fi
+  if _api_suppressed "$C_TICKET"; then
+    # This BLOCKS the lane for the tick — head-of-line, not a skip. The server
+    # picks; we can only refuse what it handed us, so the suppressed ticket is
+    # still the head of that lane on the next claim and every ticket behind it
+    # waits. Server-side suppression (a claim that never offers the ticket) is
+    # the real fix — recorded on arkho#7.
+    echo "#$C_TICKET is suppressed — releasing run $C_RUN_ID; lane $lane stands down this tick"
+    _api_end_run "$C_RUN_ID" abandoned
+    rm -f "$claims_dir/$nonce.json" "$body_file"
+    return 1
+  fi
+
+  local role protocol_file decompose model name prompt spawn_out uuid
+  case "$lane" in
+    architect)  role=ARCHITECT; protocol_file="$ARCHITECT_PROTOCOL"; decompose="$DECOMPOSE_DOC"
+                model="${ARCHITECT_MODEL:-fable}" ;;
+    spike)      role=SPIKE;     protocol_file="$SPIKE_PROTOCOL";     decompose="(none — spike lane)"
+                model="${IMPLEMENT_MODEL:-opus}" ;;
+    *)          role=IMPLEMENT; protocol_file="$IMPLEMENT_PROTOCOL"; decompose="$DECOMPOSE_DOC"
+                model="${IMPLEMENT_MODEL:-opus}" ;;
+  esac
+  name="$C_TICKET-api-$lane"
+  # Ticket and daemon name are journalled BEFORE the spawn, not after it. The
+  # run id reaches a registry meta only through board-bind, which runs at the
+  # END of the handover — so a crash anywhere in the spawn (the uuid poll is
+  # seconds wide, and the session is already detached and surviving) leaves a
+  # journal with a run id that no meta knows, indistinguishable from a run that
+  # never spawned at all. The daemon name is the only evidence of that session
+  # that exists before the bind, and reconciliation needs it to tell "never
+  # spawned" from "spawned, live, unbound".
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name"
+  # ENGINE_NAME is claude here and the engine label plays no part: a claim
+  # response carries the assignment, not the ticket's labels, so there is
+  # nothing to route on. ENV_TRACKER_ISSUE is "none" for the same reason —
+  # the API board has no env-tracker label, and an env-issue ticket is
+  # registered by the sweep, not pointed at from here.
+  prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
+    P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
+    P_REPO="$(basename "$BOARD_ROOT")" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_ENV_TRACKER_ISSUE=none P_ENGINE_NAME=claude \
+    P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
+    P_TICKET_BODY_FILE="$body_file" P_PARENT_PIN="${C_PARENT_PIN:-none (no parent)}" \
+    _render_bootstrap)" \
+    || { echo "#$C_TICKET: prompt render failed — releasing run $C_RUN_ID" >&2
+         _api_end_run "$C_RUN_ID" abandoned
+         rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
+
+  # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the same reason as the gh path's
+  # claude route: this dispatcher can itself run inside a gateway-routed
+  # daemon, and daemon-spawn persists what it inherits into the registry meta,
+  # so every later resume would ride the gateway while the log said claude.
+  spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
+    BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+    DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
+    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
+    "$model")" \
+    || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
+         _api_end_run "$C_RUN_ID" abandoned
+         rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
+  printf '%s\n' "$spawn_out"
+  uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
+  [ -n "$uuid" ] || { echo "#$C_TICKET: spawned worker UUID was not parseable — releasing run $C_RUN_ID (a session may be orphaned)" >&2
+                      _api_end_run "$C_RUN_ID" abandoned
+                      rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
+  # The bearer goes to board-bind so it lands in the meta at 0600: the sweep's
+  # renew/relay/resume phases read it back out of there, and a worker whose
+  # bearer was never stored can never be spoken for again.
+  BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
+    "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$C_TICKET" \
+    || { echo "#$C_TICKET: bind failed — retiring the worker and releasing run $C_RUN_ID" >&2
+         "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
+         _api_end_run "$C_RUN_ID" abandoned
+         rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
+  # THE HANDOFF IS DONE ONLY NOW: the journal may no longer be replayed, only
+  # observed. Marked before the bind, a crash in that window left a journal
+  # saying "handed off" over a meta holding no run credential and no locator —
+  # reconciliation skipped it (its whole point is the unbound-but-live case),
+  # nothing renewed the lease, and after the server reclaimed it the still
+  # running worker overlapped its replacement.
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 1 "$C_TICKET" "$name"
+
+  # Lane, role, nonce and the parent pin into the registry meta: the lane is
+  # what the cap above counts, the role is what a lane-aware resume reads back,
+  # the nonce is the link from a live worker to the journal entry that made it,
+  # and the pin is the parent-contract window the claim handed this run.
+  T_UUID="$uuid" T_LANE="$lane" T_ROLE="$role" T_NONCE="$nonce" \
+  T_PARENT_PIN="$C_PARENT_PIN" T_DHOME="$DAEMON_HOME" \
+  python3 - <<'PY' || echo "#$C_TICKET: lane meta write failed (non-fatal)" >&2
+import fcntl, json, os
+home = os.environ["T_DHOME"]
+path = os.path.join(home, os.environ["T_UUID"] + ".json")
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    with open(path) as f:
+        m = json.load(f)
+    m["lane"] = os.environ["T_LANE"]
+    m["role"] = os.environ["T_ROLE"]
+    m["nonce"] = os.environ["T_NONCE"]
+    if os.environ.get("T_PARENT_PIN"):
+        m["parent_pin"] = os.environ["T_PARENT_PIN"]
+    tmp = path + ".tmp"
+    # The meta already holds the run bearer (board-bind wrote it): recreate it
+    # at the mode it has, never at the umask's.
+    mode = os.stat(path).st_mode & 0o777
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+  echo "claimed #$C_TICKET run=$C_RUN_ID lane=$lane → $uuid"
+}
+
+# A FRESH claim on <lane> — the only claims the tick deadline gates, and the
+# only ones that mint a nonce. Both refusals here are rc 2: nothing was
+# claimed, but neither is a reason to try the next lane instead.
+_claim_one() {  # <lane> <lane-cap>
+  local nonce
+  _tick_deadline_left \
+    || { echo "dispatch: the sweep tick deadline has passed — lane $1 takes no fresh claim this tick"; return 2; }
+  nonce="$(_claim_nonce)" || return 2
+  _claim_one_with_nonce "$1" "$nonce" "$2"
+}
+
+dispatch_api() {
+  local rc
+  mkdir -p "$DAEMON_HOME/board-claims"
+  _reconcile_claims
+  # Local cap first (the registry), the server's laneCap as the belt: if a
+  # lane stamp is ever lost the count cannot rise, and laneCap is then the
+  # only thing that ends the loop.
+  while [ "$(_api_registry_count architect)" -lt "$ARCH_CAP" ]; do
+    _claim_one architect "$ARCH_CAP" || break
+  done
+  while [ "$(_api_registry_count implementer,spike)" -lt "$CAP" ]; do
+    rc=0; _claim_one implementer "$CAP" || rc=$?
+    case "$rc" in
+      0) : ;;
+      # ONLY A CLEAN REFUSAL FALLS THROUGH TO SPIKE. rc 2 says the implementer
+      # claim may have landed and is journalled for replay — claiming a spike
+      # now would put its worker beside the replayed implementer, over the
+      # combined cap this loop exists to hold.
+      1) _claim_one spike "$CAP" || break ;;
+      *) break ;;
+    esac
+  done
+}
+
+if [ "$BOARD_BINDING" = api ]; then
+  # DISPATCH IS AUTOMATION, FULL STOP — the doctrine block at the head of
+  # _sweep_api.sh applies verbatim here. _board_api.token() hands back an
+  # ambient BOARD_RUN_TOKEN for whatever principal is asked, so a --sweep run
+  # straight out of a worker shell would claim, and end runs, as that worker.
+  # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
+  # after this, and are unaffected. This is the automation route only: no
+  # human-route verb is touched.
+  unset BOARD_RUN_TOKEN
+  case "${1:-}" in
+    --sweep) dispatch_api; exit 0 ;;
+    ''|--*)  die "usage: implement-dispatch.sh <issue-number> | --sweep" ;;
+    *) die "API-mode dispatch is claim-based — the server owns pick order, and the contract has no claim-by-ticket route; use --sweep. Targeted claim is a flow-back candidate recorded on arkho#7 (spec Revision Notes v1.2)." ;;
+  esac
+fi
+
+# ---- gh binding ----------------------------------------------------------------
+command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
 
 if [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
@@ -324,18 +672,8 @@ PY
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_ENGINE_NAME="$engine" P_PROTOCOL_FILE="$protocol_file" \
     P_DECOMPOSE_DOC="$decompose" \
-    python3 - "$BOOTSTRAP_TEMPLATE" <<'PY'
-import os, re, sys
-t = open(sys.argv[1]).read()
-subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
-out = re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), m.group(0)), t)
-left = sorted(set(re.findall(r"\{\{[A-Z_]+\}\}", out)))
-if left:
-    sys.stderr.write("unrendered placeholder(s): %s\n" % " ".join(left))
-    sys.exit(1)
-print(out)
-PY
-)" || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; return 1; }
+    _render_bootstrap)" \
+    || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; return 1; }
   [ -n "$prompt" ] || { echo "#$n: empty prompt — not dispatching" >&2; return 1; }
 
   name="$n-$T_SLUG"
@@ -362,7 +700,7 @@ PY
       || { echo "#$n: worker spawn failed" >&2; return 1; }
   fi
   printf '%s\n' "$spawn_out"
-  uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+  uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
   [ -n "$uuid" ] || { echo "#$n: spawned worker UUID was not parseable" >&2; return 1; }
 
   local try=1 bound=""

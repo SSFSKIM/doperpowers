@@ -84,6 +84,18 @@ export LOCAL_REPO
 # would stamp its at-most-once guard and then lose the answer the same
 # way). Run the whole tick from the consumer repo.
 cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exit 1; }
+
+# THE BINDING IS RESOLVED BEFORE THE gh PROBE, as in the lane dispatchers: an
+# api-bound repo runs an entirely different tick (four phases against the board
+# API, gh never invoked), so resolving BOARD_REPO through gh first would make
+# that tick unreachable on a machine without the CLI. It sits AFTER the cd for
+# the same reason the cd exists: _binding.sh reads .doperpowers/board.json from
+# the git root of the CURRENT directory, and under launchd/cron the invocation
+# cwd is not a repo at all.
+# shellcheck source=_binding.sh
+. "$SCRIPT_DIR/_binding.sh" || exit 1
+if [ "$BOARD_BINDING" = api ]; then exec "$SCRIPT_DIR/_sweep_api.sh" all; fi
+
 IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scripts/implement-dispatch.sh}"
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
 BOARD_ANSWER_CMD="${BOARD_ANSWER_CMD:-$SCRIPT_DIR/board-answer.sh}"
@@ -170,8 +182,16 @@ m = json.load(open(p))
 kv = os.environ["M_KV"].splitlines()
 for k, v in zip(kv[0::2], kv[1::2]):
     m[k] = v
+# A meta holding the run bearer is 0600 from creation — recreating it at the
+# default umask would republish that secret, if only for the width of one
+# write. Any other meta keeps the mode it already had. (Today the api tick
+# execs away before this helper is reachable, so no bearer meta arrives here;
+# the guard costs two lines and does not depend on that staying true.)
+mode = 0o600 if m.get("run_bearer") else os.stat(p).st_mode & 0o777
 tmp = p + ".tmp"
-json.dump(m, open(tmp, "w"), indent=2)
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+    json.dump(m, f, indent=2)
+os.chmod(tmp, mode)   # umask narrowing, and a tmp left by an earlier crash
 os.replace(tmp, p)
 PY
 }

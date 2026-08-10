@@ -13,6 +13,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
+# No API-mode counterpart yet (A1 route gap), so refuse rather than silently
+# writing through a gh path that a board-API repo does not have.
+_refuse_no_api_route "changing a ticket's priority"
+
 [ $# -eq 2 ] || { usage_from_header "$0" >&2; exit 2; }
 
 T_ID="$1" T_P="$2" _py - <<'PY'

@@ -29,6 +29,17 @@
 # dim dashed one a satisfied dependency; labeled dashed lines carry
 # spawned/relates lineage; each epic is a labeled box around its members
 # (click the epic's card to collapse).
+#
+# API mode renders the same two files from a thinner snapshot: the v1 ticket
+# payload carries no blocked-by edges, no PR linkage and no timestamps. Every
+# class the renderer draws as a LINE (blocked-by, spawned, relates) is empty
+# there, so BOARD.html draws no edges at all and no arrow classes appear; the
+# only structure left is parenthood, which was never a line to begin with — it
+# renders as a labeled epic box around the members. The ELIGIBLE cue degrades to
+# lane state (epics still take their recomposition carve-out; the
+# reconciliation-due half of it cannot fire, since v1 exposes no note). BOARD.md
+# says all of that in a line above the table rather than letting an edge-free
+# graph pass for "nothing blocks anything".
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -76,14 +87,53 @@ fi
 # One python pass per call: it always prints the fallback table to stdout, and
 # on --write it also writes BOARD.md and renders BOARD.html — the table and the
 # graph share the single board snapshot (one fetch, not two).
+# _api_py rather than _py: it is _py plus the two repo-scoped, deliberately
+# unexported binding values (BOARD_API_URL, BOARD_CREDENTIALS_FILE) the API
+# branch below needs inside python. In gh mode they are empty and unread, so
+# one runner serves both bindings and the render stays a single pass.
 BOARD_DIR="$BOARD_DIR" BOARD_TEMPLATE="$SCRIPT_DIR/board-map.template.html" \
-BOARD_WRITE="$write" _py - <<'PY'
+BOARD_WRITE="$write" _api_py - <<'PY'
 import json
 import os
 import _board as B
 
 env = os.environ
-tickets = B.snapshot()
+API = env.get("BOARD_BINDING") == "api"
+
+
+def api_snapshot():
+    """GET /tickets, normalized to the node shape the renderer below consumes.
+
+    The API's v1 ticket payload is a strict subset of the gh snapshot: no
+    blocked-by edges, no GitHub PR linkage, no issue URL, no timestamps. Those
+    fields normalize to empty rather than absent, so every derivation downstream
+    (B.eligible, the layering, the epic boxes) runs unchanged on either source —
+    the binding branch is this function and nothing else. All three drawn edge
+    classes (blocked_by, spawned_by, relates_to) are empty here, so BOARD.html
+    contains no edges at all; parenthood survives, but it renders as an epic BOX
+    around the members, not as a line. The ELIGIBLE cue degrades to "in a lane
+    state"; the table says so out loud rather than letting an edge-free graph
+    pass for "nothing blocks anything".
+    """
+    import _board_api as A
+    out = {}
+    for row in A.tickets(principal="automation"):
+        out[str(row["id"])] = {
+            "title": row.get("title") or "",
+            "state": row.get("state") or "",
+            "priority": row.get("priority"),
+            "category": row.get("category"),
+            "note": row.get("note"),
+            "parent": str(row["parent"]) if row.get("parent") else None,
+            "blocked_by": [], "spawned_by": None, "relates_to": [],
+            "branch": None, "pr": row.get("pr_url"), "prs": [],
+            "close_candidate": False, "url": None,
+            "created": "", "updated": "",
+        }
+    return out
+
+
+tickets = api_snapshot() if API else B.snapshot()
 
 def num(t): return int(t)
 order = sorted(tickets, key=num)
@@ -105,10 +155,20 @@ def state_label(tid, n):
 updated = max((n.get("updated") or "" for n in tickets.values()), default="")
 
 # The fallback table: stdout always; BOARD.md on --write.
+# API v1 carries no timestamps, so `updated` is empty there — the clause drops
+# out entirely rather than rendering "Board updated  · N tickets".
+stamp = "updated %s · " % updated if updated else "· "
 md = ["# Issue Board", "",
-      "_Board updated %s · %d tickets · full interactive graph in "
-      "`BOARD.html` (open in a browser)_" % (updated, len(tickets)), "",
-      "| ticket | priority | state | title | PR |", "|---|---|---|---|---|"]
+      "_Board %s%d tickets · full interactive graph in "
+      "`BOARD.html` (open in a browser)_" % (stamp, len(tickets)), ""]
+if API:
+    md += ["_blocked-by: (not exposed by API v1) — the graph draws no edges at "
+           "all; parenthood is the only structure left and it shows as an epic "
+           "box around the members, not as a line. ELIGIBLE reflects lane state "
+           "alone (the server owns the pick), except that an epic still takes "
+           "its recomposition carve-out; the reconciliation-due half of that "
+           "carve-out is dead here, since API v1 exposes no note field._", ""]
+md += ["| ticket | priority | state | title | PR |", "|---|---|---|---|---|"]
 for tid in order:
     n = tickets[tid]
     title = " ".join(str(n["title"]).split()).replace("|", "\\|")

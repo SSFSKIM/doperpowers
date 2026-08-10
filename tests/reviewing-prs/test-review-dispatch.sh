@@ -276,6 +276,19 @@ chmod +x "$STUB_BOARD/board-transition.sh"
 # in beside the stub: board-bind stays stubbed, the snapshot is genuine and
 # runs against the mock `gh` below.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
+# The dispatcher resolves its board BINDING before anything gh-mode-specific
+# (that is what makes the API path reachable without gh), and it sources that
+# resolver out of $BOARD_SCRIPTS — so the stub dir needs the real one. It is
+# side-effect-free and, with no .doperpowers/board.json in these fixtures,
+# resolves gh mode: every case below is the gh path, unchanged.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$STUB_BOARD/_binding.sh"
+# Same reason, same shape: the claim journal and its reconciliation were
+# verbatim copies in both dispatchers until _claim_journal.sh took ownership of
+# them, and this dispatcher sources it at TOP LEVEL — before any binding fork,
+# so the gh path needs it just as much as the API path does. Absent from the
+# stub dir, every case in this suite dies at the source line. Function
+# definitions only, no side effects at source time, exactly like _binding.sh.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$STUB_BOARD/_claim_journal.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
@@ -485,6 +498,14 @@ PY
 FAIL_BOARD="$TEST_ROOT/fail-board"; mkdir -p "$FAIL_BOARD"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_BOARD/board-bind.sh"
 chmod +x "$FAIL_BOARD/board-bind.sh"
+# Only the BIND fails here: the two files the dispatcher SOURCES out of this
+# same dir — the binding resolver and the claim journal — would otherwise abort
+# the run before a reviewer was ever spawned, and the assertions below are
+# about what happens to a spawned one. A dir that fails everything would still
+# make the dispatch fail, but for the wrong reason, and the retire it is
+# checking for would never be reached.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$FAIL_BOARD/_binding.sh"
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$FAIL_BOARD/_claim_journal.sh"
 reset_state
 if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
     fail "bind failure aborts review dispatch"
@@ -1343,6 +1364,18 @@ else
 fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
 assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
+
+: > "$SPAWN_LOG"
+gh_pr 43 OPEN 0 "engine:claude"
+# The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
+# itself be running inside a gateway-routed daemon whose environment exports
+# these, daemon-spawn would inherit them AND persist them into the registry
+# meta, and every later resume of this reviewer would ride the gateway while
+# the log said claude.
+DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
+    run_dispatch 43
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on the claude route"
+assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient gateway settings file never reaches the spawned reviewer"
 
 # The built-in default (no label, no WORKER_ENGINE in the environment) is the
 # plain-Claude route — the clodex gateway is opt-in only.
