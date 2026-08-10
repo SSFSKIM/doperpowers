@@ -110,7 +110,25 @@ LOCK="$DAEMON_HOME/.sweep-api.lock"
 # TZ would compare two spellings of the same instant and call them different
 # processes. Both sides go through this one function, and it pins both knobs, so
 # the token means the same thing to every writer and every reader.
-_proc_start() { LC_ALL=C TZ=UTC ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true; }
+#
+# AND THE TOKEN SAYS WHICH RENDERING IT IS. Pinning the format only settles
+# locks written after the pin; the sweep holding the lock during the upgrade
+# ITSELF wrote a bare `lstart` under whatever it inherited, and comparing that
+# against a C/UTC rendering of the same live process says "different process" —
+# so the upgrade would rob a live owner the moment its lock aged past stale,
+# causing the very double delivery this lock prevents. The version prefix is
+# what lets a reader tell a token it can compare from one it cannot; anything
+# else is UNKNOWN, and unknown keeps the owner (see _owner_live). Bump it
+# whenever the rendering below changes, and old locks degrade instead of lying.
+_START_FMT=c1
+_proc_start() {
+  local s
+  s="$(LC_ALL=C TZ=UTC ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" || true
+  # No answer at all is not an empty token, it is NO token: printing a bare
+  # prefix here would hand _owner_live a well-formed value meaning nothing.
+  [ -n "$s" ] || return 0
+  printf '%s:%s\n' "$_START_FMT" "$s"
+}
 _take_lock() {
   mkdir "$LOCK" 2>/dev/null || return 1
   printf '%s\n' "$$" > "$LOCK/owner"
@@ -121,19 +139,28 @@ _take_lock() {
 # no start time; there the pid answer is all the evidence there is, which is
 # exactly the behaviour it already had.
 #
-# THE START COMPARISON HAS THREE ANSWERS, NOT TWO, and the third one decides
-# which way this fails. `ps` can come back EMPTY — a lost race with the process
-# table, a form some later OS renders differently — and empty is not evidence
-# of death: `kill -0` has ALREADY said this pid answers. Compared as a plain
-# string, empty simply mismatches, so the lock is taken from a live owner and
-# two ticks interleave the sentinel check with its resume — the double delivery
-# this lock exists to prevent. An unreadable start is UNKNOWN, and unknown
-# keeps the owner: the age rule alone never overrides a live pid, and the cost
-# of holding is one skipped tick against a duplicated answer.
+# THE START COMPARISON HAS MORE THAN TWO ANSWERS, and the extra ones decide
+# which way this fails. A mismatch is the only thing that means "different
+# process"; every other shape means NOT KNOWN, and not-known keeps the owner,
+# because `kill -0` has ALREADY said this pid answers. Read as a mismatch
+# instead, each of them robs a live owner, and two ticks then interleave the
+# sentinel check with its resume — the double delivery this lock exists to
+# prevent. The age rule alone never overrides a live pid; the cost of holding
+# is one skipped tick, against a duplicated answer.
+#
+#   no recorded start   a lock written before this file existed. The pid answer
+#                       is all the evidence there is, exactly as it always was.
+#   a token this version cannot read   written by a sweep from before the
+#                       format was pinned and versioned, or by a NEWER one. It
+#                       may well be the same live process, spelled a way this
+#                       code cannot reproduce, so it is never grounds to steal.
+#   no current answer   `ps` printed nothing: a lost race with the process
+#                       table, a form some later OS renders differently.
 _owner_live() {  # <pid> <recorded start ('' = unknown)>
   local now
   kill -0 "$1" 2>/dev/null || return 1
   [ -n "$2" ] || return 0
+  case "$2" in "$_START_FMT":*) ;; *) return 0 ;; esac
   now="$(_proc_start "$1")"
   [ -n "$now" ] || return 0
   [ "$now" = "$2" ]

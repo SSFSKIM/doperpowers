@@ -476,16 +476,23 @@ lock_as() {  # lock_as <pid> <recorded start> — plant a lock and age it past s
   printf '%s\n' "$2" > "$LK/owner-start"
   touch -t 200001010000 "$LK"
 }
+# `lstart` is a RENDERED date — month and day names from the locale, clock from
+# the zone — so the token is written and read under a pinned C/UTC and carries
+# the FORMAT VERSION that pinning is. The prefix is spelled out here rather than
+# read from the script: this suite is where the on-disk format is pinned, and a
+# test that imported the constant would follow a silent change instead of
+# catching it.
+FMT=c1
+started_now() { printf '%s:%s' "$FMT" \
+  "$(LC_ALL=C TZ=UTC ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"; }
 # This test process is unquestionably alive, and its pid stands in for the
 # recycled one: the recorded start belongs to the sweep that died, not to it.
-lock_as "$$" "Thu Jan  1 00:00:00 2000"
+lock_as "$$" "$FMT:Thu Jan  1 00:00:00 2000"
 t  "a stale lock whose pid was recycled is stolen" \
    "stole a stale api sweep lock"                       SW renew
 # ...and the live-owner half still holds: same pid, and this time the start
-# time really is its own, so the lock is its and must not be taken. Recorded
-# the way _take_lock records it — `lstart` is a RENDERED date, so the locale
-# and the zone are pinned on both sides or the same process reads as two.
-lock_as "$$" "$(LC_ALL=C TZ=UTC ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
+# time really is its own, so the lock is its and must not be taken.
+lock_as "$$" "$(started_now)"
 t  "a live owner is never robbed, however old its lock" \
    "another api sweep holds the lock"                   SW renew
 # A lock from before the start file existed names no start: the pid answer is
@@ -505,10 +512,21 @@ cat > "$STUB/ps" <<'EOF'
 exit 0
 EOF
 chmod +x "$STUB/ps"
-lock_as "$$" "Thu Jan  1 00:00:00 2000"
+lock_as "$$" "$FMT:Thu Jan  1 00:00:00 2000"
 t  "an unreadable current start never steals from a live owner" \
    "another api sweep holds the lock"                   SW renew
 rm -f "$STUB/ps"
+# THE ROLLING UPGRADE. The sweep holding the lock right now may be the version
+# installed BEFORE the token was pinned and versioned: it recorded a bare
+# `lstart` under whatever locale and zone it inherited. Rendered here under C/
+# UTC that same live process compares unequal, and once its lock ages past
+# stale it is robbed mid-tick — the upgrade itself causing the double delivery.
+# A token this version cannot vouch for is UNKNOWN, exactly like an empty read.
+# Asia/Tokyo stands in for "whatever the old writer inherited" and is never
+# UTC, so this case does not quietly pass on a UTC machine.
+lock_as "$$" "$(TZ=Asia/Tokyo ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
+t  "a legacy unversioned token never steals from a live owner" \
+   "another api sweep holds the lock"                   SW renew
 rm -rf "$LK"
 
 # =========================================================================
