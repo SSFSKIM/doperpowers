@@ -325,12 +325,9 @@ they write against.
 ## The ticket body (pre-spec)
 
 Before registering, run the pre-registration search — and search by
-SEAM, not by title. The seam is the set of identifiers your ticket
-touches: file paths, function/RPC names, table names, contract names.
-Title-keyword search has already failed in production: a worker
-searched titles for its integration ticket, missed the sibling that
-owned the same work under different words, and the board carried two
-tickets for one job until an audit caught it. GitHub issue search hits
+SEAM: the identifiers your ticket touches (file paths, function/RPC
+names, table names). Title-keyword search may not be enough — different
+authors word the same work differently. GitHub issue search hits
 bodies, so query each seam identifier
 (`gh issue list --state open --search "<function-or-file-name>"`)
 — reads are quota-cheap; a duplicate ticket costs a worker dispatch.
