@@ -146,6 +146,17 @@ def main():
         save(s)
         return
 
+    if argv[:2] == ["pr", "view"]:
+        # `gh pr view <n> --json files` — the surface sweep/lint diff read.
+        # Files come from the state's optional "pr_files" map
+        # ({"<pr-number>": ["path", ...]}); an unlisted PR has no files,
+        # which is also what a just-opened empty PR answers.
+        if opt(argv, "--json") == "files":
+            files = (s.get("pr_files") or {}).get(argv[2], [])
+            print(json.dumps({"files": [{"path": p} for p in files]}))
+            return
+        die("unhandled pr view fields: %s" % " ".join(argv))
+
     if argv[:2] == ["issue", "view"]:
         it = issue(s, argv[2])
         if opt(argv, "--json") == "comments":

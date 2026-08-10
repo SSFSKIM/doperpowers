@@ -165,6 +165,76 @@ if [ "$before" = "$after" ]; then pass "T9: live mate's body untouched"; else
     fail "T9: live mate's body untouched"; echo "    body changed while worker live"; fi
 rm -f "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json"
 
+# ---- sweep SURFACE pass ----------------------------------------------------
+# The real board-sweep.sh with every other pass stubbed to no-ops; only the
+# SURFACE pass touches the mock board.
+SWEEP="$SCRIPTS_DIR/board-sweep.sh"
+sweep() {
+    (cd "$WORK" && IMPLEMENT_DISPATCH_CMD=true REVIEW_DISPATCH_CMD=true \
+        BOARD_ANSWER_CMD=true RECONCILE_CMD=true \
+        SWEEP_LOG="$TEST_ROOT/sweep.log" "$SWEEP" 2>&1)
+}
+
+# Park most of the cluster first: the queue-depth watch fires at >= 3 open
+# implement-lane members, and T16/T17 need the sweep to run BELOW that
+# threshold (T18 owns the trip). Parks are not implement-lane states.
+run board-transition.sh "$n3" needs-human "test park" >/dev/null
+run board-transition.sh "$n5" needs-human "test park" >/dev/null
+run board-transition.sh "$n6" needs-human "test park" >/dev/null
+
+# T16: PR-diff labeling is add-only (acceptance 4 + 5)
+echo "T16: sweep labels from the PR diff, add-only"
+printf 'no identifiers in this body\n' > "$body"
+out="$(run board-register.sh "diff-only ticket" bug P2 --body-file "$body")"
+n7="${out%% *}"
+python3 - "$n7" <<'PY'
+import json, os, sys
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+it = s["issues"][sys.argv[1]]
+it["xrefPRs"] = [{"number": 900, "url": "https://github.com/test/repo/pull/900",
+                  "state": "OPEN"}]
+s["pr_files"] = {"900": ["sql/p187_recommend_grade_axis.sql", "README.md"]}
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out16="$(sweep)"
+assert_contains "$out16" "SURFACE: #$n7 += surface:recommend-rpc (PR diff)" "T16: diff match reported"
+assert_contains "$(state "s['issues']['$n7']['labels']")" "surface:recommend-rpc" "T16: label landed from the diff"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["pr_files"] = {"900": ["tests/only.test.ts"]}   # early-WIP shape: no match
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(sweep)"
+assert_contains "$(state "s['issues']['$n7']['labels']")" "surface:recommend-rpc" \
+  "T16: a no-longer-matching diff never REMOVES the label (add-only)"
+
+# T17: relates backstop between label-mates — a diff-labeled ticket had no
+# register-moment relate, so the SAME sweep that labeled it wires the edges.
+echo "T17: sweep adds the deferred relates edge"
+assert_contains "$out16" "SURFACE: related #" "T17: sweep reports the retroactive edge"
+assert_contains "$(state "s['issues']['$n7']['body']")" "relates-to: " "T17: edge written on the diff-labeled side"
+
+# T18: queue-depth consolidation, exactly once (acceptance 6)
+echo "T18: queue-depth watch registers one consolidation ticket"
+printf 'recommend_for_student rewrite N\n' > "$body"
+out="$(run board-register.sh "네 번째 결함" bug P1 --body-file "$body")"; n8="${out%% *}"
+out="$(sweep)"
+assert_contains "$out" "SURFACE: consolidation #" "T18: consolidation registered at depth >= 3"
+count_mid="$(state "len(s['issues'])")"
+cons="$(state "max(int(k) for k in s['issues'])")"
+assert_contains "$(state "s['issues']['$cons']['labels']")" "status:ready-for-architect" "T18: consolidation born in the architect lane"
+assert_contains "$(state "s['issues']['$cons']['labels']")" "surface:recommend-rpc" "T18: consolidation carries the surface label (structural dedupe key)"
+out="$(sweep)"
+count_after="$(state "len(s['issues'])")"
+if [ "$count_mid" = "$count_after" ]; then pass "T18: second sweep registers nothing (dedupe holds)"; else
+    fail "T18: second sweep registers nothing (dedupe holds)"; echo "    issues grew $count_mid -> $count_after"; fi
+
+# T19: sweep is inert without a registry (acceptance 9)
+echo "T19: sweep SURFACE pass inert without a registry"
+out="$(SURFACES_REF=no-such-ref sweep)"
+assert_contains "$out" "SURFACE: no registry — skipped" "T19: pass reports the skip and does nothing"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "FAILED: $FAILURES of $ASSERTIONS assertions"

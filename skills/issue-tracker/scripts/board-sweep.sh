@@ -682,10 +682,131 @@ EOF
   log "[sweep] RELAY: $acted acted"
 }
 
+# SURFACE — the PR-diff matching moment (spec: surface topology). Ordered
+# BEFORE dispatch: a diff-derived label must exist before dispatch decisions
+# read it, or it always arrives one dispatch too late. Three jobs, all inert
+# without a .doperpowers/surfaces.md registry on the default branch:
+#   1. add-only labeling from open linked PR diffs (removal is never
+#      automatic — an early-WIP diff must not un-serialize a mid-flight
+#      ticket; stale labels are lint WARNs a human clears);
+#   2. retroactive relates edges between label-mates, only when NEITHER side
+#      has a live bound worker (update_meta is a full-body RMW), capped per
+#      tick — the remainder lands next tick;
+#   3. queue-depth watch: >= 3 open implement-lane tickets on one surface
+#      with no open architect-lane ticket carrying it → REGISTER a
+#      consolidation ticket (ready-for-architect) naming the members. The
+#      label on that ticket is the structural dedupe — its existence
+#      suppresses re-registration; no marker to drift.
+pass_surface() {
+  local line surface members bodyf out num
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      CONSOLIDATE\ *)
+        surface="$(printf '%s' "$line" | cut -d' ' -f2)"
+        members="$(printf '%s' "$line" | cut -d' ' -f3-)"
+        bodyf="$(mktemp)"
+        { printf '## Problem & intent\n\n'
+          printf 'The surface `%s` (see `.doperpowers/surfaces.md`) carries %s open implement-lane tickets: %s.\n' \
+            "$surface" "$(printf '%s\n' "$members" | wc -w | tr -d ' ')" "$members"
+          printf 'Three or more parallel tickets on one contested seam means patch-wise work has outgrown the seam — parallel rewrites of one body revert each other silently. This ticket owns the unified redesign: one contract, the members re-cut as its slices or closed.\n\n'
+          printf '## Constraints\n\n- Registered mechanically by the board sweep (queue-depth watch). The member list is the evidence; verify it against the live board before designing.\n\n'
+          printf '## Success criteria\n\n- A single contract for the surface exists and every member ticket is a slice of it or is closed with a reason.\n'
+        } > "$bodyf"
+        out="$("$SCRIPT_DIR/board-register.sh" "surface $surface: consolidation redesign (queue-depth auto)" \
+                enhancement P1 --state ready-for-architect --body-file "$bodyf" 2>&1)" \
+          && num="${out%% *}" \
+          && "$SCRIPT_DIR/board-surface.sh" "$num" --add "$surface" >/dev/null 2>&1 \
+          && log "[sweep] SURFACE: consolidation #$num registered for $surface (members: $members)" \
+          || log "[sweep] SURFACE: consolidation register failed for $surface"
+        rm -f "$bodyf"
+        ;;
+      *) log "$line" ;;
+    esac
+  done <<EOF
+$(BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+import json
+import os
+import sys
+sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
+import _board as B
+reg = B.surfaces_registry()
+if reg is None:
+    print("[sweep] SURFACE: no registry — skipped")
+    raise SystemExit(0)
+tickets = B.snapshot()
+live = B.live_bound_tickets()
+epics = {t for t in tickets if any(
+    tickets[c].get("parent") == t for c in tickets)}
+labeled = 0
+for tid in sorted(tickets, key=int):
+    n = tickets[tid]
+    if n["state"] in B.TERMINAL:
+        continue
+    open_prs = [p for p in n["prs"] if p["state"] == "OPEN"]
+    if not open_prs:
+        continue
+    paths = []
+    for p in open_prs:
+        try:
+            files = json.loads(B.gh(["pr", "view", str(p["num"]), "-R",
+                                     B.repo(), "--json", "files"]))
+        except SystemExit:
+            continue
+        paths += [f["path"] for f in files.get("files", [])]
+    for s in [x for x in B.match_paths(reg, paths) if x not in n["surfaces"]]:
+        B.ensure_surface_label(s)
+        B.edit_labels(tid, add=(B.SURFACE_PREFIX + s,))
+        n["surfaces"].append(s)
+        labeled += 1
+        print("[sweep] SURFACE: #%s += surface:%s (PR diff)" % (tid, s))
+# Retroactive relates between label-mates — the backstop for edges the
+# register moment deferred (live workers) or never saw (diff-derived
+# labels). Bounded per tick: body writes are the expensive, racy resource.
+writes = 0
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
+    mates = [t for t in tickets if s in tickets[t]["surfaces"]
+             and tickets[t]["state"] not in B.TERMINAL]
+    for i, a in enumerate(mates):
+        for b in mates[i + 1:]:
+            if writes >= 8:
+                break
+            if b in tickets[a]["relates_to"] or a in tickets[b]["relates_to"]:
+                continue
+            if a in live or b in live:
+                continue
+            B.update_meta(a, tickets[a], **{"relates-to": " ".join(
+                "#%s" % r for r in tickets[a]["relates_to"] + [b])})
+            tickets[a]["relates_to"].append(b)
+            B.update_meta(b, tickets[b], **{"relates-to": " ".join(
+                "#%s" % r for r in tickets[b]["relates_to"] + [a])})
+            tickets[b]["relates_to"].append(a)
+            writes += 1
+            print("[sweep] SURFACE: related #%s -- #%s (%s)" % (a, b, s))
+IMPL_STATES = ("ready-for-implementer", "in-progress", "in-review")
+ARCH_STATES = ("ready-for-architect", "in-design")
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
+    members = [t for t in sorted(tickets, key=int)
+               if s in tickets[t]["surfaces"]
+               and tickets[t]["state"] in IMPL_STATES
+               and tickets[t]["category"] != "spike" and t not in epics]
+    if len(members) < 3:
+        continue
+    if any(s in tickets[t]["surfaces"] and tickets[t]["state"] in ARCH_STATES
+           for t in tickets):
+        continue
+    print("CONSOLIDATE %s %s" % (s, " ".join("#%s" % m for m in members)))
+print("[sweep] SURFACE: %d labeled" % labeled)
+PY
+)
+EOF
+}
+
 pass_recover  || log "[sweep] RECOVER pass errored (continuing)"
 pass_cancel   || log "[sweep] CANCEL pass errored (continuing)"
 pass_finalize || log "[sweep] FINALIZE pass errored (continuing)"
 pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
+pass_surface  || log "[sweep] SURFACE pass errored (continuing)"
 "$IMPLEMENT_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] DISPATCH pass errored (continuing)"
 "$REVIEW_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
