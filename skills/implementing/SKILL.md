@@ -252,8 +252,13 @@ bullets. Omit the section entirely when nothing was.
 - A FOLLOW-UPS section: register every residual as a ticket (--spawned-by
 {{ISSUE_NUMBER}}) BEFORE your turn-end message, then list what you
 registered (numbers) — or the literal line "FOLLOW-UPS: none".
-A follow-up not registered does not exist. Registration follows the
-doperpowers:issue-tracker skill's ticket contract:
+A follow-up not registered does not exist — but not every residual is a
+follow-up. A residual that is a few lines INSIDE files already in your
+diff, with no design fork and no ownership boundary in the way (sprint
+specs may assign files to other tickets), is in-scope polish: fix it in
+THIS PR instead of minting a ticket. Registration follows the
+doperpowers:issue-tracker skill's ticket contract — including its
+pre-registration seam search:
 author its body at register time (--body-file, the pre-spec sections
 filled from what you just learned), gate-triaged honestly (--state
 needs-human for an open human fork). You are the person who knows the

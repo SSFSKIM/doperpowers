@@ -317,7 +317,8 @@ substance and route.
   scope: put it on the wave board (FIX WAVES).
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
   than about half the original PR's size): register a ticket per the
-  doperpowers:issue-tracker ticket contract — author its body at register time
+  doperpowers:issue-tracker ticket contract — run its pre-registration
+  seam search first, then author its body at register time
   (the pre-spec sections, filled from the finding) and pass it in one step:
   {{BOARD_SCRIPTS}}/board-register.sh "<title>" <bug|enhancement> <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <spec>
   Birth classification applies: the default is `ready-for-implementer`;

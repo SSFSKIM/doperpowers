@@ -85,6 +85,7 @@ birth rule: design-heavy children → `ready-for-architect`, else
 {{BOARD_SCRIPTS}}/../references/ticket-gate.md;
 an open taste fork → born needs-human).
 Per the doperpowers:issue-tracker ticket contract,
+run its pre-registration seam search first, then
 author its body at register time — the pre-spec sections filled from your
 findings; a skeleton "to fill in later" is not a graduation. Anything
 murkier stays a Recommendation line — graduation is otherwise the human's
