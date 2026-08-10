@@ -516,16 +516,33 @@ lock_as "$$" "$FMT:Thu Jan  1 00:00:00 2000"
 t  "an unreadable current start never steals from a live owner" \
    "another api sweep holds the lock"                   SW renew
 rm -f "$STUB/ps"
-# THE ROLLING UPGRADE. The sweep holding the lock right now may be the version
-# installed BEFORE the token was pinned and versioned: it recorded a bare
-# `lstart` under whatever locale and zone it inherited. Rendered here under C/
-# UTC that same live process compares unequal, and once its lock ages past
-# stale it is robbed mid-tick — the upgrade itself causing the double delivery.
-# A token this version cannot vouch for is UNKNOWN, exactly like an empty read.
-# Asia/Tokyo stands in for "whatever the old writer inherited" and is never
-# UTC, so this case does not quietly pass on a UTC machine.
-lock_as "$$" "$(TZ=Asia/Tokyo ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
-t  "a legacy unversioned token never steals from a live owner" \
+# THE ROLLING UPGRADE, both directions. The sweep holding the lock right now may
+# be a PREVIOUS shape of this script, which recorded a bare `lstart` — and a
+# bare token has to be read, not waved through, because the two mistakes
+# available here are opposite and both fatal.
+#
+# Read as a mismatch, a live owner is robbed mid-tick and two ticks interleave
+# the sentinel check with its resume: the double delivery the lock prevents.
+# Waved through as "unreadable", a RECYCLED pid under such a lock is believed
+# alive forever — no renewal, no relay, no resume, no dispatch — which is the
+# wedge the start time was recorded to prevent in the first place. So a bare
+# token is compared against the renderings an earlier version could have
+# written, and only a rendering this script cannot generate stays unknown.
+#
+# Live owner, bare token in the machine's OWN zone — what an unpinned writer
+# produced. Held.
+lock_as "$$" "$(LC_ALL=C ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')"
+t  "a bare legacy token still recognizes its live owner" \
+   "another api sweep holds the lock"                   SW renew
+# Same bare format, but a start that is nobody's: the pid was recycled under a
+# pre-versioning lock. This is the case the version prefix must NOT swallow.
+lock_as "$$" "Thu Jan  1 00:00:00 2000"
+t  "a bare legacy token whose pid was recycled is stolen" \
+   "stole a stale api sweep lock"                       SW renew
+# ...and the limit of that reading: a token rendered by a locale this script
+# cannot reproduce is not evidence either way, so the owner keeps its lock.
+lock_as "$$" "Do 1. Jan 00:00:00 2000"
+t  "a rendering this script cannot reproduce stays unknown" \
    "another api sweep holds the lock"                   SW renew
 rm -rf "$LK"
 

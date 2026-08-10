@@ -117,17 +117,48 @@ LOCK="$DAEMON_HOME/.sweep-api.lock"
 # against a C/UTC rendering of the same live process says "different process" —
 # so the upgrade would rob a live owner the moment its lock aged past stale,
 # causing the very double delivery this lock prevents. The version prefix is
-# what lets a reader tell a token it can compare from one it cannot; anything
-# else is UNKNOWN, and unknown keeps the owner (see _owner_live). Bump it
+# what lets a reader tell a token it can compare from one it cannot. Bump it
 # whenever the rendering below changes, and old locks degrade instead of lying.
+#
+# BUT "UNVERSIONED" IS NOT "UNREADABLE", and conflating the two is its own
+# defect: a bare token this code can still REPRODUCE is evidence, and refusing
+# to read it means a recycled pid under such a lock is believed alive forever —
+# no renewal, no relay, no resume, no dispatch, which is the exact wedge the
+# start time was recorded to prevent. So a bare token is compared, against the
+# two renderings a previous version of this script could have written: C/UTC
+# (what the pinning wrote before it was versioned) and C in the machine's OWN
+# zone (what an unpinned writer produced, since an unset LC_ALL already renders
+# C-like and only the zone moved). Matching either is the same process. Only a
+# rendering neither of those reproduces — a genuinely localized one — is
+# UNKNOWN, and unknown keeps the owner (see _owner_live).
 _START_FMT=c1
+# The C rendering under ONE zone. Called with no zone argument it inherits the
+# machine's; TZ= would NOT do that — an empty TZ reads as UTC on most libc,
+# which is the very value we are trying to tell apart.
+_start_raw() {  # <pid> [tz]
+  if [ "$#" -ge 2 ]; then
+    LC_ALL=C TZ="$2" ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true
+  else
+    LC_ALL=C ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true
+  fi
+}
 _proc_start() {
   local s
-  s="$(LC_ALL=C TZ=UTC ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" || true
+  s="$(_start_raw "$1" UTC)"
   # No answer at all is not an empty token, it is NO token: printing a bare
   # prefix here would hand _owner_live a well-formed value meaning nothing.
   [ -n "$s" ] || return 0
   printf '%s:%s\n' "$_START_FMT" "$s"
+}
+# Is this bare token even the shape this script renders? The locale moves the
+# day and month NAMES, so the month field is where a foreign rendering shows
+# itself; the zone moves only the clock, which is a value difference, not a
+# shape one. Five fields: `Thu Jan  1 00:00:00 2000`.
+_c_rendered() {  # <token>
+  # shellcheck disable=SC2086  # the split IS the check: these fields are the shape
+  set -- $1
+  [ "$#" -eq 5 ] || return 1
+  case "$2" in Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ;; *) return 1 ;; esac
 }
 _take_lock() {
   mkdir "$LOCK" 2>/dev/null || return 1
@@ -150,20 +181,35 @@ _take_lock() {
 #
 #   no recorded start   a lock written before this file existed. The pid answer
 #                       is all the evidence there is, exactly as it always was.
-#   a token this version cannot read   written by a sweep from before the
-#                       format was pinned and versioned, or by a NEWER one. It
-#                       may well be the same live process, spelled a way this
-#                       code cannot reproduce, so it is never grounds to steal.
+#   a rendering this code cannot reproduce   a localized `lstart` from some
+#                       earlier version's environment, or a NEWER format. It may
+#                       well be the same live process, spelled a way this code
+#                       cannot generate, so it is never grounds to steal. A bare
+#                       token it CAN reproduce is not in this class — it is
+#                       compared, because refusing to read it wedges the sweep.
 #   no current answer   `ps` printed nothing: a lost race with the process
 #                       table, a form some later OS renders differently.
 _owner_live() {  # <pid> <recorded start ('' = unknown)>
   local now
   kill -0 "$1" 2>/dev/null || return 1
   [ -n "$2" ] || return 0
-  case "$2" in "$_START_FMT":*) ;; *) return 0 ;; esac
-  now="$(_proc_start "$1")"
-  [ -n "$now" ] || return 0
-  [ "$now" = "$2" ]
+  case "$2" in
+    "$_START_FMT":*)
+      now="$(_proc_start "$1")"
+      [ -n "$now" ] || return 0
+      [ "$now" = "$2" ] ;;
+    *)
+      # Unversioned, from a previous shape of this script. Readable only if it
+      # is the C rendering; then it is this process only if it matches under
+      # one of the two zones such a writer could have used.
+      _c_rendered "$2" || return 0
+      now="$(_start_raw "$1" UTC)"
+      [ -n "$now" ] || return 0
+      [ "$now" = "$2" ] && return 0
+      now="$(_start_raw "$1")"
+      [ -n "$now" ] || return 0
+      [ "$now" = "$2" ] ;;
+  esac
 }
 if ! _take_lock; then
   _lock_owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
