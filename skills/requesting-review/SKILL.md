@@ -23,7 +23,9 @@ job reads to this session; the dead endpoint forces the per-call app-server
 path so nothing detaches and outlives the run. The `workflow` verb ignores
 the endpoint (its workers always spawn their own servers) — carrying it is
 harmless. On a wrapped run (`with-effort.mjs` below) leave the endpoint OFF:
-the wrapper provides its own live one.
+the wrapper provides its own live one. Leave it off `setup` too — that
+verb's auth probe has no direct fallback, so a dead endpoint makes it
+misreport a valid login as unauthenticated.
 
 ## Choosing the shape
 
