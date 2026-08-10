@@ -359,9 +359,9 @@ Maximum 4 waves per review.
 
 ## RE-REVIEW
 
-After a wave that fixed anything, rerun the engine — the same single
-command with a fresh --out file, in the background again; max 5 engine
-rounds total. The
+After a wave that fixed anything, rerun the engine — the round's one
+command again, redirected to fresh round-numbered findings files, in
+the background again; max 5 engine rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
