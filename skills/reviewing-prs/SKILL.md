@@ -44,10 +44,12 @@ variant of this protocol you run:
   this clone is least likely to already carry. A fetch that fails is a hard
   stop: never fall back to the default branch, nor to whatever
   `origin/<base>` already points at — park with
-  `board-transition.sh {{ISSUE_NUMBER}} needs-human` naming the ref that would
-  not fetch. Then use the resolved names wherever `{{BASE_REF}}`,
-  `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear — `{{BASE_REF}}` being the
-  freshly-fetched `origin/<baseRefName>` — above all in START ENGINE's
+  `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human` naming
+  the ref that would not fetch. Then use the resolved names wherever
+  `{{BASE_REF}}`, `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear — `{{BASE_REF}}` is
+  the BRANCH NAME `baseRefName`, never `origin/` anything: this protocol adds
+  the remote itself wherever it needs the tracking ref your fetch just moved —
+  above all in START ENGINE's
   `--base origin/{{BASE_REF}}` and in the self-merge tier's base-is-default
   clause (base-is-default is then `<resolved base> = {{DEFAULT_BRANCH}}`, not
   the `unresolved` your prompt binds). The board carries no PR base, so

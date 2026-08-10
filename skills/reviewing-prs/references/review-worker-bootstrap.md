@@ -38,7 +38,9 @@ baseRefName,headRefName,headRefOid`), then `git fetch origin <baseRefName>
 either absent or stale and the range you review is not the one the PR
 proposes; a fetch that fails is a hard stop, never a fallback to the default
 branch. Use those values
-wherever this protocol says `BASE_REF` / `HEAD_REF` / `HEAD_SHA`. The two
+wherever this protocol says `BASE_REF` / `HEAD_REF` / `HEAD_SHA` — `BASE_REF`
+being `baseRefName` itself, the branch name, never `origin/` anything: the
+protocol adds the remote wherever it wants the tracking ref. The two
 manifest snapshots below were taken at `MANIFEST_REF`; if the PR's base is a
 different branch, re-read them from it
 (`git show origin/<base>:.doperpowers/risk-surfaces.md`, same for
