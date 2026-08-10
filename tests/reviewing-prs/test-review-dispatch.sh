@@ -787,6 +787,23 @@ echo '[{"id": "cafe9999", "sessionId": "feed0000-0000-4000-8000-000000000000", "
 out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "at cap with a live reviewer, no new spawn"
 assert_contains "$out" "#4: review cap reached (1 live) — queued for a later tick" "the other PR queues behind the live reviewer"
+# a stale-boot meta is a dead session, not a slot: parked-ticket metas are
+# never finalized (board-answer wake targets), so a reboot's leftovers would
+# otherwise hold the cap closed forever (observed: 8 dead metas, 0 spawns).
+reset_state
+python3 - <<'PY'
+import json, os
+json.dump({"uuid": "dead0000-0000-4000-8000-000000000000",
+           "current": "dead0000-0000-4000-8000-000000000000",
+           "name": "review-pr-9", "status": "working",
+           "host": os.uname().nodename, "boot_id": "boot-stale",
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"],
+                            "dead0000-0000-4000-8000-000000000000.json"), "w"))
+PY
+out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "a stale-boot working meta does not hold a cap slot"
+: > "$SPAWN_LOG"
 # triggered dispatch bypasses the cap (explicit event)
 out="$(REVIEW_MAX_CONCURRENT=0 "$DISPATCH" 4 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "triggered dispatch is never gated by the cap"

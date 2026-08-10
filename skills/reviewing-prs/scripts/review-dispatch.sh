@@ -228,10 +228,17 @@ PY
 # visits its PR), so a tick can briefly overcount and under-dispatch; the next
 # tick self-corrects. `error` metas do NOT count: their respawn is itself the
 # capped action, and counting them would wedge the cap closed on exactly the
-# failure class it should be retrying.
+# failure class it should be retrying. Same-identity ONLY (_identity_local's
+# rule, inlined): a meta from another host or a previous boot is a dead
+# session, not a slot — and parked-ticket metas are deliberately never
+# finalized (they are board-answer wake targets), so without this filter a
+# reboot's stale parked reviewers hold the cap closed forever (observed:
+# 8 dead metas, 53 PRs queued, 0 spawns).
 _gh_review_slots() {
-  T_DHOME="$DAEMON_HOME" python3 - <<'PYEOF'
+  T_DHOME="$DAEMON_HOME" T_HOST="${DAEMON_HOST:-}" T_BOOT="${DAEMON_BOOT_ID:-}" python3 - <<'PYEOF'
 import glob, json, os
+host = os.environ.get("T_HOST") or ""
+boot = os.environ.get("T_BOOT") or ""
 n = 0
 for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -241,9 +248,17 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     except Exception:
         continue
     name = str(m.get("name") or "")
-    if (name.startswith("review-pr-") or name.startswith("review-epic-")) \
-            and m.get("status") in ("working", "blocked"):
-        n += 1
+    if not (name.startswith("review-pr-") or name.startswith("review-epic-")):
+        continue
+    if m.get("status") not in ("working", "blocked"):
+        continue
+    mh = str(m.get("host") or "")
+    mb = str(m.get("boot_id") or "")
+    if mh and host and mh != host:
+        continue
+    if mb and boot and mb != boot:
+        continue
+    n += 1
 print(n)
 PYEOF
 }
