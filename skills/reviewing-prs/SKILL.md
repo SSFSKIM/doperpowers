@@ -157,12 +157,15 @@ is a TOOL invocation, not a nested agent. Never add
    forms share the preamble: codex must WRITE session state, the
    worker's default home may be read-only under the outer sandbox, and
    that state must stay out of the reviewed tree — so it goes to a
-   throwaway home with login symlinked over; a nested codex also needs
+   throwaway home INSIDE `<review-tmp>`, with login symlinked over
+   (step 1's removal is then the only cleanup this state needs, and it
+   reclaims every round's home even when a run dies early or you kill a
+   hung one); a nested codex also needs
    TLS trust anchors as a FILE bundle and an explicit code-mode host
    path (it resolves that command host to /usr/local/bin, not
    ~/.local/bin, so it must be pointed at the real one).
 
-   eng_home="$(mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}-codex.XXXXXX")" && \
+   eng_home="$(mktemp -d "<review-tmp>/codex-home.XXXXXX")" && \
    { [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || ln -s "${CODEX_HOME:-$HOME/.codex}/auth.json" "$eng_home/auth.json"; } && \
    export CODEX_HOME="$eng_home" CLAUDE_PLUGIN_DATA="$eng_home/companion-state" && \
    { [ -n "${SSL_CERT_FILE:-}" ] || { [ -f /etc/ssl/cert.pem ] && export SSL_CERT_FILE=/etc/ssl/cert.pem; } || { [ -f /etc/ssl/certs/ca-certificates.crt ] && export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt; } || true; } && \
@@ -182,10 +185,6 @@ is a TOOL invocation, not a nested agent. Never add
      --script {{COMPANION_DIR}}/workflows/code-review.mjs \
      --args '{"base":"origin/{{BASE_REF}}","finderModel":"{{CODEX_REVIEW_MODEL}}","finderEffort":"{{CODEX_REVIEW_EFFORT}}","verifierModel":"{{CODEX_REVIEW_MODEL}}"}' \
      > <review-tmp>/findings-rN.json 2> <review-tmp>/findings-rN.events.log
-
-   Nothing after JOIN reads the round's engine home, so remove each
-   round's `eng_home` once its findings are read; a park preserves
-   `<review-tmp>` alone.
 
    Keep the task handle. Leave it running and the findings unread — the
    protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
