@@ -734,14 +734,6 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
       return 1
     fi
   fi
-  # API mode only: THE HANDOFF IS DONE ONLY NOW — after the bind, not before
-  # it. Marked ahead of the bind, a crash in that window left a journal saying
-  # "handed off" over a meta holding no run credential and no locator, which
-  # reconciliation then skipped (its whole point is the unbound-but-live case);
-  # nothing renewed the lease, and after the server reclaimed the run the still
-  # running reviewer overlapped its replacement. Unset in gh mode, where no
-  # claim journal exists at all.
-  [ -z "${CLAIM_JOURNAL:-}" ] || _api_mark_spawned
   if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
 import json, os
 ready = os.environ["READY"]
@@ -782,6 +774,21 @@ PY
     echo "$name: worker did not acknowledge startup barrier — retired" >&2
     return 1
   fi
+
+  # API mode only: THE HANDOFF IS DURABLE ONLY NOW — the bind landed, the
+  # startup barrier is published, and the worker acknowledged crossing it.
+  # Marked at the bind instead, a crash in the remaining window left a journal
+  # saying "handed off" over a reviewer that can NEVER start: its barrier wait
+  # is 120 seconds and then it ends without reviewing, so the session goes idle
+  # still holding the run, the tick renews that lease forever, and the ticket
+  # is owned by nobody who will work it. (Marking it earlier still — ahead of
+  # the bind — was the original bug, and left the same journal over a meta with
+  # no run credential at all.) The crash window this ordering opens, a bound
+  # meta under an unmarked journal, is reconciliation's `stranded` arm: the
+  # control dir travels in the journal so that arm can tell a reviewer that
+  # crossed the barrier from one that never could. Unset in gh mode, where no
+  # claim journal exists at all.
+  [ -z "${CLAIM_JOURNAL:-}" ] || _api_mark_spawned
 }
 
 # Consecutive FAILED reviewers for worker name <1>, newest first: a reply carrying the
@@ -1053,8 +1060,22 @@ sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-lab
 CLAIM_LANES=qagent
 _claim_lane_cap() { : "$1"; echo "$REVIEW_CAP"; }
 _claim_drop_journal() { _api_drop_journal "$1"; }
+_claim_retire_worker() { _retire "$1"; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
+
+# The sweep's tick deadline, when it set one. A single budget check ahead of
+# the whole dispatch phase admitted this lane in full — including a startup
+# barrier wait of up to REVIEW_ACK_POLLS x REVIEW_ACK_DELAY per candidate —
+# inside the sweep's global lock, so a tick with one second left could spend
+# minutes more. Checked before each FRESH claim; a replay from reconciliation
+# is recovery, not new work, and is never gated. Absent or unparseable = no
+# gate: a direct --sweep and the by-name `dispatch` phase are their own tick
+# with their own clock.
+_tick_deadline_left() {
+  case "${BOARD_TICK_DEADLINE:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(date +%s)" -lt "$BOARD_TICK_DEADLINE" ]
+}
 
 # Open workers in a lane, counted off the registry: the local cap. A
 # just-claimed worker's meta exists long before the board could show its first
@@ -1100,10 +1121,10 @@ PY
 }
 
 # The handoff is done: the journal may no longer be replayed, only observed.
-# Called from inside _spawn_reviewer, between the spawn and the bind.
+# Called from the END of _spawn_reviewer, once the handoff is durable.
 _api_mark_spawned() {
   _journal_write "$CLAIM_JOURNAL" "$CLAIM_LANE" "$CLAIM_RUN" 1 \
-    "${CLAIM_TICKET:-}" "${CLAIM_DAEMON:-}"
+    "${CLAIM_TICKET:-}" "${CLAIM_DAEMON:-}" "${CLAIM_CONTROL:-}"
 }
 
 _api_drop_journal() {  # <nonce>
@@ -1111,8 +1132,15 @@ _api_drop_journal() {  # <nonce>
 }
 
 # Claim one ticket on the qagent lane under <nonce> and hand it to a fresh
-# review worker. rc 1 = nothing dispatched (lane empty, claim refused, ticket
-# suppressed, or the handover failed) — the caller stops claiming this tick.
+# review worker. The return contract is the implement dispatcher's, verbatim —
+# one shared function name, one shared meaning:
+#   rc 0  claimed and handed off
+#   rc 1  nothing dispatched and NOTHING IS OUTSTANDING — the lane was empty,
+#         the claim was refused, the ticket is suppressed, or the handover
+#         failed and its run was released.
+#   rc 2  the claim may have LANDED and its journal is kept for replay. No
+#         further claim may be made this tick; reconciliation owns the replay.
+# This lane has no sibling to fall through to, so its loop stops on either.
 _claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
   local lane="$1" nonce="$2" cap="$3" claims_dir="$DAEMON_HOME/board-claims"
   local body_file="$claims_dir/$nonce.body.md" exports
@@ -1164,7 +1192,7 @@ PY
     # The journal STAYS: a claim that died on the wire may still have landed,
     # and the replay is the only thing that can recover it.
     echo "claim on lane $lane failed — journal $nonce kept for replay" >&2
-    return 1
+    return 2
   }
   eval "$exports"
   if [ "$C_CLAIMED" != 1 ]; then
@@ -1199,6 +1227,17 @@ PY
   # dispatcher can name (see the BASE_REF note below). MANIFEST_REF tells the
   # worker which ref these copies came from, so it can re-read them itself when
   # the PR's real base turns out to be a different branch.
+  #
+  # REFRESH THE TRACKING REF FIRST, as the PR path does before its own two
+  # `git show` calls. Nothing else on this path fetches, so a clone whose
+  # origin/<default> was stale — or, in a fresh clone, absent — handed the
+  # worker an outdated or empty policy and then told it to KEEP these copies
+  # whenever its resolved base matches MANIFEST_REF. Best-effort: the empty
+  # snapshot below is the designed degradation and the worker's own PR fetch is
+  # the hard gate, so a failure warns and dispatch continues. git only — this
+  # dispatcher never invokes gh (see the BASE_REF note below).
+  git -C "$LOCAL_REPO" fetch -q origin "$DEFAULT_BRANCH" 2>/dev/null \
+    || echo "#$C_TICKET: could not fetch origin/$DEFAULT_BRANCH — the risk-surface and repo-facts snapshots are whatever this clone already held" >&2
   git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/risk-surfaces.md" > "$tmp/risk.md" 2>/dev/null \
     || : > "$tmp/risk.md"
   git -C "$LOCAL_REPO" show "origin/$DEFAULT_BRANCH:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
@@ -1213,6 +1252,12 @@ PY
     rm -rf "$tmp" "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
     _api_drop_journal "$nonce"; return 1
   fi
+  # The control dir joins the journal BEFORE the spawn. After a crash between
+  # the bind and the durable mark, the ack file inside it is the ONLY thing
+  # that separates a reviewer which crossed the startup barrier from one
+  # waiting on a barrier nobody will ever publish — see the `stranded` arm in
+  # _claim_journal.sh, and the mark at the end of _spawn_reviewer.
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name" "$control_dir"
 
   # BASE_REF IS NOT KNOWABLE HERE, and saying `$DEFAULT_BRANCH` was not a
   # conservative default — it was a wrong answer. A claim carries no PR: the
@@ -1261,12 +1306,12 @@ PY
   # the dispatcher's journal path.
   local spawn_rc=0
   CLAIM_JOURNAL="$claims_dir/$nonce.json" CLAIM_LANE="$lane" CLAIM_RUN="$C_RUN_ID"
-  CLAIM_TICKET="$C_TICKET" CLAIM_DAEMON="$name"
+  CLAIM_TICKET="$C_TICKET" CLAIM_DAEMON="$name" CLAIM_CONTROL="$control_dir"
   BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
   BOARD_API_URL="$BOARD_API_URL" \
     _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
       "$control_dir" "$name" || spawn_rc=1
-  unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON
+  unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL
   [ "$spawn_rc" -eq 0 ] \
     || { echo "#$C_TICKET: handover failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
@@ -1304,7 +1349,16 @@ PY
   echo "claimed #$C_TICKET run=$C_RUN_ID lane=$lane → $REVIEWER_UUID"
 }
 
-_claim_one() { _claim_one_with_nonce "$1" "$(uuidgen)" "$2"; }
+# A FRESH claim on <lane> — the only claims the tick deadline gates, and the
+# only ones that mint a nonce. Both refusals here are rc 2: nothing was
+# claimed, and neither is a reason to keep claiming.
+_claim_one() {  # <lane> <lane-cap>
+  local nonce
+  _tick_deadline_left \
+    || { echo "dispatch: the sweep tick deadline has passed — lane $1 takes no fresh claim this tick"; return 2; }
+  nonce="$(_claim_nonce)" || return 2
+  _claim_one_with_nonce "$1" "$nonce" "$2"
+}
 
 dispatch_api() {
   mkdir -p "$DAEMON_HOME/board-claims"
@@ -1318,6 +1372,14 @@ dispatch_api() {
 }
 
 if [ "$BOARD_BINDING" = api ]; then
+  # DISPATCH IS AUTOMATION, FULL STOP — the doctrine block at the head of
+  # _sweep_api.sh applies verbatim here. _board_api.token() hands back an
+  # ambient BOARD_RUN_TOKEN for whatever principal is asked, so a --sweep run
+  # straight out of a worker shell would claim, and end runs, as that worker.
+  # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
+  # after this, and are unaffected. This is the automation route only: no
+  # human-route verb is touched.
+  unset BOARD_RUN_TOKEN
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;
     ''|--*)  die "usage: review-dispatch.sh <pr-number> | --sweep" ;;

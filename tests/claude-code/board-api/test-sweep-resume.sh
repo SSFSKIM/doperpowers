@@ -611,4 +611,108 @@ t  "an exhausted budget stops fresh dispatch" \
    "tick budget exhausted — fresh claims ride the next tick"  cat "$OUTB"
 nt "so no fresh claim goes out"        '"path": "/runs/claim"' cat "$FIX.log"
 
+# =========================================================================
+# ...AND FROM THE INSIDE. The gate above is one check at the DOOR of the
+# dispatch phase: a tick with a second left admitted both dispatchers in full,
+# every lane loop and a review startup-barrier wait included, still holding the
+# global lock. So the tick hands its own deadline across the process boundary
+# and the dispatchers check it before each fresh claim (their half of that gate
+# is pinned in test-dispatch-claim.sh). A phase asked for BY NAME is its own
+# tick with its own clock and hands across nothing — which is what an empty
+# value means to the dispatcher.
+#
+# Its own fixture world: by this point the script's board has spent the `once`
+# grants a spawn needs, and the worker environment is where a variable crossing
+# that boundary becomes observable.
+# =========================================================================
+DBOARD=""   # where deadline_board leaves the checkout it made
+DMOCKS=""   # the mocks it started, to be killed once these two ticks are done
+deadline_board() {  # deadline_board <port> <run-id> — one throwaway board
+  # One `local` per name: bash 3.2 expands every word of a `local` statement
+  # before applying any of them, so `local a=1 b=$a` leaves b empty (and, under
+  # set -u, dies).
+  local port="$1"
+  local run="$2"
+  local fix="$TDIR/fixd-$port.json"
+  : > "$fix.log"
+  DEADLINE_RUN="$run" python3 - "$fix" <<'PY'
+import json, os, sys
+run = int(os.environ["DEADLINE_RUN"])
+json.dump([
+  {"method": "POST", "path": "/runs/claim", "status": 200, "once": True,
+   "body": {"runId": run, "ticketId": 66, "fence": 1, "bearer": "tok-d",
+            "plan": None, "body": "deadline work", "parentPin": None}},
+  {"method": "POST", "path": "/runs/claim", "status": 200,
+   "body": {"claimed": False}},
+  {"method": "POST", "path": "/runs/%d/bind" % run, "status": 200,
+   "body": {"bound": True}},
+], open(sys.argv[1], "w"))
+PY
+  python3 "$TESTS_DIR/mock-server.py" "$fix" "$port" &
+  # Tracked so the pair can be torn down: a mock left running holds this
+  # script's stdout open and a `| tail` at the call site never returns.
+  DMOCKS="$DMOCKS $!"
+  wait_for_port "$port" || { echo "FAIL mock server never listened on $port"; exit 1; }
+  # Left in a global rather than echoed: mkrepo registers its directory for
+  # cleanup in THIS shell, and a command substitution would do that in a
+  # subshell nothing ever tidies.
+  DBOARD="$(mkrepo)"
+  mkdir -p "$DBOARD/.doperpowers"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$DBOARD/.doperpowers/board.json"
+}
+SWD() {  # SWD <repo> <registry> <phase>
+  ( cd "$1" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$2" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      LOCAL_REPO="$1" "$SCRIPTS/_sweep_api.sh" "$3" )
+}
+# The dispatcher's environment as the worker it spawns sees it — the only
+# place a value crossing that process boundary becomes observable.
+deadline_handed() {
+  grep '^BOARD_TICK_DEADLINE=' "$SPAWN_LOG" | head -1 |
+    python3 -c 'import sys, time
+line = sys.stdin.read().rstrip("\n")
+v = line.split("=", 1)[1] if "=" in line else "<absent>"
+print("deadline=%s" % ("a future epoch" if v.isdigit() and int(v) > time.time()
+                       else "[%s]" % v))'
+}
+
+deadline_board "$(free_port)" 77
+DHA="$TDIR/dh-all"; mkdir -p "$DHA"
+: > "$SPAWN_LOG"
+SWD "$DBOARD" "$DHA" all > "$TDIR/deadline-all.out" 2>&1 || true
+t  "an all tick hands its dispatchers a real deadline" \
+   "deadline=a future epoch"  deadline_handed
+
+deadline_board "$(free_port)" 78
+DHN="$TDIR/dh-named"; mkdir -p "$DHN"
+: > "$SPAWN_LOG"
+SWD "$DBOARD" "$DHN" dispatch > "$TDIR/deadline-named.out" 2>&1 || true
+t  "a phase asked for by name hands across none" \
+   "deadline=[]"              deadline_handed
+# shellcheck disable=SC2086  # DMOCKS is a deliberate word-split pid list
+kill $DMOCKS 2>/dev/null || true
+
+# =========================================================================
+# BOARD_SUPPRESS_DIR IS THE OPERATOR'S. The header documents it as honored and
+# both dispatchers already default-respect it at their _api_suppressed — but
+# this phase overwrote it with the registry default, splitting one mechanism in
+# two: the tick wrote suppression records where nobody read them, while the
+# dispatchers read a directory nothing ever wrote to. The lift pass is the
+# cheapest place to see which directory this phase is actually working in.
+# =========================================================================
+SUPD="$TDIR/operator-suppress"; mkdir -p "$SUPD"
+# env-issue 999 is on no listing this board serves, so the lift fires on the
+# closed-env-issue trigger without depending on any other scenario's leftovers.
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 999}' \
+  > "$SUPD/12.json"
+: > "$FIX.log"
+OUTS="$TDIR/suppressdir.out"
+( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    BOARD_SUPPRESS_DIR="$SUPD" "$SCRIPTS/_sweep_api.sh" resume ) > "$OUTS" 2>&1 || true
+t  "the configured directory is the one this phase reads" \
+   "suppression lifted for #12"                           cat "$OUTS"
+supd_record() { [ -e "$SUPD/12.json" ] && echo "still-there" || echo "gone"; }
+t  "and the record it acted on was the operator's"  "gone"  supd_record
+
 finish

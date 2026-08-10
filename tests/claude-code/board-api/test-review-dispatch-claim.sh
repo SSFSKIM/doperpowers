@@ -70,10 +70,17 @@ wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/
 [ "$wname" = "$name" ] || bind_ready=""
 if [ -n "$bind_ready" ]; then
   READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
-import json, os, time
+import json, os, shutil, time
 ready = os.environ["READY"]
+home = os.environ["DAEMON_HOME"]
 for _ in range(500):
     if os.path.isfile(ready):
+        # The claim journal AT THE INSTANT BEFORE THE ACK. The handoff is not
+        # durable until this ack exists, so the dispatcher may not have marked
+        # it done yet — and after the fact every order looks the same.
+        snap = os.path.join(home, "claims-at-ack")
+        if not os.path.exists(snap):
+            shutil.copytree(os.path.join(home, "board-claims"), snap)
         ack = ready + ".ack"; tmp = ack + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"uuid": os.environ["UUID"]}, f)
@@ -136,10 +143,15 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# BOARD_RUN_TOKEN is set on the way in ON PURPOSE: a --sweep launched from a
+# worker's own shell inherits that worker's run bearer, and the client hands
+# BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
+# and every end below would speak as that one run instead of as automation.
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    BOARD_RUN_TOKEN=ambient-worker-bearer \
     DAEMON_CLAUDE_SETTINGS="$STUB/ambient-gateway.json" \
     "$DISPATCH" --sweep ) > "$OUT" 2>&1 || true
 
@@ -166,6 +178,16 @@ t "claim journal carries the run id"       '"run_id": 51' \
   bash -c "cat '$DH'/board-claims/*.json"
 t "claim journal carries the lane"         '"lane": "qagent"' \
   bash -c "cat '$DH'/board-claims/*.json"
+# THE HANDOFF IS DURABLE ONLY AFTER THE WORKER ACKS. Marked at the bind, a
+# crash before the barrier was published left a journal saying "handed off"
+# over a reviewer that can never start: it waits out its 120-second barrier
+# bound, ends without reviewing, and the ticket stays owned by a session
+# nothing will ever wake. The control dir travels in the journal because the
+# ack file inside it is the only thing reconciliation can tell those apart by.
+t "the journal is still open when the worker acks" '"spawn_completed": false' \
+  bash -c "cat '$DH'/claims-at-ack/*.json"
+t "and it names the control dir the barrier lives in" '"control"' \
+  bash -c "cat '$DH'/board-claims/*.json"
 t "assignment body written beside it"      "review it" \
   bash -c "cat '$DH'/board-claims/*.body.md"
 # The journal filename IS the nonce that went on the wire — that identity is
@@ -185,6 +207,11 @@ nt "no other lane is claimed from here"  '\"lane\": \"implementer\"' cat "$FIX.l
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }
 t "an empty lane stops the tick" "claims=2" claim_posts
 t "the claim speaks as automation" '"auth": "Bearer a"' cat "$FIX.log"
+# DISPATCH IS AUTOMATION, FULL STOP — the sweep's own doctrine, and the same
+# reason it unsets this. A worker shell that runs --sweep directly would
+# otherwise claim, and end runs, as its own run.
+nt "an ambient worker bearer never reaches the wire" \
+   "Bearer ambient-worker-bearer" cat "$FIX.log"
 
 # --- the handover: bind, barrier, and the local half of a later resume -----
 t "the run is bound to its session" '"path": "/runs/51/bind"' cat "$FIX.log"
@@ -373,5 +400,133 @@ held_wire() {
 }
 # One empty qagent claim and nothing else.
 t "a held run sends nothing" "posts=1 ends=0" held_wire
+
+# =========================================================================
+# Scenario 4 — THE HANDOFF WINDOW'S REMAINING CRASH POINT, and the release
+# that fails. The journal is marked only once the worker has acked the startup
+# barrier, which leaves one shape a crash can produce: a bound meta under an
+# open journal. Two of those are indistinguishable by the run alone —
+#   (s) bound, barrier never published: the reviewer waited out its 120-second
+#       bound and ended. Repairing the marker would leave the ticket owned by
+#       a session that can never start and a lease this tick renews forever.
+#   (t) bound, barrier crossed, only the marker write lost: a working reviewer
+#       that must not be touched.
+# — and the ack file inside the journalled control dir is what separates them.
+# Beside them, (u): a release that FAILS keeps its journal. It is the only
+# retry handle there is; dropped, the run stays open owning its ticket and no
+# later tick can retry, so "it retries next tick" was never true.
+# =========================================================================
+PORT4="$(free_port)"
+FIX4="$(mktemp)"; : > "$FIX4.log"
+cat > "$FIX4" <<'JSON'
+[
+ {"method":"POST","path":"/runs/70/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/72/end","status":503,
+  "body":{"error":{"code":"unavailable","message":"the board is down"}}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX4" "$PORT4" & MOCK4=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 2>/dev/null' EXIT
+wait_for_port "$PORT4" || { echo "FAIL mock server never listened on $PORT4"; exit 1; }
+
+r4="$(apirepo "$PORT4")"
+DH4="$(mktemp -d)"; mkdir -p "$DH4/board-claims"
+# (s) the stranded reviewer: a control dir with no ack in it.
+CTL_S="$DH4/41-api-qagent-control.stranded"; mkdir -p "$CTL_S"
+printf '{"uuid": "ffff0001", "ticket": "41", "ledger": "x"}\n' > "$CTL_S/bind-ready.json"
+printf '{"uuid":"ffff0001","current":"ffff0001","name":"41-api-qagent","status":"working","run_id":70,"lane":"qagent","ticket":"41"}' \
+  > "$DH4/ffff0001.json"
+printf '{"lane": "qagent", "run_id": 70, "spawn_completed": false, "ticket": "41", "daemon": "41-api-qagent", "control": "%s"}\n' \
+  "$CTL_S" > "$DH4/board-claims/nonce-s.json"
+printf 'stranded review assignment\n' > "$DH4/board-claims/nonce-s.body.md"
+# (t) the same shape with the ack present — a reviewer already at work.
+CTL_T="$DH4/42-api-qagent-control.acked"; mkdir -p "$CTL_T"
+printf '{"uuid": "ffff0002", "ticket": "42", "ledger": "x"}\n' > "$CTL_T/bind-ready.json"
+printf '{"uuid": "ffff0002"}\n' > "$CTL_T/bind-ready.json.ack"
+printf '{"uuid":"ffff0002","current":"ffff0002","name":"42-api-qagent","status":"working","run_id":71,"lane":"qagent","ticket":"42"}' \
+  > "$DH4/ffff0002.json"
+printf '{"lane": "qagent", "run_id": 71, "spawn_completed": false, "ticket": "42", "daemon": "42-api-qagent", "control": "%s"}\n' \
+  "$CTL_T" > "$DH4/board-claims/nonce-t.json"
+# (u) claimed, never handed off, and the release will fail.
+printf '{"lane": "qagent", "run_id": 72, "spawn_completed": false}\n' \
+  > "$DH4/board-claims/nonce-u.json"
+printf 'undelivered review assignment\n' > "$DH4/board-claims/nonce-u.body.md"
+
+OUT4="$(mktemp)"
+( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH4" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r4" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
+
+# --- (s) a reviewer that can never start is not left owning its ticket -----
+t  "the barrier-less handoff is reported" "startup barrier never opened" cat "$OUT4"
+t  "its worker is retired"                "retire ffff0001"  cat "$DH4/spawn-capture.txt"
+t  "and its run ended so the ticket requeues" '"path": "/runs/70/end"' cat "$FIX4.log"
+t  "ended as abandoned"                   '\"reason\": \"abandoned\"'  cat "$FIX4.log"
+gone4() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
+t  "the journal is dropped"               "gone" gone4 "$DH4/board-claims/nonce-s.json"
+# --- (t) a reviewer that DID cross its barrier is left alone ---------------
+nt "an acked reviewer's run is never ended" '"path": "/runs/71/end"' cat "$FIX4.log"
+nt "and its worker is never retired"        "retire ffff0002"  \
+   bash -c "cat '$DH4/spawn-capture.txt' 2>/dev/null || echo none"
+t  "its marker is simply repaired"          '"spawn_completed": true' \
+   cat "$DH4/board-claims/nonce-t.json"
+# --- (u) the retry handle survives a failed release ------------------------
+t  "a release that FAILED keeps its journal" \
+   "the journal is KEPT so the next tick can retry"  cat "$OUT4"
+t  "the record stays open on disk"          '"spawn_completed": false' \
+   cat "$DH4/board-claims/nonce-u.json"
+t  "and its assignment body is not dropped" "still-there" gone4 "$DH4/board-claims/nonce-u.body.md"
+
+# =========================================================================
+# Scenario 5 — THE MANIFEST SNAPSHOTS COME FROM A CURRENT TRACKING REF. The
+# PR path fetches head and base before its own two `git show` calls; this path
+# fetched nothing, so a clone whose origin/<default> was stale — or, in a fresh
+# clone, absent — handed the worker an empty or outdated risk-surface and
+# repo-facts policy and then told it to KEEP those copies whenever its resolved
+# base matches MANIFEST_REF. git only: this dispatcher never invokes gh.
+# =========================================================================
+PORT5="$(free_port)"
+FIX5="$(mktemp)"; : > "$FIX5.log"
+cat > "$FIX5" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":90,"ticketId":50,"fence":1,"bearer":"tok-m","plan":null,
+          "body":"manifest review","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/90/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX5" "$PORT5" & MOCK5=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 2>/dev/null' EXIT
+wait_for_port "$PORT5" || { echo "FAIL mock server never listened on $PORT5"; exit 1; }
+
+# The remote carries both manifests on its default branch...
+UP="$(mkrepo)"
+git -C "$UP" symbolic-ref HEAD refs/heads/main
+mkdir -p "$UP/.doperpowers"
+printf 'RISK-SURFACE-FROM-ORIGIN\n' > "$UP/.doperpowers/risk-surfaces.md"
+printf 'REPO-FACTS-FROM-ORIGIN\n'   > "$UP/.doperpowers/repo-facts.md"
+git -C "$UP" add -A
+git -C "$UP" -c user.email=t@example.com -c user.name=t commit -qm manifests
+# ...and the dispatching clone has the remote configured but has never fetched
+# it, which is exactly a fresh clone or a long-idle daemon host.
+r5="$(apirepo "$PORT5")"
+git -C "$r5" remote add origin "$UP"
+DH5="$(mktemp -d)"
+OUT5="$(mktemp)"
+( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH5" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r5" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
+
+prompt5() { cat "$DH5/prompt-50-api-qagent.md"; }
+t  "the risk-surface snapshot is the remote's"  "RISK-SURFACE-FROM-ORIGIN" prompt5
+t  "so is the repo-facts snapshot"              "REPO-FACTS-FROM-ORIGIN"   prompt5
+nt "neither degrades to the empty fallback"     "no repo risk-surface manifest" prompt5
+nt "the fetch is git, never gh"                 "GH-CALLED" cat "$MARKER"
 
 finish

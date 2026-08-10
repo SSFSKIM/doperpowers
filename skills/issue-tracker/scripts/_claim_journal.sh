@@ -12,13 +12,45 @@
 # safe direction. The sweep's `successor` lane is outside both, and the sweep
 # reconciles it itself.
 #
-# The caller supplies (all required):
+# _claim_nonce needs nothing. _reconcile_claims needs all of:
 #   CLAIM_LANES                  comma-separated lanes this dispatcher owns
 #   _claim_one_with_nonce L N C  replay one claim under an existing nonce
 #   _claim_lane_cap L            the lane cap to replay that lane under
 #   _claim_drop_journal N        remove a nonce's journal (and its body file)
-#   _api_end_run R REASON        best-effort release of a claimed run
+#   _claim_retire_worker U       retire a spawned session by uuid
+#   _api_py                      the API-client python runner (_binding.sh)
 #   DAEMON_HOME                  registry root
+
+# The nonce a claim is filed under. uuidgen is NOT a declared dependency of
+# anything else here and a host without util-linux has none of it; python3 is
+# a hard dependency of every script in this family, so it is the fallback.
+# AN EMPTY NONCE IS FATAL, never a claim to make anyway: the nonce IS the
+# journal filename, so an empty one journals to ".json"/".body.md" and the
+# next claim to take that path deletes a granted run's only recovery record.
+_claim_nonce() {
+  local n
+  n="$(uuidgen 2>/dev/null || true)"
+  [ -n "$n" ] || n="$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || true)"
+  [ -n "$n" ] || { echo "error: no claim nonce could be minted (neither uuidgen nor python3 produced one) — refusing to claim" >&2
+                   return 1; }
+  printf '%s\n' "$n"
+}
+
+# Release a claimed run and SAY WHETHER IT LANDED. The dispatchers' own
+# _api_end_run swallows every failure (`|| true`), which is right where the
+# journal is already gone and there is nothing left to retry from — and wrong
+# in the reconciler, where the journal is the only retry handle there is.
+# A typed run-ended answer counts as landed: the run is already over.
+_claim_end_run() {  # <run-id> <reason> — rc 0 only when the run is released
+  T_RUN="$1" T_REASON="$2" _api_py - <<'PY'
+import os
+import _board_api as A
+try:
+    A.end_run(os.environ["T_RUN"], os.environ["T_REASON"])
+except A.RunEnded:
+    pass
+PY
+}
 
 # One journal entry, written whole. json.dump rather than printf: the run id is
 # whatever the server sent, and a non-integer one (a string id, a null slipping
@@ -26,10 +58,14 @@
 # can parse — and an unparseable journal is a claimed run nobody can reconcile.
 # `ticket` and `daemon` land BEFORE the spawn on purpose; see _reconcile_claims.
 # `pid` is this dispatcher's, so a concurrent peer can tell a journal whose
-# writer is still working from one a crash left behind.
-_journal_write() {  # <path> <lane> <run-id ('' = null)> <spawn-completed 0|1> [ticket] [daemon]
+# writer is still working from one a crash left behind. `control` is the review
+# lane's control directory, where the startup barrier and the worker ack live;
+# it is what separates a reviewer that crossed the barrier from one waiting on
+# a barrier nobody will publish. The implement lanes have no barrier and pass
+# none.
+_journal_write() {  # <path> <lane> <run-id ('' = null)> <spawn-completed 0|1> [ticket] [daemon] [control-dir]
   J_PATH="$1" J_LANE="$2" J_RUN="$3" J_DONE="$4" J_TICKET="${5:-}" J_DAEMON="${6:-}" \
-  J_PID="$$" python3 - <<'PY'
+  J_CONTROL="${7:-}" J_PID="$$" python3 - <<'PY'
 import json, os
 e = os.environ
 run = e["J_RUN"]
@@ -46,6 +82,8 @@ if e["J_TICKET"]:
     j["ticket"] = e["J_TICKET"]
 if e["J_DAEMON"]:
     j["daemon"] = e["J_DAEMON"]
+if e["J_CONTROL"]:
+    j["control"] = e["J_CONTROL"]
 with open(e["J_PATH"], "w") as f:
     json.dump(j, f)
     f.write("\n")
@@ -81,7 +119,9 @@ import glob, json, os, time
 home = os.environ["T_DHOME"]
 lanes = set(os.environ["T_LANES"].split(","))
 grace = float(os.environ["T_GRACE"])
-live = set()
+# run id -> the uuid of the meta carrying it. The uuid is needed by the
+# `stranded` arm, which has a worker to retire and not merely a run to end.
+live = {}
 names = set()
 blind = []
 for p in glob.glob(os.path.join(home, "*.json")):
@@ -95,7 +135,7 @@ for p in glob.glob(os.path.join(home, "*.json")):
         blind.append(p)
         continue
     if m.get("run_id"):
-        live.add(str(m["run_id"]))
+        live[str(m["run_id"])] = str(m.get("uuid") or os.path.basename(p)[:-5])
     # ONLY A RUNNING SESSION IS EVIDENCE OF A SPAWN. Daemon names are
     # deterministic per ticket and lane (`<ticket>-api-<lane>`) and a retired
     # daemon keeps its meta, so a HISTORICAL entry into the same lane left a
@@ -136,7 +176,28 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     lane = j.get("lane") or ""
     run = j.get("run_id")
     daemon = j.get("daemon") or ""
-    if run and str(run) in live:
+    control = j.get("control") or ""
+    if (run and str(run) in live and control and not alive(j.get("pid"))
+            and not os.path.exists(os.path.join(control, "bind-ready.json.ack"))):
+        # A BOUND RUN WHOSE WORKER NEVER CROSSED ITS STARTUP BARRIER. The
+        # review handover is bind -> publish the barrier -> wait for the ack,
+        # and the journal is marked only after the ack; a crash before the
+        # publish therefore leaves exactly this: a meta carrying the run and a
+        # control dir with no ack in it. Repairing the marker here would be a
+        # lie — the reviewer waits out its 120-second barrier bound and ends
+        # without reviewing anything, so the ticket would stay owned by a
+        # session that can never start and the tick would renew its lease
+        # forever. The uuid rides along: there is a worker to retire, not just
+        # a run to end.
+        #
+        # THE WRITER MUST BE DEAD. This is the one arm that retires a session
+        # somebody else may be mid-handover on, and a peer dispatcher between
+        # its bind and its ack has exactly this journal — so liveness, not the
+        # mtime grace the inflight arm below uses, since a handover legitimately
+        # outlives that grace while it waits for the ack. Pid reuse errs into
+        # `repaired`, which sends nothing.
+        print("stranded\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, live[str(run)]))
+    elif run and str(run) in live:
         # the spawn DID complete — its worker is in the registry — and only
         # the marker write was lost. Repair it in place; nothing to send.
         j["spawn_completed"] = True
@@ -179,6 +240,18 @@ PY
         echo "reconcile: unreadable json at $nonce — left untouched; no claim under it can be reconciled until it is repaired or removed by hand" >&2 ;;
       repaired)
         echo "reconcile: $nonce did spawn (run $run) — marker repaired" ;;
+      stranded)
+        # The one handoff crash that leaves a LIVE-LOOKING run nobody will ever
+        # work: bound, but the startup barrier never opened. Retire the worker
+        # and end the run so the ticket goes back on the queue. The end is
+        # checked, not best-effort — see the `end` arm below.
+        echo "reconcile: $nonce bound run $run to session $extra but the startup barrier never opened — retiring that worker and ending the run so the ticket returns to the queue" >&2
+        _claim_retire_worker "$extra"
+        if _claim_end_run "$run" abandoned; then
+          _claim_drop_journal "$nonce"
+        else
+          echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
+        fi ;;
       orphaned)
         echo "reconcile: $nonce spawned $extra for run $run but never bound it — the session is live and is NOT being ended; it has no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" ;;
       held)
@@ -190,8 +263,17 @@ PY
         # would rotate nothing; the lease would otherwise strand the ticket
         # until the server's own reclaim.
         echo "reconcile: $nonce claimed run $run but never spawned — ending it"
-        _api_end_run "$run" abandoned
-        _claim_drop_journal "$nonce" ;;
+        # THE JOURNAL IS THE ONLY RETRY HANDLE. A transport or service outage
+        # fails the release while the run stays open and keeps owning the
+        # ticket — and dropping the journal anyway removed the one record a
+        # later tick could retry from, so "it retries next tick" was never
+        # true and the ticket waited on the server lease instead. Same shape
+        # as the successor-journal release in _sweep_api.sh.
+        if _claim_end_run "$run" abandoned; then
+          _claim_drop_journal "$nonce"
+        else
+          echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
+        fi ;;
       replay)
         # The nonce persisted but no run id ever did: the response was lost in
         # flight. Replaying THIS nonce is the only legal replay there is.

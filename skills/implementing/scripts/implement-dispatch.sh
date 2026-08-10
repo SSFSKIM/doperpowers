@@ -124,8 +124,21 @@ _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
 _claim_drop_journal() {  # <nonce>
   rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
 }
+_claim_retire_worker() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
+
+# The sweep's tick deadline, when it set one. A single budget check ahead of
+# the whole dispatch phase admitted every loop below in full — and, on the
+# review side, a barrier wait per candidate — inside the sweep's global lock,
+# so a tick with one second left could spend minutes more. Checked before each
+# FRESH claim; a replay from reconciliation is recovery, not new work, and is
+# never gated. Absent or unparseable = no gate: a direct --sweep and the
+# by-name `dispatch` phase are their own tick with their own clock.
+_tick_deadline_left() {
+  case "${BOARD_TICK_DEADLINE:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(date +%s)" -lt "$BOARD_TICK_DEADLINE" ]
+}
 
 # Open workers in a lane-set, counted off the registry: the local cap. A
 # just-claimed worker's meta exists long before the board could show its first
@@ -171,8 +184,14 @@ PY
 }
 
 # Claim one ticket on <lane> under <nonce> and hand it to a fresh worker.
-# rc 1 = nothing dispatched (lane empty, claim refused, or ticket suppressed) —
-# the caller stops working that lane this tick.
+#   rc 0  claimed and handed off
+#   rc 1  nothing dispatched and NOTHING IS OUTSTANDING — the lane was empty,
+#         the claim was refused, the ticket is suppressed, or the handover
+#         failed and its run was released. Another lane may be tried.
+#   rc 2  the claim may have LANDED and its journal is kept for replay. No
+#         further claim may be made this tick: reconciliation owns the replay,
+#         and a second lane claimed now would run beside the replayed one,
+#         over the combined cap.
 _claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
   local lane="$1" nonce="$2" cap="$3" claims_dir="$DAEMON_HOME/board-claims"
   local body_file="$claims_dir/$nonce.body.md" exports
@@ -227,7 +246,7 @@ PY
     # refused claim retries once per tick, loudly, which is the cheaper side
     # of this trade than silently dropping a granted run's only record.
     echo "claim on lane $lane failed — journal $nonce kept for replay" >&2
-    return 1
+    return 2
   }
   eval "$exports"
   if [ "$C_CLAIMED" != 1 ]; then
@@ -350,9 +369,19 @@ PY
   echo "claimed #$C_TICKET run=$C_RUN_ID lane=$lane → $uuid"
 }
 
-_claim_one() { _claim_one_with_nonce "$1" "$(uuidgen)" "$2"; }
+# A FRESH claim on <lane> — the only claims the tick deadline gates, and the
+# only ones that mint a nonce. Both refusals here are rc 2: nothing was
+# claimed, but neither is a reason to try the next lane instead.
+_claim_one() {  # <lane> <lane-cap>
+  local nonce
+  _tick_deadline_left \
+    || { echo "dispatch: the sweep tick deadline has passed — lane $1 takes no fresh claim this tick"; return 2; }
+  nonce="$(_claim_nonce)" || return 2
+  _claim_one_with_nonce "$1" "$nonce" "$2"
+}
 
 dispatch_api() {
+  local rc
   mkdir -p "$DAEMON_HOME/board-claims"
   _reconcile_claims
   # Local cap first (the registry), the server's laneCap as the belt: if a
@@ -362,11 +391,28 @@ dispatch_api() {
     _claim_one architect "$ARCH_CAP" || break
   done
   while [ "$(_api_registry_count implementer,spike)" -lt "$CAP" ]; do
-    _claim_one implementer "$CAP" || _claim_one spike "$CAP" || break
+    rc=0; _claim_one implementer "$CAP" || rc=$?
+    case "$rc" in
+      0) : ;;
+      # ONLY A CLEAN REFUSAL FALLS THROUGH TO SPIKE. rc 2 says the implementer
+      # claim may have landed and is journalled for replay — claiming a spike
+      # now would put its worker beside the replayed implementer, over the
+      # combined cap this loop exists to hold.
+      1) _claim_one spike "$CAP" || break ;;
+      *) break ;;
+    esac
   done
 }
 
 if [ "$BOARD_BINDING" = api ]; then
+  # DISPATCH IS AUTOMATION, FULL STOP — the doctrine block at the head of
+  # _sweep_api.sh applies verbatim here. _board_api.token() hands back an
+  # ambient BOARD_RUN_TOKEN for whatever principal is asked, so a --sweep run
+  # straight out of a worker shell would claim, and end runs, as that worker.
+  # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
+  # after this, and are unaffected. This is the automation route only: no
+  # human-route verb is touched.
+  unset BOARD_RUN_TOKEN
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;
     ''|--*)  die "usage: implement-dispatch.sh <issue-number> | --sweep" ;;

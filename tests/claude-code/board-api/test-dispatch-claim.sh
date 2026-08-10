@@ -125,9 +125,14 @@ cp -R "\$DAEMON_HOME/board-claims" "\$DAEMON_HOME/claims-at-bind" 2>/dev/null ||
 exec "$SCRIPTS/board-bind.sh" "\$@"
 EOF
 chmod +x "$BSOVL/board-bind.sh"
+# BOARD_RUN_TOKEN is set on the way in ON PURPOSE: a --sweep launched from a
+# worker's own shell inherits that worker's run bearer, and the client hands
+# BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
+# and every end below would speak as that one run instead of as automation.
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" BOARD_SCRIPTS="$BSOVL" \
     BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
+    BOARD_RUN_TOKEN=ambient-worker-bearer \
     DAEMON_CLAUDE_SETTINGS="$STUB/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=high \
     "$DISPATCH" --sweep ) > "$OUT" 2>&1 || true
 
@@ -192,6 +197,11 @@ t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }
 t "an empty lane stops the tick" "claims=3" claim_posts
 t "the claim speaks as automation" '"auth": "Bearer a"' cat "$FIX.log"
+# DISPATCH IS AUTOMATION, FULL STOP — the sweep's own doctrine, and the same
+# reason it unsets this. A worker shell that runs --sweep directly would
+# otherwise claim, and end runs, as its own run.
+nt "an ambient worker bearer never reaches the wire" \
+   "Bearer ambient-worker-bearer" cat "$FIX.log"
 
 # --- the handover: bind, and the local half a later resume rehydrates from --
 t "the run is bound to its session" '"path": "/runs/41/bind"' cat "$FIX.log"
@@ -384,5 +394,159 @@ held_wire() {
 }
 # Three empty lane claims and nothing else: architect, implementer, spike.
 t "a held run sends nothing" "posts=3 ends=0" held_wire
+
+# =========================================================================
+# Scenario 4 — A HOST WITHOUT uuidgen. uuidgen is declared nowhere in this
+# toolkit and a minimal image ships none of util-linux; python3 is a hard
+# dependency of every script here. Without a fallback `$(uuidgen)` expanded to
+# nothing inside the errexit-suppressed loop condition, so the claim went out
+# under an EMPTY dispatch nonce and its journal was filed as ".json" — a name
+# the next claim on that path takes away, and with it a granted run's only
+# recovery record.
+# =========================================================================
+PORT4="$(free_port)"
+FIX4="$(mktemp)"; : > "$FIX4.log"
+cat > "$FIX4" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":31,"fence":1,"bearer":"tok-n","plan":null,
+          "body":"nonce work","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX4" "$PORT4" & MOCK4=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 2>/dev/null' EXIT
+wait_for_port "$PORT4" || { echo "FAIL mock server never listened on $PORT4"; exit 1; }
+
+# What a host with no uuidgen presents to `$(uuidgen)`: nothing on stdout.
+NOUUID="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$NOUUID/uuidgen"
+chmod +x "$NOUUID/uuidgen"
+
+r4="$(apirepo "$PORT4")"
+DH4="$(mktemp -d)"
+OUT4="$(mktemp)"
+( cd "$r4" && env PATH="$NOUUID:$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH4" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r4" \
+    BOARD_CREDENTIALS_FILE="$CREDS" ARCHITECT_MAX_CONCURRENT=0 \
+    "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
+
+nonce_len() {
+  grep '"path": "/runs/claim"' "$FIX4.log" | head -1 |
+    python3 -c 'import json, sys
+b = json.loads(json.loads(sys.stdin.read())["body"])
+print("nonce-len=%d" % len(b["dispatchNonce"]))'
+}
+t "the claim still goes out under a real nonce" "nonce-len=36" nonce_len
+t "and the dispatch lands"                      "claimed #31 run=71" cat "$OUT4"
+# The consequence, not just the symptom: every empty nonce names the SAME
+# journal, so the next claim on that lane overwrote the granted run's record
+# and then removed it when the lane answered empty. The one record that could
+# have recovered run 71 was gone before the tick ended.
+journal4() { cat "$DH4"/board-claims/*.json 2>/dev/null || echo "no journal survived"; }
+t "the granted run keeps its recovery record" '"run_id": 71'          journal4
+t "and that record says the handoff completed" '"spawn_completed": true' journal4
+
+# The guard itself, at the seam: with NEITHER minter able to answer, the claim
+# is refused before anything is journalled. There is no end-to-end form of this
+# — python3 has to work for the dispatcher to run at all — so it is exercised
+# where it lives.
+NOMINT="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$NOMINT/uuidgen"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$NOMINT/python3"
+chmod +x "$NOMINT/uuidgen" "$NOMINT/python3"
+nonce_guard() {
+  ( PATH="$NOMINT:$PATH"
+    # shellcheck source=../../../skills/issue-tracker/scripts/_claim_journal.sh
+    . "$SCRIPTS/_claim_journal.sh"
+    local rc=0
+    _claim_nonce || rc=$?
+    # Bracketed: rc=127 (the helper missing entirely) contains "rc=1".
+    echo "rc=[$rc]" )
+}
+t "with no minter at all the refusal is loud" "no claim nonce could be minted" nonce_guard
+t "and it refuses rather than answering empty" "rc=[1]" nonce_guard
+
+# =========================================================================
+# Scenario 5 — AN UNCERTAIN IMPLEMENTER CLAIM DOES NOT FALL THROUGH TO SPIKE.
+# A claim that dies on the wire may still have landed; its journal is kept and
+# reconciliation replays it later. Reading that as "lane refused" and claiming
+# a spike NOW puts two workers on the machine for one slot — the replayed
+# implementer and the spike — over the combined cap the loop exists to hold.
+# =========================================================================
+PORT5="$(free_port)"
+FIX5="$(mktemp)"; : > "$FIX5.log"
+cat > "$FIX5" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":503,"once":true,
+  "body":{"error":{"code":"unavailable","message":"claim service is down"}}},
+ {"method":"POST","path":"/runs/claim","status":200,
+  "body":{"runId":81,"ticketId":41,"fence":1,"bearer":"tok-s","plan":null,
+          "body":"spike work","parentPin":null}},
+ {"method":"POST","path":"/runs/81/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX5" "$PORT5" & MOCK5=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 2>/dev/null' EXIT
+wait_for_port "$PORT5" || { echo "FAIL mock server never listened on $PORT5"; exit 1; }
+
+r5="$(apirepo "$PORT5")"
+DH5="$(mktemp -d)"
+OUT5="$(mktemp)"
+( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH5" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r5" \
+    BOARD_CREDENTIALS_FILE="$CREDS" ARCHITECT_MAX_CONCURRENT=0 \
+    "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
+
+t  "the uncertain claim keeps its journal for replay" \
+   "kept for replay"                                   cat "$OUT5"
+nt "and the spike lane is NOT claimed behind it" '\"lane\": \"spike\"' cat "$FIX5.log"
+claim5() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX5.log")"; }
+t  "the tick stops on the uncertain claim"  "claims=1"     claim5
+nt "so nothing is spawned this tick"        "ARGS name="   bash -c "cat '$DH5/spawn-capture.txt' 2>/dev/null || echo none"
+journal5() { ls "$DH5/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal gone"; }
+t  "the record the replay needs survives"   "journal kept" journal5
+
+# =========================================================================
+# Scenario 6 — THE SWEEP'S TICK DEADLINE BOUNDS THE DISPATCH PHASE FROM THE
+# INSIDE. One budget check ahead of the whole phase admitted every loop here in
+# full on one second of remaining budget, under the sweep's global lock. The
+# deadline is checked before each FRESH claim; unset or unparseable is no gate
+# at all, which is what a direct --sweep and the by-name `dispatch` phase get.
+# =========================================================================
+PORT6="$(free_port)"
+FIX6="$(mktemp)"; : > "$FIX6.log"
+cat > "$FIX6" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX6" "$PORT6" & MOCK6=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 2>/dev/null' EXIT
+wait_for_port "$PORT6" || { echo "FAIL mock server never listened on $PORT6"; exit 1; }
+
+r6="$(apirepo "$PORT6")"
+DH6="$(mktemp -d)"
+SWEEP6() {  # SWEEP6 [env...] — one dispatch tick against this board
+  ( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+      DAEMON_HOME="$DH6" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r6" \
+      BOARD_CREDENTIALS_FILE="$CREDS" "$@" "$DISPATCH" --sweep )
+}
+OUT6="$(mktemp)"
+SWEEP6 BOARD_TICK_DEADLINE=1 > "$OUT6" 2>&1 || true
+t  "a passed deadline stops the fresh claims" "tick deadline has passed" cat "$OUT6"
+nt "and nothing goes on the wire"             '"path": "/runs/claim"'    cat "$FIX6.log"
+
+: > "$FIX6.log"
+OUT6B="$(mktemp)"
+SWEEP6 > "$OUT6B" 2>&1 || true
+t  "no deadline is no gate"    '"path": "/runs/claim"'   cat "$FIX6.log"
+nt "and says nothing about one" "tick deadline"          cat "$OUT6B"
+
+: > "$FIX6.log"
+OUT6C="$(mktemp)"
+SWEEP6 BOARD_TICK_DEADLINE=not-a-number > "$OUT6C" 2>&1 || true
+t  "an unparseable deadline is no gate either" '"path": "/runs/claim"' cat "$FIX6.log"
 
 finish

@@ -52,6 +52,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_binding.sh
 . "$SCRIPT_DIR/_binding.sh"
+# For _claim_nonce ONLY — the successor claim below is filed under a nonce on
+# exactly the dispatchers' terms, and a host without uuidgen must not journal a
+# claim under an empty name. The reconciler this file also defines belongs to
+# the DISPATCHERS and is not called here: the successor lane is outside their
+# lanes and _reconcile_successors reconciles it.
+# shellcheck source=_claim_journal.sh
+. "$SCRIPT_DIR/_claim_journal.sh"
 [ "$BOARD_BINDING" = api ] || {
   echo "error: _sweep_api.sh runs only under an api binding" >&2; exit 1; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -719,7 +726,12 @@ PY
 #   {"ticket": N, "state": "<board state when it stuck>", "env_issue": N}
 # THIS PHASE IS THEIR ONLY WRITER. Both dispatchers read the directory
 # (BOARD_SUPPRESS_DIR) and release any claim that yields a suppressed ticket.
-SUPPRESS_DIR="$DAEMON_HOME/board-suppress"
+# An operator-set BOARD_SUPPRESS_DIR is honored (the header documents it, and
+# both dispatchers already default-respect it at their _api_suppressed);
+# overwriting it here split the two halves of one mechanism — this phase wrote
+# records into the registry default while the dispatchers read the configured
+# directory, so every suppression was invisible to the side that enforces it.
+SUPPRESS_DIR="${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}"
 CLAIMS_DIR="$DAEMON_HOME/board-claims"
 
 _suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
@@ -1092,7 +1104,7 @@ _resume_one() {
   _scan_ok || { echo "resume: #$tid — registry scan failed; the predecessor's lane is unreadable, so this ticket is left for the next tick rather than recovered as an implementer" >&2; return 1; }
   # A nonce handed in by reconciliation is a REPLAY of a claim that may already
   # have landed: the server answers it with the same run rather than a second.
-  [ -n "$nonce" ] || nonce="$(uuidgen)"
+  [ -n "$nonce" ] || nonce="$(_claim_nonce)" || return 1
   mkdir -p "$CLAIMS_DIR"
   dir="$(mktemp -d "$SCRATCH/resume.XXXXXX")"
   # Journalled BEFORE the POST, the dispatchers, rule: a crash between the two
@@ -1520,8 +1532,18 @@ phase_dispatch() {
   # tick renewing one registry while the dispatchers filled another.
   # BOARD_CREDENTIALS_FILE is deliberately NOT passed: it is repo-scoped, and
   # each dispatcher re-derives it from the repo it resolves for itself.
+  # BOARD_TICK_DEADLINE hands the tick's own clock across the process boundary,
+  # so the dispatchers can stop BETWEEN claims. The _budget_left gate below
+  # admits this whole phase on one second of remaining budget, and both
+  # dispatchers then run to completion inside the global lock — repeated claims
+  # on every lane, plus a startup-barrier wait per review candidate. The
+  # deadline bounds the phase from the inside as well as at its door. Empty
+  # unless the `all` tick set it: a phase asked for by name is its own tick
+  # with its own clock, and is no more gated inside the dispatchers than it is
+  # at the case arm below.
   local env_common=(BOARD_SUPPRESS_DIR="$SUPPRESS_DIR" DAEMON_HOME="$DAEMON_HOME"
-                    DAEMON_SCRIPTS="$DAEMON_SCRIPTS" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}")
+                    DAEMON_SCRIPTS="$DAEMON_SCRIPTS" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
+                    BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
   env "${env_common[@]}" "$impl" --sweep \
     || echo "dispatch: the implement lanes failed this tick" >&2
   env "${env_common[@]}" "$revw" --sweep \
@@ -1540,6 +1562,10 @@ case "${1:-all}" in
   # that had already spent its 900 seconds went on to spend more. A phase asked
   # for BY NAME is its own tick with its own clock and is never gated here.
   all) phase_renew || true; phase_relay || true; phase_resume || true
+       # The same budget the arms above stop on, as an absolute the dispatchers
+       # can read across the process boundary. Set only here: this is the tick
+       # that owns the clock.
+       TICK_DEADLINE="$((TICK_START + TICK_BUDGET))"
        if _budget_left; then phase_dispatch || true
        else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
   *) die "usage: _sweep_api.sh [renew|relay|resume|dispatch|all]" ;;
