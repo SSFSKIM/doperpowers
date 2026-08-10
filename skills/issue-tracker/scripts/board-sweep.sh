@@ -714,9 +714,8 @@ pass_surface() {
           printf '## Success criteria\n\n- A single contract for the surface exists and every member ticket is a slice of it or is closed with a reason.\n'
         } > "$bodyf"
         out="$("$SCRIPT_DIR/board-register.sh" "surface $surface: consolidation redesign (queue-depth auto)" \
-                enhancement P1 --state ready-for-architect --body-file "$bodyf" 2>&1)" \
+                enhancement P1 --state ready-for-architect --surface "$surface" --body-file "$bodyf" 2>&1)" \
           && num="${out%% *}" \
-          && "$SCRIPT_DIR/board-surface.sh" "$num" --add "$surface" >/dev/null 2>&1 \
           && log "[sweep] SURFACE: consolidation #$num registered for $surface (members: $members)" \
           || log "[sweep] SURFACE: consolidation register failed for $surface"
         rm -f "$bodyf"
@@ -749,11 +748,17 @@ for tid in sorted(tickets, key=int):
     paths = []
     for p in open_prs:
         try:
-            files = json.loads(B.gh(["pr", "view", str(p["num"]), "-R",
-                                     B.repo(), "--json", "files"]))
-        except SystemExit:
+            files = json.loads(B.gh(["api", "--paginate",
+                                     "repos/%s/pulls/%s/files"
+                                     % (B.repo(), p["num"])]))
+        except (SystemExit, ValueError):
             continue
-        paths += [f["path"] for f in files.get("files", [])]
+        for f in files or []:
+            # A rename contributes BOTH names: previous_filename is how a
+            # file renamed OUT of a surface still marks the ticket.
+            paths.append(f.get("filename") or "")
+            if f.get("previous_filename"):
+                paths.append(f["previous_filename"])
     for s in [x for x in B.match_paths(reg, paths) if x not in n["surfaces"]]:
         B.ensure_surface_label(s)
         B.edit_labels(tid, add=(B.SURFACE_PREFIX + s,))
@@ -764,35 +769,67 @@ for tid in sorted(tickets, key=int):
 # register moment deferred (live workers) or never saw (diff-derived
 # labels). Bounded per tick: body writes are the expensive, racy resource.
 writes = 0
+lock_root = os.path.join(os.environ.get("DAEMON_HOME",
+    os.path.expanduser("~/.claude/orchestrating-daemons")), "surface-locks")
+os.makedirs(lock_root, exist_ok=True)
 for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
     mates = [t for t in tickets if s in tickets[t]["surfaces"]
              and tickets[t]["state"] not in B.TERMINAL]
-    for i, a in enumerate(mates):
-        for b in mates[i + 1:]:
-            if writes >= 8:
-                break
-            if b in tickets[a]["relates_to"] or a in tickets[b]["relates_to"]:
-                continue
-            if a in live or b in live:
-                continue
-            B.update_meta(a, tickets[a], **{"relates-to": " ".join(
-                "#%s" % r for r in tickets[a]["relates_to"] + [b])})
-            tickets[a]["relates_to"].append(b)
-            B.update_meta(b, tickets[b], **{"relates-to": " ".join(
-                "#%s" % r for r in tickets[b]["relates_to"] + [a])})
-            tickets[b]["relates_to"].append(a)
-            writes += 1
-            print("[sweep] SURFACE: related #%s -- #%s (%s)" % (a, b, s))
-IMPL_STATES = ("ready-for-implementer", "in-progress", "in-review")
+    if len(mates) < 2:
+        continue
+    # The dispatcher holds this same lock across its occupancy-check →
+    # spawn window (including the parent-pin body stamp) — taking it here
+    # is what keeps these relates RMWs from racing a dispatch. Contention
+    # or a fresh live worker → skip; next tick converges.
+    lock = os.path.join(lock_root, s)
+    try:
+        os.mkdir(lock)
+    except OSError:
+        continue
+    try:
+        live_now = B.live_bound_tickets()
+        for i, a in enumerate(mates):
+            for b in mates[i + 1:]:
+                if writes >= 8:
+                    break
+                # Each SIDE is checked and repaired independently — a
+                # one-sided edge (a crashed prior tick) must converge, not
+                # be skipped as "already related".
+                for src_t, dst in ((a, b), (b, a)):
+                    if dst in tickets[src_t]["relates_to"]:
+                        continue
+                    if src_t in live_now:
+                        continue
+                    B.update_meta(src_t, tickets[src_t],
+                                  **{"relates-to": " ".join(
+                                      "#%s" % r for r in
+                                      tickets[src_t]["relates_to"] + [dst])})
+                    tickets[src_t]["relates_to"].append(dst)
+                    writes += 1
+                    print("[sweep] SURFACE: related #%s -> #%s (%s)"
+                          % (src_t, dst, s))
+    finally:
+        os.rmdir(lock)
+# Members = every ticket still in the rewrite race. Parks COUNT — a
+# needs-human/needs-info rewrite resumes into its lane without another
+# registration or search; only deferred, terminal, spike, epic, and the
+# architect lane (the resolver) are out.
 ARCH_STATES = ("ready-for-architect", "in-design")
+OUT_STATES = B.TERMINAL + ARCH_STATES + ("deferred",)
 for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
     members = [t for t in sorted(tickets, key=int)
                if s in tickets[t]["surfaces"]
-               and tickets[t]["state"] in IMPL_STATES
+               and tickets[t]["state"] not in OUT_STATES
                and tickets[t]["category"] != "spike" and t not in epics]
     if len(members) < 3:
         continue
-    if any(s in tickets[t]["surfaces"] and tickets[t]["state"] in ARCH_STATES
+    # Structural dedupe covers the consolidation's WHOLE open lifecycle:
+    # architect states before decompose, epic-with-children after (decompose
+    # moves it to ready-for-implementer while members stay open — arch-states
+    # alone re-registered every tick from that moment).
+    if any(s in tickets[t]["surfaces"]
+           and tickets[t]["state"] not in B.TERMINAL
+           and (tickets[t]["state"] in ARCH_STATES or t in epics)
            for t in tickets):
         continue
     print("CONSOLIDATE %s %s" % (s, " ".join("#%s" % m for m in members)))

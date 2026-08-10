@@ -509,6 +509,18 @@ def surfaces_registry():
     reg = None
     ref = _surfaces_ref()
     if ref:
+        # Refresh the tracking ref first (best-effort): none of the board
+        # scripts otherwise fetch, so a registry entry merged remotely would
+        # stay invisible to a long-lived clone indefinitely. Offline or slow
+        # remotes degrade to the cached ref, never to an error. $SURFACES_REF
+        # (tests / explicit pins) skips the fetch — the override IS the pin.
+        if not os.environ.get("SURFACES_REF") and "/" in ref:
+            remote, _, branch = ref.partition("/")
+            try:
+                subprocess.run(["git", "fetch", "--quiet", remote, branch],
+                               capture_output=True, timeout=30, check=False)
+            except subprocess.TimeoutExpired:
+                pass
         r = subprocess.run(["git", "show", "%s:.doperpowers/surfaces.md" % ref],
                            capture_output=True, text=True)
         if r.returncode == 0:

@@ -723,6 +723,24 @@ json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
 }
 
+# T9b: WITHOUT a surfaces.md registry, a surface label is ignored — the
+# leftover-label case must not queue eligible work forever (the no-registry
+# inertness contract covers the dispatcher too).
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board in-progress
+out="$(run 20)"
+assert_contains "$out" "dispatched #20" \
+  "no registry: a surface label does not serialize (inertness holds)"
+
+# The registry lands on the clone's default branch (what production reads:
+# origin/HEAD, freshly fetched); every scenario below runs with it present.
+mkdir -p "$CLONE/.doperpowers"
+printf '## recommend-rpc\n- paths: sql/*recommend*.sql\n- identifiers: recommend_for_student\n' \
+  > "$CLONE/.doperpowers/surfaces.md"
+git -C "$CLONE" add .doperpowers/surfaces.md
+git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m surfaces
+git -C "$CLONE" push -q origin main
+
 # T10: a board-state occupant (in-progress) blocks the implement lane only —
 # the architect (resolver) and the spike (read-only) still dispatch.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"

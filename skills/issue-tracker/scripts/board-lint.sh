@@ -182,10 +182,14 @@ if reg is not None:
             for pr in n["prs"]:
                 try:
                     import json as _json
-                    files = _json.loads(B.gh(["pr", "view", str(pr["num"]),
-                                              "-R", B.repo(), "--json", "files"]))
-                    paths += [f["path"] for f in files.get("files", [])]
-                except SystemExit:
+                    files = _json.loads(B.gh(["api", "--paginate",
+                                              "repos/%s/pulls/%s/files"
+                                              % (B.repo(), pr["num"])]))
+                    for f in files or []:
+                        paths.append(f.get("filename") or "")
+                        if f.get("previous_filename"):
+                            paths.append(f["previous_filename"])
+                except (SystemExit, ValueError):
                     paths = None
                     break
             if paths is not None:

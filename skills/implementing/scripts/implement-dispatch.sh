@@ -458,41 +458,82 @@ q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
 q("T_PARENT", n.get("parent") or "")
 eng = "claude" if "engine:claude" in n["labels"] else ("codex" if "engine:codex" in n["labels"] else "")
 q("T_ENGINE_LABEL", eng)
-# Surface occupancy (spec: dispatch serialization). A surface this ticket
-# carries is OCCUPIED when another open non-epic non-spike ticket with the
-# same label is in an in-flight board state (in-progress/in-review/in-design
-# — in-design so a consolidation redesign holds patch work off the surface),
-# OR has a live bound non-reviewer worker (registry-first: board state lags a
-# fresh spawn by minutes — the double-dispatch window), OR was claimed by an
-# earlier dispatch in this same sweep tick (T_CLAIMED, space-joined names).
-q("T_SURFACES", " ".join(n["surfaces"]))
-block = occupant = ""
-if n["surfaces"]:
-    claimed = set((os.environ.get("T_CLAIMED") or "").split())
-    live = B.live_bound_tickets(include_reviewers=False)
-    epics = {t for t in tickets if any(
-        tickets[c].get("parent") == t for c in tickets)}
-    for s in n["surfaces"]:
-        # Board/registry occupants first, the in-tick claim set second —
-        # both block identically, but naming the real occupant beats
-        # "an earlier dispatch this tick" when either would match.
-        for t, m in tickets.items():
-            if t == tid or s not in m["surfaces"] or t in epics \
-               or m["category"] == "spike" or m["state"] in B.TERMINAL:
-                continue
-            if m["state"] in ("in-progress", "in-review", "in-design") \
-               or t in live:
-                block, occupant = s, "#" + t
-                break
-        if not block and s in claimed:
-            block, occupant = s, "an earlier dispatch this tick"
-        if block:
-            break
-q("T_SURFACE_BLOCK", block); q("T_SURFACE_OCCUPANT", occupant)
+# Surface labels, gated on a loaded registry: without .doperpowers/
+# surfaces.md on the default branch the whole surface feature is inert BY
+# CONTRACT — a leftover label in a repo whose registry was removed must not
+# queue work forever. The occupancy CHECK runs later, under the per-surface
+# lock (dispatch_one) — computing it here would be a check outside the lock.
+q("T_SURFACES", " ".join(n["surfaces"]) if n["surfaces"]
+  and B.surfaces_registry() is not None else "")
 import re
 slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", n["title"].lower())).strip("-")[:32].rstrip("-")
 q("T_SLUG", slug or "ticket")
 PY
+}
+
+# Surface occupancy for ticket <1> across its surfaces (space-joined <2>),
+# given the surfaces claimed earlier this tick (<3>). Fresh snapshot each
+# call ON PURPOSE — it runs under the per-surface lock, and a check computed
+# before the lock would be the TOCTOU the lock exists to close. A surface is
+# OCCUPIED when another open non-epic non-spike ticket with the same label
+# is in an in-flight board state (in-progress/in-review/in-design —
+# in-design so a consolidation redesign holds patch work off the surface),
+# OR has a live bound non-reviewer worker (registry-first: board state lags
+# a fresh spawn by minutes), OR sits in the in-tick claim set (the belt for
+# a crashed meta write). Prints "<surface>|<occupant>" or nothing.
+_surface_occupant() {  # <ticket> <surfaces> <claimed>
+  T_ID="$1" T_SURFS="$2" T_CLAIMED="$3" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
+import _board as B
+tickets = B.snapshot()
+tid = os.environ["T_ID"]
+claimed = set((os.environ.get("T_CLAIMED") or "").split())
+live = B.live_bound_tickets(include_reviewers=False)
+epics = {t for t in tickets if any(
+    tickets[c].get("parent") == t for c in tickets)}
+for s in os.environ["T_SURFS"].split():
+    for t, m in tickets.items():
+        if t == tid or s not in m["surfaces"] or t in epics \
+           or m["category"] == "spike" or m["state"] in B.TERMINAL:
+            continue
+        if m["state"] in ("in-progress", "in-review", "in-design") \
+           or t in live:
+            print("%s|#%s" % (s, t))
+            raise SystemExit(0)
+    if s in claimed:
+        print("%s|an earlier dispatch this tick" % s)
+        raise SystemExit(0)
+PY
+}
+
+# Per-surface mkdir locks under $DAEMON_HOME/surface-locks/ — the
+# cross-PROCESS half of serialization (the in-tick claim set only covers one
+# sweep process; two triggered dispatches, or a triggered dispatch beside the
+# sweep, would otherwise both pass the occupancy check inside the
+# check-to-meta window). Same stale-steal policy as the review dispatch lock.
+# Also taken by the sweep SURFACE pass around its relates body writes, which
+# is what serializes those against this dispatcher's parent-pin stamp.
+_surf_lock() {  # <surfaces...> — 0 = all acquired; 1 = contention (none held)
+  local s got=""
+  mkdir -p "$DAEMON_HOME/surface-locks"
+  for s in $1; do
+    if ! mkdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null; then
+      if [ -n "$(find "$DAEMON_HOME/surface-locks/$s" -maxdepth 0 -mmin +"${SURFACE_LOCK_STALE:-30}" 2>/dev/null)" ]; then
+        rmdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null || true
+        mkdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null \
+          || { _surf_unlock "$got"; return 1; }
+      else
+        _surf_unlock "$got"; return 1
+      fi
+    fi
+    got="$got $s"
+  done
+  return 0
+}
+_surf_unlock() {  # <surfaces...>
+  local s
+  for s in $1; do rmdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null || true; done
 }
 
 # Newest registry meta bound to ticket <1> → "uuid|status|name" (empty if none).
@@ -580,7 +621,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model
+  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model surf_locked="" occ
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -644,16 +685,31 @@ dispatch_one() {
   fi
 
   # Surface serialization (spec: one in-flight implement worker per surface).
-  # Only the IMPLEMENT role waits: the architect lane is the resolver (a
-  # consolidation ticket must dispatch ONTO an occupied surface) and a spike
-  # is read-only exploration. A skip is normal scheduling — return 0, next
-  # tick retries. SURFACE_OVERRIDE=1 is the deliberate operator bypass; both
-  # entry points (--sweep and triggered) share this guard by construction.
-  if [ "$role" = "IMPLEMENT" ] && [ -n "${T_SURFACE_BLOCK:-}" ]; then
-    if [ "${SURFACE_OVERRIDE:-0}" = "1" ]; then
-      echo "SURFACE_OVERRIDE=1: dispatching #$n onto occupied surface $T_SURFACE_BLOCK (occupant ${T_SURFACE_OCCUPANT:-?})"
-    else
-      echo "surface $T_SURFACE_BLOCK occupied by ${T_SURFACE_OCCUPANT:-?} — #$n queued"
+  # Lock FIRST, check UNDER the lock: the per-surface mkdir lock is what
+  # makes the occupancy check atomic across processes (two triggered
+  # dispatches, or a triggered dispatch racing the sweep). Held from here
+  # through the spawn — the spawn writes the registry meta, after which the
+  # registry arm of the check takes over. Only the IMPLEMENT role waits:
+  # the architect lane is the resolver (a consolidation ticket must dispatch
+  # ONTO an occupied surface; on lock contention it proceeds unlocked rather
+  # than queue) and a spike is read-only exploration. A skip is normal
+  # scheduling — return 0, next tick retries. SURFACE_OVERRIDE=1 is the
+  # deliberate operator bypass; both entry points share this guard.
+  if [ -n "${T_SURFACES:-}" ] && [ "$role" != "SPIKE" ]; then
+    if _surf_lock "$T_SURFACES"; then
+      surf_locked="$T_SURFACES"
+      occ="$(_surface_occupant "$n" "$T_SURFACES" "${DISPATCHED_SURFACES:-}")"
+      if [ -n "$occ" ] && [ "$role" = "IMPLEMENT" ]; then
+        if [ "${SURFACE_OVERRIDE:-0}" = "1" ]; then
+          echo "SURFACE_OVERRIDE=1: dispatching #$n onto occupied surface ${occ%%|*} (occupant ${occ#*|})"
+        else
+          echo "surface ${occ%%|*} occupied by ${occ#*|} — #$n queued"
+          _surf_unlock "$surf_locked"
+          return 0
+        fi
+      fi
+    elif [ "$role" = "IMPLEMENT" ] && [ "${SURFACE_OVERRIDE:-0}" != "1" ]; then
+      echo "surface lock contention ($T_SURFACES) — #$n queued"
       return 0
     fi
   fi
@@ -723,8 +779,8 @@ PY
     P_ENGINE_NAME="$engine" P_PROTOCOL_FILE="$protocol_file" \
     P_DECOMPOSE_DOC="$decompose" \
     _render_bootstrap)" \
-    || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; return 1; }
-  [ -n "$prompt" ] || { echo "#$n: empty prompt — not dispatching" >&2; return 1; }
+    || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; _surf_unlock "$surf_locked"; return 1; }
+  [ -n "$prompt" ] || { echo "#$n: empty prompt — not dispatching" >&2; _surf_unlock "$surf_locked"; return 1; }
 
   name="$n-$T_SLUG"
   # ONE worker harness, two model routes (same shape as review-dispatch):
@@ -735,7 +791,7 @@ PY
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
       "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
       "${IMPLEMENT_MODEL:-fable}")" \
-      || { echo "#$n: worker spawn failed" >&2; return 1; }
+      || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   else
     # Cleared, not merely unset by us: this dispatcher can itself run inside a
     # gateway-routed daemon whose environment exports these, and daemon-spawn.sh
@@ -747,8 +803,11 @@ PY
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
       "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
       "$model")" \
-      || { echo "#$n: worker spawn failed" >&2; return 1; }
+      || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   fi
+  # The spawn wrote the worker's registry meta — the registry arm of the
+  # occupancy check covers the surface from here on; release the lock.
+  _surf_unlock "$surf_locked"; surf_locked=""
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
   [ -n "$uuid" ] || { echo "#$n: spawned worker UUID was not parseable" >&2; return 1; }

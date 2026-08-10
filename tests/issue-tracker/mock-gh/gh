@@ -146,17 +146,6 @@ def main():
         save(s)
         return
 
-    if argv[:2] == ["pr", "view"]:
-        # `gh pr view <n> --json files` — the surface sweep/lint diff read.
-        # Files come from the state's optional "pr_files" map
-        # ({"<pr-number>": ["path", ...]}); an unlisted PR has no files,
-        # which is also what a just-opened empty PR answers.
-        if opt(argv, "--json") == "files":
-            files = (s.get("pr_files") or {}).get(argv[2], [])
-            print(json.dumps({"files": [{"path": p} for p in files]}))
-            return
-        die("unhandled pr view fields: %s" % " ".join(argv))
-
     if argv[:2] == ["issue", "view"]:
         it = issue(s, argv[2])
         if opt(argv, "--json") == "comments":
@@ -176,6 +165,22 @@ def main():
             print(json.dumps({"comments": comment_objs(it)[:page]}))
             return
         die("unhandled issue view fields: %s" % " ".join(argv))
+
+    # REST: pulls/<n>/files — the surface sweep/lint diff read. Files come
+    # from the state's optional "pr_files" map; an entry is a plain path or
+    # {"filename": ..., "previous_filename": ...} (a rename). An unlisted PR
+    # has no files, which is also what a just-opened empty PR answers.
+    m_files = None
+    if argv[:1] == ["api"]:
+        rest = [a for a in argv[1:] if not a.startswith("-")]
+        if rest:
+            m_files = re.match(r"repos/[^/]+/[^/]+/pulls/(\d+)/files$", rest[0])
+    if m_files:
+        out = []
+        for f in (s.get("pr_files") or {}).get(m_files.group(1), []):
+            out.append({"filename": f} if isinstance(f, str) else f)
+        print(json.dumps(out))
+        return
 
     # REST endpoints the board verifies a plan pin against. Both are driven by
     # $MOCK_GH_REFS (JSON): {"compare": {"<branch>...<sha>": "identical"},

@@ -175,12 +175,14 @@ sweep() {
         SWEEP_LOG="$TEST_ROOT/sweep.log" "$SWEEP" 2>&1)
 }
 
-# Park most of the cluster first: the queue-depth watch fires at >= 3 open
-# implement-lane members, and T16/T17 need the sweep to run BELOW that
-# threshold (T18 owns the trip). Parks are not implement-lane states.
-run board-transition.sh "$n3" needs-human "test park" >/dev/null
-run board-transition.sh "$n5" needs-human "test park" >/dev/null
-run board-transition.sh "$n6" needs-human "test park" >/dev/null
+# Defer most of the cluster first: the queue-depth watch fires at >= 3
+# members, and T16/T17 need the sweep to run BELOW that threshold (T18 owns
+# the trip). `deferred` is the ONE park that leaves the rewrite race —
+# needs-human/needs-info members still count (they resume into their lane
+# without re-running any search).
+run board-transition.sh "$n3" deferred "test defer" >/dev/null
+run board-transition.sh "$n5" deferred "test defer" >/dev/null
+run board-transition.sh "$n6" deferred "test defer" >/dev/null
 
 # T16: PR-diff labeling is add-only (acceptance 4 + 5)
 echo "T16: sweep labels from the PR diff, add-only"
@@ -229,6 +231,68 @@ out="$(sweep)"
 count_after="$(state "len(s['issues'])")"
 if [ "$count_mid" = "$count_after" ]; then pass "T18: second sweep registers nothing (dedupe holds)"; else
     fail "T18: second sweep registers nothing (dedupe holds)"; echo "    issues grew $count_mid -> $count_after"; fi
+
+# T18b: a needs-human PARKED member still counts toward the queue depth, and
+# the dedupe survives the consolidation's decompose (epic in a non-arch state)
+echo "T18b: park counting + post-decompose dedupe"
+run board-transition.sh "$n7" needs-human "parked mid-race" >/dev/null
+python3 - "$cons" <<'PY'
+import json, os, sys
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+c = s["issues"][sys.argv[1]]
+# decompose shape: the consolidation left the architect lane and now has a
+# child — arch-states-only dedupe would re-register from this very tick
+c["labels"] = [l for l in c["labels"] if not l.startswith("status:")] + ["status:ready-for-implementer"]
+child = str(s["next"]); s["next"] += 1
+s["issues"][child] = dict(c, number=int(child), id="ID_%s" % child,
+                          labels=["status:ready-for-implementer", "bug"],
+                          parent=int(sys.argv[1]), body="slice", comments=[])
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+count_before_18b="$(state "len(s['issues'])")"
+out="$(sweep)"
+count_after_18b="$(state "len(s['issues'])")"
+if [ "$count_before_18b" = "$count_after_18b" ]; then
+    pass "T18b: an open decomposed consolidation (epic, non-arch state) still suppresses re-registration"
+else
+    fail "T18b: an open decomposed consolidation (epic, non-arch state) still suppresses re-registration"
+    echo "    issues grew $count_before_18b -> $count_after_18b"
+fi
+
+# T18c: a rename OUT of a surface path still labels the ticket
+echo "T18c: rename matching via previous_filename"
+printf 'nothing here\n' > "$body"
+out="$(run board-register.sh "rename carrier" bug P2 --body-file "$body")"
+n9="${out%% *}"
+python3 - "$n9" <<'PY'
+import json, os, sys
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+it = s["issues"][sys.argv[1]]
+it["xrefPRs"] = [{"number": 901, "url": "https://github.com/test/repo/pull/901",
+                  "state": "OPEN"}]
+s.setdefault("pr_files", {})["901"] = [
+    {"filename": "sql/archive/old.sql",
+     "previous_filename": "sql/p177_recommend_elective.sql"}]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(sweep)"
+assert_contains "$(state "s['issues']['$n9']['labels']")" "surface:recommend-rpc" \
+  "T18c: previous_filename of a rename matches the surface paths"
+
+# T18d: a one-sided relates edge is repaired, not skipped
+echo "T18d: one-sided relates repair"
+python3 - "$n9" <<'PY'
+import json, os, sys
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+it = s["issues"][sys.argv[1]]
+# strip THIS side's meta entirely — the mates still point at it, so the old
+# pair-skip logic would see "already related" and never converge
+it["body"] = "nothing here\n"
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(sweep)"
+assert_contains "$(state "s['issues']['$n9']['body']")" "relates-to: " \
+  "T18d: the stripped side is re-written independently (converges after partial failure)"
 
 # T19: sweep is inert without a registry (acceptance 9)
 echo "T19: sweep SURFACE pass inert without a registry"
