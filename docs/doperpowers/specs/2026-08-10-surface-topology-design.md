@@ -144,9 +144,11 @@ Lane rules:
   in-flight tickets (`in-design` included) DO occupy against
   implementers: while the redesign runs, patch work waits.
 - **Spike lane**: neither blocked nor occupying — read-only exploration
-  cannot rewrite a body. (Occupancy queries fetch labels+state and
-  exclude spike-category tickets and epic parents — pull-bookkeeping
-  `in-progress` on an epic must not occupy forever.)
+  cannot rewrite a body. Lane, not category: a spike-category ticket in
+  an architect state (`ready-for-architect` / `in-design`) is architect
+  work and occupies (v3). (Occupancy queries fetch labels+state and
+  exclude implement-lane spike tickets and epic parents —
+  pull-bookkeeping `in-progress` on an epic must not occupy forever.)
 
 Registration is NEVER refused (knowledge is never lost — the invariant
 governs parallel work, not parallel recording).
@@ -227,7 +229,8 @@ live recommend-RPC cluster is under serialization from day one.
    `surface:X` tickets in ONE tick yield one dispatch (in-tick claim).
 4. An architect-lane `surface:X` ticket dispatches onto an occupied
    surface; while it is in-design, an implement `surface:X` ticket
-   waits. A spike ticket neither waits nor blocks.
+   waits. A spike-lane ticket neither waits nor blocks (in an
+   architect state it occupies like any in-design work — v3).
 5. A PR whose diff touches a seeded path pattern gets its ticket
    labeled by the next sweep tick even when the registrar declared
    nothing; an early-WIP diff that no longer matches never REMOVES a
@@ -340,3 +343,9 @@ Pending — written at finish.
   claim (M5), testable acceptance preconditions (M6), matching contract
   (M7), deletion lifecycle / relate idempotence + cap / name
   constraints / lane-derived counting (L1–L4).
+- v3 (2026-08-11): post-implementation reconciliation (codex rounds 1-3
+  during PR #54, ExecPlan Decision Log has the full record) - spike
+  exemption lane-scoped (a design-phase spike routes ARCHITECT and must
+  occupy); sweep SURFACE pass restricted to registry-present names
+  (orphan labels are lint's, not the sweep's); registry fetch throttled
+  by a cross-process stamp (`SURFACES_FETCH_TTL`, default 300s).

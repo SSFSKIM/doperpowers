@@ -397,10 +397,11 @@ add-only — a label is never removed automatically, a stale one is a lint
 WARN a human clears via `board-surface.sh --remove`).
 
 What the label DOES: implement-dispatch runs at most ONE implement-lane
-worker per surface at a time (skips log `surface <name> occupied by #<n>
-— queued`; `SURFACE_OVERRIDE=1` bypasses loudly). The architect lane is
+worker per surface at a time (the skip is logged;
+`SURFACE_OVERRIDE=1` bypasses loudly). The architect lane is
 never blocked but its in-flight tickets occupy — patch work waits while
-a consolidation redesign runs; spikes neither wait nor occupy. When three
+a consolidation redesign runs; spike-lane work neither waits nor
+occupies. When three
 or more open implement tickets pile onto one surface with no architect
 ticket carrying it, the sweep registers a consolidation ticket
 (`ready-for-architect`) naming the members — the surface label on that
