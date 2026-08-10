@@ -57,6 +57,22 @@
 #                       ticket-bind retries (defaults 3 attempts, 2s delay)
 #   REVIEW_ACK_POLLS / REVIEW_ACK_DELAY
 #                       startup-barrier acknowledgement wait (600 x 0.2s)
+#   WORKTREE_BOOTSTRAP_CMD
+#                       optional project bootstrap run inside each fresh review
+#                       worktree before the worker spawns (e.g. `npm run
+#                       setup:worktree`). Unset = no bootstrap (prior behavior).
+#                       Runs with the worktree at the TRUSTED base ref, never
+#                       the PR head (see BOOTSTRAP TRUST INVARIANT below).
+#                       Failure logs to $DAEMON_HOME/<name>.bootstrap.log and
+#                       never blocks dispatch.
+#   WORKTREE_BOOTSTRAP_TIMEOUT
+#                       bootstrap time budget in seconds (default 480). The
+#                       PR-triggered Actions path is bounded ABOVE by
+#                       pr-review-dispatch.yml `timeout-minutes: 10` — keep
+#                       this default below that cap or GitHub kills the job
+#                       before the nonfatal-failure path can run.
+#   DISPATCH_LOCK_STALE per-worker dispatch-lock stale-steal age in minutes
+#                       (default 30, same policy as board-sweep.sh)
 #
 # Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
 # in the target repo declares the repo's validated hot paths/patterns —
@@ -324,13 +340,93 @@ sys.exit(1)
 PY
 }
 
+# ---- worktree bootstrap (optional, config-driven) ------------------------------
+# Detached review worktrees start bare — no dependencies, no local env files —
+# which made reviewers' verification runs fail red or pass vacuously (the env
+# tracker's dominant thread). When WORKTREE_BOOTSTRAP_CMD is set, run it inside
+# the fresh worktree BEFORE the worker spawns, so the environment is ready by
+# the time the reviewer's first verification command runs. Failure is recorded
+# but never fatal: the reviewer can finish bootstrap by hand, and blocking the
+# whole review on a provisioning hiccup would trade a known-bad env for no
+# review at all.
+# BOOTSTRAP TRUST INVARIANT — extends the "must never execute PR code"
+# invariant the Actions entrypoint already enforces (see the cd comment near
+# the top): the bootstrap runs while the worktree is checked out at the
+# TRUSTED ref (the PR's base / the epic's base branch), never at the PR head.
+# package.json, lockfiles, and every script the command resolves come from
+# code that survived review; only after the bootstrap does the worktree move
+# to the reviewed ref, and untracked artifacts (node_modules, .env.local)
+# survive that checkout. A PR that edits the bootstrap's own inputs is
+# deliberately not honored at dispatch time — the worker re-verifies its
+# environment per protocol. The callers below own that ref choreography; this
+# helper only runs the command where it is told to.
+#
+# GNU `timeout` does not exist on the stock-macOS runner (runner-setup.md),
+# where an unguarded call would exit 127 and silently skip every bootstrap —
+# and TERM alone lets a signal-ignoring bootstrap overrun its budget. Prefer
+# timeout/gtimeout with a KILL backstop; otherwise a portable watchdog: TERM
+# at the budget, KILL 10s later.
+_run_with_budget() {  # <seconds> <command-string> — runs via bash -lc
+  local budget="$1" cmd="$2" rc=0 pid wd
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 10 "$budget" bash -lc "$cmd"; return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 10 "$budget" bash -lc "$cmd"; return $?
+  fi
+  bash -lc "$cmd" & pid=$!
+  ( sleep "$budget"; kill -TERM "$pid" 2>/dev/null; sleep 10; kill -KILL "$pid" 2>/dev/null ) & wd=$!
+  wait "$pid" || rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null || true
+  return "$rc"
+}
+
+_bootstrap_worktree() {  # <worktree-path> <worker-name>
+  [ -n "${WORKTREE_BOOTSTRAP_CMD:-}" ] || return 0
+  local wt="$1" wname="$2" log rc=0
+  log="$DAEMON_HOME/$wname.bootstrap.log"
+  ( cd "$wt" && _run_with_budget "${WORKTREE_BOOTSTRAP_TIMEOUT:-480}" \
+      "$WORKTREE_BOOTSTRAP_CMD" ) >"$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "$wname: worktree bootstrap failed rc=$rc (see $log) — dispatching anyway" >&2
+  fi
+  return 0
+}
+
+# ---- per-worker dispatch lock --------------------------------------------------
+# A PR event and the sweep can overlap while a long bootstrap runs: neither
+# sees reviewer metadata yet (it is published at spawn), both pass dedupe, and
+# the second would remove/recreate the same worktree mid-bootstrap. Dedupe on
+# dispatch stays the primary serializer (operation manual, "Two dispatches,
+# one PR"); this lock only covers the metadata-free window between workspace
+# preparation and spawn. mkdir lock — portable, macOS ships no flock — with
+# the same stale-steal policy as board-sweep.sh: a lock a dead dispatch left
+# behind is stolen after 30 min, not obeyed.
+_with_dispatch_lock() {  # <worker-name> <fn> [args…]
+  local wname="$1" lock rc=0; shift
+  lock="$DAEMON_HOME/$wname.dispatch.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +"${DISPATCH_LOCK_STALE:-30}" 2>/dev/null)" ]; then
+      rmdir "$lock" 2>/dev/null || true
+      mkdir "$lock" 2>/dev/null \
+        || { echo "$wname: concurrent dispatch holds the lock — skip"; return 0; }
+    else
+      echo "$wname: concurrent dispatch holds the lock — skip"; return 0
+    fi
+  fi
+  "$@" || rc=$?
+  rmdir "$lock" 2>/dev/null || true
+  return "$rc"
+}
+
 # ---- per-PR dispatch (dedupe already decided by the caller) --------------------
 # Every step is explicitly guarded: in sweep mode this function runs behind
 # `||` (which suspends errexit through the WHOLE call subtree), so an
 # unguarded mid-function failure would be silently absorbed — dispatching
 # with stale vars from the previous iteration or an empty prompt. Guards
 # return 1 so the sweep's per-PR reporter fires instead.
-dispatch_one() {
+dispatch_one() { _with_dispatch_lock "review-pr-$1" _dispatch_one_locked "$@"; }
+_dispatch_one_locked() {
   local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
@@ -392,8 +488,20 @@ PY
     git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
   fi
   git -C "$LOCAL_REPO" worktree prune
-  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
-    || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
+  # Trust choreography (see the BOOTSTRAP TRUST INVARIANT above): with a
+  # bootstrap configured, the worktree is born at the trusted BASE ref, the
+  # bootstrap runs there, and only then does the worktree move to the PR
+  # head. Without one, the head checkout is direct as before.
+  if [ -n "${WORKTREE_BOOTSTRAP_CMD:-}" ]; then
+    git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$BASE_REF" \
+      || { echo "#$pr: worktree add failed (origin/$BASE_REF)" >&2; rm -rf "$tmp"; return 1; }
+    _bootstrap_worktree "$wt" "review-pr-$pr"
+    git -C "$wt" checkout -q --detach "$HEAD_SHA" \
+      || { echo "#$pr: checkout of PR head failed" >&2; rm -rf "$tmp"; return 1; }
+  else
+    git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "$HEAD_SHA" \
+      || { echo "#$pr: worktree add failed" >&2; rm -rf "$tmp"; return 1; }
+  fi
 
   # Startup barrier + orchestrator-only control state. The worker receives only
   # the ready-file path; fixers receive neither it nor the sibling ledger path.
@@ -440,6 +548,9 @@ PY
 # branches are deleted. Guarded per step for the same reason dispatch_one is:
 # the sweep runs it behind `||`.
 dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-label] [child pull numbers]
+  _with_dispatch_lock "review-epic-$1" _dispatch_epic_locked "$@"
+}
+_dispatch_epic_locked() {
   local etid="$1" pkg="$2" branch="${3:-}" eng_label="${4:-}" pulls="${5:-}"
   local name tmp wt int_ref base_ref td prompt engine pr_ref
   local control_dir bind_ready ledger range_note
@@ -524,8 +635,18 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
     git -C "$LOCAL_REPO" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
   fi
   git -C "$LOCAL_REPO" worktree prune
-  git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$int_ref" \
-    || { echo "$name: worktree add failed (origin/$int_ref)" >&2; rm -rf "$tmp"; return 1; }
+  # Same trust choreography as the PR path: bootstrap at the trusted base
+  # branch, then move to the integration ref under review.
+  if [ -n "${WORKTREE_BOOTSTRAP_CMD:-}" ]; then
+    git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$base_ref" \
+      || { echo "$name: worktree add failed (origin/$base_ref)" >&2; rm -rf "$tmp"; return 1; }
+    _bootstrap_worktree "$wt" "$name"
+    git -C "$wt" checkout -q --detach "origin/$int_ref" \
+      || { echo "$name: checkout of origin/$int_ref failed" >&2; rm -rf "$tmp"; return 1; }
+  else
+    git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$int_ref" \
+      || { echo "$name: worktree add failed (origin/$int_ref)" >&2; rm -rf "$tmp"; return 1; }
+  fi
 
   control_dir="$(mktemp -d "$DAEMON_HOME/$name-control.XXXXXX")" \
     || { echo "$name: control dir allocation failed" >&2; rm -rf "$tmp"; return 1; }
