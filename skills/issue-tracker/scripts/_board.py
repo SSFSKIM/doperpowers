@@ -578,6 +578,37 @@ def match_paths(registry, paths):
     return sorted(hits)
 
 
+def live_bound_tickets(include_reviewers=True):
+    """Ticket numbers (str) with a live bound worker (registry meta status
+    working/blocked). Surface-driven BODY writes (relates edges) defer on
+    these — update_meta is a full-body read-modify-write and must never race
+    a live worker's own meta write (spec H2). Reviewer/lander species write
+    meta too, so they count by default; occupancy checks pass
+    include_reviewers=False (their ticket's in-review STATE already covers
+    them there)."""
+    import glob
+    home = os.environ.get("DAEMON_HOME",
+                          os.path.expanduser("~/.claude/orchestrating-daemons"))
+    live = set()
+    for p in glob.glob(os.path.join(home, "*.json")):
+        if p.endswith(".reply.json"):
+            continue
+        try:
+            with open(p) as f:
+                m = json.load(f)
+        except (ValueError, OSError):
+            continue
+        if not include_reviewers:
+            name = str(m.get("name") or "")
+            if name.startswith(("review-pr-", "review-epic-", "land-pr-")):
+                continue
+        if m.get("status") in ("working", "blocked"):
+            t = str(m.get("ticket") or "").lstrip("#")
+            if t:
+                live.add(t)
+    return live
+
+
 def ensure_surface_label(name):
     """Create the surface:<name> label if missing (idempotent; one list
     call per process would be nicer but registration is rare)."""

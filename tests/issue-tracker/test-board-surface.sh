@@ -118,6 +118,53 @@ lint_out="$(run board-lint.sh || true)"
 assert_contains "$lint_out" "SURFACE recommend-rpc: 1 open ticket(s)" "T4: depth report line"
 run board-surface.sh "$n1" --remove recommend-rpc >/dev/null
 
+# ---- T5: register-time matching + auto-relate (acceptance 1) ---------------
+echo "T5: register auto-labels and auto-relates"
+printf 'the recommend_for_student sample block is wrong\n' > "$body"
+out="$(run board-register.sh "성적 표본 결함" bug P1 --body-file "$body")"
+n2="${out%% *}"
+assert_contains "$(state "s['issues']['$n2']['labels']")" "surface:recommend-rpc" "T5: identifier match labels at create"
+assert_contains "$out" "surface recommend-rpc: no open label-mates" "T5: first ticket has no mates"
+out="$(run board-register.sh "같은 함수 두 번째 결함" bug P1 --body-file "$body")"
+n3="${out%% *}"
+assert_contains "$out" "surface recommend-rpc: open label-mates #$n2" "T5: second ticket reports the mate"
+assert_contains "$(state "s['issues']['$n2']['body']")" "relates-to: #$n3" "T5: mate side got the relates edge"
+assert_contains "$(state "s['issues']['$n3']['body']")" "relates-to: #$n2" "T5: new side got the relates edge"
+
+# ---- T6: --surface path hint matches path globs ----------------------------
+echo "T6: --surface path hint"
+printf 'no identifiers here at all\n' > "$body"
+out="$(run board-register.sh "스크럽 후속" enhancement P2 --body-file "$body" --surface lib/scrub/wipe.ts)"
+n4="${out%% *}"
+assert_contains "$(state "s['issues']['$n4']['labels']")" "surface:scrubber" "T6: path hint matched the glob"
+
+# ---- T8: transition-time re-match (acceptance 2) ---------------------------
+echo "T8: lane-entry transition re-matches the current body"
+out="$(run board-register.sh "제목만 있는 티켓" bug P2)"   # skeleton → needs-info
+n5="${out%% *}"
+assert_not_contains "$(state "s['issues']['$n5']['labels']")" "surface:" "T8: title-only birth stays unlabeled"
+printf 'now the body names recommend_for_student explicitly\n' | gh issue edit "$n5" -R test/repo --body-file - >/dev/null
+out="$(run board-transition.sh "$n5" ready-for-implementer)"
+assert_contains "$out" "surface: += recommend-rpc" "T8: transition reports the re-match"
+assert_contains "$(state "s['issues']['$n5']['labels']")" "surface:recommend-rpc" "T8: label added on lane entry"
+
+# ---- T9: live-worker deferral of the relates body write --------------------
+echo "T9: relates edge defers on a live bound worker"
+cat > "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json" <<EOF
+{"uuid": "aaaa0001-0000-4000-8000-000000000000", "name": "$n2-worker",
+ "status": "working", "ticket": "$n2"}
+EOF
+before="$(state "s['issues']['$n2']['body']")"
+printf 'recommend_for_student third strike\n' > "$body"
+out="$(run board-register.sh "세 번째 결함" bug P1 --body-file "$body")"
+n6="${out%% *}"
+assert_contains "$out" "relate deferred to sweep: #$n2" "T9: deferral reported"
+assert_contains "$before" "relates-to: #$n3" "T9(pre): mate body baseline sane"
+after="$(state "s['issues']['$n2']['body']")"
+if [ "$before" = "$after" ]; then pass "T9: live mate's body untouched"; else
+    fail "T9: live mate's body untouched"; echo "    body changed while worker live"; fi
+rm -f "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "FAILED: $FAILURES of $ASSERTIONS assertions"
