@@ -188,6 +188,7 @@ assert_contains "$SKILL" "CODEX_CODE_MODE_HOST_PATH" "the engine preamble points
 assert_contains "$SKILL" "doperpowers:requesting-review" "the route judgment is delegated to the requesting-review skill"
 assert_contains "$SKILL" "retry the panel once" "an interrupted panel verdict retries within the round"
 assert_not_contains "$SKILL" "--out" "the retired engine's --out flag is absent — round output comes from redirection"
+assert_contains "$SKILL" "shell syntax here, not a ref" "the rendered base ref is checked for shell metacharacters before it is pasted into an engine command"
 assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
 assert_contains "$SKILL" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
 assert_contains "$SKILL" "stays in-review" "engine-down never parks needs-human"

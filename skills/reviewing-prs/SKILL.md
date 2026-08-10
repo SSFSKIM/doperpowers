@@ -186,6 +186,14 @@ is a TOOL invocation, not a nested agent. Never add
      --args '{"base":"origin/{{BASE_REF}}","finderModel":"{{CODEX_REVIEW_MODEL}}","finderEffort":"{{CODEX_REVIEW_EFFORT}}","verifierModel":"{{CODEX_REVIEW_MODEL}}"}' \
      > <review-tmp>/findings-rN.json 2> <review-tmp>/findings-rN.events.log
 
+   `{{BASE_REF}}` reached these commands as a branch NAME rendered into a
+   shell word (the panel's is inside a single-quoted JSON blob), and git
+   accepts refs carrying a quote, `$`, or a backtick — such a ref is
+   shell syntax here, not a ref, and this loop runs unattended. Run
+   nothing until the rendered ref is plain (letters, digits, `.`, `_`,
+   `/`, `-`); anything else is the same hard stop as a base that will not
+   fetch — park needs-human naming the ref.
+
    Keep the task handle. Leave it running and the findings unread — the
    protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
    JOIN step is the only place engine output is read.
