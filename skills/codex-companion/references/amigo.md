@@ -12,7 +12,7 @@ executor you steer mid-task. Prints Codex's final response; records a job
     CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
     CODEX_COMPANION_APP_SERVER_ENDPOINT="unix:$HOME/.claude/doperpowers/codex-companion/no-broker.sock" \
       node "<skill-base>/runtime/scripts/codex-companion.mjs" task \
-      [--write] [--resume-last|--fresh] \
+      [--write|--auto] [--resume-last|--fresh] \
       [--model <m|spark>] [--effort none|minimal|low|medium|high|xhigh] \
       [--prompt-file <path>] -- [prompt text]
 
@@ -32,6 +32,13 @@ progress doesn't multiply what you read back.
 - Read-only by default. `--write` lets Codex edit the working tree — pass
   it only when edits are the point (a fix, an implementation), not for
   review/diagnosis/research.
+- `--auto` (implies `--write`) is Codex's Auto preset: same workspace-write
+  sandbox, but boundary-crossing actions (network, files outside the
+  workspace, escalated commands) are judged by Codex's built-in auto-review
+  guardian instead of failing outright. A denial comes back in the answer —
+  Codex is told to take a safer path or stop and ask. Each review is an
+  extra model call, so plain `--write` stays the default writer; reach for
+  `--auto` when the task legitimately needs to cross the sandbox.
 - `--model` and `--effort` left unset defer to the user's codex
   `config.toml`.
 - Long or structured prompts go in a file via `--prompt-file` instead of
