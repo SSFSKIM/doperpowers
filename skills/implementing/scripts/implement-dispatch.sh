@@ -62,6 +62,10 @@ ARCHITECT_PROTOCOL="$SKILL_DIR/../architecting/SKILL.md"
 ARCH_CAP="${ARCHITECT_MAX_CONCURRENT:-1}"
 DECOMPOSE_DOC="$SKILL_DIR/references/implement-decompose.md"
 CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
+# Surfaces claimed by dispatches earlier in this process (one sweep = one
+# process, so a plain variable is the in-tick claim set — see the surface
+# guard in dispatch_one). SURFACE_OVERRIDE=1 bypasses that guard, loudly.
+DISPATCHED_SURFACES=""
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -454,6 +458,37 @@ q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
 q("T_PARENT", n.get("parent") or "")
 eng = "claude" if "engine:claude" in n["labels"] else ("codex" if "engine:codex" in n["labels"] else "")
 q("T_ENGINE_LABEL", eng)
+# Surface occupancy (spec: dispatch serialization). A surface this ticket
+# carries is OCCUPIED when another open non-epic non-spike ticket with the
+# same label is in an in-flight board state (in-progress/in-review/in-design
+# — in-design so a consolidation redesign holds patch work off the surface),
+# OR has a live bound non-reviewer worker (registry-first: board state lags a
+# fresh spawn by minutes — the double-dispatch window), OR was claimed by an
+# earlier dispatch in this same sweep tick (T_CLAIMED, space-joined names).
+q("T_SURFACES", " ".join(n["surfaces"]))
+block = occupant = ""
+if n["surfaces"]:
+    claimed = set((os.environ.get("T_CLAIMED") or "").split())
+    live = B.live_bound_tickets(include_reviewers=False)
+    epics = {t for t in tickets if any(
+        tickets[c].get("parent") == t for c in tickets)}
+    for s in n["surfaces"]:
+        # Board/registry occupants first, the in-tick claim set second —
+        # both block identically, but naming the real occupant beats
+        # "an earlier dispatch this tick" when either would match.
+        for t, m in tickets.items():
+            if t == tid or s not in m["surfaces"] or t in epics \
+               or m["category"] == "spike" or m["state"] in B.TERMINAL:
+                continue
+            if m["state"] in ("in-progress", "in-review", "in-design") \
+               or t in live:
+                block, occupant = s, "#" + t
+                break
+        if not block and s in claimed:
+            block, occupant = s, "an earlier dispatch this tick"
+        if block:
+            break
+q("T_SURFACE_BLOCK", block); q("T_SURFACE_OCCUPANT", occupant)
 import re
 slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", n["title"].lower())).strip("-")[:32].rstrip("-")
 q("T_SLUG", slug or "ticket")
@@ -557,7 +592,7 @@ dispatch_one() {
     esac
   fi
 
-  exports="$(_ticket_exports "$n")" \
+  exports="$(T_CLAIMED="${DISPATCHED_SURFACES:-}" _ticket_exports "$n")" \
     || { echo "#$n: board snapshot failed" >&2; return 1; }
   eval "$exports"
   if [ "${T_ELIGIBLE:-0}" != "1" ]; then
@@ -606,6 +641,21 @@ dispatch_one() {
     fi
     engine="${T_ENGINE_LABEL:-}"
     [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
+  fi
+
+  # Surface serialization (spec: one in-flight implement worker per surface).
+  # Only the IMPLEMENT role waits: the architect lane is the resolver (a
+  # consolidation ticket must dispatch ONTO an occupied surface) and a spike
+  # is read-only exploration. A skip is normal scheduling — return 0, next
+  # tick retries. SURFACE_OVERRIDE=1 is the deliberate operator bypass; both
+  # entry points (--sweep and triggered) share this guard by construction.
+  if [ "$role" = "IMPLEMENT" ] && [ -n "${T_SURFACE_BLOCK:-}" ]; then
+    if [ "${SURFACE_OVERRIDE:-0}" = "1" ]; then
+      echo "SURFACE_OVERRIDE=1: dispatching #$n onto occupied surface $T_SURFACE_BLOCK (occupant ${T_SURFACE_OCCUPANT:-?})"
+    else
+      echo "surface $T_SURFACE_BLOCK occupied by ${T_SURFACE_OCCUPANT:-?} — #$n queued"
+      return 0
+    fi
   fi
 
   # E2 parent-pin: stamp the inherited-contract pin BEFORE the worker is
@@ -741,6 +791,14 @@ finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
 PY
+
+  # Claim this ticket's surfaces for the rest of the tick: two eligible
+  # same-surface tickets in ONE sweep must yield one dispatch (the in-tick
+  # arm of occupancy — the registry meta exists, but a later _ticket_exports
+  # in this same loop could race the meta write). Spikes never occupy.
+  if [ "$role" != "SPIKE" ] && [ -n "${T_SURFACES:-}" ]; then
+    DISPATCHED_SURFACES="${DISPATCHED_SURFACES:-} $T_SURFACES"
+  fi
 
   echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
 }
