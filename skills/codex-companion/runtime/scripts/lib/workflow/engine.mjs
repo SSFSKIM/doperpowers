@@ -243,6 +243,22 @@ export async function runWorkflow(spec) {
       return { ...stamped, uncacheable: runNonce };
     };
 
+    // The app-server buffers its child's stderr and surfaces it only on a
+    // nonzero exit, but the observed fs-sandbox failure (bwrap RTM_NEWADDR —
+    // ida-worker-1, 2026-08-09) exits 0 and renders findings anyway.
+    // Consumers' fail-closed guards (reviewing-prs review-engine.sh) read this
+    // run's stderr stream for those markers, so forward them from every leaf's
+    // buffered stderr — dropping them here hides exactly the false-clean runs
+    // the guards exist to reject. Forwarded BEFORE the leaf's own success
+    // check, so a failing turn keeps its diagnostics too.
+    const SANDBOX_FAILURE_MARKERS = /RTM_NEWADDR|shell is unavailable|fs sandbox helper failed/;
+    const emitSandboxDiagnostics = (label, stderr) => {
+      if (!stderr) return;
+      for (const line of String(stderr).split("\n")) {
+        if (SANDBOX_FAILURE_MARKERS.test(line)) emit(`sandbox-diagnostic ${label ?? ""}: ${line}`);
+      }
+    };
+
     const hooks = {
       args: spec.args,
       log: (m) => { appendEvent(journalPath, { type: "log", message: String(m) }); emit(`log ${m}`); },
@@ -256,6 +272,7 @@ export async function runWorkflow(spec) {
             sandbox: "read-only", persistThread: true,
             outputSchema: opts.schema ?? null, connect
           });
+          emitSandboxDiagnostics(opts.label, turn.stderr);
           assertTurnUsable(turn, "agent turn");
           if (!opts.schema) {
             if (!turn.finalMessage?.trim()) throw new Error("agent turn returned no output");
@@ -270,6 +287,7 @@ export async function runWorkflow(spec) {
             model: opts.model, effort: opts.effort, sandbox: "read-only",
             outputSchema: opts.schema, connect
           });
+          emitSandboxDiagnostics(opts.label, repair.stderr);
           assertTurnUsable(repair, "schema repair turn");
           parsed = parseStructuredOutput(repair.finalMessage);
           errors = parsed.parseError ? [parsed.parseError] : validateSchema(parsed.parsed, opts.schema);
@@ -316,6 +334,7 @@ export async function runWorkflow(spec) {
             model: opts.model, target,
             connect: { disableBroker: true, configOverrides: overrides, onSpawn }
           });
+          emitSandboxDiagnostics(opts.label, res.stderr);
           assertTurnUsable(res, "review");
           if (!res.reviewText?.trim()) throw new Error("review returned no output");
           // review/start takes the SYMBOLIC target — it has no commit parameter —

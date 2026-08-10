@@ -163,7 +163,10 @@ is a TOOL invocation, not a nested agent. Never add
    scalpel lenses, one binding verifier — instead of a single native
    review, and renders the verifier-confirmed findings into the same
    --out file (raw panel result beside it as findings-rN.txt.panel.json;
-   a panel round can take ~20 minutes). Use your harness's background
+   a panel round can take ~20 minutes). One judgment stays yours: a diff
+   below that size whose weight concentrates on declared risk surfaces
+   (your dispatch manifest) can warrant the panel anyway — add
+   CODEX_REVIEW_PANEL=always to the command to force it. Use your harness's background
    execution and keep the task handle. Leave it running and the findings
    unread — the protocol's COMPLIANCE AUDIT runs while the engine
    reviews, and its JOIN step is the only place engine output is read.

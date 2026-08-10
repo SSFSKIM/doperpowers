@@ -161,6 +161,7 @@ assert_equals "$([ -s "$TEST_ROOT/out.txt.panel.json" ] && echo yes)" "yes" "raw
 echo "panel auto-threshold (real repo):"
 REPO="$TEST_ROOT/repo"; mkdir -p "$REPO"; cd "$REPO"
 git init -q -b main; git config user.email t@t; git config user.name t
+git config commit.gpgsign false   # host git policy must not break the hermetic suite
 echo base > seed.txt; git add .; git commit -qm seed
 git checkout -qb feature
 for i in $(seq 1 21); do echo "change $i" > "f$i.txt"; done

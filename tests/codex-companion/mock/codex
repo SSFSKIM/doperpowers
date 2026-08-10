@@ -2,7 +2,7 @@
 // Mock codex app-server. Speaks the REAL JSON-RPC-over-stdio shapes
 // (derived from lib/codex.mjs captureTurn + app-server.mjs — see the
 // PROTOCOL notes below). Controlled by CODEX_MOCK_DIR:
-//   scenario.json  { turns: [ {finalMessage|finalRaw|die|dieMidTurn|banner|hangMs|reviewText|turnStatus}... ],
+//   scenario.json  { turns: [ {finalMessage|finalRaw|die|dieMidTurn|banner|stderrLine|hangMs|reviewText|turnStatus}... ],
 //                    byLens: { "<developer_instructions prefix>": {same behavior} } }
 //                  `turns` is consumed in global order via a counter file (mkdir
 //                  lock); turnStatus: "failed" ⇒ emit turn/completed with the
@@ -225,6 +225,13 @@ rl.on("line", (line) => {
     // to skip the line, not treat it as the end of the connection.
     if (b.banner) {
       process.stdout.write(`${b.banner}\n`);
+    }
+
+    // stderrLine: a line on the server's STDERR mid-turn — the real server's
+    // sandbox helper complains there (bwrap RTM_NEWADDR et al.) while the turn
+    // still exits 0; the client buffers it into client.stderr.
+    if (b.stderrLine) {
+      process.stderr.write(`${b.stderrLine}\n`);
     }
 
     const finish = () => {

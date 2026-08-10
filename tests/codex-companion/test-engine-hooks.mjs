@@ -296,6 +296,31 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
 }
 
+// --- sandbox diagnostics on the server's stderr reach emit -------------------
+// The app-server buffers stderr and surfaces it only on a nonzero exit, but the
+// observed fs-sandbox failure (bwrap RTM_NEWADDR) exits 0 and renders findings
+// anyway; consumers' fail-closed guards grep the run's stderr stream for the
+// markers, so the hooks must forward them from the buffered result.
+{
+  const c = newCase("sandbox-diag", [{
+    reviewText: "# Sweep\n\nlooks clean",
+    stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+  }]);
+  const lines = [];
+  const out = await runWorkflow({
+    scriptPath: path.join(FIXTURES, "fx-review.mjs"),
+    args: {},
+    cwd: c.repo,
+    runDir: c.runDir,
+    emit: (l) => lines.push(l)
+  });
+  assert.equal(out.result.reviewText, "# Sweep\n\nlooks clean", "the leaf itself still succeeds");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic sweep:") && l.includes("RTM_NEWADDR")),
+    "the sandbox-failure marker from the worker's buffered stderr is forwarded to emit"
+  );
+}
+
 // --- a review whose turn failed is not a review ------------------------------
 {
   const c = newCase("review-fail", [
