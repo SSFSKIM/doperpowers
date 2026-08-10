@@ -23,7 +23,7 @@ To see it working: run the test suites listed in Validation, and (the merge gate
 - [x] (2026-08-10 17:56Z) Milestone 3: review-engine.sh, render-panel-findings.mjs, test-review-engine.sh deleted; SKILL.md START ENGINE rewritten (worker routes per requesting-review; env preamble template; findings-rN.txt/.json; interrupted retries once); ENGINE FALLBACK covers sandbox rejection + twice-interrupted panel; dispatcher binds COMPANION_DIR (3 sites); bootstrap binding renamed; operation-manual rewritten; dispatch + entrypoint suites updated and green.
 - [x] (2026-08-10 18:10Z) Milestone 4: consumer repoints (execplan, subagent-driven-development, writing-plans, architecting) committed 214a496f; review-bench's codex path moved to the with-effort invocation; user-CLAUDE.md repoint flagged for the final report, not edited.
 - [x] (2026-08-10 18:40Z) Milestone 5: companion, workflow, dispatch, entrypoint, shell-lint suites all rc=0; residual grep clean (one intentional "is retired" note in review-bench); run-skill-tests.sh shows 6 pre-existing ARKHO_DIR-gated integration skips the runner counts as failures (unrelated to this branch — runner has no exit-77 accounting) plus one LLM-phrasing flake in the SDD test that passed on rerun. Version stays 7.46.0.
-- [ ] Milestone 6 (merge gate): live dogfood — one dispatched review worker routes a big diff to the panel by protocol alone; PR #55 description rewritten; push.
+- [x] (2026-08-10 22:10Z) Milestone 6 (merge gate): PASSED — worker `review-pr-55` (dispatched 18:20Z, auto-merge off) chose the panel from protocol reading alone on the 26-file diff and composed the documented invocation exactly; it then ran the FULL loop: 5 panel rounds, 5 waves, 21 graded commits pushed (d58d85a5→79a69dad), trail comment posted 21:34Z. Review commits pulled; origin/main merged (4 version-manifest conflicts only, resolved to main); version re-bumped 7.47.0 per the reviewer's staleness finding; PR #55 description rewritten; pushed.
 
 ## Surprises & Discoveries
 
@@ -33,6 +33,13 @@ To see it working: run the test suites listed in Validation, and (the merge gate
   Evidence: `payload.codex.stderr` present in both branches; M1 diff adds only the two `assertSandboxUsable` calls.
 - Observation (M1): the verb's default path and the with-effort path talk to the app-server over a socket, where the child's stderr never reaches the verb's client — `result.stderr` is populated only on the direct (dead-endpoint kill-switch) path. The guard therefore lives in THREE places: the workflow engine's leaves (disableBroker → direct), the verb branches (direct path), and with-effort.mjs itself, which pipes and scans its private server's stderr and exits 3 on a marker after a clean verb exit.
   Evidence: first new runtime test failed with exit 0 until the kill-switch env was added; with-effort test passes end-to-end against the `sandbox-broken` fake.
+
+- Observation (M6 dogfood): the stderr-only scanning decision was validated LIVE, in the negative — a wave-4 fixer extended the guard to the workflow engine's throw path (error text), the very next panel round's scalpel-1 lane died because codex's command-policy rejection embedded model-authored text quoting this repo's own `RTM_NEWADDR` test fixtures, and the worker reverted it with cross-round evidence (rounds 1–4: 0 diagnostics, 0 lost lanes; round 5: 3 and 1). The throw path's error is a union of machine stderr and arbitrary server text (`app-server.mjs:314` vs `:165`) and can never be treated as machine-emitted.
+  Evidence: PR #55 trail comment ("The correction I have to lead with"), revert 79a69dad.
+- Observation (M6 dogfood): three seams produced findings in round after round — the guard's per-transport observation channels, engine-home cleanup, and template shell-safety. The trail names this a decomposition defect: the guard must observe a channel three transports expose differently, and patching call sites one at a time is what produced five rounds. A follow-up design pass should unify the observation channel. Deferred findings (broker-path guard gap, stderr snapshot races, unquoted template paths, inert `--background`) are LOGGED inline in the trail.
+  Evidence: trail "The pattern worth more than any single finding" + Deferred section.
+- Observation (M6 dogfood): behavior evidence for the skill rewrite — the dispatched worker followed the new protocol end to end with zero protocol errors attributable to the prose: correct route choice, correct env preamble, correct JSON reading at JOIN, interrupted-retry honored (round 3's first attempt was SIGTERMed and retried), observation-mode close. The 5-round loop also pressure-tested requesting-review's own text: 6 of the 20 wave fixes were to MY skill prose (promised-but-unset env var, `--out` flag that no longer exists, over-broad target-selection claim, missing CODEX_SANDBOX caveat, setup-verb contradiction, overstated interrupted conditions) — all caught by the panel reading the docs against the code.
+  Evidence: trail Waves 1–4 tables; commits 82793c52, 9c7a11bb, 548828a6, a831ba90, 034cb0ab, 8b81b162.
 
 ## Decision Log
 
@@ -63,7 +70,11 @@ To see it working: run the test suites listed in Validation, and (the merge gate
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Completed 2026-08-10 ~22:20Z (calendar 2026-08-11 local). All six milestones landed. The review job now lives in one skill (`requesting-review`, 120 lines) that every consumer — interactive session, daemon worker, other skills — reads directly; the engine script layer (182-line engine + 74-line renderer + 384-line test suite) is deleted; the fail-closed sandbox guarantee moved to the runtime and got *stronger* (stderr-only scanning removed the quoted-marker false-positive class the old events-log grep carried — proven live when the dogfood's own wave briefly reintroduced the class and the next round caught it).
+
+The merge-gate dogfood exceeded its brief: the dispatched worker not only routed to the panel by protocol alone but ran the full 5-round/5-wave loop against this branch, contributing 21 graded commits — including 6 corrections to the new skill prose itself and a caught-and-reverted regression. That run IS the behavior evidence CLAUDE.md's skill-change bar asks for.
+
+Gaps, stated plainly: the "every consumer" fail-closed claim holds for the direct, wrapper, and workflow paths, NOT the broker path (unreachable via the documented contract but real — logged as a deferred P1); two stderr-timing races remain accepted-by-design; and the guard-channel-per-transport pattern is a decomposition defect deserving its own design pass (the trail's strongest recommendation). Lessons: (1) moving a guard from wrapper to source is what frees the wrapper's deletion; (2) a protocol template's env preamble must be carried over *verbatim with its reasons* — every line I paraphrased or dropped (CODE_MODE_HOST_PATH, cleanup trap, isolated bench env) came back as a finding; (3) the panel reviewing prose-against-code catches skill-doc lies a suite cannot.
 
 ## Context and Orientation
 
@@ -145,3 +156,6 @@ Consumers: `lib/workflow/engine.mjs` (agent leaf, repair turn, review leaf — o
 ## Revision Notes
 
 - 2026-08-11: Initial authoring after the brainstorming grill. The "sustained threshold" delegated unknown is resolved here (stderr-only scan, single-hit trigger — see Decision Log) rather than left to implementation, since the channel analysis that settles it was done during planning.
+- 2026-08-11 (M1): Corrected my own planning-stage claim about the adversarial branch's stderr (it was present all along); recorded the three-transport guard placement discovery (direct / wrapper / workflow — the broker path stays unguarded and undocumented-unreachable).
+- 2026-08-11 (M5): Milestone 5's residual-grep acceptance is satisfied substantively, not literally — one deliberate "is retired" comment in tests/review-bench and frozen artifacts under its results/ remain (also noted by the dogfood reviewer).
+- 2026-08-11 (M6, close): Dogfood observations recorded in Surprises; version decision superseded live (main released 7.46.x while this branch sat → merged main, re-bumped 7.47.0); Outcomes written. The reviewer's deferred P1/P2 findings live in the PR trail comment — the guard-channel unification is the named follow-up design pass.
