@@ -146,9 +146,10 @@ is a TOOL invocation, not a nested agent. Never add
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
    turn reads them.
-2. From the worktree root, start the round's ONE engine run IN THE
-   BACKGROUND (round N uses findings-rN.txt; the empty lens assignments
-   are deliberate — they shield the run from any inherited host value):
+2. From the worktree root, start the round's ONE engine run
+   IN THE BACKGROUND (round N uses findings-rN.txt; the empty lens
+   assignments are deliberate — they shield the run from any inherited
+   host value):
 
    CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
    CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
