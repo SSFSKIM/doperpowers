@@ -52,11 +52,14 @@
 #                       the local clone's origin/HEAD in API mode); the
 #                       scale-review lane resolves integration refs against it,
 #                       and the API lane takes its manifest snapshots from it
-#   REVIEW_MAX_CONCURRENT  API mode only: qagent-lane slot cap (default 3),
-#                       enforced against the local registry before claiming and
-#                       sent as the server-side `laneCap`. gh mode has no cap —
-#                       its work list is the open-PR listing itself, which is
-#                       finite; a claim loop has no such natural end.
+#   REVIEW_MAX_CONCURRENT  reviewer slot cap (default 3). API mode: qagent-lane
+#                       cap enforced against the local registry before claiming
+#                       and sent as the server-side `laneCap`. gh mode: the
+#                       sweep's new-spawn throttle — live reviewers are counted
+#                       off the registry and dispatches beyond the cap queue to
+#                       a later tick (a deep open-PR backlog would otherwise
+#                       spawn one daemon per PR in a single tick). Triggered
+#                       dispatches are an explicit event and are never gated.
 #   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
 #   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
 #   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
@@ -216,6 +219,33 @@ if best:
                                     m.get("engine") or "claude", m.get("pid", ""), m.get("host", ""),
                                     m.get("boot_id", "")))
 PY
+}
+
+# Live gh-mode reviewers counted off the registry — the sweep's new-spawn
+# throttle (REVIEW_MAX_CONCURRENT). Same slot definition as implement-dispatch's
+# _slots_used: a meta in an active status holds a slot. A finished --no-wait
+# meta stays `working` until _decide finalizes it (which happens as the sweep
+# visits its PR), so a tick can briefly overcount and under-dispatch; the next
+# tick self-corrects. `error` metas do NOT count: their respawn is itself the
+# capped action, and counting them would wedge the cap closed on exactly the
+# failure class it should be retrying.
+_gh_review_slots() {
+  T_DHOME="$DAEMON_HOME" python3 - <<'PYEOF'
+import glob, json, os
+n = 0
+for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    name = str(m.get("name") or "")
+    if (name.startswith("review-pr-") or name.startswith("review-epic-")) \
+            and m.get("status") in ("working", "blocked"):
+        n += 1
+print(n)
+PYEOF
 }
 
 # rc 0 when the reviewer's CURRENT turn is live: claude → session uuid visible
@@ -577,6 +607,12 @@ PY
 # branches are deleted. Guarded per step for the same reason dispatch_one is:
 # the sweep runs it behind `||`.
 dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-label] [child pull numbers]
+  # Scale review is sweep-only, so the spawn throttle sits on the wrapper —
+  # every epic spawn route (fresh, respawn, superseded) funnels through here.
+  if [ "$(_gh_review_slots)" -ge "$REVIEW_CAP" ]; then
+    echo "epic #$1: review cap reached ($REVIEW_CAP live) — queued for a later tick"
+    return 0
+  fi
   _with_dispatch_lock "review-epic-$1" _dispatch_epic_locked "$@"
 }
 _dispatch_epic_locked() {
@@ -1073,6 +1109,13 @@ run_for() {  # $1=pr $2=mode $3=off-review-status $4=ticket-number
     echo "#$pr: skip — primary ticket #$tid is parked (status:$stale); $resume"
     return
   fi
+  case "$verdict" in
+    dispatch|respawn\ *|respawn-clean\ *)
+      if [ "$mode" = "sweep" ] && [ "$(_gh_review_slots)" -ge "$REVIEW_CAP" ]; then
+        echo "#$pr: review cap reached ($REVIEW_CAP live) — queued for a later tick"
+        return 0
+      fi ;;
+  esac
   case "$verdict" in
     dispatch)  dispatch_one "$1" "$2" ;;
     respawn\ *)       _retire_failed "${verdict#respawn }"; dispatch_one "$1" "$2" ;;

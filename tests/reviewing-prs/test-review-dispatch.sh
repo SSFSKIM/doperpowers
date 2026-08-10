@@ -755,6 +755,52 @@ out="$("$DISPATCH" --sweep)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep dispatches the unbound open PR"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-6" "sweep never dispatches a draft"
 
+# ---- sweep honors REVIEW_MAX_CONCURRENT (gh-mode spawn throttle) ----------------
+# gh mode's work list is the open-PR listing itself: with a deep backlog one
+# tick would spawn one reviewer daemon per open PR. The cap counts live
+# reviewer metas (working/blocked) and queues everything beyond it to a later
+# tick. Triggered dispatch is an explicit event and is never gated.
+echo "review cap:"
+SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]; sha = os.environ["SHA"]
+base = {"number": 4, "title": "fix: something", "body": "No ticket for this one.",
+        "baseRefName": "main", "headRefName": "feat/x", "headRefOid": sha,
+        "url": "https://github.com/test/repo/pull/4", "isDraft": False,
+        "state": "OPEN", "labels": [], "closingIssuesReferences": []}
+json.dump(base, open(os.path.join(d, "pr-4.json"), "w"))
+json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: something",
+            "body": "No ticket for this one.", "closingIssuesReferences": []},
+           {"number": 5, "isDraft": False, "labels": [], "title": "feat: add f",
+            "body": "Adds f.\n\nCloses #7", "closingIssuesReferences": []}],
+          open(os.path.join(d, "pr-list.json"), "w"))
+PY
+reset_state
+out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "cap=1: the first unbound PR is dispatched"
+assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "cap=1: the second PR is not spawned this tick"
+assert_contains "$out" "#5: review cap reached (1 live) — queued for a later tick" "the queued PR is reported by name"
+# a live reviewer seeded at cap: NOTHING new spawns, and the queue message names both
+reset_state
+seed_reviewer working
+echo '[{"id": "cafe9999", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
+out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "at cap with a live reviewer, no new spawn"
+assert_contains "$out" "#4: review cap reached (1 live) — queued for a later tick" "the other PR queues behind the live reviewer"
+# triggered dispatch bypasses the cap (explicit event)
+out="$(REVIEW_MAX_CONCURRENT=0 "$DISPATCH" 4 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "triggered dispatch is never gated by the cap"
+# restore the canonical pr list for later sections
+SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]
+json.dump([{"number": 5, "isDraft": False, "labels": [], "title": "feat: add f",
+            "body": "Adds f.\n\nCloses #7", "closingIssuesReferences": []},
+           {"number": 6, "isDraft": True, "labels": [], "title": "wip",
+            "body": "", "closingIssuesReferences": []}],
+          open(os.path.join(d, "pr-list.json"), "w"))
+PY
+
 # ---- sweep skips a PR whose primary ticket is parked ----------------------------
 # A prior reviewer parked the ticket on the human; every tick would otherwise
 # spawn a reviewer that board-bind refuses (observed live: PR #574 / #548).
