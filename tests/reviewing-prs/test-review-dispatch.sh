@@ -282,6 +282,13 @@ cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
 # side-effect-free and, with no .doperpowers/board.json in these fixtures,
 # resolves gh mode: every case below is the gh path, unchanged.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$STUB_BOARD/_binding.sh"
+# Same reason, same shape: the claim journal and its reconciliation were
+# verbatim copies in both dispatchers until _claim_journal.sh took ownership of
+# them, and this dispatcher sources it at TOP LEVEL — before any binding fork,
+# so the gh path needs it just as much as the API path does. Absent from the
+# stub dir, every case in this suite dies at the source line. Function
+# definitions only, no side effects at source time, exactly like _binding.sh.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$STUB_BOARD/_claim_journal.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
 # Every PRE-EXISTING case in this file exercises the claude path unchanged —
 # the label→env→codex resolution only kicks in per-test below via an
@@ -493,10 +500,14 @@ PY
 FAIL_BOARD="$TEST_ROOT/fail-board"; mkdir -p "$FAIL_BOARD"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_BOARD/board-bind.sh"
 chmod +x "$FAIL_BOARD/board-bind.sh"
-# Only the BIND fails here: the binding resolver is sourced from the same dir
-# and its absence would abort the run before a reviewer was ever spawned —
-# the assertions below are about what happens to a spawned one.
+# Only the BIND fails here: the two files the dispatcher SOURCES out of this
+# same dir — the binding resolver and the claim journal — would otherwise abort
+# the run before a reviewer was ever spawned, and the assertions below are
+# about what happens to a spawned one. A dir that fails everything would still
+# make the dispatch fail, but for the wrong reason, and the retire it is
+# checking for would never be reached.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$FAIL_BOARD/_binding.sh"
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$FAIL_BOARD/_claim_journal.sh"
 reset_state
 if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
     fail "bind failure aborts review dispatch"
