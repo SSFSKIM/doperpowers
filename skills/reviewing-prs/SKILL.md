@@ -146,56 +146,38 @@ is a TOOL invocation, not a nested agent. Never add
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
    turn reads them.
-2. Judge the diff shape and choose this round's engine-run count — most
-   PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
-   runs, whole-branch scale up to 4. From the worktree root, start each
-   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
-   empty lens assignments are deliberate — they shield the plain run
-   from any inherited host value):
+2. From the worktree root, start the round's ONE engine run IN THE
+   BACKGROUND (round N uses findings-rN.txt; the empty lens assignments
+   are deliberate — they shield the run from any inherited host value):
 
    CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
    CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
    CODEX_REVIEW_LENS= CODEX_REVIEW_LENS_FILE= \
      {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --out <review-tmp>/findings-r1-1.txt
+     --out <review-tmp>/findings-r1.txt
 
-   A single run takes no lens. When fanning out, keep one run lens-free
-   as the broad sweep and give each other run a LENS: a structural focus
-   mandate you derive from the diff itself (e.g. actor/authz assumptions
-   in the changed routes; ordering/atomicity of the new writes;
-   consumers of a changed field) — never ticket/spec content. The repo's
-   risk-surface manifest (in your dispatch prompt) marks validated hot
-   paths: a diff touching one is a strong lens candidate. Write each
-   mandate to `<review-tmp>/lens-<k>.txt` with your file-writing tool
-   and set `CODEX_REVIEW_LENS_FILE=<review-tmp>/lens-<k>.txt` on that
-   run's command — never inline the mandate text into a shell command
-   (it is generated prose; interpolation is an injection surface). A
-   lensed run narrows hard — a scalpel beside the sweep, not a second
-   sweep; it runs the engine's challenge-review rubric along the lens,
-   so its findings may question structure and assumptions, not only
-   defects — triage them with the same judgment. Use your harness's background execution for these commands and
-   keep the task handles. Leave them running and the findings unread —
-   the protocol's COMPLIANCE AUDIT runs while the engine reviews, and
-   its JOIN step is the only place engine output is read.
-3. At JOIN: wait for all of the round's background tasks. Bound the
-   wait — an engine task that has neither completed nor failed
-   45 minutes after start is hung: kill it. The lens-free sweep is the
-   round's required whole-range review: if IT failed, the round failed
-   (the fallback below owns retries and the outage path) — only lensed
-   runs' failures are tolerable. When the sweep succeeded, proceed on
-   the successful outputs and record any failed lensed runs in the
-   review trail.
-4. Read the findings file(s) — the round's findings are their union;
-   overlapping findings collapse into one triaged item (keep the
-   highest-priority duplicate as the anchor).
+   Diff-size scaling is the ENGINE's, not yours: on a big diff (~20+
+   files or a couple thousand changed lines) it runs the
+   codex-companion code-review panel — one lens-free sweep, diff-derived
+   scalpel lenses, one binding verifier — instead of a single native
+   review, and renders the verifier-confirmed findings into the same
+   --out file (raw panel result beside it as findings-rN.txt.panel.json;
+   a panel round can take ~20 minutes). Use your harness's background
+   execution and keep the task handle. Leave it running and the findings
+   unread — the protocol's COMPLIANCE AUDIT runs while the engine
+   reviews, and its JOIN step is the only place engine output is read.
+3. At JOIN: wait for the round's background task. Bound the wait — an
+   engine task that has neither completed nor failed 45 minutes after
+   start is hung: kill it. If the run failed, the round failed (the
+   fallback below owns retries and the outage path).
+4. Read the findings file.
    Correctness review of the whole range is the engine's job; your own
    reading serves the audit and the triage, not a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
-critical/high finding remains unresolved; needs-attention otherwise. On
-RE-REVIEW rounds the same run-count judgment applies — after a small fix
-wave a single plain run is the norm — with fresh --out files, again in
-the background.
+critical/high finding remains unresolved; needs-attention otherwise.
+RE-REVIEW rounds run the same single command with a fresh --out file,
+again in the background.
 
 ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
 If the engine script fails (codex missing — rc 127, auth failure, or
@@ -295,11 +277,10 @@ itself a finding.
 
 ## JOIN
 
-Wait for ALL of the round's background engine tasks per the engine
-block's bound; a failed lens-free sweep fails the round (the fallback
-block owns retries and the outage path — lensed-run failures alone do
-not). Read every successful run's compact findings file — the round's
-findings are their union — and your already-written audit together.
+Wait for the round's background engine task per the engine block's
+bound; a failed run fails the round (the fallback block owns retries
+and the outage path). Read the round's compact findings file and your
+already-written audit together.
 From here on, command-backed evidence checks may run whenever nothing
 else holds the worktree — never while an engine round or a fixer wave
 is live.
@@ -351,9 +332,9 @@ Maximum 4 waves per review.
 
 ## RE-REVIEW
 
-After a wave that fixed anything, rerun the engine — same run-count
-judgment (a single plain run is the norm after a small wave), fresh
---out files, in the background again; max 5 engine rounds total. The
+After a wave that fixed anything, rerun the engine — the same single
+command with a fresh --out file, in the background again; max 5 engine
+rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
@@ -417,8 +398,9 @@ end your turn with the park intact.
 
 A `review-epic-<n>` dispatch is the E2 scale review: the ticket is an
 EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
-`CLOSURE_PACKAGE` binding names it). Same engine machinery — whole-range
-codex runs, lenses derived from the cross-child contracts: your worktree
+`CLOSURE_PACKAGE` binding names it). Same engine machinery — a
+whole-range codex run per range (an epic-scale diff routes to the panel
+by size, as any diff does): your worktree
 sits at the epic's integration branch and START ENGINE's
 `--base origin/{{BASE_REF}}` reviews it against the branch it merges
 into. When your dispatch prompt instead says this epic has NO aggregate
@@ -496,8 +478,9 @@ what the contract permits separately from what the evidence shows actually ran.
 ## REVIEW TRAIL
 
 The review-trail comment on the PR records: engine and rounds run — for
-a fan-out round, every run (its lens mandate verbatim, or lens-free) with
-the findings it contributed, written BEFORE `<review-tmp>` cleanup; the
+a panel round, the panel's verdict line and its lens/coverage summary
+(from the findings file and the .panel.json beside it), written BEFORE
+`<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board
 outcomes; deferred findings inline when the tech-debt issue is "none";

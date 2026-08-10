@@ -2,8 +2,11 @@
 # review-engine.sh — the ONE review-engine invocation for the reviewing-prs
 # loop, driven by the doperpowers:codex-companion runtime (vendored codex
 # app-server client; sibling skill). PURE correctness review: a plain run is
-# codex's native `review` verb with no ticket/spec input of any kind; the
-# single optional modification is a diff-derived structural LENS
+# codex's native `review` verb with no ticket/spec input of any kind — and
+# on a big diff it routes instead to the companion's code-review PANEL
+# (native sweep + diff-derived scalpel lenses + binding verifier; see the
+# panel-routing block below), still behind the same --base/--out contract.
+# The single optional modification is a diff-derived structural LENS
 # (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS, see the lens block below),
 # which routes the run through the `adversarial-review` verb with the lens
 # as its focus mandate. Ticket/spec compliance is the REVIEW WORKER's own
@@ -18,7 +21,8 @@
 # Env: CODEX_REVIEW_MODEL (default gpt-5.6-sol), CODEX_REVIEW_EFFORT
 # (default xhigh), CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS (optional
 # diff-derived structural focus mandate — see the lens block below; both
-# empty keeps the plain review).
+# empty keeps the plain review), CODEX_REVIEW_PANEL (auto|always|never,
+# default auto — see the panel-routing block below).
 # Run from the worktree root — the engine reviews $PWD.
 # Exits 127 when codex/node are missing, 2 on usage error, else the
 # runtime's rc.
@@ -38,7 +42,7 @@ command -v codex >/dev/null 2>&1 || { echo "review-engine: codex CLI not found" 
 command -v node  >/dev/null 2>&1 || { echo "review-engine: node not found" >&2; exit 127; }
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-companion="$script_dir/../../codex-companion"
+companion="${REVIEW_COMPANION_DIR:-$script_dir/../../codex-companion}"   # override: tests
 [ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: codex-companion skill not found at $companion" >&2; exit 127; }
 
 model="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
@@ -107,13 +111,58 @@ if [ -n "$lens" ]; then
   verb_args=( adversarial-review --base "$base" --wait --model "$model" -- "$lens" )
 fi
 
-# with-effort.mjs serves the verb a private app-server carrying the effort
-# override (the review protocol has no effort field) and provides its own
-# live endpoint — no detached broker, nothing outlives this run. Findings
-# render on stdout (--out), progress on stderr (<out>.events.log).
+# Panel routing: one reviewer's recall thins on a big diff — the multilens
+# execplan's PR752 benchmark (22 files, +2,101 lines) had the best single
+# engine find 10 of 13 confirmed defects while seven single runs' union
+# found all 13. At the codex-companion rule-of-thumb threshold (~20+ files
+# or ~2k changed lines) a plain run therefore routes to the bundled
+# code-review panel — one native sweep, diff-derived scalpel lenses, one
+# binding verifier — instead of a single native review. A lensed
+# invocation is already a scalpel and never routes. CODEX_REVIEW_PANEL
+# overrides the size gate: `always` / `never` (default `auto`).
+panel=""
+if [ -z "$lens" ]; then
+  case "${CODEX_REVIEW_PANEL:-auto}" in
+    always) panel=1 ;;
+    never)  ;;
+    auto)
+      # --numstat: "added deleted path"; binary files carry "-" and count
+      # toward files only. A git failure (unfetched base, not a repo) counts
+      # nothing — the review verb below then surfaces the real error.
+      counts="$({ git diff --numstat "$base...HEAD" 2>/dev/null || true; } | \
+        awk '{files++; if ($1 != "-") changed += $1 + $2} END {printf "%d %d", files+0, changed+0}')"
+      if [ "${counts% *}" -ge 20 ] || [ "${counts#* }" -ge 2000 ]; then panel=1; fi
+      ;;
+    *) echo "review-engine: CODEX_REVIEW_PANEL must be auto|always|never (got: $CODEX_REVIEW_PANEL)" >&2; exit 2 ;;
+  esac
+fi
+
 rc=0
-node "$companion/scripts/with-effort.mjs" --effort "$effort" -- \
-  "${verb_args[@]}" > "$out" 2> "$out.events.log" || rc=$?
+if [ -n "$panel" ]; then
+  # The workflow verb runs the panel as ONE foreground process; every worker
+  # spawns its own app-server (disableBroker), so with-effort's private
+  # endpoint has no role here — finder/verifier model and effort ride the
+  # script args instead. Args are built by node so no shell value is ever
+  # interpolated into JSON. The raw panel result stays in <out>.panel.json
+  # beside the rendered findings for the review trail.
+  args_json="$(P_BASE="$base" P_MODEL="$model" P_EFFORT="$effort" node -e \
+    'console.log(JSON.stringify({base: process.env.P_BASE, finderModel: process.env.P_MODEL, finderEffort: process.env.P_EFFORT, verifierModel: process.env.P_MODEL}))')"
+  node "$companion/runtime/scripts/codex-companion.mjs" workflow \
+    --script "$companion/workflows/code-review.mjs" \
+    --args "$args_json" > "$out.panel.json" 2> "$out.events.log" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # Exit 4 = panel verdict `interrupted` (lost lane or moved head): no
+    # findings file exists, the caller retries like any engine failure.
+    node "$script_dir/render-panel-findings.mjs" "$out.panel.json" > "$out" || rc=$?
+  fi
+else
+  # with-effort.mjs serves the verb a private app-server carrying the effort
+  # override (the review protocol has no effort field) and provides its own
+  # live endpoint — no detached broker, nothing outlives this run. Findings
+  # render on stdout (--out), progress on stderr (<out>.events.log).
+  node "$companion/scripts/with-effort.mjs" --effort "$effort" -- \
+    "${verb_args[@]}" > "$out" 2> "$out.events.log" || rc=$?
+fi
 
 # Fail closed when the engine's own fs sandbox never worked. Observed live
 # (ida-worker-1, 2026-08-09): a host that blocks unprivileged userns makes

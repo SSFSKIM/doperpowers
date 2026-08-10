@@ -77,9 +77,10 @@ human to merge" state.
 **Risk surfaces feed scrutiny, not a merge gate.** A repo may declare
 concrete hot paths in an optional `.doperpowers/risk-surfaces.md` — a
 plain list of globs and prose path/content rules the worker reads against
-the diff; a diff touching one is a strong lens candidate for the engine
-fan-out. The dispatch layer injects it from the PR's **base ref, never
-HEAD**, so a PR cannot delist a surface it touches in the same commit.
+the diff; a diff touching one earns the worker's sharpest audit and
+triage attention. The dispatch layer injects it from the PR's **base ref,
+never HEAD**, so a PR cannot delist a surface it touches in the same
+commit.
 
 **Repo facts feed the cross-check.** The optional
 `.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing)
@@ -127,22 +128,22 @@ produce evidence, the review side verifies the claims were real.
 
 Review responsibility is split between two concurrent tracks with one owner
 each. The ENGINE — the native codex review run by
-`scripts/review-engine.sh` through the doperpowers:codex-companion runtime
-(plain run = the non-steerable `review` verb; lensed run = the
-`adversarial-review` verb with the lens as focus) — receives no ticket,
-spec, or policy input of
+`scripts/review-engine.sh` through the doperpowers:codex-companion
+runtime — receives no ticket, spec, or policy input of
 any kind: coupling spec policy into the native reviewer measurably weakened
-its correctness review, so the interface is `--base` + `--out` plus the
-optional `CODEX_REVIEW_LENS` env — a structural focus mandate the worker
-derives from the diff itself (never from the ticket/spec) when it fans out
-to 2–4 parallel runs on a large diff; a bench-validated lens recovered a
-confirmed authz defect two plain runs had missed
-(`tests/review-bench/results/2026-07-28-pr752-lenscell/`). The worker
-starts the round's runs in the background, and each returns a compact
-structured verdict file; the PR diff never enters the worker's own
-context. A hung engine (no result within 45 minutes) is killed and treated
-as a failure; a failed lens-free sweep fails the round (it is the required
-whole-range review), while failed lensed runs are merely recorded.
+its correctness review, so the interface is `--base` + `--out`. Diff-size
+scaling lives inside the engine: a big diff (~20+ files or ~2k changed
+lines — one reviewer's recall thins at that scale; on the PR752 benchmark
+the best single run found 10 of 13 confirmed defects while a multi-run
+union found all 13) routes to the companion's code-review panel — one
+lens-free sweep, up to five diff-derived scalpel lenses, one binding
+verifier — rendered into the same findings file (raw panel JSON beside it;
+a `interrupted` panel verdict is an engine failure, never a findings
+file). Smaller diffs run the single non-steerable `review` verb. The
+worker starts the round's run in the background and gets a compact
+findings file back; the PR diff never enters the worker's own context. A
+hung engine (no result within 45 minutes) is killed and treated as a
+failure; a failed run fails the round.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
@@ -212,7 +213,8 @@ self-review bias: the entity that grades the fixes never wrote them.
    `tech-debt` label).
 5. (Optional) Add `.doperpowers/risk-surfaces.md` listing the repo's
    validated hot paths — auth files, migration dirs, privileged routes,
-   security-sensitive SQL; reviewers read it for lens derivation. Commit
+   security-sensitive SQL; reviewers read it to sharpen audit and triage
+   scrutiny. Commit
    it on the branch(es) reviewers target (it is read from the base).
 6. Start in observation mode: leave `AUTO_MERGE_ENABLED` unset/false in the
    workflow env. Flip it to `true` only after the trail comments show the
