@@ -44,7 +44,11 @@ bench_root="$(cd "$(dirname "$0")" && pwd)"
 timeout_s="${ARGUS_TIMEOUT:-2700}"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/review-bench.XXXXXX")"
-cleanup() { [ "${BENCH_KEEP:-0}" = "1" ] && echo "scratch kept: $scratch" >&2 || rm -rf "$scratch"; }
+eng_home=""
+cleanup() {
+  if [ -n "$eng_home" ]; then rm -rf "$eng_home"; fi
+  [ "${BENCH_KEEP:-0}" = "1" ] && echo "scratch kept: $scratch" >&2 || rm -rf "$scratch"
+}
 trap cleanup EXIT
 
 # --- Materialize: a repo with base branch `main` and the change committed on `bench-change`.
@@ -85,7 +89,28 @@ started="$(date +%s)"
 case "$engine" in
   codex)
     # The production single-review path (review-engine.sh is retired): the
-    # with-effort wrapper serving the native review verb, findings on stdout.
+    # with-effort wrapper serving the native review verb, findings on stdout,
+    # under the same preamble the live loop's START ENGINE sets up — codex
+    # must WRITE session state, the default home may be read-only under an
+    # outer sandbox, and that state must stay out of the reviewed tree. So:
+    # a throwaway CODEX_HOME with login symlinked over, an isolated
+    # CLAUDE_PLUGIN_DATA (the job ledger is unlocked read-modify-write), TLS
+    # anchors as a FILE bundle, and the code-mode host a nested codex
+    # resolves to /usr/local/bin instead of ~/.local/bin.
+    eng_home="$(mktemp -d "${TMPDIR:-/tmp}/review-bench-codex.XXXXXX")"
+    source_codex_home="${CODEX_HOME:-$HOME/.codex}"
+    if [ -f "$source_codex_home/auth.json" ]; then
+      ln -s "$source_codex_home/auth.json" "$eng_home/auth.json"
+    fi
+    export CODEX_HOME="$eng_home" CLAUDE_PLUGIN_DATA="$eng_home/companion-state"
+    if [ -z "${SSL_CERT_FILE:-}" ]; then
+      for _cert in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt; do
+        if [ -f "$_cert" ]; then export SSL_CERT_FILE="$_cert"; break; fi
+      done
+    fi
+    if [ -z "${CODEX_CODE_MODE_HOST_PATH:-}" ] && [ -x "$HOME/.local/bin/codex-code-mode-host" ]; then
+      export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"
+    fi
     node "$bench_root/../../skills/codex-companion/scripts/with-effort.mjs" \
       --effort "${CODEX_REVIEW_EFFORT:-xhigh}" -- \
       review --base main --wait --model "${CODEX_REVIEW_MODEL:-gpt-5.6-sol}" \
