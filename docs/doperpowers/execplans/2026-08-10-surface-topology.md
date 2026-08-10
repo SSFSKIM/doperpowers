@@ -53,8 +53,11 @@ change — that inertness is itself an acceptance criterion.
       `pr view --json files` — suite at 35 assertions.
 - [x] (2026-08-10 ~12:20Z) M5: SKILL.md (toolkit row + Surfaces section +
       tripwire cross-ref), all suites green, changed-file shellcheck clean.
-- [ ] Exit gate: codex whole-branch review, then PR against main (human
-      review gate — never merged by this plan).
+- [x] (2026-08-10 ~13:30Z) Exit gate round 1: codex whole-branch review
+      (gpt-5.6-sol) returned 8 findings (P1 x4, P2 x4) — all adopted (see
+      Decision Log); suites re-green at 38 + 14 surface assertions.
+- [ ] Exit gate round 2: codex re-review of the fixed branch, then PR
+      against main (human review gate — never merged by this plan).
 
 ## Surprises & Discoveries
 
@@ -127,6 +130,32 @@ change — that inertness is itself an acceptance criterion.
   `gh pr list` would re-fetch the same facts and see unlinked PRs the pass
   cannot act on anyway (no ticket to label). Date/Author: 2026-08-10,
   plan author.
+
+- Decision (codex round 1, all 8 findings adopted): per-surface mkdir
+  locks under `$DAEMON_HOME/surface-locks/` — the dispatcher holds a
+  ticket's surface locks from the occupancy check (now a fresh-snapshot
+  helper run UNDER the lock) through the spawn, and the sweep's relates
+  read-modify-writes take the same lock. One mechanism closes both the
+  cross-process double-dispatch window (the in-tick claim set only covers
+  one process) and the relates-vs-dispatch TOCTOU. Same stale-steal
+  policy as the review dispatch lock. On lock contention an implementer
+  queues; the architect proceeds unlocked (never-blocked doctrine
+  outranks lock hygiene for the resolver).
+  Rationale: codex P1 x2; precedent in review-dispatch (#49).
+  Date/Author: 2026-08-10.
+- Decision (codex round 1): `surfaces_registry()` best-effort-fetches the
+  default branch (30s timeout, offline degrades to the cached ref) except
+  under `$SURFACES_REF`; consolidation dedupe covers arch states OR an
+  open epic-with-children (decompose moves the consolidation to
+  `ready-for-implementer` while members stay open); dispatch gates
+  `T_SURFACES` on a loaded registry (leftover labels in a registry-less
+  repo must stay inert); the consolidation label rides `--surface` on the
+  register call (atomic with create); PR files come from REST
+  `pulls/N/files` so `previous_filename` catches renames; relates edges
+  repair per SIDE (one-sided edges from a crashed tick converge); and the
+  queue-depth members count parks except `deferred` (the #52 finding-5
+  twin — a parked rewrite resumes without re-running any search).
+  Date/Author: 2026-08-10.
 
 ## Outcomes & Retrospective
 
