@@ -145,7 +145,10 @@ is a TOOL invocation, not a nested agent. Never add
    once. Treat the returned path as `<review-tmp>` for this invocation and
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
-   turn reads them.
+   turn reads them. A park preserves the boards, never engine state, so
+   `rm -rf <review-tmp>/codex-home.*` runs on every exit including a
+   park — nothing after JOIN reads the engine home, and it holds a
+   symlink to the real `auth.json`.
 2. Choose the round's route — YOUR judgment, by
    doperpowers:requesting-review's doctrine: a single native review by
    default; the code-review panel on a big diff (~20+ files or a couple
@@ -528,7 +531,8 @@ secondary linked issues if any; and the tier judgment with the rubric
 clauses it satisfied. A scale run has no PR to post it on: its trail goes
 on the EPIC ISSUE, the same thread its closure package lives in.
 
-Cleanup: a needs-human park preserves `<review-tmp>` and the dispatcher control
+Cleanup: a needs-human park preserves `<review-tmp>` (minus the engine homes
+step 1 removes on every exit) and the dispatcher control
 directory (parent of `{{BIND_READY_FILE}}`) for resume. Any non-park terminal
 outcome removes both after the trail is posted; never leave the accepted ledger
 behind when no reviewer will resume it.
