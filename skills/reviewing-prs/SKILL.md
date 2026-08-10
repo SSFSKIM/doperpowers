@@ -210,9 +210,11 @@ is a TOOL invocation, not a nested agent. Never add
    priority-sorted) plus `.result.coverage` for the trail. A verdict of
    `interrupted` is an engine failure, not a judgment about the diff —
    retry the panel once with fresh output files; a second interruption
-   fails the round. Correctness review of the whole range is the
-   engine's job; your own reading serves the audit and the triage, not
-   a second review.
+   fails the round. An interrupted attempt still carries any confirmed
+   findings it reached, and they remain this round's evidence: carry
+   them into TRIAGE alongside the retry's. Correctness review of the
+   whole range is the engine's job; your own reading serves the audit
+   and the triage, not a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
 critical/high finding remains unresolved; needs-attention otherwise.
