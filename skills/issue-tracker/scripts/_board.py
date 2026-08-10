@@ -173,6 +173,18 @@ CATEGORIES = ("bug", "enhancement", "spike", "env-issue")
 SPIKE_COLOR = "f9d0c4"
 ENV_ISSUE_COLOR = "e4a0f7"
 
+# Surfaces: the board's third managed label family. A surface is a named
+# contested code seam the CONSUMER repo declares in .doperpowers/surfaces.md
+# (read from the default branch — an entry takes effect when its PR lands,
+# never from a working tree). A ticket carrying `surface:<name>` is
+# serialized by implement-dispatch: one in-flight implement worker per
+# surface. Closed vocabulary — a surface label with no registry entry is a
+# lint FAIL. No registry file → surfaces_registry() is None → every surface
+# feature is inert (the opt-in contract).
+SURFACE_PREFIX = "surface:"
+SURFACE_COLOR = "e99695"
+SURFACE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
              "parent-pin", "note")
@@ -393,9 +405,12 @@ def snapshot(refresh=False):
                     and prs_complete
                     and all(p["state"] in ("MERGED", "CLOSED") for p in pr_list)
                     and any(p["state"] == "MERGED" for p in pr_list),
+                "surfaces": [l[len(SURFACE_PREFIX):] for l in labels
+                             if l.startswith(SURFACE_PREFIX)],
                 "labels": [l for l in labels
                            if not l.startswith(STATUS_PREFIX)
                            and not l.startswith(PRIORITY_PREFIX)
+                           and not l.startswith(SURFACE_PREFIX)
                            and l not in CATEGORIES],
                 "assignees": [a["login"] for a in it["assignees"]["nodes"]],
                 "created": it["createdAt"][:10],
@@ -458,6 +473,121 @@ def edit_labels(num, remove=(), add=()):
         args += ["--add-label", l]
     if len(args) > 4:
         gh(args)
+
+
+# ── surfaces registry (.doperpowers/surfaces.md on the default branch) ───
+def _surfaces_ref():
+    """The ref surfaces.md is read from: $SURFACES_REF (tests), else the
+    remote default branch. Entries take effect when their PR LANDS — a
+    working-tree or feature-branch entry has no effect (spec M1)."""
+    ref = os.environ.get("SURFACES_REF")
+    if ref:
+        return ref
+    r = subprocess.run(["git", "symbolic-ref", "-q", "--short",
+                        "refs/remotes/origin/HEAD"],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    for cand in ("origin/main", "origin/master"):
+        if subprocess.run(["git", "rev-parse", "--verify", "-q", cand],
+                          capture_output=True).returncode == 0:
+            return cand
+    return None
+
+
+_surfaces_cache = ("unset",)
+
+
+def surfaces_registry():
+    """Parsed .doperpowers/surfaces.md → {name: {"paths": [...],
+    "identifiers": [...], "born_of": str, "note": str}} — or None when the
+    file (or a readable ref) is absent, which switches every surface
+    feature off. Cached per process like snapshot()."""
+    global _surfaces_cache
+    if _surfaces_cache[0] != "unset":
+        return _surfaces_cache[0]
+    reg = None
+    ref = _surfaces_ref()
+    if ref:
+        r = subprocess.run(["git", "show", "%s:.doperpowers/surfaces.md" % ref],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            reg, cur = {}, None
+            for line in r.stdout.splitlines():
+                m = re.match(r"^##\s+(\S+)\s*$", line)
+                if m:
+                    cur = {"paths": [], "identifiers": [],
+                           "born_of": "", "note": ""}
+                    reg[m.group(1)] = cur
+                    continue
+                if cur is None:
+                    continue
+                m = re.match(r"^-\s*(paths|identifiers|born-of|note):\s*(.*)$",
+                             line)
+                if not m:
+                    continue
+                key, val = m.group(1), m.group(2).strip()
+                if key in ("paths", "identifiers"):
+                    cur[key] = [p.strip() for p in val.split(",") if p.strip()]
+                else:
+                    cur[key.replace("-", "_")] = val
+    _surfaces_cache = (reg,)
+    return reg
+
+
+def match_identifiers(registry, text):
+    """Surface names whose identifiers appear in `text` as whole words
+    (case-sensitive — the register/transition matching moments)."""
+    hits = []
+    for name, entry in (registry or {}).items():
+        for ident in entry["identifiers"]:
+            if re.search(r"\b%s\b" % re.escape(ident), text or ""):
+                hits.append(name)
+                break
+    return sorted(hits)
+
+
+def _glob_re(pat):
+    """One surfaces.md path glob → regex: `**` crosses `/`, `*` does not,
+    `?` is one non-slash char. Hand-rolled (fnmatch's `*` crosses `/`)."""
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "*":
+            if pat[i:i + 2] == "**":
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("^%s$" % "".join(out))
+
+
+def match_paths(registry, paths):
+    """Surface names whose path globs match any of `paths` (a PR diff's
+    file list; a rename should contribute both its old and new path)."""
+    hits = []
+    for name, entry in (registry or {}).items():
+        pats = [_glob_re(p) for p in entry["paths"]]
+        if any(p.match(path) for p in pats for path in paths):
+            hits.append(name)
+    return sorted(hits)
+
+
+def ensure_surface_label(name):
+    """Create the surface:<name> label if missing (idempotent; one list
+    call per process would be nicer but registration is rare)."""
+    label = SURFACE_PREFIX + name
+    have = {l["name"] for l in json.loads(
+        gh(["label", "list", "-R", repo(), "--json", "name", "--limit", "200"]))}
+    if label not in have:
+        gh(["label", "create", label, "-R", repo(), "--color", SURFACE_COLOR,
+            "--description", "issue-tracker contested surface (serialized dispatch)",
+            "--force"])
 
 
 def set_state_label(num, node, to):
