@@ -198,11 +198,25 @@ PY
 
 _transcript() { find "$HOME/.claude/projects" -name "$1.jsonl" 2>/dev/null | head -1; }
 
-# File mtime as UTC ISO-8601 (BSD stat first, GNU fallback) — the turn-end
-# ordering signal for the relay pass.
+# File mtime as epoch seconds — GNU stat first, BSD fallback. The BSD-first
+# order was NOT portable: GNU `stat -f %m` treats -f as filesystem mode and
+# %m as a filename, so it dumps the surviving file's filesystem status to
+# stdout while exiting nonzero — the fallback's number lands AFTER that
+# garbage, and arithmetic saw `File:` (every RECOVER tick with a live
+# worker crashed: "line 261: File: unbound variable"). GNU `stat -c` on BSD
+# fails cleanly to stderr, so this order composes; the numeric guard drops
+# anything else.
+_mtime_epoch() {
+  local e
+  e="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$e"
+}
+
+# File mtime as UTC ISO-8601 — the turn-end ordering signal for the relay pass.
 _mtime_iso() {
   local e
-  e="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null)" || return 1
+  e="$(_mtime_epoch "$1")" || return 1
   date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
 }
 
@@ -258,7 +272,7 @@ pass_recover() {
           live)
             tx="$(_transcript "$current")"
             if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx") ) / 60 ))"
+              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 _recover "$tk" "$uuid" "$recov" "silent for ${age}m (stall threshold ${STALL_MIN}m)"
                 acted=$((acted+1))
@@ -287,7 +301,7 @@ pass_recover() {
             # meta's `updated` is bumped by the finalize just above).
             tx="$(_transcript "$current")"
             if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx") ) / 60 ))"
+              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 log "[sweep] RECOVER: #$tk worker $uuid is live but silent for ${age}m (threshold ${STALL_MIN}m) on a handed-off $state ticket — retiring the binding; it owns no further writes here"
                 "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
