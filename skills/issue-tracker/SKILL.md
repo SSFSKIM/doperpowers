@@ -329,22 +329,34 @@ SEAM: the identifiers your ticket touches (file paths, function/RPC
 names, table names). Title-keyword search may not be enough — different
 authors word the same work differently. GitHub issue search hits
 bodies, so query each seam identifier
-(`gh issue list --state open --search "<function-or-file-name>"`).
-Then triage the hits:
+(`gh issue list --state open --limit 200 --search "<function-or-file-name>"`
+— the explicit `--limit` matters: the default caps at 30 and truncates
+silently). This search is a gh-binding route; an API-bound repo has no
+client search verb yet — rely on the server's registration-time dedupe
+until one lands (the arkho#7 route family). Then triage the hits:
 
 - **Same defect or scope** → comment your evidence on the existing
   ticket instead of registering a duplicate — parallel workers hit the
   same base regressions blind.
 - **Same seam, different defect** → register, but in the same breath
-  `board-relate.sh` your new ticket to every open ticket on that seam.
-- **Cluster tripwire**: if your registration would put a THIRD open
-  non-park ticket onto the same function or contract body, that seam
-  has outgrown patch-wise work — parallel rewrites of one body revert
-  each other silently (different files, zero git conflicts).
-  Register your finding, then raise consolidation: a
-  ticket born `ready-for-architect` that names every member and owns
-  the unified contract, with the members related (and, where they are
-  still undispatched, `--blocked-by` the consolidation ticket).
+  `board-relate.sh` your new ticket to every open ticket on that seam
+  (gh binding — board-relate.sh has no API route; there, name the
+  seam-mates in your ticket body instead and move on).
+- **Cluster tripwire**: if your registration would put a THIRD
+  non-terminal ticket onto the same function or contract body, that
+  seam has outgrown patch-wise work — parallel rewrites of one body
+  revert each other silently (different files, zero git conflicts).
+  Parks COUNT: a needs-human/needs-info rewrite resumes into its lane
+  without re-running this search; only `deferred` and closed tickets
+  are out of the race. Register your finding, then raise consolidation:
+  a ticket born `ready-for-architect` that names every member and owns
+  the unified contract, with the members related. Member disposition
+  belongs to the consolidation ticket itself — each member is re-cut as
+  a slice of the unified contract or closed with a reason. Do not reach
+  for `--blocked-by` on the existing members: re-cutting other tickets'
+  edges is not a worker's write, and a block merely defers the
+  collision — the moment the consolidation lands, the unblock sweep
+  frees the stale rewrites to overwrite it.
 
 Whoever registers a ticket authors
 its body AT REGISTER TIME — write the sections to a temp file and pass
