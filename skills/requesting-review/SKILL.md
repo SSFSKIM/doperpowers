@@ -46,7 +46,7 @@ Three shapes, chosen by what the review is for:
   assumptions. Trailing positional text is its focus lens, e.g.
   `… adversarial-review --base main challenge whether this caching design is right`.
 
-Target selection (all shapes): `--base <ref>` reviews the diff from
+Target selection (`review` and `adversarial-review`): `--base <ref>` reviews the diff from
 `merge-base HEAD <ref>` to HEAD — the form for "review this branch against
 main". `--scope working-tree` reviews uncommitted work; `--scope branch`
 uses the auto-detected default branch; the default (`auto`) is working-tree
@@ -89,7 +89,9 @@ unauthenticated, the `setup` verb diagnoses both.
       --script "<skill-base>/../codex-companion/workflows/code-review.mjs" \
       --args '{"base":"origin/main"}' [--cwd <repo>] 2> <scratch>.events.log
 
-`base` is the only required arg. Optional args: `lenses` (an array replacing
+`base` is the only required arg, and it is the panel's whole target: every
+finder reviews `merge-base(HEAD, base)`…HEAD, so uncommitted work is outside
+a panel round — there is no scope selection here. Optional args: `lenses` (an array replacing
 the derived set), `finderModel`/`finderEffort` (default `gpt-5.6-sol`/`xhigh`),
 `verifierModel`/`verifierEffort` (default `gpt-5.6-sol`/`high`). It is ONE
 foreground process — run it in a background Bash call and keep the handle.
