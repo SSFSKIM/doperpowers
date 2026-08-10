@@ -218,7 +218,7 @@ assert_contains "$(state "s['issues']['$n7']['body']")" "relates-to: " "T17: edg
 # T18: queue-depth consolidation, exactly once (acceptance 6)
 echo "T18: queue-depth watch registers one consolidation ticket"
 printf 'recommend_for_student rewrite N\n' > "$body"
-out="$(run board-register.sh "네 번째 결함" bug P1 --body-file "$body")"; n8="${out%% *}"
+out="$(run board-register.sh "네 번째 결함" bug P1 --body-file "$body")"
 out="$(sweep)"
 assert_contains "$out" "SURFACE: consolidation #" "T18: consolidation registered at depth >= 3"
 count_mid="$(state "len(s['issues'])")"
