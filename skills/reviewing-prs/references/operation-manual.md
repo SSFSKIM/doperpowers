@@ -156,8 +156,11 @@ PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
 progress), SPEC FINDING (fix-required; waves with native blockers), and
 AUDIT NOTE (trail-only). The two streams JOIN before triage.
 
-There is NO second engine: on engine failure the worker retries twice, then
-posts the trail comment, leaves the ticket in-review, and ends its turn
+There is NO second engine: on engine failure the worker retries twice —
+except for two terminal kinds, a sandbox-unavailable rejection and a panel
+round that has already spent its own retry, which take the outage path on
+first occurrence — then posts the trail comment, leaves the ticket
+in-review, and ends its turn
 with the `ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it
 (capped; see the outage cap above). `needs-human` is never written for an
 infra outage. The review-trail comment names the engine that reviewed.
