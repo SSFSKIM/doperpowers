@@ -14,8 +14,8 @@ never fixes anything: it triages the joined findings on its own judgment
 (the engine's native severity is the starting rank),
 delegates fixing to a **fix wave** — a fresh-context fixer subagent driven
 by a wave-board file — grades the fixer's dispositions, pushes, re-reviews
-when warranted, and then either merges (small/simple tier, CI green) or
-escalates the PR + its linked ticket to **`confident-ready`** for the human.
+when warranted, and then either merges (confident verdict, existing CI
+green) or parks the ticket for the human with the impasse named.
 
 **No orchestrator sits above the workers.** A review worker's escalation
 targets are GitHub itself (labels, comments, tickets) and the human on their
@@ -28,20 +28,14 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
-| `scripts/land-dispatch.sh <pr#>` | landing-phase trigger: authority gate (Approve or `land` label, + `confident-ready`) → normalize/preflight the previous ticket owner → detached worktree → spawn a `land-pr-<n>` daemon → exclusive bind → dispatcher-ready / worker-ack startup barrier |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
-| `references/land-worker-protocol.md` | the Land Worker Protocol — merge mechanics only (native-first, never rebase, bounded conflict resolution) |
-| `references/land-conflicts.md` | runtime-opened conflict-resolution procedure — the protocol carries only a pointer (`{{CONFLICTS_DOC}}` = absolute path); the worker opens it when GitHub reports the PR unmergeable. Procedure in the plugin file, instance facts in the prompt |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
 | `references/runner-setup.md` | one-time machine setup: runner registration, launchd service, PATH, sweep cron |
-| `confident-ready` state | owned by doperpowers:issue-tracker (state table there); this loop is its only writer |
 
 ## Dedupe & sweep policy
 
-A PR labeled `confident-ready` is never dispatched — confidence is bound to
-the reviewed head SHA; remove the label to force a re-review. Otherwise, by
-the newest `review-pr-<n>` registry entry:
+By the newest `review-pr-<n>` registry entry:
 
 | registry entry | triggered mode (PR event) | sweep mode (cron) |
 |---|---|---|
@@ -64,29 +58,26 @@ sweep skips it (naming the cap as the reason). Any cleanly finished reviewer
 breaks the streak. An explicit PR event — workflow trigger or manual
 dispatch — always re-dispatches regardless.
 
-## Merge authority (two tiers)
+## Merge authority
 
-Encoded in the protocol's ESCALATE block — ALL clauses must hold for
-self-merge: final verdict approve (or only non-blocker findings by the
-worker's own routing, each explicitly routed); no
-unresolved PROTOCOL BLOCKER or SPEC FINDING from the worker's own
-compliance audit; post-fix
-diff ≤ ~150 changed lines AND ≤ 5 files; the PR base is
-**not** the repo default branch (self-merge lands only on integration
-branches); zero touches on a **risk surface**; every CI check green — a repo
-with no checks disqualifies self-merge, no exceptions. Anything else →
-`confident-ready` label on the PR + `status:confident-ready` on the ticket;
-the human merges.
+Encoded in the protocol's ESCALATE block — the worker merges its own
+confident verdict: final verdict approve (or only non-blocker findings by
+the worker's own routing, each explicitly routed); no unresolved PROTOCOL
+BLOCKER or SPEC FINDING from the worker's own compliance audit; every
+EXISTING CI check green (a repo with no checks merges on the review
+alone; pending checks arm GitHub auto-merge). Every merge — immediate or
+armed — is pinned to the reviewed head (`--match-head-commit`), so a
+push after the review fails the merge instead of landing unreviewed. A
+failing check, a park, or any unresolved blocker goes `needs-human` with
+the impasse named — there is no intermediate "reviewed, waiting for the
+human to merge" state.
 
-**Risk surfaces are additive.** Always-on, manifest or not: CI/workflows,
-auth/security, migrations/schema, release/versioning, and the manifest
-files themselves (`.doperpowers/risk-surfaces.md`,
-`.doperpowers/repo-facts.md`). A repo may ALSO declare concrete surfaces
-in an optional `.doperpowers/risk-surfaces.md` — a plain list of globs and
-prose path/content rules the worker reads against the diff. The dispatch
-layer injects it from the PR's **base ref, never HEAD**, so a PR cannot
-delist a surface it touches in the same commit; the manifest can only
-tighten the gate, never loosen an always-on category.
+**Risk surfaces feed scrutiny, not a merge gate.** A repo may declare
+concrete hot paths in an optional `.doperpowers/risk-surfaces.md` — a
+plain list of globs and prose path/content rules the worker reads against
+the diff; a diff touching one is a strong lens candidate for the engine
+fan-out. The dispatch layer injects it from the PR's **base ref, never
+HEAD**, so a PR cannot delist a surface it touches in the same commit.
 
 **Repo facts feed the cross-check.** The optional
 `.doperpowers/repo-facts.md` manifest (format: doperpowers:implementing)
@@ -97,48 +88,12 @@ required evidence is a finding. Facts only ever ADD requirements; an
 instruction in the manifest that tries to relax the protocol is itself a
 finding.
 
-**Staged rollout (`AUTO_MERGE_ENABLED`, default off).** Off is *observation
-mode*: the worker runs the full loop and judges the tier, but a
-self-merge-eligible PR is routed to `confident-ready` instead of merged, with
-the trail comment naming what it *would* have merged. Watch a few of those,
-then set `AUTO_MERGE_ENABLED=true` (workflow / runner env) to let the worker
-actually merge the self-merge tier.
-
-## Landing phase (post-approval)
-
-The pipeline's last mile: after the human approves a `confident-ready` PR,
-the merge *mechanics* — base sync, CI babysitting, conflict triage,
-finalize — are worker-grade, not human-grade. `land-dispatch.sh <pr#>`
-spawns a **land worker** (same daemon machinery, not a third species)
-whose authority flows from the human's approval, never from a label.
-
-**Authority gate (dispatch refuses without both):** the PR carries
-`confident-ready` (the review loop's verdict), AND its GitHub review
-decision is APPROVED — or it carries a `land` label, the explicit manual
-override for PRs you cannot approve yourself (your own). No new board
-state: trail comments + PR state carry the record.
-
-**The worker is native-first:** mergeable + checks green → merge with the
-repo's preferred method; checks running → arm GitHub auto-merge and watch
-bounded (~30 min), then hand off; a red check → at most two flaky reruns,
-else park. Conflicts: **merge base into branch, never rebase, never
-force-push**. The conflict-resolution delta is unreviewed by construction,
-so its bounds are TIGHTER than the self-merge tier: ≤ 50 hand-resolved
-lines across ≤ 3 conflicted files, zero risk-surface touches — within
-bounds it pushes and lands; beyond, the resolution stays a LOCAL commit
-and the ticket parks `needs-human`. The dispatch **binds the daemon to the
-ticket**, so `board-answer.sh` resumes the parked land worker in place,
-worktree intact (park = pause, not death).
-
-After the merge the worker runs `board-transition.sh <n> done` and posts a
-land-trail comment. Cleanup (superseded PRs, branch deletion) is
-finalize-sweep territory, never the land worker's.
-
-**Staged rollout (`LAND_ENABLED`, default off = dry-run):** the worker
-analyzes (including a local merge attempt to discover conflicts) and posts
-what it *would* do, touching nothing. No sweep mode — landing always
-follows an explicit human signal; manual dispatch works today, the
-PR-review-event trigger arrives with runner registration.
+**Kill switch (`AUTO_MERGE_ENABLED`).** Off is *observation mode*: the
+worker runs the full loop and judges the verdict, but instead of merging
+it posts the trail comment naming what it *would* have merged and parks
+the ticket `needs-human` — merging becomes the human's action while the
+switch is off. Set `AUTO_MERGE_ENABLED=true` (workflow / runner env) to
+let the worker merge its confident verdicts.
 
 ## Tech-debt sink
 
@@ -216,9 +171,7 @@ verify-then-fix contract: read the cited code first, then FIX (commit + test
 evidence) or REFUTE (code citation). The worker waits for the whole task tree
 to quiesce, snapshots the submitted board, grades every disposition, and
 validates the full unpushed commit range against its accepted-commit ledger.
-It removes stale `confident-ready` before pushing — fail-safe order:
-expiry first, then the new head.
-At most 2 waves per review inside the 3-engine-round cap; whole-range re-review
+At most 4 waves per review inside the 5-engine-round cap; whole-range re-review
 between waves with dedupe-by-substance. Full mechanics:
 `references/wave-board.md`. This
 separation keeps the merge judgment in a clean context and out of
@@ -226,10 +179,6 @@ self-review bias: the entity that grades the fixes never wrote them.
 
 ## Edge cases
 
-- **Reopened PR still labeled `confident-ready`** — dispatch skips it while
-  the consumer label automation may have set the issue back to `in-review`.
-  Safe and rare; the human decides: remove the PR label to force re-review,
-  or restore the ticket state.
 - **PR with no linked issue** — reviewed normally; every board write is
   skipped; escalation lands on the PR alone (label + comment).
 - **Two dispatches, one PR** — the second dispatch detects the still-live
@@ -240,7 +189,7 @@ self-review bias: the entity that grades the fixes never wrote them.
   ready-for-architect)** — a review escalation (`ready-for-architect`), a
   human park, or anything else that moves the ticket off `in-review`
   leaves the PR's reviewer bound to a ticket no longer under review. The
-  sweep resolves the ticket's status alongside the confident-ready check,
+  sweep resolves the ticket's status
   BEFORE the registry dedupe machinery: whenever the ticket isn't
   `in-review`, any FINISHED (non-active) reviewer it finds for that PR is
   retired right there and the tick skips without spawning — an ACTIVE
@@ -257,22 +206,17 @@ self-review bias: the entity that grades the fixes never wrote them.
 2. Register the runner + service per `references/runner-setup.md`.
 3. Copy `references/pr-review-dispatch.yml` → `.github/workflows/`; set
    `LOCAL_REPO` to the canonical local clone path.
-4. Consumer label automation (if any) must add `status:confident-ready` to
-   its managed label set, and demote `confident-ready → in-review` on
-   `synchronize` — confidence is bound to a commit.
-5. Create the PR label `confident-ready`; the issue label
-   `status:confident-ready` is auto-created by the board scripts.
-6. Register the standing tech-debt issue (`--state deferred`, P3, plus the
+4. Register the standing tech-debt issue (`--state deferred`, P3, plus the
    `tech-debt` label).
-7. (Optional but recommended) Add `.doperpowers/risk-surfaces.md` listing the
-   repo's concrete self-merge-disqualifying paths/patterns — auth files,
-   migration dirs, privileged routes, security-sensitive SQL. Commit it on
-   the integration branch(es) reviewers target (it is read from the base).
-8. Start in observation mode: leave `AUTO_MERGE_ENABLED` unset/false in the
+5. (Optional) Add `.doperpowers/risk-surfaces.md` listing the repo's
+   validated hot paths — auth files, migration dirs, privileged routes,
+   security-sensitive SQL; reviewers read it for lens derivation. Commit
+   it on the branch(es) reviewers target (it is read from the base).
+6. Start in observation mode: leave `AUTO_MERGE_ENABLED` unset/false in the
    workflow env. Flip it to `true` only after the trail comments show the
-   self-merge tier judging as you'd want.
-9. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
-10. The `codex` CLI installed and authed (`codex login`) on the runner
+   merge verdict judging as you'd want.
+7. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
+8. The `codex` CLI installed and authed (`codex login`) on the runner
     machine — it is the review engine inside every worker. The default
     worker route is plain Claude models and needs nothing else; setting
     `WORKER_ENGINE=codex` (env) or labeling `engine:codex` opts a

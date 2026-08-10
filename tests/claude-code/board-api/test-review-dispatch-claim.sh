@@ -224,7 +224,6 @@ nt "nothing was left unrendered"                 "{{"                 prompt
 # worker that skipped the resolution gets `fatal: bad revision`, never a quietly
 # wrong range) and the prompt hands the worker the resolution.
 t  "the base binding says it is unresolved"      '`BASE_REF`: UNRESOLVED' prompt
-t  "and so does base-is-default"                 '`BASE_IS_DEFAULT`: unresolved' prompt
 t  "the worker is told to read the base off the PR" "gh pr view <n> --json" prompt
 t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
 

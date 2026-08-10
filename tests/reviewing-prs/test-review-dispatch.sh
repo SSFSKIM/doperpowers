@@ -402,7 +402,6 @@ def pr(n, **kw):
                            "closingIssuesReferences")})
 pr(5)
 pr(6, isDraft=True)
-pr(8, labels=[{"name": "confident-ready"}])
 pr(9, title="chore: tidy", body="No ticket for this one.")
 json.dump([e for e in list_entries if e["number"] != 9],
           open(os.path.join(d, "pr-list.json"), "w"))
@@ -435,7 +434,6 @@ assert_not_contains "$PROMPT" "Ticket seven brief body" "prompt carries no inlin
 assert_contains "$PROMPT" '`BASE_REF`: main' "prompt carries the base ref"
 assert_contains "$PROMPT" '`TECH_DEBT_ISSUE`: 99' "prompt carries the standing tech-debt issue binding"
 assert_contains "$PROMPT" '`AUTO_MERGE`: off' "prompt binds auto-merge off by default (observation mode)"
-assert_contains "$PROMPT" '`BASE_IS_DEFAULT`: yes' "prompt binds base==default (PR 5 targets main, the default) → always human tier"
 assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
 assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-facts-absent fallback when the repo has none"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
@@ -547,9 +545,6 @@ reset_state
 out="$("$DISPATCH" 6)"
 assert_contains "$out" "draft" "draft PR skipped"
 assert_equals "$(cat "$SPAWN_LOG")" "" "draft PR spawns nothing"
-out="$("$DISPATCH" 8)"
-assert_contains "$out" "confident-ready" "confident-ready-labeled PR skipped"
-assert_equals "$(cat "$SPAWN_LOG")" "" "confident-ready PR spawns nothing"
 
 # ---- dedupe: active / dead / finished -----------------------------------------
 echo "dedupe:"
@@ -675,12 +670,11 @@ rm -rf "$DEFAULT_DAEMON_HOME"
 echo "sweep:"
 reset_state; seed_reviewer idle
 out="$("$DISPATCH" --sweep)"
-assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips finished(5)/draft(6)/labeled(8)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips finished(5)/draft(6)"
 reset_state
 out="$("$DISPATCH" --sweep)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep dispatches the unbound open PR"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-6" "sweep never dispatches a draft"
-assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-8" "sweep never dispatches a confident-ready PR"
 
 # ---- sweep skips a PR whose primary ticket is parked ----------------------------
 # A prior reviewer parked the ticket on the human; every tick would otherwise
@@ -870,7 +864,7 @@ json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
            "status": "idle", "updated": "2026-07-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-printf 'review complete; confident-ready set.\n' \
+printf 'review complete; merged.\n' \
   > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_equals "$(cat "$SPAWN_LOG")" "" "sweep still skips a finished reviewer without the marker"
@@ -1244,7 +1238,6 @@ assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifes
 assert_contains "$P10" "FACTS-FROM-BASE" "repo-facts content injected from the BASE ref"
 assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-facts edit does not leak (read from base, not head)"
 assert_contains "$P10" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true binds auto-merge on"
-assert_contains "$P10" '`BASE_IS_DEFAULT`: no' "base (main) != default branch (develop) → not main-excluded"
 
 # ---- engine switch (label → WORKER_ENGINE → claude) + codex liveness -----------
 # Canned PR on feat/x (labels overridable) + a thin wrapper over $DISPATCH, so
@@ -1676,7 +1669,6 @@ assert_contains "$INT_PROMPT" '`BASE_REF`: main' "the engine base is the default
 assert_not_contains "$INT_PROMPT" '`BASE_REF`: epic/integration' "the engine never reviews the integration branch against itself"
 assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt names the integration branch the worktree sits at"
 assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
-assert_contains "$INT_PROMPT" '`BASE_IS_DEFAULT`: yes' "base-is-default follows BASE_REF, which for an epic is always the default branch"
 
 # ...and the NEXT cycle must not ride that branch. The recomposition return
 # clears `branch:` with `pr:` (both describe a composition that just changed),
@@ -1975,7 +1967,7 @@ json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
            "status": "idle", "updated": "2026-07-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-printf 'review complete; confident-ready set.\n' \
+printf 'review complete; merged.\n' \
   > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
 "$DISPATCH" 5 >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "the clean reviewer is still replaced on an explicit event"

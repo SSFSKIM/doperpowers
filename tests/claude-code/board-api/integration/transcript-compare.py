@@ -63,20 +63,19 @@ PINNED = {
         "gh mode resolves the ticket against its snapshot before any call; the API "
         "learns of it from the server's 404"),
     7: ("transition-echo-omits-from-state", "see step 3"),
-    8: ("refusal-wording-illegal-transition",
-        "the legality table lives client-side in gh mode and server-side in API mode; "
-        "both name the same edge (asserted separately by the drill)"),
-    9: ("relay-report-shape",
+    8: ("relay-report-shape",
         "gh mode relays by resuming a registry-resolved session and reports that "
         "session; API mode records the answer server-side and reports the delivery "
         "the sweep made, keyed by the answer's own id"),
+    9: ("refusal-wording-illegal-transition",
+        "the legality table lives client-side in gh mode and server-side in API mode; "
+        "both name the same edge (asserted separately by the drill)"),
     10: ("transition-echo-omits-from-state", "see step 3"),
     11: ("transition-echo-omits-from-state", "see step 3"),
-    12: ("transition-echo-omits-from-state", "see step 3"),
-    13: ("show-shape",
+    12: ("show-shape",
          "gh mode prints the snapshot node as JSON; the API ticket's history IS its "
          "server-side timeline, and there is no node to print"),
-    14: ("list-row-shape", "see step 2"),
+    13: ("list-row-shape", "see step 2"),
 }
 
 

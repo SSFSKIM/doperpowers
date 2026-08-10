@@ -6,7 +6,7 @@
 # against it); PR listing and issue comments come from a gh overlay shim;
 # every lane dispatcher and daemon verb is a logging stub, so these tests
 # pin the SWEEP's own logic: pass scoping, bounded recovery, cancel guards,
-# land signal detection, relay ordering, and pass isolation.
+# relay ordering, and pass isolation.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -278,10 +278,6 @@ cat > "$TEST_ROOT/review-dispatch" <<'STUB'
 echo "review-dispatch:$*" >> "$ACTION_LOG"
 if [ "${FAIL_REVIEW:-0}" = "1" ]; then echo "review lane exploded" >&2; exit 1; fi
 STUB
-cat > "$TEST_ROOT/land-dispatch" <<'STUB'
-#!/usr/bin/env bash
-echo "land-dispatch:$*" >> "$ACTION_LOG"
-STUB
 cat > "$TEST_ROOT/board-answer" <<'STUB'
 #!/usr/bin/env bash
 echo "answer:$*" >> "$ACTION_LOG"
@@ -293,10 +289,9 @@ echo "reconcile-pwd:$PWD" >> "$ACTION_LOG"
 echo "reconcile report line"
 STUB
 chmod +x "$TEST_ROOT/impl-dispatch" "$TEST_ROOT/review-dispatch" \
-         "$TEST_ROOT/land-dispatch" "$TEST_ROOT/board-answer" "$TEST_ROOT/reconcile"
+         "$TEST_ROOT/board-answer" "$TEST_ROOT/reconcile"
 export IMPLEMENT_DISPATCH_CMD="$TEST_ROOT/impl-dispatch"
 export REVIEW_DISPATCH_CMD="$TEST_ROOT/review-dispatch"
-export LAND_DISPATCH_CMD="$TEST_ROOT/land-dispatch"
 export BOARD_ANSWER_CMD="$TEST_ROOT/board-answer"
 export RECONCILE_CMD="$TEST_ROOT/reconcile"
 
@@ -533,21 +528,6 @@ cat > "$COMMENTS_DIR/34.json" <<'J'
 {"comments":[{"id":"IC_34a","author":{"login":"me"},"body":"[board-epic] ready-for-architect: recomposition-due: all children terminal (was: q)","createdAt":"2026-07-18T02:00:00Z"}]}
 J
 
-# PRs for the land pass
-cat > "$MOCK_PR_LIST" <<'J'
-[{"number":21,"reviewDecision":"APPROVED","labels":[{"name":"confident-ready"}]},
- {"number":22,"reviewDecision":"REVIEW_REQUIRED","labels":[{"name":"confident-ready"}]},
- {"number":23,"reviewDecision":"","labels":[{"name":"confident-ready"},{"name":"land"}]},
- {"number":24,"reviewDecision":"APPROVED","labels":[{"name":"confident-ready"}]}]
-J
-python3 - <<'PY'
-import json, os
-u = "bbbb0024-0000-4000-8000-000000000000"
-json.dump({"uuid": u, "current": u, "name": "land-pr-24", "status": "idle",
-           "updated": "2026-07-18T00:00:00Z"},
-          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
-PY
-
 run_sweep() { SWEEP_STALL_MINUTES=60 "$SWEEP" 2>&1; }
 
 # The IMPACT cursor lives in a SUBDIRECTORY of DAEMON_HOME. The top level is
@@ -627,12 +607,6 @@ assert_not_contains "$log" "retire:aaaa0039" "a live scale reviewer survives the
 assert_contains "$log" "impl-dispatch:--sweep" "implement lane sweeps"
 assert_contains "$log" "review-dispatch:--sweep" "review lane sweeps"
 
-# LAND
-assert_contains "$log" "land-dispatch:21" "approved confident-ready PR gets a land worker"
-assert_contains "$log" "land-dispatch:23" "land label overrides a missing approval"
-assert_not_contains "$log" "land-dispatch:22" "unapproved PR is not landed"
-assert_not_contains "$log" "land-dispatch:24" "an existing land meta means no second sweep attempt"
-
 # RELAY
 assert_contains "$log" "answer:15 --posted" "fresh human comment on a parked ticket relays"
 assert_not_contains "$log" "answer:16" "[answers] comment does not re-relay"
@@ -681,7 +655,7 @@ assert_not_contains "$log" "retire:aaaa0013" "second tick does not re-cancel a r
 : > "$ACTION_LOG"
 out="$(FAIL_REVIEW=1 run_sweep)"
 log="$(cat "$ACTION_LOG")"
-assert_contains "$log" "land-dispatch:21" "a failing review lane never stops later passes"
+assert_contains "$log" "reconcile-ran" "a failing review lane never stops later passes"
 assert_contains "$out" "review lane exploded" "the failing lane's error is surfaced"
 
 mkdir -p "$DAEMON_HOME/board-sweep.lock"

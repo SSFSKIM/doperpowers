@@ -30,8 +30,8 @@ artifact under review is the ticket's `pr` binding, which
 for an ordinary ticket, or a closure-package event id for an epic. Your
 worktree starts on the repo's current head, so checking out the head you are
 reviewing is yours to do — and so is resolving what that PR MERGES INTO. The
-board carries no PR base, so `BASE_REF` and `BASE_IS_DEFAULT` below are
-UNRESOLVED: read them off the PR (`gh pr view <n> --json
+board carries no PR base, so `BASE_REF` below is
+UNRESOLVED: read it off the PR (`gh pr view <n> --json
 baseRefName,headRefName,headRefOid`), then `git fetch origin <baseRefName>
 <headRefName>` and `git checkout --detach <headRefOid>`, all before ORIENT.
 `gh` moves no ref in this long-lived clone, so a base you did not fetch is
@@ -93,8 +93,6 @@ Runtime bindings (dispatcher-owned):
 - `ENV_TRACKER_ISSUE`: {{ENV_TRACKER_ISSUE}}
 - `BOARD_SCRIPTS`: {{BOARD_SCRIPTS}}
 - `AUTO_MERGE`: {{AUTO_MERGE}}
-- `DEFAULT_BRANCH`: {{DEFAULT_BRANCH}}
-- `BASE_IS_DEFAULT`: {{BASE_IS_DEFAULT}}
 - `BIND_READY_FILE`: {{BIND_READY_FILE}}
 - `IMPLEMENT_PROTOCOL_FILE`: {{IMPLEMENT_PROTOCOL_FILE}}
 - `REVIEW_ENGINE`: {{REVIEW_ENGINE}}

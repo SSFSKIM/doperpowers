@@ -10,7 +10,7 @@
 #   register (human) → claim + spawn + bind (implement-dispatch, API mode)
 #     → gate verdict (in-progress + [gate] comment, as the RUN)
 #     → park needs-human → human answer → relay resume into the bound session
-#     → in-review with a PR → human verdict → done
+#     → in-review with a PR → the human's closing verdict → done
 #
 # and three server-side properties ride along, each of which the unit tier
 # could only assume because a mock answers whatever it is told to:
@@ -129,9 +129,14 @@ t "in-review requires the artifact and takes it" "#$TID: → in-review" \
 # The crossing ENDED the run server-side, and the bearer died with the commit.
 t "the ended run's bearer is revoked" "unauthenticated" \
   api "$BEARER" GET /tickets
-t "the human's verdict is accepted" "#$TID: → confident-ready" \
-  in_repo "$SCRIPTS/board-transition.sh" "$TID" confident-ready
-t "and the ticket closes" "#$TID: → done" \
+# THE VERDICT IS THE CLOSE. `confident-ready` was retired from this fork's
+# state machine (the review worker merges what it is confident about, and the
+# merge closes the ticket), so the walk takes `in-review → done` — the one
+# in-review exit both canons still hold. A1's LEGAL_ROWS keeps a
+# `in-review → confident-ready` row it no longer has a client for; that
+# divergence is booked as the legality-drift follow-up, and a drill whose
+# purpose is cross-binding parity must not walk an edge only one side knows.
+t "the human's verdict closes the ticket" "#$TID: → done" \
   in_repo "$SCRIPTS/board-transition.sh" "$TID" "done"
 
 t "the board shows the ticket done" "#$TID done" in_repo "$SCRIPTS/board-list.sh"

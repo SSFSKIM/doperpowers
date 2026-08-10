@@ -57,6 +57,16 @@ MD
 # ---- the walk, as data ------------------------------------------------------
 # ONE definition, run under both bindings. `%T` is the ticket the walk's own
 # first step registered; nothing else differs between the two invocations.
+#
+# EVERY EDGE HERE IS ONE BOTH CANONS HOLD. The walk used to verdict through
+# `confident-ready` and to probe its illegal-edge refusal on
+# `needs-human → confident-ready`; that state is retired from this fork's
+# machine while A1's LEGAL_ROWS still carries its rows, so both steps now say
+# more about the known legality drift than about the adapter. The verdict is
+# the `in-review → done` close both sides keep, and the illegal-edge probe
+# moved to `in-progress → ready-for-implementer` — refused by gh's LEGAL and by
+# A1's legal_transition alike, and refused by NAMING THE EDGE on both sides,
+# which is the property the probe is here for.
 STEPS=(
   "board-register.sh|transcript diff walk|enhancement|P1|--body-file|$BODY"
   "board-list.sh|ready-for-implementer"
@@ -65,10 +75,9 @@ STEPS=(
   "board-transition.sh|%T|in-review"
   "board-transition.sh|4242|in-progress"
   "board-transition.sh|%T|needs-human|which db?"
-  "board-transition.sh|%T|confident-ready"
   "board-answer.sh|%T|sqlite"
+  "board-transition.sh|%T|ready-for-implementer"
   "board-transition.sh|%T|in-review|--pr|https://example.test/pr/1"
-  "board-transition.sh|%T|confident-ready"
   "board-transition.sh|%T|done"
   "board-show.sh|%T"
   "board-list.sh"
@@ -204,7 +213,7 @@ for cap in "$GH_CAP" "$API_CAP"; do
   side=gh; [ "$cap" = "$GH_CAP" ] || side=api
   t "the $side refusal names the unknown ticket"      "4242" step_out "$cap" 6
   t "the $side refusal names the illegal edge itself" \
-    "needs-human → confident-ready"                          step_out "$cap" 8
+    "in-progress → ready-for-implementer"                    step_out "$cap" 9
 done
 # The PR requirement is the one refusal whose vocabulary does NOT match: gh
 # mode explains the requirement and its destination, while A1 raises

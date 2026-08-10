@@ -122,7 +122,7 @@ Every claim of done carries EVIDENCE appropriate to the change — never
 claim completion on reasoning alone:
 
 - testable logic: TDD (/doperpowers:test-driven-development) — failing  
-test first. Green checks are what keep your PR self-merge-eligible.
+test first. Green checks are what let the review worker merge your PR.
 - UI/visual changes: build + run it — verify the actual rendered
 behavior (E2E where the repo has it); write tests only where behavior
 is assertable without theater.

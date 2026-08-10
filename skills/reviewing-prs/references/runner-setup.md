@@ -72,10 +72,10 @@ crontab -e
 
 ## 7. (Optional) Per-repo risk-surface manifest
 
-Declare the repo's concrete self-merge-disqualifying paths in
-`.doperpowers/risk-surfaces.md` on the integration branch(es) reviewers
+Declare the repo's validated hot paths in
+`.doperpowers/risk-surfaces.md` on the branch(es) reviewers
 target. It's a plain list of globs and prose path/content rules the review
 worker reads against the diff — auth files, migration dirs, privileged
-routes, security-sensitive SQL. It is read from the PR's **base ref** (never
-HEAD) and only ADDS to the always-on risk categories; it can never loosen the
-gate. Absent file → the always-on categories still apply.
+routes, security-sensitive SQL — as lens-derivation input for the engine
+fan-out. It is read from the PR's **base ref** (never HEAD). Absent file →
+reviewers derive lenses from the diff alone.

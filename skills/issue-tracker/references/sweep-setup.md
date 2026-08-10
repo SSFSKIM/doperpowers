@@ -3,8 +3,7 @@
 `scripts/board-sweep.sh` is the unattended tick: every ~5 minutes it
 recovers dead workers, cancels workers on closed tickets, dispatches
 implement workers onto ELIGIBLE tickets (cap-bounded), attaches the review
-loop to open PRs, dispatches a land worker when a human has Approved a
-`confident-ready` PR, and relays fresh `needs-human` ticket comments to the
+loop to open PRs, and relays fresh `needs-human` ticket comments to the
 parked worker that asked. It is mechanical (no model calls) and idempotent —
 overlapping or repeated ticks are safe, and all state lives in GitHub and
 the daemon registry.
@@ -62,7 +61,6 @@ path):
       <key>EnvironmentVariables</key><dict>
         <key>LOCAL_REPO</key><string>/ABSOLUTE/PATH/TO/YOUR/REPO/CLONE</string>
         <key>AUTO_MERGE_ENABLED</key><string>true</string>
-        <key>LAND_ENABLED</key><string>true</string>
         <key>IMPLEMENT_MAX_CONCURRENT</key><string>5</string>
       </dict>
       <key>StandardOutPath</key><string>/tmp/board-sweep-launchd.log</string>
@@ -70,9 +68,9 @@ path):
     </dict></plist>
 
 `bash -lc` loads your login profile, so `gh`, `python3`, and `claude`
-resolve exactly as they do in your terminal. `AUTO_MERGE_ENABLED` /
-`LAND_ENABLED` arm the two merge tiers for workers the sweep dispatches —
-drop either line to keep that tier in its default (off / dry-run) mode.
+resolve exactly as they do in your terminal. `AUTO_MERGE_ENABLED` arms
+merging for the review workers the sweep dispatches — drop the line to
+keep them in observation mode (review + park, no merge).
 
 Arm / un-arm / observe:
 
@@ -86,7 +84,7 @@ environment-level failures.
 
 ## cron (any Unix)
 
-    */5 * * * * DOPERPOWERS_HOME=$HOME/.claude/plugins/marketplaces/doperpowers LOCAL_REPO=/path/to/repo AUTO_MERGE_ENABLED=true LAND_ENABLED=true bash -lc '$DOPERPOWERS_HOME/skills/issue-tracker/scripts/board-sweep.sh'
+    */5 * * * * DOPERPOWERS_HOME=$HOME/.claude/plugins/marketplaces/doperpowers LOCAL_REPO=/path/to/repo AUTO_MERGE_ENABLED=true bash -lc '$DOPERPOWERS_HOME/skills/issue-tracker/scripts/board-sweep.sh'
 
 macOS caveat: plain cron runs outside your login session — daemons spawned
 from it can lose TCC grants (observed: fleet-wide `exit 1 before init`).
@@ -97,15 +95,14 @@ actually run before trusting a cron arming.
 
 | env | default | meaning |
 |---|---|---|
-| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (review/land workers never count) |
+| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (review workers never count) |
 | `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted separately from the implement cap |
 | `ARCHITECT_MODEL` | fable | model pin for the architect route; the architect dispatch ignores `engine:*` labels and `WORKER_ENGINE` — plan authorship is never label-routed |
 | `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
 | `WORKER_ENGINE` | claude (all lanes) | overrides the lanes' default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts every worker on the clodex gateway |
-| `AUTO_MERGE_ENABLED` | false | review worker's trivial-tier self-merge |
-| `LAND_ENABLED` | false (dry-run) | land worker merges for real |
+| `AUTO_MERGE_ENABLED` | false | review worker merges its confident verdicts (off = observation mode) |
 
 ## The event path (lower latency, needs a runner)
 
@@ -116,7 +113,6 @@ dispatch the latency-sensitive lanes directly; the sweep stays as catch-up:
 
 - PR opened → review worker: `reviewing-prs/references/pr-review-dispatch.yml`
 - issue becomes ready → implement worker: `implementing/references/issue-dispatch.yml`
-- PR review approved → land worker: `reviewing-prs/references/land-on-approve.yml`
 
-All three templates keep the same security posture: no checkout of PR code,
+Both templates keep the same security posture: no checkout of PR code,
 `permissions: {}`, numeric-only interpolation, actor allowlist.

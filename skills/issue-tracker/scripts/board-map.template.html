@@ -64,7 +64,6 @@
   .s_prog { --bd: #00d68f; --bgc: rgba(0,214,143,.08);  --tx: #6ee7b7; --glow: rgba(0,214,143,.30); }
   .s_design { --bd: #bfd4f2; --bgc: rgba(191,212,242,.09); --tx: #dbe7f9; --glow: rgba(191,212,242,.28); }
   .s_rev  { --bd: #a855f7; --bgc: rgba(168,85,247,.09); --tx: #d8b4fe; --glow: rgba(168,85,247,.22); }
-  .s_cready { --bd: #14b8a6; --bgc: rgba(20,184,166,.09); --tx: #5eead4; --glow: rgba(20,184,166,.22); }
   .s_elig { --bd: #3b82f6; --bgc: rgba(59,130,246,.09); --tx: #93c5fd; --glow: rgba(59,130,246,.32); }
   .s_wait { --bd: #2d3748; --bgc: rgba(45,55,72,.25);   --tx: #64748b; --glow: transparent; }
   .s_needh { --bd: #ef4444; --bgc: rgba(239,68,68,.09);  --tx: #fca5a5; --glow: rgba(239,68,68,.22); }
@@ -199,7 +198,7 @@
     // future label adds). Give every state present a column rather than
     // silently dropping its tickets.
     KB_STATES = ["ready-for-architect", "in-design", "ready-for-implementer",
-                 "in-progress", "in-review", "confident-ready",
+                 "in-progress", "in-review",
                  "close-candidate", "needs-human", "needs-info",
                  "interactive-preferred", "deferred",
                  "conflict", "untracked", "done", "wontfix"];
@@ -210,14 +209,13 @@
   bindData(JSON.parse(document.getElementById("board-data").textContent));
 
   // state class -> the short badge shown on the card (the full label goes to detail).
-  var BADGE = { s_done: "done", s_prog: "running", s_rev: "review", s_cready: "confident",
+  var BADGE = { s_done: "done", s_prog: "running", s_rev: "review",
                 s_elig: "ELIGIBLE", s_design: "designing",
                 s_wait: "waiting", s_needh: "needs-human", s_info: "needs-info",
                 s_ipref: "interactive", s_def: "deferred", s_wf: "wontfix",
                 s_conflict: "CONFLICT", s_untracked: "untracked" };
   // state name (chip vocabulary) -> palette class, for coloring the filter chips.
   var STATE_CLS = { "done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
-                    "confident-ready": "s_cready",
                     "ready-for-architect": "s_elig", "in-design": "s_design",
                     "ready-for-implementer": "s_elig", "needs-human": "s_needh",
                     "needs-info": "s_info", "interactive-preferred": "s_ipref",

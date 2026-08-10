@@ -192,7 +192,7 @@ with open(env["BOARD_DIR"] + "/BOARD.md", "w") as f:
 
 # --- the interactive graph (BOARD.html) ---
 CLASS = {"done": "s_done", "in-progress": "s_prog", "in-review": "s_rev",
-         "confident-ready": "s_cready", "needs-human": "s_needh",
+         "needs-human": "s_needh",
          "needs-info": "s_info", "interactive-preferred": "s_ipref",
          "deferred": "s_def", "wontfix": "s_wf",
          "conflict": "s_conflict", "untracked": "s_untracked"}

@@ -88,8 +88,8 @@ assert_contains "$SKILL" "stated reason in the trail" "departures from the nativ
 assert_contains "$SKILL" "references/wave-board.md" "wave mechanics live in the runtime-opened reference"
 assert_contains "$SKILL" "<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-" "wave board path is pinned in the dispatcher-session tmp dir"
 assert_not_contains "$SKILL" ".doperpowers/qa/" "no wave state path under the PR-controlled worktree (symlink escape)"
-assert_contains "$SKILL" "Maximum 2 waves" "wave cap is pinned"
-assert_contains "$SKILL" "--remove-label confident-ready" "push strips stale confidence in-loop"
+assert_contains "$SKILL" "Maximum 4 waves" "wave cap is pinned"
+assert_not_contains "$SKILL" "confident-ready" "the confident-ready state is retired — confident verdicts merge"
 
 echo "runtime skill — compliance audit policy:"
 assert_contains "$SKILL" "PROTOCOL BLOCKER" "protocol-blocker class exists"
@@ -128,10 +128,10 @@ assert_contains "$SKILL" "cap) or was just routed to ready-for-architect (the se
 assert_contains "$SKILL" "a finding that is missing DESIGN (not just missing work) passes" "TOO BIG registration births a design-missing finding on the architect lane"
 
 echo "runtime skill — escalation and dead ends:"
-assert_contains "$SKILL" "SELF-MERGE tier requires ALL" "merge authority lives in the runtime skill"
-assert_contains "$SKILL" "No unresolved PROTOCOL BLOCKER or SPEC FINDING" "worker-owned findings disqualify both confidence tiers"
+assert_contains "$SKILL" "MERGE verdict requires ALL" "merge authority lives in the runtime skill"
+assert_contains "$SKILL" "No unresolved PROTOCOL BLOCKER or SPEC FINDING" "worker-owned findings disqualify the merge verdict"
 assert_contains "$SKILL" "PARKED tier" "escalation has a terminal branch for an already-parked ticket"
-assert_contains "$SKILL" "NEVER grant confident-ready over a park" "the human-tier catch-all cannot overwrite a needs-human park"
+assert_contains "$SKILL" "NEVER merge over a park" "the merge verdict cannot overwrite a needs-human park"
 assert_contains "$SKILL" "the fix did not hold" "a re-flag matching a FIXED item re-waves as a live blocker, never a dupe"
 assert_contains "$SKILL" "resolved by verification, not by a wave" "evidence-only spec findings have a resolvable route"
 assert_contains "$SKILL" "unrun portion remains an unresolved SPEC FINDING" "substituted validation never silently verifies the original claim"
@@ -149,7 +149,7 @@ assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
 
 echo "runtime skill — placeholder set:"
-want_placeholders="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -215,7 +215,7 @@ assert_contains "$WAVEBOARD" "dispatcher control directory" "ledger path is undi
 assert_contains "$WAVEBOARD" "ledger content fingerprint" "late ledger tampering is detected before push"
 assert_contains "$WAVEBOARD" "remote head differs from <push-base>" "unexpected remote movement blocks automatic salvage"
 assert_before "$WAVEBOARD" "fresh remote SHA" "git reset --hard <wave-base>" "remote publication is ruled out before local reset"
-assert_contains "$WAVEBOARD" "If this was wave 2" "wave-cap contamination parks instead of creating wave 3"
+assert_contains "$WAVEBOARD" "If this was the last wave the protocol's cap allows" "wave-cap contamination parks instead of exceeding the cap"
 assert_contains "$SKILL" "scratch control state" "orchestrator write whitelist covers safety artifacts"
 assert_contains "$SKILL" "do not rebase" "push rejection never asks the orchestrator to resolve code conflicts"
 assert_not_contains "$SKILL" "log it twice" "re-flag dedupe states the routing fact, not a prohibition tail"
@@ -226,7 +226,6 @@ assert_before "$WAVEBOARD" "record <wave-base> before dispatch" "Dispatch the wa
 assert_before "$WAVEBOARD" "stop the authorized fixer and every descendant" "QUIESCENCE GATE" "descendants stop before quiescence"
 assert_before "$WAVEBOARD" "QUIESCENCE GATE" "discard the contaminated board" "quiescence precedes contaminated-state disposal"
 assert_before "$WAVEBOARD" "grade ONLY the snapshot" "- FIXED:<sha>" "submitted snapshot precedes grading branches"
-assert_before "$WAVEBOARD" "expire stale confidence BEFORE" "git push origin" "confidence expires before publishing"
 assert_contains "$WAVEBOARD" "never rewrite history" "rejected fixes are corrected fix-forward, not rebased away"
 assert_not_contains "$WAVEBOARD" "Stage only the files" "no staging-means mandate — the board-file ban and mixed-commit grading carry it"
 assert_contains "$WAVEBOARD" "commit the board file" "the board-file ban survives in the fixer never list"
@@ -260,7 +259,7 @@ assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail
 echo "runtime skill — E2 scale-review variant (recomposition epics):"
 assert_contains "$SKILL" 'A `review-epic-<n>` dispatch is the E2 scale review' "the scale section is keyed to the dispatcher's worker name"
 assert_contains "$SKILL" "no fix waves and no merge step" "the scale variant drops the wave/merge machinery"
-assert_contains "$SKILL" "never grants \`confident-ready\`" "a scale run never takes the ESCALATE tier ladder"
+assert_contains "$SKILL" "never merges, so the two verdicts" "a scale run never takes the ESCALATE ladder"
 assert_before "$SKILL" "REVIEW_MODE\` binding reads \`scale\`" "## ORIENT" "the mode fork is announced before the PR-shaped flow begins"
 
 echo "worker bootstrap:"
@@ -282,7 +281,7 @@ assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds t
 assert_contains "$BOOTSTRAP" "SCALE REVIEWER of recomposition epic" "bootstrap carries the scale variant's own opening"
 assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
-want_rboot="{{AUTO_MERGE}} {{BASE_IS_DEFAULT}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{DEFAULT_BRANCH}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"

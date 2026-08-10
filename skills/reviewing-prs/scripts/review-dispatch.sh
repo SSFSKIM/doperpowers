@@ -43,14 +43,15 @@
 #   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
 #   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-5.6-sol)
 #   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
-#   AUTO_MERGE_ENABLED  staged-rollout gate for the worker's self-merge tier
-#                       (default false = observation mode: the worker reviews
-#                       and judges the tier but routes self-merge-eligible PRs
-#                       to confident-ready instead of merging). Supplied as a
-#                       skill runtime binding; the dispatch layer never merges.
+#   AUTO_MERGE_ENABLED  merge kill switch (default false = observation mode:
+#                       the worker reviews and judges the verdict but parks
+#                       the ticket needs-human instead of merging). Supplied
+#                       as a skill runtime binding; the dispatch layer never
+#                       merges.
 #   DEFAULT_BRANCH      repo default branch (default: resolved via gh, or from
-#                       the local clone's origin/HEAD in API mode); the worker
-#                       never self-merges a PR whose base is this branch
+#                       the local clone's origin/HEAD in API mode); the
+#                       scale-review lane resolves integration refs against it,
+#                       and the API lane takes its manifest snapshots from it
 #   REVIEW_MAX_CONCURRENT  API mode only: qagent-lane slot cap (default 3),
 #                       enforced against the local registry before claiming and
 #                       sent as the server-side `laneCap`. gh mode has no cap —
@@ -65,21 +66,20 @@
 #                       startup-barrier acknowledgement wait (600 x 0.2s)
 #
 # Per-repo risk surfaces: an optional file at <base>:.doperpowers/risk-surfaces.md
-# in the target repo declares concrete self-merge-disqualifying paths/patterns.
-# It is read from the PR's BASE ref (never HEAD) so a PR cannot weaken its own
-# gate in the same commit, and it only ADDS to the always-on risk categories.
+# in the target repo declares the repo's validated hot paths/patterns —
+# lens-derivation input for the worker's engine fan-out, not a merge gate.
+# It is read from the PR's BASE ref (never HEAD) so a PR cannot delist a
+# surface it touches in the same commit.
 # Per-repo facts: an optional file at <base>:.doperpowers/repo-facts.md declares
 # Bootstrap / Validation / Evidence add-on facts (see implementing).
 # Same BASE-ref discipline; the review worker cross-checks claimed evidence
 # against the declared validation commands and add-on requirements.
 # LOCAL_REPO must be a FULL clone (not --single-branch): the base read resolves
 # origin/<base>, refreshed by the per-dispatch fetch; a narrowed clone can
-# leave that tracking ref stale and the manifest would silently fall back to
-# the always-on categories only (fail-safe — self-merge still never lands on
-# the default branch, but a repo-declared surface would go unenforced).
+# leave that tracking ref stale and the manifests would silently read empty.
 #
-# Dedupe policy (references/operation-manual.md table): confident-ready-labeled PRs are never
-# dispatched; a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
+# Dedupe policy (references/operation-manual.md table):
+# a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
 # retire + respawn; a cleanly finished reviewer → triggered mode re-dispatches
 # (explicit event = fresh signal), sweep mode skips; a FAILED reviewer —
 # reply carries the ENGINE-UNAVAILABLE marker, or the turn finalized
@@ -96,8 +96,8 @@
 # the human, or anything else) is stale by definition — nothing will ever
 # re-dispatch a normally-finished reviewer on its own (sweep mode's
 # "cleanly finished → skip" row above is permanent, not a retry). The sweep
-# loop below resolves the ticket's status alongside the confident-ready
-# check, BEFORE consulting the registry dedupe machinery: when the ticket
+# loop below resolves the ticket's status
+# BEFORE consulting the registry dedupe machinery: when the ticket
 # isn't in-review, any FINISHED (non-active) reviewer meta it finds is
 # retired right there and the tick is skipped without spawning — never an
 # ACTIVE (working/blocked) reviewer, which owns its own exit. That retire
@@ -156,8 +156,7 @@ else
     BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
   fi
   [ -n "$BOARD_REPO" ] || die "could not resolve BOARD_REPO"
-  # Repo-wide config injected into every worker prompt (constant across PRs):
-  #   DEFAULT_BRANCH — self-merge is forbidden onto it (main-exclusion).
+  #   DEFAULT_BRANCH — the scale lane's integration-ref fallback.
   DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
 fi
 # EXPORTED, not just set: the scale-review passes shell out to python that
@@ -167,7 +166,8 @@ fi
 # "BOARD_REPO is unset" inside the subprocess and be silently skipped.
 export BOARD_REPO
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
-# AUTO_MERGE_DISPLAY — the staged-rollout gate as the worker sees it.
+# Repo-wide config injected into every worker prompt (constant across PRs):
+#   AUTO_MERGE_DISPLAY — the merge kill switch as the worker sees it.
 case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;
@@ -412,9 +412,6 @@ PY
   git -C "$LOCAL_REPO" show "origin/$BASE_REF:.doperpowers/repo-facts.md" > "$tmp/facts.md" 2>/dev/null \
     || : > "$tmp/facts.md"
   [ -z "$issue" ] || _finalize_ticket_owners "$issue"
-  # base-is-default drives the worker's main-exclusion clause.
-  local base_is_default="no"
-  [ "$BASE_REF" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
   if [ -e "$wt" ]; then
     if _wt_occupied "$wt"; then
       echo "#$pr: live daemon occupies $wt — not removing (retire it first)" >&2
@@ -449,7 +446,6 @@ PY
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_MANIFEST_REF="$BASE_REF" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
@@ -475,7 +471,7 @@ PY
 dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-label] [child pull numbers]
   local etid="$1" pkg="$2" branch="${3:-}" eng_label="${4:-}" pulls="${5:-}"
   local name tmp wt int_ref base_ref td prompt engine pr_ref
-  local control_dir bind_ready ledger base_is_default range_note
+  local control_dir bind_ready ledger range_note
   name="review-epic-$etid"
   # The epic's own engine:* label wins over the environment, exactly as the PR
   # path resolves it. Scale review is a QAgent route, and per-ticket engine
@@ -532,13 +528,6 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
   # No integration branch left ⇒ the worktree sits on the default branch and
   # there is no aggregate range at all; say so in the prompt rather than
   # letting the worker run an engine over nothing.
-  # Same formula as the PR path, on the same binding: BASE_REF is what the
-  # reviewed work merges into, and for an epic that is always the default
-  # branch — so this is always "yes". Hand-setting it "no" for the
-  # integration-branch case contradicted the BASE_REF the same prompt binds,
-  # and pointed the (scale-inapplicable) self-merge tier the permissive way.
-  base_is_default="no"
-  [ "$base_ref" = "$DEFAULT_BRANCH" ] && base_is_default="yes"
   if [ "$int_ref" = "$base_ref" ]; then
     range_note="This epic has NO aggregate branch range: its integration branch is gone (deleted when its children merged), so this worktree sits on $base_ref itself and an engine run based on origin/$base_ref would review nothing. The review ranges are the per-child base/head ranges the closure package names — drive the engine over those, one range at a time (the worktree is yours to move: detach it at a range's head and run the engine with that range's base)."
   else
@@ -589,7 +578,6 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT="$base_is_default" \
     P_MANIFEST_REF="$base_ref" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
@@ -612,8 +600,8 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
 }
 
 # ---- shared worker plumbing (both review variants) -----------------------------
-# Normalize lingering finished owners of ticket <1> BEFORE binding (same
-# preflight as land-dispatch): a claude-species worker has no self-finalizer,
+# Normalize lingering finished owners of ticket <1> BEFORE binding:
+# a claude-species worker has no self-finalizer,
 # so its meta lingers status=working after its turn ends and board-bind
 # protects it as a stable ACTIVE owner — which blocked the reviewer's bind
 # and retired three reviewers in the 2026-07-18 live shakedown. finalize
@@ -863,13 +851,12 @@ _finished_verdict() {
   else echo "skip finished reviewer ($status)"; fi
 }
 
-# Dedupe verdict for worker name <1> in mode <2> (triggered|sweep), cr-label
-# flag <3>. Prints: "dispatch" | "respawn <uuid>" (a FAILED reviewer is being
+# Dedupe verdict for worker name <1> in mode <2> (triggered|sweep).
+# Prints: "dispatch" | "respawn <uuid>" (a FAILED reviewer is being
 # replaced — the retire is stamped) | "respawn-clean <uuid>" (an explicit
 # event replacing a finished one — unstamped) | "skip <why>".
 _decide() {
-  local name="$1" mode="$2" cr="$3" meta uuid status current rest engine pid whost wboot fin
-  if [ "$cr" = "1" ]; then echo "skip confident-ready label (remove it to force re-review)"; return; fi
+  local name="$1" mode="$2" meta uuid status current rest engine pid whost wboot fin
   meta="$(_reviewer_meta "$name")"
   if [ -z "$meta" ]; then echo "dispatch"; return; fi
   uuid="${meta%%|*}"; rest="${meta#*|}"; status="${rest%%|*}"; rest="${rest#*|}"
@@ -901,31 +888,27 @@ _decide() {
   esac
 }
 
-# $4/$5 (sweep mode only): the primary ticket's off-review status name
+# $3/$4 (sweep mode only): the primary ticket's off-review status name
 # (e.g. "ready-for-architect", "needs-human") and its number, when the
-# sweep already resolved the ticket is NOT in-review. Empty $4 means
+# sweep already resolved the ticket is NOT in-review. Empty $3 means
 # in-review, ticketless, or triggered mode — never gated, same as before.
 #
 # A reviewer bound to a ticket that has left in-review is stale by
 # definition (header comment). $verdict from the ordinary dedupe machinery
 # already tells us everything needed to act on that: "skip active
 # reviewer" means a live session is mid-turn and owns its own exit (never
-# touched); "skip confident-ready ..." is an unrelated, already-correct
-# skip (passed through unchanged); anything else — dispatch, respawn
+# touched); anything else — dispatch, respawn
 # <uuid>, or any other "skip ..." — means at most a NON-live reviewer meta
 # is on file, so it's retired here instead of being left to strand the
 # ticket's next return to in-review behind "skip finished reviewer"
 # forever.
-run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
-  local pr="$1" mode="$2" cr="$3" stale="${4:-}" tid="${5:-}" verdict resume
-  verdict="$(_decide "review-pr-$pr" "$mode" "$cr")"
+run_for() {  # $1=pr $2=mode $3=off-review-status $4=ticket-number
+  local pr="$1" mode="$2" stale="${3:-}" tid="${4:-}" verdict resume
+  verdict="$(_decide "review-pr-$pr" "$mode")"
   if [ -n "$stale" ]; then
     case "$verdict" in
       "skip active reviewer")
         echo "#$pr: skip — primary ticket #$tid is status:$stale, not in-review; its still-active reviewer owns its own exit"
-        return ;;
-      "skip confident-ready"*)
-        echo "#$pr: $verdict"
         return ;;
     esac
     if [ "$stale" = "needs-human" ]; then
@@ -982,7 +965,7 @@ run_for() {  # $1=pr $2=mode $3=cr-label $4=off-review-status $5=ticket-number
 # retired, unstamped: this is not a failure, so it must not feed the streak.
 _cleanup_orphaned_reviewer() {  # <worker-name> <why>
   local name="$1" why="$2" verdict meta
-  verdict="$(_decide "$name" sweep 0)"
+  verdict="$(_decide "$name" sweep)"
   if [ "$verdict" = "skip active reviewer" ]; then
     echo "$name: skip — $why; its still-active reviewer owns its own exit"
     return
@@ -1012,7 +995,7 @@ _cleanup_orphaned_reviewer() {  # <worker-name> <why>
 # is the current one by construction.
 sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-label $5=child pull numbers
   local etid="$1" pkg="$2" verdict meta uuid
-  verdict="$(_decide "review-epic-$etid" sweep 0)"
+  verdict="$(_decide "review-epic-$etid" sweep)"
   case "$verdict" in
     dispatch)   dispatch_epic "$@"; return ;;
     respawn\ *)       _retire_failed "${verdict#respawn }"; dispatch_epic "$@"; return ;;
@@ -1250,7 +1233,6 @@ PY
     P_TICKET_BODY_FILE="$body_file" \
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_DEFAULT_BRANCH="$DEFAULT_BRANCH" P_BASE_IS_DEFAULT=unresolved \
     P_MANIFEST_REF="$DEFAULT_BRANCH" \
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/implementing/SKILL.md" \
@@ -1372,14 +1354,13 @@ import json, re, sys
 for p in json.load(sys.stdin):
     if p.get("isDraft"):
         continue
-    cr = 1 if any(l.get("name") == "confident-ready" for l in p.get("labels") or []) else 0
     linked = [str(n["number"]) for n in (p.get("closingIssuesReferences") or [])]
     text = (p.get("title") or "") + "\n" + (p.get("body") or "")
     for m in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)", text, re.I):
         if m.group(1) not in linked:
             linked.append(m.group(1))
-    print("%s %s %s" % (p["number"], cr, linked[0] if linked else "-"))' \
-    | while read -r prn cr issue; do
+    print("%s %s" % (p["number"], linked[0] if linked else "-"))' \
+    | while read -r prn issue; do
         [ "$issue" = "-" ] && issue=""
         # A reviewer only makes sense while its ticket is in-review — read
         # the ticket's status label (the same read Finding 2 always did)
@@ -1424,7 +1405,7 @@ elif len(status) > 1:
 elif status and status[0] != "in-review":
     print(status[0])')" || stale=""
         fi
-        run_for "$prn" sweep "$cr" "$stale" "$issue" \
+        run_for "$prn" sweep "$stale" "$issue" \
           || echo "#$prn: dispatch error (continuing sweep)" >&2
       done
 
@@ -1607,12 +1588,5 @@ else
   [ $# -ge 1 ] || die "usage: review-dispatch.sh <pr-number> | --sweep"
   pr="${1#\#}"
   case "$pr" in ""|*[!0-9]*) die "not a PR number: $1" ;; esac
-  cr="$(gh pr view "$pr" -R "$BOARD_REPO" --json labels 2>/dev/null | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
-print(1 if any(l.get("name") == "confident-ready" for l in d.get("labels") or []) else 0)')"
-  run_for "$pr" triggered "$cr"
+  run_for "$pr" triggered
 fi

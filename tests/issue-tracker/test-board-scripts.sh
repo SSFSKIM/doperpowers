@@ -637,52 +637,32 @@ TRUNC
 out="$(run board-list.sh)"
 assert_not_contains "$(printf '%s\n' "$out" | grep '^#14 ')" "CLOSE?" "truncated PR fetch disqualifies the candidate"
 
-# ---- confident-ready (review-loop escalation state) ---------------------------
-# Reachable only from in-review (a review verdict presupposes a PR); demotes
-# back to in-review on a new push; closes normally. Note optional.
-echo "confident-ready:"
+# ---- confident-ready retirement (the review loop merges instead) --------------
+# The state is gone from the machine: transition refuses it as unknown, and
+# in-review closes straight to done (in production the merge auto-closes).
+echo "confident-ready retirement:"
 run board-register.sh "Review target" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                  # 17
-assert_fails run board-transition.sh 17 confident-ready                          # ready → confident-ready illegal
 run board-transition.sh 17 in-progress >/dev/null
-assert_fails run board-transition.sh 17 confident-ready                          # in-progress → illegal (must pass through in-review)
 run board-transition.sh 17 in-review "pr open" --pr https://github.com/test/repo/pull/80 >/dev/null
-out="$(run board-transition.sh 17 confident-ready "codex approve, 2 rounds")"
-assert_contains "$out" "#17: in-review → confident-ready" "in-review → confident-ready applied"
-assert_contains "$(state "s['issues']['17']['labels']")" "status:confident-ready" "label swapped in"
-assert_not_contains "$(state "s['issues']['17']['labels']")" "status:in-review" "old label removed"
-assert_contains "$(state "s['issues']['17']['comments'][-1]")" "[board] confident-ready: codex approve" "note comment posted"
-out="$(run board-list.sh confident-ready)"
-assert_contains "$out" "#17" "board-list filters confident-ready"
-set +e
-lint_out="$(run board-lint.sh 2>&1)"; lint_rc=$?
-set -e
-assert_equals "$lint_rc" "0" "board with a confident-ready ticket lints green"
-out="$(run board-transition.sh 17 in-review "new push demoted" --pr https://github.com/test/repo/pull/80)"
-assert_contains "$out" "#17: confident-ready → in-review" "confident-ready demotes to in-review"
-run board-transition.sh 17 confident-ready >/dev/null                            # note optional
+assert_fails run board-transition.sh 17 confident-ready                          # retired state refused
 out="$(run board-transition.sh 17 "done")"
-assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "confident-ready → done closes the issue"
+assert_equals "$(state "s['issues']['17']['state']")" "CLOSED" "in-review → done closes the issue"
 assert_equals "$(state "s['issues']['17']['stateReason']")" "COMPLETED" "closes as completed"
 
 run board-register.sh "CR map probe" enhancement P2  --body-file "$SPEC_BODY" >/dev/null                    # 18
 run board-transition.sh 18 in-progress >/dev/null
 run board-transition.sh 18 in-review "pr" --pr https://github.com/test/repo/pull/81 >/dev/null
-run board-transition.sh 18 confident-ready >/dev/null
 run board-map.sh --write >/dev/null 2>&1
-assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"cls": "s_cready"' "html payload carries the confident-ready class"
-assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"confident-ready"' "kanban vocabulary carries the confident-ready column"
+assert_not_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" "s_cready" "retired confident-ready class is gone from the map payload"
+assert_not_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" "confident-ready" "retired confident-ready column is gone from the kanban vocabulary"
 
 # ---- in-review escalations: needs-info/needs-human (review-worker protocol
 # safety valves) -------------------------------------------------------------
 # The reviewing-prs Review Worker Protocol escalates in-review → needs-info
 # (round cap reached, impasse) and in-review → needs-human (push conflict,
 # precondition failure) — both were illegal transitions before this fix.
-# Reuses #18 (left at confident-ready above); demote it back to in-review
-# first.
+# Reuses #18 (left at in-review above).
 echo "in-review escalations:"
-out="$(run board-transition.sh 18 in-review "demote for escalation test" --pr https://github.com/test/repo/pull/81)"
-assert_contains "$out" "#18: confident-ready → in-review" "confident-ready demotes back to in-review for the escalation test"
-
 assert_fails run board-transition.sh 18 needs-info                             # note required
 out="$(run board-transition.sh 18 needs-info "round cap reached, escalate")"
 assert_contains "$out" "#18: in-review → needs-info" "in-review → needs-info is now legal (protocol escalation)"
