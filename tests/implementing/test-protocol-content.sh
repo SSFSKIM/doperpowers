@@ -98,7 +98,11 @@ assert_contains "$bootstrap" "{{ROLE}}" "bootstrap: one parameterized bootstrap 
 assert_not_contains "$bootstrap" "ISSUE_BODY" "bootstrap: no inlined ticket body (the worker reads its ticket via gh)"
 assert_not_contains "$bootstrap" "REPO_FACTS" "bootstrap: no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-block binding (the doctrine lives in the protocol)"
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}}"
+# PARENT_PIN and TICKET_BODY_FILE are the API binding's two additions: the
+# parent-contract window a claim was cut against (no read a worker may make
+# hands it over), and the assignment file the claim delivered in place of a
+# ticket-body read route.
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -269,7 +273,13 @@ done
 for _pair in "architect:$ARCHITECT" "implementer:$PROTO" "spike:$SPIKE"; do
     _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
     assert_contains "$_body" "parent-pin: #<parent> @ <hash>" "$_name: the inherited parent contract is read from the parent-pin meta (a hash of the parent BODY, not a repo sha)"
-    assert_contains "$_body" '[parent-impact] #<parent> <affected clauses>:' "$_name: the proposal is one marker comment on the worker's OWN ticket"
+    # ONE VERB, BOTH BINDINGS. The proposal is posted through board-comment.sh
+    # --kind parent-impact, which renders the `[parent-impact] #<parent> …`
+    # marker under a gh board and records the typed event an API board's
+    # reconciler joins on. A hand-written marker is invisible to the second,
+    # so the verb — not the marker — is what each protocol must instruct.
+    assert_contains "$_body" '--kind parent-impact --text "#<parent> <affected clauses>:' "$_name: the proposal is one typed board-comment event on the worker's OWN ticket"
+    assert_contains "$_body" '[parent-impact] #<parent>' "$_name: and the gh rendering of that event is still named"
     assert_contains "$_body" "never edit or transition the parent" "$_name: a child proposes upward, it never writes its parent"
 done
 # Recomposition protocol (Architect).
