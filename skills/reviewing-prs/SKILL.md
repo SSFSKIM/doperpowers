@@ -159,12 +159,14 @@ is a TOOL invocation, not a nested agent. Never add
    that state must stay out of the reviewed tree — so it goes to a
    throwaway home with login symlinked over; a nested codex also needs
    TLS trust anchors as a FILE bundle and an explicit code-mode host
-   path.
+   path (it resolves that command host to /usr/local/bin, not
+   ~/.local/bin, so it must be pointed at the real one).
 
    eng_home="$(mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}-codex.XXXXXX")" && \
    { [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || ln -s "${CODEX_HOME:-$HOME/.codex}/auth.json" "$eng_home/auth.json"; } && \
    export CODEX_HOME="$eng_home" CLAUDE_PLUGIN_DATA="$eng_home/companion-state" && \
    { [ -n "${SSL_CERT_FILE:-}" ] || { [ -f /etc/ssl/cert.pem ] && export SSL_CERT_FILE=/etc/ssl/cert.pem; } || { [ -f /etc/ssl/certs/ca-certificates.crt ] && export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt; } || true; } && \
+   { [ -n "${CODEX_CODE_MODE_HOST_PATH:-}" ] || { [ -x "$HOME/.local/bin/codex-code-mode-host" ] && export CODEX_CODE_MODE_HOST_PATH="$HOME/.local/bin/codex-code-mode-host"; } || true; } && \
    <ONE of the two commands below>
 
    Single review:

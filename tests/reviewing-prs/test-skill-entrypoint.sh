@@ -183,6 +183,7 @@ assert_contains "$SKILL" "EXCEPT a needs-human park" "review-tmp survives a park
 assert_not_contains "$SKILL" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
 assert_contains "$SKILL" "the only place engine output is read" "audit independence keeps its positive statement"
 assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (audit runs concurrently)"
+assert_contains "$SKILL" "CODEX_CODE_MODE_HOST_PATH" "the engine preamble points a nested codex at the code-mode host it cannot resolve"
 assert_contains "$SKILL" "doperpowers:requesting-review" "the route judgment is delegated to the requesting-review skill"
 assert_contains "$SKILL" "retry the panel once" "an interrupted panel verdict retries within the round"
 assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
