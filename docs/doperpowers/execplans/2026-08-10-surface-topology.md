@@ -56,8 +56,14 @@ change — that inertness is itself an acceptance criterion.
 - [x] (2026-08-10 ~13:30Z) Exit gate round 1: codex whole-branch review
       (gpt-5.6-sol) returned 8 findings (P1 x4, P2 x4) — all adopted (see
       Decision Log); suites re-green at 38 + 14 surface assertions.
-- [ ] Exit gate round 2: codex re-review of the fixed branch, then PR
-      against main (human review gate — never merged by this plan).
+- [x] (2026-08-10 ~14:15Z) Exit gate round 2: codex re-review returned 5
+      findings (P1 x3, P2 x2) — all adopted (lock held through bind;
+      register relate writes under the same locks; --slurp pagination;
+      stderr notices; contention-bypass logging). Suites re-green.
+- [x] (2026-08-10 ~14:30Z) PR opened against main (human review gate —
+      never merged by this plan). Round-2 fix delta left to the human
+      gate + hermetic suites (diminishing returns on a third round;
+      recorded in the Decision Log).
 
 ## Surprises & Discoveries
 
@@ -157,9 +163,37 @@ change — that inertness is itself an acceptance criterion.
   twin — a parked rewrite resumes without re-running any search).
   Date/Author: 2026-08-10.
 
+- Decision (codex round 2, all 5 adopted): the surface lock is held
+  through board-bind (a spawn-time meta carries no ticket field — the
+  registry arm is blind to it, so releasing at spawn reopened the
+  window); register-time relate writes take the same locks with a fresh
+  under-lock liveness check, deferring to the sweep on contention; PR
+  file reads use `--paginate --slurp` (multi-page diffs were concatenated
+  arrays json.loads rejected — a silent serialization bypass); notices
+  moved to stderr to keep the `<number> <url>` stdout contract; the
+  override/architect path logs when it proceeds past a contended lock.
+  A third review round was deliberately not run: two full rounds were
+  adopted in full, the round-2 delta is narrow, and the PR's human gate
+  plus the hermetic suites own the residual. Date/Author: 2026-08-10.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Delivered M1–M5 end-to-end on branch `worktree-surface-topology`; PR
+opened against main and left unmerged (the human gate). Spec acceptance
+1–9 are covered by 38 assertions in
+`tests/issue-tracker/test-board-surface.sh` plus 14 surface assertions in
+`tests/implementing/test-implement-dispatch.sh`; the pre-existing
+issue-tracker/implementing/board-api suites pass unchanged, and the
+changed file set is shellcheck-clean. Acceptance 10 (ida seed +
+migration) is the planned follow-up outside this repo. Two external codex
+review rounds (gpt-5.6-sol) produced 13 findings, all adopted — the
+recurring lesson: every serious finding was a WINDOW (spawn-to-bind,
+check-outside-lock, snapshot-to-write, page-to-page), and the fix that
+held was always "do the check under the same lock the writer holds", not
+a wider snapshot. The mock-gh harness absorbed every new verb (REST
+files, --slurp) in ~15 lines each — that investment keeps paying.
+Gap carried forward: mechanical detection of NEW contested seams stays
+with the #52 prompt policy by design (spec Scope boundary).
 
 ## Context and Orientation
 
