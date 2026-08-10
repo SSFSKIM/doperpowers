@@ -495,7 +495,13 @@ epics = {t for t in tickets if any(
 for s in os.environ["T_SURFS"].split():
     for t, m in tickets.items():
         if t == tid or s not in m["surfaces"] or t in epics \
-           or m["category"] == "spike" or m["state"] in B.TERMINAL:
+           or m["state"] in B.TERMINAL:
+            continue
+        # Spike exemption is LANE-scoped, not category-scoped: a spike
+        # ticket in the architect queue routes ARCHITECT (state outranks
+        # category) and its design run must occupy like any architect's.
+        if m["category"] == "spike" \
+           and m["state"] not in ("ready-for-architect", "in-design"):
             continue
         if m["state"] in ("in-progress", "in-review", "in-design") \
            or t in live:

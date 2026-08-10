@@ -60,10 +60,16 @@ change — that inertness is itself an acceptance criterion.
       findings (P1 x3, P2 x2) — all adopted (lock held through bind;
       register relate writes under the same locks; --slurp pagination;
       stderr notices; contention-bypass logging). Suites re-green.
-- [x] (2026-08-10 ~14:30Z) PR opened against main (human review gate —
-      never merged by this plan). Round-2 fix delta left to the human
-      gate + hermetic suites (diminishing returns on a third round;
-      recorded in the Decision Log).
+- [x] (2026-08-10 ~14:30Z) PR #54 opened against main (human review gate —
+      never merged by this plan).
+- [x] (2026-08-10 ~15:00Z) Exit gate round 3 (human-requested): 3 findings
+      (P1 x1, P2 x2) — all adopted: SURFACE pass restricted to registered
+      names (an orphaned label CONSOLIDATEd into an unlabeled ticket the
+      dedupe never saw — a duplicate every tick); cross-process fetch
+      stamp (SURFACES_FETCH_TTL, default 300s — a sweep ran one fetch per
+      labeled ticket); spike occupancy exemption lane-scoped (a
+      design-phase spike routes ARCHITECT and must occupy). Suites at
+      39 + 15 assertions, all green; PR updated.
 
 ## Surprises & Discoveries
 

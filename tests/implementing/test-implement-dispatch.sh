@@ -814,6 +814,22 @@ out="$(run --sweep)"
 assert_contains "$out" "surface recommend-rpc occupied by #23 — #20 queued" \
   "an in-design architect ticket occupies the surface against implementers"
 
+# T14b: a spike-category ticket routed ARCHITECT by state (in-design)
+# occupies — the spike exemption is lane-scoped, not category-scoped.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+seed_surface_board "done"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+del s["issues"]["23"]
+s["issues"]["24"]["labels"] = ["status:in-design", "priority:P0", "spike",
+                               "surface:recommend-rpc"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(run --sweep)"
+assert_contains "$out" "surface recommend-rpc occupied by #24 — #20 queued" \
+  "a design-phase spike (architect-routed by state) occupies the surface"
+
 # T15: SURFACE_OVERRIDE=1 — deliberate bypass, loudly logged.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 seed_surface_board in-progress

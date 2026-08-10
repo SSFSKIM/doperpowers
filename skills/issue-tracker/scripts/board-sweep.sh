@@ -776,7 +776,12 @@ writes = 0
 lock_root = os.path.join(os.environ.get("DAEMON_HOME",
     os.path.expanduser("~/.claude/orchestrating-daemons")), "surface-locks")
 os.makedirs(lock_root, exist_ok=True)
-for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
+# Registered names only, here and in the queue-depth watch below: an
+# orphaned label (entry deleted, or invented — lint FAILs it) must not
+# drive body writes, and a CONSOLIDATE on it would register with a
+# --surface hint that matches nothing — an unlabeled consolidation the
+# structural dedupe can never see, duplicated every tick.
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]} & set(reg)):
     mates = [t for t in tickets if s in tickets[t]["surfaces"]
              and tickets[t]["state"] not in B.TERMINAL]
     if len(mates) < 2:
@@ -820,7 +825,7 @@ for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
 # architect lane (the resolver) are out.
 ARCH_STATES = ("ready-for-architect", "in-design")
 OUT_STATES = B.TERMINAL + ARCH_STATES + ("deferred",)
-for s in sorted({x for n in tickets.values() for x in n["surfaces"]}):
+for s in sorted({x for n in tickets.values() for x in n["surfaces"]} & set(reg)):
     members = [t for t in sorted(tickets, key=int)
                if s in tickets[t]["surfaces"]
                and tickets[t]["state"] not in OUT_STATES

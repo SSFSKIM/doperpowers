@@ -294,6 +294,26 @@ out="$(sweep)"
 assert_contains "$(state "s['issues']['$n9']['body']")" "relates-to: " \
   "T18d: the stripped side is re-written independently (converges after partial failure)"
 
+# T18e: an orphaned label (no registry entry) never drives a consolidation —
+# an unlabeled consolidation would dodge the structural dedupe and duplicate
+# every tick; orphans are lint's FAIL, not the sweep's work-list
+echo "T18e: orphaned labels stay out of the queue-depth watch"
+for t in "$n2" "$n3" "$n6"; do
+    gh issue edit "$t" -R test/repo --add-label surface:bogus >/dev/null
+done
+count_before_18e="$(state "len(s['issues'])")"
+out="$(sweep)"
+count_after_18e="$(state "len(s['issues'])")"
+if [ "$count_before_18e" = "$count_after_18e" ]; then
+    pass "T18e: three orphan-labeled tickets register no consolidation"
+else
+    fail "T18e: three orphan-labeled tickets register no consolidation"
+    echo "    issues grew $count_before_18e -> $count_after_18e"
+fi
+for t in "$n2" "$n3" "$n6"; do
+    gh issue edit "$t" -R test/repo --remove-label surface:bogus >/dev/null
+done
+
 # T19: sweep is inert without a registry (acceptance 9)
 echo "T19: sweep SURFACE pass inert without a registry"
 out="$(SURFACES_REF=no-such-ref sweep)"

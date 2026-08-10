@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 from typing import NoReturn
 
@@ -515,12 +516,34 @@ def surfaces_registry():
         # remotes degrade to the cached ref, never to an error. $SURFACES_REF
         # (tests / explicit pins) skips the fetch — the override IS the pin.
         if not os.environ.get("SURFACES_REF") and "/" in ref:
-            remote, _, branch = ref.partition("/")
+            # Cross-process fetch stamp: a dispatch sweep runs a fresh
+            # python per ticket, so a per-process cache alone would fetch
+            # N times per tick (N x 30s worst case offline). One fetch per
+            # SURFACES_FETCH_TTL seconds (default 300) across processes.
+            stamp = os.path.join(
+                os.environ.get("DAEMON_HOME",
+                               os.path.expanduser(
+                                   "~/.claude/orchestrating-daemons")),
+                ".surfaces-fetch-stamp")
+            ttl = int(os.environ.get("SURFACES_FETCH_TTL") or 300)
             try:
-                subprocess.run(["git", "fetch", "--quiet", remote, branch],
-                               capture_output=True, timeout=30, check=False)
-            except subprocess.TimeoutExpired:
-                pass
+                fresh = (time.time() - os.stat(stamp).st_mtime) < ttl
+            except OSError:
+                fresh = False
+            if not fresh:
+                remote, _, branch = ref.partition("/")
+                try:
+                    subprocess.run(["git", "fetch", "--quiet", remote, branch],
+                                   capture_output=True, timeout=30, check=False)
+                except subprocess.TimeoutExpired:
+                    pass
+                try:
+                    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+                    with open(stamp, "w"):
+                        pass
+                    os.utime(stamp, None)
+                except OSError:
+                    pass
         r = subprocess.run(["git", "show", "%s:.doperpowers/surfaces.md" % ref],
                            capture_output=True, text=True)
         if r.returncode == 0:
