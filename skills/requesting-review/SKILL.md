@@ -106,10 +106,15 @@ Stdout is exactly one JSON object `{runId, result, agents, durationMs}`;
 `correct`/`incorrect` is the panel's answer — `findings` carries only
 verifier-confirmed items (`{id, priority, title, file, lines, comment,
 sources}`, priority-sorted), so `incorrect` means confirmed defects.
-`interrupted` means no verdict can be asserted — a lane was lost or the
-reviewed head moved mid-run (the panel pins merge-base AND HEAD at start
-and re-resolves at assembly). Treat `interrupted` as an engine failure:
-retry once, then treat the round as an outage. Don't commit to the branch
+`interrupted` means no verdict can be asserted: the reviewed head moved
+mid-run (the panel pins merge-base AND HEAD at start and re-resolves at
+assembly), the lens-free sweep died, or a lost lane would otherwise have
+made the answer `correct` — a clean claim needs complete coverage. A lost
+lane does NOT overturn `incorrect`: the confirmed defects stand, and the
+incomplete coverage shows up as a `; coverage partial: <lanes>` suffix on
+`explanation` and in `coverage`, whose per-lane rows carry a `status` of
+`ok`, `dead`, or `extraction-failed`. Treat `interrupted` as an engine
+failure: retry once, then treat the round as an outage. Don't commit to the branch
 under review while a panel round is in flight — that is what moves the
 head. `watch <run-id>` (same runtime) renders live progress from any
 terminal.
