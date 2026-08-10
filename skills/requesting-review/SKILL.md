@@ -77,7 +77,10 @@ stdout. Keep the file: errors land there, checked on a nonzero exit. The
 runtime fails closed when the reviewer's own fs sandbox was broken during
 the run (a hollow "clean" is worse than no verdict) — that surfaces as a
 nonzero exit naming the sandbox, and retrying it is pointless until the
-host is fixed. Foreground `--wait` suits small diffs; anything multi-file
+host is fixed. One exception: nested under an outer codex sandbox
+(`CODEX_SANDBOX` set) the guard stands down — the run exits zero and the
+broken sandbox shows up only as a diagnostic in the events log, so a
+nested run's clean verdict is only as good as that log. Foreground `--wait` suits small diffs; anything multi-file
 belongs in a background Bash call. Working-tree and adversarial reviews
 embed untracked-file contents (following symlinks) into the prompt — don't
 run them on a checkout you don't trust. If codex may be missing or
