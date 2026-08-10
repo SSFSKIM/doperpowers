@@ -38,23 +38,42 @@ change — that inertness is itself an acceptance criterion.
 - [x] (2026-08-10) Spec approved (v2, independent-review revision), worktree
       created (`worktree-surface-topology`), scripts and test harness read,
       this plan authored.
-- [ ] M1: registry parsing + surface helpers in `_board.py`,
-      `board-surface.sh` verb, snapshot `surfaces` key, lint vocabulary FAILs
-      + queue report, new test suite started (T1–T4).
-- [ ] M2: register-time matching (labels at create, auto-relate ≤8 + print),
-      transition-time re-match on lane entry (T5–T9).
-- [ ] M3: dispatch serialization — `_ticket_exports` surfaces/occupancy,
-      claim-set threading, lane rules, SURFACE_OVERRIDE (T10–T15).
-- [ ] M4: sweep SURFACE pass (PR-diff add-only labeling, deferred relates,
-      consolidation auto-register with structural dedupe) + mock-gh
-      `pr view --json files` extension (T16–T19).
-- [ ] M5: SKILL.md docs, full suites + shellcheck, codex review, PR against
-      main (human review gate — never merged by this plan).
+- [x] (2026-08-10 ~11:00Z) M1: registry parsing + surface helpers in
+      `_board.py`, `board-surface.sh` verb, snapshot `surfaces` key, lint
+      vocabulary FAILs + queue report — 13 assertions green on first run.
+- [x] (2026-08-10 ~11:20Z) M2: register-time matching (labels ride the
+      create call, auto-relate ≤8 + mate print), transition-time re-match
+      on lane entry — suite at 25 assertions.
+- [x] (2026-08-10 ~11:45Z) M3: dispatch serialization — `_ticket_exports`
+      surfaces/occupancy (board ∪ registry ∪ in-tick claims), lane rules,
+      SURFACE_OVERRIDE — 13 new dispatcher assertions.
+- [x] (2026-08-10 ~12:10Z) M4: sweep SURFACE pass (PR-diff add-only
+      labeling, relates backstop capped 8/tick, consolidation
+      auto-register with structural dedupe) + mock-gh
+      `pr view --json files` — suite at 35 assertions.
+- [x] (2026-08-10 ~12:20Z) M5: SKILL.md (toolkit row + Surfaces section +
+      tripwire cross-ref), all suites green, changed-file shellcheck clean.
+- [ ] Exit gate: codex whole-branch review, then PR against main (human
+      review gate — never merged by this plan).
 
 ## Surprises & Discoveries
 
-(none yet — plan-time observations that shaped the design live in the
-Decision Log; this section fills during implementation)
+- Observation: the register script's output contract ("prints `<number>
+  <url>`") is positional — surface mate reports printed BEFORE it broke
+  `${out%% *}` parsing in the suite immediately.
+  Evidence: T5 first run extracted `n2="surface"`. Fixed by printing the
+  number/url line first; consumers keep their first-token parse.
+- Observation: the in-tick claim set is nearly unreachable in tests — the
+  stub spawn writes a working registry meta, so the registry arm names the
+  fresh spawn before the claim set is consulted. The claim set survives as
+  the belt for a crashed meta write.
+  Evidence: T12's block reason reads `occupied by #20`, not "an earlier
+  dispatch this tick".
+- Observation: the queue-depth watch fired "early" during test staging —
+  by T16 the suite had already accumulated 3 open members, so the
+  consolidation registered one sweep before the test expected it. Not a
+  defect (the threshold is global state, not per-scenario); the suite now
+  parks members to stay under threshold until T18.
 
 ## Decision Log
 
@@ -278,8 +297,18 @@ until the final `gh pr create`.
 
 ## Artifacts and Notes
 
-(fills at finish — the expected shape of a passing run is every suite line
-`  [PASS] …` and shellcheck at 0 findings; actual transcripts land here)
+Suite runs (2026-08-10, worktree root):
+
+    tests/issue-tracker/test-board-surface.sh     → OK (35 assertions)
+    tests/issue-tracker/test-board-scripts.sh     → all tests passed
+    tests/issue-tracker/test-board-sweep.sh       → all tests passed
+    tests/implementing/test-implement-dispatch.sh → all tests passed
+                                                    (13 new surface asserts)
+    tests/claude-code/board-api/test-register-transition.sh → PASS
+    scripts/lint-shell.sh <changed set>           → clean (the --all
+                                                    baseline's findings are
+                                                    pre-existing, in files
+                                                    this branch never touched)
 
 ## Interfaces and Dependencies
 
