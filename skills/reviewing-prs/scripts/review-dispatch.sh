@@ -233,14 +233,21 @@ PY
 # session, not a slot — and parked-ticket metas are deliberately never
 # finalized (they are board-answer wake targets), so without this filter a
 # reboot's stale parked reviewers hold the cap closed forever (observed:
-# 8 dead metas, 53 PRs queued, 0 spawns).
+# 8 dead metas, 53 PRs queued, 0 spawns). `idle` needs one more cut: the
+# no-wait spawn samples the fresh session and sometimes records idle at
+# BIRTH while the review is actually just starting (observed: 12 spawns in
+# one tick sailed past cap 8 because their metas never read working) — a
+# premature-idle meta has an empty reply, a genuinely finished reviewer's
+# finalize wrote a substantive one. So idle counts as a slot only while its
+# reply file is missing or trivially small.
 _gh_review_slots() {
   T_DHOME="$DAEMON_HOME" T_HOST="${DAEMON_HOST:-}" T_BOOT="${DAEMON_BOOT_ID:-}" python3 - <<'PYEOF'
 import glob, json, os
 host = os.environ.get("T_HOST") or ""
 boot = os.environ.get("T_BOOT") or ""
+home = os.environ["T_DHOME"]
 n = 0
-for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
+for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
         continue
     try:
@@ -250,7 +257,8 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     name = str(m.get("name") or "")
     if not (name.startswith("review-pr-") or name.startswith("review-epic-")):
         continue
-    if m.get("status") not in ("working", "blocked"):
+    status = m.get("status")
+    if status not in ("working", "blocked", "idle"):
         continue
     mh = str(m.get("host") or "")
     mb = str(m.get("boot_id") or "")
@@ -258,6 +266,13 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
         continue
     if mb and boot and mb != boot:
         continue
+    if status == "idle":
+        rp = os.path.join(home, str(m.get("uuid") or "") + ".reply.txt")
+        try:
+            if os.path.getsize(rp) > 64:
+                continue  # finished for real — finalize wrote a substantive reply
+        except OSError:
+            pass  # no reply yet — premature idle, still a slot
     n += 1
 print(n)
 PYEOF

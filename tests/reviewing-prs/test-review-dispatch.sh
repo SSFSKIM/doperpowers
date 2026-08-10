@@ -804,6 +804,38 @@ PY
 out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "a stale-boot working meta does not hold a cap slot"
 : > "$SPAWN_LOG"
+# premature-idle metas hold a slot; genuinely finished idle metas do not.
+# The no-wait spawn can record idle at BIRTH (fast poll) with an empty
+# reply while the review is just starting — observed sailing 12 spawns
+# past cap 8. A real finish has a substantive finalize-written reply.
+reset_state
+python3 - <<'PY'
+import json, os
+home = os.environ["DAEMON_HOME"]
+def meta(uuid, name, reply):
+    json.dump({"uuid": uuid, "current": uuid, "name": name, "status": "idle",
+               "updated": "2026-07-08T00:00:00Z"},
+              open(os.path.join(home, uuid + ".json"), "w"))
+    if reply is not None:
+        open(os.path.join(home, uuid + ".reply.txt"), "w").write(reply)
+meta("beb10000-0000-4000-8000-000000000000", "review-pr-8", "")            # premature: empty reply
+meta("beb20000-0000-4000-8000-000000000000", "review-pr-9", "x" * 400)     # finished: substantive reply
+PY
+out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "a premature-idle (empty-reply) meta holds the cap slot"
+assert_contains "$out" "review cap reached (1 live)" "the pass reports the held slot"
+reset_state
+python3 - <<'PY'
+import json, os
+home = os.environ["DAEMON_HOME"]
+json.dump({"uuid": "beb20000-0000-4000-8000-000000000000", "current": "beb20000-0000-4000-8000-000000000000",
+           "name": "review-pr-9", "status": "idle", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(home, "beb20000-0000-4000-8000-000000000000.json"), "w"))
+open(os.path.join(home, "beb20000-0000-4000-8000-000000000000.reply.txt"), "w").write("x" * 400)
+PY
+out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "a finished idle meta (substantive reply) frees its slot"
+: > "$SPAWN_LOG"
 # triggered dispatch bypasses the cap (explicit event)
 out="$(REVIEW_MAX_CONCURRENT=0 "$DISPATCH" 4 2>&1)" || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "triggered dispatch is never gated by the cap"
