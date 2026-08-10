@@ -179,7 +179,8 @@ def main():
         out = []
         for f in (s.get("pr_files") or {}).get(m_files.group(1), []):
             out.append({"filename": f} if isinstance(f, str) else f)
-        print(json.dumps(out))
+        # --slurp wraps pages in one outer array (the mock is single-page)
+        print(json.dumps([out] if "--slurp" in argv else out))
         return
 
     # REST endpoints the board verifies a plan pin against. Both are driven by

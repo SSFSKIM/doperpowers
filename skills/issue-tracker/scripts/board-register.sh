@@ -69,7 +69,7 @@ done
 # reports what came back — none of the gh path's client-side adjudication runs.
 if [ "$BOARD_BINDING" = api ]; then
   [ -z "$surface_hints" ] \
-    || echo "note: --surface is gh-mode only (surface-aware pick order is a server-side A2 requirement) — hint(s) ignored"
+    || echo "note: --surface is gh-mode only (surface-aware pick order is a server-side A2 requirement) — hint(s) ignored" >&2
   T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
   T_STATE_EXPLICIT="$state_explicit" T_NOTE="$note" T_PARENT="$parent" \
   T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" T_BODY_FILE="$body_file" \
@@ -295,8 +295,9 @@ if reg is not None:
     for s_ in surfaces:
         B.ensure_surface_label(s_)
 elif env.get("T_SURFACE_HINTS", "").strip():
+    import sys as _sys
     print("note: --surface ignored — no .doperpowers/surfaces.md on the "
-          "default branch (surfaces are opt-in per repo)")
+          "default branch (surfaces are opt-in per repo)", file=_sys.stderr)
 
 B.ensure_labels()
 labels = "%s,%s%s,%s%s" % (category, B.STATUS_PREFIX, state,
@@ -334,35 +335,62 @@ print("%s %s" % (num, url))
 # read-modify-write that must never race the worker's own meta writes — and
 # the sweep SURFACE pass adds that edge later.
 if surfaces:
-    live = B.live_bound_tickets()
-    new_node = {"body": body}
-    new_rel = []
+    # The relate writes are full-body RMWs on tickets an issue-event
+    # dispatch may be binding workers to RIGHT NOW (the new ticket
+    # included — event dispatch fires on creation). Take the same
+    # per-surface locks the dispatcher holds across its check-to-bind
+    # window and re-check liveness UNDER them; contention or a live
+    # worker defers the edge to the sweep's SURFACE pass.
+    lock_root = os.path.join(
+        os.environ.get("DAEMON_HOME",
+                       os.path.expanduser("~/.claude/orchestrating-daemons")),
+        "surface-locks")
+    os.makedirs(lock_root, exist_ok=True)
+    held = []
     for s_ in surfaces:
-        mates = [t for t in tickets
-                 if s_ in tickets[t]["surfaces"]
-                 and tickets[t]["state"] not in B.TERMINAL]
-        if not mates:
-            print("surface %s: no open label-mates" % s_)
-            continue
-        arch = [t for t in mates
-                if tickets[t]["state"] in ("ready-for-architect", "in-design")]
-        rest = sorted((t for t in mates if t not in arch), key=int,
-                      reverse=True)[:8]
-        take = sorted(set(arch + rest), key=int)
-        for t in take:
-            if t in live or t in new_rel:
+        try:
+            os.mkdir(os.path.join(lock_root, s_))
+            held.append(s_)
+        except OSError:
+            pass
+    locked = set(held) == set(surfaces)
+    try:
+        live = B.live_bound_tickets() if locked else None
+        new_node = {"body": body}
+        new_rel = []
+        for s_ in surfaces:
+            mates = [t for t in tickets
+                     if s_ in tickets[t]["surfaces"]
+                     and tickets[t]["state"] not in B.TERMINAL]
+            if not mates:
+                print("surface %s: no open label-mates" % s_)
                 continue
-            B.update_meta(t, tickets[t], **{"relates-to": " ".join(
-                "#%s" % r for r in tickets[t]["relates_to"] + [num])})
-            new_rel.append(t)
-        deferred = [t for t in take if t in live]
-        print("surface %s: open label-mates %s%s" % (
-            s_, " ".join("#%s" % t for t in take),
-            " (relate deferred to sweep: %s)"
-            % " ".join("#%s" % t for t in deferred) if deferred else ""))
-    if new_rel:
-        B.update_meta(num, new_node, **{"relates-to": " ".join(
-            "#%s" % r for r in new_rel)})
+            arch = [t for t in mates
+                    if tickets[t]["state"] in ("ready-for-architect",
+                                               "in-design")]
+            rest = sorted((t for t in mates if t not in arch), key=int,
+                          reverse=True)[:8]
+            take = sorted(set(arch + rest), key=int)
+            deferred = []
+            for t in take:
+                if not locked or t in live or num in live:
+                    deferred.append(t)
+                    continue
+                if t in new_rel:
+                    continue
+                B.update_meta(t, tickets[t], **{"relates-to": " ".join(
+                    "#%s" % r for r in tickets[t]["relates_to"] + [num])})
+                new_rel.append(t)
+            print("surface %s: open label-mates %s%s" % (
+                s_, " ".join("#%s" % t for t in take),
+                " (relate deferred to sweep: %s)"
+                % " ".join("#%s" % t for t in deferred) if deferred else ""))
+        if new_rel and num not in (live or ()):
+            B.update_meta(num, new_node, **{"relates-to": " ".join(
+                "#%s" % r for r in new_rel)})
+    finally:
+        for s_ in held:
+            os.rmdir(os.path.join(lock_root, s_))
 
 PY
 

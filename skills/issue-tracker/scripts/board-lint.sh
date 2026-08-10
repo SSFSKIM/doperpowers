@@ -182,10 +182,11 @@ if reg is not None:
             for pr in n["prs"]:
                 try:
                     import json as _json
-                    files = _json.loads(B.gh(["api", "--paginate",
+                    pages = _json.loads(B.gh(["api", "--paginate", "--slurp",
                                               "repos/%s/pulls/%s/files"
                                               % (B.repo(), pr["num"])]))
-                    for f in files or []:
+                    files = [f for page in pages or [] for f in page or []]
+                    for f in files:
                         paths.append(f.get("filename") or "")
                         if f.get("previous_filename"):
                             paths.append(f["previous_filename"])

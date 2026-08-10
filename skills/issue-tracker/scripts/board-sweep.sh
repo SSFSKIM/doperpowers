@@ -748,12 +748,16 @@ for tid in sorted(tickets, key=int):
     paths = []
     for p in open_prs:
         try:
-            files = json.loads(B.gh(["api", "--paginate",
+            # --slurp wraps each page in one outer array — without it a
+            # multi-page diff is concatenated arrays json.loads rejects,
+            # and the silent skip would leave the PR unserialized.
+            pages = json.loads(B.gh(["api", "--paginate", "--slurp",
                                      "repos/%s/pulls/%s/files"
                                      % (B.repo(), p["num"])]))
         except (SystemExit, ValueError):
             continue
-        for f in files or []:
+        files = [f for page in pages or [] for f in page or []]
+        for f in files:
             # A rename contributes BOTH names: previous_filename is how a
             # file renamed OUT of a surface still marks the ticket.
             paths.append(f.get("filename") or "")

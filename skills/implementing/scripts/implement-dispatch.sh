@@ -711,6 +711,8 @@ dispatch_one() {
     elif [ "$role" = "IMPLEMENT" ] && [ "${SURFACE_OVERRIDE:-0}" != "1" ]; then
       echo "surface lock contention ($T_SURFACES) — #$n queued"
       return 0
+    else
+      echo "surface lock contention ($T_SURFACES) — #$n proceeding UNLOCKED (role=$role SURFACE_OVERRIDE=${SURFACE_OVERRIDE:-0})"
     fi
   fi
 
@@ -805,12 +807,9 @@ PY
       "$model")" \
       || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   fi
-  # The spawn wrote the worker's registry meta — the registry arm of the
-  # occupancy check covers the surface from here on; release the lock.
-  _surf_unlock "$surf_locked"; surf_locked=""
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
-  [ -n "$uuid" ] || { echo "#$n: spawned worker UUID was not parseable" >&2; return 1; }
+  [ -n "$uuid" ] || { echo "#$n: spawned worker UUID was not parseable" >&2; _surf_unlock "$surf_locked"; return 1; }
 
   local try=1 bound=""
   while [ "$try" -le "${IMPLEMENT_BIND_ATTEMPTS:-3}" ]; do
@@ -821,8 +820,14 @@ PY
   if [ -z "$bound" ]; then
     "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
     echo "#$n: bind failed — worker retired (an unbindable worker cannot be answer-relayed)" >&2
+    _surf_unlock "$surf_locked"
     return 1
   fi
+  # Only NOW is the meta bound (ticket field written) — the registry arm of
+  # the occupancy check can see this worker, so the lock may be released.
+  # Releasing at spawn was a hole: an unbound meta carries no ticket, and a
+  # second process's check between spawn and bind saw a free surface.
+  _surf_unlock "$surf_locked"; surf_locked=""
 
   # Persist the role (ARCHITECT/IMPLEMENT/SPIKE) this dispatcher already
   # knows into the registry meta, same read-modify-write-under-lock shape
