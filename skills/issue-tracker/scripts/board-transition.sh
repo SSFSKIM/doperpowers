@@ -316,6 +316,24 @@ if to in B.DISPATCHABLE and "(pre-spec: fill in)" in (n.get("body") or ""):
           "%s --body-file <spec>) before a dispatchable lane state" % (tid, tid))
 
 B.ensure_labels()
+
+# Surface re-match (spec "Matching moment 2"): entering a dispatchable lane
+# state re-runs identifier matching over the CURRENT body — the documented
+# two-step registration flow (skeleton birth, body fleshed out afterward via
+# `gh issue edit`) means register-time matching may have seen only a title.
+# Add-only, labels only; relates edges are the sweep pass's backstop.
+if to in B.DISPATCHABLE:
+    _reg = B.surfaces_registry()
+    if _reg is not None:
+        _hits = [s_ for s_ in B.match_identifiers(
+                     _reg, n["title"] + "\n" + B.strip_meta(n.get("body") or ""))
+                 if s_ not in n["surfaces"]]
+        for s_ in _hits:
+            B.ensure_surface_label(s_)
+            B.edit_labels(tid, add=(B.SURFACE_PREFIX + s_,))
+        if _hits:
+            print("surface: += %s" % " ".join(_hits))
+
 extra = {}
 if env["T_BRANCH"]:
     extra["branch"] = env["T_BRANCH"]
