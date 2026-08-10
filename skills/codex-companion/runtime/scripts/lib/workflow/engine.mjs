@@ -183,11 +183,17 @@ export async function runWorkflow(spec) {
         } catch (e1) {
           if (e1?.terminal) throw e1;            // schema-repair exhaustion etc: NEVER a third attempt
           // A dead app-server's protocol error carries the child's buffered
-          // stderr, so the same fail-closed guard applies to it: a sandbox
-          // marker here is the structural failure, not a transport one, and
-          // retrying it risks journaling a result the second turn produced
-          // with the sandbox still broken.
-          guardSandbox(label, String(e1?.message ?? e1));
+          // stderr — forward sandbox markers from it too, or a dying worker's
+          // diagnostics never reach the consumers' fail-closed guards.
+          // Diagnostic ONLY, never guardSandbox: unlike the *.stderr sites, an
+          // error message is not exclusively the machine channel — a rejected
+          // request quotes back the command the model asked to run, so a leaf
+          // reviewing this repo can put a marker here by reading its own test
+          // fixtures. Observed 2026-08-11: a command-policy rejection quoting
+          // `bwrap: … RTM_NEWADDR` out of tests/codex-companion/ killed a live
+          // review lane whose sandbox was fine. Fail closed only where the text
+          // cannot be model-authored.
+          emitSandboxDiagnostics(label, String(e1?.message ?? e1));
           appendEvent(journalPath, { type: "retry", key, error: String(e1?.message ?? e1) });
           emit(`retry ${kind}:${label ?? ""}`);
           out = await attempt();                 // one automatic transport retry, fresh turn
