@@ -757,7 +757,7 @@ assert_contains "$out" "surface recommend-rpc occupied by #22 — #20 queued" \
 # spike rows are removed: an architect dispatch would claim the surface first
 # (it occupies by design), which is T14's scenario, not this one.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
-seed_surface_board done   # 22 out of the way (terminal states never occupy)
+seed_surface_board "done"   # 22 out of the way (terminal states never occupy)
 python3 - <<'PY'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
@@ -772,7 +772,7 @@ assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "in-tick claim h
 
 # T13: occupancy clears → the queued ticket dispatches on the next sweep.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
-seed_surface_board done
+seed_surface_board "done"
 python3 - <<'PY'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
@@ -785,7 +785,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "queued ticket dispa
 # T14: an architect mid-design (in-design) occupies against implementers —
 # patch work waits while the consolidation redesign runs.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
-seed_surface_board done
+seed_surface_board "done"
 python3 - <<'PY'
 import json, os
 s = json.load(open(os.environ["MOCK_GH_STATE"]))
