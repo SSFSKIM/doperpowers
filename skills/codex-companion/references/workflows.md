@@ -52,28 +52,9 @@ was the last guard standing.
 ## The bundled code-review panel
 
 `<skill-base>/workflows/code-review.mjs` is a ready-made review workflow —
-the destination references/reviews.md routes big diffs to. One lens-free
-native sweep, up to five scalpel lenses a deriver reads off the diff, and
-one binding verifier over the merged candidate pool:
-
-    … workflow --script "<skill-base>/workflows/code-review.mjs" \
-      --args '{"base":"main"}' --cwd <repo> 2> <scratch>.events.log
-
-`base` is the only required arg. Optional: `lenses` (an array replacing the
-derived set), `finderModel`/`finderEffort` (default `gpt-5.6-sol`/`xhigh`),
-`verifierModel`/`verifierEffort` (default `gpt-5.6-sol`/`high`).
-
-The verb's stdout `result` is `{verdict, findings, coverage, lenses,
-explanation}`. `verdict` is `correct`, `incorrect`, or `interrupted`;
-`findings` carries only verifier-confirmed items —
-`{id, priority, title, file, lines, comment, sources}`, priority-sorted —
-so `incorrect` means confirmed defects, not raw candidates. `interrupted`
-means no verdict about this diff can be asserted: a lane was lost (sweep or
-verifier down, so a clean claim would be hollow) or the target moved — the
-panel pins `merge-base` AND `HEAD` at start and re-resolves both at
-assembly, so a commit landing on the reviewed branch mid-run withholds the
-verdict, with any findings attached as partial evidence. Don't commit to
-the branch under review while a round is in flight.
+one lens-free native sweep, up to five diff-derived scalpel lenses, and one
+binding verifier. When to run it, its invocation, and its result contract
+are owned by the sibling skill doperpowers:requesting-review.
 
 ## The script
 
@@ -124,7 +105,7 @@ Hooks:
 - `review({base, scope, model, effort, lens, label, cwd})` →
   `{reviewText, threadId, status}`. Target selection matches the `review` verb
   (`base`, or `scope` of `auto`/`working-tree`/`branch` — see
-  references/reviews.md). This is Codex's native reviewer, so `lens` is not a
+  doperpowers:requesting-review). This is Codex's native reviewer, so `lens` is not a
   prompt: it rides `developer_instructions` on that worker's private
   app-server, alongside the review protocol rather than replacing it. Keep a
   lens to at most two plain sentences; longer mandates compete with the

@@ -16,11 +16,11 @@ To see it working: run the test suites listed in Validation, and (the merge gate
 
 ## Progress
 
-- [x] (2026-08-11 00:20Z) Grill complete (brainstorming session); design approved; track = autonomous.
-- [x] (2026-08-11 00:40Z) ExecPlan authored and committed.
-- [ ] Milestone 1: runtime fail-closed (sandbox.mjs, engine.mjs leaves, review/adversarial verb paths, CODEX_SANDBOX exemption) + tests.
-- [ ] Milestone 2: skills/requesting-review/SKILL.md created; codex-companion slimmed (reviews.md deleted, verb list repointed, workflows.md panel section → pointer).
-- [ ] Milestone 3: reviewing-prs — engine/renderer/tests deleted; SKILL.md START ENGINE/JOIN/RE-REVIEW/TRAIL rewritten; dispatcher binds COMPANION_DIR; operator docs updated; dispatch + entrypoint tests updated.
+- [x] (2026-08-10 16:40Z) Grill complete (brainstorming session); design approved; track = autonomous.
+- [x] (2026-08-10 16:55Z) ExecPlan authored and committed (b656b9de).
+- [x] (2026-08-10 17:25Z) Milestone 1: runtime fail-closed — lib/sandbox.mjs; engine.mjs leaves guard via assertSandboxUsable (terminal); review AND adversarial verb branches assert on result.stderr; with-effort.mjs guards its private server's piped stderr (exit 3) since the socket path hides stderr from the verb's client; CODEX_SANDBOX stands the guard down everywhere. Tests: engine-hooks sandbox cases rewritten (fail-closed + nested-OK), fake codex gained `sandbox-broken` behavior + `-c` tolerance, 4 new runtime.test.mjs cases — all green; full companion + workflow suites green.
+- [x] (2026-08-10 17:40Z) Milestone 2: skills/requesting-review/SKILL.md created; codex-companion SKILL.md verb list repointed; references/reviews.md deleted; workflows.md panel section → pointer.
+- [x] (2026-08-10 17:56Z) Milestone 3: review-engine.sh, render-panel-findings.mjs, test-review-engine.sh deleted; SKILL.md START ENGINE rewritten (worker routes per requesting-review; env preamble template; findings-rN.txt/.json; interrupted retries once); ENGINE FALLBACK covers sandbox rejection + twice-interrupted panel; dispatcher binds COMPANION_DIR (3 sites); bootstrap binding renamed; operation-manual rewritten; dispatch + entrypoint suites updated and green.
 - [ ] Milestone 4: consumer repoints (execplan, subagent-driven-development, writing-plans, architecting); user-CLAUDE.md repoint flagged (not edited).
 - [ ] Milestone 5: full validation suites + shell lint + residual-grep sweep; version stays 7.46.0.
 - [ ] Milestone 6 (merge gate): live dogfood — one dispatched review worker routes a big diff to the panel by protocol alone; PR #55 description rewritten; push.
@@ -29,8 +29,10 @@ To see it working: run the test suites listed in Validation, and (the merge gate
 
 - Observation (planning stage): the incident's sandbox markers ride the app-server child's *buffered stderr* (surfaced per turn as `result.stderr`), while the streamed progress lines also carry a truncated copy of the model's final answer — making progress a false-positive channel (a diff quoting a marker string, e.g. this repo's own tests, would trip a naive scan).
   Evidence: `skills/codex-companion/runtime/scripts/lib/workflow/engine.mjs` lines 251–265 (the buffering comment), and `executeReviewRun` in `codex-companion.mjs` returning `result.stderr` verbatim on the native-review branch.
-- Observation (planning stage): `executeReviewRun`'s adversarial branch does not carry the turn's stderr into its payload today — fail-closed there needs the field plumbed through first.
-  Evidence: the adversarial branch builds its result from `runAppServerTurn` without a `stderr` field in the rendered payload (codex-companion.mjs, after line 416).
+- Observation (planning stage, CORRECTED at M1): I first noted the adversarial branch drops the turn's stderr — wrong on re-read: its payload carries `codex.stderr` (codex-companion.mjs line ~440). Both verb branches only needed the assert added.
+  Evidence: `payload.codex.stderr` present in both branches; M1 diff adds only the two `assertSandboxUsable` calls.
+- Observation (M1): the verb's default path and the with-effort path talk to the app-server over a socket, where the child's stderr never reaches the verb's client — `result.stderr` is populated only on the direct (dead-endpoint kill-switch) path. The guard therefore lives in THREE places: the workflow engine's leaves (disableBroker → direct), the verb branches (direct path), and with-effort.mjs itself, which pipes and scans its private server's stderr and exits 3 on a marker after a clean verb exit.
+  Evidence: first new runtime test failed with exit 0 until the kill-switch env was added; with-effort test passes end-to-end against the `sandbox-broken` fake.
 
 ## Decision Log
 

@@ -296,28 +296,61 @@ const spawnRecord = (mockDir, pid) => JSON.parse(fs.readFileSync(path.join(mockD
   assert.deepEqual(workers(c.runDir), [], "no pids left tracked");
 }
 
-// --- sandbox diagnostics on the server's stderr reach emit -------------------
+// --- a sandbox-failure marker on the server's stderr FAILS the leaf ----------
 // The app-server buffers stderr and surfaces it only on a nonzero exit, but the
 // observed fs-sandbox failure (bwrap RTM_NEWADDR) exits 0 and renders findings
-// anyway; consumers' fail-closed guards grep the run's stderr stream for the
-// markers, so the hooks must forward them from the buffered result.
+// anyway. The engine fails closed on the buffered markers (lib/sandbox.mjs):
+// the leaf fails terminally — no transport retry, since a blocked sandbox does
+// not heal between attempts — and the diagnostic still reaches emit.
 {
-  const c = newCase("sandbox-diag", [{
+  const c = newCase("sandbox-fail-closed", [{
     reviewText: "# Sweep\n\nlooks clean",
     stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
   }]);
   const lines = [];
   const out = await runWorkflow({
-    scriptPath: path.join(FIXTURES, "fx-review.mjs"),
+    scriptPath: path.join(FIXTURES, "fx-review-fail.mjs"),
     args: {},
     cwd: c.repo,
     runDir: c.runDir,
     emit: (l) => lines.push(l)
   });
-  assert.equal(out.result.reviewText, "# Sweep\n\nlooks clean", "the leaf itself still succeeds");
+  assert.deepEqual(out.result, [null], "a clean-looking report from a broken sandbox is not a result");
+  assert.equal(counter(c.mockDir), 1, "terminal: the transport retry never buys a second attempt");
+  const fin = journal(c.runDir).filter((e) => e.type === "finished");
+  assert.match(fin[0].error, /fs sandbox unavailable/, "the sandbox guard is what rejected it");
   assert.ok(
     lines.some((l) => l.startsWith("sandbox-diagnostic sweep:") && l.includes("RTM_NEWADDR")),
-    "the sandbox-failure marker from the worker's buffered stderr is forwarded to emit"
+    "the marker from the worker's buffered stderr still reaches emit"
+  );
+}
+
+// --- under an OUTER codex sandbox the guard stands down ----------------------
+// CODEX_SANDBOX set means probe confinement is expected (nested run); the leaf
+// succeeds and the marker is journaled as a diagnostic only.
+{
+  const c = newCase("sandbox-nested-ok", [{
+    reviewText: "# Sweep\n\nlooks clean",
+    stderrLine: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+  }]);
+  const lines = [];
+  process.env.CODEX_SANDBOX = "seatbelt";
+  let out;
+  try {
+    out = await runWorkflow({
+      scriptPath: path.join(FIXTURES, "fx-review.mjs"),
+      args: {},
+      cwd: c.repo,
+      runDir: c.runDir,
+      emit: (l) => lines.push(l)
+    });
+  } finally {
+    delete process.env.CODEX_SANDBOX;
+  }
+  assert.equal(out.result.reviewText, "# Sweep\n\nlooks clean", "the nested leaf still succeeds");
+  assert.ok(
+    lines.some((l) => l.startsWith("sandbox-diagnostic sweep:") && l.includes("RTM_NEWADDR")),
+    "…with the marker forwarded to emit as a diagnostic"
   );
 }
 

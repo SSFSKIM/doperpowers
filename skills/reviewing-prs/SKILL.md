@@ -133,10 +133,10 @@ its own.
 
 ## START ENGINE
 
-REVIEW ENGINE — the native codex review engine (the
-doperpowers:codex-companion runtime, driven through {{REVIEW_ENGINE}}),
-run as a PURE correctness review: it receives no ticket or spec input of
-any kind.
+REVIEW ENGINE — the native codex review runtime (the
+doperpowers:codex-companion runtime at {{COMPANION_DIR}}, driven per
+doperpowers:requesting-review), run as a PURE correctness review: it
+receives no ticket or spec input of any kind.
 Ticket/spec compliance is YOUR audit, not the engine's. The engine call
 is a TOOL invocation, not a nested agent. Never add
 --dangerously-bypass-approvals-and-sandbox / --yolo to anything.
@@ -146,46 +146,67 @@ is a TOOL invocation, not a nested agent. Never add
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
    turn reads them.
-2. From the worktree root, start the round's ONE engine run
-   IN THE BACKGROUND (round N uses findings-rN.txt; the empty lens
-   assignments are deliberate — they shield the run from any inherited
-   host value):
+2. Choose the round's route — YOUR judgment, by
+   doperpowers:requesting-review's doctrine: a single native review by
+   default; the code-review panel on a big diff (~20+ files or a couple
+   thousand changed lines, where one reviewer's recall thins) or on a
+   smaller diff whose weight concentrates on declared risk surfaces
+   (your dispatch manifest). A panel round runs ~8 workers and can take
+   ~20 minutes. Then, from the worktree root, start the round's ONE
+   review run IN THE BACKGROUND (round N writes findings-rN.*). Both
+   forms share the preamble: codex must WRITE session state, the
+   worker's default home may be read-only under the outer sandbox, and
+   that state must stay out of the reviewed tree — so it goes to a
+   throwaway home with login symlinked over; a nested codex also needs
+   TLS trust anchors as a FILE bundle and an explicit code-mode host
+   path.
 
-   CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
-   CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
-   CODEX_REVIEW_LENS= CODEX_REVIEW_LENS_FILE= \
-     {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --out <review-tmp>/findings-r1.txt
+   eng_home="$(mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}-codex.XXXXXX")" && \
+   { [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || ln -s "${CODEX_HOME:-$HOME/.codex}/auth.json" "$eng_home/auth.json"; } && \
+   export CODEX_HOME="$eng_home" CLAUDE_PLUGIN_DATA="$eng_home/companion-state" && \
+   { [ -n "${SSL_CERT_FILE:-}" ] || { [ -f /etc/ssl/cert.pem ] && export SSL_CERT_FILE=/etc/ssl/cert.pem; } || { [ -f /etc/ssl/certs/ca-certificates.crt ] && export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt; } || true; } && \
+   <ONE of the two commands below>
 
-   Diff-size scaling is the ENGINE's, not yours: on a big diff (~20+
-   files or a couple thousand changed lines) it runs the
-   codex-companion code-review panel — one lens-free sweep, diff-derived
-   scalpel lenses, one binding verifier — instead of a single native
-   review, and renders the verifier-confirmed findings into the same
-   --out file (raw panel result beside it as findings-rN.txt.panel.json;
-   a panel round can take ~20 minutes). One judgment stays yours: a diff
-   below that size whose weight concentrates on declared risk surfaces
-   (your dispatch manifest) can warrant the panel anyway — add
-   CODEX_REVIEW_PANEL=always to the command to force it. Use your harness's background
-   execution and keep the task handle. Leave it running and the findings
-   unread — the protocol's COMPLIANCE AUDIT runs while the engine
-   reviews, and its JOIN step is the only place engine output is read.
+   Single review:
+
+   node {{COMPANION_DIR}}/scripts/with-effort.mjs \
+     --effort {{CODEX_REVIEW_EFFORT}} -- \
+     review --base origin/{{BASE_REF}} --wait --model {{CODEX_REVIEW_MODEL}} \
+     > <review-tmp>/findings-rN.txt 2> <review-tmp>/findings-rN.events.log
+
+   Panel:
+
+   node {{COMPANION_DIR}}/runtime/scripts/codex-companion.mjs workflow \
+     --script {{COMPANION_DIR}}/workflows/code-review.mjs \
+     --args '{"base":"origin/{{BASE_REF}}","finderModel":"{{CODEX_REVIEW_MODEL}}","finderEffort":"{{CODEX_REVIEW_EFFORT}}","verifierModel":"{{CODEX_REVIEW_MODEL}}"}' \
+     > <review-tmp>/findings-rN.json 2> <review-tmp>/findings-rN.events.log
+
+   Keep the task handle. Leave it running and the findings unread — the
+   protocol's COMPLIANCE AUDIT runs while the engine reviews, and its
+   JOIN step is the only place engine output is read.
 3. At JOIN: wait for the round's background task. Bound the wait — an
    engine task that has neither completed nor failed 45 minutes after
    start is hung: kill it. If the run failed, the round failed (the
    fallback below owns retries and the outage path).
-4. Read the findings file.
-   Correctness review of the whole range is the engine's job; your own
-   reading serves the audit and the triage, not a second review.
+4. Read the findings. A single review's findings-rN.txt is rendered
+   text. A panel's findings-rN.json is one JSON object: read
+   `.result.verdict` and `.result.findings` (verifier-confirmed only,
+   priority-sorted) plus `.result.coverage` for the trail. A verdict of
+   `interrupted` is an engine failure, not a judgment about the diff —
+   retry the panel once with fresh output files; a second interruption
+   fails the round. Correctness review of the whole range is the
+   engine's job; your own reading serves the audit and the triage, not
+   a second review.
 
 The verdict is YOURS, derived from the findings: approve when no
 critical/high finding remains unresolved; needs-attention otherwise.
-RE-REVIEW rounds run the same single command with a fresh --out file,
-again in the background.
+RE-REVIEW rounds repeat the route judgment and run a fresh command with
+fresh output files, again in the background.
 
 ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
-If the engine script fails (codex missing — rc 127, auth failure, or
-API errors), retry twice with a short backoff. Still failing:
+If the run fails (codex missing, auth failure, API errors, the
+runtime's sandbox-unavailable rejection, or a twice-interrupted panel),
+retry twice with a short backoff. Still failing:
 - post the review-trail comment recording the outage ("engine
   unavailable: <error>");
 - touch NO board state — the ticket stays in-review. An infra outage is
@@ -403,8 +424,8 @@ end your turn with the park intact.
 A `review-epic-<n>` dispatch is the E2 scale review: the ticket is an
 EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
 `CLOSURE_PACKAGE` binding names it). Same engine machinery — a
-whole-range codex run per range (an epic-scale diff routes to the panel
-by size, as any diff does): your worktree
+whole-range codex run per range (an epic-scale diff warrants the panel
+by size, judged as any diff is): your worktree
 sits at the epic's integration branch and START ENGINE's
 `--base origin/{{BASE_REF}}` reviews it against the branch it merges
 into. When your dispatch prompt instead says this epic has NO aggregate
@@ -483,7 +504,7 @@ what the contract permits separately from what the evidence shows actually ran.
 
 The review-trail comment on the PR records: engine and rounds run — for
 a panel round, the panel's verdict line and its lens/coverage summary
-(from the findings file and the .panel.json beside it), written BEFORE
+(from findings-rN.json's `.result`), written BEFORE
 `<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board

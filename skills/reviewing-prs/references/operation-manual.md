@@ -6,9 +6,9 @@ The inverse-symmetric counterpart of the implementing daemon: where a worker
 turns a ticket into a PR, a **review worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
 background daemon (`orchestrating-daemons`) that runs TWO review tracks at
-once: the native Codex engine (the doperpowers:codex-companion runtime via
-review-engine.sh, in the background) reviews pure code correctness, while
-the worker itself audits
+once: the native Codex engine (the doperpowers:codex-companion runtime,
+invoked per doperpowers:requesting-review in the background) reviews pure
+code correctness, while the worker itself audits
 implementer protocol/spec compliance against the linked ticket. The worker
 never fixes anything: it triages the joined findings on its own judgment
 (the engine's native severity is the starting rank),
@@ -27,7 +27,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` daemon (`daemon-spawn.sh --no-wait`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
-| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker runs it once per round; diff-size scaling is the engine's own — a big diff routes internally to the companion's code-review panel (sweep + diff-derived scalpel lenses + binding verifier), smaller diffs run the single native `review` verb |
+| the review runtime | one review run per round, pure correctness — no ticket/spec input of any kind. The worker drives the doperpowers:codex-companion runtime directly, following doperpowers:requesting-review: a single native review (per-run effort via the with-effort wrapper) by default, the companion's code-review panel (sweep + diff-derived scalpel lenses + binding verifier) on a big or risk-concentrated diff — the route is the worker's judgment. The runtime itself fails closed on a broken fs sandbox |
 | `SKILL.md` | the Review Worker Protocol — invoked by every review worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
@@ -127,23 +127,23 @@ produce evidence, the review side verifies the claims were real.
 ## Review engine (pure correctness) + worker audit (compliance)
 
 Review responsibility is split between two concurrent tracks with one owner
-each. The ENGINE — the native codex review run by
-`scripts/review-engine.sh` through the doperpowers:codex-companion
-runtime — receives no ticket, spec, or policy input of
-any kind: coupling spec policy into the native reviewer measurably weakened
-its correctness review, so the interface is `--base` + `--out`. Diff-size
-scaling lives inside the engine: a big diff (~20+ files or ~2k changed
-lines — one reviewer's recall thins at that scale; on the PR752 benchmark
-the best single run found 10 of 13 confirmed defects while a multi-run
-union found all 13) routes to the companion's code-review panel — one
-lens-free sweep, up to five diff-derived scalpel lenses, one binding
-verifier — rendered into the same findings file (raw panel JSON beside it;
-a `interrupted` panel verdict is an engine failure, never a findings
-file). Smaller diffs run the single non-steerable `review` verb. The
-worker starts the round's run in the background and gets a compact
-findings file back; the PR diff never enters the worker's own context. A
-hung engine (no result within 45 minutes) is killed and treated as a
-failure; a failed run fails the round.
+each. The ENGINE — the native codex review, driven directly through the
+doperpowers:codex-companion runtime — receives no ticket, spec, or policy
+input of any kind: coupling spec policy into the native reviewer measurably
+weakened its correctness review, so the run is a pure `--base` diff review.
+The route is the worker's judgment per doperpowers:requesting-review: a
+big diff (~20+ files or ~2k changed lines — one reviewer's recall thins at
+that scale; on the PR752 benchmark the best single run found 10 of 13
+confirmed defects while a multi-run union found all 13) or a smaller diff
+concentrated on declared risk surfaces warrants the companion's
+code-review panel — one lens-free sweep, up to five diff-derived scalpel
+lenses, one binding verifier (an `interrupted` panel verdict is an engine
+failure, retried once, never a judgment about the diff). Other diffs run
+the single non-steerable `review` verb. The worker starts the round's run
+in the background and reads the findings back at JOIN; the PR diff never
+enters the worker's own context. The runtime fails closed when its fs
+sandbox was broken during the run. A hung engine (no result within 45
+minutes) is killed and treated as a failure; a failed run fails the round.
 
 The WORKER meanwhile audits implementer protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
