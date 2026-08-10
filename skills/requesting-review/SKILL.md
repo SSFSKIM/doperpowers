@@ -110,7 +110,7 @@ sources}`, priority-sorted), so `incorrect` means confirmed defects.
 mid-run (the panel pins merge-base AND HEAD at start and re-resolves at
 assembly), the lens-free sweep died, or a lost lane would otherwise have
 made the answer `correct` — a clean claim needs complete coverage. A lost
-lane does NOT overturn `incorrect`: the confirmed defects stand, and the
+LENS lane does NOT overturn `incorrect`: the confirmed defects stand, and the
 incomplete coverage shows up as a `; coverage partial: <lanes>` suffix on
 `explanation` and in `coverage`, whose per-lane rows carry a `status` of
 `ok`, `dead`, or `extraction-failed`. Treat `interrupted` as an engine
