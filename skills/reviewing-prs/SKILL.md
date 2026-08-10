@@ -220,11 +220,14 @@ RE-REVIEW rounds repeat the route judgment and run a fresh command with
 fresh output files, again in the background.
 
 ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
-If the run fails (codex missing, auth failure, API errors, or the
-runtime's sandbox-unavailable rejection), retry twice with a short
-backoff. A twice-interrupted panel has already spent step 4's retry —
-at ~8 workers and ~20 minutes a round, it takes the outage path below
-with no further attempt. Still failing:
+If the run fails — codex missing, auth failure, API errors — retry twice
+with a short backoff. Two kinds of failure skip that budget and take the outage
+path below on first occurrence: the runtime's sandbox-unavailable
+rejection, terminal by construction because a blocked sandbox does not
+heal between attempts and only the host can fix it; and a panel round
+whose step 4 retry failed at all, interrupted again or otherwise — it
+has already spent step 4's retry, at ~8 workers and ~20 minutes a round.
+Still failing:
 - post the review-trail comment recording the outage ("engine
   unavailable: <error>");
 - touch NO board state — the ticket stays in-review. An infra outage is
