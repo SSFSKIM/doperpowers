@@ -329,21 +329,19 @@ SEAM: the identifiers your ticket touches (file paths, function/RPC
 names, table names). Title-keyword search may not be enough — different
 authors word the same work differently. GitHub issue search hits
 bodies, so query each seam identifier
-(`gh issue list --state open --search "<function-or-file-name>"`)
-— reads are quota-cheap; a duplicate ticket costs a worker dispatch.
+(`gh issue list --state open --search "<function-or-file-name>"`).
 Then triage the hits:
 
 - **Same defect or scope** → comment your evidence on the existing
   ticket instead of registering a duplicate — parallel workers hit the
   same base regressions blind.
 - **Same seam, different defect** → register, but in the same breath
-  `board-relate.sh` your new ticket to EVERY open ticket on that seam.
-  The relates web is how a future reader sees the cluster at all.
+  `board-relate.sh` your new ticket to every open ticket on that seam.
 - **Cluster tripwire**: if your registration would put a THIRD open
   non-park ticket onto the same function or contract body, that seam
   has outgrown patch-wise work — parallel rewrites of one body revert
-  each other silently (different files, zero git conflicts, wrong
-  final state). Register your finding, then raise consolidation: a
+  each other silently (different files, zero git conflicts).
+  Register your finding, then raise consolidation: a
   ticket born `ready-for-architect` that names every member and owns
   the unified contract, with the members related (and, where they are
   still undispatched, `--blocked-by` the consolidation ticket).
@@ -385,9 +383,8 @@ ticket but leaves work behind still closes the ticket (`Closes #N` stays in
 the body: done means the PR landed, not that every idea it surfaced died).
 The worker registers the residue as tickets (`--spawned-by <n>`) BEFORE its
 turn-end message and lists the numbers in its FOLLOW-UPS section — a
-follow-up not registered does not exist. (A few-line residual inside files
-already in the PR's diff, with no design fork and no ownership boundary in
-the way, is not residue — it is in-scope polish the PR absorbs; see the
+follow-up not registered does not exist. (A few-line residual inside the
+PR's own diff is in-scope polish the PR absorbs, not residue — see the
 implementing skill's Closing Artifact.)
 
 ## Edge cases

@@ -256,15 +256,9 @@ A follow-up not registered does not exist — but not every residual is a
 follow-up. A residual that is a few lines INSIDE files already in your
 diff, with no design fork and no ownership boundary in the way (sprint
 specs may assign files to other tickets), is in-scope polish: fix it in
-THIS PR instead of minting a ticket — a one-line fix shipped as a ticket
-costs a full dispatch + worktree + review cycle. Ticket the residual
-when it needs its own review scope, touches files outside your diff, or
-forks a decision. Registration follows the
+THIS PR instead of minting a ticket. Registration follows the
 doperpowers:issue-tracker skill's ticket contract — including its
-pre-registration seam search (search open tickets by the file/function
-identifiers you touched, never by title keywords; relate same-seam
-tickets; a third rewrite of one contract body raises consolidation
-instead of another patch):
+pre-registration seam search:
 author its body at register time (--body-file, the pre-spec sections
 filled from what you just learned), gate-triaged honestly (--state
 needs-human for an open human fork). You are the person who knows the
