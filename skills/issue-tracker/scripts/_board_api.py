@@ -30,6 +30,18 @@ def die(msg):
     raise SystemExit(1)
 
 
+def ref(raw):
+    """A ticket ref — '#42'/'42' → 42, same refusal as gh mode's B.resolve.
+
+    Refs are argv, so a junk one is a caller mistake and dies here rather
+    than as a traceback or a request the server has to reject.
+    """
+    n = str(raw).lstrip("#")
+    if not n.isdigit():
+        die("not an issue number: %s" % raw)
+    return int(n)
+
+
 def api_url():
     url = os.environ.get("BOARD_API_URL", "").rstrip("/")
     if not url:

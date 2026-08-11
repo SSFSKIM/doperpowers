@@ -48,18 +48,9 @@ if [ "$BOARD_BINDING" = api ]; then
 import os
 import _board_api as A
 
-
-def ref(raw):
-    """A ticket ref — '#42'/'42' → 42, same refusal as gh mode."""
-    n = raw.lstrip("#")
-    if not n.isdigit():
-        A.die("not an issue number: %s" % raw)
-    return int(n)
-
-
-tid = ref(os.environ["T_ID"])
+tid = A.ref(os.environ["T_ID"])
 op = os.environ["T_OP"]
-other = ref(os.environ["T_REF"]) if os.environ["T_REF"] else None
+other = A.ref(os.environ["T_REF"]) if os.environ["T_REF"] else None
 if op == "block":
     A.edge(tid, "add", other)
     print("#%s: blocked_by += #%s" % (tid, other))

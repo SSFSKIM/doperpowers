@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# test-edge-verbs.sh — the arkho#7 human verbs' API branches. Task 2 covers
-# board-edge.sh (blocked-by re-cuts, reparent, orphan); Tasks 3–4 append their
-# own fixtures and asserts for relate / priority / body to this file.
+# test-edge-verbs.sh — the arkho#7 human verbs' API branches: board-edge.sh
+# (blocked-by re-cuts, reparent, orphan), board-relate.sh, board-priority.sh;
+# Task 4 appends its own fixtures and asserts for body to this file.
 #
 # Two things are pinned per call: what went on the wire (the fixture log) and
 # what the verb printed. Server refusals surface the service's own message
@@ -30,7 +30,16 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/tickets/5/parent","status":200,"body":{"ok":true},"once":true},
  {"method":"POST","path":"/tickets/5/parent","status":409,
   "body":{"error":{"code":"ancestor-blocker","message":"#5 is blocked by #3, an ancestor"}},"once":true},
- {"method":"POST","path":"/tickets/5/parent","status":200,"body":{"ok":true}}
+ {"method":"POST","path":"/tickets/5/parent","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/relates","status":200,"body":{"ok":true},"once":true},
+ {"method":"POST","path":"/tickets/5/relates","status":409,
+  "body":{"error":{"code":"duplicate-edge","message":"#5 and #7 are already related"}},"once":true},
+ {"method":"POST","path":"/tickets/5/relates","status":409,
+  "body":{"error":{"code":"self-edge","message":"a ticket cannot relate to itself"}},"once":true},
+ {"method":"POST","path":"/tickets/5/relates","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true},"once":true},
+ {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true,"noop":true},"once":true},
+ {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
@@ -119,10 +128,67 @@ t "a non-numeric ref dies like the gh path" "not an issue number: abc" \
   V board-edge.sh 5 --block abc
 nt "a non-numeric ref raises no traceback" "Traceback" V board-edge.sh 5 --parent xyz
 
+# ---- board-relate.sh ----
+# One call, not two: the server stores the edge normalized and projects it on
+# both tickets, so the gh half's write into BOTH issues' meta blocks has no
+# counterpart here.
+t "relate prints the edge it made" "related: #5 -- #7" V board-relate.sh 5 7
+t "the relate payload is op add with an int ticket" '{"op": "add", "ticket": 7}' \
+  last_body /tickets/5/relates
+t "a relates write speaks as the human principal" '"auth": "Bearer h"' \
+  last_line /tickets/5/relates
+
+DUP_OUT="$(mktemp)"; DUP_RC=0
+V board-relate.sh 5 7 > "$DUP_OUT" 2>&1 || DUP_RC=$?
+t "a duplicate relate surfaces the server's identifier" "duplicate-edge" cat "$DUP_OUT"
+t "a duplicate relate surfaces the server's message" "#5 and #7 are already related" \
+  cat "$DUP_OUT"
+t "a refused relate exits nonzero" "rc=1" echo "rc=$DUP_RC"
+
+# Same sharpness as the board-edge self-edge case: the gh path refuses a
+# self-relate in its own python, so this branch must NOT — it has to reach the
+# wire. Third call on /tickets/5/relates, matching the third `once` fixture.
+SELF_REL="$(mktemp)"
+V board-relate.sh 5 5 > "$SELF_REL" 2>&1 || true
+t "a self-relate is sent, not adjudicated locally" '{"op": "add", "ticket": 5}' \
+  last_body /tickets/5/relates
+t "the server's self-relate refusal surfaces" "a ticket cannot relate to itself" \
+  cat "$SELF_REL"
+
+t "--cut prints the cut" "cut: #5 -- #7" V board-relate.sh 5 7 --cut
+t "the cut payload says cut" '{"op": "cut", "ticket": 7}' last_body /tickets/5/relates
+t "hash refs are accepted on both relate ends" "related: #5 -- #7" \
+  V board-relate.sh '#5' '#7'
+t "a non-numeric relate ref dies like the gh path" "not an issue number: abc" \
+  V board-relate.sh 5 abc
+nt "a non-numeric relate ref raises no traceback" "Traceback" V board-relate.sh abc 5
+
+# ---- board-priority.sh ----
+# No old grade on the left: the client holds no snapshot in api mode, and the
+# server's answer is the whole truth about what the write did.
+t "priority prints the grade that committed" "#5: → P0" V board-priority.sh 5 P0
+t "the priority payload is the grade alone" '{"priority": "P0"}' last_body /tickets/5/priority
+t "a priority write speaks as the human principal" '"auth": "Bearer h"' \
+  last_line /tickets/5/priority
+# Write-if-changed is the server's; the flag is it saying nothing was recorded.
+t "the server's noop flag is reported" "#5: → P0 (noop)" V board-priority.sh 5 P0
+nt "a committed re-grade says nothing about noop" "(noop)" V board-priority.sh 5 P1
+
+# A bad grade is bad argv, not a server matter — it must not need a socket.
+t "a bad grade dies client-side" "priority must be one of P0|P1|P2|P3" \
+  V board-priority.sh 5 P9
+nt "a bad grade never reaches the wire" "P9" cat "$FIX.log"
+t "a non-numeric priority ref dies like the gh path" "not an issue number: xyz" \
+  V board-priority.sh xyz P0
+
 # In API mode gh is never invoked — asserted with a stub, as everywhere else.
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
-nt "api edge verbs never invoke gh" "GH-CALLED" \
+_no_gh() {  # <verb> <args...> — same call, but with a gh that announces itself
   bash -c "cd '$r' && PATH='$gdir:$PATH' BOARD_CREDENTIALS_FILE='$CREDS' \
-    '$SCRIPTS/board-edge.sh' 5 --block 7"
+    '$SCRIPTS/$1' ${*:2}"
+}
+nt "api edge verbs never invoke gh" "GH-CALLED" _no_gh board-edge.sh 5 --block 7
+nt "api relate never invokes gh" "GH-CALLED" _no_gh board-relate.sh 5 7 --cut
+nt "api priority never invokes gh" "GH-CALLED" _no_gh board-priority.sh 5 P2
 
 finish

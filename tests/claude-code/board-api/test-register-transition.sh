@@ -175,9 +175,11 @@ t "bug birth body pins the mapped category and omits birth" \
 
 t "register prints id + url" "30 http://127.0.0.1:$PORT/tickets/30" \
   V board-register.sh "plain one" enhancement P2 --body-file "$SPEC"
-for verb in board-priority.sh board-relate.sh board-migrate-gh.sh; do
-  t "$verb fails loud naming arkho#7" "arkho#7" V "$verb" 1 --block 2
-done
+# board-migrate-gh.sh is now the only verb with no API-mode counterpart —
+# priority and relate got theirs (see test-edge-verbs.sh). It must still refuse
+# rather than write through a gh path an api-bound repo does not have.
+t "board-migrate-gh.sh fails loud naming arkho#7" "arkho#7" \
+  V board-migrate-gh.sh 1 --block 2
 
 # The binding constraint, asserted rather than assumed: in API mode gh is never
 # invoked — with a stub on PATH that would announce itself if it were.
