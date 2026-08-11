@@ -227,8 +227,10 @@ def edge(tid, op, blocked_by):
 
 
 def set_parent(tid, parent):
-    # None is sent as an explicit null — that is what orphans a ticket; an
-    # omitted key would read as "leave the parent alone".
+    # Orphaning writes an explicit null rather than dropping the key. The
+    # service reads absent and null the same way today, so this is for
+    # legibility and robustness: an explicit null states "no parent"
+    # unambiguously and still means that if the contract ever tightens.
     return request("POST", "/tickets/%s/parent" % int(tid),
                    {"parent": int(parent) if parent is not None else None},
                    "human")

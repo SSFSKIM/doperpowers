@@ -190,11 +190,18 @@ t "edge body pins op and blockedBy" '{"op": "add", "blockedBy": 7}' \
   last_body tickets/5/edges
 t "the edge speaks as the human" '"auth": "Bearer human-tok"' last_log tickets/5/edges
 
-# An orphan is an explicit null, not an omitted key: the service reads the
-# absent parent as "leave it alone" and only null detaches.
+# An orphan is written as an explicit null, not an omitted key. The service
+# reads absent and null alike, so the null is for legibility and robustness —
+# it says "no parent" outright and survives a tightening of the contract.
 run_py "$CREDS" "$CORE
 A.set_parent(5, None)" > /dev/null 2>&1 || true
 t "parent body sends an explicit null to orphan" '{"parent": null}' \
+  last_body tickets/5/parent
+# The other half of the same verb: a real parent must reach the wire as an int
+# under the same key, or reparenting silently orphans instead.
+run_py "$CREDS" "$CORE
+A.set_parent(5, 3)" > /dev/null 2>&1 || true
+t "parent body pins the new parent id" '{"parent": 3}' \
   last_body tickets/5/parent
 
 run_py "$CREDS" "$CORE
