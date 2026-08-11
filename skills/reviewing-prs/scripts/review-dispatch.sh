@@ -1371,16 +1371,16 @@ if missing:
 q("C_CLAIMED", 1)
 for var, field in fields:
     q(var, out[field])
+# The working bindings the variant split reads: for a leaf, the PR URL and its
+# working branch; for an epic, the closure-package event id and the integration
+# ref. The dispatcher is the only party that sees them.
+q("C_PR", out.get("pr") or "")
+q("C_BRANCH", out.get("branch") or "")
 # The parent-contract window this claim was cut against: A1 answers
 # `{"parent_id": N, "parent_event_cursor": C}` (or null) and stores it on the
 # run. It is the run-specific cursor the recomposing Architect needs, and no
 # read a worker may make hands it over — so it travels with the dispatch or
 # not at all. Flattened to one line; there is nothing to parse downstream.
-# The working bindings of whichever variant this claim is: for a leaf, the PR
-# URL and its working branch; for an epic, the closure-package event id and the
-# integration ref. The dispatcher is the only party that sees them.
-q("C_PR", out.get("pr") or "")
-q("C_BRANCH", out.get("branch") or "")
 pin = out.get("parentPin") or {}
 q("C_PARENT_PIN",
   "#%s @ event %s" % (pin.get("parent_id"), pin.get("parent_event_cursor"))

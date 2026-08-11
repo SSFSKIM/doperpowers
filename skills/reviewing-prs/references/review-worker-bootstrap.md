@@ -56,7 +56,8 @@ This repo's board is the Arkho board API, not GitHub issues: every board
 read and write goes through the scripts at {{BOARD_SCRIPTS}}, which speak
 for your run through the credentials already in your environment
 (`BOARD_RUN_TOKEN`, `BOARD_RUN_ID`, `BOARD_RUN_FENCE`, `BOARD_API_URL`).
-`git` still reaches GitHub exactly as before.
+Nothing else about the repo moved — `git` and `gh` reach GitHub and its
+pull requests exactly as before.
 
 Your assignment is the ticket text as the claim delivered it, at
 {{TICKET_BODY_FILE}} — read it first; there is no other route to it.
@@ -71,7 +72,7 @@ failure would surface one step late, at a checkout of `origin/`.)
 
 Your worktree starts on the repo's current head; positioning it is yours
 to do, before ORIENT: `git fetch origin {{INTEGRATION_REF}}` and
-`git checkout origin/{{INTEGRATION_REF}}` — the epic's integration
+`git checkout --detach origin/{{INTEGRATION_REF}}` — the epic's integration
 branch, where the composed result lives. A fetch that fails is a hard
 stop, never a fallback: park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human`

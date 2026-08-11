@@ -236,6 +236,9 @@ prompt() { cat "$DH/prompt-9-api-qagent.md"; }
 t  "the reviewer is told it is the qagent lane on its ticket" \
    "ticket #9" prompt
 t  "the api review mode is the one rendered"     '`REVIEW_MODE`: api' prompt
+# `REVIEW_MODE`: api is a prefix of api-scale, so the positive assert alone
+# cannot tell the two variants apart — the pair can.
+nt "and it is not the api-scale variant"         '`REVIEW_MODE`: api-scale' prompt
 t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
 t  "the board scripts, not gh, are the board"    "board-show.sh 9"   prompt
 t  "the barrier file is bound"                   '`BIND_READY_FILE`: ' prompt
@@ -579,7 +582,7 @@ t "the scale base is the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
 nt "the scale prompt carries no PR-resolution order" \
   "UNRESOLVED-resolve-from-the-PR" cat "$SCALE_PROMPT"
 nt "the scale prompt never went out as mode api" \
-  "board is the Arkho board API, not GitHub issues: every board read" cat "$SCALE_PROMPT"
+  "resolving what that PR MERGES INTO" cat "$SCALE_PROMPT"
 nt "nothing was left unrendered on the scale prompt" "{{" cat "$SCALE_PROMPT"
 
 # =========================================================================
@@ -615,7 +618,8 @@ OUT7="$(mktemp)"
 LEAF_PROMPT="$DH7/prompt-92-api-qagent.md"
 t "the URL dispatch reports its handoff" "claimed #92" cat "$OUT7"
 t "a URL pr renders the api block" "resolving what that PR MERGES INTO" cat "$LEAF_PROMPT"
-t "the api mode is the one rendered" '`REVIEW_MODE`: api' cat "$LEAF_PROMPT"
+t  "the api mode is the one rendered" '`REVIEW_MODE`: api' cat "$LEAF_PROMPT"
+nt "and a leaf is not the api-scale variant" '`REVIEW_MODE`: api-scale' cat "$LEAF_PROMPT"
 nt "no scale framing reaches a leaf reviewer" "SCALE REVIEWER" cat "$LEAF_PROMPT"
 
 finish
