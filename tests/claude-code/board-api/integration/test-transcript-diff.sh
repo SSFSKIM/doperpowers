@@ -215,16 +215,17 @@ for cap in "$GH_CAP" "$API_CAP"; do
   t "the $side refusal names the illegal edge itself" \
     "in-progress → ready-for-implementer"                    step_out "$cap" 9
 done
-# The PR requirement is the one refusal whose vocabulary does NOT match: gh
-# mode explains the requirement and its destination, while A1 raises
-# `pr-required` with no message body, so the client can only echo the contract
-# identifier. Both refuse the same write for the same reason, and the identifier
-# is a fine machine-readable answer — but the human-readable half is thinner on
-# the API side, and pinning it here is how that stays visible.
+# The PR requirement is the one refusal whose SENTENCE does not match: gh mode
+# explains the requirement and its destination in prose, while the API answers
+# with the contract identifier and then the server's own account of the edge.
+# (A1 used to raise `pr-required` with no message at all, leaving the client
+# echoing the bare identifier; arkho a05b1ac gave every refusal a message.) Both
+# refuse the same write for the same reason, and each half is pinned so the one
+# that thins out again is visible.
 t "gh explains the missing artifact and where it was going" \
   "a PR link is required when moving to in-review"          step_out "$GH_CAP" 5
-t "the API answers with the contract identifier alone"      \
-  "refused: pr-required — pr-required"                      step_out "$API_CAP" 5
+t "the API names the contract identifier and the edge it refused" \
+  "pr-required — in-progress → in-review requires"          step_out "$API_CAP" 5
 
 # ---- the relay prompt: what the resumed worker is actually TOLD ------------
 # Not a verb's stdout, and the most important surface here — this is the
