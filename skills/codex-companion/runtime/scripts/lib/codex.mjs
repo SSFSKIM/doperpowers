@@ -68,6 +68,7 @@ function buildThreadParams(cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
+    approvalsReviewer: options.approvalsReviewer ?? null,
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
@@ -81,6 +82,9 @@ function buildResumeParams(threadId, cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
+    // Explicit on resume as well: a resumed thread otherwise restores the
+    // reviewer persisted at creation, which beats process-level config.
+    approvalsReviewer: options.approvalsReviewer ?? null,
     sandbox: options.sandbox ?? "read-only"
   };
 }
@@ -1219,6 +1223,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
         ephemeral: false
       });
       threadId = response.thread.id;
@@ -1228,6 +1233,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });

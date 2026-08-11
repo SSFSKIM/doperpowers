@@ -497,9 +497,7 @@ async function executeTaskRun(request) {
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
     approvalPolicy: request.auto ? "on-request" : undefined,
-    // approvals_reviewer is config-level, not a thread param, so an auto task
-    // spawns its own app-server with the override instead of sharing a broker.
-    connect: request.auto ? { configOverrides: ["approvals_reviewer=auto_review"] } : null,
+    approvalsReviewer: request.auto ? "auto_review" : undefined,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
