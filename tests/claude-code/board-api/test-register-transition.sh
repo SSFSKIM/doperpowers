@@ -35,6 +35,7 @@ cat > "$FIX" <<'JSON'
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":31,"state":"needs-human"},"once":true},
+ {"method":"POST","path":"/tickets","status":200,"body":{"id":35,"state":"needs-human"},"once":true},
  {"method":"POST","path":"/tickets","status":500,
   "body":{"error":{"code":"internal","message":"upstream exploded"}},"once":true},
  {"method":"POST","path":"/tickets","status":409,
@@ -105,6 +106,16 @@ SPEC="$(mktemp)"; printf 'the spec' > "$SPEC"   # a real statement of work: a
                          # BODYLESS registration is no longer dispatchable (see
                          # the pre-spec rung at the end of this file), so every
                          # assertion about something else carries one
+
+# A park birth may carry BOTH: the question AND the statement of work. They are
+# separate payload fields — the note must not be folded into the body head (the
+# non-park transport), and the body must not swallow the question. Pinned whole,
+# so a regression that merges the two shows up as a key that vanished.
+V board-register.sh "parked with a spec" enhancement P2 --state needs-human \
+  --note 'q?' --body-file "$SPEC" >/dev/null
+t "a park birth carries note and body as separate fields" \
+  '{"title": "parked with a spec", "category": "work", "priority": "P2", "birth": "needs-human", "note": "q?", "body": "the spec"}' \
+  last_register_body
 
 # The arkho#7 pointer is a claim about CANON — "this birth is illegal here" —
 # and it may only ride the server saying exactly that. An outage on the same
@@ -215,10 +226,10 @@ t "a bodyless default birth is demoted out of the implement queue" \
 t "and says what to do about it" "re-register with --body-file" last_register_body
 # The demotion lands on needs-info — a park by outcome — so its auto-note is the
 # park's standing question and rides the `note` field, not a body it does not
-# have.
+# have. Same registration as the two asserts above, read through the same
+# payload pin: scoped to this exact request rather than to anything in the log.
 t "bodyless demotion sends its auto-note as the note field" \
-  '\"note\": \"registered with no body' \
-  bash -c "V board-register.sh 'no spec here two' enhancement P2 >/dev/null; cat '$FIX.log'"
+  '"note": "registered with no body' last_register_body
 t "a bodyless EXPLICIT lane birth is refused" \
   "cannot be born into a dispatchable lane state" \
   V board-register.sh "no spec, named lane" enhancement P2 --state ready-for-implementer

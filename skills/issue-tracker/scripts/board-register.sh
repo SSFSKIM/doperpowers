@@ -104,7 +104,8 @@ PARK_BIRTHS = ("needs-human", "needs-info", "interactive-preferred")
 # server cannot tell the two apart.
 if explicit and state in PARK_BIRTHS and not note and not body:
     A.die("--note is required for state %s — it is the question the park stands "
-          "on (or pass --body-file, whose head A1 reads as that question)" % state)
+          "on (or pass --body-file — A1 falls back to the whole body, then the "
+          "title, as the standing question)" % state)
 if (not explicit and env["T_CATEGORY"] == "env-issue"
         and not note and not body and not env["T_REPAIR"]):
     A.die("an env-issue defaults to needs-human and requires --note naming the "
