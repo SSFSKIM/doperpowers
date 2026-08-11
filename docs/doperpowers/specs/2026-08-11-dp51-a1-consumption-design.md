@@ -269,10 +269,18 @@ the line with no extra work; the meta stamp reaches it through
   client-rederived cue would tell an operator a claimable ticket is
   waiting. `board-list.sh` already declines this exact rederivation in
   api mode; the map does the same, and its table says eligibility is
-  the server's answer. The docstring's caveat is rewritten to the
-  remaining honest gaps: `spawned_by`, PR linkage, URL, and timestamps
-  are still not projected, so spawned-by edges don't render and nodes
-  carry no links/ages.
+  the server's answer. The cue's whole surface goes silent together
+  (Task 8 flow-back): the `waiting: #N` label suffix is the same
+  client-rederived blocker claim and is gated off with it, and the
+  dispatchable card class becomes `s_lane` (in neither CLASS nor BADGE)
+  so the template's `s_wait` badge — literal text "waiting" — cannot
+  keep asserting what the prose stopped claiming. The honesty note
+  lives in BOARD.md (BOARD.html is template+JSON, no prose slot). The
+  docstring's caveat names the remaining honest gaps — corrected by
+  review: the projection DOES carry `pr_url` (it renders); what is
+  missing is the GitHub-linked `prs` list and merge state (so no
+  close-candidate derivation), `spawned_by`, issue URLs, and
+  timestamps.
 
 ### Deferred
 
