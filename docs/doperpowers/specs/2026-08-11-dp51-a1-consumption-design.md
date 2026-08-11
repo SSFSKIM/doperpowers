@@ -448,6 +448,12 @@ Pending — written at finish.
   raw-splice gh body edit, `_stamp_lane` as the parent-pin stamp point,
   park-question acceptance via the decisions queue, no ELIGIBLE cue on
   api map nodes.
+- v1.2.1 (2026-08-11, Task 2 flow-back): §1's "print the same move
+  lines the gh half prints" is refined by construction — api mode prints
+  the committed op only, in a deliberately SHORTER line: no `(was …)`
+  clause on reparent (the old parent is unknowable without a read the
+  thin client refuses) and no derived sweep lines (already §1's rule).
+  `#a: parent = #b`, `#a: parent cleared` are the canonical api forms.
 - v1.2 (2026-08-11): codex plan review (5 findings, all adopted into the
   plan): trailing-block splice via META_RE byte offsets (a first-marker
   find corrupts bodies quoting a marker-like example); explicit
