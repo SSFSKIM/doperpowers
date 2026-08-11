@@ -110,9 +110,13 @@ file is a legal edit — clearing the statement of work).
   erase keys a newer version introduced and reformat noncanonical
   blocks. A body-edit verb has no business interpreting the meta at
   all — it replaces the prose and carries the machine block through
-  untouched. This is the missing safe counterpart to the documented
-  "flesh out the body with `gh issue edit`" flow, which clobbers the
-  `board:meta` block today. gh mode has no ownership guard (parity with
+  untouched — anchored on the RIGHTMOST `META_RE` match, because
+  `re.search` is leftmost-first and the pattern's lazy middle backtracks
+  across prose to the trailing `-->`, so a first-match offset would
+  splice from a marker-like example quoted in the prose (measured:
+  offset 29, inside the fake block, on the guard fixture). This is the
+  missing safe counterpart to the documented "flesh out the body with
+  `gh issue edit`" flow, which clobbers the `board:meta` block today. gh mode has no ownership guard (parity with
   existing gh-mode reality, where nothing stops a body edit; the api
   guard is a server invariant, not a client one).
 
@@ -428,6 +432,16 @@ _(maintained during implementation)_
   `B.eligible` requires `done` — a live eligibility divergence that
   killed the map cue. A run registering a child cannot comment on it —
   which killed the non-park-note-as-comment design.
+
+- (Task 4) The v1.2 fix itself carried a false premise: `META_RE.search`
+  is NOT protected by its end-anchor — leftmost-first matching with a
+  lazy middle means a prose-quoted marker becomes the match start. The
+  shipped splice walks to the RIGHTMOST match. Same investigation
+  surfaced a LIVE gh-mode bug outside this scope: `_board.strip_meta`
+  (and everything on it — `update_meta`, so every `branch:`/`pr:`/
+  `parent-pin:` write) truncates any body whose prose quotes a
+  `<!-- board:meta` marker. Filed as its own ticket; `board-body.sh` is
+  currently the only immune meta-writer.
 
 ## Outcomes & Retrospective
 
