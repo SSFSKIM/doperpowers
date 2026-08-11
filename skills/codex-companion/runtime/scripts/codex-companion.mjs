@@ -496,6 +496,14 @@ async function executeTaskRun(request) {
     model: request.model,
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
+    // A --write task runs Codex's Auto preset: escalations (network, paths
+    // outside the workspace) are judged by the server-side auto_review
+    // guardian instead of failing outright. The reviewer must ride the thread
+    // params — thread/resume restores the reviewer persisted at creation,
+    // which beats process-level config. Guardian calls only happen when an
+    // escalation is actually requested, so in-sandbox work costs nothing.
+    approvalPolicy: request.write ? "on-request" : undefined,
+    approvalsReviewer: request.write ? "auto_review" : undefined,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)

@@ -31,7 +31,11 @@ progress doesn't multiply what you read back.
 
 - Read-only by default. `--write` lets Codex edit the working tree — pass
   it only when edits are the point (a fix, an implementation), not for
-  review/diagnosis/research.
+  review/diagnosis/research. A `--write` task runs Codex's Auto preset:
+  actions that cross the sandbox (network, files outside the workspace,
+  escalated commands) are judged by Codex's built-in auto-review guardian
+  instead of failing outright. A denial comes back in the answer — Codex
+  is told to take a safer path or stop and ask.
 - `--model` and `--effort` left unset defer to the user's codex
   `config.toml`.
 - Long or structured prompts go in a file via `--prompt-file` instead of
