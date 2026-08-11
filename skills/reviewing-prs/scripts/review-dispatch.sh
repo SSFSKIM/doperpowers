@@ -169,6 +169,20 @@ if [ "$BOARD_BINDING" = api ]; then
     DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
   fi
+  # AND ONE RUNG BELOW THE CLONE, BEFORE THE `main` GUESS: an api-scale run
+  # promotes DEFAULT_BRANCH to the epic's BASE_REF, so a wrong guess reviews
+  # (and closes) an epic against a branch it does not merge into. A clone with
+  # no origin/HEAD — every `git clone --single-branch` and every worktree cut
+  # from one — has the answer on the remote, and ls-remote asks for it without
+  # gh. Best-effort: the `main` fallback below still catches a dead network.
+  # `|| true` is load-bearing under `set -e -o pipefail`: a clone with no origin
+  # at all (every fixture repo, and a legitimate local-only checkout) makes
+  # ls-remote exit 128, which would take the whole dispatcher down instead of
+  # falling through to the guess this rung is only trying to improve on.
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" ls-remote --symref origin HEAD 2>/dev/null \
+      | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -1 || true)"
+  fi
 else
   command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
   if [ -z "${BOARD_REPO:-}" ]; then

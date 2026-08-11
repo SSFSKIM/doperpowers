@@ -62,19 +62,34 @@ pull requests exactly as before.
 Your assignment is the ticket text as the claim delivered it, at
 {{TICKET_BODY_FILE}} — read it first; there is no other route to it.
 
-**If the `INTEGRATION_REF` binding below is EMPTY, stop here**: the claim
-carried no integration ref, and there is nothing to derive one from —
-park immediately with
+**If the `INTEGRATION_REF` binding below is EMPTY, this run is over before
+any fetch**: the claim carried no integration ref, and there is nothing to
+derive one from. Cross the BINDING BARRIER first — it is the protocol's
+first gate, and the dispatcher retires an unacknowledged worker and
+abandons the run — and then, instead of ORIENT, park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "scale review: the claim carried no integration ref"`
 and end your turn. (An empty ref must never reach the fetch: bare
 `git fetch origin` can SUCCEED by fetching configured refs, and the
-failure would surface one step late, at a checkout of `origin/`.)
+failure would surface one step late, at the checkout.)
 
 Your worktree starts on the repo's current head; positioning it is yours
-to do, before ORIENT: `git fetch origin {{INTEGRATION_REF}}` and
-`git checkout --detach origin/{{INTEGRATION_REF}}` — the epic's integration
-branch, where the composed result lives. A fetch that fails is a hard
-stop, never a fallback: park with
+to do, before ORIENT. Both refs this review spans must come down — the
+integration branch you review from, and `BASE_REF`, which the review
+engine ranges against as `origin/{{BASE_REF}}`:
+
+```
+git fetch origin {{BASE_REF}}
+git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
+```
+
+`FETCH_HEAD` — not `origin/{{INTEGRATION_REF}}` — is what the fetch just
+wrote: a single-branch clone's fetch refspec need not cover these
+branches, in which case no remote-tracking ref is created or updated and
+`origin/<ref>` is absent or stale. Keep the integration fetch immediately
+before the checkout, since `FETCH_HEAD` names the ref most recently
+fetched. Either fetch failing is a hard stop, never a fallback: a base
+that will not fetch is as un-reviewable as an integration ref that will
+not, so park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human`
 naming the ref that would not fetch. `BASE_REF` below is the repo's
 default branch — what this epic merges into — and the manifest snapshots
