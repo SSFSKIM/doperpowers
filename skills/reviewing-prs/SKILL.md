@@ -307,14 +307,18 @@ is live.
 ## TRIAGE
 
 ROUTE each finding to exactly one bin. The engine's native severity is
-your starting rank, not your verdict: evaluate each finding's real stakes
-and route on your own judgment — a critical/high defaults to WAVE, lower
-ranks default to LOG (momentum outranks polish), and a departure in
-either direction takes a stated reason in the trail. Deep verification
+your starting rank, not your verdict: evaluate each finding's real
+stakes and route on your own judgment. Every NEW finding defaults to
+WAVE regardless of severity — small findings ride the same wave as
+blockers; severity orders the wave, it does not pick the bin. Mid-loop
+LOG is a judgment departure only (a fix whose churn exceeds its worth)
+and takes a stated reason in the trail; LOG's ordinary intake is the
+review's exit (RE-REVIEW). Deep verification
 against the code stays the fixer's verify-then-fix job; you judge
 substance and route.
-- WAVE — a blocker by your routing, or a SPEC FINDING within this PR's
-  scope: put it on the wave board (FIX WAVES).
+- WAVE — the default for every NEW finding, blocker or not, including
+  any SPEC FINDING within this PR's scope: put it on the wave board
+  (FIX WAVES).
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
   than about half the original PR's size): register a ticket per the
   doperpowers:issue-tracker ticket contract — run its pre-registration
@@ -331,7 +335,8 @@ substance and route.
   NEVER wave it. On a ticketless PR, post a structured PR comment
   describing the scope fork instead — board writes are skipped, the
   cross-ticket exception included.
-- LOG — valid non-blocker: append a
+- LOG — valid non-blocker, at the review's exit (RE-REVIEW) or as a
+  stated-reason departure: append a
   structured comment to the standing tech-debt issue
   ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
   file:line, severity, why deferred. When TECH_DEBT_ISSUE is "none", write these into the
@@ -365,8 +370,14 @@ dispositions (line numbers shift after fixes). A match against a LOGGED
 finding or an accepted REFUTED disposition is already routed and needs
 nothing more. A re-flag matching a FIXED item is
 the opposite: the fix did not hold — that is a live blocker, never a
-dupe; re-wave it within the caps. The exit condition is no NEW blocker,
-not a clean report. At the cap with unresolved blockers there is no
+dupe; re-wave it within the caps. The exit condition is no NEW finding
+of ANY severity, not a clean report: a round whose findings all match
+already-routed items ends the review, and reaching the wave/round cap
+with no blocker left ends it too. At that exit — and only then — LOG
+whatever valid non-blockers remain unrouted; this exit plus
+stated-reason departures are the tech-debt sink's entire intake, so
+small findings get fixed in the loop instead of accumulating as debt.
+At the cap with unresolved blockers there is no
 confidence to grant. When those blockers cluster at one seam — each
 wave's fix spawning the next finding there — that is a decomposition
 defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to
@@ -456,7 +467,9 @@ artifact that cannot exist is never a finding.
 
 Which findings force a corrective child is your blocker routing,
 unchanged: TRIAGE still bins the round's findings, and a non-blocker
-still LOGs to the tech-debt issue rather than holding the epic open.
+still LOGs to the tech-debt issue rather than holding the epic open —
+the PR loop's wave-everything default is a merge-gate policy and does
+not apply to a scale run, which never merges.
 The ESCALATE ladder does not apply to a scale run: it
 never merges, so the two verdicts
 above are its only closing verdicts. A park is still a park — an impasse

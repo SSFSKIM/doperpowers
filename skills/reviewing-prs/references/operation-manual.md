@@ -99,7 +99,9 @@ let the worker merge its confident verdicts.
 
 ## Tech-debt sink
 
-Non-blocking findings — everything the worker routes LOG — go by DEFAULT
+Non-blocking findings the worker routes LOG — exit residue and
+stated-reason departures only; mid-loop non-blockers ride fix waves
+(SKILL.md TRIAGE) — go by DEFAULT
 to ONE standing GitHub issue per repo (label `tech-debt`)
 as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
