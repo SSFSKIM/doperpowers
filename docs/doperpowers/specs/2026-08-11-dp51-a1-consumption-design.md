@@ -202,9 +202,16 @@ them at dispatch:
   **explicit empty-binding check before the fetch**, not through fetch
   failure: bare `git fetch origin` with an empty ref can SUCCEED
   (configured refs), deferring the failure to a checkout of `origin/`
-  with no park note naming the real gap. The no-aggregate-range
-  fallback (per-child ranges from the closure package) remains the
-  worker-side degradation the Scale review section already defines.
+  with no park note naming the real gap. Under api-scale a BRANCHLESS
+  epic therefore PARKS — the gh path's no-aggregate-range fallback
+  (per-child ranges from the closure package, `SCALE_RANGE_NOTE`,
+  pre-fetched pull refs) has no api twin, and the empty-ref check
+  catches exactly the claim such an epic produces (an architect records
+  `--branch` only when the composition has an integration ref). The two
+  clauses this section previously held simultaneously — "empty branch
+  parks" and "the per-child fallback remains" — were contradictory;
+  park wins as the amended, safe instruction, and per-child scale
+  review on an API board is a **deferred capability** (§Deferred).
 - `SKILL.md`'s api-mode entry section: the "an event id, not a URL →
   NOT executable … park needs-human" paragraph is replaced with the
   scale-variant entry: `CLOSURE_PACKAGE` / `INTEGRATION_REF` bindings
@@ -266,6 +273,15 @@ the line with no extra work; the meta stamp reaches it through
   remaining honest gaps: `spawned_by`, PR linkage, URL, and timestamps
   are still not projected, so spawned-by edges don't render and nodes
   carry no links/ages.
+
+### Deferred
+
+- **Per-child scale review under api-scale** (Task 6 flow-back): a
+  branchless recomposition epic (integration branch deleted as children
+  merged) parks needs-human on an API board; gh mode reviews it via
+  closure-package per-child ranges. Needs: the dispatcher reading the
+  closure package at claim time (or the worker deriving ranges from it)
+  plus pull-ref fetching — build when a real API board hits the park.
 
 ### Out of scope (stays on dp#51)
 
