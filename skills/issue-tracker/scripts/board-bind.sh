@@ -41,6 +41,7 @@ import fcntl
 import glob
 import json
 import os
+import re
 import socket
 
 env = os.environ
@@ -75,6 +76,36 @@ def write_meta(path, meta):
         json.dump(meta, f, indent=2)
     os.chmod(tmp, mode)   # umask narrowing
     os.replace(tmp, path)
+
+
+def _cur_boot():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        out = os.popen("sysctl -n kern.boottime 2>/dev/null").read()
+        m = re.search(r"sec = (\d+)", out)
+        return m.group(1) if m else ""
+
+
+HOST = socket.gethostname()
+CUR_BOOT = _cur_boot()
+
+
+def alive_here(meta):
+    """working/blocked is only ACTIVE if the meta can name a process that
+    still exists: same host, same boot (the daemon liveness rule). A meta
+    from another boot is a daemon that died without finalizing — its ticket
+    may have crossed into a state no recovery pass owns (in-review), where
+    this check is the only thing standing between the successor and a
+    permanent refusal. Missing identity fields = assume alive (legacy metas
+    predate the stamp)."""
+    mh, mb = str(meta.get("host") or ""), str(meta.get("boot_id") or "")
+    if mh and mh != HOST:
+        return False
+    if mb and CUR_BOOT and mb != CUR_BOOT:
+        return False
+    return True
 
 
 lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
@@ -122,9 +153,13 @@ try:
     # reads a snapshot state that is not fetchable here at all.
     if not API:
         for _, owner in owners:
-            if owner.get("status") in ("working", "blocked"):
+            if owner.get("status") in ("working", "blocked") and alive_here(owner):
                 B.die("#%s is owned by active daemon %s" %
                       (tid, owner.get("name") or owner.get("uuid") or "unknown"))
+        # The park rule deliberately does NOT apply alive_here: a parked
+        # ticket's owner meta is a wake target, and what it protects is
+        # RESUMABILITY (the transcript survives a reboot; board-answer
+        # respawns from it), not process liveness.
         if ticket.get("state") == "needs-human" and owners:
             owner = owners[0][1]
             B.die("#%s is parked for daemon %s — answer/resume it before rebinding" %

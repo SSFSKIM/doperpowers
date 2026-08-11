@@ -357,6 +357,41 @@ J
 assert_fails run board-bind.sh park-contender 2
 assert_contains "$(cat "$DAEMON_HOME/parked-two.json")" '"ticket":"2"' "parked needs-human owner keeps its binding"
 assert_not_contains "$(cat "$DAEMON_HOME/park-contender.json")" '"ticket"' "parked ticket rejects a new owner"
+# A working owner from a previous boot is a daemon that died without
+# finalizing — it cannot be a running process, so it must not refuse the
+# successor (observed: dead implementer metas on in-review tickets blocked
+# every reviewer bind, and no recovery pass owns that state).
+python3 - <<PY
+import json
+p='$DAEMON_HOME/aaaa-bbbb.json'; m=json.load(open(p))
+m.update(status='working', host='$(hostname)', boot_id='dead-boot-0000')
+json.dump(m,open(p,'w'))
+PY
+out="$(run board-bind.sh cccc 9)"
+assert_contains "$out" "bound #9 ← cccc-dddd" "dead-boot working owner yields to the successor"
+assert_not_contains "$(cat "$DAEMON_HOME/aaaa-bbbb.json")" '"ticket"' "dead-boot owner is stripped on takeover"
+# restore: revive aaaa-bbbb and hand #9 back so downstream fixtures see it
+python3 - <<PY
+import json
+p='$DAEMON_HOME/aaaa-bbbb.json'; m=json.load(open(p))
+m.pop('boot_id', None); m.pop('host', None)
+json.dump(m,open(p,'w'))
+p='$DAEMON_HOME/cccc-dddd.json'; m=json.load(open(p))
+m['status']='idle'
+json.dump(m,open(p,'w'))
+PY
+run board-bind.sh aaaa 9 >/dev/null
+# The park rule is about resumability, not process liveness: a parked
+# owner's transcript survives the reboot, so a dead-boot parked owner
+# still refuses a contender.
+python3 - <<PY
+import json
+p='$DAEMON_HOME/parked-two.json'; m=json.load(open(p))
+m.update(host='$(hostname)', boot_id='dead-boot-0000')
+json.dump(m,open(p,'w'))
+PY
+assert_fails run board-bind.sh park-contender 2
+assert_contains "$(cat "$DAEMON_HOME/parked-two.json")" '"ticket"' "dead-boot parked owner keeps its wake binding"
 
 # The registry lock serializes two simultaneous claims: exactly one wins and
 # exactly one meta owns the ticket afterward.
