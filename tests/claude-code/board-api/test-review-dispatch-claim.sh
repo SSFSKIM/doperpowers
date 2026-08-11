@@ -529,4 +529,93 @@ t  "so is the repo-facts snapshot"              "REPO-FACTS-FROM-ORIGIN"   promp
 nt "neither degrades to the empty fallback"     "no repo risk-surface manifest" prompt5
 nt "the fetch is git, never gh"                 "GH-CALLED" cat "$MARKER"
 
+# =========================================================================
+# Scenario 6 — THE SCALE VARIANT. A claim whose `pr` is not URL-shaped is an
+# epic's closure-package event id, and its `branch` the integration ref: the
+# aggregate review of a recomposition epic, which has no PR at all. The
+# dispatcher is the only party that sees the claim response, so it — not the
+# worker — picks the render mode, and the two bindings ride the prompt because
+# no board read hands them over.
+# =========================================================================
+PORT6="$(free_port)"
+FIX6="$(mktemp)"; : > "$FIX6.log"
+cat > "$FIX6" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":61,"ticketId":88,"fence":2,"bearer":"scale-bearer",
+          "body":"epic assignment","pr":"3141","branch":"epic/e9-integration",
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/61/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX6" "$PORT6" & MOCK6=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 2>/dev/null' EXIT
+wait_for_port "$PORT6" || { echo "FAIL mock server never listened on $PORT6"; exit 1; }
+
+r6="$(apirepo "$PORT6")"
+DH6="$(mktemp -d)"
+OUT6="$(mktemp)"
+( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH6" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r6" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT6" 2>&1 || true
+
+SCALE_PROMPT="$DH6/prompt-88-api-qagent.md"
+t "the scale dispatch reports the handoff" "claimed #88 run=61" cat "$OUT6"
+t "the bind reached the wire" '"path": "/runs/61/bind"' cat "$FIX6.log"
+t "an event-id pr renders the api-scale block" \
+  "SCALE REVIEWER of recomposition epic #88" cat "$SCALE_PROMPT"
+t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "$SCALE_PROMPT"
+t "the integration ref binding rides the prompt" \
+  '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
+t "the assignment file still rides an api-scale prompt" '`TICKET_BODY_FILE`: ' cat "$SCALE_PROMPT"
+t "the scale prompt orders the integration checkout" \
+  "git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
+# A recomposition epic merges into the default branch, and that IS knowable
+# here — unlike a PR's base, which the api PR variant leaves to the worker.
+t "the scale base is the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
+nt "the scale prompt carries no PR-resolution order" \
+  "UNRESOLVED-resolve-from-the-PR" cat "$SCALE_PROMPT"
+nt "the scale prompt never went out as mode api" \
+  "board is the Arkho board API, not GitHub issues: every board read" cat "$SCALE_PROMPT"
+nt "nothing was left unrendered on the scale prompt" "{{" cat "$SCALE_PROMPT"
+
+# =========================================================================
+# Scenario 7 — the same split from the other side: a URL-shaped `pr` is a
+# leaf's pull request (the entry-edge guard makes leaf `pr` values URLs), so
+# the unchanged api PR variant renders.
+# =========================================================================
+PORT7="$(free_port)"
+FIX7="$(mktemp)"; : > "$FIX7.log"
+cat > "$FIX7" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":63,"ticketId":92,"fence":1,"bearer":"leaf-bearer",
+          "body":"leaf assignment","pr":"https://github.com/o/r/pull/9",
+          "branch":"feat/x","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/63/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX7" "$PORT7" & MOCK7=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 2>/dev/null' EXIT
+wait_for_port "$PORT7" || { echo "FAIL mock server never listened on $PORT7"; exit 1; }
+
+r7="$(apirepo "$PORT7")"
+DH7="$(mktemp -d)"
+OUT7="$(mktemp)"
+( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
+
+LEAF_PROMPT="$DH7/prompt-92-api-qagent.md"
+t "the URL dispatch reports its handoff" "claimed #92" cat "$OUT7"
+t "a URL pr renders the api block" "resolving what that PR MERGES INTO" cat "$LEAF_PROMPT"
+t "the api mode is the one rendered" '`REVIEW_MODE`: api' cat "$LEAF_PROMPT"
+nt "no scale framing reaches a leaf reviewer" "SCALE REVIEWER" cat "$LEAF_PROMPT"
+
 finish

@@ -841,7 +841,7 @@ def readcap(path):
 t = open(sys.argv[1]).read()
 subs = {k[2:]: v for k, v in os.environ.items() if k.startswith("P_")}
 mode = subs.get("REVIEW_MODE", "pr")
-t = re.sub(r"<!-- mode:(\w+) -->\n(.*?)<!-- /mode:\1 -->\n",
+t = re.sub(r"<!-- mode:([\w-]+) -->\n(.*?)<!-- /mode:\1 -->\n",
            lambda m: m.group(2) if m.group(1) == mode else "", t, flags=re.S)
 subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
@@ -1346,6 +1346,7 @@ _claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
   # One process for the whole exchange: claim, write the assignment body, hand
   # back shell-quoted facts. The run bearer crosses exactly one boundary.
   local C_CLAIMED=0 C_RUN_ID="" C_TICKET="" C_FENCE="" C_BEARER="" C_PARENT_PIN=""
+  local C_PR="" C_BRANCH=""
   exports="$(T_LANE="$lane" T_NONCE="$nonce" T_CAP="$cap" T_BODY="$body_file" _api_py - <<'PY'
 import os, shlex
 import _board_api as A
@@ -1375,6 +1376,11 @@ for var, field in fields:
 # run. It is the run-specific cursor the recomposing Architect needs, and no
 # read a worker may make hands it over — so it travels with the dispatch or
 # not at all. Flattened to one line; there is nothing to parse downstream.
+# The working bindings of whichever variant this claim is: for a leaf, the PR
+# URL and its working branch; for an epic, the closure-package event id and the
+# integration ref. The dispatcher is the only party that sees them.
+q("C_PR", out.get("pr") or "")
+q("C_BRANCH", out.get("branch") or "")
 pin = out.get("parentPin") or {}
 q("C_PARENT_PIN",
   "#%s @ event %s" % (pin.get("parent_id"), pin.get("parent_event_cursor"))
@@ -1453,7 +1459,7 @@ PY
   # _claim_journal.sh, and the mark at the end of _spawn_reviewer.
   _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name" "$control_dir"
 
-  # BASE_REF IS NOT KNOWABLE HERE, and saying `$DEFAULT_BRANCH` was not a
+  # A PR's BASE_REF IS NOT KNOWABLE HERE, and saying `$DEFAULT_BRANCH` was not a
   # conservative default — it was a wrong answer. A claim carries no PR: the
   # ticket's `pr` value is read by the WORKER, and a ticket whose PR targets an
   # integration branch (a stacked PR) then had its engine run
@@ -1466,8 +1472,25 @@ PY
   # PR number and checks out its head) resolve base and head before ORIENT. The
   # sentinel is deliberately not a ref: a worker that skipped the step gets
   # `fatal: bad revision` from git, not a quietly wrong review range.
-  prompt="$(P_REVIEW_MODE=api P_WORKER_NAME="$name" \
-    P_REPO="$BOARD_REPO" P_BASE_REF=UNRESOLVED-resolve-from-the-PR \
+  #
+  # THE VARIANT IS THE DISPATCHER'S CALL — it alone sees the claim response.
+  # Shape, not Number(): the entry-edge guard (arkho#7) makes a leaf's `pr`
+  # URL-shaped, so a URL is the PR variant and anything else non-empty is an
+  # epic's closure-package event id — the scale variant, whose base IS the
+  # default branch (what a recomposition epic merges into) and whose bindings
+  # no board read hands over. An epic claim with no integration branch parks
+  # via the worker (the api-scale block's empty-ref check), not here: the
+  # dispatcher refusing to spawn would strand the ticket with no park note
+  # naming the gap.
+  local mode=api
+  case "$C_PR" in
+    http://*|https://*) mode=api ;;
+    ?*) mode=api-scale ;;
+  esac
+  prompt="$(P_REVIEW_MODE="$mode" P_WORKER_NAME="$name" \
+    P_CLOSURE_PACKAGE="$C_PR" P_INTEGRATION_REF="$C_BRANCH" \
+    P_REPO="$BOARD_REPO" \
+    P_BASE_REF="$([ "$mode" = api-scale ] && echo "$DEFAULT_BRANCH" || echo UNRESOLVED-resolve-from-the-PR)" \
     P_ISSUE_NUMBER="$C_TICKET" P_ISSUE_LIST="$C_TICKET" \
     P_TICKET_BODY_FILE="$body_file" \
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
