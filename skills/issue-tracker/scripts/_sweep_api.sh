@@ -1353,6 +1353,11 @@ PY
 # alike), while _persist_successor runs only when a session locator exists and
 # board-bind writes no parent_pin at all.
 _stamp_lane() {  # <uuid> <lane> <role> [parent-pin]
+  # No lane, nothing stamped — and the pin shares the lane's fate: an unknown
+  # predecessor lane drops `parent_pin` from the meta too. Deliberate. The
+  # prompt is the pin's actual delivery channel and carries it unconditionally;
+  # nothing reads `parent_pin` back out of a meta yet; and in this same state
+  # the lane itself is already lost, so the meta is incomplete either way.
   [ -n "${2:-}" ] || return 0
   T_PATH="$DAEMON_HOME/$1.json" T_LANE="$2" T_ROLE="$3" T_PIN="${4:-}" T_DHOME="$DAEMON_HOME" \
   python3 - <<'PY' || echo "resume: lane/role stamp on $1 failed (non-fatal)" >&2

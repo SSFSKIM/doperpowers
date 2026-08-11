@@ -86,7 +86,16 @@ global.fetch = () => Promise.resolve({ ok: false });
 // assertions exercise the exact shipped view logic — same convention as the
 // documented eval in test-board-scripts.sh's state() helper.
 const tpl = fs.readFileSync(path.join(__dirname, "../../skills/issue-tracker/scripts/board-map.template.html"), "utf8");
-eval(tpl.match(/<script>([\s\S]*?)<\/script>/)[1]);
+// Spliced INSIDE the template's IIFE (before its closing `})();`): the tail
+// publishes the entry points the page's own hot reload calls, so a second
+// snapshot can be bound in-process. Nothing else reaches that scope —
+// rebindFrom() itself is unusable here, it needs DOMParser.
+const tplScript = tpl.match(/<script>([\s\S]*?)<\/script>/)[1];
+const closeAt = tplScript.lastIndexOf("})();");
+if (closeAt < 0) { console.log("FAIL could not find the template IIFE close"); process.exit(1); }
+eval(tplScript.slice(0, closeAt) +
+  "\n  global.__page = { bindData: bindData, buildChips: buildChips, updateHeader: updateHeader, renderAll: renderAll };\n" +
+  tplScript.slice(closeAt));
 
 function columns() {
   const out = {};
@@ -157,6 +166,44 @@ ids.chips.children.find((b) => b.textContent === "ELIGIBLE only").onclick();
 cols = columns();
 expect("ELIGIBLE-only keeps the eligible candidate", (cols["close-candidate"] || []).includes("#1"));
 expect("ELIGIBLE-only drops the non-eligible active candidate", !(cols["in-progress"] || []).includes("#3"));
+// The gh snapshot above is also the positive half of the next pair: it carries
+// `eligible` on every node, so the count and the filter are surfaces it earns.
+expect("a snapshot that knows eligibility offers the ELIGIBLE-only filter",
+  !!ids.chips.children.find((b) => b.textContent === "ELIGIBLE only"));
+expect("and reports the eligible tally in the header",
+  ids.hcounts.textContent.indexOf(" eligible") >= 0);
+
+// ---- api-shaped snapshot: eligibility is ABSENT, not false ----------------
+// In API mode the server owns the claim predicate, so board-map omits the key
+// rather than shipping a false it cannot back. Both surfaces that report on it
+// must disappear: a "0 eligible" tally would understate a claimable board, and
+// an ELIGIBLE-only filter would have every card to hide.
+ids.chips.children.find((b) => b.textContent === "ELIGIBLE only").onclick();  // clear the filter first
+const apiPayload = {
+  meta: { count: 2, updated: "" },
+  nodes: [
+    { id: "#1", state: "ready-for-implementer", cls: "s_lane", label: "ready-for-implementer",
+      title: "server picks", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 0, y: 0 },
+    { id: "#2", state: "in-progress", cls: "s_prog", label: "in-progress",
+      title: "running", close_candidate: false, blocked_by: [], relates_to: [], prs: [], x: 240, y: 0 },
+  ],
+  edges: [], epics: [],
+};
+global.__page.bindData(apiPayload);
+global.__page.buildChips(); global.__page.updateHeader(); global.__page.renderAll();
+expect("no ELIGIBLE-only chip when no node claims eligibility",
+  !ids.chips.children.find((b) => b.textContent === "ELIGIBLE only"));
+expect("no eligible tally in the header either",
+  ids.hcounts.textContent.indexOf("eligible") < 0);
+expect("the rest of the header still reports",
+  ids.hcounts.textContent.indexOf("1 running") === 0 &&
+  ids.hcounts.textContent.indexOf("needs-human") >= 0);
+expect("state chips still build for an api snapshot",
+  !!ids.chips.children.find((b) => b.textContent === "ready-for-implementer"));
+cols = columns();
+expect("api cards still render — the board is not filtered away",
+  (cols["ready-for-implementer"] || []).includes("#1") &&
+  (cols["in-progress"] || []).includes("#2"));
 
 if (failures) { console.log(failures + " template test(s) FAILED"); process.exit(1); }
 console.log("template kanban tests: all pass");

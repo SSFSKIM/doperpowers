@@ -99,6 +99,11 @@ env = os.environ
 API = env.get("BOARD_BINDING") == "api"
 
 
+# Set by api_snapshot; gh mode never asks the question (B.snapshot always
+# carries the topology).
+TOPOLOGY_PROJECTED = True
+
+
 def api_snapshot():
     """GET /tickets, normalized to the node shape the renderer below consumes.
 
@@ -117,8 +122,18 @@ def api_snapshot():
     the server's answer here, as board-list.sh already says.
     """
     import _board_api as A
+    global TOPOLOGY_PROJECTED
     out = {}
-    for row in A.tickets(principal="automation"):
+    rows = A.tickets(principal="automation")
+    # WHOLE-RESPONSE absence, decided once: `row.get("blocked_by") or []` reads
+    # a server that projects no topology at all (any pre-arkho#7 deployment)
+    # exactly like a board with no dependencies, and the map then renders a
+    # confident, edge-free graph. Per-ROW absence is not the same question and
+    # stays `[]` — a row missing the key in a response where others carry it is
+    # not something a server produces.
+    TOPOLOGY_PROJECTED = (not rows) or any(
+        "blocked_by" in row or "relates" in row for row in rows)
+    for row in rows:
         out[str(row["id"])] = {
             "title": row.get("title") or "",
             "state": row.get("state") or "",
@@ -181,7 +196,14 @@ stamp = "updated %s · " % updated if updated else "· "
 md = ["# Issue Board", "",
       "_Board %s%d tickets · full interactive graph in "
       "`BOARD.html` (open in a browser)_" % (stamp, len(tickets)), ""]
-if API:
+if API and not TOPOLOGY_PROJECTED:
+    md += ["_edges: this server projects no dependency or relates columns "
+           "(pre-arkho#7), so NO edge is drawn — an edge-free graph here means "
+           "unknown topology, not an unblocked board. eligibility: "
+           "server-owned (API mode) — no cue is derived here and no card "
+           "carries one. PR merge state, issue links and ages are absent "
+           "too._", ""]
+elif API:
     md += ["_edges: blocked-by and relates draw; spawned-by is not projected, "
            "so that lineage class is missing from the graph. eligibility: "
            "server-owned (API mode) — the server computes the claim pick, so "
@@ -505,8 +527,8 @@ def did(t): return "#" + t
 nodes = []
 for t in order:
     n = tickets[t]; x, y = pos[t]
-    nodes.append({
-        "id": did(t), "state": n["state"], "eligible": elig(t),
+    node = {
+        "id": did(t), "state": n["state"],
         "cls": cls(t, n), "label": state_label(t, n),
         "title": " ".join(str(n["title"]).split()),
         "category": n.get("category"), "note": n.get("note"),
@@ -519,7 +541,24 @@ for t in order:
         "md": n.get("url"),
         "created": n.get("created"), "updated": n.get("updated"),
         "x": x, "y": y,
-    })
+    }
+    # THE KEY IS OMITTED, NOT set False, in api mode. `eligible: false` is a
+    # claim about the ticket; here the cue is merely unknown to this client
+    # (see elig), and serializing the unknown as a negative made the page say
+    # "0 eligible" and gave its ELIGIBLE-only filter every card to hide. The
+    # template gates that count and that chip on the key existing on any node,
+    # so omission is what turns the surface off. gh nodes carry it as before.
+    if not API:
+        node["eligible"] = elig(t)
+    nodes.append(node)
+
+# A blocker is satisfied when it is TERMINAL, and in api mode that is
+# done|wontfix — the server's own claim predicate — not done alone. Drawing a
+# wontfix blocker as a live edge would contradict the card it points at, which
+# the server may well be handing out to a claimer. gh mode keeps done-only on
+# purpose: there the client owns the predicate and a wontfix blocker renders
+# live so a stuck chain stays visible.
+SATISFIED = ("done", "wontfix") if API else ("done",)
 
 edges = []
 seen_rel = set()
@@ -528,7 +567,7 @@ for t in order:
     for b in n.get("blocked_by", []):
         if b in tickets:
             edges.append({"from": did(b), "to": did(t),
-                          "kind": "block-done" if tickets[b]["state"] == "done" else "block-active"})
+                          "kind": "block-done" if tickets[b]["state"] in SATISFIED else "block-active"})
     sb = n.get("spawned_by")
     if sb in tickets:
         edges.append({"from": did(sb), "to": did(t), "kind": "spawned"})

@@ -1089,6 +1089,14 @@ assert_contains "$(run board-list.sh)" "ELIGIBLE" "board-list still tags eligibi
 assert_contains "$(run board-list.sh ready-for-architect)" "ready-for-architect" "state filter works for the architect queue"
 out="$(run board-map.sh)"
 assert_contains "$out" "ready-for-architect · ELIGIBLE" "board-map table shows lane + eligibility"
+# The serialized half of the same claim: gh mode OWNS the eligibility predicate,
+# so its nodes still carry the flag — that key is what keeps the page's eligible
+# tally and its ELIGIBLE-only filter on screen. (API mode omits it, because
+# there the server owns the predicate and a client-derived false would be a
+# claim, not an unknown.)
+run board-map.sh --write >/dev/null
+assert_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" '"eligible": true' \
+  "gh nodes still serialize the eligibility flag the page filters on"
 
 # ---- plan meta (E1 transitions 2 and 3) ---------------------------------------
 echo "plan meta:"

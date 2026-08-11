@@ -216,6 +216,28 @@ t "a stdin body edit exits zero" "rc=0" echo "rc=$STDIN_RC"
 t "a body read from stdin reaches the wire" '{"body": "piped statement"}' \
   last_body /tickets/5/body
 
+# The stdin spelling has to mktemp, and what it spools there is the ticket's
+# FULL statement of work — left behind, it accumulates in the temp directory
+# for anyone who shares it. The probe is a content search, not a file count:
+# TMPDIR is not honored by every mktemp (BSD's ignores it), so the only
+# portable question is whether THIS run's text is still on disk anywhere the
+# spool could have landed. A unique sentinel keeps a parallel run out of it.
+# It deliberately runs on the REFUSAL path — this call lands past the
+# fixture's four 200s — since a hard exit must clean up too.
+LEAK_SENTINEL="spool-leak-probe-$$-$RANDOM"
+LEAK_TMPD="$(dirname "$(mktemp -u)")"
+LEAK_BEFORE="$(mktemp)"; find "$LEAK_TMPD" -maxdepth 1 -type f > "$LEAK_BEFORE" 2>/dev/null || true
+( cd "$r" && printf 'statement %s\n' "$LEAK_SENTINEL" | \
+  BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-body.sh" 5 --body-file - ) >/dev/null 2>&1 || true
+leak_probe() {
+  local f n=0
+  while IFS= read -r f; do
+    grep -qF "$LEAK_SENTINEL" "$f" 2>/dev/null && n=$((n + 1))
+  done < <(find "$LEAK_TMPD" -maxdepth 1 -type f 2>/dev/null | grep -vxF -f "$LEAK_BEFORE" || true)
+  printf 'leftover-spools=%s\n' "$n"
+}
+t "the stdin spool file does not outlive the run" "leftover-spools=0" leak_probe
+
 # The body IS the assignment a claim hands the worker, so the server refuses an
 # edit while a run holds the ticket. The client relays that, unrewritten.
 OWNED_OUT="$(mktemp)"; OWNED_RC=0

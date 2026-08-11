@@ -26,6 +26,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 tid="$1" body_file="$3"
 if [ "$body_file" = - ]; then
   body_file="$(mktemp)"
+  # Ours to allocate, ours to remove: without this the full body text of every
+  # stdin edit is left readable in TMPDIR. The trap is armed only on this
+  # branch — a caller-named file is not ours to delete.
+  trap 'rm -f "$body_file"' EXIT
   cat > "$body_file"
 else
   [ -f "$body_file" ] || die "no such file: $body_file"
