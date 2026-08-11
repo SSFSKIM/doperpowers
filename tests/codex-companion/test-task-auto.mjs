@@ -1,19 +1,20 @@
-// The task verb's --auto lane: Codex's Auto preset (workspace-write sandbox +
-// on-request approvals reviewed by the built-in auto_review guardian) instead
-// of the headless default (approvalPolicy "never"). The reviewer rides the
-// THREAD params — a `-c approvals_reviewer=...` process override is not
-// enough, because thread/resume restores the reviewer persisted at thread
-// creation, which beats process-level config (observed live: a plain-created
-// thread resumed with --auto routed its approval RPC to this client, whose
+// The task verb's writer lane IS Codex's Auto preset: --write selects the
+// workspace-write sandbox AND guardian-reviewed escalation (approvalPolicy
+// "on-request", approvalsReviewer "auto_review"), while read-only tasks keep
+// the headless "never" policy. The reviewer rides the THREAD params — a
+// `-c approvals_reviewer=...` process override is not enough, because
+// thread/resume restores the reviewer persisted at thread creation, which
+// beats process-level config (observed live: a plain-created thread resumed
+// into the auto lane routed its approval RPC to this client, whose
 // handleServerRequest rejects all server requests). Three things must hold:
-//   --auto          → thread/start carries approvalPolicy "on-request",
-//                     approvalsReviewer "auto_review", AND sandbox
-//                     "workspace-write" (auto implies write).
-//   --auto resume   → thread/resume carries the same three — including on a
-//                     thread a plain task created.
-//   --write alone   → byte-identical to today: approvalPolicy "never", no
-//                     reviewer, plain ["app-server"] argv. --auto must not
-//                     leak into the default lane.
+//   --write         → thread/start carries approvalPolicy "on-request",
+//                     approvalsReviewer "auto_review", sandbox
+//                     "workspace-write".
+//   --write resume  → thread/resume carries the same three — including on a
+//                     thread a read-only task created.
+//   no flag         → read-only, approvalPolicy "never", no reviewer, plain
+//                     ["app-server"] argv. The auto preset must not leak
+//                     into the read-only lane.
 // Everything is asserted against the mock app-server's own records
 // (threads.jsonl params, spawn-<pid>.json argv), not the CLI's rendering.
 import assert from "node:assert/strict";
@@ -35,10 +36,9 @@ fs.writeFileSync(
   path.join(mockDir, "scenario.json"),
   JSON.stringify({
     turns: [
-      { finalMessage: "plain answer" },
-      { finalMessage: "auto follow-up answer" },
-      { finalMessage: "auto fresh answer" },
-      { finalMessage: "plain write answer" }
+      { finalMessage: "read-only answer" },
+      { finalMessage: "write follow-up answer" },
+      { finalMessage: "write fresh answer" }
     ]
   })
 );
@@ -73,49 +73,40 @@ const spawnArgv = (pid) => JSON.parse(fs.readFileSync(path.join(mockDir, `spawn-
 // The mock mints thread ids as t-<pid>-<seq>.
 const threadIdOf = (startRecord) => `t-${startRecord.pid}-1`;
 
-// --- plain task first: the thread --auto must later upgrade -----------------
-const plainRun = run("node", [SCRIPT, "task", "--", "start a plain thread"], { cwd: repo, env });
+// --- read-only task first: the thread --write must later upgrade ------------
+const plainRun = run("node", [SCRIPT, "task", "--", "start a read-only thread"], { cwd: repo, env });
 assert.equal(plainRun.status, 0, plainRun.stderr);
 
 const plainStart = threadRecords().at(-1);
-assert.equal(plainStart.method, "thread/start", "a plain task starts a thread");
-assert.equal(plainStart.params.approvalPolicy, "never", "a plain task keeps the headless default policy");
+assert.equal(plainStart.method, "thread/start", "a read-only task starts a thread");
+assert.equal(plainStart.params.sandbox, "read-only", "a task without --write stays read-only");
+assert.equal(plainStart.params.approvalPolicy, "never", "…keeps the headless default policy");
 assert.equal(plainStart.params.approvalsReviewer, null, "…and names no reviewer");
+assert.deepEqual(spawnArgv(plainStart.pid), ["app-server"], "the task lanes spawn with an untouched argv");
 
-// --- --auto --resume-last of that PLAIN thread ------------------------------
+// --- --write --resume-last of that read-only thread -------------------------
 // The case the config-override design got wrong: the resumed thread restores
 // its persisted reviewer unless the resume params override it.
-const resumeRun = run("node", [SCRIPT, "task", "--auto", "--resume-last", "--", "upgrade to auto"], { cwd: repo, env });
+const resumeRun = run("node", [SCRIPT, "task", "--write", "--resume-last", "--", "now apply the fix"], { cwd: repo, env });
 assert.equal(resumeRun.status, 0, resumeRun.stderr);
 
-const autoResume = threadRecords().at(-1);
-assert.equal(autoResume.method, "thread/resume", "--resume-last resumes rather than starting fresh");
-assert.equal(autoResume.params.threadId, threadIdOf(plainStart), "…the thread the plain task created");
-assert.equal(autoResume.params.approvalPolicy, "on-request", "--auto re-asserts on-request approvals on resume");
-assert.equal(autoResume.params.approvalsReviewer, "auto_review", "--auto overrides the thread's persisted reviewer");
-assert.equal(autoResume.params.sandbox, "workspace-write", "--auto implies the workspace-write sandbox");
+const writeResume = threadRecords().at(-1);
+assert.equal(writeResume.method, "thread/resume", "--resume-last resumes rather than starting fresh");
+assert.equal(writeResume.params.threadId, threadIdOf(plainStart), "…the thread the read-only task created");
+assert.equal(writeResume.params.approvalPolicy, "on-request", "--write asserts on-request approvals on resume");
+assert.equal(writeResume.params.approvalsReviewer, "auto_review", "--write overrides the thread's persisted reviewer");
+assert.equal(writeResume.params.sandbox, "workspace-write", "--write selects the workspace-write sandbox");
 
-// --- --auto --fresh --------------------------------------------------------
-const autoRun = run("node", [SCRIPT, "task", "--auto", "--fresh", "--", "fresh auto thread"], { cwd: repo, env });
-assert.equal(autoRun.status, 0, autoRun.stderr);
-assert.match(autoRun.stdout, /auto fresh answer/, "the auto lane still returns the turn's final message");
-
-const autoStart = threadRecords().at(-1);
-assert.equal(autoStart.method, "thread/start", "--fresh forces a new thread");
-assert.equal(autoStart.params.approvalPolicy, "on-request", "--auto asks for on-request approvals");
-assert.equal(autoStart.params.approvalsReviewer, "auto_review", "--auto routes approvals to the guardian reviewer");
-assert.equal(autoStart.params.sandbox, "workspace-write", "--auto implies the workspace-write sandbox");
-
-// --- --write alone: unchanged ----------------------------------------------
-const writeRun = run("node", [SCRIPT, "task", "--write", "--fresh", "--", "plain write lane"], { cwd: repo, env });
+// --- --write --fresh --------------------------------------------------------
+const writeRun = run("node", [SCRIPT, "task", "--write", "--fresh", "--", "fresh write thread"], { cwd: repo, env });
 assert.equal(writeRun.status, 0, writeRun.stderr);
+assert.match(writeRun.stdout, /write fresh answer/, "the write lane still returns the turn's final message");
 
 const writeStart = threadRecords().at(-1);
 assert.equal(writeStart.method, "thread/start", "--fresh forces a new thread");
-assert.equal(writeStart.params.approvalPolicy, "never", "without --auto the headless default policy is untouched");
-assert.equal(writeStart.params.approvalsReviewer, null, "without --auto no reviewer is named");
-assert.equal(writeStart.params.sandbox, "workspace-write", "--write still selects the workspace-write sandbox");
-assert.deepEqual(spawnArgv(writeStart.pid), ["app-server"], "the task lanes spawn with an untouched argv");
+assert.equal(writeStart.params.approvalPolicy, "on-request", "--write asks for on-request approvals");
+assert.equal(writeStart.params.approvalsReviewer, "auto_review", "--write routes approvals to the guardian reviewer");
+assert.equal(writeStart.params.sandbox, "workspace-write", "--write selects the workspace-write sandbox");
 
 fs.rmSync(scratch, { recursive: true, force: true });
 console.log("test-task-auto: ok");

@@ -56,8 +56,8 @@ Verbs, and where each is specified:
   trailing text is a lens, parallel lenses for big diffs → references/reviews.md
 - `task` — any prompt to a resumable Codex thread; one-shot delegation
   or a standing multi-turn partner (critique debates, steered execution);
-  read-only unless `--write` (or `--auto`, which adds guardian-reviewed
-  escalation) → references/amigo.md
+  read-only unless `--write` (which includes guardian-reviewed escalation)
+  → references/amigo.md
 - `workflow` — run a JS orchestration script fanning out Codex workers
   (agents + native reviews) as ONE process; read-only, resumable
   → references/workflows.md
