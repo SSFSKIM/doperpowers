@@ -32,11 +32,12 @@
 #
 # API mode renders the same two files from a thinner snapshot. Blocked-by and
 # relates edges draw there; spawned lineage does not (the projection carries no
-# spawned_by), and nodes carry no PR links, issue links or ages. The ELIGIBLE
-# cue is OFF: the server owns the claim predicate, and this client's version of
-# it disagrees, so no card is badged and none is called waiting. BOARD.md says
-# all of that in a line above the table rather than letting an absence pass for
-# a fact about the board.
+# spawned_by). A node's recorded pr_url renders, but not the GitHub-linked PR
+# list and its merge state — so no CLOSE? candidate signal — nor the issue URL
+# or ages. The ELIGIBLE cue is OFF: the server owns the claim predicate, and
+# this client's version of it disagrees, so no card is badged and none is
+# called waiting. BOARD.md says all of that in a line above the table rather
+# than letting an absence pass for a fact about the board.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -101,10 +102,12 @@ API = env.get("BOARD_BINDING") == "api"
 def api_snapshot():
     """GET /tickets, normalized to the node shape the renderer below consumes.
 
-    The projection now carries blocked_by / relates / branch (arkho#7), so
-    dependency and relates edges render. What it still does not carry:
-    spawned_by (those edges don't render), PR linkage, issue URL, and
-    timestamps (nodes carry no links or ages). Those fields normalize to
+    The projection now carries blocked_by / relates / branch / pr_url
+    (arkho#7), so dependency and relates edges render and a recorded PR link
+    shows. What it still does not carry: spawned_by (those edges don't
+    render), the GitHub-linked `prs` list with each PR's merge state (which
+    is what close_candidate is derived from, so that signal is always False
+    here), the issue URL, and timestamps (no ages). Those fields normalize to
     empty rather than absent, so every derivation downstream (the layering,
     the epic boxes) runs unchanged on either source. The ELIGIBLE cue stays
     OFF for api nodes: B.eligible's blocker rule (every blocker done)
@@ -182,8 +185,10 @@ if API:
     md += ["_edges: blocked-by and relates draw; spawned-by is not projected, "
            "so that lineage class is missing from the graph. eligibility: "
            "server-owned (API mode) — the server computes the claim pick, so "
-           "no cue is derived here and no card carries one. Nodes also carry "
-           "no PR links, issue links or ages (not projected)._", ""]
+           "no cue is derived here and no card carries one. A recorded PR link "
+           "renders, but the GitHub-linked PR list and its merge state are not "
+           "projected, so no ticket is marked CLOSE? here; issue links and "
+           "ages are absent too._", ""]
 md += ["| ticket | priority | state | title | PR |", "|---|---|---|---|---|"]
 for tid in order:
     n = tickets[tid]
@@ -216,6 +221,14 @@ def cls(tid, n):
     if n["state"] == "in-design":
         return "s_design"
     if n["state"] in B.DISPATCHABLE:
+        # With the cue off (api mode), "not eligible" is not a fact we know —
+        # falling through to s_wait would badge every dispatchable ticket
+        # "waiting", the exact misread the cue is off to avoid. s_lane is in
+        # neither CLASS nor BADGE nor the stylesheet, so the template degrades
+        # on its own: the badge falls back to the state name, the card to the
+        # default palette, and the waiting-suffix line stays unwritten.
+        if API:
+            return "s_lane"
         return "s_elig" if elig(tid) else "s_wait"
     return CLASS.get(n["state"], "s_wait")
 

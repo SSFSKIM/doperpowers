@@ -32,7 +32,7 @@ cat > "$FIX" <<'JSON'
            "branch":null,"blocked_by":[],"relates":[]},
           {"id":9,"title":"T sibling","category":"work","state":"in-review",
            "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
-           "branch":null,"blocked_by":[],"relates":[]},
+           "branch":null,"blocked_by":[],"relates":[12]},
           {"id":12,"title":"T one","category":"work","state":"in-progress",
            "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
            "branch":"feat/x","blocked_by":[3,4],"relates":[9]},
@@ -168,6 +168,11 @@ t "map renders the ticket row" "| #12 | P1 | in-progress | T one |" map_md
 t "map draws the active dependency edge" '"kind": "block-active"' map_html
 t "map draws the satisfied dependency edge" '"kind": "block-done"' map_html
 t "map draws the relates edge" '"kind": "relates"' map_html
+# The server reports relates symmetrically (#12 relates [9] AND #9 relates
+# [12]), so the fixture does too — which makes the renderer's dedupe load-
+# bearing: without it the same pair draws twice, one line over the other.
+rel_edge_count() { printf 'relates-edges=%s\n' "$(map_html | grep -cF '"kind": "relates"')"; }
+t "a symmetric relates pair draws exactly one edge" "relates-edges=1" rel_edge_count
 # spawned_by is still unprojected, so that lineage class stays absent — and the
 # table has to say so rather than letting a spawned-edge-free graph pass for
 # "nothing spawned anything".
@@ -182,6 +187,13 @@ nt "map draws no spawned edges" '"kind": "spawned"' map_html
 nt "no serialized eligible flag on api nodes" '"eligible": true' map_html
 nt "no ELIGIBLE card class on api nodes" '"cls": "s_elig"' map_html
 nt "no ELIGIBLE label in the api table" "ELIGIBLE" map_md
+# ...and "off" cannot mean falling through to the WAITING class: s_wait's badge
+# literally reads "waiting", so a dispatchable api ticket wearing it states the
+# very thing the cue is off to avoid. s_lane is in neither the palette nor the
+# badge map, so the card degrades to its state name. #13/#14 are the
+# dispatchable pair; nothing else in the fixture can wear either class.
+t "dispatchable api cards take the badge-less lane class" '"cls": "s_lane"' map_html
+nt "no waiting card class on api nodes" '"cls": "s_wait"' map_html
 t "the table hands eligibility to the server" "eligibility: server-owned (API mode)" map_md
 t "map writes BOARD.html too" "T one" map_html
 # Parenthood survives normalization, and it renders as an epic BOX rather than an
