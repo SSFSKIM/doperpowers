@@ -803,7 +803,16 @@ PY
 # delivery itself, and no new state file is needed to hold it.
 _successor_marker() { printf '[board-successor run:%s]' "$1"; }
 
-_successor_prompt() {  # <ticket> <run> <folded answer text ('' if none)>
+_successor_prompt() {  # <ticket> <run> <folded answer text ('' if none)> <parent pin ('' if none)>
+  # The pin block is assembled OUT here rather than as a `${4:+...}` inside the
+  # heredoc: bash 3.2 parses the word of that expansion for quoting, so the
+  # apostrophe in the sentence would open a quote that swallows the closing
+  # brace ("bad substitution") and the whole prompt would come back empty.
+  local pin=""
+  [ -z "${4:-}" ] || pin="
+
+Parent pin (your run's parent-contract window): $4 — the parent contract
+snapshot your dispatch was cut against; no board read hands it over."
   cat <<EOF
 $(_successor_marker "$2") You are the successor run for ticket #$1 — your
 predecessor was reclaimed, so the board handed its work to you on a fresh run.
@@ -811,7 +820,7 @@ predecessor was reclaimed, so the board handed its work to you on a fresh run.
 Read your own ticket timeline FIRST (board-show.sh $1). The park and answer
 history there is part of your assignment: answers delivered to the session you
 are replacing live in it and nowhere else. Then continue under your original
-protocol.${3:+
+protocol.$pin${3:+
 
 ---- answers relayed with this resume (verbatim) ----
 $3}
@@ -1075,7 +1084,7 @@ PY
 _resume_one() {
   local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
   local pre_pending="" post_pending="" lane="" role=""
-  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS=""
+  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
   # the claim so this tick never mints a successor run it cannot deliver.
   # daemon-resume stamps status=error + pending_short when a fork LAUNCHED
@@ -1133,6 +1142,13 @@ q("C_CLAIMED", 1)
 q("C_RUN", out["runId"])
 q("C_FENCE", out["fence"])
 q("C_BEARER", out["bearer"])
+# The parent-contract window, flattened into the dispatchers exact spelling.
+# Empty when the run has no parent: a rendered "#None @ event None" is worse
+# than silence, because a worker would act on it.
+pin = out.get("parentPin") or {}
+q("C_PIN",
+  "#%s @ event %s" % (pin.get("parent_id"), pin.get("parent_event_cursor"))
+  if pin.get("parent_id") is not None else "")
 loc = out.get("sessionLocator") or {}
 q("C_SESS", loc.get("sessionId") or "")
 with open(os.environ["T_BODY"], "w") as f:
@@ -1156,7 +1172,7 @@ PY
     || echo "resume: #$tid — unrelayed feed unreadable; answers stay on it" >&2
   ids="$(cat "$dir/ids")"
   text="$(cat "$dir/text")"
-  prompt="$(_successor_prompt "$tid" "$C_RUN" "$text")"
+  prompt="$(_successor_prompt "$tid" "$C_RUN" "$text" "$C_PIN")"
 
   # PERSIST-BEFORE-RESUME IS A BOUNDARY, NOT A PREFERENCE. Delivering anyway
   # past a failed persist produces the exact state the boundary exists to
@@ -1310,7 +1326,7 @@ $(cat "$dir/body.md")"
       return 1
     fi
   fi
-  _stamp_lane "$delivered" "$lane" "$role"
+  _stamp_lane "$delivered" "$lane" "$role" "$C_PIN"
   _journal "$CLAIMS_DIR/$nonce.json" "$C_RUN" 1 "$tid" "$delivered" "$C_SESS"
   # ACK ONLY AFTER DELIVERY, exactly as phase 2 does: a folded answer that was
   # never delivered stays on the feed for the next tick rather than being
@@ -1331,9 +1347,14 @@ PY
 # cannot see this open run at all — it counts lane-stamped metas holding a run —
 # so every recovery silently loosened the combined implementer+spike cap the
 # client owns by one. Non-fatal: the server's own laneCap still bounds it.
-_stamp_lane() {  # <uuid> <lane> <role>
+#
+# The parent pin rides here too: this is the ONE stamp point BOTH delivery legs
+# share (it runs after board-bind for the resumed session and the fresh spawn
+# alike), while _persist_successor runs only when a session locator exists and
+# board-bind writes no parent_pin at all.
+_stamp_lane() {  # <uuid> <lane> <role> [parent-pin]
   [ -n "${2:-}" ] || return 0
-  T_PATH="$DAEMON_HOME/$1.json" T_LANE="$2" T_ROLE="$3" T_DHOME="$DAEMON_HOME" \
+  T_PATH="$DAEMON_HOME/$1.json" T_LANE="$2" T_ROLE="$3" T_PIN="${4:-}" T_DHOME="$DAEMON_HOME" \
   python3 - <<'PY' || echo "resume: lane/role stamp on $1 failed (non-fatal)" >&2
 import fcntl, json, os
 env = os.environ
@@ -1345,6 +1366,8 @@ try:
         m = json.load(f)
     m["lane"] = env["T_LANE"]
     m["role"] = env["T_ROLE"]
+    if env.get("T_PIN"):
+        m["parent_pin"] = env["T_PIN"]
     mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
     try:

@@ -67,7 +67,7 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
   "body":{"runId":44,"ticketId":12,"fence":4,"bearer":"tok-s","predecessorRun":41,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
-          "plan":null,"body":"work on"}},
+          "plan":null,"parentPin":null,"body":"work on"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":121,"ticketId":12,"correlationId":"evt-9","replies":["go"]}]},
  {"method":"POST","path":"/answers/121/ack","status":200,"body":{"acked":true}},
@@ -78,7 +78,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
   "body":{"runId":43,"ticketId":12,"fence":5,"bearer":"tok-t","predecessorRun":44,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
-          "plan":null,"body":"work on"}},
+          "plan":null,"parentPin":{"parent_id":7,"parent_event_cursor":118},
+          "body":"work on"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"POST","path":"/runs/43/bind","status":200,"body":{"bound":true}},
 
@@ -99,7 +100,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
   "body":{"runId":45,"ticketId":12,"fence":5,"bearer":"tok-s2","predecessorRun":49,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
-          "plan":null,"body":"the assignment text a successor cannot reach any other way"}},
+          "plan":null,"parentPin":{"parent_id":9,"parent_event_cursor":205},
+          "body":"the assignment text a successor cannot reach any other way"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"POST","path":"/runs/45/bind","status":200,"body":{"bound":true}},
 
@@ -329,6 +331,13 @@ t  "under a lane neither dispatcher owns"  '"lane": "successor"'       journal
 t  "and marked handed off"                 '"spawn_completed": true'   journal
 nt "the api tick never invokes gh"         "GH-CALLED"                 cat "$MARKER"
 
+# A NULL parentPin CARRIES NOTHING. This claim answered `"parentPin": null`
+# (the ordinary shape for a run with no parent contract), so neither the meta
+# key nor the prompt line may be invented — an empty pin rendered anyway reads
+# as `#None @ event None` to the worker that acts on it.
+nt "a null pin stamps no meta key"         '"parent_pin"'  cat "$DH/u-old.json"
+nt "and adds no prompt line"               "Parent pin"    cat "$TRANSCRIPT"
+
 # =========================================================================
 # Phase 3, rung 2 — A BOUNDED WAIT IS NOT A FAILED DELIVERY. daemon-resume
 # forks the turn and injects the prompt BEFORE it blocks, then exits 1 when
@@ -349,6 +358,14 @@ t  "an expired wait whose delivery landed is not a failure" \
 nt "so no second worker is spawned onto the live run"       "SPAWN"  cat "$SPAWN_LOG"
 t  "and the successor is bound as delivered"                "/runs/43/bind" cat "$FIX.log"
 nt "and no recovery cycle is charged"                       "recovery cycle" cat "$OUTW"
+# THE PARENT PIN RIDES THE DELIVERY OR NOT AT ALL — no board read a worker may
+# make hands the parent contract window over, so the claim's `parentPin` has to
+# reach both the delivered meta and the orientation prompt. This is the
+# RESUMED-SESSION leg: the stamp lands on the predecessor's own meta.
+t  "the successor meta carries the flattened parent pin" \
+   '"parent_pin": "#7 @ event 118"'                         cat "$DH/u-old.json"
+t  "and the successor prompt carries the pin line" \
+   "Parent pin (your run's parent-contract window): #7 @ event 118" cat "$TRANSCRIPT"
 
 # =========================================================================
 # Phase 3, rung 2b — AN AMBIGUOUS FORK IS NOT A FAILED DELIVERY EITHER.
@@ -426,6 +443,13 @@ t  "the fresh worker is bound to the ticket" "/runs/45/bind"           cat "$FIX
 new_bearer() { bearer_at_rest "$DH/$NEWUUID.json"; }
 t  "and its bearer lands at rest for the next relay" "run_bearer=tok-s2" new_bearer
 nt "a delivered cycle ends no run"         '"path": "/runs/45/end"'    cat "$FIX.log"
+# ...and the FRESH-SPAWN leg, which _persist_successor never touches and
+# board-bind writes no pin into: the one stamp point both legs share is the
+# lane stamp, so the pin has to travel with it.
+t  "the fresh worker's meta carries the parent pin too" \
+   '"parent_pin": "#9 @ event 205"'                    cat "$DH/$NEWUUID.json"
+t  "and the fresh bootstrap carries the pin line" \
+   "Parent pin (your run's parent-contract window): #9 @ event 205" cat "$SPAWN_LOG"
 
 # =========================================================================
 # Phase 3, rung 4 — cycles where NEITHER vehicle delivers. The failed
