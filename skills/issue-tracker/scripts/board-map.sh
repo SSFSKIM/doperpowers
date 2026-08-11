@@ -30,16 +30,13 @@
 # spawned/relates lineage; each epic is a labeled box around its members
 # (click the epic's card to collapse).
 #
-# API mode renders the same two files from a thinner snapshot: the v1 ticket
-# payload carries no blocked-by edges, no PR linkage and no timestamps. Every
-# class the renderer draws as a LINE (blocked-by, spawned, relates) is empty
-# there, so BOARD.html draws no edges at all and no arrow classes appear; the
-# only structure left is parenthood, which was never a line to begin with — it
-# renders as a labeled epic box around the members. The ELIGIBLE cue degrades to
-# lane state (epics still take their recomposition carve-out; the
-# reconciliation-due half of it cannot fire, since v1 exposes no note). BOARD.md
-# says all of that in a line above the table rather than letting an edge-free
-# graph pass for "nothing blocks anything".
+# API mode renders the same two files from a thinner snapshot. Blocked-by and
+# relates edges draw there; spawned lineage does not (the projection carries no
+# spawned_by), and nodes carry no PR links, issue links or ages. The ELIGIBLE
+# cue is OFF: the server owns the claim predicate, and this client's version of
+# it disagrees, so no card is badged and none is called waiting. BOARD.md says
+# all of that in a line above the table rather than letting an absence pass for
+# a fact about the board.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -104,16 +101,17 @@ API = env.get("BOARD_BINDING") == "api"
 def api_snapshot():
     """GET /tickets, normalized to the node shape the renderer below consumes.
 
-    The API's v1 ticket payload is a strict subset of the gh snapshot: no
-    blocked-by edges, no GitHub PR linkage, no issue URL, no timestamps. Those
-    fields normalize to empty rather than absent, so every derivation downstream
-    (B.eligible, the layering, the epic boxes) runs unchanged on either source —
-    the binding branch is this function and nothing else. All three drawn edge
-    classes (blocked_by, spawned_by, relates_to) are empty here, so BOARD.html
-    contains no edges at all; parenthood survives, but it renders as an epic BOX
-    around the members, not as a line. The ELIGIBLE cue degrades to "in a lane
-    state"; the table says so out loud rather than letting an edge-free graph
-    pass for "nothing blocks anything".
+    The projection now carries blocked_by / relates / branch (arkho#7), so
+    dependency and relates edges render. What it still does not carry:
+    spawned_by (those edges don't render), PR linkage, issue URL, and
+    timestamps (nodes carry no links or ages). Those fields normalize to
+    empty rather than absent, so every derivation downstream (the layering,
+    the epic boxes) runs unchanged on either source. The ELIGIBLE cue stays
+    OFF for api nodes: B.eligible's blocker rule (every blocker done)
+    disagrees with the server's claim predicate (done|wontfix terminal, plus
+    lane, epic and ownership terms no projection exposes) — a client-derived
+    cue would tell an operator a claimable ticket is waiting. Eligibility is
+    the server's answer here, as board-list.sh already says.
     """
     import _board_api as A
     out = {}
@@ -125,8 +123,10 @@ def api_snapshot():
             "category": row.get("category"),
             "note": row.get("note"),
             "parent": str(row["parent"]) if row.get("parent") else None,
-            "blocked_by": [], "spawned_by": None, "relates_to": [],
-            "branch": None, "pr": row.get("pr_url"), "prs": [],
+            "blocked_by": [str(b) for b in row.get("blocked_by") or []],
+            "spawned_by": None,
+            "relates_to": [str(x) for x in row.get("relates") or []],
+            "branch": row.get("branch"), "pr": row.get("pr_url"), "prs": [],
             "close_candidate": False, "url": None,
             "created": "", "updated": "",
         }
@@ -134,6 +134,19 @@ def api_snapshot():
 
 
 tickets = api_snapshot() if API else B.snapshot()
+
+
+def elig(tid):
+    """The claim cue, once, for every surface that draws it.
+
+    B.eligible feeds three independent surfaces below — the Markdown state
+    label, the HTML card class, and the serialized node flag the page filters
+    on. In api mode the server owns the claim predicate and this client's
+    rederivation disagrees with it (see api_snapshot), so the cue is off; a
+    single value keeps all three surfaces saying the same thing, rather than
+    an unbadged card still shipping eligible:true to the ELIGIBLE-only filter.
+    """
+    return (not API) and B.eligible(tickets, tid)
 
 def num(t): return int(t)
 order = sorted(tickets, key=num)
@@ -144,9 +157,13 @@ def state_label(tid, n):
     # eligible only on its own E2 carve-out (a recomposition or
     # reconciliation claim in ready-for-architect), and a blocker check alone
     # printed ELIGIBLE for epics the dispatcher would never claim.
-    if B.eligible(tickets, tid):
+    if elig(tid):
         return n["state"] + " · ELIGIBLE"
-    if n["state"] in B.DISPATCHABLE:
+    # The waiting suffix is the same blocker rule stated the other way round,
+    # so it goes silent with the cue: a wontfix blocker is satisfied to the
+    # server, and "waiting: #7" on a claimable ticket is the misread the cue
+    # is off to avoid.
+    if not API and n["state"] in B.DISPATCHABLE:
         unmet = [b for b in n.get("blocked_by", []) if tickets.get(b, {}).get("state") != "done"]
         if unmet:
             return n["state"] + " · waiting: " + ",".join("#%s" % b for b in unmet)
@@ -162,12 +179,11 @@ md = ["# Issue Board", "",
       "_Board %s%d tickets · full interactive graph in "
       "`BOARD.html` (open in a browser)_" % (stamp, len(tickets)), ""]
 if API:
-    md += ["_blocked-by: (not exposed by API v1) — the graph draws no edges at "
-           "all; parenthood is the only structure left and it shows as an epic "
-           "box around the members, not as a line. ELIGIBLE reflects lane state "
-           "alone (the server owns the pick), except that an epic still takes "
-           "its recomposition carve-out; the reconciliation-due half of that "
-           "carve-out is dead here, since API v1 exposes no note field._", ""]
+    md += ["_edges: blocked-by and relates draw; spawned-by is not projected, "
+           "so that lineage class is missing from the graph. eligibility: "
+           "server-owned (API mode) — the server computes the claim pick, so "
+           "no cue is derived here and no card carries one. Nodes also carry "
+           "no PR links, issue links or ages (not projected)._", ""]
 md += ["| ticket | priority | state | title | PR |", "|---|---|---|---|---|"]
 for tid in order:
     n = tickets[tid]
@@ -200,7 +216,7 @@ def cls(tid, n):
     if n["state"] == "in-design":
         return "s_design"
     if n["state"] in B.DISPATCHABLE:
-        return "s_elig" if B.eligible(tickets, tid) else "s_wait"
+        return "s_elig" if elig(tid) else "s_wait"
     return CLASS.get(n["state"], "s_wait")
 
 # Longest-path layering over blocked_by (blockers above dependents); memoized,
@@ -477,7 +493,7 @@ nodes = []
 for t in order:
     n = tickets[t]; x, y = pos[t]
     nodes.append({
-        "id": did(t), "state": n["state"], "eligible": B.eligible(tickets, t),
+        "id": did(t), "state": n["state"], "eligible": elig(t),
         "cls": cls(t, n), "label": state_label(t, n),
         "title": " ".join(str(n["title"]).split()),
         "category": n.get("category"), "note": n.get("note"),

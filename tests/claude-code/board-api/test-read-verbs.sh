@@ -24,12 +24,24 @@ cat > "$FIX" <<'JSON'
    {"source":"board","cursor":"7","observedAt":"t","sourceTime":null,
     "runId":2,"kind":"closure-package","body":{"pr":"none","evidence":"suite green"}}]}},
  {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"title":"T one","category":"work","state":"in-progress",
-           "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null},
+  "body":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
+           "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
+           "branch":null,"blocked_by":[],"relates":[]},
+          {"id":4,"title":"T blocker done","category":"work","state":"done",
+           "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
+           "branch":null,"blocked_by":[],"relates":[]},
+          {"id":9,"title":"T sibling","category":"work","state":"in-review",
+           "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
+           "branch":null,"blocked_by":[],"relates":[]},
+          {"id":12,"title":"T one","category":"work","state":"in-progress",
+           "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
+           "branch":"feat/x","blocked_by":[3,4],"relates":[9]},
           {"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
-           "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null},
+           "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+           "branch":null,"blocked_by":[],"relates":[]},
           {"id":14,"title":"T three","category":"work","state":"ready-for-architect",
-           "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null}]},
+           "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
+           "branch":null,"blocked_by":[],"relates":[]}]},
  {"method":"GET","path":"/queue/decisions","status":200,
   "body":[{"correlation_id":"evt-9","ticket_id":12,"run_id":41,"species":"board",
            "question":{"note":"pick one"},"raised_at":"t","state":"needs-human","category":"work"}]},
@@ -109,6 +121,12 @@ t "show prints the ticket row with run/plan/pr" "#12 in-progress P1 T one  owner
   V board-show.sh 12
 t "show accepts a #-prefixed ref" "[board:5] transition n1" V board-show.sh '#12'
 t "show dies on an unknown ticket" "error: no ticket #77" V board-show.sh 77
+# The projection carries branch and both edge arrays now (arkho#7); the header
+# line is the only place an operator sees them in API mode.
+t "show prints branch and both edge arrays" "branch=feat/x blocked_by=[3 4] relates=[9]" \
+  V board-show.sh 12
+# No edges is an ordinary state, not a missing column: it prints as [].
+t "show prints empty edge arrays as []" "blocked_by=[] relates=[]" V board-show.sh 13
 t "show without an argument prints usage" "Usage: board-show.sh" V board-show.sh
 
 # ── reconcile ──────────────────────────────────────────────────────────────
@@ -143,11 +161,28 @@ else echo "FAIL lint must exit zero when clean"; FAILS=$((FAILS+1)); fi
 
 # ── map ────────────────────────────────────────────────────────────────────
 t "map renders the ticket row" "| #12 | P1 | in-progress | T one |" map_md
-# Honesty about the thinner snapshot: API v1 exposes no blocked-by, spawned or
-# relates edges, so the DAG draws no lines at all and the table has to say so — a
-# silently edge-free graph reads as "nothing blocks anything", which is a
-# different claim entirely.
-t "map declares the missing edge class" "blocked-by: (not exposed by API v1)" map_md
+# The projection carries blocked_by and relates now, so both edge classes draw.
+# #12 is blocked by #3 (in-progress → active) and #4 (done → satisfied), and
+# relates to #9. These are payload spellings — the template itself contains
+# none of them, so the assert reads the render, not the boilerplate.
+t "map draws the active dependency edge" '"kind": "block-active"' map_html
+t "map draws the satisfied dependency edge" '"kind": "block-done"' map_html
+t "map draws the relates edge" '"kind": "relates"' map_html
+# spawned_by is still unprojected, so that lineage class stays absent — and the
+# table has to say so rather than letting a spawned-edge-free graph pass for
+# "nothing spawned anything".
+t "map declares the still-missing edge class" "spawned-by" map_md
+nt "map draws no spawned edges" '"kind": "spawned"' map_html
+# The ELIGIBLE cue is server-owned in API mode: B.eligible's blocker rule
+# disagrees with the server's claim predicate, so a client-derived cue would
+# mislabel a claimable ticket. It feeds THREE surfaces — the Markdown label,
+# the card class and the serialized node flag — and all three must read the
+# same answer. #13 and #14 are gh-eligible (lane-state leaves, no blockers), so
+# a cue still derived on any one surface fires here.
+nt "no serialized eligible flag on api nodes" '"eligible": true' map_html
+nt "no ELIGIBLE card class on api nodes" '"cls": "s_elig"' map_html
+nt "no ELIGIBLE label in the api table" "ELIGIBLE" map_md
+t "the table hands eligibility to the server" "eligibility: server-owned (API mode)" map_md
 t "map writes BOARD.html too" "T one" map_html
 # Parenthood survives normalization, and it renders as an epic BOX rather than an
 # edge: #13's parent is #12, so #12 shows up in the `epics` payload. An empty
