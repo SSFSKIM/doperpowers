@@ -194,7 +194,11 @@ them at dispatch:
   PR-derived UNRESOLVED sentinel.
 - A scale claim whose `branch` is empty parks exactly as today (the
   integration ref is the one binding with no fallback), except the park
-  is now the *edge case*, not the whole variant. The no-aggregate-range
+  is now the *edge case*, not the whole variant — and it fires as an
+  **explicit empty-binding check before the fetch**, not through fetch
+  failure: bare `git fetch origin` with an empty ref can SUCCEED
+  (configured refs), deferring the failure to a checkout of `origin/`
+  with no park note naming the real gap. The no-aggregate-range
   fallback (per-child ranges from the closure package) remains the
   worker-side degradation the Scale review section already defines.
 - `SKILL.md`'s api-mode entry section: the "an event id, not a URL →
@@ -444,3 +448,12 @@ Pending — written at finish.
   raw-splice gh body edit, `_stamp_lane` as the parent-pin stamp point,
   park-question acceptance via the decisions queue, no ELIGIBLE cue on
   api map nodes.
+- v1.2 (2026-08-11): codex plan review (5 findings, all adopted into the
+  plan): trailing-block splice via META_RE byte offsets (a first-marker
+  find corrupts bodies quoting a marker-like example); explicit
+  empty-`INTEGRATION_REF` park BEFORE the fetch (§6 amended — bare
+  fetch can succeed on an empty ref); gh body edit reads one issue
+  (`gh issue view --json body`), not `B.snapshot()`'s GraphQL sweep;
+  scale/URL dispatch test scenarios isolated and lifecycle-complete
+  (bind asserted, not just prompt text); the ELIGIBLE kill covers all
+  three consumers (label, `s_elig` class, serialized flag).
