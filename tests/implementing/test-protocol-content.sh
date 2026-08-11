@@ -410,6 +410,21 @@ assert_contains "$triage" "설계가 앞서야 하는 항목도 \`needs-human\`�
     "design-heavy feedback parks needs-human for the human to route"
 assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the dispatch-time pin"
 
+# Worker mode is a SECOND implementation of the dispatcher (the live cloud
+# routine runs it, not src/dispatch.ts), so the provenance fencing that
+# dispatch.ts enforces in code has to be enforced here as prose or the
+# routine-created issue fires @mention/#N from untrusted feedback text.
+TRIAGE_SKILL="$REPO_ROOT/skills/triaging-feedback/SKILL.md"
+triage_skill="$(cat "$TRIAGE_SKILL")"
+assert_contains "$triage_skill" 'verbatim original **inside a
+     code fence**, marked as untrusted data' \
+    "Worker mode fences the verbatim original and marks it untrusted data"
+assert_contains "$triage_skill" "a blockquote will not do" \
+    "...and rules out the blockquote the fence replaced"
+assert_contains "$triage_skill" "one backtick
+     longer than the longest backtick run" \
+    "...and pins the variable fence length, so an original carrying its own fence cannot escape"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
 echo "all tests passed"
