@@ -114,7 +114,7 @@ poller — the operator material does not apply to you. Your contract:
 | `src/sideEffects.ts` | `makeSideEffects(cfg, sh)` — the only place that touches the outside world: `findExisting` (idempotency guard via a `feedback:<id>` marker, searched `in:body,comments`; **fails closed** — a `gh` search error aborts the row rather than reading as "no duplicate"), `listOpenTickets` (dedup candidates: open-issue number+title, cap 40; fails **open** to `[]` — advisory feature), `registerTicket` (any birth state, via the board scripts; body goes through a private `mkdtemp` file, mode 0600, removed in `finally`), `commentOnIssue` (dup-merge: diagnosis as a comment on the existing issue, marker included, state untouched), `relateTickets` (best-effort `board-relate.sh` annotation edge) |
 | `src/codexAdapter.ts` | `makeCodexRunner(cfg)` — the Codex SDK seam: a fresh **read-only** thread per row, model/effort pinned from config (never inherited from `~/.codex/config.toml`), locked-down child env (`buildCodexOptions`: PATH/HOME only, no inherited secrets), `approvalPolicy:never` + network off, per-turn abort timeout |
 | `src/git.ts` | `makeGit(repoPath, baseBranch)` — per-feedback disposable **detached** worktree (`addWorktree`/`removeWorktree`), pinned to `origin/<baseBranch>` for `file:line` citation integrity (no branch, no build, no `node_modules`) |
-| `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → trust resolution → board snapshot → single diagnose+author turn → registration gate + lint → **second idempotency check** (a reclaimer may have registered during the long Codex turn) → dup? comment-merge : register (+ relates edges) → writeback. `duplicate_of`/`related` are honored **only for numbers in the candidate list the dispatcher itself supplied** — an injected verdict cannot target arbitrary or closed issues, and a dup claim's worst case is "a comment instead of a ticket". Composes the final ticket body: worker-authored content + dispatcher-appended provenance block (quoted original, marked as data for user trust) |
+| `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → trust resolution → board snapshot → single diagnose+author turn → registration gate + lint → **second idempotency check** (a reclaimer may have registered during the long Codex turn) → dup? comment-merge : register (+ relates edges) → writeback. `duplicate_of`/`related` are honored **only for numbers in the candidate list the dispatcher itself supplied** — an injected verdict cannot target arbitrary or closed issues, and a dup claim's worst case is "a comment instead of a ticket". Composes the final ticket body: worker-authored content + dispatcher-appended provenance block (the original inside a code fence — a blockquote would still let an `@mention` or `#N` in feedback text fire on the artifact — marked as data for user trust) |
 | `src/poll.ts` | the entry: `TRIAGE_ENABLED=false` exits **before** any config parsing (the stop switch works even with missing secrets) → `loadConfig` → `findActionable` → per-row lease-issuing `claim` + `dispatchRow` with lease-bound writeback, sequential, catch → writeback `failed` |
 | `references/triage-worker-protocol.md` | the Triage Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every turn's prompt by `src/prompt.ts` |
 | `scripts/feedback-poll.sh` | launchd entry point: loads the skill dir's `.env`, runs `npx tsx src/poll.ts` |
@@ -155,9 +155,10 @@ The dispatcher (`dispatch.ts`, running with real credentials) is the only
 thing that ever performs a side effect. It re-validates the recommendation
 (the registration gate in `gate.ts`), fixes priority at P2 (so an injected
 feedback body can never jump the implement-dispatch queue), and appends the
-provenance block — the quoted raw feedback explicitly marked as data — so a
-downstream implement worker always sees the trust boundary inside the
-ticket.
+provenance block — the raw feedback inside a code fence, explicitly marked as
+data — so a downstream implement worker always sees the trust boundary inside
+the ticket and no `@mention` or `#N` in the original ever fires as live
+markdown on the artifact.
 
 ## Why the worker has no network and no approvals reviewer
 
