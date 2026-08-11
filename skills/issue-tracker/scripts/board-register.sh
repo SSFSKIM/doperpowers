@@ -33,7 +33,7 @@
 # the body.
 #
 # Prints "<number> <url>" — then YOU flesh out the pre-spec body:
-#   gh issue edit <number> --body-file <file>
+#   board-body.sh <number> --body-file <file>   (meta-preserving; both bindings)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -122,9 +122,11 @@ if (not explicit and env["T_CATEGORY"] == "env-issue"
 # the security contract itself).
 #
 # The RULING is mirrored; the skeleton is not. A1's body IS the assignment the
-# claim hands the worker, and this client has no body-edit route (arkho#7) — so
-# seeding a skeleton would ship an assignment nobody can fill and, worse, make
-# the park question the skeleton's own text. An EXPLICITLY EMPTY --body-file is
+# claim hands the worker at claim time — so seeding a skeleton would make the
+# park question the skeleton's own text and ship a dispatchable assignment that
+# says nothing. (A body-edit route exists — board-body.sh — but a skeleton that
+# must be edited before dispatch is a skeleton that should not be born.)
+# An EXPLICITLY EMPTY --body-file is
 # the registrar saying so, exactly as in gh mode, and is left alone.
 if not body and not env["T_BODY_FILE"]:
     if explicit and state in ("ready-for-architect", "ready-for-implementer"):

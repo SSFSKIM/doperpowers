@@ -39,7 +39,13 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/tickets/5/relates","status":200,"body":{"ok":true}},
  {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true},"once":true},
  {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true,"noop":true},"once":true},
- {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true}}
+ {"method":"POST","path":"/tickets/5/priority","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/body","status":200,"body":{"ok":true},"once":true},
+ {"method":"POST","path":"/tickets/5/body","status":200,"body":{"ok":true,"noop":true},"once":true},
+ {"method":"POST","path":"/tickets/5/body","status":200,"body":{"ok":true},"once":true},
+ {"method":"POST","path":"/tickets/5/body","status":200,"body":{"ok":true},"once":true},
+ {"method":"POST","path":"/tickets/5/body","status":409,
+  "body":{"error":{"code":"ticket-owned","message":"ticket 5 is owned by run 41"}}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
@@ -181,6 +187,48 @@ nt "a bad grade never reaches the wire" "P9" cat "$FIX.log"
 t "a non-numeric priority ref dies like the gh path" "not an issue number: xyz" \
   V board-priority.sh xyz P0
 
+# ---- board-body.sh (api half) ----
+# Four `once` 200s then a standing 409, and the calls below run in exactly that
+# order: rewrite, noop rewrite, empty-file clear, stdin. Every call after those
+# four is refused ticket-owned — which is what the owned asserts want.
+BF="$(mktemp)"; printf 'the sharpened statement' > "$BF"
+t "body edit posts and reports" "#5: body rewritten" V board-body.sh 5 --body-file "$BF"
+t "the body payload carries the text whole" '{"body": "the sharpened statement"}' \
+  last_body /tickets/5/body
+# Body is a human-only route (API.md §4.2), like every other verb in this file.
+t "a body write speaks as the human principal" '"auth": "Bearer h"' last_line /tickets/5/body
+# Write-if-changed is the server's; the flag is it saying nothing was recorded.
+t "a noop body edit says so" "#5: body rewritten (noop)" V board-body.sh 5 --body-file "$BF"
+
+# An empty file is a legal edit — clearing the statement of work — not a caller
+# mistake to refuse, and it must go out as an empty string rather than a
+# dropped key (which the server would read as "no change asked for").
+EMPTYB="$(mktemp)"; : > "$EMPTYB"
+t "an empty body file is a legal edit" "#5: body rewritten" V board-body.sh 5 --body-file "$EMPTYB"
+t "the cleared payload is an empty string, not a dropped key" '{"body": ""}' \
+  last_body /tickets/5/body
+
+# `-` is the documented stdin spelling; it must reach the wire whole.
+STDIN_RC=0
+( cd "$r" && printf 'piped statement' | BOARD_CREDENTIALS_FILE="$CREDS" \
+  "$SCRIPTS/board-body.sh" 5 --body-file - ) >/dev/null 2>&1 || STDIN_RC=$?
+t "a stdin body edit exits zero" "rc=0" echo "rc=$STDIN_RC"
+t "a body read from stdin reaches the wire" '{"body": "piped statement"}' \
+  last_body /tickets/5/body
+
+# The body IS the assignment a claim hands the worker, so the server refuses an
+# edit while a run holds the ticket. The client relays that, unrewritten.
+OWNED_OUT="$(mktemp)"; OWNED_RC=0
+V board-body.sh 5 --body-file "$BF" > "$OWNED_OUT" 2>&1 || OWNED_RC=$?
+t "ticket-owned surfaces naming the run" "ticket-owned — ticket 5 is owned by run 41" \
+  cat "$OWNED_OUT"
+t "an owned refusal exits nonzero" "rc=1" echo "rc=$OWNED_RC"
+
+t "a non-numeric body ref dies like the gh path" "not an issue number: abc" \
+  V board-body.sh abc --body-file "$BF"
+t "a missing body file is a caller error, not a request" "no such file: /nope/nope" \
+  V board-body.sh 5 --body-file /nope/nope
+
 # In API mode gh is never invoked — asserted with a stub, as everywhere else.
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
 _no_gh() {  # <verb> <args...> — same call, but with a gh that announces itself
@@ -190,5 +238,55 @@ _no_gh() {  # <verb> <args...> — same call, but with a gh that announces itsel
 nt "api edge verbs never invoke gh" "GH-CALLED" _no_gh board-edge.sh 5 --block 7
 nt "api relate never invokes gh" "GH-CALLED" _no_gh board-relate.sh 5 7 --cut
 nt "api priority never invokes gh" "GH-CALLED" _no_gh board-priority.sh 5 P2
+nt "api body never invokes gh" "GH-CALLED" _no_gh board-body.sh 5 --body-file "$BF"
+
+# ---- board-body.sh (gh half): the raw meta splice ----
+# The TRAILING board:meta block must survive BYTE-FOR-BYTE, noncanonical
+# spelling and unknown future keys included — parse/render would canonicalize
+# and drop. The stored prose deliberately QUOTES a marker-like example before
+# the real trailing block: META_RE is leftmost-first and its `.*?` spans from
+# the quote clear through to the real `-->`, so a first-match splice keeps the
+# prose it was told to replace. This fixture is the guard against that.
+ghr="$(mkrepo)"
+gstub="$(mktemp -d)"
+cat > "$gstub/gh" <<'EOF'
+#!/usr/bin/env bash
+# Every gh call the verb makes, answered contract-shaped:
+#   repo view  --json nameWithOwner --jq .nameWithOwner  → _lib.sh's BOARD_REPO
+#   issue view <n> -R <repo> --json body --jq .body      → the stored body
+#   issue edit <n> -R <repo> --body-file -               → capture stdin
+# Anything else fails loud rather than returning a plausible `{}`: the assert
+# below pins this command's EXIT STATUS, so an unanticipated call must show up
+# as a failure and not as a silently swallowed stub answer.
+case "$*" in
+  *"repo view"*) echo 'acme/board' ;;
+  *"issue view"*) printf 'old prose quoting an example:\n<!-- board:meta\nfake: example\n-->\nmore old prose\n\n<!-- board:meta\nfuture-key: kept\n# a comment line\nbranch:   odd/spacing\n-->\n' ;;
+  *"issue edit"*) cat > "$GH_BODY_CAPTURE" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$gstub/gh"
+NEWB="$(mktemp)"; printf 'new prose' > "$NEWB"
+CAP="$(mktemp)"
+GH_RC=0
+( cd "$ghr" && PATH="$gstub:$PATH" GH_BODY_CAPTURE="$CAP" \
+  "$SCRIPTS/board-body.sh" 12 --body-file "$NEWB" ) >/dev/null 2>&1 || GH_RC=$?
+t "gh body edit exits zero (no swallowed stub failure)" "rc=0" echo "rc=$GH_RC"
+
+# Byte-for-byte means byte-for-byte: a substring match would pass on a block
+# that had been reparsed and re-rendered line by line, so compare the tail of
+# what was written against the stored block's exact bytes.
+WANT_META="$(mktemp)"
+printf '<!-- board:meta\nfuture-key: kept\n# a comment line\nbranch:   odd/spacing\n-->\n' \
+  > "$WANT_META"
+meta_tail_check() {
+  local n; n=$(( $(wc -c < "$WANT_META") ))
+  if cmp -s <(tail -c "$n" "$CAP") "$WANT_META"; then echo meta-intact
+  else echo "meta-DIFFERS — the body that was written:"; cat "$CAP"; fi
+}
+t "gh body edit keeps the TRAILING meta block byte-for-byte" "meta-intact" meta_tail_check
+t "gh body edit replaced the prose" "new prose" cat "$CAP"
+nt "gh body edit did not keep the old prose" "old prose" cat "$CAP"
+nt "the quoted marker example did not survive as a splice point" "fake: example" cat "$CAP"
 
 finish
