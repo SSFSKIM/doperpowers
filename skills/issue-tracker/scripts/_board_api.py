@@ -216,3 +216,34 @@ def timeline(tid, principal="human"):
 
 def queue_decisions():
     return request("GET", "/queue/decisions", principal="human")
+
+
+# The five routes below are human-only server-side: a run's bearer is refused
+# on all of them. `principal="human"` is therefore stated, not defaulted.
+
+def edge(tid, op, blocked_by):
+    return request("POST", "/tickets/%s/edges" % int(tid),
+                   {"op": op, "blockedBy": int(blocked_by)}, "human")
+
+
+def set_parent(tid, parent):
+    # None is sent as an explicit null — that is what orphans a ticket; an
+    # omitted key would read as "leave the parent alone".
+    return request("POST", "/tickets/%s/parent" % int(tid),
+                   {"parent": int(parent) if parent is not None else None},
+                   "human")
+
+
+def relate(tid, op, other):
+    return request("POST", "/tickets/%s/relates" % int(tid),
+                   {"op": op, "ticket": int(other)}, "human")
+
+
+def set_priority(tid, priority):
+    return request("POST", "/tickets/%s/priority" % int(tid),
+                   {"priority": priority}, "human")
+
+
+def set_body(tid, body):
+    return request("POST", "/tickets/%s/body" % int(tid),
+                   {"body": body}, "human")

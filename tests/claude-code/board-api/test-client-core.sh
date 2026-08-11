@@ -32,7 +32,14 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/41/bind","status":200,
   "body":{"ok":true}},
  {"method":"POST","path":"/tickets/12/park-answer","status":200,
-  "body":{"eventId":200}}
+  "body":{"eventId":200}},
+ {"method":"POST","path":"/tickets/5/edges","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/parent","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/relates","status":200,"body":{"ok":true}},
+ {"method":"POST","path":"/tickets/5/priority","status":200,
+  "body":{"ok":true,"noop":true}},
+ {"method":"POST","path":"/tickets/5/body","status":409,
+  "body":{"error":{"code":"ticket-owned","message":"ticket 5 is owned by run 41"}}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
@@ -172,5 +179,42 @@ t "worker context speaks as the run on a human-default verb" '"auth": "Bearer to
 t "missing creds file dies loud" "board credentials file" \
   run_py "/nonexistent" "$CORE
 A.claim('implementer','n-2')"
+
+# The five human-only routes (arkho#7). Each body is pinned whole, because a
+# renamed camelCase key reaches the wire silently and fails only against the
+# real service; and the principal is checked once — these are the operator's
+# verbs, so an operator shell must present the human token, not automation's.
+run_py "$CREDS" "$CORE
+A.edge(5, 'add', 7)" > /dev/null 2>&1 || true
+t "edge body pins op and blockedBy" '{"op": "add", "blockedBy": 7}' \
+  last_body tickets/5/edges
+t "the edge speaks as the human" '"auth": "Bearer human-tok"' last_log tickets/5/edges
+
+# An orphan is an explicit null, not an omitted key: the service reads the
+# absent parent as "leave it alone" and only null detaches.
+run_py "$CREDS" "$CORE
+A.set_parent(5, None)" > /dev/null 2>&1 || true
+t "parent body sends an explicit null to orphan" '{"parent": null}' \
+  last_body tickets/5/parent
+
+run_py "$CREDS" "$CORE
+A.relate(5, 'add', 9)" > /dev/null 2>&1 || true
+t "relates body pins op and ticket" '{"op": "add", "ticket": 9}' \
+  last_body tickets/5/relates
+
+# The server answers a no-change priority write with noop; the helper hands
+# that flag back rather than flattening every answer to success. The expected
+# string is INTERPOLATED, never a literal in the snippet: a traceback echoes
+# its own source line, so a literal 'noop-yes' in there would match the very
+# crash this assert exists to catch.
+t "priority returns the server's noop flag" "noop=True" \
+  run_py "$CREDS" "$CORE
+print('noop=%s' % A.set_priority(5, 'P0').get('noop'))"
+
+t "body surfaces a ticket-owned refusal verbatim" \
+  "ticket-owned — ticket 5 is owned by run 41" \
+  run_py "$CREDS" "$CORE
+try: A.set_body(5, 'x')
+except SystemExit: pass"
 
 finish
