@@ -156,6 +156,7 @@ checkout's repo.
 | script | does |
 |---|---|
 | `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike`\|`env-issue` (Categories above owns their semantics — note an `env-issue` with no explicit `--state` is born `needs-human` and is REFUSED without `--note`); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
+| `board-body.sh <n> --body-file F` | rewrite a ticket's statement of work (`F` may be `-` for stdin; an empty file is a legal edit — clearing it). Both bindings: the API route refuses `ticket-owned` while a run holds the ticket — the body IS the claim-time assignment, so an edit under an open run reaches nobody; enrichment for a BOUND park rides the park answer, never the body. The gh route is a meta-preserving read-modify-write — the trailing `board:meta` block is spliced back byte-for-byte, never parsed, which bare `gh issue edit` clobbers |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent) |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
@@ -341,7 +342,8 @@ until one lands (the arkho#7 route family). Then triage the hits:
   same base regressions blind.
 - **Same seam, different defect** → register, but in the same breath
   `board-relate.sh` your new ticket to every open ticket on that seam
-  (gh binding — board-relate.sh has no API route; there, name the
+  (both bindings, but the API route admits the human principal only — a
+  worker writing under its run token is refused; there, name the
   seam-mates in your ticket body instead and move on).
 - **Cluster tripwire**: if your registration would put a THIRD
   non-terminal ticket onto the same function or contract body, that
