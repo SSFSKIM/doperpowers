@@ -100,14 +100,21 @@ file is a legal edit — clearing the statement of work).
   `409 ticket-owned` refusal reaches the caller verbatim — the message
   names the owning run, and the enrichment channel for a bound park is
   the park answer, not the body; the header documents exactly that.
-- **gh mode:** meta-preserving read-modify-write: snapshot the ticket,
-  `parse_meta` the current body, `render_body(new_text, meta)`, write
-  through `gh issue edit --body-file -`. This is the missing safe
-  counterpart to the documented "flesh out the body with
-  `gh issue edit`" flow, which clobbers the `board:meta` block today.
-  gh mode has no ownership guard (parity with existing gh-mode reality,
-  where nothing stops a body edit; the api guard is a server invariant,
-  not a client one).
+- **gh mode:** meta-preserving read-modify-write — but by **raw
+  splice**, not `parse_meta`/`render_body`: extract the current body's
+  literal `board:meta` suffix (the block `strip_meta` removes), append
+  it to the new text **byte-for-byte**, write through
+  `gh issue edit --body-file -`. The parse/render round-trip is wrong
+  here: `parse_meta` reads a fixed key allowlist and `render_body`
+  canonicalizes order and formatting, so an older client would silently
+  erase keys a newer version introduced and reformat noncanonical
+  blocks. A body-edit verb has no business interpreting the meta at
+  all — it replaces the prose and carries the machine block through
+  untouched. This is the missing safe counterpart to the documented
+  "flesh out the body with `gh issue edit`" flow, which clobbers the
+  `board:meta` block today. gh mode has no ownership guard (parity with
+  existing gh-mode reality, where nothing stops a body edit; the api
+  guard is a server invariant, not a client one).
 
 `board-register.sh` pointers catch up: the header's
 "then YOU flesh out the pre-spec body: `gh issue edit …`" line names
@@ -126,15 +133,21 @@ or a dispatched assignment; A1's body IS the claim-time assignment).
   the OUTCOME state (verified in `src/tickets.js`: the check runs on
   `birthState(...)`'s result), so all three client-known park outcomes
   ride it: explicit park births, the implicit env-issue inversion, and
-  the client's own bodyless demotion to needs-info. The body stays the
-  statement of work; the question is stored whole as `park_note`
-  server-side, verbatim.
-- **A note on a non-park birth** is posted after registration as a
-  `POST /tickets/:id/comment` (`kind: "comment"`,
-  `text: "[board] note: <note>"`) — gh mode records every note as a
-  comment and meta line, and silently dropping the argument in api mode
-  (today's behavior for explicit non-park births) loses documented
-  input. One extra request, only when a note was given.
+  the client's own bodyless demotion to needs-info. The client already
+  computes exactly this classification (the existing `PARK_BIRTHS` +
+  `explicit` logic mirrors `birthState`). The body stays the statement
+  of work; the question is stored whole as `park_note` server-side,
+  verbatim.
+- **A note on a non-park-outcome birth stays in the body head**, as the
+  implicit path does today — the same prepend, now applied to explicit
+  non-park births too (where the argument is silently dropped today).
+  NOT a follow-up comment: registration commits before any second
+  request, so a comment that fails loses the note behind a `duplicate`
+  refusal on retry — and a *worker* registering a child cannot post it
+  at all (`comment` scopes a run to its own ticket, and
+  `_board_api.py`'s `token()` always speaks as the run when
+  `BOARD_RUN_TOKEN` is in env, whatever principal a verb names). The
+  prepend is atomic — one request — and principal-blind.
 - **Client-side refusals stand unchanged**: the "park with no question"
   rule (`--note` required when neither note nor body exists for a park
   birth) mirrors a ruling the server deliberately does not enforce (its
@@ -156,17 +169,34 @@ them at dispatch:
 
 - `_claim_one_with_nonce`'s claim exchange additionally emits
   `C_PR=out.get("pr") or ""` and `C_BRANCH=out.get("branch") or ""`.
-- Variant split mirrors the server's own discriminator direction, on
-  shape: a `pr` matching `^https?://` is the PR variant; anything else
-  non-empty is the scale variant. The render gains
-  `P_CLOSURE_PACKAGE="$C_PR"` and `P_INTEGRATION_REF="$C_BRANCH"` for
-  the scale case (empty/none for the PR case) — `P_REVIEW_MODE` stays
-  `api` (one template block; the worker still branches on its entry
-  artifact, now with real bindings instead of a park order).
+- **The dispatcher splits the variant; the render mode carries it.**
+  The bootstrap template's `<!-- mode:X -->` blocks are exclusive — the
+  renderer keeps only the selected block, so passing scale bindings
+  under `P_REVIEW_MODE=api` renders them into nothing while the
+  surviving api block orders PR resolution against an artifact that is
+  not a PR. A **new `api-scale` mode block** joins the template: the
+  scale framing (recomposition epic, closure package as entry artifact,
+  no PR) composed with the api board substrate (board scripts + run
+  credentials + `TICKET_BODY_FILE`), plus the two binding lines
+  `CLOSURE_PACKAGE: {{CLOSURE_PACKAGE}}` /
+  `INTEGRATION_REF: {{INTEGRATION_REF}}`. Split rule, on shape: `pr`
+  matching `^https?://` → `P_REVIEW_MODE=api` (the PR variant,
+  unchanged); anything else non-empty → `P_REVIEW_MODE=api-scale` with
+  `P_CLOSURE_PACKAGE="$C_PR"`, `P_INTEGRATION_REF="$C_BRANCH"`.
+- **The worker positions its own worktree** — the api claim path spawns
+  in the shared clone and owns its checkout choreography (the
+  established api-mode contract; the gh scale path's dispatcher-side
+  checkout has no counterpart here). The `api-scale` block orders it
+  before ORIENT: `git fetch origin <INTEGRATION_REF>` and check it out
+  (a fetch that fails is a hard stop → park naming the ref, exactly as
+  the PR variant treats an unfetchable base); `BASE_REF` is the repo's
+  **default branch** — what a recomposition epic merges into — not the
+  PR-derived UNRESOLVED sentinel.
 - A scale claim whose `branch` is empty parks exactly as today (the
-  integration ref is the one binding with no fallback — its absence is
-  the un-derivable case the old park text was about), except the park is
-  now the *edge case*, not the whole variant.
+  integration ref is the one binding with no fallback), except the park
+  is now the *edge case*, not the whole variant. The no-aggregate-range
+  fallback (per-child ranges from the closure package) remains the
+  worker-side degradation the Scale review section already defines.
 - `SKILL.md`'s api-mode entry section: the "an event id, not a URL →
   NOT executable … park needs-human" paragraph is replaced with the
   scale-variant entry: `CLOSURE_PACKAGE` / `INTEGRATION_REF` bindings
@@ -191,9 +221,15 @@ flattened in the dispatchers' exact format
 (`#<parent_id> @ event <parent_event_cursor>`, empty when null). Two
 consumers:
 
-- `_persist_successor` stamps it into the successor's registry meta as
-  `parent_pin` (the same key both dispatchers stamp), so a lane-aware
-  resume and the recomposing Architect's lineage check read one format.
+- **`_stamp_lane` grows an optional pin argument** and writes
+  `parent_pin` into the delivered worker's registry meta (the same key
+  both dispatchers stamp). `_stamp_lane` is the one stamp point BOTH
+  delivery branches share — it runs after `board-bind.sh` for the
+  resumed-session leg and the fresh-spawn leg alike — so stamping there
+  covers the fallback branch that `_persist_successor` never touches
+  (`_persist_successor` runs only when a session locator exists, and
+  `board-bind.sh` writes no `parent_pin`). Same durability class as the
+  lane itself, which is stamped at the same point.
 - `_successor_prompt` gains one line when the pin is non-empty —
   `Parent pin (your run's parent-contract window): #N @ event C` — with
   the same rationale the fresh-dispatch path records: no read a worker
@@ -201,7 +237,8 @@ consumers:
   all.
 
 The fresh-spawn fallback path delivers the same prompt, so it inherits
-the line with no extra work.
+the line with no extra work; the meta stamp reaches it through
+`_stamp_lane`.
 
 ### 8. Read parity — `board-show.sh`, `board-map.sh`
 
@@ -210,11 +247,17 @@ the line with no extra work.
   a legal, ordinary state).
 - **board-map** `api_snapshot()` maps `blocked_by` (ids → strings, the
   node shape's currency), `relates` → `relates_to`, and `branch`.
-  Dependency and relates edges render on api boards; `B.eligible`'s cue
-  works from real edges. The docstring's "no edges at all / ELIGIBLE
-  degrades" caveat is rewritten to the remaining honest gaps:
-  `spawned_by`, PR linkage, URL, and timestamps are still not projected,
-  so spawned-by edges don't render and nodes carry no links/ages.
+  Dependency and relates edges render on api boards. The **ELIGIBLE cue
+  stays off for api nodes**: `B.eligible`'s blocker rule requires every
+  blocker `done`, while the server's claim predicate treats `wontfix`
+  blockers as satisfied too (and adds lane/epic/ownership terms) — a
+  client-rederived cue would tell an operator a claimable ticket is
+  waiting. `board-list.sh` already declines this exact rederivation in
+  api mode; the map does the same, and its table says eligibility is
+  the server's answer. The docstring's caveat is rewritten to the
+  remaining honest gaps: `spawned_by`, PR linkage, URL, and timestamps
+  are still not projected, so spawned-by edges don't render and nodes
+  carry no links/ages.
 
 ### Out of scope (stays on dp#51)
 
@@ -266,21 +309,34 @@ against the integration harness (`harness.sh start`; env from
    edge.
 4. `board-body.sh <n> --body-file f` rewrites the body; against an
    owned ticket it prints `ticket-owned — …` naming the run and exits
-   non-zero. In gh mode it preserves the `board:meta` block byte-for-byte.
+   non-zero. In gh mode the `board:meta` block survives **byte-for-byte
+   including noncanonical spelling**: a fixture body carrying an unknown
+   future key, a comment line, and odd whitespace in the block comes
+   through the edit unchanged.
 5. `board-register.sh "t" bug P1 --state needs-human --note "q?" --body-file spec.md`
-   sends `note` and `body` as separate payload fields (request log), and
-   `board-show.sh` on the result shows the park question verbatim.
+   sends `note` and `body` as separate payload fields (request log —
+   the body free of the question), and in the integration tier the
+   birthed decision park's question is `q?` verbatim on
+   `GET /queue/decisions`. (Not asserted through `board-show.sh`: the
+   ticket projection carries no `park_note` and the register event body
+   carries none either — the decisions queue is where the pinned
+   contract exposes the standing question.)
 6. `board-register.sh "spike t" spike P2 --state ready-for-architect --body-file s.md`
    succeeds with no divergence note anywhere in the output.
-7. A qagent claim on an epic carrying a closure package renders a worker
-   prompt whose `CLOSURE_PACKAGE` is the event id and `INTEGRATION_REF`
-   the branch (dispatch dry assertion in the unit tier).
+7. A qagent claim on an epic carrying a closure package renders the
+   **final spawned prompt** from the `api-scale` block: it carries the
+   scale framing, `CLOSURE_PACKAGE` = the event id, `INTEGRATION_REF` =
+   the branch, the fetch/checkout order, and NO PR-resolution
+   instructions; a URL claim renders the `api` block unchanged
+   (dispatch dry assertion on the rendered prompt, unit tier).
 8. A successor claim whose response carries `parentPin` produces a
    registry meta with `parent_pin: "#N @ event C"` and a delivery prompt
-   containing that pin line.
+   containing that pin line — asserted on **both** delivery branches
+   (resumed session AND the fresh-spawn fallback), and a null pin
+   produces neither.
 9. `board-show.sh <n>` (api) prints `branch=`, `blocked_by=`,
    `relates=`; `board-map.sh --write` renders a dependency edge between
-   two api-board tickets.
+   two api-board tickets, with no ELIGIBLE cue on api nodes.
 10. Full suites green: `tests/claude-code/board-api/` unit tier, the
     integration tier under `ARKHO_DIR`, and
     `tests/claude-code/run-skill-tests.sh` + `scripts/lint-shell.sh`.
@@ -310,11 +366,17 @@ against the integration harness (`harness.sh start`; env from
   is URL-shaped, so shape is the stable discriminator; mirroring the
   server's Number() semantics client-side re-imports the exact
   subtlety (`' 42 '`, `'4.2e1'`) that guard exists to bury.
-- **Non-park notes become comments** rather than being dropped or
-  refused client-side. gh parity (gh mode records every note) and the
-  established "a documented invocation that silently loses its argument
-  is worse than one that fails" rule; letting the server refuse would
-  break the implicit-birth-with-note flow that works today.
+- **Non-park notes ride the body head**, not a follow-up comment and
+  not the `note` field. Rejected: a post-registration comment (rev
+  finding — non-atomic: the register commits first, a failed comment
+  loses the note behind `duplicate` on retry; and principal-broken: a
+  run registering a child cannot comment on it, `comment` being scoped
+  to the run's own ticket while `token()` always speaks as the run).
+  Rejected: sending `note` unconditionally and letting the server
+  refuse (`note-not-applicable` would break the implicit-birth-with-note
+  flow that works today). The prepend is atomic, principal-blind, and
+  is what the implicit path already does — extended to explicit
+  non-park births where the argument is silently dropped today.
 - **Edge verbs print the committed op only**, not gh mode's derived
   sweep lines ("now eligible", epic pulls). Those derivations are
   server-side state machinery in api mode; re-deriving client-side to
@@ -323,6 +385,24 @@ against the integration harness (`harness.sh start`; env from
   guards are the contract, with messages built for humans; duplicating
   the walk client-side is the state-machine half `_board_api.py`'s
   header forbids.
+- **`api-scale` is its own render mode**, not bindings smuggled under
+  `api`. The template's mode blocks are exclusive by design (neither
+  worker reads the other's framing); composing scale framing with the
+  api substrate needs a block that carries both, and the dispatcher —
+  which alone sees the claim response — owns the split. Rejected:
+  worker-side branching off the `api` block (the block's own text
+  orders PR resolution; a scale artifact has no PR to resolve).
+- **gh body edit splices the raw meta block**, never parse/render.
+  Rejected: `parse_meta` + `render_body` (fixed key allowlist +
+  canonicalization — an older client would erase a newer version's
+  keys and reformat valid blocks; the verb must not interpret what it
+  only needs to carry).
+- **No ELIGIBLE cue on api map nodes.** Client `B.eligible` and the
+  server's claim predicate disagree (done-only vs done|wontfix terminal
+  blockers, plus lane/epic/ownership terms the client can't see);
+  `board-list.sh` already declines the rederivation in api mode.
+  Rejected: patching `B.eligible` to match (it is gh-mode canon, and
+  the server predicate has terms no client read exposes).
 
 ## Surprises & Discoveries
 
@@ -332,6 +412,18 @@ _(maintained during implementation)_
   state, not the requested one (`src/tickets.js` runs the check on
   `birthState()`'s result) — so the implicit env-issue inversion and the
   client's needs-info demotion both legally carry a note field.
+- (adversarial review, pre-implementation) The ticket projection and
+  the register event both omit `park_note` — the decisions queue is the
+  only read exposing a birth park's standing question; acceptance moved
+  there. The bootstrap renderer drops every unselected mode block, so
+  scale bindings under `P_REVIEW_MODE=api` render into nothing — hence
+  the `api-scale` block. `_persist_successor` runs only when a session
+  locator exists and `board-bind.sh` writes no `parent_pin` — the
+  fresh-spawn leg needed its own stamp point (`_stamp_lane`). The
+  server's terminal-blocker set is `done|wontfix` while client
+  `B.eligible` requires `done` — a live eligibility divergence that
+  killed the map cue. A run registering a child cannot comment on it —
+  which killed the non-park-note-as-comment design.
 
 ## Outcomes & Retrospective
 
@@ -341,3 +433,14 @@ Pending — written at finish.
 
 - v1.0 (2026-08-11): initial spec from the dp#51 consumption design
   session.
+- v1.1 (2026-08-11): codex adversarial review (gpt-5.6-sol xhigh), six
+  findings, all adopted — two with different fixes than recommended:
+  non-park notes moved from follow-up comment to body-head prepend
+  (atomic + principal-blind, vs the reviewer's server-side-atomicity
+  ask, which needs an arkho change this pass doesn't have); scale
+  variant got its own `api-scale` render mode with worker-owned
+  integration-ref checkout (vs dispatcher-side positioning, which the
+  api claim path's shared-clone contract forbids). Straight adoptions:
+  raw-splice gh body edit, `_stamp_lane` as the parent-pin stamp point,
+  park-question acceptance via the decisions queue, no ELIGIBLE cue on
+  api map nodes.
