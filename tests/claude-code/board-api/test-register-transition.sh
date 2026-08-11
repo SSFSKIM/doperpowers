@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-register-transition.sh — the two write verbs' API branches, plus the
-# four human-side verbs that have no API-mode counterpart yet.
+# verbs that still have no API-mode counterpart. Each verb leaves this file's
+# refusal loop as its api branch lands (board-edge.sh → test-edge-verbs.sh).
 #
 # Every assertion rides a real socket against the fixture mock: the verb
 # assembles the request, the mock records what arrived and answers a
@@ -174,7 +175,7 @@ t "bug birth body pins the mapped category and omits birth" \
 
 t "register prints id + url" "30 http://127.0.0.1:$PORT/tickets/30" \
   V board-register.sh "plain one" enhancement P2 --body-file "$SPEC"
-for verb in board-edge.sh board-priority.sh board-relate.sh board-migrate-gh.sh; do
+for verb in board-priority.sh board-relate.sh board-migrate-gh.sh; do
   t "$verb fails loud naming arkho#7" "arkho#7" V "$verb" 1 --block 2
 done
 

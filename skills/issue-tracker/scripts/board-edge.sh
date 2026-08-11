@@ -14,14 +14,12 @@
 # changes re-derive epic states, so it runs the same sweeps as
 # board-transition: an in-progress child pulls its new epic chain, and an
 # epic whose last active child leaves may return for recomposition.
+# In API mode the server enforces the same refusal set and this script only
+# relays it.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
-
-# No API-mode counterpart yet (A1 route gap), so refuse rather than silently
-# writing through a gh path that a board-API repo does not have.
-_refuse_no_api_route "re-cutting parent / blocked-by edges"
 
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 tid="$1"
@@ -39,6 +37,45 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$op" ] || { usage_from_header "$0" >&2; exit 2; }
+
+# API mode: the server owns every structural guard — self-edge, dependency and
+# parent cycles, ancestor-blocker, duplicate/no-such-edge — and refuses with a
+# message naming the state (API.md §4.2). The client sends the one edge op and
+# prints the move that committed; the gh half's derived lines ("now eligible",
+# epic pulls) are server-side sweeps here and are not re-derived.
+if [ "$BOARD_BINDING" = api ]; then
+  T_ID="$tid" T_OP="$op" T_REF="$ref" _api_py - <<'PY'
+import os
+import _board_api as A
+
+
+def ref(raw):
+    """A ticket ref — '#42'/'42' → 42, same refusal as gh mode."""
+    n = raw.lstrip("#")
+    if not n.isdigit():
+        A.die("not an issue number: %s" % raw)
+    return int(n)
+
+
+tid = ref(os.environ["T_ID"])
+op = os.environ["T_OP"]
+other = ref(os.environ["T_REF"]) if os.environ["T_REF"] else None
+if op == "block":
+    A.edge(tid, "add", other)
+    print("#%s: blocked_by += #%s" % (tid, other))
+elif op == "unblock":
+    A.edge(tid, "cut", other)
+    print("#%s: blocked_by -= #%s" % (tid, other))
+elif op == "parent":
+    A.set_parent(tid, other)
+    print("#%s: parent = #%s" % (tid, other))
+else:  # orphan
+    A.set_parent(tid, None)
+    print("#%s: parent cleared" % tid)
+PY
+  _rerender_if_serving
+  exit 0
+fi
 
 T_ID="$tid" T_OP="$op" T_REF="$ref" _py - <<'PY'
 import os
