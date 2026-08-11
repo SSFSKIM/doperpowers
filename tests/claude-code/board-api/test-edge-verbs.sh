@@ -24,6 +24,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/tickets/5/edges","status":200,"body":{"ok":true},"once":true},
  {"method":"POST","path":"/tickets/5/edges","status":409,
   "body":{"error":{"code":"edge-cycle","message":"#7 already waits on #5"}},"once":true},
+ {"method":"POST","path":"/tickets/5/edges","status":409,
+  "body":{"error":{"code":"self-edge","message":"a ticket cannot block itself"}},"once":true},
  {"method":"POST","path":"/tickets/5/edges","status":200,"body":{"ok":true}},
  {"method":"POST","path":"/tickets/5/parent","status":200,"body":{"ok":true},"once":true},
  {"method":"POST","path":"/tickets/5/parent","status":409,
@@ -82,6 +84,17 @@ V board-edge.sh 5 --block 7 > "$CYCLE_OUT" 2>&1 || CYCLE_RC=$?
 t "a cycle refusal surfaces the server's identifier" "edge-cycle" cat "$CYCLE_OUT"
 t "a cycle refusal surfaces the server's message" "#7 already waits on #5" cat "$CYCLE_OUT"
 t "a refused edge exits nonzero" "rc=1" echo "rc=$CYCLE_RC"
+
+# The sharpest form of the same property: the gh path rejects a self-edge in
+# its own code, so this branch must NOT — `--block 5` on #5 has to reach the
+# wire and come back refused. Its fixture is a `once` entry, and first-unused
+# wins, so this call has to be the third on /tickets/5/edges; parked any later
+# the standing 200 below would answer it.
+SELF_OUT="$(mktemp)"
+V board-edge.sh 5 --block 5 > "$SELF_OUT" 2>&1 || true
+t "a self-edge is sent, not adjudicated locally" '{"op": "add", "blockedBy": 5}' \
+  last_body /tickets/5/edges
+t "the server's self-edge refusal surfaces" "self-edge" cat "$SELF_OUT"
 
 t "unblock prints the cut" "#5: blocked_by -= #7" V board-edge.sh 5 --unblock 7
 t "the unblock payload says cut" '{"op": "cut", "blockedBy": 7}' \

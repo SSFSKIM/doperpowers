@@ -86,6 +86,7 @@ tests=(
     "board-api/test-client-core.sh"
     "board-api/test-read-verbs.sh"
     "board-api/test-register-transition.sh"
+    "board-api/test-edge-verbs.sh"
     "board-api/test-comment.sh"
     "board-api/test-answer.sh"
     "board-api/test-bind.sh"
