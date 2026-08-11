@@ -376,25 +376,34 @@ And the gh-mode raw-splice test as its own unit block (no mock needed — stub `
 
 ```bash
 # ---- board-body.sh (gh half): the raw meta splice ----
-# The board:meta block must survive BYTE-FOR-BYTE, noncanonical spelling and
-# unknown future keys included — parse/render would canonicalize and drop.
+# The TRAILING board:meta block must survive BYTE-FOR-BYTE, noncanonical
+# spelling and unknown future keys included — parse/render would canonicalize
+# and drop. The stored prose deliberately QUOTES a marker-like example before
+# the real trailing block: a first-marker find would splice from the quote
+# and corrupt the body, so this fixture is the guard against that.
 ghr="$(mkrepo)"
 gstub="$(mktemp -d)"
 cat > "$gstub/gh" <<'EOF'
 #!/usr/bin/env bash
-# view → the stored body; edit --body-file - → capture stdin
+# issue view --json body → the stored body; issue edit --body-file - →
+# capture stdin. The implementer aligns these match arms (and the repo-name
+# resolution B.repo() makes) with the implementation's exact argv, answering
+# each contract-shaped — the stub must satisfy every gh call the verb makes,
+# because the assertion below pins the command's EXIT STATUS.
 case "$*" in
-  *"issue view"*) printf 'old prose\n\n<!-- board:meta\nfuture-key: kept\n# a comment line\nbranch:   odd/spacing\n-->\n' ;;
+  *"issue view"*) printf 'old prose quoting an example:\n<!-- board:meta\nfake: example\n-->\nmore old prose\n\n<!-- board:meta\nfuture-key: kept\n# a comment line\nbranch:   odd/spacing\n-->\n' ;;
   *"issue edit"*) cat > "$GH_BODY_CAPTURE" ;;
-  *"repo view"*|*"api "*) echo '{}' ;;
+  *) echo '{}' ;;
 esac
 EOF
 chmod +x "$gstub/gh"
 NEWB="$(mktemp)"; printf 'new prose' > "$NEWB"
 CAP="$(mktemp)"
+GH_RC=0
 ( cd "$ghr" && PATH="$gstub:$PATH" GH_BODY_CAPTURE="$CAP" \
-  "$SCRIPTS/board-body.sh" 12 --body-file "$NEWB" ) >/dev/null 2>&1 || true
-t "gh body edit keeps the meta block byte-for-byte" \
+  "$SCRIPTS/board-body.sh" 12 --body-file "$NEWB" ) >/dev/null 2>&1 || GH_RC=$?
+t "gh body edit exits zero (no swallowed stub failure)" "rc=0" echo "rc=$GH_RC"
+t "gh body edit keeps the TRAILING meta block byte-for-byte" \
   '<!-- board:meta
 future-key: kept
 # a comment line
@@ -402,9 +411,10 @@ branch:   odd/spacing
 -->' cat "$CAP"
 t "gh body edit replaced the prose" "new prose" cat "$CAP"
 nt "gh body edit did not keep the old prose" "old prose" cat "$CAP"
+nt "the quoted marker example did not survive as a splice point" "fake: example" cat "$CAP"
 ```
 
-(The implementer adjusts the `gh` stub's match strings to the exact `gh` argv the implementation uses — the pinned substance is the byte-identical meta block and the replaced prose.)
+(The implementer adjusts the `gh` stub's match arms to the exact `gh` argv the implementation uses — the pinned substance is: exit 0, the byte-identical TRAILING block, the replaced prose, and the quoted example NOT surviving.)
 
 - [ ] **Step 2: Run to verify failure.** `tests/claude-code/board-api/test-edge-verbs.sh` — new asserts fail (`board-body.sh: No such file`).
 
@@ -461,19 +471,20 @@ import os
 import _board as B
 
 env = os.environ
-tickets = B.snapshot()
-tid = B.resolve(env["T_ID"], tickets)
-old = tickets[tid].get("body") or ""
+tid = env["T_ID"].lstrip("#")
+# A dedicated single-issue read, NOT B.snapshot(): the verb needs one body,
+# and the snapshot's GraphQL sweep is unstubable overhead a body edit has no
+# business paying.
+old = B.gh(["issue", "view", tid, "-R", B.repo(), "--json", "body",
+            "--jq", ".body"])
 new = open(env["T_FILE"]).read()
-# The raw splice: everything from the meta block's opening marker onward is
-# carried through unchanged. META_RE would also match, but a regex round-trip
-# is exactly the interpretation this verb must not do — a plain find on the
-# literal marker keeps the block's bytes, comments and spacing included.
-marker = "<!-- board:meta\n"
-i = old.find(marker)
-if i >= 0:
-    tail = old[i:]
-    new = new.rstrip("\n") + "\n\n" + tail
+# The raw splice: the TRAILING meta block's bytes are carried through
+# unchanged. META_RE is used for its byte OFFSET only — it anchors at the
+# end of the body, so a marker-like example quoted in the prose can never be
+# mistaken for the block — and its match text is never parsed or re-rendered.
+m = B.META_RE.search(old)
+if m:
+    new = new.rstrip("\n") + "\n" + old[m.start():]
 B.set_body(tid, new)
 print("#%s: body rewritten" % tid)
 PY
@@ -635,19 +646,25 @@ Update the api-path comment that starts `# No API note field for the birth quest
 - Consumes: claim response `pr`/`branch` (server contract, live since a05b1ac).
 - Produces: rendered prompt binding lines `CLOSURE_PACKAGE:` / `INTEGRATION_REF:` for api-scale claims.
 
-- [ ] **Step 1: Write the failing test.** In `test-review-dispatch-claim.sh`, find the claim fixture(s) for `/runs/claim` and add a second scenario. Add a `once` fixture FIRST in the fixture array (order matters — first match wins):
+- [ ] **Step 1: Write the failing test.** In `test-review-dispatch-claim.sh`, add TWO NEW ISOLATED SCENARIOS — do NOT splice fixtures into the file's existing once-queue (the dispatcher loops to its cap, so a prepended grant shifts every existing scenario's consumption; and the file's existing claim fixture carries no URL `pr`, so it exercises the empty-`pr` fallback, not URL classification). Each scenario gets its OWN mock instance (fresh fixture file + port + `DAEMON_HOME`, the file's scaffold re-run — or a fresh sub-scope of it), is **lifecycle-complete** (grant + standing `{"claimed": false}` + `/runs/<id>/bind` 200 + activity/renew standing fixtures as the dispatcher needs), and asserts the HANDOFF SUCCEEDED, not just prompt text.
+
+Scenario A — scale claim:
 
 ```json
+[
  {"method":"POST","path":"/runs/claim","status":200,"once":true,
   "body":{"claimed":true,"runId":61,"ticketId":88,"fence":2,"bearer":"scale-bearer",
           "body":"epic assignment","pr":"3141","branch":"epic/e9-integration",
-          "parentPin":null}}
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/61/bind","status":200,"body":{"ok":true}}
+]
 ```
-
-(Adjust to sit before the file's existing claim fixture so the FIRST dispatch tick consumes it; then re-order the existing asserts or run a dedicated dispatch tick first — follow the file's own sequencing idiom.) Add asserts on the captured prompt (the daemon-spawn stub stores it at `$DAEMON_HOME/prompt-<name>.md`):
 
 ```bash
 SCALE_PROMPT="$DAEMON_HOME/prompt-88-api-qagent.md"
+t "the scale dispatch reports the handoff" "claimed #88 run=61" <the-dispatch-invocation>
+t "the bind reached the wire" '"path": "/runs/61/bind"' bash -c "cat '$FIX.log'"
 t "an event-id pr renders the api-scale block" "SCALE REVIEWER of recomposition epic #88" cat "$SCALE_PROMPT"
 t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "$SCALE_PROMPT"
 t "the integration ref binding rides the prompt" '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
@@ -656,13 +673,14 @@ nt "the scale prompt carries no PR-resolution order" "UNRESOLVED-resolve-from-th
 nt "the scale prompt never went out as mode api" "board is the Arkho board API, not GitHub issues: every board read" cat "$SCALE_PROMPT"
 ```
 
-And one guard assert for the existing URL path (the later claim fixture): the existing prompt assertions in the file already pin the `api` block — extend with:
+Scenario B — URL claim (real HTTPS `pr`), same lifecycle shape with `"pr":"https://github.com/o/r/pull/9","branch":"feat/x"` and run/ticket ids of its own:
 
 ```bash
-t "a URL pr still renders the api block" "resolving what that PR MERGES INTO" cat "$DAEMON_HOME/prompt-<existing-name>.md"
+t "a URL pr renders the api block" "resolving what that PR MERGES INTO" cat "$DAEMON_HOME/prompt-<B-ticket>-api-qagent.md"
+t "the URL dispatch reports its handoff" "claimed #<B-ticket>" <the-dispatch-invocation-capture>
 ```
 
-(implementer: substitute the actual existing prompt filename used by the file's first scenario.)
+(implementer: reuse the file's scaffold helpers for both scenarios; `<the-dispatch-invocation>` is the file's existing dispatch-run capture idiom. The existing scenarios stay byte-identical.)
 
 - [ ] **Step 2: Run to verify failure.** `tests/claude-code/board-api/test-review-dispatch-claim.sh` — new asserts fail (no api-scale block exists; the scale claim renders the api block).
 
@@ -683,6 +701,14 @@ for your run through the credentials already in your environment
 
 Your assignment is the ticket text as the claim delivered it, at
 {{TICKET_BODY_FILE}} — read it first; there is no other route to it.
+
+**If the `INTEGRATION_REF` binding below is EMPTY, stop here**: the claim
+carried no integration ref, and there is nothing to derive one from —
+park immediately with
+`{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "scale review: the claim carried no integration ref"`
+and end your turn. (An empty ref must never reach the fetch: bare
+`git fetch origin` can SUCCEED by fetching configured refs, and the
+failure would surface one step late, at a checkout of `origin/`.)
 
 Your worktree starts on the repo's current head; positioning it is yours
 to do, before ORIENT: `git fetch origin {{INTEGRATION_REF}}` and
@@ -883,10 +909,15 @@ t "empty arrays print as []" "blocked_by=[] relates=[]" V board-show.sh 13
 ```bash
 t "map draws the dependency edge" 'data-edge="blocked_by"' \
   bash -c "V board-map.sh --write >/dev/null; cat '$r/BOARD.html'"
-nt "no ELIGIBLE cue on api nodes" ">ELIGIBLE<" bash -c "cat '$r/BOARD.html'"
+# The cue has THREE consumers; assert each in the ARTIFACT, with fixture rows
+# that would be eligible under gh rules (a ready-state leaf, no blockers) so a
+# still-derived cue actually fires and the nt asserts discriminate:
+nt "no serialized eligible:true on api nodes" '"eligible": true' bash -c "cat '$r/BOARD.html'"
+nt "no s_elig card class on api nodes" 's_elig' bash -c "cat '$r/BOARD.html'"
+t "the legend says eligibility is server-owned" "server-owned (API mode)" bash -c "cat '$r/BOARD.html'"
 ```
 
-(implementer: read `board-map.template.html`/the renderer to learn the real edge markup and the ELIGIBLE cue's real spelling, and pin those actual strings — the substance is: an edge exists in the output, the eligibility cue does not.)
+(implementer: read the renderer to confirm the real spellings of the edge markup, the serialized flag, the card class, and the label — pin the ACTUAL strings, and first verify each `nt` string DOES appear when the same fixture renders under the pre-change code, so the asserts fail against the parent commit rather than passing vacuously.)
 
 - [ ] **Step 2: Run to verify failure.** `tests/claude-code/board-api/test-read-verbs.sh` — new asserts fail.
 
@@ -938,7 +969,7 @@ Rewrite the docstring's degradation paragraph to:
     """
 ```
 
-Then find where the renderer computes the eligibility cue (`B.eligible`) and gate it off for api mode: locate the call in `board-map.sh` and wrap it as `(not API) and B.eligible(...)` — or, if the cue rides a node field, set that field only when `not API`. The table/legend note for api boards should say `eligibility: server-owned (API mode)` — put that string wherever the existing degradation note lives.
+Then kill the cue at ITS DERIVATION, not one consumer: `B.eligible` feeds THREE independent surfaces in `board-map.sh` — the Markdown label, the HTML card class (`s_elig`), and the serialized node's `eligible` flag. Grep every `B.eligible` call/derived field in the file and compute ONE api-aware value at each derivation point — `elig = (not API) and B.eligible(...)` — so all three consumers read the same answer; clearing only the node field would leave an api card visibly badged. The table/legend note for api boards says `eligibility: server-owned (API mode)`, placed where the existing degradation note lives.
 
 - [ ] **Step 5: Run.** `tests/claude-code/board-api/test-read-verbs.sh` → PASS.
 
