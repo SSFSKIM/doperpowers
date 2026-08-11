@@ -309,16 +309,15 @@ is live.
 ROUTE each finding to exactly one bin. The engine's native severity is
 your starting rank, not your verdict: evaluate each finding's real
 stakes and route on your own judgment. Every NEW finding defaults to
-WAVE regardless of severity — small findings ride the same wave as
-blockers; severity orders the wave, it does not pick the bin. Mid-loop
+WAVE regardless of severity — severity orders the wave, it does not
+pick the bin. Mid-loop
 LOG is a judgment departure only (a fix whose churn exceeds its worth)
 and takes a stated reason in the trail; LOG's ordinary intake is the
 review's exit (RE-REVIEW). Deep verification
 against the code stays the fixer's verify-then-fix job; you judge
 substance and route.
-- WAVE — the default for every NEW finding, blocker or not, including
-  any SPEC FINDING within this PR's scope: put it on the wave board
-  (FIX WAVES).
+- WAVE — the default for every NEW finding, including any SPEC FINDING
+  within this PR's scope: put it on the wave board (FIX WAVES).
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
   than about half the original PR's size): register a ticket per the
   doperpowers:issue-tracker ticket contract — run its pre-registration
@@ -374,9 +373,8 @@ dupe; re-wave it within the caps. The exit condition is no NEW finding
 of ANY severity, not a clean report: a round whose findings all match
 already-routed items ends the review, and reaching the wave/round cap
 with no blocker left ends it too. At that exit — and only then — LOG
-whatever valid non-blockers remain unrouted; this exit plus
-stated-reason departures are the tech-debt sink's entire intake, so
-small findings get fixed in the loop instead of accumulating as debt.
+whatever valid non-blockers remain unrouted, so small findings get
+fixed in the loop instead of accumulating as debt.
 At the cap with unresolved blockers there is no
 confidence to grant. When those blockers cluster at one seam — each
 wave's fix spawning the next finding there — that is a decomposition
