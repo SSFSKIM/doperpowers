@@ -92,15 +92,17 @@ t "the resume is delivered BEFORE any fresh worker is started" \
 
 # ---- and the successor is a real successor ---------------------------------
 SUCC_FENCE=$((FENCE + 1))
-t "the successor carries fence + 1" "BOARD_RUN_FENCE=$SUCC_FENCE" cat "$RESUME_LOG"
-nt "on a run that is not the reclaimed one" "BOARD_RUN_ID=$RUN" cat "$RESUME_LOG"
+# Each env line is closed by `eol`: without a terminator `BOARD_RUN_ID=7` is a
+# substring of `BOARD_RUN_ID=70`, and the `nt` below — the assertion that the
+# successor is NOT the reclaimed run — would fail for that wrong reason.
+t "the successor carries fence + 1" "BOARD_RUN_FENCE=$SUCC_FENCE;" eol "$RESUME_LOG"
+nt "on a run that is not the reclaimed one" "BOARD_RUN_ID=$RUN;" eol "$RESUME_LOG"
 t "the successor is told to read its own timeline first" \
   "board-show.sh $STUCK" cat "$PROJECTS/$UUID.jsonl"
 # The successor run id, read off the tick's own report, so the ownership
 # assertion below names the run this tick actually opened.
 SUCC_RUN="$(sed -n "s/^resume: #$STUCK run \([0-9][0-9]*\) .*/\1/p" "$OUT" | head -1)"
-owner_line() { echo "owner=$(ticket_owner "$1")"; }
-t "and the board hands the ticket to that successor" "owner=$SUCC_RUN" owner_line "$STUCK"
+t "and the board hands the ticket to that successor" "owner=[$SUCC_RUN]" owner_line "$STUCK"
 t "with the ticket still in flight — a resume is not a re-queue" \
   "in-progress" ticket_state "$STUCK"
 

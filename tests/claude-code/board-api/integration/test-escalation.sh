@@ -73,11 +73,12 @@ SQL
   wait_until 30 "the service to reclaim run $run (cycle $CYCLE)" \
     env T_TOK="$AUTOMATION_TOKEN" T_URL="$BOARD_API_URL" T_TID="$TID" bash -c \
       'curl -s -H "authorization: Bearer $T_TOK" "$T_URL/runs/needing-resume" \
-         | grep -q "\"ticketId\":$T_TID"' || exit 1
+         | grep -q "\"ticketId\":$T_TID[,}]"' || exit 1
 }
 broken_resume() { in_repo RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 "$SCRIPTS/_sweep_api.sh" resume; }
-owner_line() { echo "owner=$(ticket_owner "$1")"; }
-suppression() { cat "$DAEMON_HOME/board-suppress/$TID.json" 2>/dev/null || echo "no suppression record"; }
+# `eol` because the record is JSON the drill did not author: `"env_issue": 9`
+# ENDS its line, so only an explicit terminator keeps it from matching 90.
+suppression() { eol "$DAEMON_HOME/board-suppress/$TID.json" 2>/dev/null || echo "no suppression record"; }
 
 # ---- cycles 1 and 2: counted, never escalated -----------------------------
 arm_cycle
@@ -85,7 +86,7 @@ OUT1="$DRILL_TMP/cycle1.out"; broken_resume >"$OUT1" 2>&1 || true
 t  "cycle 1 is counted"                         "recovery cycle 1 of 3"    cat "$OUT1"
 t  "neither vehicle delivered"                  "neither vehicle delivered" cat "$OUT1"
 t  "and the undeliverable successor is released, not left to squat" \
-   "owner=None"                                 owner_line "$TID"
+   "owner=[None]"                               owner_line "$TID"
 nt "nothing is escalated yet"                   "env-issue"                cat "$OUT1"
 t  "and no suppression record is written"       "no suppression record"    suppression
 
@@ -103,8 +104,8 @@ EID="$(sed -n "s/.*env-issue #\([0-9][0-9]*\).*/\1/p" "$OUT3" | head -1)"
 t "the env-issue is born needs-human"           "#$EID needs-human"        in_repo "$SCRIPTS/board-list.sh"
 t "and names the stuck ticket"                  "ticket #$TID cannot be revived" \
   in_repo "$SCRIPTS/board-list.sh"
-t "the suppression record freezes the board state it stuck in" '"state": "in-progress"' suppression
-t "and names the env-issue that lifts it"       "\"env_issue\": $EID"      suppression
+t "the suppression record freezes the board state it stuck in" '"state": "in-progress",' suppression
+t "and names the env-issue that lifts it"       "\"env_issue\": $EID;"     suppression
 # Automation holds no transition authority — the ticket is left where it was.
 t "the stuck ticket is NOT parked by automation" "in-progress"             ticket_state "$TID"
 
@@ -113,14 +114,14 @@ arm_cycle
 OUT4="$DRILL_TMP/cycle4.out"; broken_resume >"$OUT4" 2>&1 || true
 t  "a suppressed ticket is skipped by the resume phase" "suppressed — skipping #$TID" cat "$OUT4"
 nt "and no cycle is charged for a ticket nobody tried"  "recovery cycle"   cat "$OUT4"
-t  "so no successor is opened on it"                    "owner=None"       owner_line "$TID"
+t  "so no successor is opened on it"                    "owner=[None]"     owner_line "$TID"
 
 OUT5="$DRILL_TMP/dispatch.out"
 sweep dispatch >"$OUT5" 2>&1 || true
 t "a dispatcher that draws a suppressed ticket hands the run straight back" \
   "#$TID is suppressed — releasing run"          cat "$OUT5"
 t "and that lane stands down for the tick"       "stands down this tick"   cat "$OUT5"
-t "leaving the ticket unowned"                   "owner=None"              owner_line "$TID"
+t "leaving the ticket unowned"                   "owner=[None]"            owner_line "$TID"
 
 # ---- the human fixes the substrate and closes the env-issue ---------------
 arm_cycle

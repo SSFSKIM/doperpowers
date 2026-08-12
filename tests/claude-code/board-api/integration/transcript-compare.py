@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """transcript-compare.py — the transcript-diff drill's judge.
 
-Reads two capture files (one step per line, JSON: {i, argv, rc, out}) produced
-by running THE SAME verb sequence under the two bindings, and reports, per
-step, whether the worker-visible surface is the same.
+Reads two capture files (one step per line, JSON: {i, argv, argv_raw, rc, out})
+produced by running THE SAME verb sequence under the two bindings, and reports,
+per step, whether the worker-visible surface is the same.
 
 Two levels, and the split is the whole point:
 
   STRICT   the argv and the exit status must match, step for step. "Same
            scripts, same arguments, same refusal vocabulary" (spec § Purpose)
            begins here: if the two bindings disagree about whether a call is
-           legal, nothing downstream is comparable.
+           legal, nothing downstream is comparable. The argv compared is
+           `argv_raw` — the step as WRITTEN, `%T` unsubstituted — because each
+           walk registers its own ticket and the two ids are never equal. The
+           alternative, normalizing digits out of the executed argv, would also
+           erase step 6's literal 4242, and that step is precisely the known
+           ticket / unknown ticket distinction.
 
   NORMALIZED  stdout/stderr is compared after transport tokens are erased —
            urls, timestamps, ids, session uuids. What survives that is content,
@@ -100,8 +105,9 @@ def main(gh_path, api_path):
             print("STEP %d MISSING (gh=%s api=%s)" % (i, g is not None, a is not None))
             bad += 1
             continue
-        if g["argv"] != a["argv"]:
-            print("STEP %d ARGV-MISMATCH\n  gh : %s\n  api: %s" % (i, g["argv"], a["argv"]))
+        if g["argv_raw"] != a["argv_raw"]:
+            print("STEP %d ARGV-MISMATCH\n  gh : %s\n  api: %s"
+                  % (i, g["argv_raw"], a["argv_raw"]))
             bad += 1
             continue
         if g["rc"] != a["rc"]:
@@ -112,7 +118,7 @@ def main(gh_path, api_path):
         same = norm(g["out"]) == norm(a["out"])
         pin = PINNED.get(i)
         if same and not pin:
-            print("STEP %d IDENTICAL  %s" % (i, " ".join(g["argv"])))
+            print("STEP %d IDENTICAL  %s" % (i, " ".join(g["argv_raw"])))
         elif same and pin:
             print("STEP %d PINNED-BUT-IDENTICAL(%s) — the table is stale, drop the entry"
                   % (i, pin[0]))
@@ -121,7 +127,7 @@ def main(gh_path, api_path):
             print("STEP %d DIVERGES(%s) — %s" % (i, pin[0], pin[1]))
         else:
             print("STEP %d UNEXPECTED-DIVERGENCE  %s\n  gh : %s\n  api: %s"
-                  % (i, " ".join(g["argv"]), norm(g["out"]), norm(a["out"])))
+                  % (i, " ".join(g["argv_raw"]), norm(g["out"]), norm(a["out"])))
             bad += 1
     print("VERDICT: %s (%d step(s) unaccounted for)"
           % ("accounted" if not bad else "UNACCOUNTED", bad))

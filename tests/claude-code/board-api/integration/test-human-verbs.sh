@@ -47,10 +47,12 @@ register() {  # register <title> <category> <priority> [opts...] — prints the 
   printf '%s\n' "$out" | awk 'END{print $1}'
 }
 
-# The server's own projection for one ticket, as `k=v` lines — GET /tickets is
+# The server's own projection for one ticket, as `k=[v]` lines — GET /tickets is
 # the route every one of these fields is published on, so the assertions read
 # what a consumer reads. A null prints as `-`: "no parent" is an ordinary
-# answer and must be assertable as one.
+# answer and must be assertable as one. EVERY value is bracketed, scalars
+# included: `parent=[9]` cannot be satisfied by the row of a ticket parented
+# under #90, which is exactly what the bare `parent=9` allowed.
 row() {  # row <ticket>
   api automation GET /tickets | T_ID="$1" python3 -c '
 import json, os, sys
@@ -61,7 +63,7 @@ if t is None:
 def v(k):
     return "-" if t.get(k) is None else t[k]
 for k in ("state", "priority", "parent", "branch", "pr_url", "owner_run"):
-    print("%s=%s" % (k, v(k)))
+    print("%s=[%s]" % (k, v(k)))
 print("blocked_by=[%s]" % " ".join(str(b) for b in t.get("blocked_by") or []))
 print("relates=[%s]" % " ".join(str(x) for x in t.get("relates") or []))'
 }
@@ -88,6 +90,9 @@ run_rc() {  # run_rc <cmd...>
   out="$("$@" 2>&1)" || rc=$?
   printf '%s\nrc=%s\n' "$out" "$rc"
 }
+
+# The ticket a claim drew, delimited: `drew #1` is a substring of `drew #12`.
+drew() { echo "[drew #$1]"; }
 
 end_run() {  # end_run <run-id> — the abandon path, through its own route
   api automation POST "/runs/$1/end" '{"reason":"abandoned"}' >/dev/null
@@ -116,8 +121,8 @@ t "and cutting one that is not is no-such-edge" "no-such-edge" \
 # A is older than B and would be drawn first; blocked, it is passed over, and
 # with B taken the lane has nothing left to give.
 IFS=$'\t' read -r RUN_B TICK_B _ _ <<<"$(claim_run implementer human-verbs-blocked)"
-t "the blocked leaf is passed over for the younger one" "drew #$TID_B" \
-  echo "drew #$TICK_B"
+t "the blocked leaf is passed over for the younger one" "[drew #$TID_B]" \
+  drew "$TICK_B"
 t "and a blocked ticket is beyond the dispatcher's reach entirely" '"claimed":false' \
   api automation POST /runs/claim \
     '{"lane":"implementer","dispatchNonce":"human-verbs-blocked-probe"}'
@@ -126,17 +131,17 @@ t "the unblock reports the cut" "#$TID_A: blocked_by -= #$TID_B" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --unblock "$TID_B"
 t "and the projection is empty again" "blocked_by=[]" row "$TID_A"
 IFS=$'\t' read -r RUN_A TICK_A _ _ <<<"$(claim_run implementer human-verbs-unblocked)"
-t "the same claim now draws the ticket the edge was holding back" "drew #$TID_A" \
-  echo "drew #$TICK_A"
+t "the same claim now draws the ticket the edge was holding back" "[drew #$TID_A]" \
+  drew "$TICK_A"
 end_run "$RUN_A"
 end_run "$RUN_B"
-t "the abandoned run released the ticket" "owner_run=-" row "$TID_A"
+t "the abandoned run released the ticket" "owner_run=[-]" row "$TID_A"
 
 # ---- 3. the re-grade, and its write-if-changed noop -------------------------
 REGRADE="$(in_repo "$SCRIPTS/board-priority.sh" "$TID_A" P0 2>&1)" || true
 t  "the re-grade reports the grade that committed" "#$TID_A: → P0" printf '%s\n' "$REGRADE"
 nt "a real change is not a noop"                   "(noop)"        printf '%s\n' "$REGRADE"
-t "and the board shows it" "priority=P0" row "$TID_A"
+t "and the board shows it" "priority=[P0]" row "$TID_A"
 t "re-sending the standing grade writes nothing, and says so" "#$TID_A: → P0 (noop)" \
   in_repo "$SCRIPTS/board-priority.sh" "$TID_A" P0
 
@@ -159,10 +164,10 @@ TID_E="$(register "human-verbs epic E" enhancement P2 --state ready-for-architec
   --body-file "$(spec e 'Epic E exists to be a parent and then to stop being one.')")"
 t "the reparent reports the destination" "#$TID_A: parent = #$TID_E" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --parent "$TID_E"
-t "and the row moves with it" "parent=$TID_E" row "$TID_A"
+t "and the row moves with it" "parent=[$TID_E]" row "$TID_A"
 t "the orphan reports the clear" "#$TID_A: parent cleared" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --orphan
-t "and the row has no parent" "parent=-" row "$TID_A"
+t "and the row has no parent" "parent=[-]" row "$TID_A"
 
 # ---- 6. the body edit, and the run that forbids it -------------------------
 BODY2="$(spec a2 'The sharpened statement of work, written while nobody owned the ticket.')"
@@ -172,7 +177,7 @@ t "re-sending the standing body writes nothing" "#$TID_A: body rewritten (noop)"
   in_repo "$SCRIPTS/board-body.sh" "$TID_A" --body-file "$BODY2"
 
 IFS=$'\t' read -r RUN_A2 TICK_A2 _ _ <<<"$(claim_run implementer human-verbs-body)"
-t "the P0 ticket is what the lane draws" "drew #$TID_A" echo "drew #$TICK_A2"
+t "the P0 ticket is what the lane draws" "[drew #$TID_A]" drew "$TICK_A2"
 BODY3="$(spec a3 'The edit that must not reach a worker holding an older assignment.')"
 OWNED="$(run_rc in_repo "$SCRIPTS/board-body.sh" "$TID_A" --body-file "$BODY3")"
 # The body IS the claim-time assignment: an edit under an open run would reach
@@ -187,7 +192,7 @@ t "once the run ends, the same edit commits" "#$TID_A: body rewritten" \
 SPEC7="$(spec park 'The statement of work a park birth keeps while its question stands.')"
 TID_P="$(register "human-verbs park birth" enhancement P2 --state needs-human \
   --note "which database?" --body-file "$SPEC7")"
-t "the birth parks the ticket" "state=needs-human" row "$TID_P"
+t "the birth parks the ticket" "state=[needs-human]" row "$TID_P"
 t "the note is the standing question, verbatim" "question=which database?" \
   park_question "$TID_P"
 # There is no body read route, so the write-if-changed noop IS the read: a
@@ -203,7 +208,7 @@ SPIKE="$(in_repo "$SCRIPTS/board-register.sh" "human-verbs spike" spike P2 \
   --body-file "$(spec spike 'A spike whose first act is a design pass.')" 2>&1)" || true
 t "the spike is born" "$BOARD_API_URL/tickets/" printf '%s\n' "$SPIKE"
 TID_S="$(printf '%s\n' "$SPIKE" | awk 'END{print $1}')"
-t "into the architect queue, as R2 rules" "state=ready-for-architect" row "$TID_S"
+t "into the architect queue, as R2 rules" "state=[ready-for-architect]" row "$TID_S"
 # The client used to warn that this birth diverged from the server; arkho#7
 # closed that gap, and the retired warning must not have survived it.
 nt "and carries no divergence note" "arkho/issues/7" printf '%s\n' "$SPIKE"
@@ -213,13 +218,13 @@ TID_L="$(register "human-verbs leaf close" enhancement P1 \
   --body-file "$(spec l 'The leaf that has to reach done through the review lane.')")"
 t "the leaf goes in-flight with its working ref" "#$TID_L: → in-progress" \
   in_repo "$SCRIPTS/board-transition.sh" "$TID_L" in-progress --branch feat/human-verbs
-t "and the branch is recorded on the row" "branch=feat/human-verbs" row "$TID_L"
+t "and the branch is recorded on the row" "branch=[feat/human-verbs]" row "$TID_L"
 t "the artifact carries it into review" "#$TID_L: → in-review" \
   in_repo "$SCRIPTS/board-transition.sh" "$TID_L" in-review --pr https://example.test/pr/9
-t "with the PR url on the row" "pr_url=https://example.test/pr/9" row "$TID_L"
+t "with the PR url on the row" "pr_url=[https://example.test/pr/9]" row "$TID_L"
 
 IFS=$'\t' read -r RUN_L TICK_L FENCE_L BEARER_L <<<"$(claim_run qagent human-verbs-close)"
-t "the review lane draws the leaf" "drew #$TID_L" echo "drew #$TICK_L"
+t "the review lane draws the leaf" "[drew #$TID_L]" drew "$TICK_L"
 # THE CLOSE IS THE REVIEW RUN'S. A1 grants `in-review → done` to a worker only
 # on the qagent lane and only with a URL-shaped pr_url (a numeric one is an
 # epic's closure package) — which is exactly the path R1 said this fork's
@@ -227,7 +232,7 @@ t "the review lane draws the leaf" "drew #$TID_L" echo "drew #$TICK_L"
 t "and the run that claimed it closes it" "#$TID_L: → done" \
   in_repo BOARD_RUN_TOKEN="$BEARER_L" BOARD_RUN_ID="$RUN_L" BOARD_RUN_FENCE="$FENCE_L" \
     "$SCRIPTS/board-transition.sh" "$TID_L" "done"
-t "the board shows the leaf closed" "state=done" row "$TID_L"
+t "the board shows the leaf closed" "state=[done]" row "$TID_L"
 
 # Every verb above went over the API. The gh CLI has no business on this path.
 nt "the gh CLI is never invoked across the whole flow" "GH INVOKED" cat "$GH_LOG"

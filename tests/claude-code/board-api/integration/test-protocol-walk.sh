@@ -70,13 +70,12 @@ bind_confirmed() { T_P="$DAEMON_HOME/$UUID.json" python3 -c '
 import json, os
 print("bind_confirmed=%s" % json.load(open(os.environ["T_P"])).get("bind_confirmed"))'; }
 t "the bind is confirmed by the SERVER, not assumed locally" "bind_confirmed=True" bind_confirmed
-owner_line() { echo "owner=$(ticket_owner "$1")"; }
-t "the server records the run as the ticket's owner" "owner=$RUN" owner_line "$TID"
+t "the server records the run as the ticket's owner" "owner=[$RUN]" owner_line "$TID"
 
 # OWNER EXCLUSIVITY, server-side: a second dispatch tick finds nothing to take.
 OUT_D2="$DRILL_TMP/dispatch2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D2" 2>&1 || true
-nt "an owned ticket is not claimed a second time" "claimed #$TID" cat "$OUT_D2"
+nt "an owned ticket is not claimed a second time" "claimed #$TID run=" cat "$OUT_D2"
 t  "a bare claim on the lane answers empty" '"claimed":false' \
    api automation POST /runs/claim '{"lane":"implementer","dispatchNonce":"walk-exclusivity-probe"}'
 
@@ -93,8 +92,8 @@ t "a write carrying the WRONG fence is refused" "fence-mismatch" \
     "$SCRIPTS/board-transition.sh" "$TID" needs-human "wrong fence"
 t "the park is written" "#$TID: → needs-human" \
   worker "$SCRIPTS/board-transition.sh" "$TID" needs-human "which db?"
-t "the park keeps its run bound — it is a pause, not a death" "owner=$RUN" owner_line "$TID"
-t "and the question reaches the decisions queue" "\"ticket_id\":$TID" \
+t "the park keeps its run bound — it is a pause, not a death" "owner=[$RUN]" owner_line "$TID"
+t "and the question reaches the decisions queue" "\"ticket_id\":$TID," \
   api human GET /queue/decisions
 
 # THE PARK IS THE HUMAN'S TO ANSWER — and nothing local enforces that.
