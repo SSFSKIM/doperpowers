@@ -182,8 +182,8 @@ share no design surface, so there was nothing to mature jointly; phases
    initiatives assume greenfield more often than the code is.
    Over-merging hides independent shippables; over-splitting loses
    coherence — ask when unsure.
-3. **Grill the residue** — one question at a time, each with your
-   recommended answer (doperpowers:brainstorming's grill protocol):
+3. **Grill the residue** — batched frontier rounds, each question with
+   your recommended answer (doperpowers:brainstorming's grill protocol):
    child boundaries, dependency edges, cross-child contracts, authority
    grades, and reservations that belong to a later cut rather than this
    one. A matured design has already answered its architectural

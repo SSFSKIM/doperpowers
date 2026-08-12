@@ -47,7 +47,7 @@ Create a task per phase; complete them in order.
    Unsure whether two observations are one epic or two? Ask — over-merging
    hides independent shippables; over-splitting loses coherence. Present
    the tentative map and get a reaction BEFORE deep grilling.
-4. **Grill until every question lands** — one question at a time, full
+4. **Grill until every question lands** — batched frontier rounds, full
    record into the Decision Log (see The grill below). Milestone boundaries
    are grill questions too: work that outgrows this sprint is landed as a
    named reservation for the next milestone, not silently absorbed or
@@ -74,7 +74,7 @@ digraph organizing_sprints {
     "Atomize the note" [shape=box];
     "Ground in code (verification table)" [shape=box];
     "Tentative streams/epics, get reaction" [shape=box];
-    "Grill one question at a time" [shape=box];
+    "Grill in batched rounds" [shape=box];
     "Every question landed or owner-assigned?" [shape=diamond];
     "Author umbrella spec (born landed)" [shape=box];
     "Human approves spec?" [shape=diamond];
@@ -83,9 +83,9 @@ digraph organizing_sprints {
 
     "Atomize the note" -> "Ground in code (verification table)";
     "Ground in code (verification table)" -> "Tentative streams/epics, get reaction";
-    "Tentative streams/epics, get reaction" -> "Grill one question at a time";
-    "Grill one question at a time" -> "Every question landed or owner-assigned?";
-    "Every question landed or owner-assigned?" -> "Grill one question at a time" [label="no / re-cut epics"];
+    "Tentative streams/epics, get reaction" -> "Grill in batched rounds";
+    "Grill in batched rounds" -> "Every question landed or owner-assigned?";
+    "Every question landed or owner-assigned?" -> "Grill in batched rounds" [label="no / re-cut epics"];
     "Every question landed or owner-assigned?" -> "Author umbrella spec (born landed)" [label="yes"];
     "Author umbrella spec (born landed)" -> "Human approves spec?";
     "Human approves spec?" -> "Author umbrella spec (born landed)" [label="changes"];
@@ -116,8 +116,10 @@ scope unless someone checks the assumption against the code.
 
 The interview protocol, adapted from doperpowers:brainstorming's grill:
 
-- One question at a time, each with your recommended answer. Prefer
-  multiple choice where the options are enumerable; open-ended is fine too.
+- Batched frontier rounds per doperpowers:brainstorming's grill, each
+  question with your recommended answer: multiple-choice questions ride
+  AskUserQuestion where the options are enumerable; open-ended is fine
+  as prose.
 - A question the codebase can answer is answered by reading, never asked.
 - Sharpen fuzzy terms; stress-test with concrete scenarios; cross-reference
   the human's claims about current behavior with the code.

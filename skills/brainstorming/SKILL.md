@@ -7,7 +7,7 @@ description: "Use when starting any creative work — creating features, buildin
 
 Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
 
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get approval.
+Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design and get approval.
 
 **The gate:** no implementation — code, scaffolding, invoking implementation skills — until a design has been presented and your human partner has approved it. Simple projects too: the design may be three sentences, but it exists and gets a yes — "too simple to need a design" is where unexamined assumptions cause the most wasted work.
 
@@ -16,7 +16,7 @@ Start by understanding the current project context, then ask questions one at a 
 Work through these in order:
 
 1. **Explore project context** — check files, docs, recent commits
-2. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
+2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
 3. **Recommend the track, then get confirmation** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); see Choosing the Track below
 4. **Present the design** — one holistic pass, attention-ranked, one approval (see Presenting the Design below)
 5. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
@@ -36,11 +36,11 @@ Three exits leave this skill: writing-plans (controlled), execplan (autonomous, 
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Focus on understanding: purpose, constraints, success criteria
 
-**The Grill** — this is the clarification protocol:
+**The Grill** — this is the clarification protocol (reference/batch-grilling.md is the canonical method):
 
-> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and provide your recommended answer with every question.
 >
-> Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering. If a topic needs more exploration, break it into multiple questions.
+> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — ask the whole frontier in one round, then recompute it from the answers; a question whose answer depends on another question still open in this round belongs to a later round. Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat.
 >
 > If a question can be answered by exploring the codebase, explore the codebase instead. If it can't be answered for lack of information, run research.
 
