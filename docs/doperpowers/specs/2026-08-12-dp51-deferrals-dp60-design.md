@@ -561,6 +561,25 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2.4 (2026-08-13, convergence flow-back): v1.2.3's
+  between-adjacent-candidates rule has a hole (shape C, reproduced by
+  the reviewer): prose QUOTING a legacy-nested example followed by a
+  real trailing block — the segment between the quoted outer and
+  quoted nested opener is all-legal (`note: line1`), so the quoted
+  opener won. Corrected rule: a candidate qualifies iff its WHOLE
+  interior — every line strictly between its opener and the FINAL
+  closer — is block-legal, where legal = known-key `key: value` or a
+  line-start nested marker; blank lines, prose, and any intermediate
+  `-->` disqualify. Equivalent single pass: classify lines once, choose
+  the first candidate after the LAST illegal line (last candidate as
+  fallback, preserving old rightmost behavior on all-illegal tails).
+  Shape B still resolves to the outer opener (its interior is entries +
+  nested marker line only); shapes A and C resolve to the real block
+  (the quoted example's closer/prose lines disqualify every quoted
+  opener). Known ambiguous boundary (accepted): a quoted example that
+  is all-legal kv lines with NO closer, NO blank and NO prose before
+  the real opener is byte-indistinguishable from a legacy-nested block
+  and resolves as one.
 - v1.2.3 (2026-08-13, final-panel flow-back): §1's rightmost rule is
   refined to a content-based candidate walk. Two panel findings, both
   confirmed: (1) a LEGACY body whose pre-grammar client stored a marker
