@@ -469,7 +469,39 @@ _(maintained during implementation)_
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped 2026-08-12 on branch `dp51-a1-consumption` (10 tasks,
+subagent-driven, opus workers): all eight consumption items landed —
+four human verbs bound (edges/reparent, relates, priority, plus the new
+both-modes `board-body.sh`), register's real `note` field with the
+non-park body-head rule, the `api-scale` review variant with
+dispatcher-split bindings and worker-owned positioning, successor
+`parentPin` into meta + prompt, and read parity (show columns, map
+edges, eligibility surfaces silenced across ALL consumers). Suites:
+13-file unit tier + 8-drill integration tier + gh parity + reviewing-prs
+all green; every one of the eight unit-fixture refusal codes confirmed
+against the real service. The R1 headline was proven END-TO-END ON
+PRODUCTION: scratch leaf #7 driven register → in-progress → in-review
+(URL pr) → qagent claim (run 5, `pr`/`branch` bindings echoed) →
+run-actor `done` accepted; scratch principal minted and deleted, run
+closed by the phase end.
+
+Review yield (what the loop caught that would have shipped): the v1.2
+"fixed" splice was itself wrong (leftmost-first regex — Task 4 walked to
+the rightmost match) and the investigation surfaced a LIVE gh-mode
+truncation bug (dp#60); the killed ELIGIBLE cue survived as a "waiting"
+badge one surface over (Task 8); the api-scale bootstrap had three
+narrow-clone/ordering holes (final panel + convergence: FETCH_HEAD
+checkout, explicit-refspec base fetch, park-after-barrier); a hot-reload
+filter could blank an api board with no control to clear it. Two
+pre-existing drills had pinned refusal PROSE and broke when arkho grew
+diagnostic messages — repaired to pin identifiers.
+
+Gaps/known boundaries: branchless epics park under api-scale (per-child
+fallback deferred, §Deferred); BOARD.html's api eligibility chip now
+self-gates but map spawned-by/PR-list/timestamps remain unprojected;
+`_stamp_lane`'s empty-lane path skips the pin stamp (documented — the
+prompt carries it regardless); dp#51's non-consumption deferrals remain
+open on the issue.
 
 ## Revision Notes
 
