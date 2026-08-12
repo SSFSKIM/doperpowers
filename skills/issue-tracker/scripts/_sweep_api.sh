@@ -967,7 +967,23 @@ PY
 #            worker whose bind never landed. NOT ended (that would kill it) and
 #            not replayed — reported, and the server's lease reclaim owns it.
 #
-# Runs BEFORE the feed is read, so anything it releases is served in this tick.
+# Runs BEFORE the feed is read, so anything it releases is served in this tick,
+# and AFTER the lift pass, so a just-lifted ticket replays its own standing
+# journal here rather than minting a fresh nonce down in the feed loop.
+#
+# A SUPPRESSED TICKET IS FROZEN, ITS JOURNAL INCLUDED. Suppression means "stop
+# spending recovery on this ticket until a human clears the substrate", and a
+# reconciliation that kept replaying the journal spent it anyway: every replay
+# charged another cycle, every third cycle re-escalated, and each re-escalation
+# rewrote the suppression record with the state read seconds earlier in the same
+# tick — so _check_lift's `moved` could never fire and the "move the ticket"
+# half of the escalation's own instructions was inert. The journal is left
+# exactly where it is; it is still the retry handle when the suppression lifts.
+#
+# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this pass CLAIMED
+# for, so the feed loop does not claim a second successor for the same ticket in
+# the same tick. Only the replay arm goes on it: settle and orphaned make no
+# claim, and settle's release is designed to be served by this very tick's feed.
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
@@ -1033,10 +1049,15 @@ PY
   done <<<"$plan"
   for line in ${lines[@]+"${lines[@]}"}; do
     IFS=$'\x1f' read -r act nonce run tid sess daemon <<<"$line"
+    if [ -n "$tid" ] && _suppressed "$tid"; then
+      echo "resume: successor claim $nonce for #$tid is suppressed — the journal stands untouched until the suppression lifts"
+      continue
+    fi
     case "$act" in
       replay)
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
-        [ -z "$tid" ] || _resume_one "$tid" "$nonce" || true ;;
+        [ -z "$tid" ] || { printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
+                           _resume_one "$tid" "$nonce" || true; } ;;
       orphaned)
         echo "resume: successor claim $nonce spawned $daemon for run $run but never bound it — the session is live and is NOT being ended; it holds no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" >&2
         _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess" ;;
@@ -1534,17 +1555,27 @@ PY
 phase_resume() {
   local dir f tid tids=()
   mkdir -p "$SUPPRESS_DIR"
-  # Unfinished successor claims first: a run this machine already holds but
-  # never delivered keeps its ticket off the feed below, so reconciling after
-  # the read would postpone every such recovery by a whole tick.
-  _reconcile_successors
-  # Lift first: a suppression that no longer holds must not cost this tick a
-  # resume it could have made.
+  # LIFT FIRST: a suppression that no longer holds must not cost this tick a
+  # resume it could have made — and, now that reconciliation honors suppression,
+  # lifting after it would strand journals. A suppression lifting mid-tick in
+  # the old order left the journal untouched in reconcile, dropped the record,
+  # and then let the feed claim a FRESH nonce: the old journal survived to
+  # replay beside the new successor on a later tick. Lifting first lets a
+  # just-lifted ticket replay its own standing journal.
   for f in "$SUPPRESS_DIR"/*.json; do
     [ -e "$f" ] || continue
     _check_lift "$(basename "$f" .json)" \
       || echo "resume: suppression check for $(basename "$f" .json) failed" >&2
   done
+  # Unfinished successor claims before the feed: a run this machine already
+  # holds but never delivered keeps its ticket off the feed below, so
+  # reconciling after the read would postpone every such recovery by a whole
+  # tick. ONE RECOVERY ATTEMPT PER TICKET PER TICK: the ledger carries the
+  # tickets reconciliation already claimed for into the feed loop, where a
+  # ticket re-served by the feed would otherwise buy a second successor claim,
+  # a second charged cycle and a second journal in the same tick.
+  RESUMED_LEDGER="$(mktemp "$SCRATCH/resumed.XXXXXX")"
+  _reconcile_successors
   dir="$(mktemp -d "$SCRATCH/feed.XXXXXX")"
   _api_py - > "$dir/feed" <<'PY' || { echo "resume: needing-resume feed unavailable this tick" >&2; return 0; }
 import _board_api as A
@@ -1563,6 +1594,10 @@ PY
   for tid in ${tids[@]+"${tids[@]}"}; do
     if _suppressed "$tid"; then
       echo "resume: suppressed — skipping #$tid"
+      continue
+    fi
+    if grep -qxF -- "$tid" "$RESUMED_LEDGER"; then
+      echo "resume: #$tid — already replayed this tick"
       continue
     fi
     _budget_left || { echo "resume: tick budget exhausted — the rest of the feed rides the next tick"; break; }
