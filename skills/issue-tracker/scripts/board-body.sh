@@ -66,9 +66,10 @@ new = open(env["T_FILE"]).read()
 # unknown keys, comment lines and noncanonical spacing all survive a client
 # older than whatever wrote them.
 #
-# The block that counts is the LAST one — the helper walks to the rightmost
-# match (see _board.meta_match, #60). Its start never includes META_RE's
-# optional leading newline, so the separator is this splice's to supply.
+# Which opener starts the real block is decided by the interior between the
+# candidates, not by position — see _board.meta_match (#60). Its start never
+# includes META_RE's optional leading newline, so the separator is this
+# splice's to supply.
 m = B.meta_match(old)
 if m:
     # Only the newlines AROUND the block are normalized (to render_body's

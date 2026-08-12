@@ -187,6 +187,7 @@ SURFACE_COLOR = "e99695"
 SURFACE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
+META_OPENER_RE = re.compile(r"^<!-- board:meta\n", re.M)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
              "parent-pin", "note")
 
@@ -235,26 +236,63 @@ def graphql(query, **variables):
 
 
 # ── board:meta body block ────────────────────────────────────────────────
-def meta_match(body):
-    """The RIGHTMOST META_RE match — the real trailing block. A leftmost-first
-    search anchors on a marker QUOTED in the prose and its lazy middle spans
-    to the real trailing `-->` (#60); every match ends at end-of-string
-    (`\\s*$`), so the rightmost START is the actual block. render_body's value
-    grammar (single-line, no marker tokens) is what makes this sound: the
-    block itself can never contain a marker.
+def _block_line(line):
+    """True for a line that could legally sit INSIDE a meta block — a
+    `key: value` whose key is one of ours. Blank lines, prose and a quoted
+    example's `-->` are all False."""
+    return ":" in line and line.split(":", 1)[0].strip() in META_KEYS
 
-    The returned start never includes META_RE's optional leading `\\n`: wherever
-    a match begins at `\\n<!--`, one beginning a byte later at `<` also exists,
-    and the rightmost walk lands on that one. Byte-offset consumers (strip_meta,
-    board-body.sh's splice) therefore keep the separator newline and must
-    normalize it themselves — strip_meta's `.rstrip("\\n")` does."""
-    m, pos = None, 0
+
+def meta_match(body):
+    """The META_RE match on the body's REAL trailing block, chosen by content.
+
+    Every META_RE match ends at end-of-string (`\\s*$`), so the openers compete
+    and only the start differs. Two prose shapes make both the leftmost and the
+    rightmost opener wrong:
+
+    - QUOTED (#60): the prose documents the block, so a marker-shaped example
+      sits above the real one. Leftmost anchors on the example and its lazy
+      middle runs to the real `-->` — a leftmost strip deletes the prose
+      between them.
+    - LEGACY-NESTED: a pre-grammar client stored a meta VALUE containing a
+      verbatim `<!-- board:meta`, so the real block's interior holds a second
+      opener. Rightmost anchors on THAT — a rightmost strip cuts inside the
+      block and leaves half of it behind as prose.
+
+    So neither end wins by position; the interior decides. Candidates are the
+    leftmost match's opener plus every later line-start opener that still
+    precedes the closer. Walking left to right, a candidate is the real opener
+    iff every line between it and the next candidate is a legal block line
+    (`_block_line`) — a real block's interior can only reach a nested opener
+    through its own entries. Anything else (prose, a blank line, a quoted
+    example's `-->`) disqualifies it. The last candidate always wins by
+    default. This is also why the walk costs two regex scans rather than one
+    per marker (the old rightmost loop was O(N²) on a marker-dense body).
+
+    The returned start never includes META_RE's optional leading `\\n`: the
+    search is anchored at the chosen opener, where `\\n?` matches empty.
+    Byte-offset consumers (strip_meta, board-body.sh's splice) therefore keep
+    the separator newline and must normalize it themselves — strip_meta's
+    `.rstrip("\\n")` does."""
     body = body or ""
-    while True:
-        nxt = META_RE.search(body, pos)
-        if not nxt:
-            return m
-        m, pos = nxt, nxt.start() + 1
+    m0 = META_RE.search(body)
+    if not m0:
+        return None
+    head = len("<!-- board:meta\n")
+    # The closer is unique: `\n-->` with nothing but whitespace behind it can
+    # occur at only one offset, and m0's lazy middle ends exactly there. A
+    # candidate opener is only real if the closer still has room for it.
+    limit = m0.end(1) - head
+    first = m0.start() + (1 if body[m0.start()] == "\n" else 0)
+    opens = [first] + [o.start() for o in META_OPENER_RE.finditer(body, first)
+                       if first < o.start() <= limit]
+    chosen = opens[-1]
+    for i, start in enumerate(opens[:-1]):
+        if all(_block_line(ln)
+               for ln in body[start + head:opens[i + 1]].splitlines()):
+            chosen = start
+            break
+    return META_RE.search(body, chosen)
 
 
 def parse_meta(body):

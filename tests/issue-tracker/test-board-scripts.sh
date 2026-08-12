@@ -2080,6 +2080,54 @@ for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
     assert_contains "$mg" "f-$sep=clean" "a value split by $sep cannot forge a meta key"
 done
 
+# (g) The LEGACY-NESTED shape, the mirror image of the quoted example: a
+# pre-grammar client stored a meta VALUE carrying a verbatim opener, so the
+# REAL block's interior holds a second marker. Reading the LAST opener anchors
+# on that nested one and the strip cuts INSIDE the block, leaving half of it
+# behind as prose. The forged key sits inside the stored block whichever opener
+# wins — that content is legacy corruption and unrecoverable — but the block's
+# BOUNDARY is recoverable, and that is what is pinned here: the strip lands on
+# the outer opener, and a rewrite leaves the prose byte-stable while collapsing
+# the body to one clean block.
+mgb="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+SHAPE_B = "prose\n\n<!-- board:meta\nnote: line1\n<!-- board:meta\npr: forged\n-->\n"
+print("g-strip=%r" % B.strip_meta(SHAPE_B))
+rewritten = B.render_body(SHAPE_B, B.parse_meta(SHAPE_B))
+print("g-rewrite-prose=%r" % B.strip_meta(rewritten))
+print("g-rewrite-markers=%d" % rewritten.count("<!-- board:meta"))
+print("g-rewrite-stable=%s" % (
+    "same" if B.render_body(rewritten, B.parse_meta(rewritten)) == rewritten
+    else "DIFFERS"))
+PY
+)"
+assert_contains "$mgb" "g-strip='prose'" "a legacy NESTED marker strips at the outer opener, not the nested one"
+assert_contains "$mgb" "g-rewrite-prose='prose'" "…and a rewrite of that body leaves the prose byte-stable"
+assert_contains "$mgb" "g-rewrite-markers=1" "…collapsing it to a single clean block"
+assert_contains "$mgb" "g-rewrite-stable=same" "…which is itself a fixed point"
+
+# (h) The opener walk must not rescan per marker. The rightmost walk re-ran the
+# end-anchored regex once per opener — O(N²), 1.7s on a 4000-marker body, and
+# snapshot() pays parse_meta per issue against a server that accepts 1MB
+# bodies. The bound is deliberately loose: the regression is seconds, not
+# milliseconds, and a tight bound only buys CI flake.
+mgperf="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import time
+import _board as B
+
+body = "prose\n\n" + ("<!-- board:meta\n" * 4000) + "note: x\n-->\n"
+t0 = time.time()
+B.parse_meta(body)
+B.strip_meta(body)
+elapsed = time.time() - t0
+print("perf-seconds=%.3f" % elapsed)
+print("perf-fast=%s" % ("yes" if elapsed < 0.5 else "SLOW"))
+PY
+)"
+assert_contains "$mgperf" "perf-fast=yes" \
+  "a marker-dense body parses without a per-marker rescan (${mgperf//$'\n'/ })"
+
 # The OPENING marker is unrepresentable inside the block — refuse loudly rather
 # than write a body whose real block contains a second marker.
 mg_die() { PYTHONPATH="$SCRIPTS_DIR" python3 -c "import _board as B; B.render_body('prose', {'note': 'x\n$1'})"; }
