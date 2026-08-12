@@ -23,7 +23,6 @@ ledger and tool results carry the record.
 
 A written plan with mostly-independent tasks, executed in this session.
 Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
-Handing execution to a parallel session → doperpowers:executing-plans.
 
 ## The loop
 

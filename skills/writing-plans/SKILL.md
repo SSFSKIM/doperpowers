@@ -94,7 +94,7 @@ End every plan with a verification task that executes the spec's acceptance sect
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-development (recommended) or doperpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -193,26 +193,12 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 
 ## Execution Handoff
 
-After saving the plan, offer execution choice:
-
-**"Plan complete and saved to `docs/doperpowers/plans/<filename>.md`. Two execution options:**
-
-**1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
-
-**2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints
-
-**Which approach?"**
-
-While waiting for the response, run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper), in a background Bash, with the focus text:
+After saving the plan, report the path ("Plan complete and saved to `docs/doperpowers/plans/<filename>.md`"), then run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper), in a background Bash, with the focus text:
 
 > Review the implementation plan at [PLAN_FILE_PATH] against its spec at [SPEC_FILE_PATH]. Verify the implementation architecture is sound and the plan is complete, spec-aligned, well-decomposed, and buildable by an engineer with zero context.
 
-Evaluate its findings rather than accepting them wholesale; fix what survives and move on.
+Evaluate its findings rather than accepting them wholesale; fix what survives.
 
-**If Subagent-Driven chosen:**
+Then execute:
 - **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-development
 - Fresh subagent per task + two-stage review
-
-**If Inline Execution chosen:**
-- **REQUIRED SUB-SKILL:** Use doperpowers:executing-plans
-- Batch execution with checkpoints for review

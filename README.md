@@ -5,14 +5,14 @@
 ```text
                           d o p e r p o w e r s
 
-   what you're building  ─┬─▶  CONTROLLED  · you sign off at every gate
+   what you're building  ─┬─▶  CONTROLLED  · you sign off on the design
                           │      brainstorm → spec → plan → subagent-TDD → review → ship
                           │
                           └─▶  AUTONOMOUS  · it runs while you're away
                                  board → dispatch → build → review → merge
 ```
 
-Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers splits that in two. When the work needs your judgement, the **controlled track** shows you the design in readable chunks and stops for your approval at each seam. When the work is well-scoped and delegable, the **autonomous track** takes a ticket off the board and drives it to a reviewed pull request without waking you up. The skills route between the two based on what you actually asked for.
+Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers splits that in two. When the work needs your judgement, the **controlled track** shows you the design in readable chunks and stops for your approval before anything is built. When the work is well-scoped and delegable, the **autonomous track** takes a ticket off the board and drives it to a reviewed pull request without waking you up. The skills route between the two based on what you actually asked for.
 
 Because every skill declares when it applies, you don't invoke any of this by hand. The agent checks for a relevant skill before it starts a task, and the right workflow just happens.
 
@@ -23,7 +23,7 @@ Because every skill declares when it applies, you don't invoke any of this by ha
 Both tracks enforce the same non-negotiables — design before code, tests before implementation, evidence before "done." They differ only in where the human sits.
 
 **Controlled** — for work where taste and intent matter.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks small enough for an unsupervised junior to follow (`writing-plans`), then executes each one through a fresh subagent with two-stage review — spec compliance, then code quality (`subagent-driven-development`). You approve each gate.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks small enough for an unsupervised junior to follow (`writing-plans`), then executes each one through a fresh subagent with two-stage review — spec compliance, then code quality (`subagent-driven-development`). You approve the design; independent reviews gate the rest.
 
 **Autonomous** — for work that's already well-scoped.
 A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`implementing`), a review loop lands the PRs (`reviewing-prs`), and durable background sessions keep it all running (`orchestrating-daemons`). Product feedback can even feed the board directly (`triaging-feedback`).
@@ -60,7 +60,7 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-one skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -73,7 +73,6 @@ Twenty-one skills, grouped by what they're for. Each one auto-triggers from its 
 **Build it**
 - `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
 - `subagent-driven-development` — one fresh subagent per task, two-stage review
-- `executing-plans` — batch execution with human checkpoints
 - `execplan` — the autonomous single-plan track, gates front-loaded
 - `dispatching-parallel-agents` — fan independent work out concurrently
 - `using-git-worktrees` — isolated workspaces so parallel work never clashes
@@ -100,7 +99,7 @@ Twenty-one skills, grouped by what they're for. Each one auto-triggers from its 
 1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read.
 2. **using-git-worktrees** — Activates after design approval. Creates an isolated workspace on a new branch and verifies a clean test baseline.
 3. **writing-plans** — Breaks the approved design into tasks of a few minutes each, every one with exact file paths, complete code, and verification steps.
-4. **subagent-driven-development** / **executing-plans** — Dispatches a fresh subagent per task with two-stage review, or runs in batches with human checkpoints.
+4. **subagent-driven-development** — Dispatches a fresh subagent per task with two-stage review.
 5. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
 6. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.
 7. **finishing-a-development-branch** — Verifies tests, presents merge/PR/keep/discard, cleans up the worktree.
