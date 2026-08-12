@@ -850,7 +850,13 @@ EOF2
 
 # Bootstrap render: every P_* var in the environment fills the matching
 # {{PLACEHOLDER}}, plus the two BASE-ref manifest snapshots (capped, with
-# their absent-file fallbacks). A placeholder with no P_* renders empty.
+# their absent-file fallbacks). A placeholder no call site supplies is a HARD
+# ERROR, never a prompt shipped with a hole in it (implement-dispatch's
+# _render_bootstrap has always worked this way): rendered as a blank it reads
+# to the worker as "bound to nothing", and no downstream assertion can tell
+# that apart from a value that is empty by design. The check runs over the
+# mode-stripped TEMPLATE, not the output — the manifest snapshots and any other
+# injected content are data, and a `{{...}}` inside them is not an unfilled slot.
 #
 # The template also carries `<!-- mode:X -->…<!-- /mode:X -->` blocks: the
 # block whose X is this run's P_REVIEW_MODE survives, every other block is
@@ -877,7 +883,11 @@ subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
     "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
-print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
+missing = sorted(n for n in set(re.findall(r"\{\{(\w+)\}\}", t)) if n not in subs)
+if missing:
+    sys.stderr.write("unrendered placeholders: %s\n" % " ".join(missing))
+    sys.exit(1)
+print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs[m.group(1)], t))
 PY
 }
 

@@ -265,6 +265,22 @@ nt "nothing was left unrendered"                 "{{"                 prompt
 t  "the base binding says it is unresolved"      '`BASE_REF`: UNRESOLVED' prompt
 t  "the worker is told to read the base off the PR" "gh pr view <n> --json" prompt
 t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
+# The bindings an api reviewer cannot function without, pinned on the VALUE
+# side: a `NAME`: assertion passes just as well against a rendered blank, which
+# is the shape a call site that stopped supplying a placeholder used to take.
+bound() {  # bound <NAME> — reads the rendered roster line shape
+  local v; v="$(prompt | sed -n "s/^- \`$1\`: \(.*\)$/\1/p" | head -1)"
+  [ -n "$v" ] && echo "$1 bound: $v" || echo "$1 UNBOUND"
+}
+t "the barrier file binding carries a value"     "BIND_READY_FILE bound" bound BIND_READY_FILE
+t "the implement contract carries a value"       "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE
+t "the board scripts binding carries a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS
+t "the assignment file binding carries a value"  "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE
+skill_pin() {  # SKILL_FILE renders in prose, not on the roster
+  local v; v="$(prompt | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
+  [ -n "$v" ] && echo "SKILL_FILE bound: $v" || echo "SKILL_FILE UNBOUND"
+}
+t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin
 
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
