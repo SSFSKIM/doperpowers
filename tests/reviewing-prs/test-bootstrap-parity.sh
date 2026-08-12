@@ -65,6 +65,20 @@ before "modes are stripped BEFORE the missing-placeholder check" \
   't = re.sub(r"<!-- mode:([\w-]+) -->' 'missing = sorted(' "$DISPATCH"
 before "…and the check runs before the substitution that would fill them" \
   'missing = sorted(' 'print(re.sub(r"\{\{(\w+)\}\}"' "$DISPATCH"
+# RISK_MANIFEST and REPO_FACTS are the two bindings no P_* variable supplies —
+# the dispatcher injects them from files, between the mode strip and the
+# missing-placeholder check. This fixture binds them like any other placeholder,
+# so the fence cannot feel that injection moving: below the missing check, every
+# real render would die reporting those two names as unrendered while this suite
+# stayed green. Hence the position pin.
+t "the risk manifest is injected, not supplied by a P_* binding" \
+  'subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or' "$DISPATCH"
+t "the repo facts are injected, not supplied by a P_* binding" \
+  'subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or' "$DISPATCH"
+before "the manifest snapshots are injected AFTER the mode strip" \
+  't = re.sub(r"<!-- mode:([\w-]+) -->' 'subs["RISK_MANIFEST"] = readcap(' "$DISPATCH"
+before "…and BEFORE the missing-placeholder check, which they satisfy" \
+  'subs["REPO_FACTS"] = readcap(' 'missing = sorted(' "$DISPATCH"
 
 echo
 echo "honesty pins — the copied renderer still matches implement-dispatch.sh:"
