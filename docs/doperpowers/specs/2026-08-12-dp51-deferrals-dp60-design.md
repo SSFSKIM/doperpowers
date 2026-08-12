@@ -82,9 +82,18 @@ collapse every separator `str.splitlines()` recognizes — not `\r`/`\n`
 alone; `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, U+2028/U+2029 would remain
 injectable as forged keys through `parse_meta`'s `splitlines()` (plan
 review finding) — via `" ".join(value.splitlines())`, and `die` on a
-value containing `<!-- board:meta` or `-->` (unrepresentable in the
-block; loud beats mangled). With the grammar enforced, the rightmost
-match is the real block by construction.
+value containing `<!-- board:meta` (unrepresentable in the block; loud
+beats mangled). `-->` is NOT rejected (v1.2.1, task-review finding,
+fuzz-proven): after the splitlines collapse every value sits behind its
+`key: ` prefix, so a `-->` can never reach line start where `META_RE`
+requires it — rejecting it would brick every pre-fix ticket whose
+stored note carries an arrow (update_meta re-renders every parsed key
+on every write) and was the only realistic trigger of a TORN WRITE in
+`apply_state` (label already moved, meta write then dies). The
+surviving marker check must run BEFORE any external write in
+`apply_state`'s callers reaches GitHub — validate, then write. With
+the grammar enforced, the rightmost match is the real block by
+construction.
 
 **Tests (RED against the parent commit):** a body whose prose quotes a
 full marker-shaped example AND carries a real trailing block —
@@ -550,6 +559,14 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2.1 (2026-08-13, Task 1 review flow-back): the `-->` half of the
+  value grammar is dropped — fuzz-proven harmless (8 keys × 8
+  arrow-values × 4 prose shapes, zero mismatches: the collapsed value
+  always sits behind `key: `, never at line start), and rejecting it
+  bricked pre-fix arrow-bearing notes on every `update_meta`
+  read-modify-write AND was the only realistic trigger of a torn write
+  (`apply_state` moves the label before the meta write dies). The
+  `<!-- board:meta` check stays and must run before any external write.
 - v1.2 (2026-08-12): codex plan review (3 findings, all adopted): §1
   value normalization covers every `splitlines()` separator, not
   CR/LF alone (U+2028-class injection); §3 phase order becomes
