@@ -241,7 +241,13 @@ def meta_match(body):
     to the real trailing `-->` (#60); every match ends at end-of-string
     (`\\s*$`), so the rightmost START is the actual block. render_body's value
     grammar (single-line, no marker tokens) is what makes this sound: the
-    block itself can never contain a marker."""
+    block itself can never contain a marker.
+
+    The returned start never includes META_RE's optional leading `\\n`: wherever
+    a match begins at `\\n<!--`, one beginning a byte later at `<` also exists,
+    and the rightmost walk lands on that one. Byte-offset consumers (strip_meta,
+    board-body.sh's splice) therefore keep the separator newline and must
+    normalize it themselves — strip_meta's `.rstrip("\\n")` does."""
     m, pos = None, 0
     body = body or ""
     while True:
@@ -287,14 +293,21 @@ def contract_hash(body):
     return hashlib.sha256(strip_meta(body).encode("utf-8")).hexdigest()[:12]
 
 
-def render_body(body, meta):
-    """Body with its meta block replaced by `meta` (dropped when meta is empty).
-    Everything outside the block is preserved byte-for-byte."""
-    base = strip_meta(body)
-    # Value grammar: one line, no marker tokens. parse_meta reads the block
-    # line-wise, so a multi-line value is silent corruption at best and a
-    # forged key at worst — and a marker token inside the real block would
-    # defeat meta_match's rightmost rule outright.
+def clean_meta(meta):
+    """Meta values normalized to the block's grammar — one line, no opening
+    marker — and refused when they cannot live there. Empty values dropped.
+
+    parse_meta reads the block line-wise, so a multi-line value is silent
+    corruption at best and a forged key at worst; `<!-- board:meta` inside the
+    real block would defeat meta_match's rightmost rule outright, and is
+    unrepresentable, so it dies (loud beats mangled). `-->` is NOT refused: the
+    collapse leaves every value behind its `key: ` prefix, and META_RE requires
+    the closer at line start, so an arrow can never terminate the block early
+    (fuzz-proven, spec v1.2.1). Refusing it bricked every stored note carrying
+    an ASCII arrow, since update_meta re-renders every key it parsed.
+
+    Split out of render_body so a caller that makes OTHER remote writes first
+    can validate ahead of them — see apply_state."""
     clean = {}
     for k, v in meta.items():
         if not v:
@@ -302,10 +315,17 @@ def render_body(body, meta):
         # EVERY separator parse_meta's splitlines() would honour — \r\n alone
         # leaves \v, \f, \x1c–\x1e, \x85, U+2028/U+2029 injectable as keys.
         v = " ".join(str(v).splitlines())
-        if "<!-- board:meta" in v or "-->" in v:
+        if "<!-- board:meta" in v:
             die("meta value %r cannot carry a board:meta marker token" % k)
         clean[k] = v
-    meta = clean
+    return clean
+
+
+def render_body(body, meta):
+    """Body with its meta block replaced by `meta` (dropped when meta is empty).
+    Everything outside the block is preserved byte-for-byte."""
+    base = strip_meta(body)
+    meta = clean_meta(meta)
     if not meta:
         return base + ("\n" if base else "")
     block = "\n".join("%s: %s" % (k, meta[k]) for k in META_KEYS if k in meta)
@@ -864,14 +884,22 @@ def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     extra_meta lets the caller fold branch/pr into the same body write."""
     n = tickets[tid]
     old = n["state"]
+    updates = {"note": why or None}
+    updates.update(extra_meta or {})
+    # Validate the meta write BEFORE the label write. update_meta re-renders
+    # every key it parsed out of the existing block, so a refusal on ANY of
+    # them (new or stored) would land after the label had already moved on
+    # GitHub — the ticket relabelled, carrying a stale note that reads as a
+    # real one and that board-lint cannot flag. Nothing rolls that back.
+    merged = parse_meta(n["body"])
+    merged.update(updates)
+    clean_meta(merged)
     if to in TERMINAL:
         # strip status labels first so a closed issue never carries one
         edit_labels(tid, remove=[STATUS_PREFIX + s for s in n["status_labels"]])
         close(tid, to)
     else:
         set_state_label(tid, n, to)
-    updates = {"note": why or None}
-    updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
         if bookkeeping:

@@ -1892,6 +1892,19 @@ print("hash-prose-only=%s" % ("yes" if B.contract_hash(both) == B.contract_hash(
 # (d) a multi-line value collapses to one line rather than minting block lines.
 print("d-block=%r" % B.render_body("prose", {"note": "line1\nline2"}))
 
+# (e) `-->` in a value is LEGAL (spec v1.2.1): the collapse leaves every value
+# behind its `key: ` prefix, and META_RE needs the closer at LINE START, so an
+# arrow can never terminate the block early. Refusing it bricked every stored
+# note carrying an ASCII arrow — update_meta re-renders every key it parsed.
+ARROW = "parked, in-review --> needs-info"
+arrow = B.render_body("prose", {"note": ARROW})
+print("e-parse=%s" % B.parse_meta(arrow).get("note"))
+print("e-prose=%s" % ("intact" if B.strip_meta(arrow) == "prose" else "MANGLED"))
+print("e-roundtrip=%s" % (
+    "same" if B.render_body(B.strip_meta(arrow), B.parse_meta(arrow)) == arrow else "DIFFERS"))
+# …even one that would otherwise REACH line start: the collapse folds it back.
+print("e-multi=%s" % B.parse_meta(B.render_body("prose", {"note": "a\n--> b"})).get("note"))
+
 # (f) EVERY separator parse_meta's str.splitlines() honours — \r\n-only
 # normalization leaves the rest injectable as forged keys.
 SEPS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "vt": "\v", "ff": "\f",
@@ -1920,17 +1933,59 @@ assert_contains "$mg" "both-tail=kept" "stripping a two-marker body keeps the pr
 assert_contains "$mg" "hash-prose-only=yes" "contract_hash covers the prose only"
 assert_contains "$mg" "d-block=" "render_body returned a block"
 assert_contains "$mg" "note: line1 line2" "a multi-line meta value renders as ONE line"
+assert_contains "$mg" "e-parse=parked, in-review --> needs-info" "an arrow-bearing value round-trips verbatim"
+assert_contains "$mg" "e-prose=intact" "…and leaves the prose byte-for-byte"
+assert_contains "$mg" "e-roundtrip=same" "…strip → parse → render is the identity on it"
+assert_contains "$mg" "e-multi=a --> b" "an arrow that would reach line start collapses onto one line"
 for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
     assert_contains "$mg" "f-$sep=clean" "a value split by $sep cannot forge a meta key"
 done
 
-# Marker tokens are unrepresentable inside the block — refuse loudly rather than
-# write a body whose real block contains a second marker.
+# The OPENING marker is unrepresentable inside the block — refuse loudly rather
+# than write a body whose real block contains a second marker.
 mg_die() { PYTHONPATH="$SCRIPTS_DIR" python3 -c "import _board as B; B.render_body('prose', {'note': 'x\n$1'})"; }
 assert_fails mg_die '<!-- board:meta'
-assert_fails mg_die '-->'
 die_out="$(mg_die '<!-- board:meta' 2>&1 || true)"
 assert_contains "$die_out" "note" "the refusal names the offending key"
+# Pin the message: die_out is captured with 2>&1, so a traceback echoing the
+# source line would also contain "note" and pass the assert above.
+assert_contains "$die_out" "cannot carry a board:meta marker token" "…with the refusal's own message, not a traceback"
+
+# The refusal must land BEFORE any remote write. apply_state writes the status
+# label first and re-renders EVERY parsed key on the meta write that follows, so
+# a die in between left the ticket relabelled with a stale note (task review C1).
+mg_tid="$(run board-register.sh "Meta grammar drill" bug P2 --body-file "$SPEC_BODY")"
+mg_tid="${mg_tid%% *}"
+run board-transition.sh "$mg_tid" in-progress >/dev/null
+mg_labels_before="$(state "s['issues']['$mg_tid']['labels']")"
+mg_body_before="$(state "s['issues']['$mg_tid']['body']")"
+mg_log_mark="$(wc -l < "$MOCK_GH_LOG")"
+assert_fails run board-transition.sh "$mg_tid" needs-human 'forged: <!-- board:meta'
+mg_log_tail="$(tail -n "+$((mg_log_mark + 1))" "$MOCK_GH_LOG")"
+assert_not_contains "$mg_log_tail" "status:needs-human" "the refused transition never wrote the status label"
+assert_equals "$(state "s['issues']['$mg_tid']['labels']")" "$mg_labels_before" "…labels untouched"
+assert_equals "$(state "s['issues']['$mg_tid']['body']")" "$mg_body_before" "…body untouched"
+
+# …and the arrow-bearing note that C1's repro tore now goes through end-to-end.
+out="$(run board-transition.sh "$mg_tid" needs-human 'human input needed: in-review --> needs-info')"
+assert_contains "$out" "#$mg_tid: in-progress → needs-human" "an arrow-bearing park note transitions cleanly"
+assert_contains "$(state "s['issues']['$mg_tid']['labels']")" "status:needs-human" "…the label moved"
+assert_contains "$(state "s['issues']['$mg_tid']['body']")" "note: human input needed: in-review --> needs-info" "…and the note is the real one"
+
+# #60 at the CLI, not the library: the bug was found as a live failure of
+# board-transition → apply_state → update_meta over a body that DOCUMENTS the
+# meta block. Drive that whole path over such a body.
+MARKER_BODY="$TEST_ROOT/marker-body.md"
+printf '## Problem & intent\n\nThe block looks like:\n\n<!-- board:meta\npr: example\n-->\n\n## Success criteria\n\n- the prose after the example survives a meta write\n' > "$MARKER_BODY"
+# Birth with a note so the ticket carries a REAL trailing block: the quoted
+# example only misleads META_RE while a real block anchors the `-->\s*$` it
+# spans to. The transition is then an ordinary meta write over that body.
+mg60="$(run board-register.sh "Documents the meta block" bug P2 --body-file "$MARKER_BODY" --state needs-human --note "waiting on A")"
+mg60="${mg60%% *}"
+run board-transition.sh "$mg60" in-progress >/dev/null
+mg60_body="$(state "s['issues']['$mg60']['body']")"
+assert_contains "$mg60_body" "the prose after the example survives a meta write" "a gh-mode meta write keeps the prose after a quoted marker (#60)"
+assert_contains "$mg60_body" "## Success criteria" "…including the headings after it"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
