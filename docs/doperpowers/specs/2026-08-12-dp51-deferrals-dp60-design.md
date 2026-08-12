@@ -561,6 +561,22 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2.3 (2026-08-13, final-panel flow-back): §1's rightmost rule is
+  refined to a content-based candidate walk. Two panel findings, both
+  confirmed: (1) a LEGACY body whose pre-grammar client stored a marker
+  inside a meta value (shape B) made the rightmost walk pick the nested
+  opener — parse forged keys, and strip_meta left the outer block's
+  head behind as prose, a regression against the old leftmost strip
+  boundary; (2) the per-marker end-anchored rescan was O(N²) (1.77s at
+  4000 markers; snapshot() runs parse_meta per issue). One rewrite
+  fixes both: candidates are line-start openers from the leftmost
+  match onward; walking left to right, a candidate is the real opener
+  iff every line between it and the next candidate is a known-key
+  `key: value` line (blank or prose lines disqualify — a real block
+  interior contains only its own entries); two regex scans total. On a
+  poisoned legacy body the guarantee is the STRIP boundary and rewrite
+  round-trip stability — the forged key inside the block's own lines
+  is that body's actual content and is not recoverable.
 - v1.2.2 (2026-08-13, Task 9 review flow-back): §5 Piece 2's roster
   parenthetical was wrong — `CLOSURE_PACKAGE`/`INTEGRATION_REF` are
   carried by BOTH members of the scale pair (they are scale-mode
