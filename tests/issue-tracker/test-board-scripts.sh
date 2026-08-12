@@ -2107,6 +2107,47 @@ assert_contains "$mgb" "g-rewrite-prose='prose'" "…and a rewrite of that body 
 assert_contains "$mgb" "g-rewrite-markers=1" "…collapsing it to a single clean block"
 assert_contains "$mgb" "g-rewrite-stable=same" "…which is itself a fixed point"
 
+# (i) The two shapes COMPOSED: prose that QUOTES a legacy-nested example, with
+# the real block further down. Judging only the gap between adjacent candidates
+# fails here — the gap between the quoted outer opener and the quoted nested
+# one holds nothing but that example's own `note:` entry, so it reads legal and
+# the quoted opener wins, leaking its keys and truncating the body from the
+# example onward. The interior is only block-legal if it is legal ALL the way
+# to the closer, which the example's `-->` and the prose after it break.
+mgc="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+QUOTED_NESTED = "<!-- board:meta\nnote: line1\n<!-- board:meta\npr: forged\n-->"
+prose = "Docs about the block:\n\n%s\n\nMore prose." % QUOTED_NESTED
+body = "%s\n\n<!-- board:meta\npr: https://real/1\n-->\n" % prose
+meta = B.parse_meta(body)
+print("i-parse-pr=%s" % meta.get("pr"))
+print("i-leak-note=%s" % meta.get("note"))
+print("i-tail=%s" % ("kept" if "More prose." in B.strip_meta(body) else "LOST"))
+print("i-prose=%s" % ("intact" if B.strip_meta(body) == prose else "MANGLED"))
+PY
+)"
+assert_contains "$mgc" "i-parse-pr=https://real/1" "a QUOTED legacy-nested example is not read as the real block"
+assert_contains "$mgc" "i-leak-note=None" "…so its keys never leak into the parse"
+assert_contains "$mgc" "i-tail=kept" "…and the strip keeps the prose after it"
+assert_contains "$mgc" "i-prose=intact" "…byte-for-byte, quoted example included"
+
+# The block a client older than the grammar wrote is noncanonical — unknown
+# keys, comment lines, hand spacing — and no opener clears its interior. The
+# LAST candidate then wins, which is the old rightmost behavior and what
+# board-body.sh's raw splice carries through untouched.
+mgnc="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+body = ("Docs:\n\n<!-- board:meta\npr: fake\n-->\n\nMore prose."
+        "\n\n<!-- board:meta\nweird-key: x\npr: https://real/1\n-->\n")
+print("nc-parse-pr=%s" % B.parse_meta(body).get("pr"))
+print("nc-tail=%s" % ("kept" if "More prose." in B.strip_meta(body) else "LOST"))
+PY
+)"
+assert_contains "$mgnc" "nc-parse-pr=https://real/1" "a block carrying an UNKNOWN key is still found (last-candidate fallback)"
+assert_contains "$mgnc" "nc-tail=kept" "…without eating the prose above it"
+
 # (h) The opener walk must not rescan per marker. The rightmost walk re-ran the
 # end-anchored regex once per opener — O(N²), 1.7s on a 4000-marker body, and
 # snapshot() pays parse_meta per issue against a server that accepts 1MB

@@ -187,7 +187,6 @@ SURFACE_COLOR = "e99695"
 SURFACE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
-META_OPENER_RE = re.compile(r"^<!-- board:meta\n", re.M)
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
              "parent-pin", "note")
 
@@ -259,15 +258,27 @@ def meta_match(body):
       opener. Rightmost anchors on THAT — a rightmost strip cuts inside the
       block and leaves half of it behind as prose.
 
-    So neither end wins by position; the interior decides. Candidates are the
-    leftmost match's opener plus every later line-start opener that still
-    precedes the closer. Walking left to right, a candidate is the real opener
-    iff every line between it and the next candidate is a legal block line
-    (`_block_line`) — a real block's interior can only reach a nested opener
-    through its own entries. Anything else (prose, a blank line, a quoted
-    example's `-->`) disqualifies it. The last candidate always wins by
-    default. This is also why the walk costs two regex scans rather than one
-    per marker (the old rightmost loop was O(N²) on a marker-dense body).
+    - QUOTED-NESTED: the two composed — prose that quotes a legacy-nested
+      example, with the real block further down.
+
+    So neither end wins by position; the interior decides. Since every match
+    runs to the same closer, a candidate opener is the real one iff its WHOLE
+    interior — every line from its opener to that closer — could sit inside a
+    block: a known-key `key: value` (`_block_line`) or a line-start nested
+    marker. A blank line, prose, or an intermediate `-->` cannot, so the choice
+    is the FIRST opener standing after the LAST such line. Judging only the gap
+    between adjacent candidates is not enough: in QUOTED-NESTED that gap holds
+    the quoted example's own entries and reads legal, and the quoted opener
+    wins (spec v1.2.4).
+
+    When no opener clears the last illegal line the block is noncanonical — an
+    unknown key, a comment, hand-edited spacing — and the last candidate wins,
+    which is the old rightmost behavior and what board-body.sh's raw splice
+    relies on.
+
+    One classification pass over the span plus two regex scans: the walk is
+    linear in the body, where the old rightmost loop re-ran the end-anchored
+    regex per marker (O(N²) on a marker-dense body).
 
     The returned start never includes META_RE's optional leading `\\n`: the
     search is anchored at the chosen opener, where `\\n?` matches empty.
@@ -279,17 +290,30 @@ def meta_match(body):
     if not m0:
         return None
     head = len("<!-- board:meta\n")
-    # The closer is unique: `\n-->` with nothing but whitespace behind it can
-    # occur at only one offset, and m0's lazy middle ends exactly there. A
-    # candidate opener is only real if the closer still has room for it.
-    limit = m0.end(1) - head
+    # The closer is unique — `\n-->` with nothing but whitespace behind it can
+    # occur at only one offset — and m0's lazy middle ends exactly there.
+    close = m0.end(1)
     first = m0.start() + (1 if body[m0.start()] == "\n" else 0)
-    opens = [first] + [o.start() for o in META_OPENER_RE.finditer(body, first)
-                       if first < o.start() <= limit]
+    # One pass over the span: collect the candidate openers and the offset past
+    # the last line that cannot be block interior.
+    opens, fence, pos = [], first, first
+    while pos < close:
+        eol = body.find("\n", pos, close)
+        if eol < 0:
+            eol = close
+        line = body[pos:eol]
+        if line == "<!-- board:meta":
+            # A nested marker is legal interior. It is a candidate only if the
+            # closer still leaves room for a block to open here — a trailing
+            # `<!-- board:meta\n-->` has none, and META_RE cannot match there.
+            if pos + head <= close:
+                opens.append(pos)
+        elif not _block_line(line):
+            fence = eol + 1
+        pos = eol + 1
     chosen = opens[-1]
-    for i, start in enumerate(opens[:-1]):
-        if all(_block_line(ln)
-               for ln in body[start + head:opens[i + 1]].splitlines()):
+    for start in opens:
+        if start >= fence:
             chosen = start
             break
     return META_RE.search(body, chosen)
