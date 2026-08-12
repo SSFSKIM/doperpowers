@@ -2201,6 +2201,17 @@ assert_contains "$mgmix" "k-strip='prose'" "a legacy block with a nested marker 
 assert_contains "$mgmix" "k-rewrite-prose='prose'" "…and a rewrite leaves the prose byte-stable"
 assert_contains "$mgmix" "k-rewrite-markers=1" "…collapsing it to a single clean block"
 
+# Every case above is a shape somebody found the hard way, which makes them a
+# record of what was looked for rather than evidence of coverage — the opener
+# rule was corrected three times, twice by a shape an EARLIER version handled.
+# The fuzz is the coverage: bodies composed from a component grammar with the
+# intended opener known at generation time, fixed seed, ~0.3s. It catches all
+# three superseded rules on its own (see the script's header for the counts).
+fuzz_out="$(PYTHONPATH="$SCRIPTS_DIR" python3 "$SCRIPT_DIR/meta-grammar-fuzz.py" 2>&1 || true)"
+fuzz_head="$(head -1 <<<"$fuzz_out")"
+assert_contains "$fuzz_head" "divergences=0" "the opener walk survives a generated-body fuzz ($fuzz_head)"
+grep -Fq "divergences=0" <<<"$fuzz_head" || echo "$fuzz_out"
+
 # (h) The opener walk must not rescan per marker. The rightmost walk re-ran the
 # end-anchored regex once per opener — O(N²), 1.7s on a 4000-marker body, and
 # snapshot() pays parse_meta per issue against a server that accepts 1MB
