@@ -1852,6 +1852,53 @@ assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:re
 assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:needs-human" \
   "the superseded label is swapped out, not left alongside (that would read as conflict)"
 
+echo "board-migrate-gh (marker-quoting body):"
+# The migration writes bodies too — strip the meta block, append the pre-spec md,
+# re-render — and it is a ONE-SHOT rewrite of a real ticket's statement of work.
+# A leftmost strip deletes everything from a marker QUOTED in the prose onward
+# (#60), so the migration path needs the same rightmost rule as every other
+# consumer.
+MIG_BODY="$TEST_ROOT/migrate-marker-body.md"
+printf '## Problem & intent\n\nThe block looks like:\n\n<!-- board:meta\npr: example\n-->\n\n## Success criteria\n\n- the prose after the example survives a migration\n' > "$MIG_BODY"
+# Born with a note so the issue carries a REAL trailing block: the quoted
+# example only misleads META_RE while a real block anchors the `-->\s*$`.
+mig60="$(run board-register.sh "Documents the meta block (migrated)" bug P2 \
+           --body-file "$MIG_BODY" --state needs-human --note "waiting on A")"
+mig60="${mig60%% *}"
+cat > "$LEGACY/board-marker.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Documents the meta block (migrated)", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug", "note": null,
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/marker", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $mig60}
+}}
+J
+printf -- '---\nid: T4\n---\n# T4\n' > "$LEGACY/tickets/T4.md"
+run board-migrate-gh.sh --board "$LEGACY/board-marker.json" --apply >/dev/null
+mig60_body="$(state "s['issues']['$mig60']['body']")"
+assert_contains "$mig60_body" "the prose after the example survives a migration" \
+  "the migration keeps the prose after a quoted marker (#60)"
+assert_contains "$mig60_body" "## Success criteria" "…including the headings after it"
+assert_contains "$mig60_body" "branch: feat/marker" "…while still applying the migrated meta"
+
+# A legacy note that quotes the OPENING marker is unrepresentable in the block.
+# It dies LOUDLY mid-migration (the operator fixes the note and re-runs) rather
+# than minting a second marker inside the real block — no special handling.
+cat > "$LEGACY/board-marker-note.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Documents the meta block (migrated)", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug",
+         "note": "forged <!-- board:meta pr: fake",
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/marker", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $mig60}
+}}
+J
+assert_fails run board-migrate-gh.sh --board "$LEGACY/board-marker-note.json" --apply
+assert_equals "$(state "s['issues']['$mig60']['body']")" "$mig60_body" \
+  "…and the refused migration left the body untouched"
+
 echo "meta-grammar:"
 # The board:meta block is prose-adjacent: tickets that DOCUMENT the block quote
 # a marker-shaped example in their own text (#60). META_RE is leftmost-first and

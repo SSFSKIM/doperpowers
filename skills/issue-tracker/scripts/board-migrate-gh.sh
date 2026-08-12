@@ -207,7 +207,10 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
             if append:
                 what.append("pre-spec md")
             def write_body(num=num, gn=gn, want_meta=want_meta, append=append):
-                base = B.META_RE.sub("", gn["body"] or "").rstrip("\n")
+                # strip_meta, not META_RE.sub: a leftmost strip cuts from a
+                # marker QUOTED in the ticket's prose and this rewrite is
+                # one-shot (#60).
+                base = B.strip_meta(gn["body"])
                 B.set_body(num, B.render_body(base + append, want_meta))
             act("%s: body += %s" % (ref, " + ".join(what)), write_body)
 
