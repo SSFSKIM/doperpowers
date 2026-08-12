@@ -403,20 +403,17 @@ runs.
 
 A PR CONFLICTING against its base is not automatically an impasse.
 When every conflict is MECHANICAL — the resolution keeps both sides'
-lines verbatim (add/add unions: import blocks, comments, doc prose,
-adjacent test insertions) and no hunk requires choosing one side's
-logic or authoring new logic — resolve it yourself: merge the base
-into the PR branch, resolve, and check the resolution against BOTH
-parents carries only that juxtaposition. The resolved tree must then
-pass the full verification gate AND one lens-free engine sweep — that
-sweep is what closes the provenance loop (the resolution is itself
-reviewed); if it cannot run, park as usual. Record in the trail which
-files conflicted and how each hunk was resolved, and treat the
-resolved head as the reviewed head below. The moment any hunk needs a
-semantic choice — two implementations of one thing, an invariant
-spanning both sides, code you would write rather than keep — stop and
-park needs-human naming that hunk: that decision belongs to a human or
-a re-cut.
+lines verbatim (add/add unions) and no hunk requires choosing one
+side's logic or authoring new logic — resolve it yourself, checking
+the resolution against BOTH parents carries only that juxtaposition.
+The resolved tree must then pass the full verification gate AND one
+lens-free engine sweep — that sweep is what closes the provenance loop
+(the resolution is itself reviewed); if it cannot run, park as usual.
+Record the resolution in the trail and treat the resolved head as the
+reviewed head below. The moment any hunk needs a semantic choice —
+two implementations of one thing, an invariant spanning both sides,
+code you would write rather than keep — stop and park needs-human
+naming that hunk: that decision belongs to a human or a re-cut.
 
 If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge,
 pinned to the head your final engine round reviewed. Headless gh never
