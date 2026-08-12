@@ -326,7 +326,12 @@ substance and route.
 - WAVE — the default for every NEW finding, including any SPEC FINDING
   within this PR's scope: put it on the wave board (FIX WAVES).
 - TOO BIG — valid but new scope (a design fork, a new subsystem, or more
-  than about half the original PR's size): register a ticket per the
+  than about half the original PR's size). New scope measures the work,
+  not the location: a defect a fixer can fix and verify within one wave
+  is WAVE wherever it lives — outside-the-diff is not new scope.
+  (Observed drift: adjacent same-idiom defects ticketed as TOO BIG at
+  2–3 per review flooded the board.) For what passes the bar, register
+  a ticket per the
   doperpowers:issue-tracker ticket contract — run its pre-registration
   seam search first, then author its body at register time
   (the pre-spec sections, filled from the finding) and pass it in one step:
@@ -381,7 +386,9 @@ of ANY severity, not a clean report: a round whose findings all match
 already-routed items ends the review, and reaching the wave/round cap
 with no blocker left ends it too. At that exit — and only then — LOG
 whatever valid non-blockers remain unrouted, so small findings get
-fixed in the loop instead of accumulating as debt.
+fixed in the loop instead of accumulating as debt. Severity does not
+promote exit residue to a ticket — TOO BIG is the only ticket gate at
+exit, as everywhere.
 At the cap with unresolved blockers there is no
 confidence to grant. When those blockers cluster at one seam — each
 wave's fix spawning the next finding there — that is a decomposition

@@ -7,7 +7,7 @@ description: "Use when starting any creative work — creating features, buildin
 
 Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
 
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get approval.
+Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design and get approval.
 
 **The gate:** no implementation — code, scaffolding, invoking implementation skills — until a design has been presented and your human partner has approved it. Simple projects too: the design may be three sentences, but it exists and gets a yes — "too simple to need a design" is where unexamined assumptions cause the most wasted work.
 
@@ -16,12 +16,12 @@ Start by understanding the current project context, then ask questions one at a 
 Work through these in order:
 
 1. **Explore project context** — check files, docs, recent commits
-2. **Grill** — clarifying questions one at a time per The Grill below; understand purpose/constraints/success criteria
+2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
 3. **Recommend the track, then get confirmation** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); see Choosing the Track below
 4. **Present the design** — one holistic pass, attention-ranked, one approval (see Presenting the Design below)
 5. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-7. **User reviews written spec** — ask your human partner to review the spec file before proceeding
+7. **Independent spec review** — dispatch a spec reviewer subagent; evaluate its findings, fix what survives (see below)
 8. **Transition to implementation** — invoke doperpowers:writing-plans (a goal routed to decomposing invokes doperpowers:decomposing here instead)
 
 Three exits leave this skill: writing-plans (controlled), execplan (autonomous, on your human partner's explicit choice), or implementing directly in this session (direct track — no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logic). A fourth exit routes to doperpowers:decomposing when the goal fails its ownability gate — too big for one agent to reliably own as one unit — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and approved here, carrying that design as decomposing's input.
@@ -38,11 +38,14 @@ Three exits leave this skill: writing-plans (controlled), execplan (autonomous, 
 
 **The Grill** — this is the clarification protocol:
 
-> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it.
 >
-> Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering. If a topic needs more exploration, break it into multiple questions.
+> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet. Ask the whole frontier in one round: each round's answers reshape the tree and push the frontier outward, and a question whose answer depends on another question still open in this round belongs to a later round. The grill is done when the frontier is empty — every branch of design tree visited, nothing left silently assumed. Act only after you confidently reached a shared understanding.
 >
-> If a question can be answered by exploring the codebase, explore the codebase instead. If it can't be answered for lack of information, run research.
+> Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat. In a non-interactive context (a board ticket, a relay comment), the whole round is one numbered message.
+>
+> Finding facts is your job, never your human partner's: a question the codebase, filesystem, external information on web can answer is answered by exploring them; when you need more extensive exploration, run dedicated research exploring web, codebase, or whatever you need. Don't block a round on a running exploration — running exploration is an unsettled prerequisite, so only its downstream questions wait for it; ask the rest of the frontier now.
+
 
 Three moves to use throughout:
 
@@ -60,7 +63,7 @@ A design fork with genuinely sound alternatives is a grill question, not present
 
 **Choosing the Track (after the grill):**
 
-Three tracks leave this skill. The controlled track — the rest of this skill: design → spec → doperpowers:writing-plans — keeps human gates until your human partner types `<agent-ready>`; from that signal on, run the remaining steps autonomously. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation, spec writing, and your human partner's review first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
+Three tracks leave this skill. The controlled track is the rest of this skill: design → spec → doperpowers:writing-plans. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
 
 **You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
 
@@ -80,7 +83,7 @@ Once you believe you understand what you're building, present the whole design i
 2. **The design itself** — architecture, components, data flow, error handling, and testing, described in sections scaled to their complexity: a few sentences if straightforward, up to 200-300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, and the reasoning behind the significant calls. Where a section turns on your human partner's taste or domain knowledge, mark it as one to review carefully.
 3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
 
-One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the frontier logic of reference/batch-grilling.md).
+One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the grill's frontier logic).
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
@@ -132,12 +135,10 @@ After writing the spec document, look at it with fresh eyes:
 
 Fix any issues inline. No need to re-review — just fix and move on.
 
-**User Review Gate:**
-After the spec self-review passes, ask your human partner to review the written spec before proceeding:
+**Independent Spec Review:**
+After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review.
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
-
-While waiting for their response, dispatch a general-purpose subagent (model=fable) for an independent spec review — a brief prompt with 1-2 sentences of context and the spec path is enough. Evaluate its findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review. Handle requested changes from your human partner the same way. Proceed once they approve.
+From design approval onward, what returns to your human partner is exceptions: a design-level fork the approved design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the approved design is fixed where it stands and logged in the spec's Decision Log.
 
 **Implementation:**
 
