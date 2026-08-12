@@ -187,6 +187,10 @@ SURFACE_COLOR = "e99695"
 SURFACE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
+# Every boundary `str.splitlines()` honours — meta_match must cut interior lines
+# exactly where parse_meta will, or a value folded on U+2028 (or CR, \v, \x85…)
+# hides a `-->` and the prose behind it inside one apparently-legal line.
+LINE_SEP_RE = re.compile("\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
              "parent-pin", "note")
 
@@ -272,9 +276,18 @@ def meta_match(body):
     wins (spec v1.2.4).
 
     When no opener clears the last illegal line the block is noncanonical — an
-    unknown key, a comment, hand-edited spacing — and the last candidate wins,
-    which is the old rightmost behavior and what board-body.sh's raw splice
-    relies on.
+    unknown key, a comment, hand-edited spacing — and the fall back is to the
+    FIRST opener of the last run of candidates, i.e. the one that opened the
+    segment the illegal line landed in. Taking the LAST opener instead (the old
+    rightmost behavior) reopens shape B whenever a legacy block carries BOTH a
+    nested marker and an unknown key: the unknown key fences off every
+    candidate, and the nested opener wins.
+
+    The pass splits lines on every separator `str.splitlines()` honours, not
+    `\\n` alone. parse_meta reads the block that way, so a quoted example that
+    uses U+2028 (or CR, or \\v) would otherwise fold its `-->` and the prose
+    after it into one interior line that reads legal — the quoted opener wins
+    and the next meta write truncates the body.
 
     One classification pass over the span plus two regex scans: the walk is
     linear in the body, where the old rightmost loop re-ran the end-anchored
@@ -294,29 +307,28 @@ def meta_match(body):
     # occur at only one offset — and m0's lazy middle ends exactly there.
     close = m0.end(1)
     first = m0.start() + (1 if body[m0.start()] == "\n" else 0)
-    # One pass over the span: collect the candidate openers and the offset past
-    # the last line that cannot be block interior.
+    # One pass over the span: each candidate opener is recorded with the fence
+    # standing at the time — the offset past the last line so far that cannot be
+    # block interior — so the fallback can find the segment it opened.
     opens, fence, pos = [], first, first
     while pos < close:
-        eol = body.find("\n", pos, close)
-        if eol < 0:
-            eol = close
-        line = body[pos:eol]
+        sep = LINE_SEP_RE.search(body, pos, close)
+        line = body[pos:sep.start() if sep else close]
         if line == "<!-- board:meta":
-            # A nested marker is legal interior. It is a candidate only if the
-            # closer still leaves room for a block to open here — a trailing
-            # `<!-- board:meta\n-->` has none, and META_RE cannot match there.
-            if pos + head <= close:
-                opens.append(pos)
+            # A nested marker is legal interior either way. It is a CANDIDATE
+            # only when a real `\n` follows — META_RE cannot match otherwise —
+            # and the closer still leaves room for a block to open here; a
+            # trailing `<!-- board:meta\n-->` has none.
+            if sep is not None and sep.group() == "\n" and pos + head <= close:
+                opens.append((pos, fence))
         elif not _block_line(line):
-            fence = eol + 1
-        pos = eol + 1
-    chosen = opens[-1]
-    for start in opens:
+            fence = (sep.end() if sep else close)
+        pos = sep.end() if sep else close
+    for start, _ in opens:
         if start >= fence:
-            chosen = start
-            break
-    return META_RE.search(body, chosen)
+            return META_RE.search(body, start)
+    floor = opens[-1][1]
+    return META_RE.search(body, next(s for s, _ in opens if s >= floor))
 
 
 def parse_meta(body):

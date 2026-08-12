@@ -2145,8 +2145,61 @@ print("nc-parse-pr=%s" % B.parse_meta(body).get("pr"))
 print("nc-tail=%s" % ("kept" if "More prose." in B.strip_meta(body) else "LOST"))
 PY
 )"
-assert_contains "$mgnc" "nc-parse-pr=https://real/1" "a block carrying an UNKNOWN key is still found (last-candidate fallback)"
+assert_contains "$mgnc" "nc-parse-pr=https://real/1" "a block carrying an UNKNOWN key is still found (segment fallback)"
 assert_contains "$mgnc" "nc-tail=kept" "…without eating the prose above it"
+
+# (j) The opener walk must cut interior lines exactly where parse_meta will.
+# parse_meta reads the block with str.splitlines(), which honours U+2028, bare
+# CR and \v among others; a walk that splits on \n alone folds a quoted
+# example's `-->` and the prose behind it into ONE line that reads like a legal
+# `note:` entry, so the quoted opener wins and the next meta write truncates
+# the body. Same separator set as (f), coming the other way: (f) stops a value
+# from FORGING a key, (j) stops one from HIDING a disqualifying line.
+mgsep="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+SEPS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "vt": "\v", "ff": "\f",
+        "fs": "\x1c", "gs": "\x1d", "rs": "\x1e", "nel": "\x85",
+        "ls": "\u2028", "ps": "\u2029"}
+for name, sep in sorted(SEPS.items()):
+    folded = "note: example%s-->%sMore prose." % (sep, sep)
+    body = ("Docs:\n\n<!-- board:meta\n%s\n"
+            "<!-- board:meta\npr: https://real/1\n-->\n" % folded)
+    meta = B.parse_meta(body)
+    bad = []
+    if meta.get("pr") != "https://real/1":
+        bad.append("parse")
+    if meta.get("note"):
+        bad.append("leak")
+    if "More prose." not in B.strip_meta(body):
+        bad.append("truncated")
+    print("j-%s=%s" % (name, ",".join(bad) if bad else "clean"))
+PY
+)"
+for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
+    assert_contains "$mgsep" "j-$sep=clean" "a quoted example folded on $sep cannot hide its own closer"
+done
+
+# (k) The two legacy damages COMBINED: a pre-grammar block whose value carries a
+# nested marker AND which also holds an unknown key. The unknown key is not
+# block-legal, so it fences off every candidate and the walk falls back — and a
+# fallback to the LAST candidate lands on the NESTED opener, re-opening exactly
+# the strip regression (g) pins. The fallback belongs to the segment the illegal
+# line landed in, so it is that segment's FIRST opener.
+mgmix="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+MIXED = ("prose\n\n<!-- board:meta\nnote: line1\n"
+         "<!-- board:meta\npr: forged\nweird-key: x\n-->\n")
+print("k-strip=%r" % B.strip_meta(MIXED))
+rewritten = B.render_body(MIXED, B.parse_meta(MIXED))
+print("k-rewrite-prose=%r" % B.strip_meta(rewritten))
+print("k-rewrite-markers=%d" % rewritten.count("<!-- board:meta"))
+PY
+)"
+assert_contains "$mgmix" "k-strip='prose'" "a legacy block with a nested marker AND an unknown key still strips at the outer opener"
+assert_contains "$mgmix" "k-rewrite-prose='prose'" "…and a rewrite leaves the prose byte-stable"
+assert_contains "$mgmix" "k-rewrite-markers=1" "…collapsing it to a single clean block"
 
 # (h) The opener walk must not rescan per marker. The rightmost walk re-ran the
 # end-anchored regex once per opener — O(N²), 1.7s on a 4000-marker body, and
