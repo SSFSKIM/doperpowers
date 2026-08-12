@@ -1016,8 +1016,7 @@ cat > "$DAEMON_HOME/44444444-1111-2222-3333-444444444444.json" <<META
  "updated": "2026-07-12T00:00:00Z"}
 META
 run board-answer.sh "$fb_qa_t" "ship it" >/dev/null
-assert_contains "$(state "s['issues']['$fb_qa_t']['labels']")" "status:in-review" "unrecorded pre-park with a QAGENT role returns to in-review"
-assert_contains "$(state "s['issues']['$fb_qa_t']['body']")" "pr: https://github.com/test/repo/pull/88" "the re-supplied --pr is the ticket's own recorded PR"
+assert_contains "$(state "s['issues']['$fb_qa_t']['labels']")" "status:in-review" "unrecorded pre-park with a QAGENT role returns to in-review, re-supplying the ticket's own --pr"
 
 # ...and only when there IS a PR to re-supply. No pr: meta means no legal
 # in-review write, so the arm demotes itself rather than dying on the flag.

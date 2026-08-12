@@ -223,6 +223,15 @@ t "the meta records the ticket" '"ticket": "9"'    meta
 # Without the bearer at rest every later relay/resume of this reviewer has no
 # token to speak with — the sweep reads it back out of exactly this field.
 t "the bearer is stored at rest" '"run_bearer": "tok-q"' meta
+# ...and stored 0600, the way board-bind wrote it. Every bookkeeping stamp that
+# touches this meta afterwards has to hold that line: one rewrite at the umask
+# default republishes the run bearer world-readable, and the api path's own
+# stamp then faithfully preserves the widened mode.
+meta_mode() {
+  python3 -c 'import glob, os, sys
+print("%o" % (os.stat(glob.glob(sys.argv[1])[0]).st_mode & 0o777))' "$DH/bbbb0001-*.json"
+}
+t "the bearer meta is not world-readable" "600" meta_mode
 barrier() {
   local f; f="$(find "$DH" -name bind-ready.json -type f -print | head -1)"
   [ -n "$f" ] || { echo "no-barrier"; return; }

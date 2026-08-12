@@ -342,7 +342,12 @@ PY
 }
 
 # Write one field into daemon <1>'s registry meta, under the same lock
-# board-bind.sh takes (read-modify-write; unknown keys are preserved).
+# board-bind.sh takes (read-modify-write; unknown keys are preserved), and
+# under its write_meta mode discipline too. This helper lands on API metas —
+# a failure retirement stamps one — and an API meta holds the run bearer.
+# Recreating that file at the umask default republishes the secret
+# world-readable, and permanently: the api claim path's own stamp preserves
+# whatever mode it finds, so a widened mode is never narrowed again.
 _stamp_meta() {  # <uuid> <key> <value>
   DAEMON_HOME="$DAEMON_HOME" M_UUID="$1" M_KEY="$2" M_VAL="$3" python3 - <<'PY'
 import fcntl, json, os
@@ -354,9 +359,18 @@ try:
     with open(path) as f:
         m = json.load(f)
     m[os.environ["M_KEY"]] = os.environ["M_VAL"]
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    # The mode argument applies only to an inode this open CREATES; a .tmp left
+    # by an earlier crash is an existing inode at whatever mode it had. Unlink
+    # first, create exclusively, chmod against a narrowing umask.
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
         json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
     os.replace(tmp, path)
 finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
@@ -936,15 +950,21 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
       echo "$name: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
       return 1
     fi
-    # Persist role: QAGENT into the registry meta, the same
-    # read-modify-write-under-lock shape implement-dispatch.sh uses for its
-    # own lanes. board-answer.sh's needs-human fallback (no recorded
-    # pre-park:) reads it back to return this park to in-review — a reviewer
-    # resumed into in-progress owns no implementation branch and has no legal
-    # exit. Non-fatal: metas written before this stamp are still recognized
-    # by board-answer's review-pr-* / review-epic-* name inference.
-    _stamp_meta "$uuid" role QAGENT \
-      || echo "$name: role meta write failed (non-fatal)" >&2
+    # Persist role: QAGENT into the registry meta. board-answer.sh's
+    # needs-human fallback (no recorded pre-park:) reads it back to return
+    # this park to in-review — a reviewer resumed into in-progress owns no
+    # implementation branch and has no legal exit. Non-fatal: metas written
+    # before this stamp are still recognized by board-answer's review-pr-* /
+    # review-epic-* name inference.
+    #
+    # GH MODE ONLY — this tail is shared with the api claim path, which stamps
+    # role itself (alongside lane and nonce) in the one write that also has to
+    # hold the run bearer's 0600. Two stamps racing that file buys nothing and
+    # risks the mode. CLAIM_JOURNAL is this file's gh/api discriminator.
+    if [ -z "${CLAIM_JOURNAL:-}" ]; then
+      _stamp_meta "$uuid" role QAGENT \
+        || echo "$name: role meta write failed (non-fatal)" >&2
+    fi
   fi
   if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
 import json, os

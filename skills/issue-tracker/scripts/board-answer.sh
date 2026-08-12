@@ -135,12 +135,13 @@ fi
 # the relay is certain to proceed (a refused relay posts nothing — the human
 # can still comment by hand and take the fresh-dispatch path).
 #
-# A FUNCTION, not an inline "$(...)": bash 3.2 re-scans a command substitution
-# at EXPANSION time with a matcher that does not understand the heredoc, so
-# every apostrophe in this prose flips it into single-quote mode and the first
-# later double-quoted string containing a space makes the whole expansion fail
-# to find its closing paren. Parsed as a function body it goes through the real
-# parser once, and the prose is free again.
+# A FUNCTION, not an inline "$(...)": bash 3.2 scans a command substitution
+# with a matcher that does not understand the heredoc it contains, so every
+# apostrophe in this prose — worker's, doesn't — toggles its quote state. At
+# an ODD count the matcher is stuck in single-quote mode, stops counting
+# parens, and the substitution fails to find its close. The old body survived
+# on an even count; one more apostrophe of prose broke it. A function body
+# goes through the real parser instead, so the prose here is free again.
 _probe_binding() {
   T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
 import glob

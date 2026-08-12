@@ -2326,6 +2326,28 @@ assert_not_contains "$OUT_UNEXP" "BOARD_REPO is unset" "no scale subprocess dies
 
 rm -f "$MOCK_DIR/board-issues.json"
 
+# ---- _stamp_meta mode discipline ----------------------------------------------
+# The shared bookkeeping write (retired_from, closure_package, the gh role
+# stamp). It lands on API metas too — a retirement can stamp one — and an API
+# meta holds the run bearer at 0600. Recreating it at the umask default
+# republishes that secret world-readable, permanently: the api path's own stamp
+# preserves whatever mode it finds. Exercised directly, since no path in this
+# gh-mode suite puts a bearer at rest.
+echo "_stamp_meta mode discipline:"
+eval "$(sed -n '/^_stamp_meta() {/,/^}/p' "$DISPATCH")"
+mode_of() { python3 -c 'import os, sys
+print("%o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+printf '%s' '{"uuid": "u1", "run_bearer": "SECRET-TOKEN"}' > "$DAEMON_HOME/u1.json"
+chmod 600 "$DAEMON_HOME/u1.json"
+_stamp_meta u1 retired_from failure
+assert_equals "$(mode_of "$DAEMON_HOME/u1.json")" "600" "a run-bearer meta survives the stamp at 0600"
+assert_contains "$(cat "$DAEMON_HOME/u1.json")" '"retired_from": "failure"' "and the stamp still wrote its field"
+printf '%s' '{"uuid": "u2"}' > "$DAEMON_HOME/u2.json"
+chmod 600 "$DAEMON_HOME/u2.json"
+_stamp_meta u2 retired_from failure
+assert_equals "$(mode_of "$DAEMON_HOME/u2.json")" "600" "any narrowed meta keeps the mode it already had"
+rm -f "$DAEMON_HOME/u1.json" "$DAEMON_HOME/u2.json"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"; exit 1
