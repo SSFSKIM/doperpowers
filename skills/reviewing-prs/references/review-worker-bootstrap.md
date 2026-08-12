@@ -78,18 +78,21 @@ integration branch you review from, and `BASE_REF`, which the review
 engine ranges against as `origin/{{BASE_REF}}`:
 
 ```
-git fetch origin {{BASE_REF}}
+git fetch origin +refs/heads/{{BASE_REF}}:refs/remotes/origin/{{BASE_REF}}
 git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
 ```
 
-`FETCH_HEAD` — not `origin/{{INTEGRATION_REF}}` — is what the fetch just
-wrote: a single-branch clone's fetch refspec need not cover these
-branches, in which case no remote-tracking ref is created or updated and
-`origin/<ref>` is absent or stale. Keep the integration fetch immediately
-before the checkout, since `FETCH_HEAD` names the ref most recently
-fetched. Either fetch failing is a hard stop, never a fallback: a base
-that will not fetch is as un-reviewable as an integration ref that will
-not, so park with
+Each line names the ref it will actually be read through, because a
+single-branch clone's configured fetch refspec need not cover either
+branch — and when it does not, the fetch moves only `FETCH_HEAD` and
+leaves `origin/<ref>` absent or stale. So the base, which the engine only
+ever reaches as `origin/{{BASE_REF}}`, is fetched through an explicit
+refspec that writes that tracking ref whatever the clone is configured
+for; and the integration ref, which you check out immediately, is taken
+from `FETCH_HEAD` — keep that fetch adjacent to the checkout, since
+`FETCH_HEAD` names the most recently fetched ref. Either fetch failing is
+a hard stop, never a fallback: a base that will not fetch is as
+un-reviewable as an integration ref that will not, so park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human`
 naming the ref that would not fetch. `BASE_REF` below is the repo's
 default branch — what this epic merges into — and the manifest snapshots

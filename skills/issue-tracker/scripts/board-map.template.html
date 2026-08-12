@@ -254,7 +254,15 @@
     });
     return (outer[0] || hit[0]).id;
   }
-  function hiddenBy(n) { return hiddenStates[n.state] || (eligibleOnly && !n.eligible); }
+  // ELIGIBLE-only is gated on ELIG_KNOWN, not just on its own toggle: filters
+  // survive a hot reload, so a filter armed under a gh snapshot is still armed
+  // when an api one lands — and every api node omits `eligible`, so an ungated
+  // test would hide the entire board while buildChips() has already dropped the
+  // chip that could clear it. Unknown eligibility simply stops filtering; the
+  // toggle keeps its value and resumes if a gh snapshot comes back.
+  function hiddenBy(n) {
+    return hiddenStates[n.state] || (ELIG_KNOWN && eligibleOnly && !n.eligible);
+  }
   function bbox(ids) {
     var xs = ids.map(function (i) { return nodeById[i].x; });
     var ys = ids.map(function (i) { return nodeById[i].y; });

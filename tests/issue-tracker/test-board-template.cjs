@@ -178,7 +178,11 @@ expect("and reports the eligible tally in the header",
 // rather than shipping a false it cannot back. Both surfaces that report on it
 // must disappear: a "0 eligible" tally would understate a claimable board, and
 // an ELIGIBLE-only filter would have every card to hide.
-ids.chips.children.find((b) => b.textContent === "ELIGIBLE only").onclick();  // clear the filter first
+// The filter is deliberately left ON across this swap. UI state survives a hot
+// reload by design, so an ELIGIBLE-only that was armed under a gh payload is
+// still armed when an api payload lands — and api nodes omit `eligible`, so an
+// ungated filter rejects every one of them: a blank board with the chip gone,
+// leaving no control to turn it back off.
 const apiPayload = {
   meta: { count: 2, updated: "" },
   nodes: [
@@ -204,6 +208,9 @@ cols = columns();
 expect("api cards still render — the board is not filtered away",
   (cols["ready-for-implementer"] || []).includes("#1") &&
   (cols["in-progress"] || []).includes("#2"));
+expect("an armed ELIGIBLE-only filter hides nothing once eligibility is unknown",
+  (cols["ready-for-implementer"] || []).length === 1 &&
+  (cols["in-progress"] || []).length === 1);
 
 if (failures) { console.log(failures + " template test(s) FAILED"); process.exit(1); }
 console.log("template kanban tests: all pass");

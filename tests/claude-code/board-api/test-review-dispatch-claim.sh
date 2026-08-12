@@ -585,12 +585,19 @@ t "the scale checkout uses the ref the fetch wrote" \
   "git checkout --detach FETCH_HEAD" cat "$SCALE_PROMPT"
 nt "and never the remote-tracking ref the fetch may not have moved" \
   "checkout --detach origin/" cat "$SCALE_PROMPT"
-# THE BASE IS FETCHED TOO. The engine ranges this review against
-# `origin/<BASE_REF>`; the dispatcher's own DEFAULT_BRANCH fetch is a
-# best-effort manifest refresh in the DISPATCHER's clone, not the worker's
-# worktree, so an unfetched base is as un-reviewable as an unfetched
-# integration ref.
+# THE BASE IS FETCHED TOO, AND INTO THE REF THE ENGINE READS. The engine ranges
+# this review against `origin/<BASE_REF>`; the dispatcher's own DEFAULT_BRANCH
+# fetch is a best-effort manifest refresh in the DISPATCHER's clone, not the
+# worker's worktree, so an unfetched base is as un-reviewable as an unfetched
+# integration ref. The integration ref escapes the single-branch-clone hole via
+# FETCH_HEAD, but the base cannot — nothing checks it out, it is only ever read
+# as `origin/<BASE_REF>` — so its fetch must write that tracking ref explicitly.
+# Bare `git fetch origin <base>` on a single-branch clone moves FETCH_HEAD and
+# nothing else: a fresh clone then has no `origin/<base>` (the engine fails) and
+# a long-lived one reviews against a stale one (worse — it succeeds).
 t "the scale prompt orders the base fetch as well" \
+  "git fetch origin +refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
+nt "and never the bare form that may write no tracking ref" \
   "git fetch origin main" cat "$SCALE_PROMPT"
 # A recomposition epic merges into the default branch, and that IS knowable
 # here — unlike a PR's base, which the api PR variant leaves to the worker.
@@ -695,7 +702,7 @@ t "the dispatch ran" "claimed #77 run=71" cat "$OUT8"
 t "the remote's default branch becomes the epic's base" '`BASE_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "the literal main guess never reaches the worker" '`BASE_REF`: main' cat "$TRUNK_PROMPT"
 t "and the base fetch the worker is ordered to run names it too" \
-  "git fetch origin trunk" cat "$TRUNK_PROMPT"
+  "git fetch origin +refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
 t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
 
