@@ -533,3 +533,15 @@ open on the issue.
   scale/URL dispatch test scenarios isolated and lifecycle-complete
   (bind asserted, not just prompt text); the ELIGIBLE kill covers all
   three consumers (label, `s_elig` class, serialized flag).
+- v1.2.2 (2026-08-12, post-PR#61 codex review flow-back): §6's api-scale
+  base is no longer the dispatcher's `DEFAULT_BRANCH` as authority — the
+  resolution ladder can settle on a stale local `origin/HEAD` or, on a
+  gh-less machine where `ls-remote` also fails, a literal `main` guess,
+  and a guessed base whose branch exists reviews (and can close) the
+  epic against the wrong range. The worker now resolves the true default
+  from `git ls-remote --symref origin HEAD` before its fetches — the
+  same worker-resolves-base symmetry the PR variant already had — and
+  parks needs-human when that resolution fails, never falling back; the
+  rendered `BASE_REF` is an advisory echo. (Fix 9542ee3c; the review's
+  other finding, a trap-quoting claim in board-body.sh, was refuted
+  byte-level and by the passing spool-cleanup assertion.)
