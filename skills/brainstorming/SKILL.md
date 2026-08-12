@@ -38,13 +38,14 @@ Three exits leave this skill: writing-plans (controlled), execplan (autonomous, 
 
 **The Grill** — this is the clarification protocol:
 
-> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and provide your recommended answer with every question.
+> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it.
 >
-> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet. Ask the whole frontier in one round, then wait: each round's answers reshape the tree and push the frontier outward, and a question whose answer depends on another question still open in this round belongs to a later round. The grill is done when the frontier is empty — every branch visited, nothing left silently assumed.
+> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet. Ask the whole frontier in one round: each round's answers reshape the tree and push the frontier outward, and a question whose answer depends on another question still open in this round belongs to a later round. The grill is done when the frontier is empty — every branch of design tree visited, nothing left silently assumed. Act only after you confidently reached a shared understanding.
 >
 > Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat. In a non-interactive context (a board ticket, a relay comment), the whole round is one numbered message.
 >
-> Finding facts is your job, never your human partner's: a question the codebase can answer is answered by exploring the codebase, and one it can't for lack of information is answered by research. Don't block a round on a running exploration — it is an unsettled prerequisite, so only its downstream questions wait for it; ask the rest of the frontier now.
+> Finding facts is your job, never your human partner's: a question the codebase, filesystem, external information on web can answer is answered by exploring them; when you need more extensive exploration, run dedicated research exploring web, codebase, or whatever you need. Don't block a round on a running exploration — running exploration is an unsettled prerequisite, so only its downstream questions wait for it; ask the rest of the frontier now.
+
 
 Three moves to use throughout:
 
