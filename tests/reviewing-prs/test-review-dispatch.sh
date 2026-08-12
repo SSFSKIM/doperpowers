@@ -37,10 +37,10 @@ assert_file_exists() {
 # A binding is only bound when it arrives with a VALUE. Anchored on the rendered
 # roster line shape (- `NAME`: value), so a binding that rendered as a blank —
 # the shape an unsupplied placeholder used to take — reads as unbound here.
-assert_bound() {  # assert_bound <prompt> <NAME>
+assert_bound() {  # assert_bound <prompt> <NAME> <lane>
     local v; v="$(printf '%s\n' "$1" | sed -n "s/^- \`$2\`: \(.*\)$/\1/p" | head -1)"
-    if [[ -n "$v" ]]; then pass "\`$2\` renders with a value"; else
-        fail "\`$2\` renders with a value"; echo "    binding line absent or empty"; fi
+    if [[ -n "$v" ]]; then pass "\`$2\` renders with a value ($3)"; else
+        fail "\`$2\` renders with a value ($3)"; echo "    binding line absent or empty"; fi
 }
 
 # ---- environment --------------------------------------------------------------
@@ -459,9 +459,9 @@ assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"
 # The bindings a reviewer cannot function without, pinned on the VALUE side:
 # an existing `NAME`: assertion passes just as well against a rendered blank.
-assert_bound "$PROMPT" BIND_READY_FILE
-assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE
-assert_bound "$PROMPT" BOARD_SCRIPTS
+assert_bound "$PROMPT" BIND_READY_FILE pr
+assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE pr
+assert_bound "$PROMPT" BOARD_SCRIPTS pr
 SKILL_PIN="$(printf '%s\n' "$PROMPT" | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
 if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
     fail "SKILL_FILE renders a protocol path"; fi
@@ -1749,6 +1749,11 @@ assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR frami
 assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
 assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the engine base (the branch the epic integrates into)"
 assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity the startup barrier verifies"
+# The value side, on the scale call site too: the hard-fail sees a missing
+# binding, never an empty-valued one, and this lane has its own P_* block.
+assert_bound "$EPIC_PROMPT" BIND_READY_FILE scale
+assert_bound "$EPIC_PROMPT" IMPLEMENT_PROTOCOL_FILE scale
+assert_bound "$EPIC_PROMPT" BOARD_SCRIPTS scale
 # This epic has no `branch:` meta, so the worktree sits on the default branch
 # itself — there is no aggregate range to hand the engine, and the prompt must
 # say so instead of leaving the worker to review nothing.

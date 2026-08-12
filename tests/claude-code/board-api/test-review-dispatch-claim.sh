@@ -268,19 +268,20 @@ t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
 # The bindings an api reviewer cannot function without, pinned on the VALUE
 # side: a `NAME`: assertion passes just as well against a rendered blank, which
 # is the shape a call site that stopped supplying a placeholder used to take.
-bound() {  # bound <NAME> — reads the rendered roster line shape
-  local v; v="$(prompt | sed -n "s/^- \`$1\`: \(.*\)$/\1/p" | head -1)"
+bound() {  # bound <NAME> <prompt-file> — reads the rendered roster line shape
+  local v; v="$(sed -n "s/^- \`$1\`: \(.*\)$/\1/p" "$2" | head -1)"
   [ -n "$v" ] && echo "$1 bound: $v" || echo "$1 UNBOUND"
 }
-t "the barrier file binding carries a value"     "BIND_READY_FILE bound" bound BIND_READY_FILE
-t "the implement contract carries a value"       "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE
-t "the board scripts binding carries a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS
-t "the assignment file binding carries a value"  "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE
-skill_pin() {  # SKILL_FILE renders in prose, not on the roster
-  local v; v="$(prompt | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
+skill_pin() {  # skill_pin <prompt-file> — SKILL_FILE renders in prose, not on the roster
+  local v; v="$(sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' "$1" | head -1)"
   [ -n "$v" ] && echo "SKILL_FILE bound: $v" || echo "SKILL_FILE UNBOUND"
 }
-t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin
+API_PROMPT="$DH/prompt-9-api-qagent.md"
+t "the barrier file binding carries a value"     "BIND_READY_FILE bound" bound BIND_READY_FILE "$API_PROMPT"
+t "the implement contract carries a value"       "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$API_PROMPT"
+t "the board scripts binding carries a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$API_PROMPT"
+t "the assignment file binding carries a value"  "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$API_PROMPT"
+t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin "$API_PROMPT"
 
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
@@ -599,6 +600,13 @@ t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "
 t "the integration ref binding rides the prompt" \
   '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
 t "the assignment file still rides an api-scale prompt" '`TICKET_BODY_FILE`: ' cat "$SCALE_PROMPT"
+# The value side on the api-scale call site too — the same P_* block serves
+# both api modes, but only the api render was pinned on values before.
+t "the api-scale barrier file carries a value"   "BIND_READY_FILE bound" bound BIND_READY_FILE "$SCALE_PROMPT"
+t "the api-scale implement contract carries a value" "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$SCALE_PROMPT"
+t "the api-scale board scripts carry a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$SCALE_PROMPT"
+t "the api-scale assignment file carries a value" "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$SCALE_PROMPT"
+t "the api-scale protocol pin carries a value"   "SKILL_FILE bound" skill_pin "$SCALE_PROMPT"
 t "the scale prompt orders the integration checkout" \
   "git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
 # THE CHECKOUT NAMES THE REF THE FETCH JUST WROTE. `git fetch origin <ref>` on a
@@ -752,5 +760,59 @@ nt "so no rendered branch name is baked into the base fetch" \
   "+refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
 t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
+
+# =========================================================================
+# Scenario 9 — AN EPIC CLAIM WITH NO INTEGRATION BRANCH STILL DISPATCHES, and
+# its INTEGRATION_REF binding renders PRESENT AND EMPTY. This is the one place
+# where an empty rendered value is the contract rather than a defect: the
+# dispatcher deliberately does not refuse the spawn (refusing strands the
+# ticket with no park note naming the gap), so the empty binding is what the
+# api-scale block's own empty-ref check reads to park the epic itself, with a
+# note. Now that an unsupplied placeholder hard-fails the render, that
+# distinction lives one line away from the check — a later "reject empty
+# values too" tightening would look obviously right, pass every other test,
+# and silently convert a worker-parks-with-a-note into a stranded ticket.
+# =========================================================================
+PORT9="$(free_port)"
+FIX9="$(mktemp)"; : > "$FIX9.log"
+cat > "$FIX9" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":81,"ticketId":95,"fence":1,"bearer":"noref-bearer",
+          "body":"branch-less epic assignment","pr":"5150","branch":null,
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/81/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX9" "$PORT9" & MOCK9=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 2>/dev/null' EXIT
+wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; exit 1; }
+
+r9="$(apirepo "$PORT9")"
+DH9="$(mktemp -d)"
+OUT9="$(mktemp)"
+( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
+
+NOREF_PROMPT="$DH9/prompt-95-api-qagent.md"
+binding_shape() {  # binding_shape <NAME> <prompt-file> — absent / empty / valued
+  local v
+  if ! grep -q "^- \`$1\`:" "$2"; then echo "LINE-ABSENT"; return; fi
+  v="$(sed -n "s/^- \`$1\`: \{0,1\}\(.*\)\$/\1/p" "$2" | head -1)"
+  [ -n "$v" ] && echo "PRESENT-WITH-VALUE" || echo "PRESENT-AND-EMPTY"
+}
+t "a branch-less epic claim still reaches a worker" "claimed #95 run=81" cat "$OUT9"
+nt "the empty integration ref does not fail the render closed" \
+  "unrendered placeholders" cat "$OUT9"
+t "the api-scale variant is still the one rendered" \
+  "SCALE REVIEWER of recomposition epic #95" cat "$NOREF_PROMPT"
+t "the integration ref renders present and empty, not missing" \
+  "PRESENT-AND-EMPTY" binding_shape INTEGRATION_REF "$NOREF_PROMPT"
+t "and the WORKER is the party that parks it, with a note" \
+  'needs-human "scale review: the claim carried no integration ref"' cat "$NOREF_PROMPT"
 
 finish
