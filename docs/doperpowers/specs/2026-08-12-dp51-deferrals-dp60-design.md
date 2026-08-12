@@ -554,7 +554,54 @@ scratch copy — discrimination probe, not a committed test).
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Shipped (2026-08-13, branch dp51-deferrals-dp60):** all six items.
+dp#60 closed at every consumer — `meta_match`/`clean_meta` in
+`_board.py`, board-body and the migration on the shared helper, meta
+validated before any external write so a refusal can no longer tear a
+transition. The gh qagent answer path returns to in-review with the
+ticket's own `pr:` re-supplied (role stamp at spawn + legacy name
+inference). Successor-claim failures are typed: obsolete journals
+(`nonce-consumed`/`stale-resume`) drop uncharged, faults count on the
+existing 3-cycle ladder, one recovery attempt per ticket per tick,
+lift → reconcile → feed. A truncated `/tickets` read can no longer
+lift a suppression, and arkho#9 pins the read-whole contract outward.
+The review bootstrap renderer fails closed on unresolved placeholders
+with all four call sites proven complete, guarded by a 94-assertion
+static parity fence. The integration drills' id assertions are
+anchored and the transcript comparator's argv leg is honest about what
+it pins.
+
+**Against the purpose:** every known correctness hole in the client
+toolkit named by dp#51/dp#60 is closed; the one item that needed the
+server's participation became a filed contract (arkho#9) rather than
+speculation.
+
+**What the loop caught that the spec missed:** the `-->` grammar check
+was a torn-write trigger (fuzz-refuted, v1.2.1); the bearer 0600 mode
+leak through `_stamp_meta`'s shared tail; the meta opener rule itself
+needed FOUR formulations (rightmost → content walk → whole-interior →
+splitlines line model + segment fallback) — each hand revision broke a
+shape the previous one got right, and the round ended properly only
+when a 140k-body property fuzz (self-validated against all three
+superseded implementations) replaced hand reasoning. The fuzzer is
+committed; the next revision of that rule should be judged by it.
+
+**Gaps / accepted boundaries:** a quoted example that is all-legal
+`key: value` lines with no closer and no surrounding prose is
+byte-indistinguishable from a legacy-nested block (documented,
+v1.2.4); a poisoned legacy body's forged in-block keys are its actual
+content — the fix bounds strip damage, it cannot un-poison; the
+legality-drift fence and remaining PRE_PARK vocabulary question stay
+on dp#51's successor list.
+
+**Lessons:** (1) when hand-reasoned corrections of one rule fail
+repeatedly on individually-obvious cases, stop and build the generator
+— the fuzzer found the stable point in one pass and costs 0.3s to
+keep. (2) A grammar check on a write path must be fuzzed against the
+data already at rest before it ships — "unrepresentable" values had
+been representable for months. (3) The stale `arkho-a1-board-service`
+checkout cost a worker a 32-failure false regression; environment
+pins belong in the ledger the moment they are discovered.
 
 ## Revision Notes
 
