@@ -78,7 +78,10 @@ the forged keys (reproduced: real block at offset 12, rightmost match
 at 56, `pr` forged). Meta values are single-line by grammar —
 `parse_meta` reads the block line-wise, so a multi-line value is
 already silent corruption. Enforce it at the write: in `render_body`,
-normalize `\r`/`\n` in every value to a single space, and `die` on a
+collapse every separator `str.splitlines()` recognizes — not `\r`/`\n`
+alone; `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, U+2028/U+2029 would remain
+injectable as forged keys through `parse_meta`'s `splitlines()` (plan
+review finding) — via `" ".join(value.splitlines())`, and `die` on a
 value containing `<!-- board:meta` or `-->` (unrepresentable in the
 block; loud beats mangled). With the grammar enforced, the rightmost
 match is the real block by construction.
@@ -216,12 +219,18 @@ fresh nonce — two claims and one leaked journal file per tick.
    tick-scoped temp file, consult it in the feed loop — same shape as
    the suppression skip at `:1535`). This kills both the double-charge
    and the journal-per-tick leak in one move.
-3. **Reconcile honors suppression.** `_reconcile_successors` currently
-   replays through a suppression (it runs before the skip). It gains the
-   same `_suppressed` check `phase_resume` has: a suppressed ticket's
-   journal is left in place, untouched, until the suppression lifts —
-   the journal is the replay handle and the lift is the signal to use
-   it.
+3. **Reconcile honors suppression — and lift runs FIRST.**
+   `_reconcile_successors` currently replays through a suppression (it
+   runs before the skip). It gains the same `_suppressed` check
+   `phase_resume` has: a suppressed ticket's journal is left in place,
+   untouched, until the suppression lifts. The phase order moves to
+   lift → reconcile → feed (today reconcile runs first,
+   `_sweep_api.sh:1511`): with suppression-aware reconcile in the OLD
+   order, a suppression lifting mid-tick would skip the journal in
+   reconcile, lift, and then claim a FRESH nonce from the feed —
+   stranding the old journal to replay beside the new successor later
+   (plan review finding). Lift-first lets a just-lifted ticket replay
+   its own standing journal.
 4. **Generalize the escalation wording.** `_escalate`'s env-issue title
    stays (deterministic-title dedupe depends on it); the body's "Three
    resume and fresh-spawn cycles failed" becomes "Three recovery cycles
@@ -541,6 +550,14 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2 (2026-08-12): codex plan review (3 findings, all adopted): §1
+  value normalization covers every `splitlines()` separator, not
+  CR/LF alone (U+2028-class injection); §3 phase order becomes
+  lift → reconcile → feed (old order + suppression-aware reconcile
+  strands journals across a mid-tick lift); the §2 `--pr` handoff
+  crosses the python→shell boundary as an explicit sixth field (plan
+  detail, recorded here because the spec's "single conditional argv
+  append" implied shell scope it did not have).
 - v1.1 (2026-08-12): codex adversarial review (gpt-5.6-sol xhigh),
   four findings, all adopted after verification: §1 gains the value
   grammar (forged-marker reproduction confirmed — rightmost matching

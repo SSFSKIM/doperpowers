@@ -46,6 +46,12 @@
 # (d) grammar: render_body({"note": "line1\nline2"}) renders "note: line1 line2"
 # (e) grammar: render_body({"note": "x\n<!-- board:meta"}) exits nonzero with
 #     a message naming the offending key
+# (f) grammar, EVERY separator splitlines() knows: a note value carrying
+#     "safe pr: https://forged/1" and one carrying "safe\x0bpre-park: in-review"
+#     render as ONE line each — parse_meta of the round-trip returns NO forged
+#     pr/pre-park key. (parse_meta splits with str.splitlines(), which also
+#     recognizes \v \f \x1c-\x1e \x85     — CR/LF-only normalization
+#     leaves those injectable.)
 ```
 
 Note case (a)'s quoted example is INDENTED (four spaces) — `META_RE` requires the marker at line start after `\n?`, so also add case (a2) with the marker example at column 0 (the reproduced dp#60 shape).
@@ -89,7 +95,10 @@ def strip_meta(body):
     for k, v in meta.items():
         if not v:
             continue
-        v = re.sub(r"[\r\n]+", " ", str(v))
+        v = " ".join(str(v).splitlines())  # EVERY separator parse_meta's
+                                           # splitlines() would honor —
+                                           # \r\n alone leaves \v/\f/U+2028
+                                           # etc. injectable as forged keys
         if "<!-- board:meta" in v or "-->" in v:
             die("meta value %r cannot carry a board:meta marker token" % k)
         clean[k] = v
@@ -159,7 +168,38 @@ Also amend the `:987` assertion text: "an unrecorded pre-park with an IMPLEMENT 
 
 CHECK FIRST how `meta` is loaded (`board-answer.sh:104-160`): if the dict is the registry-file JSON, `name` is already a key; if it is a sub-object, read the name from the enclosing record and thread it through the same tab-separated line (`:200-201`) — extend that line rather than re-reading files.
 
-Then at the transition call (`:204-209`): when `ret == "in-review"`, read `pr = B.parse_meta(tickets[tid]["body"]).get("pr")` (the body is already fetched for pre-park); if present, append `--pr "$pr"` to the `board-transition.sh` argv; if absent, demote `ret` to `in-progress` and print `relay: #<tid> — QAGENT return wants in-review but the ticket has no pr: meta; falling back to in-progress` on stderr. The demotion happens where `ret` is computed (python), so the shell side stays a single conditional argv append.
+**The pr value must CROSS the python→shell boundary explicitly** — the
+current output line (`:200-201`) carries five fields
+(`uuid engine status updated ret`) and the shell `read` at `:204` names
+exactly those; `set -u` makes an unread `$pr` a hard abort. So:
+
+- In the python: when the role arm selects `in-review`, read
+  `pr = B.parse_meta(tickets[tid]["body"]).get("pr")` (the body is
+  already fetched for pre-park). If absent, demote `ret` to
+  `in-progress`, set `pr = ""`, and print the warning
+  `relay: #<tid> — QAGENT return wants in-review but the ticket has no pr: meta; falling back to in-progress`
+  to stderr. Emit `pr` as a SIXTH tab-separated field (empty when not
+  in-review).
+- In the shell: extend the `read` to
+  `IFS=$'\t' read -r uuid engine status updated ret pr`, and build the
+  transition argv conditionally:
+
+```bash
+if [ "$ret" = in-review ]; then
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}" --pr "$pr"
+else
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}"
+fi
+```
+
+(`ret == in-review` implies non-empty `$pr` by the python demotion, so
+the `--pr` arm never passes an empty value. Verify board-transition.sh's
+flag parsing accepts `--pr` in that position — mirror an existing caller
+if it must precede the note.) The test asserts the ACTUAL transition
+argv (capture via the test's board-transition stub or the state file),
+not only the final status.
 
 - [ ] **Step 4: Run the section — green.** Run the whole `test-board-scripts.sh`.
 
@@ -232,9 +272,12 @@ with three arms: obsolete → `rm -f "$CLAIMS_DIR/$nonce.json"`, log, `return 0`
 - Modify: `skills/issue-tracker/scripts/_sweep_api.sh` (`_reconcile_successors` `:971-1038`, `phase_resume` `:1505-1535`)
 - Test: `tests/claude-code/board-api/test-sweep-resume.sh`
 
-- [ ] **Step 1: Failing tests.** (a) one ticket with a kept journal (replay) AND on the needing-resume feed in the same tick → count claim POSTs in the mock log, assert exactly 1 (today: 2). (b) a suppressed ticket with a standing journal → reconcile makes NO claim POST and the journal file survives.
-- [ ] **Step 2: Implement.** `_reconcile_successors`: skip (leave journal untouched) when `_suppressed "$tid"`; when it DOES replay a ticket, append the tid to a tick-scoped file (e.g. `$dir/resumed-tids`, where `$dir` is the phase temp dir — check how reconcile and phase_resume share scope; if they don't share a dir, thread one variable). `phase_resume`'s feed loop: skip tids present in that file (same style as the `_suppressed` skip at `:1535`), logging `resume: #$tid — already replayed this tick`.
-- [ ] **Step 3: Green + full file. Commit** `fix(sweep): one recovery attempt per ticket per tick; reconcile honors suppression`.
+- [ ] **Step 1: Failing tests.** (a) one ticket with a kept journal (replay) AND on the needing-resume feed in the same tick → count claim POSTs in the mock log, assert exactly 1 (today: 2). (b) a suppressed ticket with a standing journal → reconcile makes NO claim POST and the journal file survives. (c) **lift-this-tick interaction:** a suppression that LIFTS this tick (its `/tickets` fixture shows the env-issue `done`) + a standing journal for the same ticket + the ticket on the feed → exactly ONE claim POST, and it carries the JOURNAL's nonce (the replay), not a fresh one; no second journal file exists after the tick.
+- [ ] **Step 2: Implement — ordering is the fix.** `phase_resume` currently runs `_reconcile_successors` FIRST (`:1511`), then the lift loop, then the feed. With a suppression-aware reconcile that order strands journals: reconcile skips the still-suppressed ticket, the lift then removes the suppression, and the feed claims a FRESH nonce — the old journal survives to replay beside the new successor on a later tick. Reorder to **lift → reconcile → feed**:
+  - Move the lift loop (`:1512-1518`) ABOVE `_reconcile_successors`. The existing "Unfinished successor claims first" comment reasons about reconcile-before-FEED, which the new order preserves; amend the comment to say lift runs first so a just-lifted ticket replays its own standing journal instead of minting a fresh nonce.
+  - `_reconcile_successors`: skip (journal untouched) when `_suppressed "$tid"`; when it DOES act on a ticket (replay/settle/orphan — any arm that consumes the journal or claims), append the tid to a tick ledger file. The ledger must exist BEFORE reconcile runs and be readable in `phase_resume`'s feed loop — reconcile is called from `phase_resume`, so create it there (`ledger="$(mktemp "$SCRATCH/resumed.XXXXXX")"`) and pass/export it; check how `_reconcile_successors` receives scope today (global vs args) and follow that shape.
+  - Feed loop: skip tids in the ledger (same style as the `_suppressed` skip), logging `resume: #$tid — already replayed this tick`.
+- [ ] **Step 3: Green + full file. Commit** `fix(sweep): lift before reconcile; one recovery attempt per ticket per tick; reconcile honors suppression`.
 
 ### Task 6: §4 `_check_lift` absent-row guard
 
