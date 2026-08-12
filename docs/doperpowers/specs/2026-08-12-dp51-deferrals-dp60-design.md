@@ -68,6 +68,21 @@ def meta_match(body):
 finds the same match `META_RE.search` found; only multi-occurrence
 bodies change, and for those the old answer was the bug.
 
+**Value grammar enforced (adversarial-review finding, reproduced).**
+Rightmost matching is only correct when the real trailing block cannot
+itself CONTAIN a marker — and today it can: `render_body`
+(`_board.py:280`) writes values verbatim, so a `note` value carrying
+`"\n<!-- board:meta\npr: …"` mints a second marker INSIDE the real
+block; the rightmost match then starts there and `parse_meta` returns
+the forged keys (reproduced: real block at offset 12, rightmost match
+at 56, `pr` forged). Meta values are single-line by grammar —
+`parse_meta` reads the block line-wise, so a multi-line value is
+already silent corruption. Enforce it at the write: in `render_body`,
+normalize `\r`/`\n` in every value to a single space, and `die` on a
+value containing `<!-- board:meta` or `-->` (unrepresentable in the
+block; loud beats mangled). With the grammar enforced, the rightmost
+match is the real block by construction.
+
 **Tests (RED against the parent commit):** a body whose prose quotes a
 full marker-shaped example AND carries a real trailing block —
 `parse_meta` returns the real block's keys; `strip_meta` keeps the prose
@@ -109,8 +124,16 @@ the resumed qagent's meta out from under it.
    (role only; `lane` stays an api-claim concept). Applies to both
    `review-pr-*` and `review-epic-*` spawns — an epic scale reviewer is
    the same protocol.
-2. **Add the QAGENT arm.** `board-answer.sh:199` becomes a three-way:
-   `ARCHITECT → in-design`, `QAGENT → in-review`, else `in-progress`.
+2. **Add the QAGENT arm, with a legacy rung.** `board-answer.sh:199`
+   becomes a three-way: `ARCHITECT → in-design`, `QAGENT → in-review`,
+   else `in-progress` — where the role is resolved in two rungs: the
+   `role:` meta first; when absent, infer QAGENT from the registry
+   record's deterministic worker `name` (`review-pr-*` /
+   `review-epic-*`; the registry JSON carries `"name"` at top level,
+   verified live). The inference rung covers every reviewer parked
+   before this version deploys and every spawn whose non-fatal stamp
+   write failed — without it the fix is upgrade-gated
+   (adversarial-review finding).
 3. **Re-supply `--pr` from the ticket's own meta.** When the QAGENT arm
    selects `in-review`, `board-answer.sh` reads the ticket's `pr:` meta
    (`parse_meta(tickets[tid]["body"]).get("pr")` — it already parses
@@ -159,18 +182,34 @@ fresh nonce — two claims and one leaked journal file per tick.
 
 **Rulings.**
 
-1. **Count path (a) only.** A claim ERROR (contract refusal, transport
-   death, malformed grant, `run-ended`) is a substrate fault — charge
-   `_attempts "$tid" fail` (no run argument; there is nothing to
-   release) at the `:1160` exit. Path (b) `claimed:false` stays
-   uncounted: it is the server's backpressure (lane cap, eligibility),
-   a healthy wait state. Escalating it would write a suppression whose
-   documented effect (`:744-761`, `:1535`, `:1572`) is to remove a
-   healthy ticket from BOTH the resume and dispatch phases until a human
-   closes an env-issue — strictly worse than the churn. With (b)
-   uncounted, no reset-on-grant is needed: the counter keeps its
-   existing reset at full delivery (`:1343`), and every counted event is
-   a real fault.
+1. **Type the claim errors before counting (adversarial-review
+   finding, both codes verified in arkho source).** Not every claim
+   error is a substrate fault — arkho answers two typed 409s that mean
+   "this JOURNAL is obsolete", not "the substrate is sick":
+   - `nonce-consumed` (`claims.js` nonceReplay: "a nonce on an ended
+     run is spent, not replayable") — the predecessor's run ended;
+     replaying this nonce is doomed forever. Action: DROP the journal
+     (`rm` it), no cycle charged, `return 0` — the feed re-serves the
+     ticket with a fresh nonce next tick.
+   - `stale-resume` (`claims.js:393`) — the ticket moved after the
+     feed read. Action: DROP the journal, no cycle charged, `return 0`
+     — the ticket's new state governs; ordinary dispatch handles it.
+   Everything else on the error exit — transport death after retries,
+   5xx, malformed grant (missing runId/fence/bearer), untyped
+   refusals — IS a fault: charge `_attempts "$tid" fail` (no run
+   argument; there is nothing to release) and KEEP the journal as
+   today. Client plumbing: `_board_api.py` already routes one typed 409
+   (`RunEnded`, `:24,:104,:124`); extend the same pattern so
+   `claim_successor` surfaces `nonce-consumed` and `stale-resume` to
+   the sweep distinguishably.
+   Path (b) `claimed:false` stays uncounted: it is the server's
+   backpressure (lane cap, eligibility), a healthy wait state.
+   Escalating it would write a suppression whose documented effect
+   (`:744-761`, `:1535`, `:1572`) is to remove a healthy ticket from
+   BOTH the resume and dispatch phases until a human closes an
+   env-issue — strictly worse than the churn. With (b) uncounted, no
+   reset-on-grant is needed: the counter keeps its existing reset at
+   full delivery (`:1343`), and every counted event is a real fault.
 2. **One attempt per ticket per tick.** `_reconcile_successors` runs
    before `phase_resume` (`:1509`); when it replays a nonce for ticket
    T, `phase_resume` must skip T this tick (record replayed tids in a
@@ -194,12 +233,15 @@ the undeliverable run (`:1403-1412`); with no second argument it must
 skip the release cleanly. Guard, don't refactor.
 
 **Tests (RED first), in `test-sweep-resume.sh`:** a `claim-successor`
-fixture answering a non-200 → "recovery cycle 1 of 3" printed, journal
-KEPT; a `claimed:false` fixture → no cycle charged, journal removed,
-exit 0 (the two untested exits, `:1160`/`:1166`, get their first
-fixtures); a replayed nonce + the same ticket on the feed in one tick →
-exactly one claim POST on the wire; a suppressed ticket with a standing
-journal → reconcile leaves it alone, no claim POST.
+fixture answering 500 → "recovery cycle 1 of 3" printed, journal KEPT;
+a 409 `nonce-consumed` fixture → journal REMOVED, no cycle, exit 0; a
+409 `stale-resume` fixture → journal REMOVED, no cycle, exit 0; a
+`claimed:false` fixture → no cycle charged, journal removed, exit 0
+(the untested exits at `:1160`/`:1166` get their first fixtures, and
+both typed 409s get one each); a replayed nonce + the same ticket on
+the feed in one tick → exactly one claim POST on the wire; a suppressed
+ticket with a standing journal → reconcile leaves it alone, no claim
+POST.
 
 ---
 
@@ -267,41 +309,66 @@ this exact two-authors drift already happened in an 8-line prompt — this
 one is 203 lines. Bonus asymmetry: `review-dispatch.sh:866` renders
 unknown `{{X}}` as EMPTY, while `implement-dispatch.sh:109-114` hard-errors.
 
-**The fence — a new static test, no dispatcher.** The render is a pure
-function of template + `P_*` env (`_render_prompt`,
+**Piece 1 — the renderer fails closed (production change).**
+`review-dispatch.sh:866` substitutes unknown `{{X}}` with `""` — a
+binding a mode block forgot renders as a silent blank, and no
+downstream assertion can tell "empty by design" from "erased". Bring it
+to parity with the implement renderer (`implement-dispatch.sh:109-114`,
+which lists the unresolved names and exits 1). Both existing dispatch
+suites already capture rendered prompts through their `daemon-spawn`
+stubs (`test-review-dispatch.sh:78`, `test-review-dispatch-claim.sh:54`)
+— those suites gain assertions that the CRITICAL bindings render
+non-empty at the real call sites (`BIND_READY_FILE`, `SKILL_FILE`,
+`IMPLEMENT_PROTOCOL_FILE`, `BOARD_SCRIPTS`, plus `TICKET_BODY_FILE` on
+the api side), so a call site that stops supplying one now dies loudly
+in the dispatcher AND fails a test. All four render call sites
+(`:625`, `:776`, `:1512` ×2 modes) must be verified to supply their
+full placeholder set before the hard-fail lands.
+
+**Piece 2 — a revised static fence, no dispatcher.** The render is a
+pure function of template + `P_*` env (`_render_prompt`,
 `review-dispatch.sh:848-868`). New file
 `tests/reviewing-prs/test-bootstrap-parity.sh`:
 
-- Carry a minimal copy of the 20-line renderer (mode-fence regex +
-  placeholder substitution), driven over the REAL template file, with
-  one fixed `P_*` fixture; render all four modes.
-- **Honesty pins on the copy:** assert the dispatcher still points at
-  the same template path (the `BOOTSTRAP_TEMPLATE=` line,
-  `review-dispatch.sh:136` — the idiom `test-skill-entrypoint.sh:302`
-  already uses) and still contains the mode-fence regex and the
-  `{{(\w+)}}` substitution literally, so the copied renderer cannot
-  silently diverge from the one it models.
-- **Parity assertions** (`pr` vs `api`, and `scale` vs `api-scale`):
-  strip every line the mode blocks own plus the `- \`NAME\`:` binding
-  lines, then the remainder — the shared tail — must be byte-identical
-  between the two renders. This is the relay drill's seven-sentence
-  idea as a diff: it covers the sentences nobody thought to assert.
-- **Roster relation:** the gh render's binding names minus
-  `PR_NUMBER/PR_URL/HEAD_REF/HEAD_SHA` must be a subset of the api
-  render's; the api render adds exactly `TICKET_BODY_FILE` (+
+- Carry a minimal copy of the renderer (mode-fence regex + placeholder
+  substitution), driven over the REAL template file with one fixed
+  `P_*` fixture; render all four modes. **Honesty pins on the copy:**
+  assert the dispatcher still points at the same template path
+  (`BOOTSTRAP_TEMPLATE=`, `review-dispatch.sh:136` — the
+  `test-skill-entrypoint.sh:302` idiom) and still carries the
+  mode-fence regex and the `{{(\w+)}}` substitution literally.
+- **Load-bearing sentences pinned in EVERY mode's render** — the relay
+  drill's idiom (`test-transcript-diff.sh:252-268`) applied here: the
+  skill-pin sentence ("dispatcher-pinned copy", the "over any
+  same-named skill" precedence clause), the read-it-live rule (each of
+  the four separately-authored rewordings pinned t/nt in both
+  directions, so two-authors drift stays visible instead of silent —
+  this is where the drift lives, and a shared-tail diff cannot see it),
+  and the worktree-bootstrap caveat.
+- **Roster relation:** the gh render's `- \`NAME\`:` binding names
+  minus `PR_NUMBER/PR_URL/HEAD_REF/HEAD_SHA` must be a subset of the
+  api render's; the api render adds exactly `TICKET_BODY_FILE` (+
   `CLOSURE_PACKAGE`/`INTEGRATION_REF` on the scale pair). Anything else
   fails.
+- **Block-boundary check:** after stripping mode-owned lines and
+  binding lines, the remaining tail of the two renders in a pair must
+  be identical. This is NOT an authorship fence (the tail is one source
+  region — same source, same output); it pins the block BOUNDARIES: a
+  shared line accidentally swallowed into one mode's fence (the
+  gating-error class §8-of-#61 hit with the eligibility chip) surfaces
+  here and nowhere else.
 - **No cross-contamination / nothing unrendered:** no `mode:` fence
-  survives any render; no `{{` survives any render.
+  survives any render; no `{{` survives any render (meaningful now
+  that unknowns hard-fail rather than blank).
 - **Implement lane, same file, small section:** render
   `worker-bootstrap.md` with and without the `api-only` region and
-  assert everything outside `:8-22` identical, roster relation
+  assert everything outside the region identical, roster relation
   `+TICKET_BODY_FILE +PARENT_PIN`.
 
-What legitimately differs (the mode-block prose, `BASE_REF` sentinel vs
-branch, `TECH_DEBT_ISSUE=none`) lives INSIDE the stripped mode blocks by
-construction — the fence never sees it, so it pins nothing that is
-supposed to vary.
+What legitimately differs (mode-block prose beyond the pinned
+sentences, `BASE_REF` sentinel vs branch, `TECH_DEBT_ISSUE=none`) is
+either inside stripped blocks or an explicitly pinned difference — the
+fence pins nothing that is supposed to vary.
 
 ---
 
@@ -419,6 +486,34 @@ scratch copy — discrimination probe, not a committed test).
   keeps the judge (`transcript-compare.py`) blind to per-side ids
   without teaching it which ids are "known"; the normalizer alternative
   put walk knowledge inside the judge.
+- **§1 enforce the value grammar rather than harden the reader
+  further** (v1.1) — the reviewer's forged-marker reproduction showed
+  rightmost matching alone still loses to a marker INSIDE the block;
+  encoding schemes (escaping markers) were rejected because
+  `parse_meta` line-wise reading makes multi-line values corrupt
+  already — normalize CR/LF, die on marker tokens, and the block is
+  clean by construction.
+- **§2 name-inference rung over required-stamp-before-barrier**
+  (v1.1) — making the stamp a hard gate before the startup barrier
+  turns a bookkeeping write into a spawn blocker (against the
+  non-fatal precedent at `implement-dispatch.sh:848`); the
+  deterministic `review-pr-*`/`review-epic-*` name is already in the
+  registry record and covers legacy AND failed-stamp cases with zero
+  new failure modes. A locked migration was rejected as touching every
+  registry file for a fallback path.
+- **§3 typed 409s drop the journal instead of charging** (v1.1) —
+  `nonce-consumed` and `stale-resume` mean the JOURNAL is obsolete,
+  not the substrate sick; counting them would escalate and suppress
+  valid work, and closing the env-issue would replay the same doomed
+  nonce forever (reviewer finding, both codes verified in arkho
+  source).
+- **§5 hard-fail renderer + sentence pins over shared-tail-diff-only**
+  (v1.1) — the tail diff is tautological for authorship drift (one
+  source region) and the blank-on-unknown renderer made "no `{{`"
+  vacuous; the revised fence pins the four separately-authored
+  rewordings directly and makes unknown placeholders a dispatcher
+  error, which also upgrades the existing suites' captured-prompt
+  assertions from shape to content.
 
 ## Surprises & Discoveries
 
@@ -446,3 +541,15 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.1 (2026-08-12): codex adversarial review (gpt-5.6-sol xhigh),
+  four findings, all adopted after verification: §1 gains the value
+  grammar (forged-marker reproduction confirmed — rightmost matching
+  alone is insufficient); §3 types the claim errors
+  (`nonce-consumed`/`stale-resume` drop the journal uncharged, both
+  verified in arkho claims.js; only ambiguous faults count); §2 gains
+  the legacy name-inference rung (registry `"name"` field verified
+  live); §5 redesigned — the review renderer fails closed on unknown
+  placeholders, the existing suites assert critical bindings
+  non-empty, and the static fence pins per-mode load-bearing sentences
+  instead of relying on the (tautological) shared-tail diff, which is
+  retained only as a block-boundary check.
