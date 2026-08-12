@@ -416,6 +416,7 @@ echo "triggered dispatch:"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "spawns --no-wait with the registry name"
 assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"ticket": "7"' "ticketed review worker is bound for board-answer resume"
+assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"role": "QAGENT"' "reviewer meta records its lane so an answered park returns to in-review, not in-progress"
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out at the PR head SHA"
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then

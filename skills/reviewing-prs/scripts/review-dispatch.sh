@@ -936,6 +936,15 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
       echo "$name: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
       return 1
     fi
+    # Persist role: QAGENT into the registry meta, the same
+    # read-modify-write-under-lock shape implement-dispatch.sh uses for its
+    # own lanes. board-answer.sh's needs-human fallback (no recorded
+    # pre-park:) reads it back to return this park to in-review — a reviewer
+    # resumed into in-progress owns no implementation branch and has no legal
+    # exit. Non-fatal: metas written before this stamp are still recognized
+    # by board-answer's review-pr-* / review-epic-* name inference.
+    _stamp_meta "$uuid" role QAGENT \
+      || echo "$name: role meta write failed (non-fatal)" >&2
   fi
   if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
 import json, os

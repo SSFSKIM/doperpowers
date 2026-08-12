@@ -984,7 +984,7 @@ cat > "$DAEMON_HOME/22222222-1111-2222-3333-444444444444.json" <<META
  "updated": "2026-07-12T00:00:00Z"}
 META
 run board-answer.sh "$fb_impl_t" "answer" >/dev/null
-assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "unrecorded pre-park with a non-architect role falls back on in-progress"
+assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "an unrecorded pre-park with an IMPLEMENT role falls back on in-progress"
 
 out="$(run board-register.sh "Unknown-role fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
 fb_unk_t="${out%% *}"
@@ -997,6 +997,57 @@ cat > "$DAEMON_HOME/33333333-1111-2222-3333-444444444444.json" <<META
 META
 run board-answer.sh "$fb_unk_t" "answer" >/dev/null
 assert_contains "$(state "s['issues']['$fb_unk_t']['labels']")" "status:in-progress" "a meta with no role at all (pre-fix daemon) preserves the prior default: in-progress"
+
+# The QAgent lane is the third rung. A reviewer resumed into in-progress owns
+# no implementation branch and has no legal exit; it belongs in in-review.
+# Reaching in-review from an UNRECORDED pre-park is itself the argv proof that
+# board-answer re-supplied --pr: board-transition refuses in-review without the
+# flag unless the pre-park: meta records in-review (asserted absent below), so
+# the recorded-pr shortcut cannot be what let this through.
+out="$(run board-register.sh "QAgent fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_qa_t="${out%% *}"
+run board-transition.sh "$fb_qa_t" in-progress "picked up" --pr https://github.com/test/repo/pull/88 >/dev/null
+run board-transition.sh "$fb_qa_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_qa_t" needs-human "human decision needed" >/dev/null
+assert_not_contains "$(state "s['issues']['$fb_qa_t']['body']")" "pre-park:" "needs-info -> needs-human records no pre-park on the qagent probe either"
+cat > "$DAEMON_HOME/44444444-1111-2222-3333-444444444444.json" <<META
+{"uuid": "44444444-1111-2222-3333-444444444444", "role": "QAGENT",
+ "status": "idle", "ticket": "$fb_qa_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_qa_t" "ship it" >/dev/null
+assert_contains "$(state "s['issues']['$fb_qa_t']['labels']")" "status:in-review" "unrecorded pre-park with a QAGENT role returns to in-review"
+assert_contains "$(state "s['issues']['$fb_qa_t']['body']")" "pr: https://github.com/test/repo/pull/88" "the re-supplied --pr is the ticket's own recorded PR"
+
+# ...and only when there IS a PR to re-supply. No pr: meta means no legal
+# in-review write, so the arm demotes itself rather than dying on the flag.
+out="$(run board-register.sh "QAgent no-PR probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_qnp_t="${out%% *}"
+run board-transition.sh "$fb_qnp_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_qnp_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/55555555-1111-2222-3333-444444444444.json" <<META
+{"uuid": "55555555-1111-2222-3333-444444444444", "role": "QAGENT",
+ "status": "idle", "ticket": "$fb_qnp_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+out="$(run board-answer.sh "$fb_qnp_t" "answer" 2>&1)"
+assert_contains "$out" "no pr: meta" "a QAGENT park on a PR-less ticket warns instead of demanding a link nobody recorded"
+assert_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:in-progress" "the PR-less QAGENT park demotes to in-progress"
+
+# Reviewers bound before the role stamp carry no role: — their deterministic
+# registry name is the only role record they have.
+out="$(run board-register.sh "Legacy reviewer probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_leg_t="${out%% *}"
+run board-transition.sh "$fb_leg_t" in-progress "picked up" --pr https://github.com/test/repo/pull/89 >/dev/null
+run board-transition.sh "$fb_leg_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_leg_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/66666666-1111-2222-3333-444444444444.json" <<META
+{"uuid": "66666666-1111-2222-3333-444444444444", "name": "review-pr-89",
+ "status": "idle", "ticket": "$fb_leg_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_leg_t" "ship it" >/dev/null
+assert_contains "$(state "s['issues']['$fb_leg_t']['labels']")" "status:in-review" "a pre-stamp reviewer meta is recognized by its review-pr-* registry name"
 
 unset DAEMON_SCRIPTS STUB_STATE
 

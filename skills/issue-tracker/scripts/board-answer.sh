@@ -10,6 +10,7 @@
 # land on the TICKET first (the ticket is the record), the ticket returns to
 # its parking lane's in-flight state (pre-park: meta; when absent, the bound
 # worker's own lane from its registry meta — in-design for an Architect,
+# in-review for a QAgent with the ticket's recorded pr: re-supplied,
 # in-progress otherwise), and the bound session is resumed with the answers
 # relayed verbatim — the worker keeps its orientation and re-states its gate
 # verdict before proceeding. No judge is reintroduced: the relay is
@@ -133,10 +134,19 @@ fi
 # Validate the park + find the binding; post the [answers] comment only once
 # the relay is certain to proceed (a refused relay posts nothing — the human
 # can still comment by hand and take the fresh-dispatch path).
-info="$(T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
+#
+# A FUNCTION, not an inline "$(...)": bash 3.2 re-scans a command substitution
+# at EXPANSION time with a matcher that does not understand the heredoc, so
+# every apostrophe in this prose flips it into single-quote mode and the first
+# later double-quoted string containing a space makes the whole expansion fail
+# to find its closing paren. Parsed as a function body it goes through the real
+# parser once, and the prose is free again.
+_probe_binding() {
+  T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
 import glob
 import json
 import os
+import sys
 import _board as B
 
 env = os.environ
@@ -193,20 +203,54 @@ else:
     # (implement-dispatch.sh), rather than hardcoding in-progress: an
     # Architect resumed there would land in a state its protocol cannot
     # exit (LEGAL["in-progress"] has no ready-for-implementer edge).
-    # Workers bound before this fix (or spawned by any other route) carry
-    # no role — for those, in-progress stays the fallback, matching prior
-    # behavior; it was only ever wrong for the architect lane.
-    ret = "in-design" if (meta.get("role") or "").upper() == "ARCHITECT" else "in-progress"
-print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
-                              meta.get("status", "?"), meta.get("updated", "?"), ret))
+    # Workers spawned by a route that stamps no role fall through to
+    # in-progress, matching prior behavior — the default is only ever wrong
+    # for a lane whose protocol cannot exit in-progress.
+    role = (meta.get("role") or "").upper()
+    if not role and str(meta.get("name") or "").startswith(("review-pr-",
+                                                            "review-epic-")):
+        # Reviewers bound before the role stamp: the deterministic worker
+        # name is the only role record they carry.
+        role = "QAGENT"
+    if role == "ARCHITECT":
+        ret = "in-design"
+    elif role == "QAGENT":
+        ret = "in-review"
+    else:
+        ret = "in-progress"
+pr = ""
+if ret == "in-review":
+    # in-review is the one return state board-transition will not write on
+    # trust: the ticket must carry a PR link, and only a pre-park: in-review
+    # return may ride the recorded one. This return has no pre-park (that
+    # branch is above), so the link is re-supplied from the ticket's own pr:
+    # meta — and when there is none, the lane is unwritable and the QAgent
+    # falls back to the prior default rather than dying on the flag.
+    pr = B.parse_meta(tickets[tid]["body"]).get("pr") or ""
+    if not pr:
+        ret = "in-progress"
+        print("relay: #%s — QAGENT return wants in-review but the ticket has "
+              "no pr: meta; falling back to in-progress" % tid,
+              file=sys.stderr)
+print("%s\t%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
+                                  meta.get("status", "?"), meta.get("updated", "?"),
+                                  ret, pr))
 PY
-)"
-IFS=$'\t' read -r uuid engine status updated ret <<<"$info"
+}
+info="$(_probe_binding)"
+IFS=$'\t' read -r uuid engine status updated ret pr <<<"$info"
 [ -n "$uuid" ] || die "binding lookup failed"
 echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated, return=$ret)"
 
-"$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
-  "answers relayed — resuming bound session ${uuid:0:8}"
+# ret=in-review implies a non-empty pr (the python demotes the return
+# otherwise), so the flag arm never passes an empty link.
+if [ "$ret" = in-review ]; then
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}" --pr "$pr"
+else
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}"
+fi
 
 if [ -n "$posted" ]; then
   block="(already on the ticket — read the latest comments: gh issue view $tid --comments)"
