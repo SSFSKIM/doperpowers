@@ -436,10 +436,12 @@ export BOARD_REPO
 # Board facts for ticket <1>, shell-quoted (state, eligibility, title, url,
 # category, engine label). _board.py is the single eligibility authority —
 # the same predicate board-list.sh tags ELIGIBLE.
-# Known cost: this and _slots_used each take a fresh full-board snapshot
-# (one GraphQL call), so a dispatching tick runs roughly three snapshots
-# per ticket. Harmless at a 5-minute cadence on a ~300-issue board; add
-# snapshot caching before the board grows ~10x.
+# Cost: this and _slots_used each read a full-board snapshot. In sweep mode
+# those reads hit the tick-scoped file cache (BOARD_SNAPSHOT_CACHE, set by
+# the --sweep entry; invalidated after every spawn), so a tick costs
+# 1 + spawns fetches instead of ~4 per queued candidate — the uncached form
+# measured eating the entire hourly GraphQL quota on a deep ready queue.
+# Triggered (single-ticket) dispatches don't set the env and stay fresh.
 _ticket_exports() {
   T_ID="$1" BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
 import os, shlex, sys
@@ -675,14 +677,22 @@ dispatch_one() {
   [ -f "$protocol_file" ] || { echo "#$n: protocol file missing: $protocol_file" >&2; return 1; }
 
   if [ "$lane" = "architect" ]; then
-    if [ "$(_slots_used architect)" -ge "$ARCH_CAP" ]; then
+    occ="$(_slots_used architect || true)"
+    case "$occ" in ''|*[!0-9]*)
+      echo "#$n: slots probe failed (fail closed — not dispatching)" >&2; return 1 ;;
+    esac
+    if [ "$occ" -ge "$ARCH_CAP" ]; then
       echo "architect cap reached ($ARCH_CAP): #$n stays queued for the next sweep"
       return 0
     fi
     # X4 exemption: plan authorship is never label-routed
     engine="claude"
   else
-    if [ "$(_slots_used implement)" -ge "$CAP" ]; then
+    occ="$(_slots_used implement || true)"
+    case "$occ" in ''|*[!0-9]*)
+      echo "#$n: slots probe failed (fail closed — not dispatching)" >&2; return 1 ;;
+    esac
+    if [ "$occ" -ge "$CAP" ]; then
       echo "cap reached ($CAP): #$n stays queued for the next sweep"
       return 0
     fi
@@ -870,11 +880,28 @@ PY
     DISPATCHED_SURFACES="${DISPATCHED_SURFACES:-} $T_SURFACES"
   fi
 
+  # A spawn changes occupancy — drop the tick's snapshot cache so the next
+  # candidate's slot counts and eligibility see this binding (snapshot()
+  # refetches and rewrites the file on the next read).
+  [ -z "${BOARD_SNAPSHOT_CACHE:-}" ] || rm -f "$BOARD_SNAPSHOT_CACHE"
+
   echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
 }
 
 # ---- modes ---------------------------------------------------------------------
 if [ "${1:-}" = "--sweep" ]; then
+  # Tick-scoped snapshot cache. Candidate re-verification runs in a fresh
+  # python process per ticket (~4 full-board GraphQL sweeps each: the two
+  # slot counts in the loop condition, _ticket_exports, and dispatch_one's
+  # own slot check), so a long ready queue burned O(queue) snapshots per
+  # tick — measured consuming the whole 5000/h GraphQL quota before the
+  # review pass ever ran. One fetch now serves the tick; every spawn rm's
+  # the file so post-spawn slot counts see the new binding, bounding real
+  # fetches at 1 + spawns. Concurrent triggered dispatches don't inherit
+  # the env and keep fully fresh reads.
+  BOARD_SNAPSHOT_CACHE="$(mktemp -u "${TMPDIR:-/tmp}/board-snapshot.XXXXXX")"
+  export BOARD_SNAPSHOT_CACHE
+  trap 'rm -f "$BOARD_SNAPSHOT_CACHE"' EXIT
   BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY' |
 import os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
@@ -889,7 +916,18 @@ for tid in sorted(tickets, key=rank):
 PY
   while IFS= read -r tid; do
     [ -n "$tid" ] || continue
-    if [ "$(_slots_used implement)" -ge "$CAP" ] && [ "$(_slots_used architect)" -ge "$ARCH_CAP" ]; then
+    imp_used="$(_slots_used implement || true)"
+    arch_used="$(_slots_used architect || true)"
+    case "${imp_used}:${arch_used}" in
+      *[!0-9:]*|:*|*:)
+        # Fail closed: a slots probe that dies (quota, transport) yields an
+        # empty/garbage count — comparing it crashed the loop with
+        # "integer expression expected" every candidate. Unknown occupancy
+        # must stop dispatch, not guess it.
+        echo "slots probe failed — remaining eligible tickets stay queued this tick" >&2
+        break ;;
+    esac
+    if [ "$imp_used" -ge "$CAP" ] && [ "$arch_used" -ge "$ARCH_CAP" ]; then
       echo "cap reached: both lanes full — remaining eligible tickets stay queued"
       break
     fi
