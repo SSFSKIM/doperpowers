@@ -561,6 +561,12 @@ Pending — written at finish.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2.2 (2026-08-13, Task 9 review flow-back): §5 Piece 2's roster
+  parenthetical was wrong — `CLOSURE_PACKAGE`/`INTEGRATION_REF` are
+  carried by BOTH members of the scale pair (they are scale-mode
+  bindings, not api additions); the api side adds exactly
+  `TICKET_BODY_FILE` on both pairs. The landed fence pins the stronger
+  truth; this note corrects the spec to match.
 - v1.2.1 (2026-08-13, Task 1 review flow-back): the `-->` half of the
   value grammar is dropped — fuzz-proven harmless (8 keys × 8
   arrow-values × 4 prose shapes, zero mismatches: the collapsed value
