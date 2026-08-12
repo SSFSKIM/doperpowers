@@ -585,23 +585,32 @@ t "the scale checkout uses the ref the fetch wrote" \
   "git checkout --detach FETCH_HEAD" cat "$SCALE_PROMPT"
 nt "and never the remote-tracking ref the fetch may not have moved" \
   "checkout --detach origin/" cat "$SCALE_PROMPT"
-# THE BASE IS FETCHED TOO, AND INTO THE REF THE ENGINE READS. The engine ranges
-# this review against `origin/<BASE_REF>`; the dispatcher's own DEFAULT_BRANCH
-# fetch is a best-effort manifest refresh in the DISPATCHER's clone, not the
-# worker's worktree, so an unfetched base is as un-reviewable as an unfetched
-# integration ref. The integration ref escapes the single-branch-clone hole via
-# FETCH_HEAD, but the base cannot — nothing checks it out, it is only ever read
-# as `origin/<BASE_REF>` — so its fetch must write that tracking ref explicitly.
-# Bare `git fetch origin <base>` on a single-branch clone moves FETCH_HEAD and
-# nothing else: a fresh clone then has no `origin/<base>` (the engine fails) and
-# a long-lived one reviews against a stale one (worse — it succeeds).
-t "the scale prompt orders the base fetch as well" \
-  "git fetch origin +refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
+# THE WORKER RESOLVES ITS OWN BASE, AUTHORITATIVELY. The dispatcher's
+# DEFAULT_BRANCH ladder can settle on a stale local origin/HEAD or, with no
+# network and no gh, on the literal `main` — and an epic reviewed (and closed)
+# against a branch it does not merge into is the wrong range, silently, because
+# every fetch still succeeds. Origin's own HEAD symref is the one answer that
+# can be neither stale-local nor guessed, and the worker has the network to ask
+# for it, so the rendered binding is an echo and `ls-remote` is the authority.
+t "the scale prompt resolves the base from the remote itself" \
+  "git ls-remote --symref origin HEAD" cat "$SCALE_PROMPT"
+t "and fetches the resolved base, not the rendered one" \
+  'git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"' cat "$SCALE_PROMPT"
+nt "the rendered base is never baked into the fetch" \
+  "+refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
 nt "and never the bare form that may write no tracking ref" \
   "git fetch origin main" cat "$SCALE_PROMPT"
-# A recomposition epic merges into the default branch, and that IS knowable
-# here — unlike a PR's base, which the api PR variant leaves to the worker.
-t "the scale base is the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
+# THE ECHO IS NOT A FALLBACK. An ls-remote that cannot answer leaves the base
+# unverifiable, which is precisely the wrong-range risk the resolution removes;
+# the run parks rather than reviewing against a guess.
+t "an unresolvable base parks instead of falling back" \
+  'needs-human "scale review: could not resolve the repo default branch from origin"' \
+  cat "$SCALE_PROMPT"
+t "and the rendered binding is named as the echo it is" \
+  "best-effort echo" cat "$SCALE_PROMPT"
+# The binding still rides the prompt as context (and as MANIFEST_REF, the ref
+# the two snapshots really came from).
+t "the scale base binding still echoes the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
 # THE EMPTY-REF PARK MUST NOT PRECEDE THE BINDING BARRIER. Parking and ending
 # the turn unacknowledged makes the dispatcher's ack wait time out, retire the
 # worker, and end the run abandoned UNDER AN ALREADY-PARKED TICKET — the one
@@ -701,8 +710,10 @@ TRUNK_PROMPT="$DH8/prompt-77-api-qagent.md"
 t "the dispatch ran" "claimed #77 run=71" cat "$OUT8"
 t "the remote's default branch becomes the epic's base" '`BASE_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "the literal main guess never reaches the worker" '`BASE_REF`: main' cat "$TRUNK_PROMPT"
-t "and the base fetch the worker is ordered to run names it too" \
-  "git fetch origin +refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
+t "and the worker is still ordered to resolve the base for itself" \
+  "git ls-remote --symref origin HEAD" cat "$TRUNK_PROMPT"
+nt "so no rendered branch name is baked into the base fetch" \
+  "+refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
 t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
 

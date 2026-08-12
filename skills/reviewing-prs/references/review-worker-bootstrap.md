@@ -74,19 +74,35 @@ failure would surface one step late, at the checkout.)
 
 Your worktree starts on the repo's current head; positioning it is yours
 to do, before ORIENT. Both refs this review spans must come down — the
-integration branch you review from, and `BASE_REF`, which the review
-engine ranges against as `origin/{{BASE_REF}}`:
+integration branch you review from, and the base the review engine
+ranges against as `origin/<base>`. That base is the repo's default
+branch, which is what this epic merges into, and you resolve it from the
+remote itself — origin's own HEAD symref is the one answer that can be
+neither stale-local nor guessed:
 
 ```
-git fetch origin +refs/heads/{{BASE_REF}}:refs/remotes/origin/{{BASE_REF}}
+BASE="$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -1)"
+git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
 git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
 ```
 
-Each line names the ref it will actually be read through, because a
+Use that resolved name wherever this protocol says `BASE_REF` — the
+branch name itself, never `origin/` anything; the protocol adds the
+remote wherever it wants the tracking ref. The rendered `BASE_REF`
+binding below is the dispatcher's best-effort echo, not the authority:
+its own resolution can settle on a stale local symref or on a literal
+guess, and reviewing an epic against a branch it does not merge into is
+exactly the wrong range. So an empty `$BASE` is the same hard stop as an
+empty integration ref, never a fallback to the echo: cross the BINDING
+BARRIER first, then, before any fetch, park with
+`{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "scale review: could not resolve the repo default branch from origin"`
+and end your turn.
+
+Each fetch line names the ref it will actually be read through, because a
 single-branch clone's configured fetch refspec need not cover either
 branch — and when it does not, the fetch moves only `FETCH_HEAD` and
 leaves `origin/<ref>` absent or stale. So the base, which the engine only
-ever reaches as `origin/{{BASE_REF}}`, is fetched through an explicit
+ever reaches as `origin/$BASE`, is fetched through an explicit
 refspec that writes that tracking ref whatever the clone is configured
 for; and the integration ref, which you check out immediately, is taken
 from `FETCH_HEAD` — keep that fetch adjacent to the checkout, since
@@ -94,9 +110,10 @@ from `FETCH_HEAD` — keep that fetch adjacent to the checkout, since
 a hard stop, never a fallback: a base that will not fetch is as
 un-reviewable as an integration ref that will not, so park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human`
-naming the ref that would not fetch. `BASE_REF` below is the repo's
-default branch — what this epic merges into — and the manifest snapshots
-were taken from it.
+naming the ref that would not fetch. The manifest snapshots below were
+taken at `MANIFEST_REF`; if the base you resolved is a different branch,
+re-read them from it (`git show origin/$BASE:.doperpowers/risk-surfaces.md`,
+same for `repo-facts.md`) and use those instead.
 
 The scale-review section of the protocol governs your verdicts.
 <!-- /mode:api-scale -->

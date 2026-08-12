@@ -169,9 +169,11 @@ if [ "$BOARD_BINDING" = api ]; then
     DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
   fi
-  # AND ONE RUNG BELOW THE CLONE, BEFORE THE `main` GUESS: an api-scale run
-  # promotes DEFAULT_BRANCH to the epic's BASE_REF, so a wrong guess reviews
-  # (and closes) an epic against a branch it does not merge into. A clone with
+  # AND ONE RUNG BELOW THE CLONE, BEFORE THE `main` GUESS: DEFAULT_BRANCH is
+  # the ref every dispatch reads its two manifest snapshots from (MANIFEST_REF),
+  # so a wrong guess hands the worker manifests from a branch the repo does not
+  # even use. (The api-scale review RANGE no longer rides this value — the
+  # worker re-resolves its base from the remote — but the snapshots do.) A clone with
   # no origin/HEAD — every `git clone --single-branch` and every worktree cut
   # from one — has the answer on the remote, and ls-remote asks for it without
   # gh. Best-effort: the `main` fallback below still catches a dead network.
@@ -1492,7 +1494,13 @@ PY
   # URL-shaped, so a URL is the PR variant and anything else non-empty is an
   # epic's closure-package event id — the scale variant, whose base IS the
   # default branch (what a recomposition epic merges into) and whose bindings
-  # no board read hands over. An epic claim with no integration branch parks
+  # no board read hands over. THAT BASE IS RENDERED AS AN ECHO, NOT AN
+  # AUTHORITY: DEFAULT_BRANCH is resolved here by a ladder that can settle on a
+  # stale local origin/HEAD or, with no network, on the literal `main` — so the
+  # api-scale protocol has the worker re-resolve it from `git ls-remote
+  # --symref origin HEAD` and park when the remote will not answer. The
+  # rendered value stays as context (and as MANIFEST_REF, the ref these
+  # snapshots actually came from). An epic claim with no integration branch parks
   # via the worker (the api-scale block's empty-ref check), not here: the
   # dispatcher refusing to spawn would strand the ticket with no park note
   # naming the gap.

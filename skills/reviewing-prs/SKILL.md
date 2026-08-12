@@ -69,7 +69,8 @@ variant of this protocol you run:
   bindings the claim response holds — `CLOSURE_PACKAGE` (the event id
   your run was stamped with) and `INTEGRATION_REF` (the epic's
   integration branch) — and your bootstrap's positioning order (fetch
-  and check out the integration ref; base is the default branch)
+  and check out the integration ref; resolve the base from origin's own
+  HEAD symref, and use that name wherever `{{BASE_REF}}` appears)
   applies before ORIENT. **Scale review (recomposition epics)** below
   governs your entry artifact and verdicts: `done` on clean — the
   qagent epic close, legal with your run's stamped package — or a
@@ -446,7 +447,8 @@ EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
 `CLOSURE_PACKAGE` binding names it). An `api-scale` claim off the board's
 qagent lane is that same review on a board-API repo — this section
 governs it unchanged, except that positioning the worktree at the
-integration ref is yours to do, as your bootstrap ordered.
+integration ref — and resolving the base it ranges against — is yours to
+do, as your bootstrap ordered.
 Same engine machinery — whole-range
 codex runs, lenses derived from the cross-child contracts: your worktree
 sits at the epic's integration branch and START ENGINE's
