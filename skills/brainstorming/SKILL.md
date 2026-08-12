@@ -36,13 +36,15 @@ Three exits leave this skill: writing-plans (controlled), execplan (autonomous, 
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Focus on understanding: purpose, constraints, success criteria
 
-**The Grill** — this is the clarification protocol (reference/batch-grilling.md is the canonical method):
+**The Grill** — this is the clarification protocol:
 
 > Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and provide your recommended answer with every question.
 >
-> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — ask the whole frontier in one round, then recompute it from the answers; a question whose answer depends on another question still open in this round belongs to a later round. Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat.
+> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet. Ask the whole frontier in one round, then wait: each round's answers reshape the tree and push the frontier outward, and a question whose answer depends on another question still open in this round belongs to a later round. The grill is done when the frontier is empty — every branch visited, nothing left silently assumed.
 >
-> If a question can be answered by exploring the codebase, explore the codebase instead. If it can't be answered for lack of information, run research.
+> Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat. In a non-interactive context (a board ticket, a relay comment), the whole round is one numbered message.
+>
+> Finding facts is your job, never your human partner's: a question the codebase can answer is answered by exploring the codebase, and one it can't for lack of information is answered by research. Don't block a round on a running exploration — it is an unsettled prerequisite, so only its downstream questions wait for it; ask the rest of the frontier now.
 
 Three moves to use throughout:
 
@@ -80,7 +82,7 @@ Once you believe you understand what you're building, present the whole design i
 2. **The design itself** — architecture, components, data flow, error handling, and testing, described in sections scaled to their complexity: a few sentences if straightforward, up to 200-300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, and the reasoning behind the significant calls. Where a section turns on your human partner's taste or domain knowledge, mark it as one to review carefully.
 3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
 
-One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the frontier logic of reference/batch-grilling.md).
+One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the grill's frontier logic).
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
