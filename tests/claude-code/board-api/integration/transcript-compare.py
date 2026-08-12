@@ -7,15 +7,22 @@ per step, whether the worker-visible surface is the same.
 
 Two levels, and the split is the whole point:
 
-  STRICT   the argv and the exit status must match, step for step. "Same
-           scripts, same arguments, same refusal vocabulary" (spec § Purpose)
-           begins here: if the two bindings disagree about whether a call is
-           legal, nothing downstream is comparable. The argv compared is
-           `argv_raw` — the step as WRITTEN, `%T` unsubstituted — because each
-           walk registers its own ticket and the two ids are never equal. The
-           alternative, normalizing digits out of the executed argv, would also
-           erase step 6's literal 4242, and that step is precisely the known
-           ticket / unknown ticket distinction.
+  STRICT   the EXIT STATUS must match, step for step. "Same scripts, same
+           arguments, same refusal vocabulary" (spec § Purpose) begins here: if
+           the two bindings disagree about whether a call is legal, nothing
+           downstream is comparable.
+
+           The argv is compared as well, but it is a CAPTURE-INTEGRITY check,
+           not a behavioral one: both walks iterate one shared step list, so
+           the argv is the drill's input rather than either binding's output,
+           and the only thing this can catch is a capture that dropped or
+           misaligned a step. The form compared is `argv_raw` — the step as
+           WRITTEN, `%T` unsubstituted — because each walk registers its own
+           ticket and the two ids are never equal; comparing the executed argv
+           only ever added a way to fail falsely. The alternative, normalizing
+           digits out of the executed argv, would also erase step 6's literal
+           4242, and that step is precisely the known ticket / unknown ticket
+           distinction.
 
   NORMALIZED  stdout/stderr is compared after transport tokens are erased —
            urls, timestamps, ids, session uuids. What survives that is content,

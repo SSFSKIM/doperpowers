@@ -11,12 +11,21 @@
 # statement makes ("same scripts, same arguments, same refusal vocabulary"),
 # and pins the residue:
 #
-#   STRICT, no allowance     every step's ARGV is identical, and every step's
-#                            EXIT STATUS is identical — the two bindings agree,
-#                            step for step, on what is legal and what is
-#                            refused. This is the drift fence that matters: a
-#                            second client-side copy of the legality table
-#                            (the X5 hazard) shows up here first.
+#   STRICT, no allowance     every step's EXIT STATUS is identical — the two
+#                            bindings agree, step for step, on what is legal
+#                            and what is refused. THIS is the drift fence that
+#                            matters: a second client-side copy of the legality
+#                            table (the X5 hazard) shows up here first, as an
+#                            rc the other side does not answer with.
+#                            The argv is compared too, but read what that buys:
+#                            both walks iterate ONE `STEPS` array, so the argv
+#                            is the drill's own input rather than either
+#                            binding's output, and the comparison can only
+#                            catch a capture that lost or misaligned a step. It
+#                            was never a behavioral fence — before the compared
+#                            form became the unsubstituted one it differed only
+#                            by each walk's ticket id, which is a way to fail
+#                            falsely, not a way to catch drift.
 #   NORMALIZED, pinned       what each step PRINTS, with transport tokens
 #                            erased. Every surviving difference must be named
 #                            in transcript-compare.py's PINNED table with the
@@ -90,7 +99,10 @@ STEPS=(
 # their own tickets and the ids are never equal, so an executed-argv comparison
 # would either always fail or have to normalize digits away, and normalizing
 # digits would also erase step 6's deliberate literal 4242 (the known-ticket /
-# unknown-ticket distinction that step exists to probe).
+# unknown-ticket distinction that step exists to probe). What that comparison
+# is NOT is a fence on binding behavior: both sides read the same `STEPS`, so
+# it can only catch a capture that dropped or misaligned a step. The exit
+# status is the fence (see the header).
 # The hook runs once, after the register, with the new ticket id: it is where
 # each binding's dispatcher would have bound a worker to the ticket, and the
 # park at step 7 needs that binding to be a PAUSE rather than a disposition.
@@ -113,6 +125,9 @@ walk() {
       DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
       BOARD_REPO="$GH_STUB_REPO" GH_STUB_STATE="$GH_STUB_STATE" \
       "$SCRIPTS/${call[0]}" "${call[@]:1}") 2>&1 )" || rc=$?
+    # `argv` is FORENSIC — what actually ran, for reading a failure back. The
+    # comparator reads `argv_raw` and nothing reads `argv`; wiring an assertion
+    # to it would be asserting on the ticket id the two walks cannot share.
     T_I="$i" T_RC="$rc" T_OUT="$out" T_ARGV="$(printf '%s\n' "${call[@]}")" \
       T_ARGV_RAW="$(printf '%s\n' "${argv[@]}")" \
       python3 -c '
@@ -157,12 +172,18 @@ PY
 GH_CAP="$DRILL_TMP/capture-gh.jsonl"
 GH_TID="$(walk "$GH_REPO" "$GH_CAP" gh_bind)"
 # Nothing below is meaningful without an id, so the empty case dies here rather
-# than failing an assertion further down; and what the id IS gets asserted as a
-# whole line, because a want of `1` — what stood here — is satisfied by every
-# id that merely contains a 1, and by an empty walk that printed the number.
+# than failing an assertion further down. What the id IS gets asserted against
+# the BOARD that holds it, the way the API half asserts through `ticket_state`
+# — the want that stood here was the substring `1`, satisfied by every id
+# containing a 1 and by a walk that printed nothing but the number.
 [ -n "$GH_TID" ] || { echo "FAIL $(basename "$0") — the gh-mode walk registered no ticket"; exit 1; }
-tid_line() { printf '%s\n' "$1" | grep -xE '[0-9]+' | eol || echo "(not a ticket id)"; }
-t "the gh-mode walk registered a ticket" "$GH_TID;" tid_line "$GH_TID"
+gh_ticket() { T_S="$GH_STUB_STATE" T_ID="$1" python3 -c '
+import json, os
+it = json.load(open(os.environ["T_S"]))["issues"].get(os.environ["T_ID"])
+print("#%s %s" % (os.environ["T_ID"], "(no such issue on the stub board)"
+                  if it is None else it["title"]))'; }
+t "the gh-mode walk registered its ticket on the stub board" \
+  "#$GH_TID transcript diff walk" gh_ticket "$GH_TID"
 
 # ---- side B: API mode, on the real service ---------------------------------
 # The gh stub stays on PATH and stays armed: nothing in this half may touch it.

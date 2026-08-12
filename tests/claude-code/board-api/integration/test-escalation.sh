@@ -112,7 +112,7 @@ t "the stuck ticket is NOT parked by automation" "in-progress"             ticke
 # ---- the suppression is honoured by both readers --------------------------
 arm_cycle
 OUT4="$DRILL_TMP/cycle4.out"; broken_resume >"$OUT4" 2>&1 || true
-t  "a suppressed ticket is skipped by the resume phase" "suppressed — skipping #$TID" cat "$OUT4"
+t  "a suppressed ticket is skipped by the resume phase" "suppressed — skipping #$TID;" eol "$OUT4"
 nt "and no cycle is charged for a ticket nobody tried"  "recovery cycle"   cat "$OUT4"
 t  "so no successor is opened on it"                    "owner=[None]"     owner_line "$TID"
 

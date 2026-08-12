@@ -60,7 +60,8 @@ update board.run set lease_expires_at = now() - interval '5 minutes', last_write
 SQL
 feed_has_stuck() { needing_resume_ids | grep -qxF "$STUCK"; }
 wait_until 30 "the service to reclaim run $RUN" feed_has_stuck || exit 1
-t "the reclaimed ticket is on the resume feed" "$STUCK" needing_resume_ids
+resume_feed() { needing_resume_ids | eol; }
+t "the reclaimed ticket is on the resume feed" "$STUCK;" resume_feed
 t "and the board shows it unowned, still in flight" "in-progress" ticket_state "$STUCK"
 
 # ---- the fresh ticket waiting behind it -----------------------------------
