@@ -334,10 +334,30 @@ def derive_state(gh_state, state_reason, status_labels):
 def snapshot(refresh=False):
     """All issues, normalized to the v6 node shape keyed by str(number).
     Cached per process — write scripts fetch once, mutate GitHub, and report
-    from their own knowledge of what they changed."""
+    from their own knowledge of what they changed.
+
+    Cross-process cache, opt-in via BOARD_SNAPSHOT_CACHE=<path> (+TTL secs in
+    BOARD_SNAPSHOT_TTL, default 600): the dispatch sweep re-verifies each
+    candidate from a fresh snapshot in a NEW python process, so a long ready
+    queue costs O(queue) full-board GraphQL sweeps per tick — measured eating
+    the entire 5000/h quota and starving every later sweep pass. Only the
+    caller that owns the tick sets the env; everyone else keeps fresh reads.
+    Invalidation is the owner's contract: rm the file after any write that
+    must be visible to later reads in the same tick (the sweep does this
+    after every spawn). refresh=True bypasses the file AND rewrites it."""
     global _snapshot_cache
     if _snapshot_cache is not None and not refresh:
         return _snapshot_cache
+    cache_path = os.environ.get("BOARD_SNAPSHOT_CACHE")
+    if cache_path and not refresh:
+        try:
+            ttl = float(os.environ.get("BOARD_SNAPSHOT_TTL", "600"))
+            if time.time() - os.stat(cache_path).st_mtime < ttl:
+                with open(cache_path) as f:
+                    _snapshot_cache = json.load(f)
+                return _snapshot_cache
+        except (OSError, ValueError):
+            pass
     owner, name = repo().split("/", 1)
     tickets, cursor = {}, None
     while True:
@@ -427,6 +447,15 @@ def snapshot(refresh=False):
             break
         cursor = page["pageInfo"]["endCursor"]
     _snapshot_cache = tickets
+    if cache_path:
+        # Atomic write; a failed cache write must never fail the read.
+        try:
+            tmp = "%s.%d.tmp" % (cache_path, os.getpid())
+            with open(tmp, "w") as f:
+                json.dump(tickets, f)
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass
     return tickets
 
 
