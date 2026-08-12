@@ -739,8 +739,16 @@ _suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
 # Lift the suppression on ticket $1 if either trigger fired. Both are checked
 # every tick because either one alone is a trap: an operator who moves the
 # ticket should not also have to close the env-issue, and closing the
-# env-issue is the natural "I fixed the substrate" gesture. A ticket that has
-# fallen off the listing entirely (terminal) reads as moved, which is right.
+# env-issue is the natural "I fixed the substrate" gesture.
+#
+# AN ABSENT ROW IS NOT A STATE — a truncated or partial /tickets read must
+# never lift a suppression. The listing is read whole, with no cursor and no
+# envelope, so a short read looks exactly like a smaller board; treating a
+# missing row as a value fired BOTH triggers on it (absent != the recorded
+# state, and absent read as "closed"), lifting every suppression the read
+# could not see and minting the human a fresh env-issue every three cycles.
+# Absent is UNKNOWN on both sides: keep waiting for a read that can name it.
+# This is the read-site mirror of the write-site guard at _escalate.
 _check_lift() {
   T_TID="$1" T_DIR="$SUPPRESS_DIR" _api_py - <<'PY'
 import json, os
@@ -751,8 +759,10 @@ if not os.path.exists(path):
 with open(path) as f:
     rec = json.load(f)
 rows = {str(t["id"]): t["state"] for t in A.tickets(principal="automation")}
-moved = rows.get(str(rec["ticket"])) != rec["state"]
-closed = rows.get(str(rec["env_issue"])) in (None, "done", "wontfix")
+cur = rows.get(str(rec["ticket"]))
+moved = cur is not None and cur != rec["state"]
+env = rows.get(str(rec["env_issue"]))
+closed = env in ("done", "wontfix")   # absent env-issue: unknown, keep waiting
 if moved or closed:
     os.remove(path)
     print("suppression lifted for #%s — %s" %

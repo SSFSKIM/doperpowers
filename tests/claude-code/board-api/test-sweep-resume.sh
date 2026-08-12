@@ -725,9 +725,11 @@ kill $DMOCKS 2>/dev/null || true
 # cheapest place to see which directory this phase is actually working in.
 # =========================================================================
 SUPD="$TDIR/operator-suppress"; mkdir -p "$SUPD"
-# env-issue 999 is on no listing this board serves, so the lift fires on the
-# closed-env-issue trigger without depending on any other scenario's leftovers.
-printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 999}' \
+# Env-issue 90 is `done` in this board's standing listing, so the lift fires on
+# the closed-env-issue trigger without depending on any other scenario's
+# leftovers. (An env-issue absent from the listing would NOT do: absent is
+# unknown, not closed — see the absent-row scenarios at the end of this file.)
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
   > "$SUPD/12.json"
 : > "$FIX.log"
 OUTS="$TDIR/suppressdir.out"
@@ -1057,6 +1059,62 @@ t  "so two journals still cost one claim"  "claims=1"  claims "$RLOG"
 t  "and one ladder rung"               "recovery cycle 1 of 3"  cat "$OUTT"
 nt "not two"                           "recovery cycle 2 of 3"  cat "$OUTT"
 t  "the waiting journal is left untouched"  "n-b.json"  standing_journal "$TDH"
+
+# ---- AN ABSENT ROW IS NOT A STATE ----------------------------------------
+# `/tickets` is read whole, with no cursor and no envelope, so a truncated or
+# partial listing is indistinguishable from a smaller board. Reading a missing
+# row as a value fired BOTH lift triggers on it — `moved` because None is not
+# the recorded state, `closed` because None sat in the closed tuple — and one
+# short read lifted every suppression it could not see: the ladder re-ran and
+# the human collected a fresh env-issue every three cycles. Absent is UNKNOWN,
+# and the suppression waits for a read that can name the state.
+suppression_present() {  # suppression_present <registry> <ticket>
+  if [ -e "$1/board-suppress/$2.json" ]; then echo "still-there"; else echo "gone"; fi
+}
+tick_exit() {  # tick_exit <registry> <out> — run a tick, record its exit status
+  if RSW "$1" > "$2" 2>&1; then echo "tick exit=0" >> "$2"
+  else echo "tick exit=$?" >> "$2"; fi
+}
+
+GFIX="$TDIR/fix-absent-ticket.json"
+cat > "$GFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]}
+]
+JSON
+rboard "$GFIX"
+GDH="$TDIR/dh-absent-ticket"; mkdir -p "$GDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$GDH/board-suppress/12.json"
+OUTG="$TDIR/absent-ticket.out"
+tick_exit "$GDH" "$OUTG"
+t  "a suppression whose ticket is off the listing is not lifted" \
+   "still-there"                        suppression_present "$GDH" 12
+nt "and the tick says nothing about lifting it"  "suppression lifted"  cat "$OUTG"
+t  "and the tick still succeeds"        "tick exit=0"                 cat "$OUTG"
+
+# The env-issue half of the same read. `closed` alone must not fire on absence:
+# an env-issue nobody can see is not an env-issue somebody closed.
+HFIX="$TDIR/fix-absent-env.json"
+cat > "$HFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$HFIX"
+HDH="$TDIR/dh-absent-env"; mkdir -p "$HDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$HDH/board-suppress/12.json"
+OUTH="$TDIR/absent-env.out"
+tick_exit "$HDH" "$OUTH"
+t  "an env-issue off the listing is not a closed env-issue" \
+   "still-there"                        suppression_present "$HDH" 12
+nt "so nothing is lifted on it"         "suppression lifted"          cat "$OUTH"
+t  "and that tick succeeds too"         "tick exit=0"                 cat "$OUTH"
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
 
