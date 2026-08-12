@@ -60,7 +60,7 @@ A design fork with genuinely sound alternatives is a grill question, not present
 
 **Choosing the Track (after the grill):**
 
-Three tracks leave this skill. The controlled track — the rest of this skill: design → spec → doperpowers:writing-plans — keeps human gates until your human partner types `<agent-ready>`; from that signal on, run the remaining steps autonomously. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
+Three tracks leave this skill. The controlled track is the rest of this skill: design → spec → doperpowers:writing-plans. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
 
 **You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
 
@@ -133,7 +133,7 @@ After writing the spec document, look at it with fresh eyes:
 Fix any issues inline. No need to re-review — just fix and move on.
 
 **Independent Spec Review:**
-After the spec self-review passes, report the committed spec path, then dispatch a general-purpose subagent (model=fable) for an independent spec review — a brief prompt with 1-2 sentences of context and the spec path is enough. Evaluate its findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review.
+After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review.
 
 From design approval onward, what returns to your human partner is exceptions: a design-level fork the approved design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the approved design is fixed where it stands and logged in the spec's Decision Log.
 
