@@ -235,9 +235,25 @@ def graphql(query, **variables):
 
 
 # ── board:meta body block ────────────────────────────────────────────────
+def meta_match(body):
+    """The RIGHTMOST META_RE match — the real trailing block. A leftmost-first
+    search anchors on a marker QUOTED in the prose and its lazy middle spans
+    to the real trailing `-->` (#60); every match ends at end-of-string
+    (`\\s*$`), so the rightmost START is the actual block. render_body's value
+    grammar (single-line, no marker tokens) is what makes this sound: the
+    block itself can never contain a marker."""
+    m, pos = None, 0
+    body = body or ""
+    while True:
+        nxt = META_RE.search(body, pos)
+        if not nxt:
+            return m
+        m, pos = nxt, nxt.start() + 1
+
+
 def parse_meta(body):
     """The trailing `<!-- board:meta ... -->` block → dict (absent keys omitted)."""
-    m = META_RE.search(body or "")
+    m = meta_match(body)
     meta = {}
     if not m:
         return meta
@@ -254,7 +270,8 @@ def parse_meta(body):
 def strip_meta(body):
     """The body WITHOUT its trailing board:meta block — the ticket's own text,
     with the board's bookkeeping removed."""
-    return META_RE.sub("", body or "").rstrip("\n")
+    m = meta_match(body)
+    return ((body or "")[:m.start()] if m else (body or "")).rstrip("\n")
 
 
 def contract_hash(body):
@@ -274,7 +291,21 @@ def render_body(body, meta):
     """Body with its meta block replaced by `meta` (dropped when meta is empty).
     Everything outside the block is preserved byte-for-byte."""
     base = strip_meta(body)
-    meta = {k: v for k, v in meta.items() if v}
+    # Value grammar: one line, no marker tokens. parse_meta reads the block
+    # line-wise, so a multi-line value is silent corruption at best and a
+    # forged key at worst — and a marker token inside the real block would
+    # defeat meta_match's rightmost rule outright.
+    clean = {}
+    for k, v in meta.items():
+        if not v:
+            continue
+        # EVERY separator parse_meta's splitlines() would honour — \r\n alone
+        # leaves \v, \f, \x1c–\x1e, \x85, U+2028/U+2029 injectable as keys.
+        v = " ".join(str(v).splitlines())
+        if "<!-- board:meta" in v or "-->" in v:
+            die("meta value %r cannot carry a board:meta marker token" % k)
+        clean[k] = v
+    meta = clean
     if not meta:
         return base + ("\n" if base else "")
     block = "\n".join("%s: %s" % (k, meta[k]) for k in META_KEYS if k in meta)

@@ -1852,6 +1852,86 @@ assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:re
 assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:needs-human" \
   "the superseded label is swapped out, not left alongside (that would read as conflict)"
 
+echo "meta-grammar:"
+# The board:meta block is prose-adjacent: tickets that DOCUMENT the block quote
+# a marker-shaped example in their own text (#60). META_RE is leftmost-first and
+# its lazy middle spans from the quoted marker to the real trailing `-->`, so a
+# leftmost read parses the wrong block and a leftmost strip deletes the prose
+# between them. The block that counts is the RIGHTMOST one — which is only sound
+# while the real block cannot itself contain a marker, hence the value grammar
+# (single line, no marker tokens) enforced at the write.
+mg="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+QUOTED = "<!-- board:meta\npr: fake\npre-park: in-review\n-->"
+# (a) the example indented inside the prose, (a2) the reproduced #60 shape with
+# the example at column 0.
+for tag, quoted in (("a", "\n".join("    " + l for l in QUOTED.splitlines())),
+                    ("a2", QUOTED)):
+    prose = "Docs about the block:\n\n%s\n\nMore prose." % quoted
+    body = B.render_body(prose, {"pr": "https://real/1"})
+    print("%s-parse-pr=%s" % (tag, B.parse_meta(body).get("pr")))
+    print("%s-tail=%s" % (tag, "kept" if "More prose." in B.strip_meta(body) else "LOST"))
+    print("%s-prose=%s" % (tag, "intact" if B.strip_meta(body) == prose.rstrip() else "MANGLED"))
+    # (b) strip → parse → render is the identity on a body the board wrote.
+    print("%s-roundtrip=%s" % (
+        tag, "same" if B.render_body(B.strip_meta(body), B.parse_meta(body)) == body else "DIFFERS"))
+
+# A body carrying BOTH blocks verbatim (what a pre-fix client left behind):
+# the quoted example's keys must not leak into the parse.
+both = ("Docs about the block:\n\n%s\n\nMore prose."
+        "\n\n<!-- board:meta\npr: https://real/1\n-->\n" % QUOTED)
+print("leak-pre-park=%s" % B.parse_meta(both).get("pre-park"))
+print("both-parse-pr=%s" % B.parse_meta(both).get("pr"))
+print("both-tail=%s" % ("kept" if "More prose." in B.strip_meta(both) else "LOST"))
+
+# (c) contract_hash covers the prose only — same prose, different meta, same id.
+other = both.replace("pr: https://real/1", "pr: https://other/2")
+print("hash-prose-only=%s" % ("yes" if B.contract_hash(both) == B.contract_hash(other) else "no"))
+
+# (d) a multi-line value collapses to one line rather than minting block lines.
+print("d-block=%r" % B.render_body("prose", {"note": "line1\nline2"}))
+
+# (f) EVERY separator parse_meta's str.splitlines() honours — \r\n-only
+# normalization leaves the rest injectable as forged keys.
+SEPS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "vt": "\v", "ff": "\f",
+        "fs": "\x1c", "gs": "\x1d", "rs": "\x1e", "nel": "\x85",
+        "ls": "\u2028", "ps": "\u2029"}
+for name, sep in sorted(SEPS.items()):
+    bad = []
+    if B.parse_meta(B.render_body("prose", {"note": "safe%spr: https://forged/1" % sep})).get("pr"):
+        bad.append("pr")
+    if B.parse_meta(B.render_body("prose", {"note": "safe%spre-park: in-review" % sep})).get("pre-park"):
+        bad.append("pre-park")
+    print("f-%s=%s" % (name, ("FORGED:" + ",".join(bad)) if bad else "clean"))
+PY
+)"
+assert_contains "$mg" "a-tail=kept" "an INDENTED marker example survives a meta write"
+assert_contains "$mg" "a-prose=intact" "…byte-for-byte outside the block"
+assert_contains "$mg" "a-parse-pr=https://real/1" "parse_meta reads the real block, not the indented example"
+assert_contains "$mg" "a-roundtrip=same" "strip → parse → render is the identity (indented example)"
+assert_contains "$mg" "a2-tail=kept" "a column-0 marker example survives a meta write (#60)"
+assert_contains "$mg" "a2-prose=intact" "…byte-for-byte outside the block"
+assert_contains "$mg" "a2-parse-pr=https://real/1" "parse_meta reads the real block, not the quoted example"
+assert_contains "$mg" "a2-roundtrip=same" "strip → parse → render is the identity (column-0 example)"
+assert_contains "$mg" "leak-pre-park=None" "keys from a quoted example never leak into the parse"
+assert_contains "$mg" "both-parse-pr=https://real/1" "the rightmost block is the one parsed"
+assert_contains "$mg" "both-tail=kept" "stripping a two-marker body keeps the prose between them"
+assert_contains "$mg" "hash-prose-only=yes" "contract_hash covers the prose only"
+assert_contains "$mg" "d-block=" "render_body returned a block"
+assert_contains "$mg" "note: line1 line2" "a multi-line meta value renders as ONE line"
+for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
+    assert_contains "$mg" "f-$sep=clean" "a value split by $sep cannot forge a meta key"
+done
+
+# Marker tokens are unrepresentable inside the block — refuse loudly rather than
+# write a body whose real block contains a second marker.
+mg_die() { PYTHONPATH="$SCRIPTS_DIR" python3 -c "import _board as B; B.render_body('prose', {'note': 'x\n$1'})"; }
+assert_fails mg_die '<!-- board:meta'
+assert_fails mg_die '-->'
+die_out="$(mg_die '<!-- board:meta' 2>&1 || true)"
+assert_contains "$die_out" "note" "the refusal names the offending key"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"
