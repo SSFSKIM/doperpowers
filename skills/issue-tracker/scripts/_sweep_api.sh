@@ -1084,7 +1084,7 @@ PY
 _resume_one() {
   local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
   local pre_pending="" post_pending="" lane="" role=""
-  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN=""
+  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
   # the claim so this tick never mints a successor run it cannot deliver.
   # daemon-resume stamps status=error + pending_short when a fork LAUNCHED
@@ -1128,8 +1128,14 @@ _resume_one() {
   exports="$(T_TID="$tid" T_NONCE="$nonce" T_BODY="$dir/body.md" _api_py - <<'PY'
 import os, shlex
 import _board_api as A
-out = A.claim_successor(os.environ["T_TID"], os.environ["T_NONCE"])
 def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
+try:
+    out = A.claim_successor(os.environ["T_TID"], os.environ["T_NONCE"])
+except A.ClaimObsolete as e:
+    # A spent handle, not a sick board — handed back as a fact for the shell
+    # to route on rather than as the failure exit every other refusal takes.
+    q("C_OBSOLETE", e.code)
+    raise SystemExit(0)
 if not out.get("claimed", True):
     q("C_CLAIMED", 0)
     raise SystemExit(0)
@@ -1155,11 +1161,33 @@ with open(os.environ["T_BODY"], "w") as f:
     f.write(out.get("body") or "")
 PY
 )" || {
-    # The journal STAYS: a claim that died on the wire may still have landed.
+    # A FAULT, and the first exit that ever charged for one: transport death
+    # after retries, a 5xx, a malformed grant, an untyped refusal. Left
+    # uncounted, a ticket whose claim persistently errors churns forever — and
+    # the kept journal is re-classified `replay` next tick while the feed ALSO
+    # re-serves the ticket, so the churn costs two claims and a leaked journal
+    # a tick. The journal STAYS: a claim that died on the wire may still have
+    # landed, and it is the only handle a replay has.
     echo "resume: #$tid — successor claim failed; journal $nonce kept" >&2
+    _attempts "$tid" fail
     return 1
   }
   eval "$exports"
+  # THE JOURNAL IS OBSOLETE, NOT THE SUBSTRATE SICK. `nonce-consumed` says the
+  # predecessor's run ended, so this nonce is spent for good; `stale-resume`
+  # says the ticket moved after the feed read, so its new state governs.
+  # Neither is a fault to charge: the handle is dropped and the ticket comes
+  # back around — on a fresh nonce, or through ordinary dispatch.
+  if [ -n "$C_OBSOLETE" ]; then
+    rm -f "$CLAIMS_DIR/$nonce.json"
+    echo "resume: #$tid — the successor journal is obsolete ($C_OBSOLETE); dropped uncharged, and the ticket comes back around on its own"
+    return 0
+  fi
+  # Uncharged on purpose: no grant is the server's BACKPRESSURE — a lane cap,
+  # an eligibility rule — and a healthy wait state. A suppression written from
+  # it would take a healthy ticket out of both the resume and the dispatch
+  # phase until a human closed an env-issue, which is strictly worse than the
+  # wait it would be "fixing".
   if [ "$C_CLAIMED" != 1 ]; then
     rm -f "$CLAIMS_DIR/$nonce.json"
     echo "resume: #$tid — the board granted no successor"
@@ -1460,8 +1488,9 @@ import _board_api as A
 tid = os.environ["T_TID"]
 payload = {"title": "stuck resume: ticket #%s cannot be revived" % tid,
            "category": "env-issue",
-           "body": "Three resume and fresh-spawn cycles failed for ticket "
-                   "#%s. The sweep has SUPPRESSED that ticket: phase 3 skips "
+           "body": "Three recovery cycles failed for ticket #%s (successor "
+                   "claim, resume, or fresh spawn). "
+                   "The sweep has SUPPRESSED that ticket: phase 3 skips "
                    "it and phase 4 releases any claim that yields it. "
                    "Investigate the session/daemon substrate, then either "
                    "move ticket #%s (any transition) or close this env-issue "

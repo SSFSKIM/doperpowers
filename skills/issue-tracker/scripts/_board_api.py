@@ -25,6 +25,20 @@ class RunEnded(Exception):
     """409 run-ended — the caller's run was reaped; callers route, not die."""
 
 
+class ClaimObsolete(Exception):
+    """A 409 saying the caller's CLAIM HANDLE is spent, not that the board is
+    sick — `nonce-consumed` (the predecessor's run ended, so that nonce can
+    never be replayed) and `stale-resume` (the ticket moved after the feed
+    read). Routed, not died on: the caller drops its journal uncharged and the
+    ticket comes back around on a fresh nonce. Carries `.code` so the caller
+    can say which one it met.
+    """
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def die(msg):
     print("error: %s" % msg, file=sys.stderr)
     raise SystemExit(1)
@@ -99,9 +113,13 @@ def _error(payload, status):
             env.get("message") or payload[:400])
 
 
-def request(method, path, body=None, principal="auto", ok=(200,), retry=None):
+def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
+            obsolete_codes=()):
     """One HTTP exchange. Dies with the contract's error identifier on
-    refusal; raises RunEnded on 409 run-ended (callers route on it)."""
+    refusal; raises RunEnded on 409 run-ended (callers route on it), and
+    ClaimObsolete on any code the caller named in `obsolete_codes` — named
+    per route rather than globally, because the same code is a routable
+    outcome on one route and an ordinary refusal on another."""
     if retry is None:
         retry = method == "GET"
     data = json.dumps(body).encode() if body is not None else None
@@ -122,6 +140,8 @@ def request(method, path, body=None, principal="auto", ok=(200,), retry=None):
             code, message = _error(e.read().decode(), e.code)
             if code == "run-ended":
                 raise RunEnded(message) from None
+            if code in obsolete_codes:
+                raise ClaimObsolete(code, message) from None
             # a refusal is an answer, never retried
             die("%s %s refused: %s — %s" % (method, path, code, message))
         except (urllib.error.URLError, OSError) as e:
@@ -146,7 +166,8 @@ def claim_successor(ticket_id, nonce, lease_minutes=None):
     body = {"ticketId": int(ticket_id), "dispatchNonce": nonce}
     if lease_minutes is not None:
         body["leaseMinutes"] = lease_minutes
-    return request("POST", "/runs/claim-successor", body, "automation", retry=True)
+    return request("POST", "/runs/claim-successor", body, "automation", retry=True,
+                   obsolete_codes=("nonce-consumed", "stale-resume"))
 
 
 def needing_resume():

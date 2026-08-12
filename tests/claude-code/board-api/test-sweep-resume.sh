@@ -739,4 +739,102 @@ t  "the configured directory is the one this phase reads" \
 supd_record() { [ -e "$SUPD/12.json" ] && echo "still-there" || echo "gone"; }
 t  "and the record it acted on was the operator's"  "gone"  supd_record
 
+# =========================================================================
+# A CLAIM FAILURE IS NOT ONE KIND OF EVENT. Both claim exits used to bypass
+# the recovery counter, so a ticket whose claim errored churned forever — and
+# the kept journal was re-classified `replay` next tick while the feed ALSO
+# re-served the ticket: two claims and a leaked journal per tick.
+#
+# Counting every claim failure is the wrong fix, because arkho answers two
+# typed 409s that mean THIS JOURNAL is obsolete, not that the substrate is
+# sick: `nonce-consumed` (the predecessor's run ended, so replaying its nonce
+# is doomed forever) and `stale-resume` (the ticket moved after the feed
+# read). Those drop the journal uncharged and let the next tick re-serve the
+# ticket on a fresh nonce. Everything else on that exit — transport death,
+# 5xx, an untyped refusal — IS a fault: charged, journal kept.
+#
+# `claimed:false` stays uncharged on purpose: it is the server's backpressure,
+# and a suppression written from it would remove a HEALTHY ticket from both
+# the resume and the dispatch phase until a human closed an env-issue.
+#
+# Its own fixture world, with a fresh registry per scenario — a kept journal
+# and the attempt counter must not leak from one scenario into the next.
+# =========================================================================
+CFIX="$TDIR/fix-claim.json"; : > "$CFIX.log"
+cat > "$CFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,"once":true,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":409,"once":true,
+  "body":{"error":{"code":"nonce-consumed",
+                   "message":"a nonce on an ended run is spent, not replayable"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":409,"once":true,
+  "body":{"error":{"code":"stale-resume",
+                   "message":"ticket moved since the feed read"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"claimed":false}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+CPORT="$(free_port)"
+python3 "$TESTS_DIR/mock-server.py" "$CFIX" "$CPORT" & CMOCK=$!
+wait_for_port "$CPORT" || { echo "FAIL mock server never listened on $CPORT"; exit 1; }
+CREPO="$(mkrepo)"; mkdir -p "$CREPO/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
+CSW() {  # CSW <registry> — one resume tick against the claim-failure board
+  ( cd "$CREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" resume )
+}
+journals() {  # journals <registry> — how many claim journals it is holding
+  local n=0 f
+  for f in "$1"/board-claims/*.json; do [ -e "$f" ] || continue; n=$((n + 1)); done
+  echo "journals=$n"
+}
+
+CDHA="$TDIR/dh-claim-fault"; mkdir -p "$CDHA"
+OUTCA="$TDIR/claim-fault.out"
+CSW "$CDHA" > "$OUTCA" 2>&1 || true
+t  "a claim that FAULTS charges a recovery cycle" "recovery cycle 1 of 3" cat "$OUTCA"
+t  "and the journal is kept as the replay handle" "journals=1" journals "$CDHA"
+
+CDHB="$TDIR/dh-claim-nonce"; mkdir -p "$CDHB"
+OUTCB="$TDIR/claim-nonce.out"
+CSW "$CDHB" > "$OUTCB" 2>&1 || true
+t  "a nonce-consumed claim names the journal obsolete" \
+   "journal is obsolete (nonce-consumed)"            cat "$OUTCB"
+nt "and is not reported as a fault"    "successor claim failed"  cat "$OUTCB"
+nt "so no recovery cycle is charged"   "recovery cycle"          cat "$OUTCB"
+t  "the spent journal is dropped"      "journals=0"  journals "$CDHB"
+
+CDHC="$TDIR/dh-claim-stale"; mkdir -p "$CDHC"
+OUTCC="$TDIR/claim-stale.out"
+CSW "$CDHC" > "$OUTCC" 2>&1 || true
+t  "a stale-resume claim names the journal obsolete too" \
+   "journal is obsolete (stale-resume)"              cat "$OUTCC"
+nt "and is not reported as a fault either" "successor claim failed" cat "$OUTCC"
+nt "so no recovery cycle is charged for it" "recovery cycle"        cat "$OUTCC"
+t  "and that journal is dropped as well"   "journals=0"  journals "$CDHC"
+
+CDHD="$TDIR/dh-claim-none"; mkdir -p "$CDHD"
+OUTCD="$TDIR/claim-none.out"
+CSW "$CDHD" > "$OUTCD" 2>&1 || true
+t  "backpressure is a wait state, not a failure" \
+   "the board granted no successor"                  cat "$OUTCD"
+nt "it charges no recovery cycle"      "recovery cycle"  cat "$OUTCD"
+t  "and leaves no journal behind"      "journals=0"  journals "$CDHD"
+kill $CMOCK 2>/dev/null || true
+
 finish
