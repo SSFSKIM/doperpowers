@@ -979,11 +979,15 @@ PY
 # tick — so _check_lift's `moved` could never fire and the "move the ticket"
 # half of the escalation's own instructions was inert. The journal is left
 # exactly where it is; it is still the retry handle when the suppression lifts.
+# The price of "untouched" is real and small: a suppressed ticket's undelivered
+# successor run now holds until its lease expires rather than being released
+# here, and the orphan warning is silent for the duration of the suppression.
 #
-# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this pass CLAIMED
-# for, so the feed loop does not claim a second successor for the same ticket in
-# the same tick. Only the replay arm goes on it: settle and orphaned make no
-# claim, and settle's release is designed to be served by this very tick's feed.
+# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this pass
+# ATTEMPTED a recovery for — written before the attempt, because a guard that
+# leaves the ticket for the next tick has spent this ticket's turn either way.
+# Only the replay arm reads and writes it: settle and orphaned make no claim,
+# and settle's release is designed to be served by this very tick's feed.
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
@@ -1055,6 +1059,16 @@ PY
     fi
     case "$act" in
       replay)
+        # The ledger is CONSULTED here as well as written, or the invariant
+        # holds only across the hand-off to the feed and not within this pass:
+        # two unfinished journals naming one ticket are two replay rows, and
+        # each one claimed and charged. Reachable because the intermediate
+        # commit on this branch minted an extra journal per tick during a claim
+        # fault, so a registry that ticked on it arrives here holding several.
+        if [ -n "$tid" ] && grep -qxF -- "$tid" "$RESUMED_LEDGER"; then
+          echo "resume: successor claim $nonce waits — #$tid already had its one recovery attempt this tick"
+          continue
+        fi
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
         [ -z "$tid" ] || { printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
                            _resume_one "$tid" "$nonce" || true; } ;;

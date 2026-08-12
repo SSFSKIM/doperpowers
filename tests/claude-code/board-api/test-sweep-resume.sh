@@ -881,7 +881,14 @@ claims() {  # claims <log> — successor-claim POSTs that reached the wire
   echo "claims=$(grep -c '"path": "/runs/claim-successor"' "$1" || true)"
 }
 standing_journal() {  # standing_journal <registry> — which journals are on disk
-  ls "$1/board-claims" 2>/dev/null || echo "no journals"
+  # A glob rather than `ls`: an EXISTING but empty directory makes ls print
+  # nothing at all, which would pass an absence assertion by accident.
+  local f n=0
+  for f in "$1"/board-claims/*; do
+    [ -e "$f" ] || continue
+    basename "$f"; n=$((n + 1))
+  done
+  [ "$n" -gt 0 ] || echo "no journals"
 }
 mkjournal() {  # mkjournal <registry> <nonce> <ticket> — an unfinished claim
   mkdir -p "$1/board-claims"
@@ -1017,6 +1024,39 @@ t  "which carries the STANDING journal's nonce, not a fresh one" \
 t  "so no second journal is stranded beside it"  "journals=1"  journals "$LDH"
 t  "and the one on disk is still the original"   "n-lifted.json" \
    standing_journal "$LDH"
+
+# ---- two standing journals for ONE ticket are still one attempt ----------
+# The ledger closed the reconcile→feed door; this is the reconcile→reconcile
+# one. Reconciliation walks a row per journal file, so two unfinished successor
+# journals naming the same ticket were two claims and two ladder rungs inside a
+# single tick — the very shape this task exists to close. Not a steady state
+# (a replay reuses its own nonce and overwrites its own file), but the
+# intermediate commit on this branch minted an extra journal per tick during a
+# claim fault, so a registry that ticked on it arrives holding several and this
+# pass must not charge through them.
+EFIX="$TDIR/fix-twojournals.json"
+cat > "$EFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$EFIX"
+TDH="$TDIR/dh-two-journals"; mkdir -p "$TDH"
+mkjournal "$TDH" n-a 12
+mkjournal "$TDH" n-b 12
+OUTT="$TDIR/two-journals.out"
+RSW "$TDH" > "$OUTT" 2>&1 || true
+t  "a second journal for the same ticket waits its turn" \
+   "#12 already had its one recovery attempt this tick"  cat "$OUTT"
+t  "so two journals still cost one claim"  "claims=1"  claims "$RLOG"
+t  "and one ladder rung"               "recovery cycle 1 of 3"  cat "$OUTT"
+nt "not two"                           "recovery cycle 2 of 3"  cat "$OUTT"
+t  "the waiting journal is left untouched"  "n-b.json"  standing_journal "$TDH"
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
 
