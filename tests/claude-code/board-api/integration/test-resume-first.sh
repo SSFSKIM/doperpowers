@@ -72,8 +72,15 @@ t "the fresh ticket is queued" "ready-for-implementer" ticket_state "$FRESH"
 OUT="$DRILL_TMP/tick.out"
 sweep all >"$OUT" 2>&1 || true
 
+# The parenthetical carries the SERVER's own diagnostic prose — arkho a05b1ac
+# gave every refusal a message, and a bare code used to stand there — so the
+# pin covers the ROUTING, the run it names, AND enough of the prose that the
+# message going empty again fails here. The refusal identifier needs no
+# pinning: the sweep's RunEnded branch is reachable for `run-ended` and nothing
+# else, so printing this line at all IS the code.
+resume_route() { grep -F -- "— resume path" "$OUT"; }
 t "the reclaimed run is routed to the resume path, not renewed" \
-  "ended (run-ended) — resume path" cat "$OUT"
+  "run $RUN: ended (run $RUN is not open" resume_route
 t "a successor is claimed for the reclaimed ticket" "resume: #$STUCK run " cat "$OUT"
 t "and delivered by resuming the predecessor's own session" "→ resumed session $UUID" cat "$OUT"
 t "the fresh ticket is claimed in the same tick" "claimed #$FRESH run=" cat "$OUT"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-register-transition.sh — the two write verbs' API branches, plus the
-# four human-side verbs that have no API-mode counterpart yet.
+# verbs that still have no API-mode counterpart. Each verb leaves this file's
+# refusal loop as its api branch lands (board-edge.sh → test-edge-verbs.sh).
 #
 # Every assertion rides a real socket against the fixture mock: the verb
 # assembles the request, the mock records what arrived and answers a
@@ -34,6 +35,7 @@ cat > "$FIX" <<'JSON'
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
  {"method":"POST","path":"/tickets","status":200,"body":{"id":31,"state":"needs-human"},"once":true},
+ {"method":"POST","path":"/tickets","status":200,"body":{"id":35,"state":"needs-human"},"once":true},
  {"method":"POST","path":"/tickets","status":500,
   "body":{"error":{"code":"internal","message":"upstream exploded"}},"once":true},
  {"method":"POST","path":"/tickets","status":409,
@@ -85,13 +87,17 @@ t "fence rides env" '\"fence\": 3' \
   bash -c "cd '$r' && BOARD_CREDENTIALS_FILE='$CREDS' BOARD_RUN_TOKEN=rt BOARD_RUN_FENCE=3 \
     '$SCRIPTS/board-transition.sh' 9 done 2>/dev/null; cat '$FIX.log'"
 
-t "park birth note prepends body" '\"body\": \"which color?' \
+# A park question now rides the server's real `note` field (arkho#7 R2), so it
+# reaches A1 as the park's standing question rather than as prose at the head of
+# the statement of work.
+t "park birth sends the note as its own field" '\"note\": \"which color?' \
   bash -c "V board-register.sh 'pick color' enhancement P2 --state needs-human --note 'which color?' >/dev/null; cat '$FIX.log'"
 # Whole-body pin, leading brace to trailing brace: a substring match on one key
 # survives a payload that dropped the birth, renamed a key, or bolted an extra
-# one on. This is the park-birth request from the assert above.
-t "park birth body pins birth + note-as-body-head" \
-  '{"title": "pick color", "category": "work", "priority": "P2", "birth": "needs-human", "body": "which color?"}' \
+# one on. This is the park-birth request from the assert above — and the ABSENCE
+# of a "body" key is half the assertion: the note must not be prepended too.
+t "park birth body pins birth + note field, body absent" \
+  '{"title": "pick color", "category": "work", "priority": "P2", "birth": "needs-human", "note": "which color?"}' \
   last_register_body
 
 EMPTY_BODY="$(mktemp)"   # a regular empty file, not /dev/null: the body-file
@@ -100,6 +106,16 @@ SPEC="$(mktemp)"; printf 'the spec' > "$SPEC"   # a real statement of work: a
                          # BODYLESS registration is no longer dispatchable (see
                          # the pre-spec rung at the end of this file), so every
                          # assertion about something else carries one
+
+# A park birth may carry BOTH: the question AND the statement of work. They are
+# separate payload fields — the note must not be folded into the body head (the
+# non-park transport), and the body must not swallow the question. Pinned whole,
+# so a regression that merges the two shows up as a key that vanished.
+V board-register.sh "parked with a spec" enhancement P2 --state needs-human \
+  --note 'q?' --body-file "$SPEC" >/dev/null
+t "a park birth carries note and body as separate fields" \
+  '{"title": "parked with a spec", "category": "work", "priority": "P2", "birth": "needs-human", "note": "q?", "body": "the spec"}' \
+  last_register_body
 
 # The arkho#7 pointer is a claim about CANON — "this birth is illegal here" —
 # and it may only ride the server saying exactly that. An outage on the same
@@ -122,8 +138,11 @@ t "spike category + explicit birth ride the payload whole" \
 SPIKE_OUT="$(mktemp)"; SPIKE_RC=0
 V board-register.sh "probe x" spike P2 --state ready-for-architect --body-file "$EMPTY_BODY" \
   > "$SPIKE_OUT" 2>&1 || SPIKE_RC=$?
-t "spike->architect surfaces 409 + arkho#7" "illegal-birth" cat "$SPIKE_OUT"
-t "spike 409 carries the arkho#7 pointer" "arkho/issues/7" cat "$SPIKE_OUT"
+t "spike->architect surfaces the 409 code" "illegal-birth" cat "$SPIKE_OUT"
+# R2 shipped, so a design-first spike is no longer a known canon divergence:
+# whatever the server refuses is refused on its own terms, with no client-side
+# pointer editorializing about which ticket the reader should go read.
+nt "no arkho#7 divergence note anymore — R2 shipped" "arkho/issues/7" cat "$SPIKE_OUT"
 t "a refused birth exits nonzero" "rc=1" echo "rc=$SPIKE_RC"
 
 # An IMPLICIT birth is the case the requested-state gate cannot see. Here the
@@ -131,20 +150,22 @@ t "a refused birth exits nonzero" "rc=1" echo "rc=$SPIKE_RC"
 # outcome — and gh mode makes the note MANDATORY for exactly this command. The
 # shell default `ready-for-implementer` is in no park tuple, so gating on the
 # requested state discarded mandatory human input. Pinned whole-body: the note
-# must be the body's opening line, and `env-issue` must survive the map.
+# must ride the `note` field (no "birth" key — the inversion is the server's),
+# and `env-issue` must survive the map.
 V board-register.sh "disk is full" env-issue P1 --note "need ops to grow the volume" >/dev/null
-t "implicit env-issue birth carries the note as the body head" \
-  '{"title": "disk is full", "category": "env-issue", "priority": "P1", "body": "need ops to grow the volume"}' \
+t "implicit env-issue birth carries the note as the note field" \
+  '{"title": "disk is full", "category": "env-issue", "priority": "P1", "note": "need ops to grow the volume"}' \
   last_register_body
 
-# The other half of the rule, unchanged: an EXPLICIT non-park birth states a
-# lane, so its --note is not a park question and stays off the body. Whole-body
-# pin — the absence of a "body" key is the assertion, which a fix that simply
-# prepended whenever --note is set would break.
+# A non-park note is not a park question, and the server refuses a `note`
+# field on a non-park OUTCOME — but the argument must not be silently lost
+# either (it was, before this pass). It rides the body head, exactly as the
+# implicit path always did. Whole-body pin: the note is the body's opening
+# paragraph and there is no `note` key.
 V board-register.sh "wire it up" enhancement P2 --state ready-for-implementer --note "fyi only" \
   --body-file "$SPEC" >/dev/null
-t "explicit non-park birth still keeps the note off the body" \
-  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer", "body": "the spec"}' \
+t "explicit non-park birth prepends the note to the body head" \
+  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer", "body": "fyi only\n\nthe spec"}' \
   last_register_body
 
 # Edge keys are wire contract, and a camelCase slip drops an edge in silence —
@@ -174,9 +195,11 @@ t "bug birth body pins the mapped category and omits birth" \
 
 t "register prints id + url" "30 http://127.0.0.1:$PORT/tickets/30" \
   V board-register.sh "plain one" enhancement P2 --body-file "$SPEC"
-for verb in board-edge.sh board-priority.sh board-relate.sh board-migrate-gh.sh; do
-  t "$verb fails loud naming arkho#7" "arkho#7" V "$verb" 1 --block 2
-done
+# board-migrate-gh.sh is now the only verb with no API-mode counterpart —
+# priority and relate got theirs (see test-edge-verbs.sh). It must still refuse
+# rather than write through a gh path an api-bound repo does not have.
+t "board-migrate-gh.sh fails loud naming arkho#7" "arkho#7" \
+  V board-migrate-gh.sh 1 --block 2
 
 # The binding constraint, asserted rather than assumed: in API mode gh is never
 # invoked — with a stub on PATH that would announce itself if it were.
@@ -201,6 +224,12 @@ V board-register.sh "no spec here" enhancement P2 >/dev/null
 t "a bodyless default birth is demoted out of the implement queue" \
   '"birth": "needs-info"' last_register_body
 t "and says what to do about it" "re-register with --body-file" last_register_body
+# The demotion lands on needs-info — a park by outcome — so its auto-note is the
+# park's standing question and rides the `note` field, not a body it does not
+# have. Same registration as the two asserts above, read through the same
+# payload pin: scoped to this exact request rather than to anything in the log.
+t "bodyless demotion sends its auto-note as the note field" \
+  '"note": "registered with no body' last_register_body
 t "a bodyless EXPLICIT lane birth is refused" \
   "cannot be born into a dispatchable lane state" \
   V board-register.sh "no spec, named lane" enhancement P2 --state ready-for-implementer

@@ -236,6 +236,9 @@ prompt() { cat "$DH/prompt-9-api-qagent.md"; }
 t  "the reviewer is told it is the qagent lane on its ticket" \
    "ticket #9" prompt
 t  "the api review mode is the one rendered"     '`REVIEW_MODE`: api' prompt
+# `REVIEW_MODE`: api is a prefix of api-scale, so the positive assert alone
+# cannot tell the two variants apart — the pair can.
+nt "and it is not the api-scale variant"         '`REVIEW_MODE`: api-scale' prompt
 t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
 t  "the board scripts, not gh, are the board"    "board-show.sh 9"   prompt
 t  "the barrier file is bound"                   '`BIND_READY_FILE`: ' prompt
@@ -528,5 +531,201 @@ t  "the risk-surface snapshot is the remote's"  "RISK-SURFACE-FROM-ORIGIN" promp
 t  "so is the repo-facts snapshot"              "REPO-FACTS-FROM-ORIGIN"   prompt5
 nt "neither degrades to the empty fallback"     "no repo risk-surface manifest" prompt5
 nt "the fetch is git, never gh"                 "GH-CALLED" cat "$MARKER"
+
+# =========================================================================
+# Scenario 6 — THE SCALE VARIANT. A claim whose `pr` is not URL-shaped is an
+# epic's closure-package event id, and its `branch` the integration ref: the
+# aggregate review of a recomposition epic, which has no PR at all. The
+# dispatcher is the only party that sees the claim response, so it — not the
+# worker — picks the render mode, and the two bindings ride the prompt because
+# no board read hands them over.
+# =========================================================================
+PORT6="$(free_port)"
+FIX6="$(mktemp)"; : > "$FIX6.log"
+cat > "$FIX6" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":61,"ticketId":88,"fence":2,"bearer":"scale-bearer",
+          "body":"epic assignment","pr":"3141","branch":"epic/e9-integration",
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/61/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX6" "$PORT6" & MOCK6=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 2>/dev/null' EXIT
+wait_for_port "$PORT6" || { echo "FAIL mock server never listened on $PORT6"; exit 1; }
+
+r6="$(apirepo "$PORT6")"
+DH6="$(mktemp -d)"
+OUT6="$(mktemp)"
+( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH6" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r6" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT6" 2>&1 || true
+
+SCALE_PROMPT="$DH6/prompt-88-api-qagent.md"
+t "the scale dispatch reports the handoff" "claimed #88 run=61" cat "$OUT6"
+t "the bind reached the wire" '"path": "/runs/61/bind"' cat "$FIX6.log"
+t "an event-id pr renders the api-scale block" \
+  "SCALE REVIEWER of recomposition epic #88" cat "$SCALE_PROMPT"
+t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "$SCALE_PROMPT"
+t "the integration ref binding rides the prompt" \
+  '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
+t "the assignment file still rides an api-scale prompt" '`TICKET_BODY_FILE`: ' cat "$SCALE_PROMPT"
+t "the scale prompt orders the integration checkout" \
+  "git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
+# THE CHECKOUT NAMES THE REF THE FETCH JUST WROTE. `git fetch origin <ref>` on a
+# single-branch clone — the shape `git clone --single-branch` and every worktree
+# cut from one leaves behind — updates no remote-tracking ref, because the
+# configured refspec does not cover that branch; only FETCH_HEAD moves. A worker
+# ordered onto `origin/<ref>` then reviews an absent or stale ref, silently.
+t "the scale checkout uses the ref the fetch wrote" \
+  "git checkout --detach FETCH_HEAD" cat "$SCALE_PROMPT"
+nt "and never the remote-tracking ref the fetch may not have moved" \
+  "checkout --detach origin/" cat "$SCALE_PROMPT"
+# THE WORKER RESOLVES ITS OWN BASE, AUTHORITATIVELY. The dispatcher's
+# DEFAULT_BRANCH ladder can settle on a stale local origin/HEAD or, with no
+# network and no gh, on the literal `main` — and an epic reviewed (and closed)
+# against a branch it does not merge into is the wrong range, silently, because
+# every fetch still succeeds. Origin's own HEAD symref is the one answer that
+# can be neither stale-local nor guessed, and the worker has the network to ask
+# for it, so the rendered binding is an echo and `ls-remote` is the authority.
+t "the scale prompt resolves the base from the remote itself" \
+  "git ls-remote --symref origin HEAD" cat "$SCALE_PROMPT"
+t "and fetches the resolved base, not the rendered one" \
+  'git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"' cat "$SCALE_PROMPT"
+# THE GUARD IS STRUCTURAL, NOT PROSE. Three unconditional lines let an
+# unresolved base sail through: the base fetch goes out with an empty refspec
+# and the integration fetch/checkout still succeeds on its own, so the sequence
+# exits 0 and the worker positions itself against an unverified base instead of
+# parking. Everything below the resolution therefore hangs off one `&&` chain.
+t "the base resolution gates the fetches structurally" \
+  '[ -n "$BASE" ]' cat "$SCALE_PROMPT"
+t "the base fetch is chained behind that gate" \
+  '&& git fetch origin "+refs/heads/$BASE' cat "$SCALE_PROMPT"
+t "and so is the integration fetch that follows it" \
+  "&& git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
+nt "the rendered base is never baked into the fetch" \
+  "+refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
+nt "and never the bare form that may write no tracking ref" \
+  "git fetch origin main" cat "$SCALE_PROMPT"
+# THE ECHO IS NOT A FALLBACK. An ls-remote that cannot answer leaves the base
+# unverifiable, which is precisely the wrong-range risk the resolution removes;
+# the run parks rather than reviewing against a guess.
+t "an unresolvable base parks instead of falling back" \
+  'needs-human "scale review: could not resolve the repo default branch from origin"' \
+  cat "$SCALE_PROMPT"
+t "and the rendered binding is named as the echo it is" \
+  "best-effort echo" cat "$SCALE_PROMPT"
+# The binding still rides the prompt as context (and as MANIFEST_REF, the ref
+# the two snapshots really came from).
+t "the scale base binding still echoes the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
+# THE EMPTY-REF PARK MUST NOT PRECEDE THE BINDING BARRIER. Parking and ending
+# the turn unacknowledged makes the dispatcher's ack wait time out, retire the
+# worker, and end the run abandoned UNDER AN ALREADY-PARKED TICKET — the one
+# state no operator is told about. The check still precedes any fetch; only the
+# action changes.
+t "the empty-ref stop crosses the binding barrier before parking" \
+  "Cross the BINDING BARRIER first" cat "$SCALE_PROMPT"
+nt "the scale prompt carries no PR-resolution order" \
+  "UNRESOLVED-resolve-from-the-PR" cat "$SCALE_PROMPT"
+nt "the scale prompt never went out as mode api" \
+  "resolving what that PR MERGES INTO" cat "$SCALE_PROMPT"
+nt "nothing was left unrendered on the scale prompt" "{{" cat "$SCALE_PROMPT"
+
+# =========================================================================
+# Scenario 7 — the same split from the other side: a URL-shaped `pr` is a
+# leaf's pull request (the entry-edge guard makes leaf `pr` values URLs), so
+# the unchanged api PR variant renders.
+# =========================================================================
+PORT7="$(free_port)"
+FIX7="$(mktemp)"; : > "$FIX7.log"
+cat > "$FIX7" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":63,"ticketId":92,"fence":1,"bearer":"leaf-bearer",
+          "body":"leaf assignment","pr":"https://github.com/o/r/pull/9",
+          "branch":"feat/x","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/63/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX7" "$PORT7" & MOCK7=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 2>/dev/null' EXIT
+wait_for_port "$PORT7" || { echo "FAIL mock server never listened on $PORT7"; exit 1; }
+
+r7="$(apirepo "$PORT7")"
+DH7="$(mktemp -d)"
+OUT7="$(mktemp)"
+( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
+
+LEAF_PROMPT="$DH7/prompt-92-api-qagent.md"
+t "the URL dispatch reports its handoff" "claimed #92" cat "$OUT7"
+t "a URL pr renders the api block" "resolving what that PR MERGES INTO" cat "$LEAF_PROMPT"
+t  "the api mode is the one rendered" '`REVIEW_MODE`: api' cat "$LEAF_PROMPT"
+nt "and a leaf is not the api-scale variant" '`REVIEW_MODE`: api-scale' cat "$LEAF_PROMPT"
+nt "no scale framing reaches a leaf reviewer" "SCALE REVIEWER" cat "$LEAF_PROMPT"
+
+# =========================================================================
+# Scenario 8 — THE DEFAULT BRANCH IS A FACT, NOT A GUESS. In API mode there is
+# no gh to ask, and an api-scale run PROMOTES the answer to BASE_REF: the ref
+# the engine ranges the epic against and the ref both manifests are read from.
+# A clone with no origin/HEAD (every `git clone --single-branch`, every
+# worktree cut from one) used to fall straight through to the literal `main`,
+# so a repo whose default branch is anything else got its epic reviewed — and
+# closed — against a branch it does not merge into. The remote knows, and
+# ls-remote asks it without gh.
+# =========================================================================
+UPSTREAM="$(mkrepo)"
+git -C "$UPSTREAM" checkout -q -b trunk
+git -C "$UPSTREAM" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$UPSTREAM" symbolic-ref HEAD refs/heads/trunk
+
+PORT8="$(free_port)"
+FIX8="$(mktemp)"; : > "$FIX8.log"
+cat > "$FIX8" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":71,"ticketId":77,"fence":1,"bearer":"trunk-bearer",
+          "body":"epic assignment","pr":"5150","branch":"epic/e7-integration",
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX8" "$PORT8" & MOCK8=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 2>/dev/null' EXIT
+wait_for_port "$PORT8" || { echo "FAIL mock server never listened on $PORT8"; exit 1; }
+
+r8="$(apirepo "$PORT8")"
+# An origin that HAS a default branch, and a clone that has never learned it:
+# no fetch, so refs/remotes/origin/HEAD does not exist locally.
+git -C "$r8" remote add origin "$UPSTREAM"
+[ -z "$(git -C "$r8" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || true)" ] \
+  || { echo "FAIL scenario 8 precondition: the clone already knows origin/HEAD"; exit 1; }
+DH8="$(mktemp -d)"
+OUT8="$(mktemp)"
+( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH8" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r8" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
+
+TRUNK_PROMPT="$DH8/prompt-77-api-qagent.md"
+t "the dispatch ran" "claimed #77 run=71" cat "$OUT8"
+t "the remote's default branch becomes the epic's base" '`BASE_REF`: trunk' cat "$TRUNK_PROMPT"
+nt "the literal main guess never reaches the worker" '`BASE_REF`: main' cat "$TRUNK_PROMPT"
+t "and the worker is still ordered to resolve the base for itself" \
+  "git ls-remote --symref origin HEAD" cat "$TRUNK_PROMPT"
+nt "so no rendered branch name is baked into the base fetch" \
+  "+refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
+t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
+nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
 
 finish

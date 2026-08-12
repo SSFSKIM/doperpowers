@@ -33,7 +33,7 @@
 # the body.
 #
 # Prints "<number> <url>" — then YOU flesh out the pre-spec body:
-#   gh issue edit <number> --body-file <file>
+#   board-body.sh <number> --body-file <file>   (meta-preserving; both bindings)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -74,10 +74,7 @@ if [ "$BOARD_BINDING" = api ]; then
   T_STATE_EXPLICIT="$state_explicit" T_NOTE="$note" T_PARENT="$parent" \
   T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" T_BODY_FILE="$body_file" \
   T_REPAIR="$repair_path" _api_py - <<'PY'
-import contextlib
-import io
 import os
-import sys
 import _board_api as A
 env = os.environ
 title = " ".join(env["T_TITLE"].split())
@@ -89,7 +86,8 @@ body = open(env["T_BODY_FILE"]).read() if env["T_BODY_FILE"] else ""
 note = env["T_NOTE"]
 state = env["T_STATE"]
 explicit = env["T_STATE_EXPLICIT"] == "1"
-# No API note field for the birth question (arkho#7): the body head carries it.
+# The note rides the real API note field for park-outcome births (arkho#7
+# shipped it); a non-park note rides the body head (see below).
 # The condition is about which births can END UP parked, not which state was
 # asked for. An IMPLICIT birth has no requested state at all — `state` here is
 # only the shell's default — and the server decides: an env-issue inverts to
@@ -97,16 +95,17 @@ explicit = env["T_STATE_EXPLICIT"] == "1"
 # births by outcome, and gh mode makes the note MANDATORY on the first of them,
 # so keying on the requested state discarded required human input. An EXPLICIT
 # birth is the registrar naming the lane, and only the park states there make
-# the note a question the body must carry.
+# the note a standing question rather than an aside.
 PARK_BIRTHS = ("needs-human", "needs-info", "interactive-preferred")
 # A PARK IS A QUESTION, and a question with no text is not one. gh mode makes
 # the note mandatory for every park birth and for the implicit env-issue
-# inversion; A1 falls back to the TITLE as the decision question when the body
-# is empty, so the same call produced a park whose standing question was a
-# ticket name. Enforced here because the server cannot tell the two apart.
+# inversion; A1 falls back to body then TITLE, so the same call produced a
+# park whose standing question was a ticket name. Enforced here because the
+# server cannot tell the two apart.
 if explicit and state in PARK_BIRTHS and not note and not body:
     A.die("--note is required for state %s — it is the question the park stands "
-          "on (or pass --body-file, whose head A1 reads as that question)" % state)
+          "on (or pass --body-file — A1 falls back to the whole body, then the "
+          "title, as the standing question)" % state)
 if (not explicit and env["T_CATEGORY"] == "env-issue"
         and not note and not body and not env["T_REPAIR"]):
     A.die("an env-issue defaults to needs-human and requires --note naming the "
@@ -122,9 +121,11 @@ if (not explicit and env["T_CATEGORY"] == "env-issue"
 # the security contract itself).
 #
 # The RULING is mirrored; the skeleton is not. A1's body IS the assignment the
-# claim hands the worker, and this client has no body-edit route (arkho#7) — so
-# seeding a skeleton would ship an assignment nobody can fill and, worse, make
-# the park question the skeleton's own text. An EXPLICITLY EMPTY --body-file is
+# claim hands the worker at claim time — so seeding a skeleton would make the
+# park question the skeleton's own text and ship a dispatchable assignment that
+# says nothing. (A body-edit route exists — board-body.sh — but a skeleton that
+# must be edited before dispatch is a skeleton that should not be born.)
+# An EXPLICITLY EMPTY --body-file is
 # the registrar saying so, exactly as in gh mode, and is left alone.
 if not body and not env["T_BODY_FILE"]:
     if explicit and state in ("ready-for-architect", "ready-for-implementer"):
@@ -140,7 +141,19 @@ if not body and not env["T_BODY_FILE"]:
         if not note:
             note = ("registered with no body — re-register with --body-file once "
                     "the spec exists, then board-transition.sh to its lane state")
-if note and (not explicit or state in PARK_BIRTHS):
+# THE NOTE'S TRANSPORT DEPENDS ON THE OUTCOME, which this client already
+# computes (the explicit/PARK_BIRTHS/env-issue logic above mirrors the
+# server's birthState). A park-outcome birth sends the real `note` field
+# (arkho#7): the question travels verbatim as park_note and the body stays
+# the statement of work. A non-park note is `note-not-applicable` to the
+# server — but silently losing the argument is worse than either answer, so
+# it rides the body head, as the implicit path always did. NOT a follow-up
+# comment: registration commits first (a failed comment loses the note
+# behind `duplicate` on retry), and a run registering a child may not
+# comment on it at all.
+park_outcome = (state in PARK_BIRTHS if explicit
+                else env["T_CATEGORY"] == "env-issue")
+if note and not park_outcome:
     body = note + ("\n\n" + body if body else "")
 
 
@@ -156,6 +169,8 @@ payload = {"title": title, "category": CATEGORY_MAP[env["T_CATEGORY"]],
            "priority": env["T_PRIORITY"]}
 if explicit:
     payload["birth"] = state
+if note and park_outcome:
+    payload["note"] = note
 if body:
     payload["body"] = body
 if env["T_REPAIR"]:
@@ -166,27 +181,7 @@ if env["T_SPAWNED"]:
     payload["spawnedBy"] = ref(env["T_SPAWNED"])
 if env["T_BLOCKED"]:
     payload["blockedBy"] = [ref(b) for b in env["T_BLOCKED"].split(",") if b]
-# The pointer below is a claim about CANON, so it may only ride the server
-# saying so. Every refusal and every outage leaves the same local shape — a
-# SystemExit out of the client — and the identifier lives in the message the
-# client already printed, so capture that stream and re-emit it verbatim.
-err = io.StringIO()
-try:
-    with contextlib.redirect_stderr(err):
-        out = A.register(payload)
-except BaseException:
-    sys.stderr.write(err.getvalue())
-    sys.stderr.flush()
-    # A spike birth into ready-for-architect is a known canon divergence — but
-    # only when the server actually refused it as one. A 500, an auth reject or
-    # a dead socket is an outage, and blaming divergence for it sends the reader
-    # to the wrong ticket.
-    if ("illegal-birth" in err.getvalue()
-            and env["T_CATEGORY"] == "spike" and state == "ready-for-architect"):
-        print("note: design-first spikes are gh-only until the arkho#7 ruling "
-              "(https://github.com/SSFSKIM/arkho/issues/7)", flush=True)
-    raise
-sys.stderr.write(err.getvalue())
+out = A.register(payload)
 print("%s %s/tickets/%s" % (out["id"], os.environ["BOARD_API_URL"], out["id"]))
 PY
   _rerender_if_serving

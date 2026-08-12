@@ -110,9 +110,13 @@ file is a legal edit — clearing the statement of work).
   erase keys a newer version introduced and reformat noncanonical
   blocks. A body-edit verb has no business interpreting the meta at
   all — it replaces the prose and carries the machine block through
-  untouched. This is the missing safe counterpart to the documented
-  "flesh out the body with `gh issue edit`" flow, which clobbers the
-  `board:meta` block today. gh mode has no ownership guard (parity with
+  untouched — anchored on the RIGHTMOST `META_RE` match, because
+  `re.search` is leftmost-first and the pattern's lazy middle backtracks
+  across prose to the trailing `-->`, so a first-match offset would
+  splice from a marker-like example quoted in the prose (measured:
+  offset 29, inside the fake block, on the guard fixture). This is the
+  missing safe counterpart to the documented "flesh out the body with
+  `gh issue edit`" flow, which clobbers the `board:meta` block today. gh mode has no ownership guard (parity with
   existing gh-mode reality, where nothing stops a body edit; the api
   guard is a server invariant, not a client one).
 
@@ -198,9 +202,16 @@ them at dispatch:
   **explicit empty-binding check before the fetch**, not through fetch
   failure: bare `git fetch origin` with an empty ref can SUCCEED
   (configured refs), deferring the failure to a checkout of `origin/`
-  with no park note naming the real gap. The no-aggregate-range
-  fallback (per-child ranges from the closure package) remains the
-  worker-side degradation the Scale review section already defines.
+  with no park note naming the real gap. Under api-scale a BRANCHLESS
+  epic therefore PARKS — the gh path's no-aggregate-range fallback
+  (per-child ranges from the closure package, `SCALE_RANGE_NOTE`,
+  pre-fetched pull refs) has no api twin, and the empty-ref check
+  catches exactly the claim such an epic produces (an architect records
+  `--branch` only when the composition has an integration ref). The two
+  clauses this section previously held simultaneously — "empty branch
+  parks" and "the per-child fallback remains" — were contradictory;
+  park wins as the amended, safe instruction, and per-child scale
+  review on an API board is a **deferred capability** (§Deferred).
 - `SKILL.md`'s api-mode entry section: the "an event id, not a URL →
   NOT executable … park needs-human" paragraph is replaced with the
   scale-variant entry: `CLOSURE_PACKAGE` / `INTEGRATION_REF` bindings
@@ -258,10 +269,27 @@ the line with no extra work; the meta stamp reaches it through
   client-rederived cue would tell an operator a claimable ticket is
   waiting. `board-list.sh` already declines this exact rederivation in
   api mode; the map does the same, and its table says eligibility is
-  the server's answer. The docstring's caveat is rewritten to the
-  remaining honest gaps: `spawned_by`, PR linkage, URL, and timestamps
-  are still not projected, so spawned-by edges don't render and nodes
-  carry no links/ages.
+  the server's answer. The cue's whole surface goes silent together
+  (Task 8 flow-back): the `waiting: #N` label suffix is the same
+  client-rederived blocker claim and is gated off with it, and the
+  dispatchable card class becomes `s_lane` (in neither CLASS nor BADGE)
+  so the template's `s_wait` badge — literal text "waiting" — cannot
+  keep asserting what the prose stopped claiming. The honesty note
+  lives in BOARD.md (BOARD.html is template+JSON, no prose slot). The
+  docstring's caveat names the remaining honest gaps — corrected by
+  review: the projection DOES carry `pr_url` (it renders); what is
+  missing is the GitHub-linked `prs` list and merge state (so no
+  close-candidate derivation), `spawned_by`, issue URLs, and
+  timestamps.
+
+### Deferred
+
+- **Per-child scale review under api-scale** (Task 6 flow-back): a
+  branchless recomposition epic (integration branch deleted as children
+  merged) parks needs-human on an API board; gh mode reviews it via
+  closure-package per-child ranges. Needs: the dispatcher reading the
+  closure package at claim time (or the worker deriving ranges from it)
+  plus pull-ref fetching — build when a real API board hits the park.
 
 ### Out of scope (stays on dp#51)
 
@@ -429,9 +457,51 @@ _(maintained during implementation)_
   killed the map cue. A run registering a child cannot comment on it —
   which killed the non-park-note-as-comment design.
 
+- (Task 4) The v1.2 fix itself carried a false premise: `META_RE.search`
+  is NOT protected by its end-anchor — leftmost-first matching with a
+  lazy middle means a prose-quoted marker becomes the match start. The
+  shipped splice walks to the RIGHTMOST match. Same investigation
+  surfaced a LIVE gh-mode bug outside this scope: `_board.strip_meta`
+  (and everything on it — `update_meta`, so every `branch:`/`pr:`/
+  `parent-pin:` write) truncates any body whose prose quotes a
+  `<!-- board:meta` marker. Filed as its own ticket; `board-body.sh` is
+  currently the only immune meta-writer.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped 2026-08-12 on branch `dp51-a1-consumption` (10 tasks,
+subagent-driven, opus workers): all eight consumption items landed —
+four human verbs bound (edges/reparent, relates, priority, plus the new
+both-modes `board-body.sh`), register's real `note` field with the
+non-park body-head rule, the `api-scale` review variant with
+dispatcher-split bindings and worker-owned positioning, successor
+`parentPin` into meta + prompt, and read parity (show columns, map
+edges, eligibility surfaces silenced across ALL consumers). Suites:
+13-file unit tier + 8-drill integration tier + gh parity + reviewing-prs
+all green; every one of the eight unit-fixture refusal codes confirmed
+against the real service. The R1 headline was proven END-TO-END ON
+PRODUCTION: scratch leaf #7 driven register → in-progress → in-review
+(URL pr) → qagent claim (run 5, `pr`/`branch` bindings echoed) →
+run-actor `done` accepted; scratch principal minted and deleted, run
+closed by the phase end.
+
+Review yield (what the loop caught that would have shipped): the v1.2
+"fixed" splice was itself wrong (leftmost-first regex — Task 4 walked to
+the rightmost match) and the investigation surfaced a LIVE gh-mode
+truncation bug (dp#60); the killed ELIGIBLE cue survived as a "waiting"
+badge one surface over (Task 8); the api-scale bootstrap had three
+narrow-clone/ordering holes (final panel + convergence: FETCH_HEAD
+checkout, explicit-refspec base fetch, park-after-barrier); a hot-reload
+filter could blank an api board with no control to clear it. Two
+pre-existing drills had pinned refusal PROSE and broke when arkho grew
+diagnostic messages — repaired to pin identifiers.
+
+Gaps/known boundaries: branchless epics park under api-scale (per-child
+fallback deferred, §Deferred); BOARD.html's api eligibility chip now
+self-gates but map spawned-by/PR-list/timestamps remain unprojected;
+`_stamp_lane`'s empty-lane path skips the pin stamp (documented — the
+prompt carries it regardless); dp#51's non-consumption deferrals remain
+open on the issue.
 
 ## Revision Notes
 
@@ -448,6 +518,12 @@ Pending — written at finish.
   raw-splice gh body edit, `_stamp_lane` as the parent-pin stamp point,
   park-question acceptance via the decisions queue, no ELIGIBLE cue on
   api map nodes.
+- v1.2.1 (2026-08-11, Task 2 flow-back): §1's "print the same move
+  lines the gh half prints" is refined by construction — api mode prints
+  the committed op only, in a deliberately SHORTER line: no `(was …)`
+  clause on reparent (the old parent is unknowable without a read the
+  thin client refuses) and no derived sweep lines (already §1's rule).
+  `#a: parent = #b`, `#a: parent cleared` are the canonical api forms.
 - v1.2 (2026-08-11): codex plan review (5 findings, all adopted into the
   plan): trailing-block splice via META_RE byte offsets (a first-marker
   find corrupts bodies quoting a marker-like example); explicit
@@ -457,3 +533,15 @@ Pending — written at finish.
   scale/URL dispatch test scenarios isolated and lifecycle-complete
   (bind asserted, not just prompt text); the ELIGIBLE kill covers all
   three consumers (label, `s_elig` class, serialized flag).
+- v1.2.2 (2026-08-12, post-PR#61 codex review flow-back): §6's api-scale
+  base is no longer the dispatcher's `DEFAULT_BRANCH` as authority — the
+  resolution ladder can settle on a stale local `origin/HEAD` or, on a
+  gh-less machine where `ls-remote` also fails, a literal `main` guess,
+  and a guessed base whose branch exists reviews (and can close) the
+  epic against the wrong range. The worker now resolves the true default
+  from `git ls-remote --symref origin HEAD` before its fetches — the
+  same worker-resolves-base symmetry the PR variant already had — and
+  parks needs-human when that resolution fails, never falling back; the
+  rendered `BASE_REF` is an advisory echo. (Fix 9542ee3c; the review's
+  other finding, a trap-quoting claim in board-body.sh, was refuted
+  byte-level and by the passing spool-cleanup assertion.)

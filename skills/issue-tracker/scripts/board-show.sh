@@ -25,9 +25,16 @@ import _board_api as A
 tid = os.environ["T_ID"].lstrip("#")
 for t in A.tickets(principal="automation"):
     if str(t["id"]) == tid:
-        print("#%s %s %s %s  owner_run=%s plan=%s pr=%s" %
+        # The projection carries branch and both edge arrays (arkho#7); this
+        # header is the only place API mode shows them. No edges is an ordinary
+        # state, so an empty array prints as [] rather than dropping the column.
+        print("#%s %s %s %s  owner_run=%s plan=%s pr=%s branch=%s "
+              "blocked_by=[%s] relates=[%s]" %
               (t["id"], t["state"], t.get("priority") or "-", t["title"],
-               t.get("owner_run"), t.get("plan"), t.get("pr_url")))
+               t.get("owner_run"), t.get("plan"), t.get("pr_url"),
+               t.get("branch"),
+               " ".join(str(b) for b in t.get("blocked_by") or []),
+               " ".join(str(x) for x in t.get("relates") or [])))
         break
 else:
     A.die("no ticket #%s" % tid)

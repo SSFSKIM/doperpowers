@@ -86,6 +86,7 @@ tests=(
     "board-api/test-client-core.sh"
     "board-api/test-read-verbs.sh"
     "board-api/test-register-transition.sh"
+    "board-api/test-edge-verbs.sh"
     "board-api/test-comment.sh"
     "board-api/test-answer.sh"
     "board-api/test-bind.sh"
@@ -96,7 +97,7 @@ tests=(
     # The integration tier carries its OWN gate rather than living under
     # --integration: it needs $ARKHO_DIR plus a container runtime for the
     # scratch Postgres, and skips loudly (exit 0) when either is missing. On a
-    # machine that has them the smoke test is ~20s and the five fast drills are
+    # machine that has them the smoke test is ~20s and the six fast drills are
     # ~30s each — each boots and tears down its own scratch database, so they
     # are independent in any order. test-lease-renewal.sh is the outlier at
     # ~4 minutes: its subject IS the clock (A1's write-freshness window is 120s
@@ -108,6 +109,7 @@ tests=(
     "board-api/integration/test-crash-boundaries.sh"
     "board-api/integration/test-resume-first.sh"
     "board-api/integration/test-escalation.sh"
+    "board-api/integration/test-human-verbs.sh"
     "board-api/integration/test-lease-renewal.sh"
 )
 

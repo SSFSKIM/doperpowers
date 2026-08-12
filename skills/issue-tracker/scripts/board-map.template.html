@@ -188,9 +188,16 @@
   // All payload-derived state lives here so a hot reload can swap in a fresh
   // snapshot and re-render in place — the UI state above (view, filters,
   // collapse set, pan/zoom) deliberately survives the swap.
-  var BOARD, nodeById, epicById, KB_STATES;
+  var BOARD, nodeById, epicById, KB_STATES, ELIG_KNOWN;
   function bindData(payload) {
     BOARD = payload; nodeById = {}; epicById = {};
+    // Does this snapshot know about eligibility at all? The api renderer omits
+    // the key rather than asserting a false it cannot back (the server owns
+    // that predicate), so the surfaces that would report on it — the header
+    // count and the ELIGIBLE-only filter — go away instead of reading "0
+    // eligible" over a board full of claimable tickets. Re-derived per
+    // snapshot so a hot reload between bindings lands on the right surface.
+    ELIG_KNOWN = BOARD.nodes.some(function (n) { return "eligible" in n; });
     BOARD.nodes.forEach(function (n) { nodeById[n.id] = n; });
     BOARD.epics.forEach(function (e) { epicById[e.id] = e; });
     // Kanban columns: the board is GitHub-derived, so a snapshot can carry
@@ -247,7 +254,15 @@
     });
     return (outer[0] || hit[0]).id;
   }
-  function hiddenBy(n) { return hiddenStates[n.state] || (eligibleOnly && !n.eligible); }
+  // ELIGIBLE-only is gated on ELIG_KNOWN, not just on its own toggle: filters
+  // survive a hot reload, so a filter armed under a gh snapshot is still armed
+  // when an api one lands — and every api node omits `eligible`, so an ungated
+  // test would hide the entire board while buildChips() has already dropped the
+  // chip that could clear it. Unknown eligibility simply stops filtering; the
+  // toggle keeps its value and resumes if a gh snapshot comes back.
+  function hiddenBy(n) {
+    return hiddenStates[n.state] || (ELIG_KNOWN && eligibleOnly && !n.eligible);
+  }
   function bbox(ids) {
     var xs = ids.map(function (i) { return nodeById[i].x; });
     var ys = ids.map(function (i) { return nodeById[i].y; });
@@ -562,7 +577,8 @@
     document.getElementById("progfill").style.width = (total ? Math.round(100 * c.done / total) : 0) + "%";
     document.getElementById("progtxt").textContent = total ? c.done + "/" + total + " done" : "empty board";
     document.getElementById("hcounts").textContent =
-      c.prog + " running · " + c.rev + " review · " + c.elig + " eligible · "
+      c.prog + " running · " + c.rev + " review · "
+      + (ELIG_KNOWN ? c.elig + " eligible · " : "")
       + c.needh + " needs-human · " + c.info + " needs-info"
       + (c.cand ? " · " + c.cand + " close?" : "");
   }
@@ -580,6 +596,7 @@
       };
       c.appendChild(b);
     });
+    if (!ELIG_KNOWN) return;   // no node claims eligibility: a filter for it would hide the whole board
     var eb = el("button", "ELIGIBLE only", "chip" + (eligibleOnly ? " on" : ""));
     eb.onclick = function () { eligibleOnly = !eligibleOnly; eb.classList.toggle("on", eligibleOnly); renderAll(); };
     c.appendChild(eb);

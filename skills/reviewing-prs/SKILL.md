@@ -20,13 +20,15 @@ and comments); the repo manifests (risk surfaces, repo facts) ride your
 dispatch prompt as BASE-ref snapshots the PR cannot edit — use those
 copies, never the worktree's.
 
-When your `REVIEW_MODE` binding reads `api` you were not dispatched from a
+When your `REVIEW_MODE` binding reads `api` or `api-scale` you were not
+dispatched from a
 PR at all: the board claimed you onto ticket #{{ISSUE_NUMBER}} in its
 `qagent` lane, so there is no `PR_NUMBER` / `PR_URL` / `HEAD_SHA` binding and
 no `gh issue view` — every board read and write goes through
 {{BOARD_SCRIPTS}}, which speaks for your run. Your entry artifact is the
 ticket's `pr` value, printed by
-`{{BOARD_SCRIPTS}}/board-show.sh {{ISSUE_NUMBER}}`, and it decides which
+`{{BOARD_SCRIPTS}}/board-show.sh {{ISSUE_NUMBER}}` (the dispatcher read it
+first — `api-scale` IS the second bullet), and it decides which
 variant of this protocol you run:
 
 - **a pull-request URL** → the PR variant, exactly as written below. Resolve
@@ -63,15 +65,20 @@ variant of this protocol you run:
   `board-comment.sh --kind`), while the GitHub half — the PR, its diff, its
   review comments, the push chain — is still plain `gh` and `git`.
 - **an event id, not a URL** → the ticket is an epic carrying a
-  closure-package event, i.e. the scale review. That variant is NOT
-  executable under an API board today: it needs `CLOSURE_PACKAGE` and
-  `INTEGRATION_REF` bindings the claim does not carry, and the board exposes
-  no branch column to derive the integration ref from. Do not improvise one.
-  Park the ticket with `board-transition.sh {{ISSUE_NUMBER}} needs-human` and
-  a note naming this gap; a scale review belongs on a gh-bound repo until the
-  bindings exist.
+  closure-package event: the scale review. Your dispatch carried the
+  bindings the claim response holds — `CLOSURE_PACKAGE` (the event id
+  your run was stamped with) and `INTEGRATION_REF` (the epic's
+  integration branch) — and your bootstrap's positioning order (fetch
+  and check out the integration ref; resolve the base from origin's own
+  HEAD symref, and use that name wherever `{{BASE_REF}}` appears)
+  applies before ORIENT. **Scale review (recomposition epics)** below
+  governs your entry artifact and verdicts: `done` on clean — the
+  qagent epic close, legal with your run's stamped package — or a
+  corrective child plus `ready-for-architect`, every board write
+  through {{BOARD_SCRIPTS}}.
 
-When your `REVIEW_MODE` binding reads `scale` there is no PR at all: you
+When your `REVIEW_MODE` binding reads `scale` or `api-scale` there is no PR
+at all: you
 are the scale reviewer of recomposition epic #{{ISSUE_NUMBER}}, and
 **Scale review (recomposition epics)** below governs your entry
 artifact and your verdicts. Read that section before ORIENT — every step
@@ -451,7 +458,12 @@ end your turn with the park intact.
 
 A `review-epic-<n>` dispatch is the E2 scale review: the ticket is an
 EPIC in in-review whose `pr:` meta is a closure package, not a PR (your
-`CLOSURE_PACKAGE` binding names it). Same engine machinery — whole-range
+`CLOSURE_PACKAGE` binding names it). An `api-scale` claim off the board's
+qagent lane is that same review on a board-API repo — this section
+governs it unchanged, except that positioning the worktree at the
+integration ref — and resolving the base it ranges against — is yours to
+do, as your bootstrap ordered.
+Same engine machinery — whole-range
 codex runs, lenses derived from the cross-child contracts: your worktree
 sits at the epic's integration branch and START ENGINE's
 `--base origin/{{BASE_REF}}` reviews it against the branch it merges

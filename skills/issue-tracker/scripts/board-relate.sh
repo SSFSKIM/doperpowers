@@ -7,14 +7,11 @@
 # The edge is annotation only — it never affects eligibility. It is stored in
 # BOTH issues' board:meta blocks (relates-to) so either ticket's board-show
 # sees it; board-map dedupes the pair and renders it once as a dotted line.
+# API mode writes the normalized server edge with one call.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
-
-# No API-mode counterpart yet (A1 route gap), so refuse rather than silently
-# writing through a gh path that a board-API repo does not have.
-_refuse_no_api_route "recording a relates-to link"
 
 [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
 a="$1" b="$2"
@@ -26,6 +23,27 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1" ;;
   esac
 done
+
+# API mode: one call to endpoint A — the server stores the edge normalized
+# (least, greatest) and both projections report it, so the gh half's
+# two-issue write has no counterpart here. Self-edge and duplicate/no-such
+# refusals are the server's, surfaced verbatim.
+if [ "$BOARD_BINDING" = api ]; then
+  T_A="$a" T_B="$b" T_CUT="$cut" _api_py - <<'PY'
+import os
+import _board_api as A
+
+a, b = A.ref(os.environ["T_A"]), A.ref(os.environ["T_B"])
+if os.environ["T_CUT"] == "1":
+    A.relate(a, "cut", b)
+    print("cut: #%s -- #%s" % (a, b))
+else:
+    A.relate(a, "add", b)
+    print("related: #%s -- #%s" % (a, b))
+PY
+  _rerender_if_serving
+  exit 0
+fi
 
 T_A="$a" T_B="$b" T_CUT="$cut" _py - <<'PY'
 import os
