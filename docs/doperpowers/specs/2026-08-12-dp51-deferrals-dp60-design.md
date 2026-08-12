@@ -510,7 +510,9 @@ scratch copy — discrimination probe, not a committed test).
   encoding schemes (escaping markers) were rejected because
   `parse_meta` line-wise reading makes multi-line values corrupt
   already — normalize CR/LF, die on marker tokens, and the block is
-  clean by construction.
+  clean by construction. (Both clauses superseded: v1.2 widened the
+  normalization to every splitlines() separator; v1.2.1 narrowed the
+  die to the opening marker only — see §1.)
 - **§2 name-inference rung over required-stamp-before-barrier**
   (v1.1) — making the stamp a hard gate before the startup barrier
   turns a bookkeeping write into a spawn blocker (against the
