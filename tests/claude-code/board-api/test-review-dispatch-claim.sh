@@ -596,6 +596,17 @@ t "the scale prompt resolves the base from the remote itself" \
   "git ls-remote --symref origin HEAD" cat "$SCALE_PROMPT"
 t "and fetches the resolved base, not the rendered one" \
   'git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"' cat "$SCALE_PROMPT"
+# THE GUARD IS STRUCTURAL, NOT PROSE. Three unconditional lines let an
+# unresolved base sail through: the base fetch goes out with an empty refspec
+# and the integration fetch/checkout still succeeds on its own, so the sequence
+# exits 0 and the worker positions itself against an unverified base instead of
+# parking. Everything below the resolution therefore hangs off one `&&` chain.
+t "the base resolution gates the fetches structurally" \
+  '[ -n "$BASE" ]' cat "$SCALE_PROMPT"
+t "the base fetch is chained behind that gate" \
+  '&& git fetch origin "+refs/heads/$BASE' cat "$SCALE_PROMPT"
+t "and so is the integration fetch that follows it" \
+  "&& git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
 nt "the rendered base is never baked into the fetch" \
   "+refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
 nt "and never the bare form that may write no tracking ref" \

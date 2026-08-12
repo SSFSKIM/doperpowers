@@ -82,8 +82,9 @@ neither stale-local nor guessed:
 
 ```
 BASE="$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -1)"
-git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
-git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
+[ -n "$BASE" ] \
+  && git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+  && git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
 ```
 
 Use that resolved name wherever this protocol says `BASE_REF` — the
@@ -93,7 +94,11 @@ binding below is the dispatcher's best-effort echo, not the authority:
 its own resolution can settle on a stale local symref or on a literal
 guess, and reviewing an epic against a branch it does not merge into is
 exactly the wrong range. So an empty `$BASE` is the same hard stop as an
-empty integration ref, never a fallback to the echo: cross the BINDING
+empty integration ref, never a fallback to the echo — which is why the
+whole sequence hangs off `[ -n "$BASE" ]` as one chain: run unchained, the
+base fetch would go out with an empty refspec and the integration checkout
+could still succeed on its own, so the sequence would exit 0 with the one
+failure that matters buried in stderr. Cross the BINDING
 BARRIER first, then, before any fetch, park with
 `{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-human "scale review: could not resolve the repo default branch from origin"`
 and end your turn.
