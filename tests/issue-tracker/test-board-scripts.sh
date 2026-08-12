@@ -1882,9 +1882,46 @@ assert_contains "$mig60_body" "the prose after the example survives a migration"
 assert_contains "$mig60_body" "## Success criteria" "…including the headings after it"
 assert_contains "$mig60_body" "branch: feat/marker" "…while still applying the migrated meta"
 
+# The same body shape with the example at the very END of the prose. That one
+# still satisfies META_RE's `\s*$`, so a SECOND strip deletes it as if it were
+# the block: write_body strips, then hands the result to a renderer that strips
+# again. Exactly one strip may happen (task-2 review I1).
+migtail="$(run board-register.sh "Ends with the meta example" bug P2 \
+             --state needs-human --note "waiting on B")"
+migtail="${migtail%% *}"
+# Seeded, not written through --body-file: board-register.sh renders the body,
+# and a renderer strips a trailing example at birth (the same one-strip question,
+# one path over). board-body.sh's raw splice is how a real ticket comes to end
+# with one; here the state is seeded so the drill pins the migration alone.
+MIGTAIL_ID="$migtail" python3 - <<'SEED'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"][os.environ["MIGTAIL_ID"]]["body"] = (
+    "## Problem & intent\n\nThe prose before the example must survive too.\n\n"
+    "The block looks like:\n\n<!-- board:meta\npr: tail-example\n-->\n\n"
+    "<!-- board:meta\nnote: waiting on B\n-->\n")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+SEED
+assert_contains "$(state "s['issues']['$migtail']['body']")" "pr: tail-example" "fixture: the ticket really ends its prose with the quoted example"
+cat > "$LEGACY/board-marker-tail.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Ends with the meta example", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug", "note": null,
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/tail", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $migtail}
+}}
+J
+run board-migrate-gh.sh --board "$LEGACY/board-marker-tail.json" --apply >/dev/null
+migtail_body="$(state "s['issues']['$migtail']['body']")"
+assert_contains "$migtail_body" "pr: tail-example" "a quoted example ENDING the prose survives the migration (one strip, not two)"
+assert_contains "$migtail_body" "The prose before the example must survive too." "…along with the prose before it"
+assert_contains "$migtail_body" "branch: feat/tail" "…while still applying the migrated meta"
+
 # A legacy note that quotes the OPENING marker is unrepresentable in the block.
-# It dies LOUDLY mid-migration (the operator fixes the note and re-runs) rather
-# than minting a second marker inside the real block — no special handling.
+# It dies LOUDLY mid-migration rather than minting a second marker inside the
+# real block — no special handling. (Recovery is a re-run after the operator
+# fixes the note; the migration's idempotence carries that, untested here.)
 cat > "$LEGACY/board-marker-note.json" <<J
 {"version": 1, "next_id": 2, "tickets": {
   "T1": {"title": "Documents the meta block (migrated)", "md": "tickets/T4.md",
@@ -1896,6 +1933,11 @@ cat > "$LEGACY/board-marker-note.json" <<J
 }}
 J
 assert_fails run board-migrate-gh.sh --board "$LEGACY/board-marker-note.json" --apply
+# Pin the REASON: rc≠0 alone would also be satisfied by a malformed heredoc or a
+# future argument-parsing change.
+mig_die_out="$(run board-migrate-gh.sh --board "$LEGACY/board-marker-note.json" --apply 2>&1 || true)"
+assert_contains "$mig_die_out" "cannot carry a board:meta marker token" \
+  "…for the grammar's own reason, not an incidental failure"
 assert_equals "$(state "s['issues']['$mig60']['body']")" "$mig60_body" \
   "…and the refused migration left the body untouched"
 

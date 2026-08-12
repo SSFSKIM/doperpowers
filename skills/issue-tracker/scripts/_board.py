@@ -321,15 +321,28 @@ def clean_meta(meta):
     return clean
 
 
-def render_body(body, meta):
-    """Body with its meta block replaced by `meta` (dropped when meta is empty).
-    Everything outside the block is preserved byte-for-byte."""
-    base = strip_meta(body)
+def compose_body(base, meta):
+    """`base` — prose the caller has ALREADY stripped — plus a rendered meta
+    block. Strips nothing.
+
+    Split out of render_body for the caller that builds a new prose before
+    rendering (strip, append, render). Feeding such a base back through a
+    stripping renderer strips twice, and once the first strip is correct the
+    second one lands on prose: a marker-shaped example that happens to END the
+    base still satisfies META_RE's `\\s*$`, so it is deleted as if it were the
+    block (#60 on the migration path, task-2 review I1)."""
+    base = (base or "").rstrip("\n")
     meta = clean_meta(meta)
     if not meta:
         return base + ("\n" if base else "")
     block = "\n".join("%s: %s" % (k, meta[k]) for k in META_KEYS if k in meta)
     return "%s\n\n<!-- board:meta\n%s\n-->\n" % (base, block)
+
+
+def render_body(body, meta):
+    """Body with its meta block replaced by `meta` (dropped when meta is empty).
+    Everything outside the block is preserved byte-for-byte."""
+    return compose_body(strip_meta(body), meta)
 
 
 def _nums(val):

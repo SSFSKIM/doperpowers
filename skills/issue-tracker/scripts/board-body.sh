@@ -67,8 +67,8 @@ new = open(env["T_FILE"]).read()
 # older than whatever wrote them.
 #
 # The block that counts is the LAST one — the helper walks to the rightmost
-# match, and its start never includes META_RE's optional leading newline (see
-# _board.meta_match, #60), which is why the splice normalizes newlines itself.
+# match (see _board.meta_match, #60). Its start never includes META_RE's
+# optional leading newline, so the separator is this splice's to supply.
 m = B.meta_match(old)
 if m:
     # Only the newlines AROUND the block are normalized (to render_body's
