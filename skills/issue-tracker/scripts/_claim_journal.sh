@@ -18,7 +18,8 @@
 #   _claim_lane_cap L            the lane cap to replay that lane under
 #   _claim_drop_journal N        remove a nonce's journal (and its body file)
 #   _claim_retire_worker U       retire a spawned session by uuid
-#   _claim_attempts_clear T      clear ticket T's failed-cycle count
+#   _claim_suppress_dir          print the suppression directory (the sweep's
+#                                failed-cycle counts live beside its records)
 #   _api_py                      the API-client python runner (_binding.sh)
 #   DAEMON_HOME                  registry root
 
@@ -115,10 +116,12 @@ PY
 _reconcile_claims() {
   local actions lines line act nonce lane run extra
   actions="$(T_DHOME="$DAEMON_HOME" T_LANES="$CLAIM_LANES" \
+             T_SUPPRESS="$(_claim_suppress_dir)" \
              T_GRACE="${BOARD_CLAIM_INFLIGHT_GRACE:-120}" python3 - <<'PY'
 import glob, json, os, time
 home = os.environ["T_DHOME"]
 lanes = set(os.environ["T_LANES"].split(","))
+suppress = os.environ.get("T_SUPPRESS") or ""
 grace = float(os.environ["T_GRACE"])
 # run id -> the uuid of the meta carrying it. The uuid is needed by the
 # `stranded` arm, which has a worker to retire and not merely a run to end.
@@ -178,8 +181,12 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     run = j.get("run_id")
     daemon = j.get("daemon") or ""
     control = j.get("control") or ""
-    if (run and str(run) in live and control and not alive(j.get("pid"))
-            and not os.path.exists(os.path.join(control, "bind-ready.json.ack"))):
+    # A journalled control dir with no ack in it is a handover that has not
+    # crossed its startup barrier — the review lane's durability line. Until it
+    # does, the delivery may still be undone (see the two arms below).
+    ack_pending = bool(control) and not os.path.exists(
+        os.path.join(control, "bind-ready.json.ack"))
+    if run and str(run) in live and ack_pending and not alive(j.get("pid")):
         # A BOUND RUN WHOSE WORKER NEVER CROSSED ITS STARTUP BARRIER. The
         # review handover is bind -> publish the barrier -> wait for the ack,
         # and the journal is marked only after the ack; a crash before the
@@ -198,17 +205,34 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         # outlives that grace while it waits for the ack. Pid reuse errs into
         # `repaired`, which sends nothing.
         print("stranded\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, live[str(run)]))
+    elif run and str(run) in live and ack_pending:
+        # The same shape with the writer STILL ALIVE: a peer between its bind
+        # and the ack it is waiting on. Sealing that journal would close a
+        # record somebody else is still writing, and the delivery is not
+        # durable yet — if the ack never lands, the arm above retires the
+        # worker and releases the run. Left entirely alone, counter included.
+        print("inflight\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, j.get("pid")))
     elif run and str(run) in live:
         # the spawn DID complete — its worker is in the registry — and only
         # the marker write was lost. Repair it in place; nothing to send.
+        #
+        # THE RESET COMES FIRST AND THE SEAL SECOND. A sealed journal is
+        # skipped by every later pass, so anything left until after that write
+        # happens once or never: the dispatcher clears the ticket's
+        # failed-cycle count one line ahead of its own marker write, and this
+        # arm — the crash that lost that write — does the same. Both steps are
+        # idempotent, so a crash between them costs nothing: the journal is
+        # still open and the next pass redoes both.
+        ticket = str(j.get("ticket") or "")
+        if ticket and suppress:
+            try:
+                os.remove(os.path.join(suppress, ".attempts-" + ticket))
+            except OSError:
+                pass
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
-        # The ticket rides along: this arm is where a delivery is CONFIRMED,
-        # and the delivering dispatcher clears the ticket failed-cycle count
-        # one line ahead of the marker write this arm is repairing.
-        print("repaired\x1f%s\x1f%s\x1f%s\x1f%s"
-              % (nonce, lane, run, j.get("ticket") or ""))
+        print("repaired\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, ticket))
     elif run and daemon and daemon in names:
         # A session by that name exists but no meta carries the run: the spawn
         # landed and the bind did not. The worker is alive with its bearer in
@@ -244,14 +268,9 @@ PY
       unreadable)
         echo "reconcile: unreadable json at $nonce — left untouched; no claim under it can be reconciled until it is repaired or removed by hand" >&2 ;;
       repaired)
-        echo "reconcile: $nonce did spawn (run $run) — marker repaired"
-        # THE RESET IS PART OF THE DELIVERY, so it is recovered with it. The
-        # dispatcher clears the count just before the marker write, and this
-        # arm is exactly the crash that lost that write — without the clear
-        # here a durable recovery keeps a stale count, and a much later,
-        # unrelated fault escalates rungs early. Idempotent: an already-cleared
-        # count is an rm of nothing.
-        [ -z "$extra" ] || _claim_attempts_clear "$extra" ;;
+        # The failed-cycle reset that belongs to this repair already ran, in
+        # the same process, ahead of the seal — see the arm above.
+        echo "reconcile: $nonce did spawn (run $run) — marker repaired${extra:+ (#$extra)}" ;;
       stranded)
         # The one handoff crash that leaves a LIVE-LOOKING run nobody will ever
         # work: bound, but the startup barrier never opened. Retire the worker

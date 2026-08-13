@@ -1376,7 +1376,7 @@ _api_tick_ledgered() {
 # (_api_mark_spawned), so the only crash that can skip it is the one
 # reconciliation still sees (`repaired`), which clears it there.
 _api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
-_claim_attempts_clear() { _api_attempts_clear "$1"; }
+_claim_suppress_dir() { _api_suppress_dir; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true

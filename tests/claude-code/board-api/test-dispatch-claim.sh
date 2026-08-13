@@ -607,4 +607,46 @@ nt "so no worker is spawned for it" "ARGS name=33"  \
 journal7() { ls "$DH7/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
 t  "and the journal is dropped with it"  "journal dropped"  journal7
 
+# =========================================================================
+# Scenario 8 — THE RESET LANDS BEFORE THE SEAL. Reconciliation's `repaired`
+# arm marks the journal spawn_completed, and a sealed journal is skipped by
+# every later pass — so anything left to do AFTER that write is done once or
+# never. With the failed-cycle reset on the far side of it, a crash in
+# between left a durable recovery beside a stale counter with nothing that
+# could ever revisit it: the early-escalation bug, one window later.
+# Reset-then-seal is crash-safe instead — both steps are idempotent, and a
+# crash between them leaves the journal open for the next pass to redo both.
+# The seal is made to FAIL here (read-only journal), which is the same
+# window: the reset must already be durable when the write does not land.
+# =========================================================================
+PORT8="$(free_port)"
+FIX8="$(mktemp)"; : > "$FIX8.log"
+cat > "$FIX8" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX8" "$PORT8" & MOCK8=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 2>/dev/null' EXIT
+wait_for_port "$PORT8" || { echo "FAIL mock server never listened on $PORT8"; exit 1; }
+
+r8="$(apirepo "$PORT8")"
+DH8="$(mktemp -d)"; mkdir -p "$DH8/board-claims" "$DH8/board-suppress"
+printf '{"uuid":"eeee0001","current":"eeee0001","name":"15-api-implementer","status":"working","run_id":43,"lane":"implementer","ticket":"15"}' \
+  > "$DH8/eeee0001.json"
+printf '{"lane": "implementer", "run_id": 43, "spawn_completed": false, "ticket": "15"}\n' \
+  > "$DH8/board-claims/nonce-i.json"
+chmod 444 "$DH8/board-claims/nonce-i.json"
+echo 2 > "$DH8/board-suppress/.attempts-15"
+OUT8="$(mktemp)"
+( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH8" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r8" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
+chmod 644 "$DH8/board-claims/nonce-i.json"
+
+t  "a seal that never lands still leaves the count cleared" "count cleared" \
+   bash -c "[ -e '$DH8/board-suppress/.attempts-15' ] && echo 'count kept' || echo 'count cleared'"
+t  "and the unsealed journal is left for the next pass to redo" \
+   '"spawn_completed": false'  cat "$DH8/board-claims/nonce-i.json"
+
 finish

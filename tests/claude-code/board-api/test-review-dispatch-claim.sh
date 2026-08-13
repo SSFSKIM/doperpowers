@@ -497,6 +497,22 @@ printf '{"lane": "qagent", "run_id": 71, "spawn_completed": false, "ticket": "42
 printf '{"lane": "qagent", "run_id": 72, "spawn_completed": false}\n' \
   > "$DH4/board-claims/nonce-u.json"
 printf 'undelivered review assignment\n' > "$DH4/board-claims/nonce-u.body.md"
+# (v) THE SAME SHAPE AS (s) WITH A LIVE WRITER: bound, no ack, and the process
+#     that claimed it is still running — a peer between its bind and the ack it
+#     is waiting for. That handover legitimately outlives any mtime grace (the
+#     bound is 120 seconds), so liveness is the only thing that separates it
+#     from (s). It is NOT a completed delivery: if that reviewer never acks,
+#     the peer retires it and releases the run. Reading it as "marker lost"
+#     seals a journal somebody else is still writing and — the reason it is
+#     pinned here — clears the ticket failed-cycle ladder for a delivery that
+#     may be about to be undone.
+CTL_V="$DH4/43-api-qagent-control.inflight"; mkdir -p "$CTL_V"
+printf '{"uuid": "ffff0003", "ticket": "43", "ledger": "x"}\n' > "$CTL_V/bind-ready.json"
+printf '{"uuid":"ffff0003","current":"ffff0003","name":"43-api-qagent","status":"working","run_id":73,"lane":"qagent","ticket":"43"}' \
+  > "$DH4/ffff0003.json"
+printf '{"lane": "qagent", "run_id": 73, "spawn_completed": false, "ticket": "43", "daemon": "43-api-qagent", "control": "%s", "pid": %s}\n' \
+  "$CTL_V" "$$" > "$DH4/board-claims/nonce-v.json"
+mkdir -p "$DH4/board-suppress"; echo 2 > "$DH4/board-suppress/.attempts-43"
 
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -512,6 +528,16 @@ t  "and its run ended so the ticket requeues" '"path": "/runs/70/end"' cat "$FIX
 t  "ended as abandoned"                   '\"reason\": \"abandoned\"'  cat "$FIX4.log"
 gone4() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t  "the journal is dropped"               "gone" gone4 "$DH4/board-claims/nonce-s.json"
+# --- (v) a delivery still waiting on its ack is not a delivery -------------
+t  "a bound handover under a live writer is left in flight" \
+   "is in flight under a live dispatcher"     cat "$OUT4"
+attempts43() { [ -e "$DH4/board-suppress/.attempts-43" ] && echo "count kept" || echo "count cleared"; }
+t  "and its ticket keeps its failed-cycle count until the ack lands" \
+   "count kept"                               attempts43
+t  "its journal is left open for the peer to mark" '"spawn_completed": false' \
+   cat "$DH4/board-claims/nonce-v.json"
+nt "and its run is not ended"    '"path": "/runs/73/end"'   cat "$FIX4.log"
+
 # --- (t) a reviewer that DID cross its barrier is left alone ---------------
 nt "an acked reviewer's run is never ended" '"path": "/runs/71/end"' cat "$FIX4.log"
 nt "and its worker is never retired"        "retire ffff0002"  \
