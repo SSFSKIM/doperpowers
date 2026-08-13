@@ -224,11 +224,23 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         # idempotent, so a crash between them costs nothing: the journal is
         # still open and the next pass redoes both.
         ticket = str(j.get("ticket") or "")
+        failed = ""
         if ticket and suppress:
             try:
                 os.remove(os.path.join(suppress, ".attempts-" + ticket))
-            except OSError:
-                pass
+            except FileNotFoundError:
+                pass                    # nothing standing: the reset is done
+            except OSError as e:
+                # A REMOVAL THAT FAILED IS NOT A REMOVAL — a read-only or
+                # unmounted registry, a permission change. The count is still
+                # standing, and sealing on top of it hides that from every
+                # later pass. Skip the seal: the journal stays open and the
+                # next one retries the pair.
+                failed = e.strerror or str(e)
+        if failed:
+            print("resetfailed\x1f%s\x1f%s\x1f%s\x1f%s %s"
+                  % (nonce, lane, run, ticket, failed))
+            continue
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
@@ -271,6 +283,8 @@ PY
         # The failed-cycle reset that belongs to this repair already ran, in
         # the same process, ahead of the seal — see the arm above.
         echo "reconcile: $nonce did spawn (run $run) — marker repaired${extra:+ (#$extra)}" ;;
+      resetfailed)
+        echo "reconcile: $nonce did spawn (run $run) but the failed-cycle reset failed (#$extra) — the marker is NOT written, so the next pass retries both steps; the ticket would otherwise escalate early on a much later fault" >&2 ;;
       stranded)
         # The one handoff crash that leaves a LIVE-LOOKING run nobody will ever
         # work: bound, but the startup barrier never opened. Retire the worker

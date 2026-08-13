@@ -649,4 +649,44 @@ t  "a seal that never lands still leaves the count cleared" "count cleared" \
 t  "and the unsealed journal is left for the next pass to redo" \
    '"spawn_completed": false'  cat "$DH8/board-claims/nonce-i.json"
 
+# =========================================================================
+# Scenario 9 — A RESET THAT FAILED IS NOT A RESET. Absent is the one benign
+# outcome (nothing to clear); every other removal error — a read-only
+# registry, a permission change, a full or unmounted volume — means the count
+# is still standing, and sealing the journal on top of it hides that from
+# every later pass. So the seal is skipped and the journal stays open: the
+# next pass retries the pair, both steps being idempotent.
+# =========================================================================
+PORT9="$(free_port)"
+FIX9="$(mktemp)"; : > "$FIX9.log"
+cat > "$FIX9" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX9" "$PORT9" & MOCK9=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 2>/dev/null' EXIT
+wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; exit 1; }
+
+r9="$(apirepo "$PORT9")"
+DH9="$(mktemp -d)"; mkdir -p "$DH9/board-claims" "$DH9/board-suppress"
+printf '{"uuid":"eeee0002","current":"eeee0002","name":"16-api-implementer","status":"working","run_id":44,"lane":"implementer","ticket":"16"}' \
+  > "$DH9/eeee0002.json"
+printf '{"lane": "implementer", "run_id": 44, "spawn_completed": false, "ticket": "16"}\n' \
+  > "$DH9/board-claims/nonce-j.json"
+echo 2 > "$DH9/board-suppress/.attempts-16"
+chmod 555 "$DH9/board-suppress"      # an unlink needs write on the DIRECTORY
+OUT9="$(mktemp)"
+( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
+chmod 755 "$DH9/board-suppress"
+
+t  "a failed reset leaves the journal open for the next pass" \
+   '"spawn_completed": false'  cat "$DH9/board-claims/nonce-j.json"
+t  "and says so, naming the ticket whose count still stands" \
+   "failed-cycle reset failed"  cat "$OUT9"
+t  "the count is still there to be retried" "count kept" \
+   bash -c "[ -e '$DH9/board-suppress/.attempts-16' ] && echo 'count kept' || echo 'count cleared'"
+
 finish
