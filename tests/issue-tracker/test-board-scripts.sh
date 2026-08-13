@@ -1018,8 +1018,12 @@ META
 run board-answer.sh "$fb_qa_t" "ship it" >/dev/null
 assert_contains "$(state "s['issues']['$fb_qa_t']['labels']")" "status:in-review" "unrecorded pre-park with a QAGENT role returns to in-review, re-supplying the ticket's own --pr"
 
-# ...and only when there IS a PR to re-supply. No pr: meta means no legal
-# in-review write, so the arm demotes itself rather than dying on the flag.
+# ...and only when there IS a PR to re-supply. With no pr: meta the review
+# lane is unwritable, and the fallback that demoted to in-progress and resumed
+# anyway RE-CREATED the stranding this return exists to prevent: the reviewer
+# wakes in a lane it cannot exit and review-dispatch's stale-reviewer arm
+# retires it, leaving the ticket in-progress with no PR and nobody bound. The
+# park is the safe state — the relay is refused and the ticket stays there.
 out="$(run board-register.sh "QAgent no-PR probe" enhancement P2 --body-file "$SPEC_BODY")"
 fb_qnp_t="${out%% *}"
 run board-transition.sh "$fb_qnp_t" needs-info "need more research" >/dev/null
@@ -1029,9 +1033,15 @@ cat > "$DAEMON_HOME/55555555-1111-2222-3333-444444444444.json" <<META
  "status": "idle", "ticket": "$fb_qnp_t", "cwd": "$WORK",
  "updated": "2026-07-12T00:00:00Z"}
 META
-out="$(run board-answer.sh "$fb_qnp_t" "answer" 2>&1)"
-assert_contains "$out" "no pr: meta" "a QAGENT park on a PR-less ticket warns instead of demanding a link nobody recorded"
-assert_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:in-progress" "the PR-less QAGENT park demotes to in-progress"
+assert_fails run board-answer.sh "$fb_qnp_t" "answer"
+out="$(run board-answer.sh "$fb_qnp_t" --posted 2>&1 || true)"
+assert_contains "$out" "no pr: meta" "the refusal names the meta that is missing"
+assert_contains "$out" "--posted" "…and the re-run that recovers it once the link is restored"
+assert_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:needs-human" "the PR-less QAGENT park STAYS parked — no demotion, no resume"
+assert_not_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:in-progress" "…and never lands in the lane the reviewer cannot exit"
+# The answers are posted before the refusal, so the human loses nothing by
+# fixing the pr: meta and re-running --posted.
+assert_contains "$(state "s['issues']['$fb_qnp_t']['comments'][-1]")" "[answers]" "the answers comment survives the refusal"
 
 # Reviewers bound before the role stamp carry no role: — their deterministic
 # registry name is the only role record they have.

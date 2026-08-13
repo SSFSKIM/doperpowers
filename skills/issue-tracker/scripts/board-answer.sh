@@ -11,10 +11,11 @@
 # its parking lane's in-flight state (pre-park: meta; when absent, the bound
 # worker's own lane from its registry meta — in-design for an Architect,
 # in-review for a QAgent with the ticket's recorded pr: re-supplied,
-# in-progress otherwise), and the bound session is resumed with the answers
-# relayed verbatim — the worker keeps its orientation and re-states its gate
-# verdict before proceeding. No judge is reintroduced: the relay is
-# mechanical, the human is the author, the ticket is the record.
+# in-progress otherwise; a review-lane return with no pr: to re-supply is
+# REFUSED and the ticket stays parked), and the bound session is resumed with
+# the answers relayed verbatim — the worker keeps its orientation and
+# re-states its gate verdict before proceeding. No judge is reintroduced:
+# the relay is mechanical, the human is the author, the ticket is the record.
 #
 # API binding: the park-answer call IS the record (no separate comment), and
 # the RETURN STATE IS THE SERVER'S — it reads the bound run's lane, so none of
@@ -147,7 +148,6 @@ _probe_binding() {
 import glob
 import json
 import os
-import sys
 import _board as B
 
 env = os.environ
@@ -222,17 +222,27 @@ else:
 pr = ""
 if ret == "in-review":
     # in-review is the one return state board-transition will not write on
-    # trust: the ticket must carry a PR link, and only a pre-park: in-review
-    # return may ride the recorded one. This return has no pre-park (that
-    # branch is above), so the link is re-supplied from the ticket's own pr:
-    # meta — and when there is none, the lane is unwritable and the QAgent
-    # falls back to the prior default rather than dying on the flag.
+    # trust: the ticket must carry a PR link, so the link is re-supplied from
+    # the ticket's own pr: meta.
     pr = B.parse_meta(tickets[tid]["body"]).get("pr") or ""
     if not pr:
-        ret = "in-progress"
-        print("relay: #%s — QAGENT return wants in-review but the ticket has "
-              "no pr: meta; falling back to in-progress" % tid,
-              file=sys.stderr)
+        # AND WHEN THERE IS NONE, THE PARK HOLDS. Demoting to in-progress and
+        # resuming looked like the gentle fallback and was the stranding this
+        # whole return exists to prevent: the reviewer wakes on a ticket in a
+        # lane it owns no branch in and cannot exit, review-dispatch's
+        # stale-reviewer arm retires its meta once idle, and the ticket sits
+        # in-progress with no PR and nobody bound. A reviewer-lane ticket with
+        # no pr: is an anomaly — the in-review entry gate stamps it — and an
+        # anomaly pauses rather than guessing. The park is the safe state: the
+        # answers are already posted (that comment lands before this), so the
+        # human loses nothing by fixing the meta and re-running.
+        B.die("#%s returns to the review lane but the ticket carries no pr: "
+              "meta — the relay is REFUSED and #%s stays parked at "
+              "needs-human. Your answers are already on the ticket, so "
+              "nothing is lost: restore the pr: link in the body's "
+              "board:meta block (board-body.sh splices that block through "
+              "byte-for-byte, so edit it there), then re-run "
+              "`board-answer.sh %s --posted`." % (tid, tid, tid))
 print("%s\t%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
                                   meta.get("status", "?"), meta.get("updated", "?"),
                                   ret, pr))
@@ -243,7 +253,7 @@ IFS=$'\t' read -r uuid engine status updated ret pr <<<"$info"
 [ -n "$uuid" ] || die "binding lookup failed"
 echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated, return=$ret)"
 
-# ret=in-review implies a non-empty pr (the python demotes the return
+# ret=in-review implies a non-empty pr (the python refuses the relay
 # otherwise), so the flag arm never passes an empty link.
 if [ "$ret" = in-review ]; then
   "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
