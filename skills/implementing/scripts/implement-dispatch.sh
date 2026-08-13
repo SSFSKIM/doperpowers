@@ -174,7 +174,24 @@ PY
 # (it writes these files; we only read them). A claim is the only way to learn
 # WHICH ticket the server picked, so suppression can only be honored after the
 # fact — by handing the run straight back.
-_api_suppressed() { [ -f "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}/$1.json" ]; }
+_api_suppress_dir() { echo "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}"; }
+_api_suppressed() { [ -f "$(_api_suppress_dir)/$1.json" ]; }
+
+# The same sweep's resume phase records every ticket it already attempted a
+# recovery for THIS TICK. A replay that faulted leaves its ticket unowned, so
+# the server can hand it to an ordinary lane claim moments later — a second
+# attempt inside the one tick the ledger holds to one. Absent (a dispatcher run
+# by hand, a phase asked for by name) it fences nothing.
+_api_tick_ledgered() {
+  [ -n "${BOARD_RESUMED_LEDGER:-}" ] && [ -f "$BOARD_RESUMED_LEDGER" ] \
+    && grep -qxF -- "$1" "$BOARD_RESUMED_LEDGER"
+}
+
+# A delivered recovery is a recovery, whichever phase delivered it: the failed
+# cycle count is the sweep's ladder to an env-issue escalation, and a count
+# left standing after a successful dispatch escalates a much later, unrelated
+# fault two rungs early.
+_api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
@@ -268,6 +285,15 @@ PY
     rm -f "$claims_dir/$nonce.json" "$body_file"
     return 1
   fi
+  if _api_tick_ledgered "$C_TICKET"; then
+    # Head-of-line, like suppression above: the server picks, so the only
+    # refusal available is to hand the run straight back. The next tick serves
+    # the ticket if it is still unowned.
+    echo "#$C_TICKET already had its one recovery attempt this tick — releasing run $C_RUN_ID; lane $lane stands down this tick"
+    _api_end_run "$C_RUN_ID" abandoned
+    rm -f "$claims_dir/$nonce.json" "$body_file"
+    return 1
+  fi
 
   local role protocol_file decompose model name prompt spawn_out uuid
   case "$lane" in
@@ -337,6 +363,7 @@ PY
   # nothing renewed the lease, and after the server reclaimed it the still
   # running worker overlapped its replacement.
   _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 1 "$C_TICKET" "$name"
+  _api_attempts_clear "$C_TICKET"
 
   # Lane, role, nonce and the parent pin into the registry meta: the lane is
   # what the cap above counts, the role is what a lane-aware resume reads back,

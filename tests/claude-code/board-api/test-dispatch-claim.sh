@@ -113,6 +113,11 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# A standing failed-cycle count for the ticket this claim will yield. Only the
+# sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
+# stale count and a much later, unrelated fault escalated early. A delivered
+# recovery is a recovery, whichever phase delivered it.
+mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-12"
 # A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
 # instant it runs and then execs the real one. Ordering is only observable from
 # INSIDE that window — after the fact every order looks the same.
@@ -138,6 +143,8 @@ chmod +x "$BSOVL/board-bind.sh"
 
 t "the granted claim is reported" "claimed #12 run=41 lane=architect" cat "$OUT"
 nt "api dispatch never invokes gh" "GH-CALLED" cat "$MARKER"
+attempts12() { [ -e "$DH/board-suppress/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
+t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" attempts12
 
 # --- the worker's environment: the run credentials it cannot run without ----
 t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/spawn-capture.txt"
@@ -548,5 +555,47 @@ nt "and says nothing about one" "tick deadline"          cat "$OUT6B"
 OUT6C="$(mktemp)"
 SWEEP6 BOARD_TICK_DEADLINE=not-a-number > "$OUT6C" 2>&1 || true
 t  "an unparseable deadline is no gate either" '"path": "/runs/claim"' cat "$FIX6.log"
+
+# =========================================================================
+# Scenario 7 — ONE RECOVERY ATTEMPT PER TICKET PER TICK REACHES THIS PHASE
+# TOO. The sweep's resume phase records every ticket it attempted a recovery
+# for this tick; phase 4 hands that ledger across the same way it hands the
+# suppression directory. Without it an ordinary lane claim could pick the very
+# ticket whose replay just faulted — a second attempt in the same tick, over
+# the invariant the ledger exists to hold. The claim is how we learn WHICH
+# ticket the server picked, so the refusal is a release, as suppression's is.
+# =========================================================================
+PORT7="$(free_port)"
+FIX7="$(mktemp)"; : > "$FIX7.log"
+cat > "$FIX7" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":33,"fence":1,"bearer":"tok-l","plan":null,
+          "body":"ledgered work","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX7" "$PORT7" & MOCK7=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 2>/dev/null' EXIT
+wait_for_port "$PORT7" || { echo "FAIL mock server never listened on $PORT7"; exit 1; }
+
+r7="$(apirepo "$PORT7")"
+DH7="$(mktemp -d)"
+LEDGER7="$(mktemp)"; echo 33 > "$LEDGER7"
+OUT7="$(mktemp)"
+( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RESUMED_LEDGER="$LEDGER7" \
+    "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
+
+t  "a claim yielding a tick-ledgered ticket is released" \
+   "#33 already had its one recovery attempt this tick"  cat "$OUT7"
+t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX7.log"
+nt "so no worker is spawned for it" "ARGS name=33"  \
+   bash -c "cat '$DH7/spawn-capture.txt' 2>/dev/null || echo none"
+journal7() { ls "$DH7/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+t  "and the journal is dropped with it"  "journal dropped"  journal7
 
 finish

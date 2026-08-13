@@ -46,6 +46,9 @@
 #                                this budget.
 #   BOARD_SUPPRESS_DIR           (exported to the dispatchers) suppression
 #                                records; they read, this tick writes
+#   BOARD_RESUMED_LEDGER         (exported to the dispatchers) the tickets this
+#                                tick already attempted a recovery for; they
+#                                read, phase 3 writes
 #   IMPLEMENT_MODEL LOCAL_REPO   model pin / repo for a successor fresh spawn
 #   BOARD_API_URL BOARD_CREDENTIALS_FILE   resolved by _binding.sh
 set -euo pipefail
@@ -1657,8 +1660,15 @@ phase_dispatch() {
   # unless the `all` tick set it: a phase asked for by name is its own tick
   # with its own clock, and is no more gated inside the dispatchers than it is
   # at the case arm below.
+  # BOARD_RESUMED_LEDGER travels for the same reason BOARD_SUPPRESS_DIR does:
+  # ONE RECOVERY ATTEMPT PER TICKET PER TICK is an invariant of the TICK. A
+  # replay that FAULTED leaves its ticket unowned, so the ordinary lane claim
+  # below could pick that very ticket seconds later and spend a second attempt
+  # on it. Empty on a phase asked for by name — that tick made no recovery
+  # attempt, so it fences nothing.
   local env_common=(BOARD_SUPPRESS_DIR="$SUPPRESS_DIR" DAEMON_HOME="$DAEMON_HOME"
                     DAEMON_SCRIPTS="$DAEMON_SCRIPTS" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
+                    BOARD_RESUMED_LEDGER="${RESUMED_LEDGER:-}"
                     BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
   env "${env_common[@]}" "$impl" --sweep \
     || echo "dispatch: the implement lanes failed this tick" >&2

@@ -143,6 +143,11 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# A standing failed-cycle count for the ticket this claim will yield. Only the
+# sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
+# stale count and a much later, unrelated fault escalated early. A delivered
+# recovery is a recovery, whichever phase delivered it.
+mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 # BOARD_RUN_TOKEN is set on the way in ON PURPOSE: a --sweep launched from a
 # worker's own shell inherits that worker's run bearer, and the client hands
 # BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
@@ -157,6 +162,8 @@ OUT="$(mktemp)"
 
 t "the granted claim is reported" "claimed #9 run=51 lane=qagent" cat "$OUT"
 nt "api review dispatch never invokes gh" "GH-CALLED" cat "$MARKER"
+attempts9() { [ -e "$DH/board-suppress/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
+t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" attempts9
 
 # --- the worker's environment: the run credentials it cannot review without -
 t "worker got the run bearer" "BOARD_RUN_TOKEN=tok-q"                cat "$DH/spawn-capture.txt"
@@ -814,5 +821,49 @@ t "the integration ref renders present and empty, not missing" \
   "PRESENT-AND-EMPTY" binding_shape INTEGRATION_REF "$NOREF_PROMPT"
 t "and the WORKER is the party that parks it, with a note" \
   'needs-human "scale review: the claim carried no integration ref"' cat "$NOREF_PROMPT"
+
+# =========================================================================
+# Scenario 10 — ONE RECOVERY ATTEMPT PER TICKET PER TICK REACHES THIS PHASE
+# TOO. The sweep's resume phase records every ticket it attempted a recovery
+# for this tick; phase 4 hands that ledger across the same way it hands the
+# suppression directory. Without it the review lane could claim the very
+# ticket whose replay just faulted — a second attempt in the same tick, over
+# the invariant the ledger exists to hold. The claim is how we learn WHICH
+# ticket the server picked, so the refusal is a release, as suppression's is.
+# =========================================================================
+PORT10="$(free_port)"
+FIX10="$(mktemp)"; : > "$FIX10.log"
+cat > "$FIX10" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":33,"fence":1,"bearer":"tok-l","plan":null,
+          "body":"ledgered review","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX10" "$PORT10" & MOCK10=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 2>/dev/null' EXIT
+wait_for_port "$PORT10" || { echo "FAIL mock server never listened on $PORT10"; exit 1; }
+
+r10="$(apirepo "$PORT10")"
+DH10="$(mktemp -d)"
+LEDGER10="$(mktemp)"; echo 33 > "$LEDGER10"
+OUT10="$(mktemp)"
+( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH10" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r10" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    BOARD_RESUMED_LEDGER="$LEDGER10" \
+    "$DISPATCH" --sweep ) > "$OUT10" 2>&1 || true
+
+t  "a claim yielding a tick-ledgered ticket is released" \
+   "#33 already had its one recovery attempt this tick"  cat "$OUT10"
+t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX10.log"
+nt "so no reviewer is spawned for it" "ARGS name=33"  \
+   bash -c "cat '$DH10/spawn-capture.txt' 2>/dev/null || echo none"
+journal10() { ls "$DH10/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+t  "and the journal is dropped with it"  "journal dropped"  journal10
 
 finish

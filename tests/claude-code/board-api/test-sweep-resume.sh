@@ -1115,6 +1115,41 @@ t  "an env-issue off the listing is not a closed env-issue" \
    "still-there"                        suppression_present "$HDH" 12
 nt "so nothing is lifted on it"         "suppression lifted"          cat "$OUTH"
 t  "and that tick succeeds too"         "tick exit=0"                 cat "$OUTH"
+# ---- THE TICK LEDGER REACHES PHASE 4 -------------------------------------
+# One recovery attempt per ticket per tick is an invariant of the TICK, not of
+# phase 3. The ledger travelled no further than phase_resume, so after a replay
+# FAULT left the ticket unowned an ordinary lane claim could pick that same
+# ticket seconds later — a second attempt inside the tick the ledger exists to
+# hold to one. It rides to the dispatchers exactly as BOARD_SUPPRESS_DIR does.
+IFIX="$TDIR/fix-ledger-dispatch.json"
+cat > "$IFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":70,"ticketId":12,"fence":1,"bearer":"tok-x","plan":null,
+          "body":"work on","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/70/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$IFIX"
+IDH="$TDIR/dh-ledger-dispatch"; mkdir -p "$IDH"
+mkjournal "$IDH" n-led 12
+OUTI="$TDIR/ledger-dispatch.out"
+( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+    DAEMON_HOME="$IDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    "$SCRIPTS/_sweep_api.sh" all ) > "$OUTI" 2>&1 || true
+t  "phase 3 spends the ticket's one attempt on the replay" \
+   "replaying it for #12"                                  cat "$OUTI"
+t  "and phase 4 refuses the same ticket on the same tick" \
+   "#12 already had its one recovery attempt this tick"    cat "$OUTI"
+t  "releasing the run it was handed"   '"path": "/runs/70/end"'  cat "$RLOG"
+nt "so nothing is spawned for it"      "SPAWN name=12"           cat "$SPAWN_LOG"
+
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
 
