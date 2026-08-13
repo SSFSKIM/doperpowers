@@ -608,6 +608,25 @@ pins belong in the ledger the moment they are discovered.
 - v1.0 (2026-08-12): initial spec from four parallel code
   investigations (qagent role, escalation counter, pagination reality,
   fence/drill inventory).
+- v1.2.5 (2026-08-13, PR-65 panel flow-back, four findings all
+  adopted): (1) §2's fail-open DEMOTION is overturned for a recognized
+  QAGENT — demote-and-resume strands the ticket (in-progress +
+  stale-reviewer retirement, the very failure §2 fixes); a QAGENT park
+  with no `pr:` now REFUSES the relay and stays parked (the posted
+  answers survive; the message names the recovery). Fail-open remains
+  for the IMPLEMENT/no-role rung only. (2) §3's one-attempt invariant
+  extends to phase 4: dispatchers receive the tick ledger (as they do
+  BOARD_SUPPRESS_DIR) and skip tick-ledgered tickets; a successful
+  dispatcher bind also clears `.attempts-<tid>` — a delivered recovery
+  is a recovery, whichever phase delivered it. (3) §1's candidate test
+  admits indentation (`lstrip() == opener`; META_RE was always
+  unanchored) so an indented REAL trailing block cannot lose to a
+  column-zero quoted example; indented quoted examples stay excluded
+  by interior legality; the fuzzer grammar gains indented-real-opener
+  bodies. (4) §1's validate-before-write hoists one caller up:
+  board-transition.sh validates meta BEFORE ensure_labels/surface-label
+  writes, closing the remaining torn-write window (labels persisted,
+  transition failed).
 - v1.2.4 (2026-08-13, convergence flow-back): v1.2.3's
   between-adjacent-candidates rule has a hole (shape C, reproduced by
   the reviewer): prose QUOTING a legacy-nested example followed by a
