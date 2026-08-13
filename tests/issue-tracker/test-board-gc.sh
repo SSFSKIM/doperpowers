@@ -34,6 +34,7 @@ assert_dir_kept() {
 # ---- environment --------------------------------------------------------------
 export DAEMON_HOME="$TEST_ROOT/registry"; mkdir -p "$DAEMON_HOME"
 export BOARD_REPO="test/repo"
+export GC_MIN_AGE_MINUTES=0   # fixtures are seconds old; the age gate has its own test
 export GH_FIXTURE="$TEST_ROOT/pr-table.txt"   # lines: <branch> <state>
 export STUB_LOG="$TEST_ROOT/stub-calls.log"; : > "$STUB_LOG"
 
@@ -141,6 +142,16 @@ out=$(WORKTREE_GC=1 GC_PR_CHECKS=1 "$GC" 2>&1)
 lookups=$(grep -c "pulls?head=" "$STUB_LOG" || true)
 if [ "$lookups" -le 2 ]; then pass "PR lookups capped ($lookups incl. open-PR recheck)"; else
   fail "PR lookups capped (got $lookups)"; fi
+
+echo "=== age gate ==="
+# A just-created worktree whose branch was never pushed looks "branch-gone" —
+# the spawn-race window the gate exists for. Young → kept; backdated → removed.
+mk_worktree t9 br-young
+out=$(WORKTREE_GC=1 GC_MIN_AGE_MINUTES=30 "$GC" 2>&1)
+assert_dir_kept "young worktree kept despite branch-gone" "$LOCAL_REPO/.claude/worktrees/t9"
+touch -m -t 202601010000 "$LOCAL_REPO/.claude/worktrees/t9/.git"
+out=$(WORKTREE_GC=1 GC_MIN_AGE_MINUTES=30 "$GC" 2>&1)
+assert_dir_gone "aged worktree removed" "$LOCAL_REPO/.claude/worktrees/t9"
 
 echo "=== docker pass ==="
 : > "$STUB_LOG"

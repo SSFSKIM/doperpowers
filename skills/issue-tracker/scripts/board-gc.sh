@@ -23,6 +23,15 @@
 # `git worktree remove` is used WITHOUT --force, so git's own dirty check
 # backs guard 2 even if the porcelain read races a write.
 #
+# Age gate: worktrees younger than GC_MIN_AGE_MINUTES are skipped outright.
+# A just-dispatched worker's tree defeats the other guards for a window:
+# its branch has never been pushed (so "branch-gone" evidence matches), and
+# the busy set is a snapshot taken at pass start (a spawn during the tick
+# is invisible to it). Observed live: a GC pass attempted removal of a
+# worker's tree seconds after dispatch — only the no-force backstop held,
+# and only because the bootstrap happened to be mid-write. The gate closes
+# the window structurally; 90min comfortably exceeds any tick duration.
+#
 # Docker debris (separate opt-in — volume prune removes ALL unused volumes,
 # which is right on a worker VM and wrong on a dev machine with precious
 # local volumes): exited postgres:* containers from throwaway-DB harnesses
@@ -36,10 +45,12 @@
 #   BOARD_REPO        owner/repo for PR-state lookups
 #   DAEMON_HOME       registry dir for the busy-path guard
 #   GC_PR_CHECKS      max PR-state lookups per run (default 20)
+#   GC_MIN_AGE_MINUTES  skip worktrees younger than this (default 90; 0 disables)
 set -uo pipefail
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
 GC_PR_CHECKS="${GC_PR_CHECKS:-20}"
+GC_MIN_AGE="${GC_MIN_AGE_MINUTES:-90}"
 
 log() { echo "$*"; }
 
@@ -85,6 +96,10 @@ PY
   for dir in "$wt_root"/*/; do
     dir="${dir%/}"
     [ -e "$dir/.git" ] || continue
+    if [ "$GC_MIN_AGE" -gt 0 ] \
+       && [ -z "$(find "$dir/.git" -maxdepth 0 -mmin +"$GC_MIN_AGE" 2>/dev/null)" ]; then
+      continue                                     # too young: spawn-race window
+    fi
     case "$busy" in *"$dir"*) continue ;; esac
     br=$(git -C "$dir" branch --show-current 2>/dev/null)
     [ -n "$br" ] || continue                       # detached: not ours to judge
