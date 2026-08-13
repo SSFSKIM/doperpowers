@@ -148,6 +148,25 @@ out="$(run board-transition.sh "$n5" ready-for-implementer)"
 assert_contains "$out" "surface: += recommend-rpc" "T8: transition reports the re-match"
 assert_contains "$(state "s['issues']['$n5']['labels']")" "surface:recommend-rpc" "T8: label added on lane entry"
 
+# ---- T8b: the meta refusal lands BEFORE every label write ------------------
+# apply_state validates the meta ahead of its own label write, but this entry
+# edge writes labels of its own first — ensure_labels, then the surface
+# re-match's create+add — so a note the meta grammar refuses tore the ticket:
+# surface labels persisted, transition failed (PR-65 panel F4). Nothing rolls
+# those back, and the ticket then reads as a lane member it never entered.
+echo "T8b: a refused meta write mutates no label at all"
+out="$(run board-register.sh "제목만 있는 두 번째" bug P2)"
+n5b="${out%% *}"
+printf 'this body also names recommend_for_student\n' | gh issue edit "$n5b" -R test/repo --body-file - >/dev/null
+mark="$(wc -l < "$MOCK_GH_LOG")"
+assert_fails run board-transition.sh "$n5b" ready-for-implementer 'forged: <!-- board:meta'
+tail_log="$(tail -n "+$((mark + 1))" "$MOCK_GH_LOG")"
+assert_not_contains "$tail_log" '"--add-label"' "T8b: no label was added"
+assert_not_contains "$tail_log" '"--remove-label"' "T8b: none removed either"
+assert_not_contains "$tail_log" '["label", "create"' "T8b: and none created"
+assert_not_contains "$(state "s['issues']['$n5b']['labels']")" "surface:" "T8b: the ticket carries no surface label"
+assert_not_contains "$(state "s['issues']['$n5b']['labels']")" "status:ready-for-implementer" "T8b: nor the lane it never entered"
+
 # ---- T9: live-worker deferral of the relates body write --------------------
 echo "T9: relates edge defers on a live bound worker"
 cat > "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json" <<EOF

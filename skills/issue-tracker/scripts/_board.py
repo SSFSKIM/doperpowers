@@ -393,7 +393,7 @@ def clean_meta(meta):
     an ASCII arrow, since update_meta re-renders every key it parsed.
 
     Split out of render_body so a caller that makes OTHER remote writes first
-    can validate ahead of them — see apply_state."""
+    can validate ahead of them — see check_meta_write."""
     clean = {}
     for k, v in meta.items():
         if not v:
@@ -405,6 +405,23 @@ def clean_meta(meta):
             die("meta value %r cannot carry a board:meta marker token" % k)
         clean[k] = v
     return clean
+
+
+def check_meta_write(body, updates):
+    """Refuse an illegal meta write BEFORE the caller's first remote write.
+
+    update_meta re-renders every key it parsed out of the existing block, so a
+    refusal on ANY of them — new or stored — must be raised against the MERGED
+    result, and it must be raised before anything else has moved on GitHub:
+    nothing rolls a label write back, and a relabelled ticket carrying a stale
+    note reads as a real one that board-lint cannot flag.
+
+    apply_state calls this at its own top; a caller that writes labels of its
+    own first (board-transition.sh: ensure_labels + the surface re-match) calls
+    it earlier still, with the same `updates` it will hand apply_state."""
+    merged = parse_meta(body)
+    merged.update(updates)
+    clean_meta(merged)
 
 
 def compose_body(base, meta):
@@ -985,14 +1002,9 @@ def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     old = n["state"]
     updates = {"note": why or None}
     updates.update(extra_meta or {})
-    # Validate the meta write BEFORE the label write. update_meta re-renders
-    # every key it parsed out of the existing block, so a refusal on ANY of
-    # them (new or stored) would land after the label had already moved on
-    # GitHub — the ticket relabelled, carrying a stale note that reads as a
-    # real one and that board-lint cannot flag. Nothing rolls that back.
-    merged = parse_meta(n["body"])
-    merged.update(updates)
-    clean_meta(merged)
+    # Validate the meta write BEFORE the label write (idempotent — a caller
+    # that writes labels of its own ahead of this one has already run it).
+    check_meta_write(n["body"], updates)
     if to in TERMINAL:
         # strip status labels first so a closed issue never carries one
         edit_labels(tid, remove=[STATUS_PREFIX + s for s in n["status_labels"]])
