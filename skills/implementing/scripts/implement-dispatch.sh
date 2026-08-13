@@ -190,8 +190,11 @@ _api_tick_ledgered() {
 # A delivered recovery is a recovery, whichever phase delivered it: the failed
 # cycle count is the sweep's ladder to an env-issue escalation, and a count
 # left standing after a successful dispatch escalates a much later, unrelated
-# fault two rungs early.
+# fault two rungs early. Called from the bind side ONE LINE AHEAD of the
+# journal's durable mark, so the only crash that can skip it is the one
+# reconciliation still sees (`repaired`), which clears it there.
 _api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
+_claim_attempts_clear() { _api_attempts_clear "$1"; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
@@ -362,8 +365,8 @@ PY
   # reconciliation skipped it (its whole point is the unbound-but-live case),
   # nothing renewed the lease, and after the server reclaimed it the still
   # running worker overlapped its replacement.
-  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 1 "$C_TICKET" "$name"
   _api_attempts_clear "$C_TICKET"
+  _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 1 "$C_TICKET" "$name"
 
   # Lane, role, nonce and the parent pin into the registry meta: the lane is
   # what the cap above counts, the role is what a lane-aware resume reads back,

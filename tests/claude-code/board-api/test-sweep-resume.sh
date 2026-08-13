@@ -1150,6 +1150,40 @@ t  "and phase 4 refuses the same ticket on the same tick" \
 t  "releasing the run it was handed"   '"path": "/runs/70/end"'  cat "$RLOG"
 nt "so nothing is spawned for it"      "SPAWN name=12"           cat "$SPAWN_LOG"
 
+# ---- ...AND THE FEED PATH IS AN ATTEMPT TOO ------------------------------
+# The ledger recorded only the tickets reconciliation replayed for. A ticket
+# served by the ORDINARY feed whose recovery then faulted (or released) is
+# equally unowned and equally spent, and phase 4 could claim and spawn it in
+# the same tick — the same double attempt through the other door.
+JFIX="$TDIR/fix-ledger-feed.json"
+cat > "$JFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":13,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":72,"ticketId":13,"fence":1,"bearer":"tok-y","plan":null,
+          "body":"work on","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/72/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":13,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$JFIX"
+JDH="$TDIR/dh-ledger-feed"; mkdir -p "$JDH"
+OUTJL="$TDIR/ledger-feed.out"
+( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+    DAEMON_HOME="$JDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    "$SCRIPTS/_sweep_api.sh" all ) > "$OUTJL" 2>&1 || true
+t  "the feed spends the ticket's one attempt as surely as a replay" \
+   "recovery cycle 1 of 3"                                 cat "$OUTJL"
+t  "and phase 4 refuses the same ticket on the same tick" \
+   "#13 already had its one recovery attempt this tick"    cat "$OUTJL"
+t  "releasing the run it was handed"   '"path": "/runs/72/end"'  cat "$RLOG"
+nt "so nothing is spawned for it"      "SPAWN name=13"           cat "$SPAWN_LOG"
+
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
 

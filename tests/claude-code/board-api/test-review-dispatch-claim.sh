@@ -317,8 +317,14 @@ printf '{"lane": "qagent", "run_id": 99, "spawn_completed": false}\n' \
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
-printf '{"lane": "qagent", "run_id": 51, "spawn_completed": false}\n' \
+printf '{"lane": "qagent", "run_id": 51, "spawn_completed": false, "ticket": "9"}\n' \
   > "$DH2/board-claims/nonce-c.json"
+# ...and the delivery it confirms is where the ticket's failed-cycle count is
+# cleared when the inline reset never ran. The reset sits one line ahead of the
+# marker write, so THIS crash — bind landed, marker lost — is exactly the
+# window that leaves a durable recovery beside a stale counter, and a much
+# later unrelated fault would then escalate two rungs early.
+mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-9"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"9-api-qagent","status":"working","run_id":51,"lane":"qagent","ticket":"9"}' \
   > "$DH2/cccc0001.json"
 # (d) another dispatcher's journal, mid-handoff. Replaying it here would spawn
@@ -358,6 +364,9 @@ gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"       "gone" gone "$DH2/board-claims/nonce-b.json"
 t "so is its orphaned assignment body"    "gone" gone "$DH2/board-claims/nonce-b.body.md"
 t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
+attempts9r() { [ -e "$DH2/board-suppress/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
+t "and the delivery it confirms clears the ticket's failed-cycle count" \
+  "count cleared" attempts9r
 t "another lane's journal is left untouched" '"run_id": 77, "spawn_completed": false' \
   cat "$DH2/board-claims/nonce-d.json"
 # --- (e) a spawned-but-unbound run is never ended --------------------------

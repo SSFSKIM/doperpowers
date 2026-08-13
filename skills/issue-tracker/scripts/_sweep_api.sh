@@ -996,11 +996,13 @@ PY
 # successor run now holds until its lease expires rather than being released
 # here, and the orphan warning is silent for the duration of the suppression.
 #
-# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this pass
+# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this TICK
 # ATTEMPTED a recovery for — written before the attempt, because a guard that
 # leaves the ticket for the next tick has spent this ticket's turn either way.
-# Only the replay arm reads and writes it: settle and orphaned make no claim,
-# and settle's release is designed to be served by this very tick's feed.
+# Of the reconciliation arms only replay writes it: settle and orphaned make no
+# claim, and settle's release is designed to be served by this very tick's
+# feed. The feed loop writes it too — an attempt is an attempt whichever door
+# it came through, and phase 4 reads the ledger to stay off both.
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
@@ -1631,6 +1633,12 @@ PY
     # Every live run's lease, refreshed ahead of a recovery that may block for
     # the whole bound — including the runs this ticket has nothing to do with.
     _tick_renew
+    # LEDGERED BEFORE THE ATTEMPT, exactly as the replay arm does it. A feed
+    # recovery that faults or releases leaves the ticket unowned and equally
+    # spent, and phase 4 would otherwise claim and spawn it in the same tick.
+    # A recovery that SUCCEEDS makes the ticket owned, so the record costs it
+    # nothing.
+    printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
     _resume_one "$tid" || true
   done
 }

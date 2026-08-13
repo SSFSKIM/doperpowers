@@ -18,6 +18,7 @@
 #   _claim_lane_cap L            the lane cap to replay that lane under
 #   _claim_drop_journal N        remove a nonce's journal (and its body file)
 #   _claim_retire_worker U       retire a spawned session by uuid
+#   _claim_attempts_clear T      clear ticket T's failed-cycle count
 #   _api_py                      the API-client python runner (_binding.sh)
 #   DAEMON_HOME                  registry root
 
@@ -203,7 +204,11 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         j["spawn_completed"] = True
         with open(p, "w") as f:
             json.dump(j, f)
-        print("repaired\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
+        # The ticket rides along: this arm is where a delivery is CONFIRMED,
+        # and the delivering dispatcher clears the ticket failed-cycle count
+        # one line ahead of the marker write this arm is repairing.
+        print("repaired\x1f%s\x1f%s\x1f%s\x1f%s"
+              % (nonce, lane, run, j.get("ticket") or ""))
     elif run and daemon and daemon in names:
         # A session by that name exists but no meta carries the run: the spawn
         # landed and the bind did not. The worker is alive with its bearer in
@@ -239,7 +244,14 @@ PY
       unreadable)
         echo "reconcile: unreadable json at $nonce — left untouched; no claim under it can be reconciled until it is repaired or removed by hand" >&2 ;;
       repaired)
-        echo "reconcile: $nonce did spawn (run $run) — marker repaired" ;;
+        echo "reconcile: $nonce did spawn (run $run) — marker repaired"
+        # THE RESET IS PART OF THE DELIVERY, so it is recovered with it. The
+        # dispatcher clears the count just before the marker write, and this
+        # arm is exactly the crash that lost that write — without the clear
+        # here a durable recovery keeps a stale count, and a much later,
+        # unrelated fault escalates rungs early. Idempotent: an already-cleared
+        # count is an rm of nothing.
+        [ -z "$extra" ] || _claim_attempts_clear "$extra" ;;
       stranded)
         # The one handoff crash that leaves a LIVE-LOOKING run nobody will ever
         # work: bound, but the startup barrier never opened. Retire the worker

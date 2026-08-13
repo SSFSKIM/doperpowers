@@ -1372,8 +1372,11 @@ _api_tick_ledgered() {
 # A delivered recovery is a recovery, whichever phase delivered it: the failed
 # cycle count is the sweep's ladder to an env-issue escalation, and a count
 # left standing after a successful dispatch escalates a much later, unrelated
-# fault two rungs early.
+# fault two rungs early. Cleared ONE LINE AHEAD of the journal's durable mark
+# (_api_mark_spawned), so the only crash that can skip it is the one
+# reconciliation still sees (`repaired`), which clears it there.
 _api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
+_claim_attempts_clear() { _api_attempts_clear "$1"; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
@@ -1389,6 +1392,7 @@ PY
 # The handoff is done: the journal may no longer be replayed, only observed.
 # Called from the END of _spawn_reviewer, once the handoff is durable.
 _api_mark_spawned() {
+  [ -z "${CLAIM_TICKET:-}" ] || _api_attempts_clear "$CLAIM_TICKET"
   _journal_write "$CLAIM_JOURNAL" "$CLAIM_LANE" "$CLAIM_RUN" 1 \
     "${CLAIM_TICKET:-}" "${CLAIM_DAEMON:-}" "${CLAIM_CONTROL:-}"
 }
@@ -1619,7 +1623,6 @@ PY
   [ "$spawn_rc" -eq 0 ] \
     || { echo "#$C_TICKET: handover failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
-  _api_attempts_clear "$C_TICKET"
 
   # Lane, role and nonce into the registry meta: the lane is what the cap above
   # counts, the role is what a lane-aware resume reads back, and the nonce is
