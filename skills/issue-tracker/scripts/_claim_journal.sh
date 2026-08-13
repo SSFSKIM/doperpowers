@@ -229,7 +229,23 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
             try:
                 os.remove(os.path.join(suppress, ".attempts-" + ticket))
             except FileNotFoundError:
-                pass                    # nothing standing: the reset is done
+                # ENOENT ANSWERS TWO OPPOSITE QUESTIONS: the counter is
+                # already gone (the reset is done), or the directory holding
+                # it cannot be seen at all — an operator BOARD_SUPPRESS_DIR
+                # whose volume unmounted, a path that moved. Sealing on the
+                # second reading loses the same way EACCES did: the mount
+                # comes back carrying the count, and the journal that would
+                # have cleared it is closed forever.
+                #
+                # REACHABILITY tells them apart, not the directory alone. The
+                # sweep creates it the first time it counts anything, so on a
+                # registry that has never had a failed cycle it legitimately
+                # does not exist — treating that as a fault would stall every
+                # repair on every healthy fleet. A directory whose PARENT is
+                # gone too is a path this process cannot see.
+                parent = os.path.dirname(suppress.rstrip("/")) or "."
+                if not (os.path.isdir(suppress) or os.path.isdir(parent)):
+                    failed = "the suppression directory is unreachable"
             except OSError as e:
                 # A REMOVAL THAT FAILED IS NOT A REMOVAL — a read-only or
                 # unmounted registry, a permission change. The count is still
