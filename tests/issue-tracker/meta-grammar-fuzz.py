@@ -8,12 +8,13 @@ The case pins in test-board-scripts.sh are therefore a record of what was
 found, not evidence of coverage. This is the coverage: bodies composed from a
 component grammar with the intended opener recorded at generation time.
 
-It has teeth. Against the three superseded implementations, at the default
+It has teeth. Against the four superseded implementations, at the default
 seed and size, it reports:
 
-    7daa2122 (rightmost walk)                        2004 / 5000
-    dc896415 (adjacent-candidate gap)                 182 / 5000
-    c71a8670 (whole interior, \\n-split, last-cand.)   954 / 5000
+    7daa2122 (rightmost walk)                        1981 / 5000
+    dc896415 (adjacent-candidate gap)                 827 / 5000
+    c71a8670 (whole interior, \\n-split, last-cand.)  1240 / 5000
+    14e96b7f (column-zero candidate test)             711 / 5000
 
 Run against another implementation with BOARD_SCRIPTS=<dir>; that is how a
 candidate rewrite of the rule should be judged before it lands.
@@ -135,10 +136,18 @@ def make_body(rng):
             prose += rng.choice(SEPS) if rng.random() < 0.3 else "\n"
         prose += ln
     interior, fallback = real_block(rng)
-    block = "%s\n%s\n-->\n" % (OPENER, "\n".join(interior))
+    # THE REAL BLOCK MAY BE INDENTED — META_RE's opener is unanchored, so a
+    # block nested under a list item or a quote is a real trailing block, and a
+    # column-zero quoted example above it must not win on position. Its CLOSER
+    # is never indented: `\n-->\s*$` is what makes it a block at all.
+    # The indent belongs to the PROSE side of the opener offset (meta_match
+    # returns the `<`), which is what the byte consumers splice against.
+    indent = rng.choice(["", "", "", "  ", "    "])
+    block = "%s\n%s\n-->\n" % (OPENER, "\n".join(indent + ln for ln in interior))
     attach = rng.choice(["\n\n", "\n"]) if prose else ""
-    return {"body": prose + attach + block, "opener": len(prose) + len(attach),
-            "prose": prose + attach, "block": block, "fallback": fallback}
+    head = prose + attach + indent
+    return {"body": head + block, "opener": len(head),
+            "prose": head, "block": block, "fallback": fallback}
 
 
 def check(c):

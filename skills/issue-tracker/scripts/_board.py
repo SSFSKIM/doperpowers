@@ -314,13 +314,25 @@ def meta_match(body):
     while pos < close:
         sep = LINE_SEP_RE.search(body, pos, close)
         line = body[pos:sep.start() if sep else close]
-        if line == "<!-- board:meta":
+        marker = line.lstrip()
+        if marker == "<!-- board:meta":
+            # INDENTATION DOES NOT DISQUALIFY AN OPENER. META_RE's opener is
+            # unanchored, so a block nested under a list item or a quote is a
+            # real trailing block; admitting only column-zero openers left an
+            # indented REAL block out of the candidate set, and a column-zero
+            # QUOTED example above it then won by fallback — a destructive
+            # strip of the prose between them (PR-65 panel). The candidate
+            # offset is the `<`, not the line start, so every byte consumer
+            # keeps the indent on the prose side, where it was written.
+            # Indented QUOTED examples stay excluded exactly as before: their
+            # own closer line (`    -->`) carries no colon, so it fences.
+            cand = pos + (len(line) - len(marker))
             # A nested marker is legal interior either way. It is a CANDIDATE
             # only when a real `\n` follows — META_RE cannot match otherwise —
             # and the closer still leaves room for a block to open here; a
             # trailing `<!-- board:meta\n-->` has none.
-            if sep is not None and sep.group() == "\n" and pos + head <= close:
-                opens.append((pos, fence))
+            if sep is not None and sep.group() == "\n" and cand + head <= close:
+                opens.append((cand, fence))
         elif not _block_line(line):
             fence = (sep.end() if sep else close)
         pos = sep.end() if sep else close
