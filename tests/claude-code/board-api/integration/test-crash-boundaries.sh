@@ -53,7 +53,6 @@ register() {  # register <title> — prints the ticket id
 }
 sentinels() { printf 'sentinels=%s\n' \
   "$(grep -c 'board-relay answer:' "$1" 2>/dev/null || echo 0)"; }
-owner_line() { echo "owner=$(ticket_owner "$1")"; }
 
 # ===========================================================================
 # RELAY BOUNDARIES — one ticket, parked and answered, killed at each point.
@@ -73,7 +72,7 @@ in_repo RESUME_DIE_BEFORE=1 "$SCRIPTS/board-answer.sh" "$T1" "sqlite" >"$OUT_A" 
 t  "the human's answer is recorded even though the relay dies" \
    "answered #$T1 → in-progress"                       cat "$OUT_A"
 t  "the failed delivery is reported, not swallowed"    "returned no delivery"   cat "$OUT_A"
-t  "an undelivered answer stays on the feed"           "\"ticketId\":$T1" \
+t  "an undelivered answer stays on the feed"           "\"ticketId\":$T1," \
    api automation GET /answers/unrelayed
 t  "and nothing reached the worker"                    "sentinels=0"     sentinels "$TRANSCRIPT"
 
@@ -83,7 +82,7 @@ in_repo RESUME_DIE_AFTER=1 "$SCRIPTS/_sweep_api.sh" relay >"$OUT_B" 2>&1 || true
 t  "a death after the injection still reports a failed resume" \
    "returned no delivery"                                     cat "$OUT_B"
 t  "the prompt landed exactly once"                    "sentinels=1"     sentinels "$TRANSCRIPT"
-t  "and the answer is STILL unacked — never ack-and-drop" "\"ticketId\":$T1" \
+t  "and the answer is STILL unacked — never ack-and-drop" "\"ticketId\":$T1," \
    api automation GET /answers/unrelayed
 
 OUT_B2="$DRILL_TMP/relay-b2.out"
@@ -118,8 +117,8 @@ printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
 OUT_D="$DRILL_TMP/dispatch-d.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D" 2>&1 || true
 t  "the orphaned nonce is replayed, not re-claimed"    "never reached a run — replaying the claim" cat "$OUT_D"
-t  "and the server answers the SAME run"               "BOARD_RUN_ID=$RUN_D" cat "$SPAWN_LOG"
-t  "so the ticket still has exactly one owner"         "owner=$RUN_D" owner_line "$T2"
+t  "and the server answers the SAME run"               "BOARD_RUN_ID=$RUN_D;" eol "$SPAWN_LOG"
+t  "so the ticket still has exactly one owner"         "owner=[$RUN_D]" owner_line "$T2"
 
 # ---- (e) the run was claimed and never spawned ----------------------------
 T3="$(register 'crash drill — claimed but never spawned')"
@@ -132,7 +131,7 @@ OUT_E="$DRILL_TMP/dispatch-e.out"
 in_repo "$DISPATCH" --sweep >"$OUT_E" 2>&1 || true
 t  "a run nothing local can vouch for is ended"        "claimed run $RUN_E but never spawned — ending it" cat "$OUT_E"
 t  "and the freed ticket is dispatched afresh"         "claimed #$T3 run=" cat "$OUT_E"
-nt "on a NEW run — the ended one never reaches a worker" "owner=$RUN_E"  owner_line "$T3"
+nt "on a NEW run — the ended one never reaches a worker" "owner=[$RUN_E]" owner_line "$T3"
 
 # ---- (f) spawned, and the dispatcher died before the bind -----------------
 # SPAWN_KILL_PARENT makes the stub kill the dispatcher after the session is
@@ -151,10 +150,10 @@ OUT_F2="$DRILL_TMP/dispatch-f2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_F2" 2>&1 || true
 t  "a spawned-but-unbound session is reported"         "but never bound it" cat "$OUT_F2"
 t  "and explicitly NOT ended"                          "is NOT being ended" cat "$OUT_F2"
-t  "the live run still owns its ticket"                "owner=$RUN_F" owner_line "$T4"
+t  "the live run still owns its ticket"                "owner=[$RUN_F]" owner_line "$T4"
 after_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
-t  "and no second worker is spawned onto it"           "spawns=$before_f" \
-   printf 'spawns=%s\n' "$after_f"
+t  "and no second worker is spawned onto it"           "spawns=[$before_f]" \
+   printf 'spawns=[%s]\n' "$after_f"
 
 nt "no boundary case ever reached the gh CLI"          "GH INVOKED"      cat "$GH_LOG"
 

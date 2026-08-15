@@ -111,6 +111,11 @@ tests=(
     "board-api/integration/test-escalation.sh"
     "board-api/integration/test-human-verbs.sh"
     "board-api/integration/test-lease-renewal.sh"
+    # reviewing-prs: the suites in tests/reviewing-prs/ are hand-run (the spec's
+    # acceptance invokes them as a glob). The bootstrap parity fence is listed
+    # here because it is hermetic and sub-second — no dispatcher, no gh, no
+    # ports, just the two bootstrap templates rendered in-process.
+    "../reviewing-prs/test-bootstrap-parity.sh"
 )
 
 # Integration tests (slow, full execution)

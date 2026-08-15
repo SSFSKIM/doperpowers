@@ -342,7 +342,12 @@ PY
 }
 
 # Write one field into daemon <1>'s registry meta, under the same lock
-# board-bind.sh takes (read-modify-write; unknown keys are preserved).
+# board-bind.sh takes (read-modify-write; unknown keys are preserved), and
+# under its write_meta mode discipline too. This helper lands on API metas —
+# a failure retirement stamps one — and an API meta holds the run bearer.
+# Recreating that file at the umask default republishes the secret
+# world-readable, and permanently: the api claim path's own stamp preserves
+# whatever mode it finds, so a widened mode is never narrowed again.
 _stamp_meta() {  # <uuid> <key> <value>
   DAEMON_HOME="$DAEMON_HOME" M_UUID="$1" M_KEY="$2" M_VAL="$3" python3 - <<'PY'
 import fcntl, json, os
@@ -354,9 +359,18 @@ try:
     with open(path) as f:
         m = json.load(f)
     m[os.environ["M_KEY"]] = os.environ["M_VAL"]
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    # The mode argument applies only to an inode this open CREATES; a .tmp left
+    # by an earlier crash is an existing inode at whatever mode it had. Unlink
+    # first, create exclusively, chmod against a narrowing umask.
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
         json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
     os.replace(tmp, path)
 finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
@@ -836,7 +850,13 @@ EOF2
 
 # Bootstrap render: every P_* var in the environment fills the matching
 # {{PLACEHOLDER}}, plus the two BASE-ref manifest snapshots (capped, with
-# their absent-file fallbacks). A placeholder with no P_* renders empty.
+# their absent-file fallbacks). A placeholder no call site supplies is a HARD
+# ERROR, never a prompt shipped with a hole in it (implement-dispatch's
+# _render_bootstrap has always worked this way): rendered as a blank it reads
+# to the worker as "bound to nothing", and no downstream assertion can tell
+# that apart from a value that is empty by design. The check runs over the
+# mode-stripped TEMPLATE, not the output — the manifest snapshots and any other
+# injected content are data, and a `{{...}}` inside them is not an unfilled slot.
 #
 # The template also carries `<!-- mode:X -->…<!-- /mode:X -->` blocks: the
 # block whose X is this run's P_REVIEW_MODE survives, every other block is
@@ -863,7 +883,11 @@ subs["RISK_MANIFEST"] = readcap(os.environ["RISK_FILE"]) or \
     "(no repo risk-surface manifest at .doperpowers/risk-surfaces.md — the always-on categories are the only risk surfaces)"
 subs["REPO_FACTS"] = readcap(os.environ["FACTS_FILE"]) or \
     "(no repo-facts manifest at .doperpowers/repo-facts.md — no declared validation commands or evidence add-ons to cross-check against)"
-print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs.get(m.group(1), ""), t))
+missing = sorted(n for n in set(re.findall(r"\{\{(\w+)\}\}", t)) if n not in subs)
+if missing:
+    sys.stderr.write("unrendered placeholders: %s\n" % " ".join(missing))
+    sys.exit(1)
+print(re.sub(r"\{\{(\w+)\}\}", lambda m: subs[m.group(1)], t))
 PY
 }
 
@@ -935,6 +959,21 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
       rm -rf "$control_dir"
       echo "$name: bind to ticket #$issue failed after $attempts attempt(s) — review worker retired (a parked reviewer must be resumable via board-answer)" >&2
       return 1
+    fi
+    # Persist role: QAGENT into the registry meta. board-answer.sh's
+    # needs-human fallback (no recorded pre-park:) reads it back to return
+    # this park to in-review — a reviewer resumed into in-progress owns no
+    # implementation branch and has no legal exit. Non-fatal: metas written
+    # before this stamp are still recognized by board-answer's review-pr-* /
+    # review-epic-* name inference.
+    #
+    # GH MODE ONLY — this tail is shared with the api claim path, which stamps
+    # role itself (alongside lane and nonce) in the one write that also has to
+    # hold the run bearer's 0600. Two stamps racing that file buys nothing and
+    # risks the mode. CLAIM_JOURNAL is this file's gh/api discriminator.
+    if [ -z "${CLAIM_JOURNAL:-}" ]; then
+      _stamp_meta "$uuid" role QAGENT \
+        || echo "$name: role meta write failed (non-fatal)" >&2
     fi
   fi
   if ! READY="$bind_ready" LEDGER="$ledger" UUID="$uuid" TICKET="${issue:-none}" python3 - <<'PY'
@@ -1317,7 +1356,27 @@ PY
 # (it writes these files; we only read them). A claim is the only way to learn
 # WHICH ticket the server picked, so suppression can only be honored after the
 # fact — by handing the run straight back.
-_api_suppressed() { [ -f "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}/$1.json" ]; }
+_api_suppress_dir() { echo "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}"; }
+_api_suppressed() { [ -f "$(_api_suppress_dir)/$1.json" ]; }
+
+# The same sweep's resume phase records every ticket it already attempted a
+# recovery for THIS TICK. A replay that faulted leaves its ticket unowned, so
+# the server can hand it to an ordinary lane claim moments later — a second
+# attempt inside the one tick the ledger holds to one. Absent (a dispatcher run
+# by hand, a phase asked for by name) it fences nothing.
+_api_tick_ledgered() {
+  [ -n "${BOARD_RESUMED_LEDGER:-}" ] && [ -f "$BOARD_RESUMED_LEDGER" ] \
+    && grep -qxF -- "$1" "$BOARD_RESUMED_LEDGER"
+}
+
+# A delivered recovery is a recovery, whichever phase delivered it: the failed
+# cycle count is the sweep's ladder to an env-issue escalation, and a count
+# left standing after a successful dispatch escalates a much later, unrelated
+# fault two rungs early. Cleared ONE LINE AHEAD of the journal's durable mark
+# (_api_mark_spawned), so the only crash that can skip it is the one
+# reconciliation still sees (`repaired`), which clears it there.
+_api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
+_claim_suppress_dir() { _api_suppress_dir; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
   T_RUN="$1" T_REASON="$2" _api_py - <<'PY' || true
@@ -1333,6 +1392,7 @@ PY
 # The handoff is done: the journal may no longer be replayed, only observed.
 # Called from the END of _spawn_reviewer, once the handoff is durable.
 _api_mark_spawned() {
+  [ -z "${CLAIM_TICKET:-}" ] || _api_attempts_clear "$CLAIM_TICKET"
   _journal_write "$CLAIM_JOURNAL" "$CLAIM_LANE" "$CLAIM_RUN" 1 \
     "${CLAIM_TICKET:-}" "${CLAIM_DAEMON:-}" "${CLAIM_CONTROL:-}"
 }
@@ -1417,6 +1477,15 @@ PY
   fi
   if _api_suppressed "$C_TICKET"; then
     echo "#$C_TICKET is suppressed — releasing run $C_RUN_ID; lane $lane stands down this tick"
+    _api_end_run "$C_RUN_ID" abandoned
+    _api_drop_journal "$nonce"
+    return 1
+  fi
+  if _api_tick_ledgered "$C_TICKET"; then
+    # Head-of-line, like suppression above: the server picks, so the only
+    # refusal available is to hand the run straight back. The next tick serves
+    # the ticket if it is still unowned.
+    echo "#$C_TICKET already had its one recovery attempt this tick — releasing run $C_RUN_ID; lane $lane stands down this tick"
     _api_end_run "$C_RUN_ID" abandoned
     _api_drop_journal "$nonce"
     return 1

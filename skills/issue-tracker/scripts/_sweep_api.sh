@@ -46,6 +46,9 @@
 #                                this budget.
 #   BOARD_SUPPRESS_DIR           (exported to the dispatchers) suppression
 #                                records; they read, this tick writes
+#   BOARD_RESUMED_LEDGER         (exported to the dispatchers) the tickets this
+#                                tick already attempted a recovery for; they
+#                                read, phase 3 writes
 #   IMPLEMENT_MODEL LOCAL_REPO   model pin / repo for a successor fresh spawn
 #   BOARD_API_URL BOARD_CREDENTIALS_FILE   resolved by _binding.sh
 set -euo pipefail
@@ -739,8 +742,16 @@ _suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
 # Lift the suppression on ticket $1 if either trigger fired. Both are checked
 # every tick because either one alone is a trap: an operator who moves the
 # ticket should not also have to close the env-issue, and closing the
-# env-issue is the natural "I fixed the substrate" gesture. A ticket that has
-# fallen off the listing entirely (terminal) reads as moved, which is right.
+# env-issue is the natural "I fixed the substrate" gesture.
+#
+# AN ABSENT ROW IS NOT A STATE — a truncated or partial /tickets read must
+# never lift a suppression. The listing is read whole, with no cursor and no
+# envelope, so a short read looks exactly like a smaller board; treating a
+# missing row as a value fired BOTH triggers on it (absent != the recorded
+# state, and absent read as "closed"), lifting every suppression the read
+# could not see and minting the human a fresh env-issue every three cycles.
+# Absent is UNKNOWN on both sides: keep waiting for a read that can name it.
+# This is the read-site mirror of the write-site guard at _escalate.
 _check_lift() {
   T_TID="$1" T_DIR="$SUPPRESS_DIR" _api_py - <<'PY'
 import json, os
@@ -751,8 +762,10 @@ if not os.path.exists(path):
 with open(path) as f:
     rec = json.load(f)
 rows = {str(t["id"]): t["state"] for t in A.tickets(principal="automation")}
-moved = rows.get(str(rec["ticket"])) != rec["state"]
-closed = rows.get(str(rec["env_issue"])) in (None, "done", "wontfix")
+cur = rows.get(str(rec["ticket"]))
+moved = cur is not None and cur != rec["state"]
+env = rows.get(str(rec["env_issue"]))
+closed = env in ("done", "wontfix")   # absent env-issue: unknown, keep waiting
 if moved or closed:
     os.remove(path)
     print("suppression lifted for #%s — %s" %
@@ -967,7 +980,29 @@ PY
 #            worker whose bind never landed. NOT ended (that would kill it) and
 #            not replayed — reported, and the server's lease reclaim owns it.
 #
-# Runs BEFORE the feed is read, so anything it releases is served in this tick.
+# Runs BEFORE the feed is read, so anything it releases is served in this tick,
+# and AFTER the lift pass, so a just-lifted ticket replays its own standing
+# journal here rather than minting a fresh nonce down in the feed loop.
+#
+# A SUPPRESSED TICKET IS FROZEN, ITS JOURNAL INCLUDED. Suppression means "stop
+# spending recovery on this ticket until a human clears the substrate", and a
+# reconciliation that kept replaying the journal spent it anyway: every replay
+# charged another cycle, every third cycle re-escalated, and each re-escalation
+# rewrote the suppression record with the state read seconds earlier in the same
+# tick — so _check_lift's `moved` could never fire and the "move the ticket"
+# half of the escalation's own instructions was inert. The journal is left
+# exactly where it is; it is still the retry handle when the suppression lifts.
+# The price of "untouched" is real and small: a suppressed ticket's undelivered
+# successor run now holds until its lease expires rather than being released
+# here, and the orphan warning is silent for the duration of the suppression.
+#
+# $RESUMED_LEDGER (phase_resume owns it) collects the tickets this TICK
+# ATTEMPTED a recovery for — written before the attempt, because a guard that
+# leaves the ticket for the next tick has spent this ticket's turn either way.
+# Of the reconciliation arms only replay writes it: settle and orphaned make no
+# claim, and settle's release is designed to be served by this very tick's
+# feed. The feed loop writes it too — an attempt is an attempt whichever door
+# it came through, and phase 4 reads the ledger to stay off both.
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
@@ -1033,10 +1068,25 @@ PY
   done <<<"$plan"
   for line in ${lines[@]+"${lines[@]}"}; do
     IFS=$'\x1f' read -r act nonce run tid sess daemon <<<"$line"
+    if [ -n "$tid" ] && _suppressed "$tid"; then
+      echo "resume: successor claim $nonce for #$tid is suppressed — the journal stands untouched until the suppression lifts"
+      continue
+    fi
     case "$act" in
       replay)
+        # The ledger is CONSULTED here as well as written, or the invariant
+        # holds only across the hand-off to the feed and not within this pass:
+        # two unfinished journals naming one ticket are two replay rows, and
+        # each one claimed and charged. Reachable because the intermediate
+        # commit on this branch minted an extra journal per tick during a claim
+        # fault, so a registry that ticked on it arrives here holding several.
+        if [ -n "$tid" ] && grep -qxF -- "$tid" "$RESUMED_LEDGER"; then
+          echo "resume: successor claim $nonce waits — #$tid already had its one recovery attempt this tick"
+          continue
+        fi
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
-        [ -z "$tid" ] || _resume_one "$tid" "$nonce" || true ;;
+        [ -z "$tid" ] || { printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
+                           _resume_one "$tid" "$nonce" || true; } ;;
       orphaned)
         echo "resume: successor claim $nonce spawned $daemon for run $run but never bound it — the session is live and is NOT being ended; it holds no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" >&2
         _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess" ;;
@@ -1084,7 +1134,7 @@ PY
 _resume_one() {
   local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
   local pre_pending="" post_pending="" lane="" role=""
-  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN=""
+  local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
   # the claim so this tick never mints a successor run it cannot deliver.
   # daemon-resume stamps status=error + pending_short when a fork LAUNCHED
@@ -1128,8 +1178,14 @@ _resume_one() {
   exports="$(T_TID="$tid" T_NONCE="$nonce" T_BODY="$dir/body.md" _api_py - <<'PY'
 import os, shlex
 import _board_api as A
-out = A.claim_successor(os.environ["T_TID"], os.environ["T_NONCE"])
 def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
+try:
+    out = A.claim_successor(os.environ["T_TID"], os.environ["T_NONCE"])
+except A.ClaimObsolete as e:
+    # A spent handle, not a sick board — handed back as a fact for the shell
+    # to route on rather than as the failure exit every other refusal takes.
+    q("C_OBSOLETE", e.code)
+    raise SystemExit(0)
 if not out.get("claimed", True):
     q("C_CLAIMED", 0)
     raise SystemExit(0)
@@ -1155,11 +1211,33 @@ with open(os.environ["T_BODY"], "w") as f:
     f.write(out.get("body") or "")
 PY
 )" || {
-    # The journal STAYS: a claim that died on the wire may still have landed.
+    # A FAULT, and the first exit that ever charged for one: transport death
+    # after retries, a 5xx, a malformed grant, an untyped refusal. Left
+    # uncounted, a ticket whose claim persistently errors churns forever — and
+    # the kept journal is re-classified `replay` next tick while the feed ALSO
+    # re-serves the ticket, so the churn costs two claims and a leaked journal
+    # a tick. The journal STAYS: a claim that died on the wire may still have
+    # landed, and it is the only handle a replay has.
     echo "resume: #$tid — successor claim failed; journal $nonce kept" >&2
+    _attempts "$tid" fail
     return 1
   }
   eval "$exports"
+  # THE JOURNAL IS OBSOLETE, NOT THE SUBSTRATE SICK. `nonce-consumed` says the
+  # predecessor's run ended, so this nonce is spent for good; `stale-resume`
+  # says the ticket moved after the feed read, so its new state governs.
+  # Neither is a fault to charge: the handle is dropped and the ticket comes
+  # back around — on a fresh nonce, or through ordinary dispatch.
+  if [ -n "$C_OBSOLETE" ]; then
+    rm -f "$CLAIMS_DIR/$nonce.json"
+    echo "resume: #$tid — the successor journal is obsolete ($C_OBSOLETE); dropped uncharged, and the ticket comes back around on its own"
+    return 0
+  fi
+  # Uncharged on purpose: no grant is the server's BACKPRESSURE — a lane cap,
+  # an eligibility rule — and a healthy wait state. A suppression written from
+  # it would take a healthy ticket out of both the resume and the dispatch
+  # phase until a human closed an env-issue, which is strictly worse than the
+  # wait it would be "fixing".
   if [ "$C_CLAIMED" != 1 ]; then
     rm -f "$CLAIMS_DIR/$nonce.json"
     echo "resume: #$tid — the board granted no successor"
@@ -1460,8 +1538,9 @@ import _board_api as A
 tid = os.environ["T_TID"]
 payload = {"title": "stuck resume: ticket #%s cannot be revived" % tid,
            "category": "env-issue",
-           "body": "Three resume and fresh-spawn cycles failed for ticket "
-                   "#%s. The sweep has SUPPRESSED that ticket: phase 3 skips "
+           "body": "Three recovery cycles failed for ticket #%s (successor "
+                   "claim, resume, or fresh spawn). "
+                   "The sweep has SUPPRESSED that ticket: phase 3 skips "
                    "it and phase 4 releases any claim that yields it. "
                    "Investigate the session/daemon substrate, then either "
                    "move ticket #%s (any transition) or close this env-issue "
@@ -1505,17 +1584,27 @@ PY
 phase_resume() {
   local dir f tid tids=()
   mkdir -p "$SUPPRESS_DIR"
-  # Unfinished successor claims first: a run this machine already holds but
-  # never delivered keeps its ticket off the feed below, so reconciling after
-  # the read would postpone every such recovery by a whole tick.
-  _reconcile_successors
-  # Lift first: a suppression that no longer holds must not cost this tick a
-  # resume it could have made.
+  # LIFT FIRST: a suppression that no longer holds must not cost this tick a
+  # resume it could have made — and, now that reconciliation honors suppression,
+  # lifting after it would strand journals. A suppression lifting mid-tick in
+  # the old order left the journal untouched in reconcile, dropped the record,
+  # and then let the feed claim a FRESH nonce: the old journal survived to
+  # replay beside the new successor on a later tick. Lifting first lets a
+  # just-lifted ticket replay its own standing journal.
   for f in "$SUPPRESS_DIR"/*.json; do
     [ -e "$f" ] || continue
     _check_lift "$(basename "$f" .json)" \
       || echo "resume: suppression check for $(basename "$f" .json) failed" >&2
   done
+  # Unfinished successor claims before the feed: a run this machine already
+  # holds but never delivered keeps its ticket off the feed below, so
+  # reconciling after the read would postpone every such recovery by a whole
+  # tick. ONE RECOVERY ATTEMPT PER TICKET PER TICK: the ledger carries the
+  # tickets reconciliation already claimed for into the feed loop, where a
+  # ticket re-served by the feed would otherwise buy a second successor claim,
+  # a second charged cycle and a second journal in the same tick.
+  RESUMED_LEDGER="$(mktemp "$SCRATCH/resumed.XXXXXX")"
+  _reconcile_successors
   dir="$(mktemp -d "$SCRATCH/feed.XXXXXX")"
   _api_py - > "$dir/feed" <<'PY' || { echo "resume: needing-resume feed unavailable this tick" >&2; return 0; }
 import _board_api as A
@@ -1536,10 +1625,20 @@ PY
       echo "resume: suppressed — skipping #$tid"
       continue
     fi
+    if grep -qxF -- "$tid" "$RESUMED_LEDGER"; then
+      echo "resume: #$tid — already replayed this tick"
+      continue
+    fi
     _budget_left || { echo "resume: tick budget exhausted — the rest of the feed rides the next tick"; break; }
     # Every live run's lease, refreshed ahead of a recovery that may block for
     # the whole bound — including the runs this ticket has nothing to do with.
     _tick_renew
+    # LEDGERED BEFORE THE ATTEMPT, exactly as the replay arm does it. A feed
+    # recovery that faults or releases leaves the ticket unowned and equally
+    # spent, and phase 4 would otherwise claim and spawn it in the same tick.
+    # A recovery that SUCCEEDS makes the ticket owned, so the record costs it
+    # nothing.
+    printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
     _resume_one "$tid" || true
   done
 }
@@ -1569,8 +1668,15 @@ phase_dispatch() {
   # unless the `all` tick set it: a phase asked for by name is its own tick
   # with its own clock, and is no more gated inside the dispatchers than it is
   # at the case arm below.
+  # BOARD_RESUMED_LEDGER travels for the same reason BOARD_SUPPRESS_DIR does:
+  # ONE RECOVERY ATTEMPT PER TICKET PER TICK is an invariant of the TICK. A
+  # replay that FAULTED leaves its ticket unowned, so the ordinary lane claim
+  # below could pick that very ticket seconds later and spend a second attempt
+  # on it. Empty on a phase asked for by name — that tick made no recovery
+  # attempt, so it fences nothing.
   local env_common=(BOARD_SUPPRESS_DIR="$SUPPRESS_DIR" DAEMON_HOME="$DAEMON_HOME"
                     DAEMON_SCRIPTS="$DAEMON_SCRIPTS" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
+                    BOARD_RESUMED_LEDGER="${RESUMED_LEDGER:-}"
                     BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
   env "${env_common[@]}" "$impl" --sweep \
     || echo "dispatch: the implement lanes failed this tick" >&2

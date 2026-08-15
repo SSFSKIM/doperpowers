@@ -61,22 +61,16 @@ old = B.gh(["issue", "view", tid, "-R", B.repo(), "--json", "body",
             "--jq", ".body"])
 new = open(env["T_FILE"]).read()
 
-# The raw splice. META_RE is consulted for a byte OFFSET only — the matched
+# The raw splice. The match is consulted for a byte OFFSET only — the matched
 # text is carried through untouched, never parsed and never re-rendered, so
 # unknown keys, comment lines and noncanonical spacing all survive a client
 # older than whatever wrote them.
 #
-# The block that counts is the LAST one. META_RE is leftmost-first and its
-# `.*?` will happily span from a marker-like example QUOTED in the prose all
-# the way to the real trailing `-->`, so splicing at the first match would
-# carry the prose this edit was told to replace. Walk to the rightmost match.
-m = None
-pos = 0
-while True:
-    nxt = B.META_RE.search(old, pos)
-    if not nxt:
-        break
-    m, pos = nxt, nxt.start() + 1
+# Which opener starts the real block is decided by the interior between the
+# candidates, not by position — see _board.meta_match (#60). Its start never
+# includes META_RE's optional leading newline, so the separator is this
+# splice's to supply.
+m = B.meta_match(old)
 if m:
     # Only the newlines AROUND the block are normalized (to render_body's
     # blank-line-then-block shape); its own bytes are untouched.

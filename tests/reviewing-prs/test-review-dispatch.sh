@@ -34,6 +34,14 @@ assert_not_contains() {
 assert_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
 }
+# A binding is only bound when it arrives with a VALUE. Anchored on the rendered
+# roster line shape (- `NAME`: value), so a binding that rendered as a blank —
+# the shape an unsupplied placeholder used to take — reads as unbound here.
+assert_bound() {  # assert_bound <prompt> <NAME> <lane>
+    local v; v="$(printf '%s\n' "$1" | sed -n "s/^- \`$2\`: \(.*\)$/\1/p" | head -1)"
+    if [[ -n "$v" ]]; then pass "\`$2\` renders with a value ($3)"; else
+        fail "\`$2\` renders with a value ($3)"; echo "    binding line absent or empty"; fi
+}
 
 # ---- environment --------------------------------------------------------------
 export HOME="$TEST_ROOT/home"; mkdir -p "$HOME"
@@ -416,6 +424,7 @@ echo "triggered dispatch:"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "spawns --no-wait with the registry name"
 assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"ticket": "7"' "ticketed review worker is bound for board-answer resume"
+assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"role": "QAGENT"' "reviewer meta records its lane so an answered park returns to in-review, not in-progress"
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out at the PR head SHA"
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
@@ -448,6 +457,42 @@ assert_contains "$PROMPT" "$REPO_ROOT/skills/implementing/SKILL.md" "prompt carr
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
 assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"
+# The bindings a reviewer cannot function without, pinned on the VALUE side:
+# an existing `NAME`: assertion passes just as well against a rendered blank.
+assert_bound "$PROMPT" BIND_READY_FILE pr
+assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE pr
+assert_bound "$PROMPT" BOARD_SCRIPTS pr
+SKILL_PIN="$(printf '%s\n' "$PROMPT" | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
+if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
+    fail "SKILL_FILE renders a protocol path"; fi
+
+# ---- an unsupplied bootstrap placeholder fails the render ----------------------
+# The renderer used to substitute an unknown {{X}} with "", so a binding a mode
+# block asks for and no call site supplies shipped as a silent blank — and no
+# downstream assertion can tell "empty by design" from "erased". Driven through
+# a copy of the skill whose template carries one placeholder nothing fills
+# (the template path is derived from the script's own dir, so the copy IS the
+# lever); the sibling skills the dispatcher sources are symlinked back.
+echo "unrendered placeholder fails closed:"
+ALT_SKILLS="$TEST_ROOT/alt-skills"; mkdir -p "$ALT_SKILLS"
+ln -s "$REPO_ROOT/skills/orchestrating-daemons" "$ALT_SKILLS/orchestrating-daemons"
+cp -R "$REPO_ROOT/skills/reviewing-prs" "$ALT_SKILLS/reviewing-prs"
+printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
+    >> "$ALT_SKILLS/reviewing-prs/references/review-worker-bootstrap.md"
+reset_state
+rm -f "$PROMPT_DIR/review-pr-5.prompt"
+if ALT_OUT="$("$ALT_SKILLS/reviewing-prs/scripts/review-dispatch.sh" 5 2>&1)"; then
+    fail "a placeholder no call site supplies fails the dispatch"
+else
+    pass "a placeholder no call site supplies fails the dispatch"
+fi
+assert_contains "$ALT_OUT" "unrendered placeholders: FORGOTTEN_BINDING" "the render failure names the placeholder"
+assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "no reviewer is spawned on a failed render"
+if [[ -f "$PROMPT_DIR/review-pr-5.prompt" ]]; then
+    fail "no prompt reaches a worker on a failed render"
+else
+    pass "no prompt reaches a worker on a failed render"
+fi
 
 # Ticket ownership is exclusive: the reviewer replaces the finished implement
 # worker as board-answer's resume target.
@@ -1704,6 +1749,11 @@ assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR frami
 assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
 assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the engine base (the branch the epic integrates into)"
 assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity the startup barrier verifies"
+# The value side, on the scale call site too: the hard-fail sees a missing
+# binding, never an empty-valued one, and this lane has its own P_* block.
+assert_bound "$EPIC_PROMPT" BIND_READY_FILE scale
+assert_bound "$EPIC_PROMPT" IMPLEMENT_PROTOCOL_FILE scale
+assert_bound "$EPIC_PROMPT" BOARD_SCRIPTS scale
 # This epic has no `branch:` meta, so the worktree sits on the default branch
 # itself — there is no aggregate range to hand the engine, and the prompt must
 # say so instead of leaving the worker to review nothing.
@@ -2324,6 +2374,28 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the scal
 assert_not_contains "$OUT_UNEXP" "BOARD_REPO is unset" "no scale subprocess dies for want of BOARD_REPO in its environment"
 
 rm -f "$MOCK_DIR/board-issues.json"
+
+# ---- _stamp_meta mode discipline ----------------------------------------------
+# The shared bookkeeping write (retired_from, closure_package, the gh role
+# stamp). It lands on API metas too — a retirement can stamp one — and an API
+# meta holds the run bearer at 0600. Recreating it at the umask default
+# republishes that secret world-readable, permanently: the api path's own stamp
+# preserves whatever mode it finds. Exercised directly, since no path in this
+# gh-mode suite puts a bearer at rest.
+echo "_stamp_meta mode discipline:"
+eval "$(sed -n '/^_stamp_meta() {/,/^}/p' "$DISPATCH")"
+mode_of() { python3 -c 'import os, sys
+print("%o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+printf '%s' '{"uuid": "u1", "run_bearer": "SECRET-TOKEN"}' > "$DAEMON_HOME/u1.json"
+chmod 600 "$DAEMON_HOME/u1.json"
+_stamp_meta u1 retired_from failure
+assert_equals "$(mode_of "$DAEMON_HOME/u1.json")" "600" "a run-bearer meta survives the stamp at 0600"
+assert_contains "$(cat "$DAEMON_HOME/u1.json")" '"retired_from": "failure"' "and the stamp still wrote its field"
+printf '%s' '{"uuid": "u2"}' > "$DAEMON_HOME/u2.json"
+chmod 600 "$DAEMON_HOME/u2.json"
+_stamp_meta u2 retired_from failure
+assert_equals "$(mode_of "$DAEMON_HOME/u2.json")" "600" "any narrowed meta keeps the mode it already had"
+rm -f "$DAEMON_HOME/u1.json" "$DAEMON_HOME/u2.json"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

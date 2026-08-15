@@ -207,8 +207,12 @@ for tid, n in sorted(legacy.items(), key=lambda kv: int(kv[0][1:])):
             if append:
                 what.append("pre-spec md")
             def write_body(num=num, gn=gn, want_meta=want_meta, append=append):
-                base = B.META_RE.sub("", gn["body"] or "").rstrip("\n")
-                B.set_body(num, B.render_body(base + append, want_meta))
+                # Exactly ONE strip, and it is the rightmost one: a leftmost
+                # strip cuts from a marker QUOTED in the ticket's prose, and a
+                # SECOND strip (render_body's own) would then cut a quoted
+                # example that ENDS the prose. This rewrite is one-shot (#60).
+                base = B.strip_meta(gn["body"])
+                B.set_body(num, B.compose_body(base + append, want_meta))
             act("%s: body += %s" % (ref, " + ".join(what)), write_body)
 
 print("%s: %d action(s)%s" % ("migrated" if apply else "dry-run",

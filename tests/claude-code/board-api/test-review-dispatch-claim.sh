@@ -143,6 +143,11 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# A standing failed-cycle count for the ticket this claim will yield. Only the
+# sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
+# stale count and a much later, unrelated fault escalated early. A delivered
+# recovery is a recovery, whichever phase delivered it.
+mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 # BOARD_RUN_TOKEN is set on the way in ON PURPOSE: a --sweep launched from a
 # worker's own shell inherits that worker's run bearer, and the client hands
 # BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
@@ -157,6 +162,8 @@ OUT="$(mktemp)"
 
 t "the granted claim is reported" "claimed #9 run=51 lane=qagent" cat "$OUT"
 nt "api review dispatch never invokes gh" "GH-CALLED" cat "$MARKER"
+attempts9() { [ -e "$DH/board-suppress/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
+t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" attempts9
 
 # --- the worker's environment: the run credentials it cannot review without -
 t "worker got the run bearer" "BOARD_RUN_TOKEN=tok-q"                cat "$DH/spawn-capture.txt"
@@ -223,6 +230,15 @@ t "the meta records the ticket" '"ticket": "9"'    meta
 # Without the bearer at rest every later relay/resume of this reviewer has no
 # token to speak with — the sweep reads it back out of exactly this field.
 t "the bearer is stored at rest" '"run_bearer": "tok-q"' meta
+# ...and stored 0600, the way board-bind wrote it. Every bookkeeping stamp that
+# touches this meta afterwards has to hold that line: one rewrite at the umask
+# default republishes the run bearer world-readable, and the api path's own
+# stamp then faithfully preserves the widened mode.
+meta_mode() {
+  python3 -c 'import glob, os, sys
+print("%o" % (os.stat(glob.glob(sys.argv[1])[0]).st_mode & 0o777))' "$DH/bbbb0001-*.json"
+}
+t "the bearer meta is not world-readable" "600" meta_mode
 barrier() {
   local f; f="$(find "$DH" -name bind-ready.json -type f -print | head -1)"
   [ -n "$f" ] || { echo "no-barrier"; return; }
@@ -256,6 +272,23 @@ nt "nothing was left unrendered"                 "{{"                 prompt
 t  "the base binding says it is unresolved"      '`BASE_REF`: UNRESOLVED' prompt
 t  "the worker is told to read the base off the PR" "gh pr view <n> --json" prompt
 t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
+# The bindings an api reviewer cannot function without, pinned on the VALUE
+# side: a `NAME`: assertion passes just as well against a rendered blank, which
+# is the shape a call site that stopped supplying a placeholder used to take.
+bound() {  # bound <NAME> <prompt-file> — reads the rendered roster line shape
+  local v; v="$(sed -n "s/^- \`$1\`: \(.*\)$/\1/p" "$2" | head -1)"
+  [ -n "$v" ] && echo "$1 bound: $v" || echo "$1 UNBOUND"
+}
+skill_pin() {  # skill_pin <prompt-file> — SKILL_FILE renders in prose, not on the roster
+  local v; v="$(sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' "$1" | head -1)"
+  [ -n "$v" ] && echo "SKILL_FILE bound: $v" || echo "SKILL_FILE UNBOUND"
+}
+API_PROMPT="$DH/prompt-9-api-qagent.md"
+t "the barrier file binding carries a value"     "BIND_READY_FILE bound" bound BIND_READY_FILE "$API_PROMPT"
+t "the implement contract carries a value"       "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$API_PROMPT"
+t "the board scripts binding carries a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$API_PROMPT"
+t "the assignment file binding carries a value"  "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$API_PROMPT"
+t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin "$API_PROMPT"
 
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
@@ -284,8 +317,14 @@ printf '{"lane": "qagent", "run_id": 99, "spawn_completed": false}\n' \
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
-printf '{"lane": "qagent", "run_id": 51, "spawn_completed": false}\n' \
+printf '{"lane": "qagent", "run_id": 51, "spawn_completed": false, "ticket": "9"}\n' \
   > "$DH2/board-claims/nonce-c.json"
+# ...and the delivery it confirms is where the ticket's failed-cycle count is
+# cleared when the inline reset never ran. The reset sits one line ahead of the
+# marker write, so THIS crash — bind landed, marker lost — is exactly the
+# window that leaves a durable recovery beside a stale counter, and a much
+# later unrelated fault would then escalate two rungs early.
+mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-9"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"9-api-qagent","status":"working","run_id":51,"lane":"qagent","ticket":"9"}' \
   > "$DH2/cccc0001.json"
 # (d) another dispatcher's journal, mid-handoff. Replaying it here would spawn
@@ -325,6 +364,9 @@ gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"       "gone" gone "$DH2/board-claims/nonce-b.json"
 t "so is its orphaned assignment body"    "gone" gone "$DH2/board-claims/nonce-b.body.md"
 t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
+attempts9r() { [ -e "$DH2/board-suppress/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
+t "and the delivery it confirms clears the ticket's failed-cycle count" \
+  "count cleared" attempts9r
 t "another lane's journal is left untouched" '"run_id": 77, "spawn_completed": false' \
   cat "$DH2/board-claims/nonce-d.json"
 # --- (e) a spawned-but-unbound run is never ended --------------------------
@@ -455,6 +497,22 @@ printf '{"lane": "qagent", "run_id": 71, "spawn_completed": false, "ticket": "42
 printf '{"lane": "qagent", "run_id": 72, "spawn_completed": false}\n' \
   > "$DH4/board-claims/nonce-u.json"
 printf 'undelivered review assignment\n' > "$DH4/board-claims/nonce-u.body.md"
+# (v) THE SAME SHAPE AS (s) WITH A LIVE WRITER: bound, no ack, and the process
+#     that claimed it is still running — a peer between its bind and the ack it
+#     is waiting for. That handover legitimately outlives any mtime grace (the
+#     bound is 120 seconds), so liveness is the only thing that separates it
+#     from (s). It is NOT a completed delivery: if that reviewer never acks,
+#     the peer retires it and releases the run. Reading it as "marker lost"
+#     seals a journal somebody else is still writing and — the reason it is
+#     pinned here — clears the ticket failed-cycle ladder for a delivery that
+#     may be about to be undone.
+CTL_V="$DH4/43-api-qagent-control.inflight"; mkdir -p "$CTL_V"
+printf '{"uuid": "ffff0003", "ticket": "43", "ledger": "x"}\n' > "$CTL_V/bind-ready.json"
+printf '{"uuid":"ffff0003","current":"ffff0003","name":"43-api-qagent","status":"working","run_id":73,"lane":"qagent","ticket":"43"}' \
+  > "$DH4/ffff0003.json"
+printf '{"lane": "qagent", "run_id": 73, "spawn_completed": false, "ticket": "43", "daemon": "43-api-qagent", "control": "%s", "pid": %s}\n' \
+  "$CTL_V" "$$" > "$DH4/board-claims/nonce-v.json"
+mkdir -p "$DH4/board-suppress"; echo 2 > "$DH4/board-suppress/.attempts-43"
 
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -470,6 +528,16 @@ t  "and its run ended so the ticket requeues" '"path": "/runs/70/end"' cat "$FIX
 t  "ended as abandoned"                   '\"reason\": \"abandoned\"'  cat "$FIX4.log"
 gone4() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t  "the journal is dropped"               "gone" gone4 "$DH4/board-claims/nonce-s.json"
+# --- (v) a delivery still waiting on its ack is not a delivery -------------
+t  "a bound handover under a live writer is left in flight" \
+   "is in flight under a live dispatcher"     cat "$OUT4"
+attempts43() { [ -e "$DH4/board-suppress/.attempts-43" ] && echo "count kept" || echo "count cleared"; }
+t  "and its ticket keeps its failed-cycle count until the ack lands" \
+   "count kept"                               attempts43
+t  "its journal is left open for the peer to mark" '"spawn_completed": false' \
+   cat "$DH4/board-claims/nonce-v.json"
+nt "and its run is not ended"    '"path": "/runs/73/end"'   cat "$FIX4.log"
+
 # --- (t) a reviewer that DID cross its barrier is left alone ---------------
 nt "an acked reviewer's run is never ended" '"path": "/runs/71/end"' cat "$FIX4.log"
 nt "and its worker is never retired"        "retire ffff0002"  \
@@ -574,6 +642,13 @@ t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "
 t "the integration ref binding rides the prompt" \
   '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
 t "the assignment file still rides an api-scale prompt" '`TICKET_BODY_FILE`: ' cat "$SCALE_PROMPT"
+# The value side on the api-scale call site too — the same P_* block serves
+# both api modes, but only the api render was pinned on values before.
+t "the api-scale barrier file carries a value"   "BIND_READY_FILE bound" bound BIND_READY_FILE "$SCALE_PROMPT"
+t "the api-scale implement contract carries a value" "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$SCALE_PROMPT"
+t "the api-scale board scripts carry a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$SCALE_PROMPT"
+t "the api-scale assignment file carries a value" "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$SCALE_PROMPT"
+t "the api-scale protocol pin carries a value"   "SKILL_FILE bound" skill_pin "$SCALE_PROMPT"
 t "the scale prompt orders the integration checkout" \
   "git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
 # THE CHECKOUT NAMES THE REF THE FETCH JUST WROTE. `git fetch origin <ref>` on a
@@ -727,5 +802,103 @@ nt "so no rendered branch name is baked into the base fetch" \
   "+refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
 t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
+
+# =========================================================================
+# Scenario 9 — AN EPIC CLAIM WITH NO INTEGRATION BRANCH STILL DISPATCHES, and
+# its INTEGRATION_REF binding renders PRESENT AND EMPTY. This is the one place
+# where an empty rendered value is the contract rather than a defect: the
+# dispatcher deliberately does not refuse the spawn (refusing strands the
+# ticket with no park note naming the gap), so the empty binding is what the
+# api-scale block's own empty-ref check reads to park the epic itself, with a
+# note. Now that an unsupplied placeholder hard-fails the render, that
+# distinction lives one line away from the check — a later "reject empty
+# values too" tightening would look obviously right, pass every other test,
+# and silently convert a worker-parks-with-a-note into a stranded ticket.
+# =========================================================================
+PORT9="$(free_port)"
+FIX9="$(mktemp)"; : > "$FIX9.log"
+cat > "$FIX9" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"claimed":true,"runId":81,"ticketId":95,"fence":1,"bearer":"noref-bearer",
+          "body":"branch-less epic assignment","pr":"5150","branch":null,
+          "parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/81/bind","status":200,"body":{"ok":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX9" "$PORT9" & MOCK9=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 2>/dev/null' EXIT
+wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; exit 1; }
+
+r9="$(apirepo "$PORT9")"
+DH9="$(mktemp -d)"
+OUT9="$(mktemp)"
+( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
+
+NOREF_PROMPT="$DH9/prompt-95-api-qagent.md"
+binding_shape() {  # binding_shape <NAME> <prompt-file> — absent / empty / valued
+  local v
+  if ! grep -q "^- \`$1\`:" "$2"; then echo "LINE-ABSENT"; return; fi
+  v="$(sed -n "s/^- \`$1\`: \{0,1\}\(.*\)\$/\1/p" "$2" | head -1)"
+  [ -n "$v" ] && echo "PRESENT-WITH-VALUE" || echo "PRESENT-AND-EMPTY"
+}
+t "a branch-less epic claim still reaches a worker" "claimed #95 run=81" cat "$OUT9"
+nt "the empty integration ref does not fail the render closed" \
+  "unrendered placeholders" cat "$OUT9"
+t "the api-scale variant is still the one rendered" \
+  "SCALE REVIEWER of recomposition epic #95" cat "$NOREF_PROMPT"
+t "the integration ref renders present and empty, not missing" \
+  "PRESENT-AND-EMPTY" binding_shape INTEGRATION_REF "$NOREF_PROMPT"
+t "and the WORKER is the party that parks it, with a note" \
+  'needs-human "scale review: the claim carried no integration ref"' cat "$NOREF_PROMPT"
+
+# =========================================================================
+# Scenario 10 — ONE RECOVERY ATTEMPT PER TICKET PER TICK REACHES THIS PHASE
+# TOO. The sweep's resume phase records every ticket it attempted a recovery
+# for this tick; phase 4 hands that ledger across the same way it hands the
+# suppression directory. Without it the review lane could claim the very
+# ticket whose replay just faulted — a second attempt in the same tick, over
+# the invariant the ledger exists to hold. The claim is how we learn WHICH
+# ticket the server picked, so the refusal is a release, as suppression's is.
+# =========================================================================
+PORT10="$(free_port)"
+FIX10="$(mktemp)"; : > "$FIX10.log"
+cat > "$FIX10" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":33,"fence":1,"bearer":"tok-l","plan":null,
+          "body":"ledgered review","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX10" "$PORT10" & MOCK10=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 2>/dev/null' EXIT
+wait_for_port "$PORT10" || { echo "FAIL mock server never listened on $PORT10"; exit 1; }
+
+r10="$(apirepo "$PORT10")"
+DH10="$(mktemp -d)"
+LEDGER10="$(mktemp)"; echo 33 > "$LEDGER10"
+OUT10="$(mktemp)"
+( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH10" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r10" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
+    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
+    BOARD_RESUMED_LEDGER="$LEDGER10" \
+    "$DISPATCH" --sweep ) > "$OUT10" 2>&1 || true
+
+t  "a claim yielding a tick-ledgered ticket is released" \
+   "#33 already had its one recovery attempt this tick"  cat "$OUT10"
+t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX10.log"
+nt "so no reviewer is spawned for it" "ARGS name=33"  \
+   bash -c "cat '$DH10/spawn-capture.txt' 2>/dev/null || echo none"
+journal10() { ls "$DH10/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+t  "and the journal is dropped with it"  "journal dropped"  journal10
 
 finish

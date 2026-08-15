@@ -984,7 +984,7 @@ cat > "$DAEMON_HOME/22222222-1111-2222-3333-444444444444.json" <<META
  "updated": "2026-07-12T00:00:00Z"}
 META
 run board-answer.sh "$fb_impl_t" "answer" >/dev/null
-assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "unrecorded pre-park with a non-architect role falls back on in-progress"
+assert_contains "$(state "s['issues']['$fb_impl_t']['labels']")" "status:in-progress" "an unrecorded pre-park with an IMPLEMENT role falls back on in-progress"
 
 out="$(run board-register.sh "Unknown-role fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
 fb_unk_t="${out%% *}"
@@ -997,6 +997,66 @@ cat > "$DAEMON_HOME/33333333-1111-2222-3333-444444444444.json" <<META
 META
 run board-answer.sh "$fb_unk_t" "answer" >/dev/null
 assert_contains "$(state "s['issues']['$fb_unk_t']['labels']")" "status:in-progress" "a meta with no role at all (pre-fix daemon) preserves the prior default: in-progress"
+
+# The QAgent lane is the third rung. A reviewer resumed into in-progress owns
+# no implementation branch and has no legal exit; it belongs in in-review.
+# Reaching in-review from an UNRECORDED pre-park is itself the argv proof that
+# board-answer re-supplied --pr: board-transition refuses in-review without the
+# flag unless the pre-park: meta records in-review (asserted absent below), so
+# the recorded-pr shortcut cannot be what let this through.
+out="$(run board-register.sh "QAgent fallback probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_qa_t="${out%% *}"
+run board-transition.sh "$fb_qa_t" in-progress "picked up" --pr https://github.com/test/repo/pull/88 >/dev/null
+run board-transition.sh "$fb_qa_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_qa_t" needs-human "human decision needed" >/dev/null
+assert_not_contains "$(state "s['issues']['$fb_qa_t']['body']")" "pre-park:" "needs-info -> needs-human records no pre-park on the qagent probe either"
+cat > "$DAEMON_HOME/44444444-1111-2222-3333-444444444444.json" <<META
+{"uuid": "44444444-1111-2222-3333-444444444444", "role": "QAGENT",
+ "status": "idle", "ticket": "$fb_qa_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_qa_t" "ship it" >/dev/null
+assert_contains "$(state "s['issues']['$fb_qa_t']['labels']")" "status:in-review" "unrecorded pre-park with a QAGENT role returns to in-review, re-supplying the ticket's own --pr"
+
+# ...and only when there IS a PR to re-supply. With no pr: meta the review
+# lane is unwritable, and the fallback that demoted to in-progress and resumed
+# anyway RE-CREATED the stranding this return exists to prevent: the reviewer
+# wakes in a lane it cannot exit and review-dispatch's stale-reviewer arm
+# retires it, leaving the ticket in-progress with no PR and nobody bound. The
+# park is the safe state — the relay is refused and the ticket stays there.
+out="$(run board-register.sh "QAgent no-PR probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_qnp_t="${out%% *}"
+run board-transition.sh "$fb_qnp_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_qnp_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/55555555-1111-2222-3333-444444444444.json" <<META
+{"uuid": "55555555-1111-2222-3333-444444444444", "role": "QAGENT",
+ "status": "idle", "ticket": "$fb_qnp_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+assert_fails run board-answer.sh "$fb_qnp_t" "answer"
+out="$(run board-answer.sh "$fb_qnp_t" --posted 2>&1 || true)"
+assert_contains "$out" "no pr: meta" "the refusal names the meta that is missing"
+assert_contains "$out" "--posted" "…and the re-run that recovers it once the link is restored"
+assert_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:needs-human" "the PR-less QAGENT park STAYS parked — no demotion, no resume"
+assert_not_contains "$(state "s['issues']['$fb_qnp_t']['labels']")" "status:in-progress" "…and never lands in the lane the reviewer cannot exit"
+# The answers are posted before the refusal, so the human loses nothing by
+# fixing the pr: meta and re-running --posted.
+assert_contains "$(state "s['issues']['$fb_qnp_t']['comments'][-1]")" "[answers]" "the answers comment survives the refusal"
+
+# Reviewers bound before the role stamp carry no role: — their deterministic
+# registry name is the only role record they have.
+out="$(run board-register.sh "Legacy reviewer probe" enhancement P2 --body-file "$SPEC_BODY")"
+fb_leg_t="${out%% *}"
+run board-transition.sh "$fb_leg_t" in-progress "picked up" --pr https://github.com/test/repo/pull/89 >/dev/null
+run board-transition.sh "$fb_leg_t" needs-info "need more research" >/dev/null
+run board-transition.sh "$fb_leg_t" needs-human "human decision needed" >/dev/null
+cat > "$DAEMON_HOME/66666666-1111-2222-3333-444444444444.json" <<META
+{"uuid": "66666666-1111-2222-3333-444444444444", "name": "review-pr-89",
+ "status": "idle", "ticket": "$fb_leg_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+run board-answer.sh "$fb_leg_t" "ship it" >/dev/null
+assert_contains "$(state "s['issues']['$fb_leg_t']['labels']")" "status:in-review" "a pre-stamp reviewer meta is recognized by its review-pr-* registry name"
 
 unset DAEMON_SCRIPTS STUB_STATE
 
@@ -1851,6 +1911,383 @@ assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:re
   "no issue is ever labelled with the retired state"
 assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:needs-human" \
   "the superseded label is swapped out, not left alongside (that would read as conflict)"
+
+echo "board-migrate-gh (marker-quoting body):"
+# The migration writes bodies too — strip the meta block, append the pre-spec md,
+# re-render — and it is a ONE-SHOT rewrite of a real ticket's statement of work.
+# A leftmost strip deletes everything from a marker QUOTED in the prose onward
+# (#60), so the migration path needs the same rightmost rule as every other
+# consumer.
+MIG_BODY="$TEST_ROOT/migrate-marker-body.md"
+printf '## Problem & intent\n\nThe block looks like:\n\n<!-- board:meta\npr: example\n-->\n\n## Success criteria\n\n- the prose after the example survives a migration\n' > "$MIG_BODY"
+# Born with a note so the issue carries a REAL trailing block: the quoted
+# example only misleads META_RE while a real block anchors the `-->\s*$`.
+mig60="$(run board-register.sh "Documents the meta block (migrated)" bug P2 \
+           --body-file "$MIG_BODY" --state needs-human --note "waiting on A")"
+mig60="${mig60%% *}"
+cat > "$LEGACY/board-marker.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Documents the meta block (migrated)", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug", "note": null,
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/marker", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $mig60}
+}}
+J
+printf -- '---\nid: T4\n---\n# T4\n' > "$LEGACY/tickets/T4.md"
+run board-migrate-gh.sh --board "$LEGACY/board-marker.json" --apply >/dev/null
+mig60_body="$(state "s['issues']['$mig60']['body']")"
+assert_contains "$mig60_body" "the prose after the example survives a migration" \
+  "the migration keeps the prose after a quoted marker (#60)"
+assert_contains "$mig60_body" "## Success criteria" "…including the headings after it"
+assert_contains "$mig60_body" "branch: feat/marker" "…while still applying the migrated meta"
+
+# The same body shape with the example at the very END of the prose. That one
+# still satisfies META_RE's `\s*$`, so a SECOND strip deletes it as if it were
+# the block: write_body strips, then hands the result to a renderer that strips
+# again. Exactly one strip may happen (task-2 review I1).
+migtail="$(run board-register.sh "Ends with the meta example" bug P2 \
+             --state needs-human --note "waiting on B")"
+migtail="${migtail%% *}"
+# Seeded, not written through --body-file: board-register.sh renders the body,
+# and a renderer strips a trailing example at birth (the same one-strip question,
+# one path over). board-body.sh's raw splice is how a real ticket comes to end
+# with one; here the state is seeded so the drill pins the migration alone.
+MIGTAIL_ID="$migtail" python3 - <<'SEED'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"][os.environ["MIGTAIL_ID"]]["body"] = (
+    "## Problem & intent\n\nThe prose before the example must survive too.\n\n"
+    "The block looks like:\n\n<!-- board:meta\npr: tail-example\n-->\n\n"
+    "<!-- board:meta\nnote: waiting on B\n-->\n")
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+SEED
+assert_contains "$(state "s['issues']['$migtail']['body']")" "pr: tail-example" "fixture: the ticket really ends its prose with the quoted example"
+cat > "$LEGACY/board-marker-tail.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Ends with the meta example", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug", "note": null,
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/tail", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $migtail}
+}}
+J
+run board-migrate-gh.sh --board "$LEGACY/board-marker-tail.json" --apply >/dev/null
+migtail_body="$(state "s['issues']['$migtail']['body']")"
+assert_contains "$migtail_body" "pr: tail-example" "a quoted example ENDING the prose survives the migration (one strip, not two)"
+assert_contains "$migtail_body" "The prose before the example must survive too." "…along with the prose before it"
+assert_contains "$migtail_body" "branch: feat/tail" "…while still applying the migrated meta"
+
+# A legacy note that quotes the OPENING marker is unrepresentable in the block.
+# It dies LOUDLY mid-migration rather than minting a second marker inside the
+# real block — no special handling. (Recovery is a re-run after the operator
+# fixes the note; the migration's idempotence carries that, untested here.)
+cat > "$LEGACY/board-marker-note.json" <<J
+{"version": 1, "next_id": 2, "tickets": {
+  "T1": {"title": "Documents the meta block (migrated)", "md": "tickets/T4.md",
+         "state": "needs-human", "category": "bug",
+         "note": "forged <!-- board:meta pr: fake",
+         "parent": null, "blocked_by": [], "spawned_by": null, "relates_to": [],
+         "branch": "feat/marker", "pr": null, "created": "2026-07-01",
+         "updated": "2026-07-05", "gh": $mig60}
+}}
+J
+assert_fails run board-migrate-gh.sh --board "$LEGACY/board-marker-note.json" --apply
+# Pin the REASON: rc≠0 alone would also be satisfied by a malformed heredoc or a
+# future argument-parsing change.
+mig_die_out="$(run board-migrate-gh.sh --board "$LEGACY/board-marker-note.json" --apply 2>&1 || true)"
+assert_contains "$mig_die_out" "cannot carry a board:meta marker token" \
+  "…for the grammar's own reason, not an incidental failure"
+assert_equals "$(state "s['issues']['$mig60']['body']")" "$mig60_body" \
+  "…and the refused migration left the body untouched"
+
+echo "meta-grammar:"
+# The board:meta block is prose-adjacent: tickets that DOCUMENT the block quote
+# a marker-shaped example in their own text (#60). META_RE is leftmost-first and
+# its lazy middle spans from the quoted marker to the real trailing `-->`, so a
+# leftmost read parses the wrong block and a leftmost strip deletes the prose
+# between them. The block that counts is the RIGHTMOST one — which is only sound
+# while the real block cannot itself contain a marker, hence the value grammar
+# (single line, no marker tokens) enforced at the write.
+mg="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+QUOTED = "<!-- board:meta\npr: fake\npre-park: in-review\n-->"
+# (a) the example indented inside the prose, (a2) the reproduced #60 shape with
+# the example at column 0.
+for tag, quoted in (("a", "\n".join("    " + l for l in QUOTED.splitlines())),
+                    ("a2", QUOTED)):
+    prose = "Docs about the block:\n\n%s\n\nMore prose." % quoted
+    body = B.render_body(prose, {"pr": "https://real/1"})
+    print("%s-parse-pr=%s" % (tag, B.parse_meta(body).get("pr")))
+    print("%s-tail=%s" % (tag, "kept" if "More prose." in B.strip_meta(body) else "LOST"))
+    print("%s-prose=%s" % (tag, "intact" if B.strip_meta(body) == prose.rstrip() else "MANGLED"))
+    # (b) strip → parse → render is the identity on a body the board wrote.
+    print("%s-roundtrip=%s" % (
+        tag, "same" if B.render_body(B.strip_meta(body), B.parse_meta(body)) == body else "DIFFERS"))
+
+# A body carrying BOTH blocks verbatim (what a pre-fix client left behind):
+# the quoted example's keys must not leak into the parse.
+both = ("Docs about the block:\n\n%s\n\nMore prose."
+        "\n\n<!-- board:meta\npr: https://real/1\n-->\n" % QUOTED)
+print("leak-pre-park=%s" % B.parse_meta(both).get("pre-park"))
+print("both-parse-pr=%s" % B.parse_meta(both).get("pr"))
+print("both-tail=%s" % ("kept" if "More prose." in B.strip_meta(both) else "LOST"))
+
+# (c) contract_hash covers the prose only — same prose, different meta, same id.
+other = both.replace("pr: https://real/1", "pr: https://other/2")
+print("hash-prose-only=%s" % ("yes" if B.contract_hash(both) == B.contract_hash(other) else "no"))
+
+# (d) a multi-line value collapses to one line rather than minting block lines.
+print("d-block=%r" % B.render_body("prose", {"note": "line1\nline2"}))
+
+# (e) `-->` in a value is LEGAL (spec v1.2.1): the collapse leaves every value
+# behind its `key: ` prefix, and META_RE needs the closer at LINE START, so an
+# arrow can never terminate the block early. Refusing it bricked every stored
+# note carrying an ASCII arrow — update_meta re-renders every key it parsed.
+ARROW = "parked, in-review --> needs-info"
+arrow = B.render_body("prose", {"note": ARROW})
+print("e-parse=%s" % B.parse_meta(arrow).get("note"))
+print("e-prose=%s" % ("intact" if B.strip_meta(arrow) == "prose" else "MANGLED"))
+print("e-roundtrip=%s" % (
+    "same" if B.render_body(B.strip_meta(arrow), B.parse_meta(arrow)) == arrow else "DIFFERS"))
+# …even one that would otherwise REACH line start: the collapse folds it back.
+print("e-multi=%s" % B.parse_meta(B.render_body("prose", {"note": "a\n--> b"})).get("note"))
+
+# (f) EVERY separator parse_meta's str.splitlines() honours — \r\n-only
+# normalization leaves the rest injectable as forged keys.
+SEPS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "vt": "\v", "ff": "\f",
+        "fs": "\x1c", "gs": "\x1d", "rs": "\x1e", "nel": "\x85",
+        "ls": "\u2028", "ps": "\u2029"}
+for name, sep in sorted(SEPS.items()):
+    bad = []
+    if B.parse_meta(B.render_body("prose", {"note": "safe%spr: https://forged/1" % sep})).get("pr"):
+        bad.append("pr")
+    if B.parse_meta(B.render_body("prose", {"note": "safe%spre-park: in-review" % sep})).get("pre-park"):
+        bad.append("pre-park")
+    print("f-%s=%s" % (name, ("FORGED:" + ",".join(bad)) if bad else "clean"))
+PY
+)"
+assert_contains "$mg" "a-tail=kept" "an INDENTED marker example survives a meta write"
+assert_contains "$mg" "a-prose=intact" "…byte-for-byte outside the block"
+assert_contains "$mg" "a-parse-pr=https://real/1" "parse_meta reads the real block, not the indented example"
+assert_contains "$mg" "a-roundtrip=same" "strip → parse → render is the identity (indented example)"
+assert_contains "$mg" "a2-tail=kept" "a column-0 marker example survives a meta write (#60)"
+assert_contains "$mg" "a2-prose=intact" "…byte-for-byte outside the block"
+assert_contains "$mg" "a2-parse-pr=https://real/1" "parse_meta reads the real block, not the quoted example"
+assert_contains "$mg" "a2-roundtrip=same" "strip → parse → render is the identity (column-0 example)"
+assert_contains "$mg" "leak-pre-park=None" "keys from a quoted example never leak into the parse"
+assert_contains "$mg" "both-parse-pr=https://real/1" "the rightmost block is the one parsed"
+assert_contains "$mg" "both-tail=kept" "stripping a two-marker body keeps the prose between them"
+assert_contains "$mg" "hash-prose-only=yes" "contract_hash covers the prose only"
+assert_contains "$mg" "d-block=" "render_body returned a block"
+assert_contains "$mg" "note: line1 line2" "a multi-line meta value renders as ONE line"
+assert_contains "$mg" "e-parse=parked, in-review --> needs-info" "an arrow-bearing value round-trips verbatim"
+assert_contains "$mg" "e-prose=intact" "…and leaves the prose byte-for-byte"
+assert_contains "$mg" "e-roundtrip=same" "…strip → parse → render is the identity on it"
+assert_contains "$mg" "e-multi=a --> b" "an arrow that would reach line start collapses onto one line"
+for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
+    assert_contains "$mg" "f-$sep=clean" "a value split by $sep cannot forge a meta key"
+done
+
+# (g) The LEGACY-NESTED shape, the mirror image of the quoted example: a
+# pre-grammar client stored a meta VALUE carrying a verbatim opener, so the
+# REAL block's interior holds a second marker. Reading the LAST opener anchors
+# on that nested one and the strip cuts INSIDE the block, leaving half of it
+# behind as prose. The forged key sits inside the stored block whichever opener
+# wins — that content is legacy corruption and unrecoverable — but the block's
+# BOUNDARY is recoverable, and that is what is pinned here: the strip lands on
+# the outer opener, and a rewrite leaves the prose byte-stable while collapsing
+# the body to one clean block.
+mgb="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+SHAPE_B = "prose\n\n<!-- board:meta\nnote: line1\n<!-- board:meta\npr: forged\n-->\n"
+print("g-strip=%r" % B.strip_meta(SHAPE_B))
+rewritten = B.render_body(SHAPE_B, B.parse_meta(SHAPE_B))
+print("g-rewrite-prose=%r" % B.strip_meta(rewritten))
+print("g-rewrite-markers=%d" % rewritten.count("<!-- board:meta"))
+print("g-rewrite-stable=%s" % (
+    "same" if B.render_body(rewritten, B.parse_meta(rewritten)) == rewritten
+    else "DIFFERS"))
+PY
+)"
+assert_contains "$mgb" "g-strip='prose'" "a legacy NESTED marker strips at the outer opener, not the nested one"
+assert_contains "$mgb" "g-rewrite-prose='prose'" "…and a rewrite of that body leaves the prose byte-stable"
+assert_contains "$mgb" "g-rewrite-markers=1" "…collapsing it to a single clean block"
+assert_contains "$mgb" "g-rewrite-stable=same" "…which is itself a fixed point"
+
+# (i) The two shapes COMPOSED: prose that QUOTES a legacy-nested example, with
+# the real block further down. Judging only the gap between adjacent candidates
+# fails here — the gap between the quoted outer opener and the quoted nested
+# one holds nothing but that example's own `note:` entry, so it reads legal and
+# the quoted opener wins, leaking its keys and truncating the body from the
+# example onward. The interior is only block-legal if it is legal ALL the way
+# to the closer, which the example's `-->` and the prose after it break.
+mgc="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+QUOTED_NESTED = "<!-- board:meta\nnote: line1\n<!-- board:meta\npr: forged\n-->"
+prose = "Docs about the block:\n\n%s\n\nMore prose." % QUOTED_NESTED
+body = "%s\n\n<!-- board:meta\npr: https://real/1\n-->\n" % prose
+meta = B.parse_meta(body)
+print("i-parse-pr=%s" % meta.get("pr"))
+print("i-leak-note=%s" % meta.get("note"))
+print("i-tail=%s" % ("kept" if "More prose." in B.strip_meta(body) else "LOST"))
+print("i-prose=%s" % ("intact" if B.strip_meta(body) == prose else "MANGLED"))
+PY
+)"
+assert_contains "$mgc" "i-parse-pr=https://real/1" "a QUOTED legacy-nested example is not read as the real block"
+assert_contains "$mgc" "i-leak-note=None" "…so its keys never leak into the parse"
+assert_contains "$mgc" "i-tail=kept" "…and the strip keeps the prose after it"
+assert_contains "$mgc" "i-prose=intact" "…byte-for-byte, quoted example included"
+
+# The block a client older than the grammar wrote is noncanonical — unknown
+# keys, comment lines, hand spacing — and no opener clears its interior. The
+# LAST candidate then wins, which is the old rightmost behavior and what
+# board-body.sh's raw splice carries through untouched.
+mgnc="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+body = ("Docs:\n\n<!-- board:meta\npr: fake\n-->\n\nMore prose."
+        "\n\n<!-- board:meta\nweird-key: x\npr: https://real/1\n-->\n")
+print("nc-parse-pr=%s" % B.parse_meta(body).get("pr"))
+print("nc-tail=%s" % ("kept" if "More prose." in B.strip_meta(body) else "LOST"))
+PY
+)"
+assert_contains "$mgnc" "nc-parse-pr=https://real/1" "a block carrying an UNKNOWN key is still found (segment fallback)"
+assert_contains "$mgnc" "nc-tail=kept" "…without eating the prose above it"
+
+# (j) The opener walk must cut interior lines exactly where parse_meta will.
+# parse_meta reads the block with str.splitlines(), which honours U+2028, bare
+# CR and \v among others; a walk that splits on \n alone folds a quoted
+# example's `-->` and the prose behind it into ONE line that reads like a legal
+# `note:` entry, so the quoted opener wins and the next meta write truncates
+# the body. Same separator set as (f), coming the other way: (f) stops a value
+# from FORGING a key, (j) stops one from HIDING a disqualifying line.
+mgsep="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+SEPS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "vt": "\v", "ff": "\f",
+        "fs": "\x1c", "gs": "\x1d", "rs": "\x1e", "nel": "\x85",
+        "ls": "\u2028", "ps": "\u2029"}
+for name, sep in sorted(SEPS.items()):
+    folded = "note: example%s-->%sMore prose." % (sep, sep)
+    body = ("Docs:\n\n<!-- board:meta\n%s\n"
+            "<!-- board:meta\npr: https://real/1\n-->\n" % folded)
+    meta = B.parse_meta(body)
+    bad = []
+    if meta.get("pr") != "https://real/1":
+        bad.append("parse")
+    if meta.get("note"):
+        bad.append("leak")
+    if "More prose." not in B.strip_meta(body):
+        bad.append("truncated")
+    print("j-%s=%s" % (name, ",".join(bad) if bad else "clean"))
+PY
+)"
+for sep in cr crlf ff fs gs lf ls nel ps rs vt; do
+    assert_contains "$mgsep" "j-$sep=clean" "a quoted example folded on $sep cannot hide its own closer"
+done
+
+# (k) The two legacy damages COMBINED: a pre-grammar block whose value carries a
+# nested marker AND which also holds an unknown key. The unknown key is not
+# block-legal, so it fences off every candidate and the walk falls back — and a
+# fallback to the LAST candidate lands on the NESTED opener, re-opening exactly
+# the strip regression (g) pins. The fallback belongs to the segment the illegal
+# line landed in, so it is that segment's FIRST opener.
+mgmix="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import _board as B
+
+MIXED = ("prose\n\n<!-- board:meta\nnote: line1\n"
+         "<!-- board:meta\npr: forged\nweird-key: x\n-->\n")
+print("k-strip=%r" % B.strip_meta(MIXED))
+rewritten = B.render_body(MIXED, B.parse_meta(MIXED))
+print("k-rewrite-prose=%r" % B.strip_meta(rewritten))
+print("k-rewrite-markers=%d" % rewritten.count("<!-- board:meta"))
+PY
+)"
+assert_contains "$mgmix" "k-strip='prose'" "a legacy block with a nested marker AND an unknown key still strips at the outer opener"
+assert_contains "$mgmix" "k-rewrite-prose='prose'" "…and a rewrite leaves the prose byte-stable"
+assert_contains "$mgmix" "k-rewrite-markers=1" "…collapsing it to a single clean block"
+
+# Every case above is a shape somebody found the hard way, which makes them a
+# record of what was looked for rather than evidence of coverage — the opener
+# rule was corrected three times, twice by a shape an EARLIER version handled.
+# The fuzz is the coverage: bodies composed from a component grammar with the
+# intended opener known at generation time, fixed seed, ~0.3s. It catches all
+# three superseded rules on its own (see the script's header for the counts).
+fuzz_out="$(PYTHONPATH="$SCRIPTS_DIR" python3 "$SCRIPT_DIR/meta-grammar-fuzz.py" 2>&1 || true)"
+fuzz_head="$(head -1 <<<"$fuzz_out")"
+assert_contains "$fuzz_head" "divergences=0" "the opener walk survives a generated-body fuzz ($fuzz_head)"
+grep -Fq "divergences=0" <<<"$fuzz_head" || echo "$fuzz_out"
+
+# (h) The opener walk must not rescan per marker. The rightmost walk re-ran the
+# end-anchored regex once per opener — O(N²), 1.7s on a 4000-marker body, and
+# snapshot() pays parse_meta per issue against a server that accepts 1MB
+# bodies. The bound is deliberately loose: the regression is seconds, not
+# milliseconds, and a tight bound only buys CI flake.
+mgperf="$(PYTHONPATH="$SCRIPTS_DIR" python3 - <<'PY'
+import time
+import _board as B
+
+body = "prose\n\n" + ("<!-- board:meta\n" * 4000) + "note: x\n-->\n"
+t0 = time.time()
+B.parse_meta(body)
+B.strip_meta(body)
+elapsed = time.time() - t0
+print("perf-seconds=%.3f" % elapsed)
+print("perf-fast=%s" % ("yes" if elapsed < 0.5 else "SLOW"))
+PY
+)"
+assert_contains "$mgperf" "perf-fast=yes" \
+  "a marker-dense body parses without a per-marker rescan (${mgperf//$'\n'/ })"
+
+# The OPENING marker is unrepresentable inside the block — refuse loudly rather
+# than write a body whose real block contains a second marker.
+mg_die() { PYTHONPATH="$SCRIPTS_DIR" python3 -c "import _board as B; B.render_body('prose', {'note': 'x\n$1'})"; }
+assert_fails mg_die '<!-- board:meta'
+die_out="$(mg_die '<!-- board:meta' 2>&1 || true)"
+assert_contains "$die_out" "note" "the refusal names the offending key"
+# Pin the message: die_out is captured with 2>&1, so a traceback echoing the
+# source line would also contain "note" and pass the assert above.
+assert_contains "$die_out" "cannot carry a board:meta marker token" "…with the refusal's own message, not a traceback"
+
+# The refusal must land BEFORE any remote write. apply_state writes the status
+# label first and re-renders EVERY parsed key on the meta write that follows, so
+# a die in between left the ticket relabelled with a stale note (task review C1).
+mg_tid="$(run board-register.sh "Meta grammar drill" bug P2 --body-file "$SPEC_BODY")"
+mg_tid="${mg_tid%% *}"
+run board-transition.sh "$mg_tid" in-progress >/dev/null
+mg_labels_before="$(state "s['issues']['$mg_tid']['labels']")"
+mg_body_before="$(state "s['issues']['$mg_tid']['body']")"
+mg_log_mark="$(wc -l < "$MOCK_GH_LOG")"
+assert_fails run board-transition.sh "$mg_tid" needs-human 'forged: <!-- board:meta'
+mg_log_tail="$(tail -n "+$((mg_log_mark + 1))" "$MOCK_GH_LOG")"
+assert_not_contains "$mg_log_tail" "status:needs-human" "the refused transition never wrote the status label"
+assert_equals "$(state "s['issues']['$mg_tid']['labels']")" "$mg_labels_before" "…labels untouched"
+assert_equals "$(state "s['issues']['$mg_tid']['body']")" "$mg_body_before" "…body untouched"
+
+# …and the arrow-bearing note that C1's repro tore now goes through end-to-end.
+out="$(run board-transition.sh "$mg_tid" needs-human 'human input needed: in-review --> needs-info')"
+assert_contains "$out" "#$mg_tid: in-progress → needs-human" "an arrow-bearing park note transitions cleanly"
+assert_contains "$(state "s['issues']['$mg_tid']['labels']")" "status:needs-human" "…the label moved"
+assert_contains "$(state "s['issues']['$mg_tid']['body']")" "note: human input needed: in-review --> needs-info" "…and the note is the real one"
+
+# #60 at the CLI, not the library: the bug was found as a live failure of
+# board-transition → apply_state → update_meta over a body that DOCUMENTS the
+# meta block. Drive that whole path over such a body.
+MARKER_BODY="$TEST_ROOT/marker-body.md"
+printf '## Problem & intent\n\nThe block looks like:\n\n<!-- board:meta\npr: example\n-->\n\n## Success criteria\n\n- the prose after the example survives a meta write\n' > "$MARKER_BODY"
+# Birth with a note so the ticket carries a REAL trailing block: the quoted
+# example only misleads META_RE while a real block anchors the `-->\s*$` it
+# spans to. The transition is then an ordinary meta write over that body.
+mg60="$(run board-register.sh "Documents the meta block" bug P2 --body-file "$MARKER_BODY" --state needs-human --note "waiting on A")"
+mg60="${mg60%% *}"
+run board-transition.sh "$mg60" in-progress >/dev/null
+mg60_body="$(state "s['issues']['$mg60']['body']")"
+assert_contains "$mg60_body" "the prose after the example survives a meta write" "a gh-mode meta write keeps the prose after a quoted marker (#60)"
+assert_contains "$mg60_body" "## Success criteria" "…including the headings after it"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

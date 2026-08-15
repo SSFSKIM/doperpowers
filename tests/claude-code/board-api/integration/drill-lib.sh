@@ -196,6 +196,19 @@ import json, os, sys
 tid = os.environ["T_ID"]
 print(next((str(t["owner_run"]) for t in json.load(sys.stdin) if str(t["id"]) == tid), "(absent)"))'; }
 
+# ---- closing an id ---------------------------------------------------------
+# `t`/`nt` match with `grep -qF`, which has no anchor of its own, so an id that
+# ENDS what it is printed in is satisfied by every id it prefixes: `owner=17`
+# is a substring of `owner=170`, and a drill asserting the first would pass on
+# the second — the right verdict for the wrong reason. Two ways to close one,
+# and every drill here uses one of them:
+#
+#   eol         give each line of an emitter's output an explicit terminator,
+#               for text this suite does not author (an env dump, a JSON tail).
+#   owner_line  the suite's own emitters carry their delimiter in the value.
+eol() { sed 's/$/;/' "$@"; }
+owner_line() { echo "owner=[$(ticket_owner "$1")]"; }
+
 # ---- the scripted worker sessions -----------------------------------------
 # No model call anywhere in this tier. The stubs stand in for the daemon layer
 # itself, so a drill whose claim IS about that layer would have to say so; none

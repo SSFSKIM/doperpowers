@@ -725,9 +725,11 @@ kill $DMOCKS 2>/dev/null || true
 # cheapest place to see which directory this phase is actually working in.
 # =========================================================================
 SUPD="$TDIR/operator-suppress"; mkdir -p "$SUPD"
-# env-issue 999 is on no listing this board serves, so the lift fires on the
-# closed-env-issue trigger without depending on any other scenario's leftovers.
-printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 999}' \
+# Env-issue 90 is `done` in this board's standing listing, so the lift fires on
+# the closed-env-issue trigger without depending on any other scenario's
+# leftovers. (An env-issue absent from the listing would NOT do: absent is
+# unknown, not closed — see the absent-row scenarios at the end of this file.)
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
   > "$SUPD/12.json"
 : > "$FIX.log"
 OUTS="$TDIR/suppressdir.out"
@@ -738,5 +740,451 @@ t  "the configured directory is the one this phase reads" \
    "suppression lifted for #12"                           cat "$OUTS"
 supd_record() { [ -e "$SUPD/12.json" ] && echo "still-there" || echo "gone"; }
 t  "and the record it acted on was the operator's"  "gone"  supd_record
+
+# =========================================================================
+# A CLAIM FAILURE IS NOT ONE KIND OF EVENT. Both claim exits used to bypass
+# the recovery counter, so a ticket whose claim errored churned forever — and
+# the kept journal was re-classified `replay` next tick while the feed ALSO
+# re-served the ticket: two claims and a leaked journal per tick.
+#
+# Counting every claim failure is the wrong fix, because arkho answers two
+# typed 409s that mean THIS JOURNAL is obsolete, not that the substrate is
+# sick: `nonce-consumed` (the predecessor's run ended, so replaying its nonce
+# is doomed forever) and `stale-resume` (the ticket moved after the feed
+# read). Those drop the journal uncharged and let the next tick re-serve the
+# ticket on a fresh nonce. Everything else on that exit — transport death,
+# 5xx, an untyped refusal — IS a fault: charged, journal kept.
+#
+# `claimed:false` stays uncharged on purpose: it is the server's backpressure,
+# and a suppression written from it would remove a HEALTHY ticket from both
+# the resume and the dispatch phase until a human closed an env-issue.
+#
+# Its own fixture world, with a fresh registry per scenario — a kept journal
+# and the attempt counter must not leak from one scenario into the next.
+# =========================================================================
+CFIX="$TDIR/fix-claim.json"; : > "$CFIX.log"
+cat > "$CFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,"once":true,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":409,"once":true,
+  "body":{"error":{"code":"nonce-consumed",
+                   "message":"a nonce on an ended run is spent, not replayable"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":409,"once":true,
+  "body":{"error":{"code":"stale-resume",
+                   "message":"ticket moved since the feed read"}}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"claimed":false}},
+
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+CPORT="$(free_port)"
+python3 "$TESTS_DIR/mock-server.py" "$CFIX" "$CPORT" & CMOCK=$!
+wait_for_port "$CPORT" || { echo "FAIL mock server never listened on $CPORT"; exit 1; }
+CREPO="$(mkrepo)"; mkdir -p "$CREPO/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
+CSW() {  # CSW <registry> — one resume tick against the claim-failure board
+  ( cd "$CREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" resume )
+}
+journals() {  # journals <registry> — how many claim journals it is holding
+  local n=0 f
+  for f in "$1"/board-claims/*.json; do [ -e "$f" ] || continue; n=$((n + 1)); done
+  echo "journals=$n"
+}
+
+CDHA="$TDIR/dh-claim-fault"; mkdir -p "$CDHA"
+OUTCA="$TDIR/claim-fault.out"
+CSW "$CDHA" > "$OUTCA" 2>&1 || true
+t  "a claim that FAULTS charges a recovery cycle" "recovery cycle 1 of 3" cat "$OUTCA"
+t  "and the journal is kept as the replay handle" "journals=1" journals "$CDHA"
+
+CDHB="$TDIR/dh-claim-nonce"; mkdir -p "$CDHB"
+OUTCB="$TDIR/claim-nonce.out"
+CSW "$CDHB" > "$OUTCB" 2>&1 || true
+t  "a nonce-consumed claim names the journal obsolete" \
+   "journal is obsolete (nonce-consumed)"            cat "$OUTCB"
+nt "and is not reported as a fault"    "successor claim failed"  cat "$OUTCB"
+nt "so no recovery cycle is charged"   "recovery cycle"          cat "$OUTCB"
+t  "the spent journal is dropped"      "journals=0"  journals "$CDHB"
+
+CDHC="$TDIR/dh-claim-stale"; mkdir -p "$CDHC"
+OUTCC="$TDIR/claim-stale.out"
+CSW "$CDHC" > "$OUTCC" 2>&1 || true
+t  "a stale-resume claim names the journal obsolete too" \
+   "journal is obsolete (stale-resume)"              cat "$OUTCC"
+nt "and is not reported as a fault either" "successor claim failed" cat "$OUTCC"
+nt "so no recovery cycle is charged for it" "recovery cycle"        cat "$OUTCC"
+t  "and that journal is dropped as well"   "journals=0"  journals "$CDHC"
+
+CDHD="$TDIR/dh-claim-none"; mkdir -p "$CDHD"
+OUTCD="$TDIR/claim-none.out"
+CSW "$CDHD" > "$OUTCD" 2>&1 || true
+t  "backpressure is a wait state, not a failure" \
+   "the board granted no successor"                  cat "$OUTCD"
+nt "it charges no recovery cycle"      "recovery cycle"  cat "$OUTCD"
+t  "and leaves no journal behind"      "journals=0"  journals "$CDHD"
+kill $CMOCK 2>/dev/null || true
+
+# =========================================================================
+# ONE RECOVERY ATTEMPT PER TICKET PER TICK, AND A SUPPRESSION THAT FREEZES
+# THE JOURNAL TOO.
+#
+# A kept fault journal is re-classified `replay` by reconciliation while the
+# feed ALSO re-serves the same ticket, so one ticket bought two successor
+# claims, two charged cycles and a second journal every tick: the documented
+# three-cycle ladder fired in two ticks and journals grew for as long as the
+# fault lasted. Reconciliation now records the tickets it claimed for, and the
+# feed loop skips them.
+#
+# Reconciliation also replayed straight THROUGH a suppression — spending the
+# recovery the suppression exists to stop, and re-escalating every third cycle.
+# Each re-escalation rewrote the suppression record with the state read seconds
+# earlier in the SAME tick, so _check_lift's `moved` compared a state against
+# itself and the "move the ticket" half of the escalation's own instructions
+# could never lift anything. The journal is now left standing while suppressed,
+# and the lift pass runs BEFORE reconciliation — which is also what keeps a
+# suppression lifting mid-tick from stranding its journal: the just-lifted
+# ticket replays its own nonce rather than the feed minting a fresh one beside
+# it.
+#
+# Each scenario gets its own board and its own registry: a standing journal, an
+# attempt counter and a suppression record all have to start from a known state.
+# =========================================================================
+RMOCKS=""
+rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
+  local port; port="$(free_port)"
+  RLOG="$1.log"; : > "$RLOG"
+  python3 "$TESTS_DIR/mock-server.py" "$1" "$port" &
+  RMOCKS="$RMOCKS $!"
+  wait_for_port "$port" || { echo "FAIL mock server never listened on $port"; exit 1; }
+  RREPO="$(mkrepo)"; mkdir -p "$RREPO/.doperpowers"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$RREPO/.doperpowers/board.json"
+}
+RSW() {  # RSW <registry> — one resume tick against the current rboard
+  ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" resume )
+}
+claims() {  # claims <log> — successor-claim POSTs that reached the wire
+  echo "claims=$(grep -c '"path": "/runs/claim-successor"' "$1" || true)"
+}
+standing_journal() {  # standing_journal <registry> — which journals are on disk
+  # A glob rather than `ls`: an EXISTING but empty directory makes ls print
+  # nothing at all, which would pass an absence assertion by accident.
+  local f n=0
+  for f in "$1"/board-claims/*; do
+    [ -e "$f" ] || continue
+    basename "$f"; n=$((n + 1))
+  done
+  [ "$n" -gt 0 ] || echo "no journals"
+}
+mkjournal() {  # mkjournal <registry> <nonce> <ticket> — an unfinished claim
+  mkdir -p "$1/board-claims"
+  printf '{"lane":"successor","run_id":null,"spawn_completed":false,"ticket":"%s"}\n' \
+    "$3" > "$1/board-claims/$2.json"
+}
+
+# ---- a standing journal AND the same ticket on the feed, one tick ---------
+AFIX="$TDIR/fix-once.json"
+cat > "$AFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/tickets","status":200,"once":true,
+  "body":{"id":93,"state":"needs-human"}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+          {"id":93,"state":"needs-human","priority":null,
+           "title":"stuck resume: ticket #12 cannot be revived"}]}
+]
+JSON
+rboard "$AFIX"
+ADH="$TDIR/dh-once"; mkdir -p "$ADH"
+mkjournal "$ADH" n-standing 12
+OUTO1="$TDIR/once-tick1.out"
+RSW "$ADH" > "$OUTO1" 2>&1 || true
+t  "a replayed journal and the feed are ONE attempt" "claims=1" claims "$RLOG"
+t  "the ticket the replay already spent is skipped on the feed" \
+   "already replayed this tick"                       cat "$OUTO1"
+t  "so exactly one cycle is charged"   "recovery cycle 1 of 3"  cat "$OUTO1"
+nt "not two"                           "recovery cycle 2 of 3"  cat "$OUTO1"
+t  "and no second journal is minted"   "journals=1"  journals "$ADH"
+
+OUTO2="$TDIR/once-tick2.out"
+RSW "$ADH" > "$OUTO2" 2>&1 || true
+t  "the ladder advances exactly one rung per tick" \
+   "recovery cycle 2 of 3"                            cat "$OUTO2"
+nt "and no rung beyond it"             "recovery cycle 3 of 3"  cat "$OUTO2"
+nt "so the second tick escalates nothing"  "escalated #12"      cat "$OUTO2"
+t  "and still holds one journal"       "journals=1"  journals "$ADH"
+
+OUTO3="$TDIR/once-tick3.out"
+RSW "$ADH" > "$OUTO3" 2>&1 || true
+t  "the THIRD tick is the one that escalates" \
+   "escalated #12 → env-issue #93 (suppressed)"        cat "$OUTO3"
+t  "three ticks of a claim fault cost three claims"  "claims=3" claims "$RLOG"
+
+# ---- the ticket MOVED: the lift must be able to see it -------------------
+# Re-escalation rewrites the suppression record with the state read moments
+# earlier, so a reconcile that runs first makes `moved` structurally unable to
+# fire — the operator does exactly what the env-issue body says and nothing
+# happens. The counter starts at 2 so this tick's single charge reaches the
+# rung that re-escalates.
+BFIX="$TDIR/fix-moved.json"
+cat > "$BFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/tickets","status":200,
+  "body":{"id":90,"state":"needs-human"}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"needs-human","priority":"P1","title":"the stuck one"},
+          {"id":90,"state":"needs-human","priority":null,
+           "title":"stuck resume: ticket #12 cannot be revived"}]}
+]
+JSON
+rboard "$BFIX"
+BDH="$TDIR/dh-moved"; mkdir -p "$BDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$BDH/board-suppress/12.json"
+printf '2\n' > "$BDH/board-suppress/.attempts-12"
+mkjournal "$BDH" n-moved 12
+OUTM="$TDIR/moved.out"
+RSW "$BDH" > "$OUTM" 2>&1 || true
+t  "a suppression whose ticket moved lifts before any replay can rewrite it" \
+   "suppression lifted for #12 — the ticket moved"     cat "$OUTM"
+
+# ---- a suppressed ticket's journal is frozen too -------------------------
+CFIX2="$TDIR/fix-frozen.json"
+cat > "$CFIX2" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+          {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]}
+]
+JSON
+rboard "$CFIX2"
+FDH="$TDIR/dh-frozen"; mkdir -p "$FDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$FDH/board-suppress/12.json"
+mkjournal "$FDH" n-frozen 12
+OUTF="$TDIR/frozen.out"
+RSW "$FDH" > "$OUTF" 2>&1 || true
+t  "a suppressed ticket's journal is left where it is" \
+   "the journal stands untouched"                      cat "$OUTF"
+t  "and buys no successor claim"       "claims=0"    claims "$RLOG"
+nt "and charges no recovery cycle"     "recovery cycle"  cat "$OUTF"
+t  "the retry handle survives the suppression"  "n-frozen.json" \
+   standing_journal "$FDH"
+
+# ---- a suppression that lifts THIS tick replays its own journal ----------
+DFIX="$TDIR/fix-lifting.json"
+cat > "$DFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+          {"id":90,"state":"done","priority":null,"title":"stuck resume"}]}
+]
+JSON
+rboard "$DFIX"
+LDH="$TDIR/dh-lifting"; mkdir -p "$LDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$LDH/board-suppress/12.json"
+mkjournal "$LDH" n-lifted 12
+OUTLF="$TDIR/lifting.out"
+RSW "$LDH" > "$OUTLF" 2>&1 || true
+t  "the suppression lifts on the closed env-issue" \
+   "suppression lifted for #12 — the env-issue closed" cat "$OUTLF"
+t  "and the just-lifted ticket costs exactly one claim" "claims=1" claims "$RLOG"
+t  "which carries the STANDING journal's nonce, not a fresh one" \
+   '\"dispatchNonce\": \"n-lifted\"'                   cat "$RLOG"
+t  "so no second journal is stranded beside it"  "journals=1"  journals "$LDH"
+t  "and the one on disk is still the original"   "n-lifted.json" \
+   standing_journal "$LDH"
+
+# ---- two standing journals for ONE ticket are still one attempt ----------
+# The ledger closed the reconcile→feed door; this is the reconcile→reconcile
+# one. Reconciliation walks a row per journal file, so two unfinished successor
+# journals naming the same ticket were two claims and two ladder rungs inside a
+# single tick — the very shape this task exists to close. Not a steady state
+# (a replay reuses its own nonce and overwrites its own file), but the
+# intermediate commit on this branch minted an extra journal per tick during a
+# claim fault, so a registry that ticked on it arrives holding several and this
+# pass must not charge through them.
+EFIX="$TDIR/fix-twojournals.json"
+cat > "$EFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$EFIX"
+TDH="$TDIR/dh-two-journals"; mkdir -p "$TDH"
+mkjournal "$TDH" n-a 12
+mkjournal "$TDH" n-b 12
+OUTT="$TDIR/two-journals.out"
+RSW "$TDH" > "$OUTT" 2>&1 || true
+t  "a second journal for the same ticket waits its turn" \
+   "#12 already had its one recovery attempt this tick"  cat "$OUTT"
+t  "so two journals still cost one claim"  "claims=1"  claims "$RLOG"
+t  "and one ladder rung"               "recovery cycle 1 of 3"  cat "$OUTT"
+nt "not two"                           "recovery cycle 2 of 3"  cat "$OUTT"
+t  "the waiting journal is left untouched"  "n-b.json"  standing_journal "$TDH"
+
+# ---- AN ABSENT ROW IS NOT A STATE ----------------------------------------
+# `/tickets` is read whole, with no cursor and no envelope, so a truncated or
+# partial listing is indistinguishable from a smaller board. Reading a missing
+# row as a value fired BOTH lift triggers on it — `moved` because None is not
+# the recorded state, `closed` because None sat in the closed tuple — and one
+# short read lifted every suppression it could not see: the ladder re-ran and
+# the human collected a fresh env-issue every three cycles. Absent is UNKNOWN,
+# and the suppression waits for a read that can name the state.
+suppression_present() {  # suppression_present <registry> <ticket>
+  if [ -e "$1/board-suppress/$2.json" ]; then echo "still-there"; else echo "gone"; fi
+}
+tick_exit() {  # tick_exit <registry> <out> — run a tick, record its exit status
+  if RSW "$1" > "$2" 2>&1; then echo "tick exit=0" >> "$2"
+  else echo "tick exit=$?" >> "$2"; fi
+}
+
+GFIX="$TDIR/fix-absent-ticket.json"
+cat > "$GFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]}
+]
+JSON
+rboard "$GFIX"
+GDH="$TDIR/dh-absent-ticket"; mkdir -p "$GDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$GDH/board-suppress/12.json"
+OUTG="$TDIR/absent-ticket.out"
+tick_exit "$GDH" "$OUTG"
+t  "a suppression whose ticket is off the listing is not lifted" \
+   "still-there"                        suppression_present "$GDH" 12
+nt "and the tick says nothing about lifting it"  "suppression lifted"  cat "$OUTG"
+t  "and the tick still succeeds"        "tick exit=0"                 cat "$OUTG"
+
+# The env-issue half of the same read. `closed` alone must not fire on absence:
+# an env-issue nobody can see is not an env-issue somebody closed.
+HFIX="$TDIR/fix-absent-env.json"
+cat > "$HFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$HFIX"
+HDH="$TDIR/dh-absent-env"; mkdir -p "$HDH/board-suppress"
+printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
+  > "$HDH/board-suppress/12.json"
+OUTH="$TDIR/absent-env.out"
+tick_exit "$HDH" "$OUTH"
+t  "an env-issue off the listing is not a closed env-issue" \
+   "still-there"                        suppression_present "$HDH" 12
+nt "so nothing is lifted on it"         "suppression lifted"          cat "$OUTH"
+t  "and that tick succeeds too"         "tick exit=0"                 cat "$OUTH"
+# ---- THE TICK LEDGER REACHES PHASE 4 -------------------------------------
+# One recovery attempt per ticket per tick is an invariant of the TICK, not of
+# phase 3. The ledger travelled no further than phase_resume, so after a replay
+# FAULT left the ticket unowned an ordinary lane claim could pick that same
+# ticket seconds later — a second attempt inside the tick the ledger exists to
+# hold to one. It rides to the dispatchers exactly as BOARD_SUPPRESS_DIR does.
+IFIX="$TDIR/fix-ledger-dispatch.json"
+cat > "$IFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":70,"ticketId":12,"fence":1,"bearer":"tok-x","plan":null,
+          "body":"work on","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/70/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$IFIX"
+IDH="$TDIR/dh-ledger-dispatch"; mkdir -p "$IDH"
+mkjournal "$IDH" n-led 12
+OUTI="$TDIR/ledger-dispatch.out"
+( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+    DAEMON_HOME="$IDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    "$SCRIPTS/_sweep_api.sh" all ) > "$OUTI" 2>&1 || true
+t  "phase 3 spends the ticket's one attempt on the replay" \
+   "replaying it for #12"                                  cat "$OUTI"
+t  "and phase 4 refuses the same ticket on the same tick" \
+   "#12 already had its one recovery attempt this tick"    cat "$OUTI"
+t  "releasing the run it was handed"   '"path": "/runs/70/end"'  cat "$RLOG"
+nt "so nothing is spawned for it"      "SPAWN name=12"           cat "$SPAWN_LOG"
+
+# ---- ...AND THE FEED PATH IS AN ATTEMPT TOO ------------------------------
+# The ledger recorded only the tickets reconciliation replayed for. A ticket
+# served by the ORDINARY feed whose recovery then faulted (or released) is
+# equally unowned and equally spent, and phase 4 could claim and spawn it in
+# the same tick — the same double attempt through the other door.
+JFIX="$TDIR/fix-ledger-feed.json"
+cat > "$JFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":13,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":72,"ticketId":13,"fence":1,"bearer":"tok-y","plan":null,
+          "body":"work on","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/72/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/tickets","status":200,
+  "body":[{"id":13,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+]
+JSON
+rboard "$JFIX"
+JDH="$TDIR/dh-ledger-feed"; mkdir -p "$JDH"
+OUTJL="$TDIR/ledger-feed.out"
+( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+    DAEMON_HOME="$JDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    "$SCRIPTS/_sweep_api.sh" all ) > "$OUTJL" 2>&1 || true
+t  "the feed spends the ticket's one attempt as surely as a replay" \
+   "recovery cycle 1 of 3"                                 cat "$OUTJL"
+t  "and phase 4 refuses the same ticket on the same tick" \
+   "#13 already had its one recovery attempt this tick"    cat "$OUTJL"
+t  "releasing the run it was handed"   '"path": "/runs/72/end"'  cat "$RLOG"
+nt "so nothing is spawned for it"      "SPAWN name=13"           cat "$SPAWN_LOG"
+
+# shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
+kill $RMOCKS 2>/dev/null || true
 
 finish

@@ -187,6 +187,10 @@ SURFACE_COLOR = "e99695"
 SURFACE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 META_RE = re.compile(r"\n?<!-- board:meta\n(.*?)\n-->\s*$", re.S)
+# Every boundary `str.splitlines()` honours — meta_match must cut interior lines
+# exactly where parse_meta will, or a value folded on U+2028 (or CR, \v, \x85…)
+# hides a `-->` and the prose behind it inside one apparently-legal line.
+LINE_SEP_RE = re.compile("\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 META_KEYS = ("spawned-by", "relates-to", "branch", "pr", "plan", "pre-park",
              "parent-pin", "note")
 
@@ -235,9 +239,113 @@ def graphql(query, **variables):
 
 
 # ── board:meta body block ────────────────────────────────────────────────
+def _block_line(line):
+    """True for a line that could legally sit INSIDE a meta block — a
+    `key: value` whose key is one of ours. Blank lines, prose and a quoted
+    example's `-->` are all False."""
+    return ":" in line and line.split(":", 1)[0].strip() in META_KEYS
+
+
+def meta_match(body):
+    """The META_RE match on the body's REAL trailing block, chosen by content.
+
+    Every META_RE match ends at end-of-string (`\\s*$`), so the openers compete
+    and only the start differs. Two prose shapes make both the leftmost and the
+    rightmost opener wrong:
+
+    - QUOTED (#60): the prose documents the block, so a marker-shaped example
+      sits above the real one. Leftmost anchors on the example and its lazy
+      middle runs to the real `-->` — a leftmost strip deletes the prose
+      between them.
+    - LEGACY-NESTED: a pre-grammar client stored a meta VALUE containing a
+      verbatim `<!-- board:meta`, so the real block's interior holds a second
+      opener. Rightmost anchors on THAT — a rightmost strip cuts inside the
+      block and leaves half of it behind as prose.
+
+    - QUOTED-NESTED: the two composed — prose that quotes a legacy-nested
+      example, with the real block further down.
+
+    So neither end wins by position; the interior decides. Since every match
+    runs to the same closer, a candidate opener is the real one iff its WHOLE
+    interior — every line from its opener to that closer — could sit inside a
+    block: a known-key `key: value` (`_block_line`) or a line-start nested
+    marker. A blank line, prose, or an intermediate `-->` cannot, so the choice
+    is the FIRST opener standing after the LAST such line. Judging only the gap
+    between adjacent candidates is not enough: in QUOTED-NESTED that gap holds
+    the quoted example's own entries and reads legal, and the quoted opener
+    wins (spec v1.2.4).
+
+    When no opener clears the last illegal line the block is noncanonical — an
+    unknown key, a comment, hand-edited spacing — and the fall back is to the
+    FIRST opener of the last run of candidates, i.e. the one that opened the
+    segment the illegal line landed in. Taking the LAST opener instead (the old
+    rightmost behavior) reopens shape B whenever a legacy block carries BOTH a
+    nested marker and an unknown key: the unknown key fences off every
+    candidate, and the nested opener wins.
+
+    The pass splits lines on every separator `str.splitlines()` honours, not
+    `\\n` alone. parse_meta reads the block that way, so a quoted example that
+    uses U+2028 (or CR, or \\v) would otherwise fold its `-->` and the prose
+    after it into one interior line that reads legal — the quoted opener wins
+    and the next meta write truncates the body.
+
+    One classification pass over the span plus two regex scans: the walk is
+    linear in the body, where the old rightmost loop re-ran the end-anchored
+    regex per marker (O(N²) on a marker-dense body).
+
+    The returned start never includes META_RE's optional leading `\\n`: the
+    search is anchored at the chosen opener, where `\\n?` matches empty.
+    Byte-offset consumers (strip_meta, board-body.sh's splice) therefore keep
+    the separator newline and must normalize it themselves — strip_meta's
+    `.rstrip("\\n")` does."""
+    body = body or ""
+    m0 = META_RE.search(body)
+    if not m0:
+        return None
+    head = len("<!-- board:meta\n")
+    # The closer is unique — `\n-->` with nothing but whitespace behind it can
+    # occur at only one offset — and m0's lazy middle ends exactly there.
+    close = m0.end(1)
+    first = m0.start() + (1 if body[m0.start()] == "\n" else 0)
+    # One pass over the span: each candidate opener is recorded with the fence
+    # standing at the time — the offset past the last line so far that cannot be
+    # block interior — so the fallback can find the segment it opened.
+    opens, fence, pos = [], first, first
+    while pos < close:
+        sep = LINE_SEP_RE.search(body, pos, close)
+        line = body[pos:sep.start() if sep else close]
+        marker = line.lstrip()
+        if marker == "<!-- board:meta":
+            # INDENTATION DOES NOT DISQUALIFY AN OPENER. META_RE's opener is
+            # unanchored, so a block nested under a list item or a quote is a
+            # real trailing block; admitting only column-zero openers left an
+            # indented REAL block out of the candidate set, and a column-zero
+            # QUOTED example above it then won by fallback — a destructive
+            # strip of the prose between them (PR-65 panel). The candidate
+            # offset is the `<`, not the line start, so every byte consumer
+            # keeps the indent on the prose side, where it was written.
+            # Indented QUOTED examples stay excluded exactly as before: their
+            # own closer line (`    -->`) carries no colon, so it fences.
+            cand = pos + (len(line) - len(marker))
+            # A nested marker is legal interior either way. It is a CANDIDATE
+            # only when a real `\n` follows — META_RE cannot match otherwise —
+            # and the closer still leaves room for a block to open here; a
+            # trailing `<!-- board:meta\n-->` has none.
+            if sep is not None and sep.group() == "\n" and cand + head <= close:
+                opens.append((cand, fence))
+        elif not _block_line(line):
+            fence = (sep.end() if sep else close)
+        pos = sep.end() if sep else close
+    for start, _ in opens:
+        if start >= fence:
+            return META_RE.search(body, start)
+    floor = opens[-1][1]
+    return META_RE.search(body, next(s for s, _ in opens if s >= floor))
+
+
 def parse_meta(body):
     """The trailing `<!-- board:meta ... -->` block → dict (absent keys omitted)."""
-    m = META_RE.search(body or "")
+    m = meta_match(body)
     meta = {}
     if not m:
         return meta
@@ -254,7 +362,8 @@ def parse_meta(body):
 def strip_meta(body):
     """The body WITHOUT its trailing board:meta block — the ticket's own text,
     with the board's bookkeeping removed."""
-    return META_RE.sub("", body or "").rstrip("\n")
+    m = meta_match(body)
+    return ((body or "")[:m.start()] if m else (body or "")).rstrip("\n")
 
 
 def contract_hash(body):
@@ -270,15 +379,73 @@ def contract_hash(body):
     return hashlib.sha256(strip_meta(body).encode("utf-8")).hexdigest()[:12]
 
 
-def render_body(body, meta):
-    """Body with its meta block replaced by `meta` (dropped when meta is empty).
-    Everything outside the block is preserved byte-for-byte."""
-    base = strip_meta(body)
-    meta = {k: v for k, v in meta.items() if v}
+def clean_meta(meta):
+    """Meta values normalized to the block's grammar — one line, no opening
+    marker — and refused when they cannot live there. Empty values dropped.
+
+    parse_meta reads the block line-wise, so a multi-line value is silent
+    corruption at best and a forged key at worst; `<!-- board:meta` inside the
+    real block would defeat meta_match's rightmost rule outright, and is
+    unrepresentable, so it dies (loud beats mangled). `-->` is NOT refused: the
+    collapse leaves every value behind its `key: ` prefix, and META_RE requires
+    the closer at line start, so an arrow can never terminate the block early
+    (fuzz-proven, spec v1.2.1). Refusing it bricked every stored note carrying
+    an ASCII arrow, since update_meta re-renders every key it parsed.
+
+    Split out of render_body so a caller that makes OTHER remote writes first
+    can validate ahead of them — see check_meta_write."""
+    clean = {}
+    for k, v in meta.items():
+        if not v:
+            continue
+        # EVERY separator parse_meta's splitlines() would honour — \r\n alone
+        # leaves \v, \f, \x1c–\x1e, \x85, U+2028/U+2029 injectable as keys.
+        v = " ".join(str(v).splitlines())
+        if "<!-- board:meta" in v:
+            die("meta value %r cannot carry a board:meta marker token" % k)
+        clean[k] = v
+    return clean
+
+
+def check_meta_write(body, updates):
+    """Refuse an illegal meta write BEFORE the caller's first remote write.
+
+    update_meta re-renders every key it parsed out of the existing block, so a
+    refusal on ANY of them — new or stored — must be raised against the MERGED
+    result, and it must be raised before anything else has moved on GitHub:
+    nothing rolls a label write back, and a relabelled ticket carrying a stale
+    note reads as a real one that board-lint cannot flag.
+
+    apply_state calls this at its own top; a caller that writes labels of its
+    own first (board-transition.sh: ensure_labels + the surface re-match) calls
+    it earlier still, with the same `updates` it will hand apply_state."""
+    merged = parse_meta(body)
+    merged.update(updates)
+    clean_meta(merged)
+
+
+def compose_body(base, meta):
+    """`base` — prose the caller has ALREADY stripped — plus a rendered meta
+    block. Strips nothing.
+
+    Split out of render_body for the caller that builds a new prose before
+    rendering (strip, append, render). Feeding such a base back through a
+    stripping renderer strips twice, and once the first strip is correct the
+    second one lands on prose: a marker-shaped example that happens to END the
+    base still satisfies META_RE's `\\s*$`, so it is deleted as if it were the
+    block (#60 on the migration path, task-2 review I1)."""
+    base = (base or "").rstrip("\n")
+    meta = clean_meta(meta)
     if not meta:
         return base + ("\n" if base else "")
     block = "\n".join("%s: %s" % (k, meta[k]) for k in META_KEYS if k in meta)
     return "%s\n\n<!-- board:meta\n%s\n-->\n" % (base, block)
+
+
+def render_body(body, meta):
+    """Body with its meta block replaced by `meta` (dropped when meta is empty).
+    Everything outside the block is preserved byte-for-byte."""
+    return compose_body(strip_meta(body), meta)
 
 
 def _nums(val):
@@ -833,14 +1000,17 @@ def apply_state(tickets, tid, to, why, extra_meta=None, bookkeeping=False):
     extra_meta lets the caller fold branch/pr into the same body write."""
     n = tickets[tid]
     old = n["state"]
+    updates = {"note": why or None}
+    updates.update(extra_meta or {})
+    # Validate the meta write BEFORE the label write (idempotent — a caller
+    # that writes labels of its own ahead of this one has already run it).
+    check_meta_write(n["body"], updates)
     if to in TERMINAL:
         # strip status labels first so a closed issue never carries one
         edit_labels(tid, remove=[STATUS_PREFIX + s for s in n["status_labels"]])
         close(tid, to)
     else:
         set_state_label(tid, n, to)
-    updates = {"note": why or None}
-    updates.update(extra_meta or {})
     update_meta(tid, n, **updates)
     if why:
         if bookkeeping:

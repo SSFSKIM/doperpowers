@@ -113,6 +113,11 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
 OUT="$(mktemp)"
+# A standing failed-cycle count for the ticket this claim will yield. Only the
+# sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
+# stale count and a much later, unrelated fault escalated early. A delivered
+# recovery is a recovery, whichever phase delivered it.
+mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-12"
 # A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
 # instant it runs and then execs the real one. Ordering is only observable from
 # INSIDE that window — after the fact every order looks the same.
@@ -138,6 +143,8 @@ chmod +x "$BSOVL/board-bind.sh"
 
 t "the granted claim is reported" "claimed #12 run=41 lane=architect" cat "$OUT"
 nt "api dispatch never invokes gh" "GH-CALLED" cat "$MARKER"
+attempts12() { [ -e "$DH/board-suppress/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
+t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" attempts12
 
 # --- the worker's environment: the run credentials it cannot run without ----
 t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/spawn-capture.txt"
@@ -248,8 +255,14 @@ printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
-printf '{"lane": "architect", "run_id": 41, "spawn_completed": false}\n' \
+printf '{"lane": "architect", "run_id": 41, "spawn_completed": false, "ticket": "12"}\n' \
   > "$DH2/board-claims/nonce-c.json"
+# ...and the delivery it confirms is where the ticket's failed-cycle count is
+# cleared when the inline reset never ran. The reset sits one line ahead of the
+# marker write, so THIS crash — bind landed, marker lost — is exactly the
+# window that leaves a durable recovery beside a stale counter, and a much
+# later unrelated fault would then escalate two rungs early.
+mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-12"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","status":"working","run_id":41,"lane":"architect","ticket":"12"}' \
   > "$DH2/cccc0001.json"
 # (d) THE SPAWN LANDED, THE BIND DID NOT — a crash inside daemon-spawn uuid
@@ -306,6 +319,9 @@ gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"      "gone" gone "$DH2/board-claims/nonce-b.json"
 t "so is its orphaned assignment body"   "gone" gone "$DH2/board-claims/nonce-b.body.md"
 t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
+attempts12r() { [ -e "$DH2/board-suppress/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
+t "and the delivery it confirms clears the ticket's failed-cycle count" \
+  "count cleared" attempts12r
 # --- (d) a spawned-but-unbound run is never ended --------------------------
 nt "a live unbound run is NOT ended" '"path": "/runs/77/end"' cat "$FIX2.log"
 t  "its journal is kept, closed to replay" '"spawn_completed": true' \
@@ -548,5 +564,192 @@ nt "and says nothing about one" "tick deadline"          cat "$OUT6B"
 OUT6C="$(mktemp)"
 SWEEP6 BOARD_TICK_DEADLINE=not-a-number > "$OUT6C" 2>&1 || true
 t  "an unparseable deadline is no gate either" '"path": "/runs/claim"' cat "$FIX6.log"
+
+# =========================================================================
+# Scenario 7 — ONE RECOVERY ATTEMPT PER TICKET PER TICK REACHES THIS PHASE
+# TOO. The sweep's resume phase records every ticket it attempted a recovery
+# for this tick; phase 4 hands that ledger across the same way it hands the
+# suppression directory. Without it an ordinary lane claim could pick the very
+# ticket whose replay just faulted — a second attempt in the same tick, over
+# the invariant the ledger exists to hold. The claim is how we learn WHICH
+# ticket the server picked, so the refusal is a release, as suppression's is.
+# =========================================================================
+PORT7="$(free_port)"
+FIX7="$(mktemp)"; : > "$FIX7.log"
+cat > "$FIX7" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":33,"fence":1,"bearer":"tok-l","plan":null,
+          "body":"ledgered work","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/71/bind","status":200,"body":{"bound":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX7" "$PORT7" & MOCK7=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 2>/dev/null' EXIT
+wait_for_port "$PORT7" || { echo "FAIL mock server never listened on $PORT7"; exit 1; }
+
+r7="$(apirepo "$PORT7")"
+DH7="$(mktemp -d)"
+LEDGER7="$(mktemp)"; echo 33 > "$LEDGER7"
+OUT7="$(mktemp)"
+( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RESUMED_LEDGER="$LEDGER7" \
+    "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
+
+t  "a claim yielding a tick-ledgered ticket is released" \
+   "#33 already had its one recovery attempt this tick"  cat "$OUT7"
+t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX7.log"
+nt "so no worker is spawned for it" "ARGS name=33"  \
+   bash -c "cat '$DH7/spawn-capture.txt' 2>/dev/null || echo none"
+journal7() { ls "$DH7/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+t  "and the journal is dropped with it"  "journal dropped"  journal7
+
+# =========================================================================
+# Scenario 8 — THE RESET LANDS BEFORE THE SEAL. Reconciliation's `repaired`
+# arm marks the journal spawn_completed, and a sealed journal is skipped by
+# every later pass — so anything left to do AFTER that write is done once or
+# never. With the failed-cycle reset on the far side of it, a crash in
+# between left a durable recovery beside a stale counter with nothing that
+# could ever revisit it: the early-escalation bug, one window later.
+# Reset-then-seal is crash-safe instead — both steps are idempotent, and a
+# crash between them leaves the journal open for the next pass to redo both.
+# The seal is made to FAIL here (read-only journal), which is the same
+# window: the reset must already be durable when the write does not land.
+# =========================================================================
+PORT8="$(free_port)"
+FIX8="$(mktemp)"; : > "$FIX8.log"
+cat > "$FIX8" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX8" "$PORT8" & MOCK8=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 2>/dev/null' EXIT
+wait_for_port "$PORT8" || { echo "FAIL mock server never listened on $PORT8"; exit 1; }
+
+r8="$(apirepo "$PORT8")"
+DH8="$(mktemp -d)"; mkdir -p "$DH8/board-claims" "$DH8/board-suppress"
+printf '{"uuid":"eeee0001","current":"eeee0001","name":"15-api-implementer","status":"working","run_id":43,"lane":"implementer","ticket":"15"}' \
+  > "$DH8/eeee0001.json"
+printf '{"lane": "implementer", "run_id": 43, "spawn_completed": false, "ticket": "15"}\n' \
+  > "$DH8/board-claims/nonce-i.json"
+chmod 444 "$DH8/board-claims/nonce-i.json"
+echo 2 > "$DH8/board-suppress/.attempts-15"
+OUT8="$(mktemp)"
+( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH8" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r8" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
+chmod 644 "$DH8/board-claims/nonce-i.json"
+
+t  "a seal that never lands still leaves the count cleared" "count cleared" \
+   bash -c "[ -e '$DH8/board-suppress/.attempts-15' ] && echo 'count kept' || echo 'count cleared'"
+t  "and the unsealed journal is left for the next pass to redo" \
+   '"spawn_completed": false'  cat "$DH8/board-claims/nonce-i.json"
+
+# =========================================================================
+# Scenario 9 — A RESET THAT FAILED IS NOT A RESET. Absent is the one benign
+# outcome (nothing to clear); every other removal error — a read-only
+# registry, a permission change, a full or unmounted volume — means the count
+# is still standing, and sealing the journal on top of it hides that from
+# every later pass. So the seal is skipped and the journal stays open: the
+# next pass retries the pair, both steps being idempotent.
+# =========================================================================
+PORT9="$(free_port)"
+FIX9="$(mktemp)"; : > "$FIX9.log"
+cat > "$FIX9" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX9" "$PORT9" & MOCK9=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 2>/dev/null' EXIT
+wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; exit 1; }
+
+r9="$(apirepo "$PORT9")"
+DH9="$(mktemp -d)"; mkdir -p "$DH9/board-claims" "$DH9/board-suppress"
+printf '{"uuid":"eeee0002","current":"eeee0002","name":"16-api-implementer","status":"working","run_id":44,"lane":"implementer","ticket":"16"}' \
+  > "$DH9/eeee0002.json"
+printf '{"lane": "implementer", "run_id": 44, "spawn_completed": false, "ticket": "16"}\n' \
+  > "$DH9/board-claims/nonce-j.json"
+echo 2 > "$DH9/board-suppress/.attempts-16"
+chmod 555 "$DH9/board-suppress"      # an unlink needs write on the DIRECTORY
+OUT9="$(mktemp)"
+( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
+chmod 755 "$DH9/board-suppress"
+
+t  "a failed reset leaves the journal open for the next pass" \
+   '"spawn_completed": false'  cat "$DH9/board-claims/nonce-j.json"
+t  "and says so, naming the ticket whose count still stands" \
+   "failed-cycle reset failed"  cat "$OUT9"
+t  "the count is still there to be retried" "count kept" \
+   bash -c "[ -e '$DH9/board-suppress/.attempts-16' ] && echo 'count kept' || echo 'count cleared'"
+
+# =========================================================================
+# Scenario 10 — ENOENT ANSWERS TWO OPPOSITE QUESTIONS. os.remove says "no
+# such file" both when the counter is already gone (benign: the reset is
+# finished) and when the DIRECTORY it lives in cannot be seen at all — an
+# operator BOARD_SUPPRESS_DIR whose volume unmounted, a path that moved.
+# Sealing on the second reading is the same bug as swallowing EACCES: the
+# mount returns carrying the stale count, and the journal that would have
+# cleared it is closed forever.
+#
+# The two are told apart by REACHABILITY, not by the directory alone. The
+# sweep creates that directory the first time it counts anything, so on a
+# registry that has never had a failed cycle it legitimately does not exist —
+# the common, healthy case, pinned second below. An absent directory whose
+# PARENT is also gone is a path this process cannot see, where absence proves
+# nothing.
+# =========================================================================
+PORT10="$(free_port)"
+FIX10="$(mktemp)"; : > "$FIX10.log"
+cat > "$FIX10" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX10" "$PORT10" & MOCK10=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 2>/dev/null' EXIT
+wait_for_port "$PORT10" || { echo "FAIL mock server never listened on $PORT10"; exit 1; }
+r10="$(apirepo "$PORT10")"
+
+mkjrepaired() {  # mkjrepaired <registry> <ticket> <run> — one repaired-shaped journal
+  mkdir -p "$1/board-claims"
+  printf '{"uuid":"aaaa%s","current":"aaaa%s","name":"%s-api-implementer","status":"working","run_id":%s,"lane":"implementer","ticket":"%s"}' \
+    "$2" "$2" "$2" "$3" "$2" > "$1/aaaa$2.json"
+  printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
+    "$3" "$2" > "$1/board-claims/nonce-$2.json"
+}
+SWEEP10() {  # SWEEP10 <registry> [env...] — one dispatch tick against this board
+  local dh="$1"; shift
+  ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+      DAEMON_HOME="$dh" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r10" \
+      BOARD_CREDENTIALS_FILE="$CREDS" "$@" "$DISPATCH" --sweep )
+}
+
+# (a) the suppression path is UNREACHABLE — its parent does not exist either.
+DHA10="$(mktemp -d)"; mkjrepaired "$DHA10" 17 45
+OUTA10="$(mktemp)"
+SWEEP10 "$DHA10" BOARD_SUPPRESS_DIR="$DHA10/gone-volume/board-suppress" \
+  > "$OUTA10" 2>&1 || true
+t  "an unreachable suppression path does not seal the journal" \
+   '"spawn_completed": false'  cat "$DHA10/board-claims/nonce-17.json"
+t  "and reports the reset it could not make" \
+   "failed-cycle reset failed"  cat "$OUTA10"
+
+# (b) ...and the registry that simply never counted anything still seals. The
+#     sweep creates that directory on demand, so its absence under a live
+#     registry is the healthy default, not a fault — reading it as one would
+#     stall every repair on every fleet that has had no failed cycle.
+DHB10="$(mktemp -d)"; mkjrepaired "$DHB10" 18 46
+OUTB10="$(mktemp)"
+SWEEP10 "$DHB10" > "$OUTB10" 2>&1 || true
+t  "a registry with no suppression directory repairs normally" \
+   '"spawn_completed": true'  cat "$DHB10/board-claims/nonce-18.json"
+nt "and reports no failure" "failed-cycle reset failed" cat "$OUTB10"
 
 finish

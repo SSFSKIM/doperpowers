@@ -10,10 +10,12 @@
 # land on the TICKET first (the ticket is the record), the ticket returns to
 # its parking lane's in-flight state (pre-park: meta; when absent, the bound
 # worker's own lane from its registry meta — in-design for an Architect,
-# in-progress otherwise), and the bound session is resumed with the answers
-# relayed verbatim — the worker keeps its orientation and re-states its gate
-# verdict before proceeding. No judge is reintroduced: the relay is
-# mechanical, the human is the author, the ticket is the record.
+# in-review for a QAgent with the ticket's recorded pr: re-supplied,
+# in-progress otherwise; a review-lane return with no pr: to re-supply is
+# REFUSED and the ticket stays parked), and the bound session is resumed with
+# the answers relayed verbatim — the worker keeps its orientation and
+# re-states its gate verdict before proceeding. No judge is reintroduced:
+# the relay is mechanical, the human is the author, the ticket is the record.
 #
 # API binding: the park-answer call IS the record (no separate comment), and
 # the RETURN STATE IS THE SERVER'S — it reads the bound run's lane, so none of
@@ -133,7 +135,16 @@ fi
 # Validate the park + find the binding; post the [answers] comment only once
 # the relay is certain to proceed (a refused relay posts nothing — the human
 # can still comment by hand and take the fresh-dispatch path).
-info="$(T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
+#
+# A FUNCTION, not an inline "$(...)": bash 3.2 scans a command substitution
+# with a matcher that does not understand the heredoc it contains, so every
+# apostrophe in this prose — worker's, doesn't — toggles its quote state. At
+# an ODD count the matcher is stuck in single-quote mode, stops counting
+# parens, and the substitution fails to find its close. The old body survived
+# on an even count; one more apostrophe of prose broke it. A function body
+# goes through the real parser instead, so the prose here is free again.
+_probe_binding() {
+  T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
 import glob
 import json
 import os
@@ -193,20 +204,64 @@ else:
     # (implement-dispatch.sh), rather than hardcoding in-progress: an
     # Architect resumed there would land in a state its protocol cannot
     # exit (LEGAL["in-progress"] has no ready-for-implementer edge).
-    # Workers bound before this fix (or spawned by any other route) carry
-    # no role — for those, in-progress stays the fallback, matching prior
-    # behavior; it was only ever wrong for the architect lane.
-    ret = "in-design" if (meta.get("role") or "").upper() == "ARCHITECT" else "in-progress"
-print("%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
-                              meta.get("status", "?"), meta.get("updated", "?"), ret))
+    # Workers spawned by a route that stamps no role fall through to
+    # in-progress, matching prior behavior — the default is only ever wrong
+    # for a lane whose protocol cannot exit in-progress.
+    role = (meta.get("role") or "").upper()
+    if not role and str(meta.get("name") or "").startswith(("review-pr-",
+                                                            "review-epic-")):
+        # Reviewers bound before the role stamp: the deterministic worker
+        # name is the only role record they carry.
+        role = "QAGENT"
+    if role == "ARCHITECT":
+        ret = "in-design"
+    elif role == "QAGENT":
+        ret = "in-review"
+    else:
+        ret = "in-progress"
+pr = ""
+if ret == "in-review":
+    # in-review is the one return state board-transition will not write on
+    # trust: the ticket must carry a PR link, so the link is re-supplied from
+    # the ticket's own pr: meta.
+    pr = B.parse_meta(tickets[tid]["body"]).get("pr") or ""
+    if not pr:
+        # AND WHEN THERE IS NONE, THE PARK HOLDS. Demoting to in-progress and
+        # resuming looked like the gentle fallback and was the stranding this
+        # whole return exists to prevent: the reviewer wakes on a ticket in a
+        # lane it owns no branch in and cannot exit, review-dispatch's
+        # stale-reviewer arm retires its meta once idle, and the ticket sits
+        # in-progress with no PR and nobody bound. A reviewer-lane ticket with
+        # no pr: is an anomaly — the in-review entry gate stamps it — and an
+        # anomaly pauses rather than guessing. The park is the safe state: the
+        # answers are already posted (that comment lands before this), so the
+        # human loses nothing by fixing the meta and re-running.
+        B.die("#%s returns to the review lane but the ticket carries no pr: "
+              "meta — the relay is REFUSED and #%s stays parked at "
+              "needs-human. Your answers are already on the ticket, so "
+              "nothing is lost: restore the pr: link in the body's "
+              "board:meta block (board-body.sh splices that block through "
+              "byte-for-byte, so edit it there), then re-run "
+              "`board-answer.sh %s --posted`." % (tid, tid, tid))
+print("%s\t%s\t%s\t%s\t%s\t%s" % (meta.get("uuid", ""), meta.get("engine", "claude"),
+                                  meta.get("status", "?"), meta.get("updated", "?"),
+                                  ret, pr))
 PY
-)"
-IFS=$'\t' read -r uuid engine status updated ret <<<"$info"
+}
+info="$(_probe_binding)"
+IFS=$'\t' read -r uuid engine status updated ret pr <<<"$info"
 [ -n "$uuid" ] || die "binding lookup failed"
 echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated=$updated, return=$ret)"
 
-"$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
-  "answers relayed — resuming bound session ${uuid:0:8}"
+# ret=in-review implies a non-empty pr (the python refuses the relay
+# otherwise), so the flag arm never passes an empty link.
+if [ "$ret" = in-review ]; then
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}" --pr "$pr"
+else
+  "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
+    "answers relayed — resuming bound session ${uuid:0:8}"
+fi
 
 if [ -n "$posted" ]; then
   block="(already on the ticket — read the latest comments: gh issue view $tid --comments)"
