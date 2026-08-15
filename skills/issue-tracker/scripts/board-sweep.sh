@@ -58,9 +58,14 @@
 #            meta BEFORE relaying so a crashed relay cannot re-fire.
 #   REPORT   board-reconcile.sh (read-only) into the sweep log — CLOSE?
 #            candidates and orphans surface there for the human's wake.
+#   GC       board-gc.sh (opt-in via WORKTREE_GC=1 / DOCKER_GC=1, else
+#            skipped entirely) — removes worktrees whose branch finished
+#            upstream and throwaway-DB docker debris; see its header for
+#            the three-guard removal rule.
 #
 # Env:
 #   LOCAL_REPO BOARD_REPO           as the lane dispatchers take them
+#   WORKTREE_GC DOCKER_GC GC_PR_CHECKS   the GC pass (opt-in, see board-gc.sh)
 #   SWEEP_STALL_MINUTES             silence threshold for a live worker (45)
 #   SWEEP_RECOVERY_CAP              lifetime sweep resumes per daemon (3)
 #   IMPLEMENT_MAX_CONCURRENT WORKER_ENGINE CLODEX_* AUTO_MERGE_ENABLED
@@ -100,6 +105,7 @@ IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scr
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
 BOARD_ANSWER_CMD="${BOARD_ANSWER_CMD:-$SCRIPT_DIR/board-answer.sh}"
 RECONCILE_CMD="${RECONCILE_CMD:-$SCRIPT_DIR/board-reconcile.sh}"
+GC_CMD="${GC_CMD:-$SCRIPT_DIR/board-gc.sh}"
 SWEEP_LOG="${SWEEP_LOG:-$DAEMON_HOME/sweep.log}"
 STALL_MIN="${SWEEP_STALL_MINUTES:-45}"
 RECOVERY_CAP="${SWEEP_RECOVERY_CAP:-3}"
@@ -874,4 +880,8 @@ pass_surface  || log "[sweep] SURFACE pass errored (continuing)"
 pass_relay    || log "[sweep] RELAY pass errored (continuing)"
 "$RECONCILE_CMD" 2>&1 | tee -a "$SWEEP_LOG" >/dev/null \
   || log "[sweep] REPORT pass errored (continuing)"
+if [ "${WORKTREE_GC:-0}" = 1 ] || [ "${DOCKER_GC:-0}" = 1 ]; then
+  "$GC_CMD" 2>&1 | tee -a "$SWEEP_LOG" \
+    || log "[sweep] GC pass errored (continuing)"
+fi
 log "[sweep] tick complete"
