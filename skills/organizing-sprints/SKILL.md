@@ -16,9 +16,6 @@ primary artifact: tickets, dependency edges, derived ExecPlans, and the next
 milestone's reservations all flow from it, and its living sections track the
 sprint through to retrospective.
 
-(Successor to `issue-register`: real sprint usage showed that clustering +
-ticket registration is one phase of this pipeline, not a standalone product.)
-
 <HARD-GATE>
 MULTIPLE observations only. A single idea — however fuzzy — goes to
 doperpowers:brainstorming. One observation has nothing to cluster or cut.
@@ -47,8 +44,7 @@ Create a task per phase; complete them in order.
    testimony too — record it; don't adjudicate it silently.
 2. **Ground every observation in code** — fan out parallel explorations by
    area (native subagents) and classify each
-   observation against code reality (see The verification table below). A
-   question the codebase can answer is answered by reading, never asked.
+   observation against code reality (see The verification table below).
 3. **Tentative decomposition** — cut streams and epics. An epic is an
    independently shippable purpose-unit; two observations share an epic
    only if they share a problem or outcome, not merely a topic or a page.
@@ -114,11 +110,9 @@ builds on. Classify EVERY observation:
 | `[BUILT]` / `[PARTIAL]` | already exists, fully or partly | no work, or the delta only — name where it lives |
 | `[NOT-BUILT]` | absent | the sprint's real work |
 
-Why this is non-negotiable: real usage caught an observation describing the
-current layout as the opposite of what the code renders — trusted as
-written, the sprint would have built the reverse of the actual requirement.
-And features "assumed built" that were never built become invisible sprint
-scope unless someone checks the assumption against the code.
+Why this is non-negotiable: a misread trusted as written ships the reverse
+of the actual requirement, and a feature assumed built but never checked
+becomes invisible sprint scope.
 
 ## The grill
 
@@ -147,8 +141,7 @@ Three moves specific to this skill:
   killed (a sketch, an aside, an example that might be a requirement) is a
   grill question: present it with its context and your recommended
   disposition, and let the human rule it in, out, or deferred. Dropping it
-  during atomization or grounding is a silent drop — the classification
-  the human never saw is the one that loses the sprint an idea.
+  during atomization or grounding is a silent drop.
 
 Every landed decision is logged with its rejected alternatives and why each
 lost.
@@ -187,12 +180,9 @@ spec is self-contained).
 |---|---|
 | Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
 | Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
-| Running on a single idea | Wrong skill — doperpowers:brainstorming. |
 | Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
 | Per-epic implementation plans in the umbrella | The umbrella stops at observable acceptance criteria; ExecPlans derive downstream at dispatch time. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
-| Distilling a decision to its logic, shedding its pitched form | The shape an idea was proposed in (the sketched UX, the worked example) is part of the idea. Carry it into the spec, or put its adoption on the grill — don't let only the abstraction survive. |
-| Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
 | Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |
 | Skipping existing-ticket disposition | The board must reflect the sprint, not accumulate parallel truths. |
