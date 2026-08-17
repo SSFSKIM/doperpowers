@@ -35,8 +35,16 @@ action — do not touch the board until the spec document is approved.
 Create a task per phase; complete them in order.
 
 1. **Ingest & atomize** — parse the note into discrete atomic observations.
-   Lose none; merge none silently. Where each observation came from (who
-   said it, seeing what) rides along — it becomes the epic's context line.
+   Lose none; merge none silently. When the note is itself a digest of
+   richer primary material (a transcript, a recording), atomize from the
+   primary material — a summary is someone else's lossy atomization. Where
+   each observation came from (who said it, seeing what) rides along — it
+   becomes the epic's context line. For ideas and proposals, two more
+   things ride along: the concrete shape they were pitched in (the
+   sketched interaction, the worked example — the form is part of the
+   idea, not packaging around it) and their conversational status
+   (endorsed, rejected, floated in passing, illustrative). Status is
+   testimony too — record it; don't adjudicate it silently.
 2. **Ground every observation in code** — fan out parallel explorations by
    area (native subagents) and classify each
    observation against code reality (see The verification table below). A
@@ -126,7 +134,7 @@ The interview protocol, adapted from doperpowers:brainstorming's grill:
 - Triage: grill what is fuzzy or important; don't grind already-clear notes
   to death across a large dump.
 
-Two moves specific to this skill:
+Three moves specific to this skill:
 
 - **Auto-landed decisions** — when grounding dissolves every alternative,
   record the decision as `[DECIDED-AUTO]` with the code fact that killed
@@ -135,6 +143,12 @@ Two moves specific to this skill:
 - **Externally-owned questions** — a question only a specific person can
   answer (copy sign-off, business input) does not block authoring: record
   it in Open Questions with owner + deadline and keep moving.
+- **Ambiguous-status ideas** — an idea the source neither adopted nor
+  killed (a sketch, an aside, an example that might be a requirement) is a
+  grill question: present it with its context and your recommended
+  disposition, and let the human rule it in, out, or deferred. Dropping it
+  during atomization or grounding is a silent drop — the classification
+  the human never saw is the one that loses the sprint an idea.
 
 Every landed decision is logged with its rejected alternatives and why each
 lost.
@@ -177,6 +191,7 @@ spec is self-contained).
 | Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
 | Per-epic implementation plans in the umbrella | The umbrella stops at observable acceptance criteria; ExecPlans derive downstream at dispatch time. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
+| Distilling a decision to its logic, shedding its pitched form | The shape an idea was proposed in (the sketched UX, the worked example) is part of the idea. Carry it into the spec, or put its adoption on the grill — don't let only the abstraction survive. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
 | Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |
