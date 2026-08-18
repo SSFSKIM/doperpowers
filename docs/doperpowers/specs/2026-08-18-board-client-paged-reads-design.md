@@ -86,9 +86,12 @@ remain until every caller is off them, then are deleted in this same patch):
   rollback) every by-id read would masquerade as a missing ticket — lint
   would retire every daemon. On the first 404 in a process the helper
   probes once (`GET /tickets?limit=1`): an `{items, next, as_of}` envelope
-  proves the paged surface exists and the 404 was a real absence; a bare
-  array means the server predates the surface and the helper dies naming
-  that, never returning `None`. The probe result is cached per process.
+  proves the paged surface exists — and the by-id read is then RE-ISSUED,
+  because the probe dates the surface and not the answer that preceded it
+  (a row rescues the 404; a second 404 is the authoritative one). A bare
+  array, or any other incomplete envelope, means the server predates the
+  surface and the helper dies naming that, never returning `None`. The
+  probe result is cached per process, and the re-ask rides with it.
 - `tickets_by_ids(ids, principal=...)` → `GET /tickets?ids=` in chunks of
   ≤200 (the documented cap), concatenated. An id absent from a completed
   response is authoritatively absent (the filter answers found rows; it
@@ -179,7 +182,9 @@ server's code is the correct surface for it.
    correctly and neither performs a bare listing: the ticket comes from
    `GET /tickets/{id}`, its history from the documented flat timeline route,
    and a 404 on a not-yet-proven server spends one `GET /tickets?limit=1`
-   rollback probe (verified against the docker board).
+   rollback probe (verified against the docker board) and then one re-issued
+   `GET /tickets/{id}` — the probe dates the surface, not the answer that
+   preceded it (§ Decision Log 2026-08-19; pinned by unit drill).
 3. A walk interrupted at page 2 (fixture server kills the connection)
    surfaces as a failure — no caller observes a partial board.
 4. The unit and integration suites are green; the plugin version is bumped
@@ -233,6 +238,26 @@ operation after this patch ships (grill decision — soak, then retire).
   row-level `not-found` share one stable code, and messages are unstable by
   contract; a server-side capability endpoint was rejected as cross-repo
   scope — the one-probe client guard closes the same hole.
+- **The probe dates the surface, not the 404 before it** (codex whole-branch
+  review round 3, 2026-08-19 — adopted in part): a 404 answered BEFORE the
+  proof is not evidence of absence. During a service version transition the
+  404 and the probe can be served by different instances — the old one
+  without the read surface, the new one with it — and a probe read as proof
+  would then authenticate a route-level 404 as a missing ticket, which is
+  the exact hazard the guard exists for. Adopted: once the probe validates,
+  `ticket()` re-issues the by-id read and returns THAT answer — a row
+  rescues the false absence, and a second 404, now observed with the surface
+  proven in-process, is the authoritative one. Rejected, from the same
+  finding: re-probing on every 404, or invalidating an earlier in-process
+  proof when a later 404 arrives. A client process here is one script
+  invocation living seconds, and the deployed board is a single instance, so
+  a mixed-fleet window is a one-off deploy race rather than steady state;
+  meanwhile every consumer of a residual false absence is loud or
+  recommendation-only — `board-show` and `board-transition` die visibly and
+  are rerunnable, `board-lint` emits a recommendation a human executes, and
+  the sweep's deferred contract tolerates an empty answer. Per-404 re-probing
+  would double the round trips on every drifted-fleet lint run to close a
+  window nothing silently consumes.
 - **Controlled track** (grill): live production sweep + per-site semantics
   decisions warranted the full spec → plan → reviewed-SDD pipeline.
 
@@ -256,6 +281,14 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-19: `ticket()` re-issues the by-id read after a rollback probe
+  validates and returns that second answer, so an authoritative `None` always
+  rests on a 404 observed with the paged surface proven in-process (§ Decision
+  Log, same date; § Helper primitives and § Acceptance item 2 now describe the
+  re-ask). A behavior change, not a wording one — drilled in
+  `test-paged-reads.sh`. No version change: the `ticket()` contract callers
+  code against (`None` = absent, action-grade) is what it always was; what
+  moved is the evidence the helper demands before it says `None`.
 - 2026-08-19: § Acceptance item 2 claimed the paged surface was "the only
   read" `board-show` performs. The acceptance walk measured it and found
   three: the by-id read, the flat timeline route (§ site map's own
