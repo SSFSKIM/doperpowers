@@ -243,19 +243,8 @@ def park_answer(tid, replies, to=None, correlation_id=None):
     return request("POST", "/tickets/%s/park-answer" % int(tid), body, "human")
 
 
-def tickets(state=None, category=None, principal="human"):
-    qs = "&".join("%s=%s" % (k, v) for k, v in
-                  (("state", state), ("category", category)) if v)
-    return request("GET", "/tickets" + ("?" + qs if qs else ""),
-                   principal=principal)
-
-
 def timeline(tid, principal="human"):
     return request("GET", "/tickets/%s/timeline" % int(tid), principal=principal)
-
-
-def queue_decisions():
-    return request("GET", "/queue/decisions", principal="human")
 
 
 # ---- paged read surface (spec: board-client-paged-reads v1.1) --------------
