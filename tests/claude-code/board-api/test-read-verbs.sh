@@ -145,17 +145,21 @@ gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chm
 # operator's REAL registry ($HOME/.claude/orchestrating-daemons), which would make
 # this suite's verdict depend on which daemons happen to live on the machine.
 DHOME="$(mktemp -d)"
-# Three registries, one per shape of the absence question lint now asks: a
+# Four registries, one per shape of the absence question lint now asks: a
 # daemon on a ticket the walk never served AND the board denies by id (retire),
-# one on a ticket the walk served as CLOSED (retire, no confirm needed), and one
+# one on a ticket the walk served as CLOSED (retire, no confirm needed), one
 # on a ticket the walk missed but the board still has open (NOT a retire — the
-# walk lost a mover, and a recommendation may not stand on that).
+# walk lost a mover, and a recommendation may not stand on that), and one on a
+# ticket the walk served as OPEN — the path every healthy daemon takes, and the
+# only one of the four where the verdict has to say nothing at all.
 DRIFT="$(mktemp -d)"
 printf '{"uuid":"abcdef1234567","ticket":"#99","run_id":7}' > "$DRIFT/d1.json"
 DCLOSED="$(mktemp -d)"
 printf '{"uuid":"c105ed1234567","ticket":"4","run_id":8}' > "$DCLOSED/d2.json"
 DMOVER="$(mktemp -d)"
 printf '{"uuid":"m0ved1234567","ticket":"#55","run_id":9}' > "$DMOVER/d3.json"
+DOPEN="$(mktemp -d)"
+printf '{"uuid":"a11ve1234567","ticket":"#12","run_id":10}' > "$DOPEN/d4.json"
 
 V() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
@@ -164,6 +168,8 @@ VD() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DRIFT" \
 VC() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DCLOSED" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 VM() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DMOVER" \
+         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
+VO() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DOPEN" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 map_md() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.md"; }
 map_html() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.html"; }
@@ -316,6 +322,15 @@ t "a ticket the walk missed but the board still has is no retire candidate" \
   "board-lint: 5 open ticket(s), 0 FAIL" VM board-lint.sh
 nt "and no FAIL is printed for it" "FAIL daemon" VM board-lint.sh
 t "the by-id confirm is what said so" '"path": "/tickets/55"' cat "$FIX.log"
+# The fourth shape, and the one every healthy daemon in the fleet is in: the
+# walk SERVED its ticket, open. Three drills above pin what lint must SAY; this
+# one pins the far more common case where it must say nothing — a verdict that
+# reads the walk-served map with the wrong polarity retires the whole live fleet
+# and is invisible to all three. The needle is this daemon's own FAIL line as
+# board-lint.sh prints it (uuid[:8] + the ticket), so it cannot pass by matching
+# a shape lint never emits.
+nt "a daemon on a ticket the walk serves as open is no retire candidate" \
+  "FAIL daemon a11ve123 bound to closed/absent ticket #12" VO board-lint.sh
 # The exit code is the machine-readable half of lint; `t` only reads output.
 if ( VD board-lint.sh >/dev/null 2>&1 ); then
   echo "FAIL lint must exit non-zero on drift"; FAILS=$((FAILS+1))

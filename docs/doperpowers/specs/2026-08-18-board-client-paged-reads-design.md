@@ -126,9 +126,11 @@ failures — the sweep tick fails as today — while a clean `ids=` response's
 absence becomes authoritative, which is strictly better evidence than the
 whole-read it replaces. Two sites gain a deliberate confirm step because their
 walk-absence triggers an action rather than a report line: board-lint's
-absence-confirm rule (a retire recommendation only after `ticket(tid)`
-answers 404 — the targeted read outranks the walk) and board-answer's
-re-walk-once rule (above). Report-only walk consumers (map, reconcile,
+absence-confirm rule (a retire recommendation stands on either grade of
+authoritative evidence — the walk SERVING the ticket closed, or, for a row no
+page carried, `ticket(tid)` answering 404; what it may never stand on is
+walk-absence alone, because the targeted read outranks the walk) and
+board-answer's re-walk-once rule (above). Report-only walk consumers (map, reconcile,
 list) accept the transient: a row hidden by a concurrent move is re-read
 on the next invocation. The escalate title-scan site self-heals the same
 way — a transient miss costs one extra escalation cycle, and the
@@ -249,6 +251,12 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-19: § Semantics preservation now names both grades of retire
+  evidence (the walk serving the ticket closed, OR a by-id 404) instead of
+  reading as if only the 404 counted. Task 4's reviewer caught the divergence
+  between this sentence and the plan's binding constraint; the plan text (and
+  the shipped code, which follows it) governs. No version change — wording
+  alignment, not a design change.
 - 2026-08-18: v1.1, codex adversarial spec review (2 high, 1 medium — all
   adopted): the walk-completeness claim was demoted to report-grade with
   per-site action-grade evidence rules (by-id / re-walk-once); queue dedupe
