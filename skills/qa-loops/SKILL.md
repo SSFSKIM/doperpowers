@@ -416,12 +416,13 @@ judgment or input — run the closing wave FIRST, over ALL of the final
 round's outstanding findings, blockers included: fixed-but-unverified
 beats known-broken when a human reads the PR next, and the resumed
 review's fresh rounds are the verification the closing wave lacks.
-Push what grading accepts, then set the ticket to needs-human with a
-note written as a QA request — rounds spent, what the final round
-found, that everything was fixed but never engine-verified, final QA
-needed. Never merge on this path (PARKED tier). A closing wave that
-fails grading here needs no fallback: unaccepted commits and the
-ledger stay local per the push gate, and the park proceeds.
+Push whatever the push gate clears, then set the ticket to needs-human
+with a note written as a QA request — rounds spent, what the final
+round found, which fixes landed on the PR (engine-unverified, so final
+QA needed), and which findings are still unfixed or stuck in commits
+the gate kept local. Never merge on this path (PARKED tier). A closing
+wave that fails grading here needs no fallback: unaccepted commits and
+the ledger stay local per the push gate, and the park proceeds.
 
 ## ESCALATE
 
