@@ -254,21 +254,30 @@ _MAX_IDS = 200      # documented ids= cap (arkho API.md §1)
 _SURFACE = {"proven": False}   # per-process: has any envelope read succeeded?
 
 
-def _envelope(payload, path):
+def _envelope(payload, path, context=""):
     """A paged read must answer the COMPLETE envelope. A bare array means
     the server predates the read surface; a dict missing `next` (or carrying
     a wrong-typed member) is a malformed or version-skewed page — and
     treating a MISSING `next` like the contract's `next: null` would end the
-    walk early and hand the caller a partial board as if complete. Strict or
-    dead: no partial result may escape."""
+    walk early and hand the caller a partial board as if complete. An EMPTY
+    `next` is malformed too, and it is the one shape a type check alone lets
+    through: the walk appends no cursor, refetches page 1 and never ends. So
+    `next` is null or a NON-EMPTY cursor, nothing else. Strict or dead: no
+    partial result may escape.
+
+    `context` appends the caller's own diagnosis to the die, for the callers
+    that know something this function cannot — the rollback probe knows a
+    404 preceded it, and that is what makes the failure legible."""
     if (not isinstance(payload, dict)
             or not isinstance(payload.get("items"), list)
             or "next" not in payload
-            or not (payload["next"] is None or isinstance(payload["next"], str))
+            or not (payload["next"] is None
+                    or (isinstance(payload["next"], str) and payload["next"]))
             or not isinstance(payload.get("as_of"), int)):
-        die("GET %s answered no complete paged envelope "
-            "({items, next, as_of}) — a pre-read-surface or malformed "
-            "server; refusing to guess" % path)
+        die("GET %s answered no complete paged envelope ({items, next, "
+            "as_of}, where next is null or a NON-EMPTY cursor) — a "
+            "pre-read-surface or malformed server; refusing to guess%s"
+            % (path, context))
     _SURFACE["proven"] = True
     return payload
 
@@ -285,7 +294,7 @@ def _walk(base, principal):
         path = base + ("&cursor=%s" % cursor if cursor else "")
         page = _envelope(request("GET", path, principal=principal), path)
         rows.extend(page["items"])
-        cursor = page["next"]   # _envelope proved the key present
+        cursor = page["next"]   # _envelope proved it null or a NON-EMPTY token
         if cursor is None:
             return rows
 
@@ -299,12 +308,16 @@ def ticket(tid, principal="human"):
     out = request("GET", "/tickets/%s" % int(tid), principal=principal,
                   absent=("not-found",))
     if out is None and not _SURFACE["proven"]:
-        probe = request("GET", "/tickets?limit=1", principal=principal)
-        if not isinstance(probe, dict) or "items" not in probe:
-            die("GET /tickets/%s answered not-found, and the server serves "
-                "no paged surface — this is a pre-read-surface server "
-                "(route-level 404), not a missing ticket" % int(tid))
-        _SURFACE["proven"] = True
+        # The probe is held to the FULL envelope, not merely to carrying an
+        # `items` key: a rolled-back or version-skewed answer may not be the
+        # thing that proves the surface, because proving it is what turns this
+        # 404 into an authoritative absence — and board-lint retires live
+        # daemons on that answer. _envelope marks the surface proven itself.
+        _envelope(request("GET", "/tickets?limit=1", principal=principal),
+                  "/tickets?limit=1",
+                  " — so the not-found on GET /tickets/%d is a route-level "
+                  "404 from a pre-read-surface server, not a missing ticket"
+                  % int(tid))
     if out is not None:
         _SURFACE["proven"] = True
     return out

@@ -41,6 +41,15 @@ sys.exit(0 if socket.socket().connect_ex(('127.0.0.1', $1)) == 0 else 1)"; then 
   return 1
 }
 
+# A walk that fails to terminate would HANG this suite rather than fail it —
+# and an unterminated walk is exactly the regression one drill below exists to
+# catch. Bound that invocation so the regression comes back as a FAIL.
+bounded() { python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.call(sys.argv[1:], timeout=60))
+except subprocess.TimeoutExpired:
+    print("TIMEOUT"); sys.exit(124)' "$@"; }
+
 TDIR="$(mktemp -d)"
 CREDS="$TDIR/creds.env"
 printf 'BOARD_AUTOMATION_TOKEN=auto-tok\nBOARD_HUMAN_TOKEN=human-tok\n' > "$CREDS"
@@ -164,6 +173,32 @@ t "a 404 from a pre-read-surface server dies instead of reporting absence" \
   "pre-read-surface server" echo "$RB_OUT"
 nt "and never answers None on the way out" "ABSENT" echo "$RB_OUT"
 t "the die exits nonzero" "rc=1" echo "rc=$RB_RC"
+
+# The rollback's second shape, and the one a bare-array test cannot see: a
+# server far enough along to answer an OBJECT on the list route but not the
+# whole envelope — a partial rollback, or a version skew. Proving the surface
+# on that is the same catastrophe as proving it on a bare array, because the
+# proof is what promotes this 404 to an authoritative absence and board-lint
+# retires live daemons on it. So the probe answers the FULL envelope or the
+# read dies.
+world probeskew <<'JSON'
+[
+ {"method":"GET","path":"/tickets/404002","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 404002"}}},
+ {"method":"GET","path":"/tickets?limit=1","status":200,"once":true,
+  "body":{"items":[]}}
+]
+JSON
+PS_OUT="$(run_py "$CORE
+r = A.ticket(404002)
+print('ABSENT=%s' % (r is None))" 2>&1 || true)"
+t "a probe answering half an envelope proves nothing" \
+  "no complete paged envelope" echo "$PS_OUT"
+nt "so that 404 never reports absence either" "ABSENT" echo "$PS_OUT"
+# Without this, the drill also passes for a client that skipped the probe and
+# died some other way — the probe having HAPPENED is half of what is under test.
+t "and the probe it refused to trust was really spent" \
+  '"path": "/tickets?limit=1"' log
 
 # ---- the cursor walk --------------------------------------------------------
 # Cursor-bearing entries FIRST: the mock matches by path prefix, so a bare
@@ -290,6 +325,28 @@ print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
 t "a page missing next dies rather than passing as the end of the walk" \
   "no complete paged envelope" echo "$MAL_OUT"
 nt "and answers nothing at all" "PARTIAL" echo "$MAL_OUT"
+
+# An EMPTY `next` is the malformed cursor a type check alone lets through — it
+# is a str — and it is the worst of them: no cursor gets appended, page 1 comes
+# back, and the walk refetches it forever. The fixture entry is deliberately NOT
+# `once`, so page 1 answers every time: that is the live hazard, and it is why
+# the call below is bounded rather than trusted to return.
+world emptycursor <<'JSON'
+[
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":1,"title":"a","category":"work","state":"in-progress",
+                    "priority":"P0","owner_run":41,"parent":null,"plan":null,
+                    "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
+          "next":"","as_of":118}}
+]
+JSON
+EC_OUT="$(bounded env PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
+  BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
+rows = A.tickets_all()
+print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
+t "an empty next is malformed, not a cursor the walk carries back" \
+  "next is null or a NON-EMPTY cursor" echo "$EC_OUT"
+nt "and no rows escape the page that carried it" "PARTIAL" echo "$EC_OUT"
 
 # The pre-read-surface server on the LIST route: a bare array is not one page.
 world barearray <<'JSON'
