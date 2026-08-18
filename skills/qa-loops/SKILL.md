@@ -91,8 +91,9 @@ the audit, the triage, the grading, and the trusted push chain. Code
 reaches the branch only as fixer commits you graded and accepted. Your
 own writes are: pushes of those commits; GitHub comments/labels and board
 transitions; scratch control state (wave boards, submitted snapshots,
-accepted ledger); and narrowly-scoped git recovery of UNPUSHED
-unauthorized-writer contamination exactly as `wave-board.md` allows.
+accepted ledger); and narrowly-scoped git recovery of UNPUSHED history
+exactly as `wave-board.md` allows (unauthorized-writer contamination;
+the closing wave's fallback reset).
 
 Toolkit:
 - board scripts: {{BOARD_SCRIPTS}}
@@ -319,8 +320,8 @@ stakes and route on your own judgment. Every NEW finding defaults to
 WAVE regardless of severity — severity orders the wave, it does not
 pick the bin. Mid-loop
 LOG is a judgment departure only (a fix whose churn exceeds its worth)
-and takes a stated reason in the trail; LOG's ordinary intake is the
-review's exit (RE-REVIEW). Deep verification
+and takes a stated reason in the trail; exit residue rides the closing
+wave instead (RE-REVIEW). Deep verification
 against the code stays the fixer's verify-then-fix job; you judge
 substance and route.
 - WAVE — the default for every NEW finding, including any SPEC FINDING
@@ -346,8 +347,9 @@ substance and route.
   NEVER wave it. On a ticketless PR, post a structured PR comment
   describing the scope fork instead — board writes are skipped, the
   cross-ticket exception included.
-- LOG — valid non-blocker, at the review's exit (RE-REVIEW) or as a
-  stated-reason departure: append a
+- LOG — valid non-blocker the loop will not fix: a stated-reason
+  departure, or residue the closing wave could not land (RE-REVIEW):
+  append a
   structured comment to the standing tech-debt issue
   ({{BOARD_SCRIPTS}}/board-comment.sh {{TECH_DEBT_ISSUE}}) — finding,
   file:line, severity, why deferred. When TECH_DEBT_ISSUE is "none", write these into the
@@ -368,7 +370,8 @@ board, and grade every disposition (an empty slot is a failed item: re-wave
 once, then needs-human). An unauthorized writer restores the recorded
 wave boundary before re-wave — none of its work is inherited. On acceptance,
 push the graded fixes (you are on a detached HEAD).
-Maximum 4 waves per review.
+Maximum 4 waves per review; the exit's closing wave stands outside
+this cap (RE-REVIEW).
 
 ## RE-REVIEW
 
@@ -384,9 +387,19 @@ the opposite: the fix did not hold — that is a live blocker, never a
 dupe; re-wave it within the caps. The exit condition is no NEW finding
 of ANY severity, not a clean report: a round whose findings all match
 already-routed items ends the review, and reaching the wave/round cap
-with no blocker left ends it too. At that exit — and only then — LOG
-whatever valid non-blockers remain unrouted, so small findings get
-fixed in the loop instead of accumulating as debt. Severity does not
+with no blocker left ends it too. At that exit, valid non-blockers
+still unrouted ride ONE CLOSING WAVE: the same wave machinery with no
+verifying engine round after it — which is why it stands outside the
+wave cap (the cap bounds the wave→re-review loop; a wave that spawns
+no re-review is not in it). The engine never sees the closing delta,
+so its whole coverage is the fixer's test evidence, your grading, and
+CI — and the wave is all-or-nothing: every item graded and accepted →
+push and merge on that head; any item still failing after its one
+re-wave → fall back (wave-board.md: reset the unpushed wave to its
+wave-base), merge the engine-reviewed head exactly as if no closing
+wave had run, and LOG the residue. Findings already LOGGED by
+stated-reason departure stay LOGGED — their deferral reason stands.
+Severity does not
 promote exit residue to a ticket — TOO BIG is the only ticket gate at
 exit, as everywhere.
 At the cap with unresolved blockers there is no
@@ -396,8 +409,20 @@ defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to
 ready-for-architect with the impasse summary as the note (the
 design-gap address; the board converts a second traversal of this edge
 to needs-human mechanically — never write it twice yourself) and end
-your turn. Otherwise — an impasse that needs human judgment or input —
-set the ticket to needs-human with the impasse summary and end your turn.
+your turn — no closing wave on this path: the seam IS the observation
+that fixes don't hold there, and churn on code awaiting a re-cut only
+muddies the architect's read. Otherwise — an impasse that needs human
+judgment or input — run the closing wave FIRST, over ALL of the final
+round's outstanding findings, blockers included: fixed-but-unverified
+beats known-broken when a human reads the PR next, and the resumed
+review's fresh rounds are the verification the closing wave lacks.
+Push whatever the push gate clears, then set the ticket to needs-human
+with a note written as a QA request — rounds spent, what the final
+round found, which fixes landed on the PR (engine-unverified, so final
+QA needed), and which findings are still unfixed or stuck in commits
+the gate kept local. Never merge on this path (PARKED tier). A closing
+wave that fails grading here needs no fallback: unaccepted commits and
+the ledger stay local per the push gate, and the park proceeds.
 
 ## ESCALATE
 
@@ -430,7 +455,9 @@ code you would write rather than keep — stop and park needs-human
 naming that hunk: that decision belongs to a human or a re-cut.
 
 If ALL hold AND auto-merge on (auto-merge: {{AUTO_MERGE}}): merge,
-pinned to the head your final engine round reviewed. Headless gh never
+pinned to the reviewed head — the head your final engine round
+reviewed, advanced only by your own graded closing-wave push when one
+landed. Headless gh never
 picks a merge method itself — resolve the repo's first (gh repo view
 --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed; first
 allowed of --squash / --merge / --rebase), then
