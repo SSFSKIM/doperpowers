@@ -63,11 +63,18 @@ if [ "$BOARD_BINDING" = api ]; then
     _cur="$(T_ID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
-tid = os.environ["T_ID"].lstrip("#")
-print(next((t["state"] for t in A.tickets() if str(t["id"]) == tid), ""))
+# The one board read on this path that keeps the HUMAN default principal: the
+# gate reads as whoever is transitioning, not as the fleet. A 404 prints empty
+# exactly as the first-match miss of the whole-board scan did, and the shell
+# turns that into the refusal below — what changed is that the emptiness is
+# now authoritative. (No apostrophes in this heredoc: it lives inside a command
+# substitution, where bash 3.2 lexes the body and a lone quote breaks the whole
+# script at parse time.)
+row = A.ticket(A.ref(os.environ["T_ID"]))
+print(row["state"] if row else "")
 PY
 )" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
-    [ -n "$_cur" ] || die "--plan: #$tid is not in a listing this principal can read — the handoff edge cannot be checked, and an unverifiable pin is not a pin"
+    [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the handoff edge cannot be checked"
     { [ "$_cur" = in-design ] && [ "$to" = ready-for-implementer ]; } \
       || die "--plan rides the Architect handoff edge (in-design → ready-for-implementer) only (#$tid is $_cur → $to)"
     if [ "$plan" != pre-spec ]; then

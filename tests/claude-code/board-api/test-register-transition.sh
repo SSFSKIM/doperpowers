@@ -24,13 +24,23 @@ FIX="$(mktemp)"; : > "$FIX.log"
 # The `once` entries for one path are a QUEUE: the Nth registration in this
 # file consumes the Nth unused /tickets fixture, so fixture order and the order
 # of the register calls below must stay in lockstep.
+# There is NO bare `GET /tickets` fixture: the --plan gate reads its ticket by
+# id, so a whole-board read from this file would find no fixture, take the
+# mock's plain 404 and fail — which is the discrimination.
 cat > "$FIX" <<'JSON'
 [
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
-           "owner_run":null,"plan":null,"pr_url":null},
-          {"id":9,"state":"in-review","priority":"P1","title":"under review",
-           "owner_run":null,"plan":null,"pr_url":null}]},
+ {"method":"GET","path":"/tickets/8","status":200,
+  "body":{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
+          "owner_run":null,"plan":null,"pr_url":null}},
+ {"method":"GET","path":"/tickets/9","status":200,
+  "body":{"id":9,"state":"in-review","priority":"P1","title":"under review",
+          "owner_run":null,"plan":null,"pr_url":null}},
+ {"method":"GET","path":"/tickets/77","status":404,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 77"}}},
+ {"method":"GET","path":"/tickets?limit=1","status":200,
+  "body":{"items":[{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
+                    "owner_run":null,"plan":null,"pr_url":null}],
+          "next":null,"as_of":118}},
  {"method":"POST","path":"/tickets/9/transition","status":200,
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
@@ -277,5 +287,28 @@ t "a pin with no branch is refused" "needs a branch the sha is reachable from" c
 V board-transition.sh 8 ready-for-implementer "n" --branch nope \
   --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
 t "an unverifiable branch fails CLOSED" "names no commit in this checkout" cat "$PIN_OUT"
+
+# THE GATE'S EVIDENCE. The edge check reads the ticket BY ID, so a board that
+# does not carry it answers 404 — absence stated by the server rather than a
+# ticket missing from whichever page a whole-board read happened to return. The
+# client proves the paged surface once before believing that 404 (a rolled-back
+# server answers the same `not-found` for an unknown route).
+: > "$FIX.log"
+V board-transition.sh 77 ready-for-implementer "n" --branch nope \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+t "a pin on a ticket the board does not carry is refused" \
+  "#77 does not exist on this board" cat "$PIN_OUT"
+t "and the gate probed the paged surface before trusting the 404" \
+  '"path": "/tickets?limit=1"' cat "$FIX.log"
+nt "and no transition was attempted on it" '"path": "/tickets/77/transition"' cat "$FIX.log"
+# THE GATE READS AS THE HUMAN. Every other board read this client makes speaks
+# as the fleet's automation principal; this one stays with whoever is
+# transitioning, so a human running the verb reads with the human token. The
+# invocations above all carry BOARD_RUN_TOKEN (a run's bearer wins for every
+# principal, as it does everywhere), which is exactly why this one does not.
+: > "$FIX.log"
+( cd "$r" && BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-transition.sh" 8 \
+    ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" ) >/dev/null 2>&1 || true
+t "the plan gate reads as the human, not as the fleet" '"auth": "Bearer h"' cat "$FIX.log"
 
 finish

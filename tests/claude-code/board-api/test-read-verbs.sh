@@ -12,9 +12,22 @@ PORT="$(python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 
 FIX="$(mktemp)"; : > "$FIX.log"
+# A real cursor, not a synthetic token: arkho's encodeCursor emits the unpadded
+# base64url of the compact JSON keyset, and /tickets orders by (priority,
+# created_at, id) — so the token is a TRIPLE and decodeCursor refuses any other
+# arity. This one is ["P1","2026-08-18 04:15:09.123456+00","12"], the keyset of
+# the last row on page 1 below.
+C1="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMTIzNDU2KzAwIiwiMTIiXQ"
 # Fixture order is longest-prefix-first: mock-server.py prefix-matches paths, so
-# a "/tickets" entry registered ahead of "/tickets/12/timeline" would shadow it.
-cat > "$FIX" <<'JSON'
+# a "/tickets" entry registered ahead of "/tickets/12/timeline" would shadow it,
+# and the bare "/tickets" listing (which only the still-unmigrated verbs read)
+# has to sit below every by-id, cursor and limit-bearing entry.
+#
+# THE SAME BOARD, TWO SHAPES. The paged rows below are the bare listing's seven
+# rows split across two pages: show and list read the paged surface, while
+# reconcile / lint / map still read the whole listing. A row that disagreed
+# between the two would make a drill's verdict depend on which verb it asked.
+cat > "$FIX" <<JSON
 [
  {"method":"GET","path":"/tickets/12/timeline","status":200,
   "body":{"records":[{"source":"board","cursor":"5","observedAt":"t","sourceTime":null,
@@ -23,6 +36,51 @@ cat > "$FIX" <<'JSON'
     "runId":null,"kind":"answer","body":{"replies":["ship it","and squash the fixups"]}},
    {"source":"board","cursor":"7","observedAt":"t","sourceTime":null,
     "runId":2,"kind":"closure-package","body":{"pr":"none","evidence":"suite green"}}]}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"title":"T one","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
+          "branch":"feat/x","blocked_by":[3,4,5],"relates":[9]}},
+ {"method":"GET","path":"/tickets/13","status":200,
+  "body":{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
+          "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+          "branch":null,"blocked_by":[],"relates":[]}},
+ {"method":"GET","path":"/tickets/77","status":404,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 77"}}},
+ {"method":"GET","path":"/tickets?limit=200&states=ready-for-implementer","status":200,
+  "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
+                    "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,
+  "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
+                    "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":14,"title":"T three","category":"work","state":"ready-for-architect",
+                    "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=1","status":200,
+  "body":{"items":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
+                    "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":"$C1","as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
+                    "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":4,"title":"T blocker done","category":"work","state":"done",
+                    "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":5,"title":"T blocker wontfix","category":"work","state":"wontfix",
+                    "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":9,"title":"T sibling","category":"work","state":"in-review",
+                    "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[12]},
+                   {"id":12,"title":"T one","category":"work","state":"in-progress",
+                    "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
+                    "branch":"feat/x","blocked_by":[3,4,5],"relates":[9]}],
+          "next":"$C1","as_of":118}},
  {"method":"GET","path":"/tickets","status":200,
   "body":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
            "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
@@ -111,19 +169,51 @@ t "list marks server order informational" "# dispatch order is server-owned in A
   V board-list.sh
 t "list renders every server row" "#13 ready-for-implementer P2 T two" V board-list.sh
 # A null priority renders as "-", not as "None" or an empty column that swallows
-# the title into the priority position.
+# the title into the priority position. #14 rides the SECOND page, so this row
+# also says the walk ran to `next: null` rather than printing page one.
 t "list renders an ungraded ticket" "#14 ready-for-architect - T three" V board-list.sh
+# The read itself, off the wire. `"path": "/tickets?limit=200"` carries its
+# closing quote: the page-2 request is a longer path and must not satisfy the
+# page-1 assertion, and a bare-listing read must not satisfy either.
+: > "$FIX.log"
+V board-list.sh >/dev/null
+t "list opts into the paged envelope" '"path": "/tickets?limit=200"' cat "$FIX.log"
+t "and carries the server's cursor back verbatim" "cursor=$C1" cat "$FIX.log"
+nt "and reads no bare listing beside it" '"path": "/tickets"' cat "$FIX.log"
 # The state argument is a SERVER-side filter in API mode; a branch that dropped
 # it would still print a plausible board (the mock answers any /tickets query).
+# It rides the PROMOTED PLURAL `states=` — the paged surface has no `state=`,
+# so a client that kept the singular would be filtering nothing.
+: > "$FIX.log"
 V board-list.sh ready-for-implementer >/dev/null 2>&1 || true
-t "list pushes the state filter onto the wire" "/tickets?state=ready-for-implementer" \
-  cat "$FIX.log"
+t "list pushes the state filter onto the wire as the promoted plural" \
+  '"path": "/tickets?limit=200&states=ready-for-implementer"' cat "$FIX.log"
 
 # ── show ───────────────────────────────────────────────────────────────────
 t "show prints the ticket row with run/plan/pr" "#12 in-progress P1 T one  owner_run=41" \
   V board-show.sh 12
 t "show accepts a #-prefixed ref" "[board:5] transition n1" V board-show.sh '#12'
+# A junk ref is a caller mistake, and it has to die as one: the by-id route
+# cannot be built from it at all, so an unguarded ref surfaces as a traceback
+# where the whole-board scan used to answer "no such ticket".
+t "show refuses a junk ref the way the gh path does" "not an issue number: abc" \
+  V board-show.sh abc
+nt "and raises no traceback doing it" "Traceback" V board-show.sh abc
+# ONE TICKET, ONE READ. The row comes from GET /tickets/:id — the whole-board
+# scan this replaces cost the entire board to answer a single-row question. Both
+# assertions carry the closing quote: `"path": "/tickets/12"` is not satisfied
+# by the timeline read, and `"path": "/tickets"` matches the bare listing only.
+: > "$FIX.log"
+V board-show.sh 12 >/dev/null
+t "show resolves its ticket by id" '"path": "/tickets/12"' cat "$FIX.log"
+nt "and reads no whole board to do it" '"path": "/tickets"' cat "$FIX.log"
+# Absence is now the SERVER's answer rather than a scan coming up empty — and
+# the client proves the paged surface exists before it believes a 404, since a
+# rolled-back server answers the same `not-found` code for an unknown route.
+: > "$FIX.log"
 t "show dies on an unknown ticket" "error: no ticket #77" V board-show.sh 77
+t "and probed the paged surface before trusting that 404" \
+  '"path": "/tickets?limit=1"' cat "$FIX.log"
 # The projection carries branch and both edge arrays now (arkho#7); the header
 # line is the only place an operator sees them in API mode.
 t "show prints branch and both edge arrays" "branch=feat/x blocked_by=[3 4 5] relates=[9]" \

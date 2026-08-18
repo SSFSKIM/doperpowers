@@ -30,7 +30,11 @@ if [ "$BOARD_BINDING" = api ]; then
 import os
 import _board_api as A
 
-rows = A.tickets(state=os.environ["T_STATE"] or None, principal="automation")
+# `states=` is the paged surface's promoted plural filter, and the single state
+# name this verb takes is a one-element list server-side — so the argument goes
+# through verbatim. The walk either completes or raises: a half-read board can
+# never print as the board.
+rows = A.tickets_all(states=os.environ["T_STATE"] or None, principal="automation")
 print("# dispatch order is server-owned in API mode")
 for t in rows:
     print("#%s %s %s %s" % (t["id"], t["state"], t.get("priority") or "-", t["title"]))
