@@ -277,7 +277,40 @@ operation after this patch ships (grill decision — soak, then retire).
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped 2026-08-19 as v7.55.0 on `board-client-paged-reads` (fork point
+64967f79), 19 commits. Everything the purpose named is done: all sixteen read
+sites are accounted for — eleven migrated onto the four paged helpers through
+the `_board_api.py` choke point, five flat-route sites carry cap-awareness
+comments naming their documented bounds — the legacy whole-board readers are
+deleted with a clean caller grep, the integration drills read by id with their
+output contracts preserved to the byte, and the acceptance section was walked
+item by item with measured wire evidence (a logging proxy in front of a live
+local board, not a re-reading of the code).
+
+Review shape: seven task reviews (every one running a real mutation battery;
+several vacuous-assertion classes were caught and fixed this way) plus four
+codex whole-branch rounds. All four rounds' findings were the same family —
+the walk contract's fail-closed edges against malformed or version-skewed
+servers: a probe accepting a half envelope, an empty-string cursor looping the
+walk, a repeated cursor looping it unboundedly, and a 404 classified by a probe
+that dated the surface, not the 404. Each got a choke-point fix and a bounded
+drill; round four was clean.
+
+Lessons worth keeping: measured evidence beats read-through (the acceptance's
+"only read" claim survived every reading and fell to the first wire capture);
+`nt`-style negative assertions pass vacuously unless paired with a positive
+from the same world; fail-closed contracts are only as strong as their
+weakest shape-check, and adversarial cross-model review found a new hole per
+round precisely there; `BOARD_BINDING` as an environment variable does not
+override the binding file — a mis-bound probe briefly opened a real GitHub
+issue (deleted within a minute, no residue; the probe was rebuilt against a
+scratch repo with a stubbed `gh`).
+
+Residue, all recorded: the accepted-Minor list and its rationale live in the
+SDE ledger; two follow-up ticket candidates (the runner counting integration
+exit-77 skips as failures, and the junk-ref-without---plan ValueError
+asymmetry); the rollout's soak gate stands — patch 3 (arkho's bare-array
+retirement) only after days of clean live operation on this client.
 
 ## Revision Notes
 
