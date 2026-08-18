@@ -287,9 +287,18 @@ def _walk(base, principal):
     passed back VERBATIM. Materializing here rather than yielding is what makes
     the no-partial-board rule structural: a failed page dies inside request()
     before this returns, so the rows read so far are unreachable — a partial
-    board is unrepresentable, not merely unconsumed by today's callers."""
+    board is unrepresentable, not merely unconsumed by today's callers.
+
+    A cursor is followed at most ONCE. `_envelope` rejects the empty `next`
+    that would refetch page 1 forever, but a well-formed cursor that REPEATS —
+    the same token again, or a cycle A→B→A — walks just as endlessly, and a
+    hang or an exhausted heap is not the fail-closed death this module owes
+    its callers. The first page carries no cursor and cannot collide with one,
+    since a cursor is a non-empty string, so the set of followed tokens is the
+    whole guard."""
     rows = []
     cursor = None
+    followed = set()
     while True:
         path = base + ("&cursor=%s" % cursor if cursor else "")
         page = _envelope(request("GET", path, principal=principal), path)
@@ -297,6 +306,10 @@ def _walk(base, principal):
         cursor = page["next"]   # _envelope proved it null or a NON-EMPTY token
         if cursor is None:
             return rows
+        if cursor in followed:
+            die("GET %s answered a cursor already followed — a looping or "
+                "version-skewed server; refusing an unbounded walk" % path)
+        followed.add(cursor)
 
 
 def ticket(tid, principal="human"):

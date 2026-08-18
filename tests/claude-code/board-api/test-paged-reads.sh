@@ -348,6 +348,39 @@ t "an empty next is malformed, not a cursor the walk carries back" \
   "next is null or a NON-EMPTY cursor" echo "$EC_OUT"
 nt "and no rows escape the page that carried it" "PARTIAL" echo "$EC_OUT"
 
+# The empty cursor's sibling, and the one no envelope check can see: a
+# WELL-FORMED cursor the walk has already followed — the same token handed
+# back, or a cycle A→B→A. Every page validates, every page is a complete
+# envelope, and the walk still never ends; it hangs or eats the heap instead of
+# dying. The loop page is deliberately NOT `once`, so it answers its own cursor
+# every time — that is the version-skewed server — and the call is bounded so
+# the regression comes back as a FAIL rather than a hung suite.
+world loopcursor <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,
+  "body":{"items":[{"id":2,"title":"b","category":"work","state":"in-progress",
+                    "priority":"P0","owner_run":43,"parent":null,"plan":null,
+                    "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
+          "next":"$C1","as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200","status":200,"once":true,
+  "body":{"items":[{"id":1,"title":"a","category":"work","state":"in-progress",
+                    "priority":"P0","owner_run":41,"parent":null,"plan":null,
+                    "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
+          "next":"$C1","as_of":118}}
+]
+JSON
+LC_OUT="$(bounded env PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
+  BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
+rows = A.tickets_all()
+print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
+t "a cursor served back a second time is a loop the walk refuses to run" \
+  "a cursor already followed" echo "$LC_OUT"
+nt "and no rows escape the pages it did read" "PARTIAL" echo "$LC_OUT"
+# Both assertions above also hold for a client that died before ever following
+# the cursor; the count is what says it followed the token exactly ONCE and
+# refused the repeat.
+t "the walk followed that cursor once and stopped at the repeat" "reqs=[2]" reqs
+
 # The pre-read-surface server on the LIST route: a bare array is not one page.
 world barearray <<'JSON'
 [
