@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""sde-telemetry — post-hoc metrics for a controlled-track (SDE) run.
+
+For each session transcript given, prints: wall-clock span, dispatch counts
+by role, and token totals by model for the controller and its subagents.
+Subagent transcripts are read from the sibling directory
+<transcript-dir>/<session-id>/subagents/.
+
+Usage: sde-telemetry SESSION_JSONL [SESSION_JSONL ...]
+"""
+import collections
+import datetime
+import glob
+import json
+import os
+import re
+import sys
+
+ROLE_PATTERNS = [
+    (re.compile(r"implement task", re.I), "executor"),
+    (re.compile(r"review task", re.I), "task-reviewer"),
+    (re.compile(r"\bfix", re.I), "fixer"),
+]
+
+
+def role_of(description):
+    for pattern, role in ROLE_PATTERNS:
+        if pattern.search(description or ""):
+            return role
+    return "other"
+
+
+def scan_transcript(path):
+    """Return (token totals by model, first timestamp, last timestamp)."""
+    totals = collections.defaultdict(collections.Counter)
+    first = last = None
+    with open(path) as fh:
+        for line in fh:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = entry.get("timestamp")
+            if ts:
+                t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                first = t if first is None else min(first, t)
+                last = t if last is None else max(last, t)
+            message = entry.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                usage = message["usage"]
+                model = message.get("model") or "unknown"
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ):
+                    totals[model][key] += usage.get(key) or 0
+    return totals, first, last
+
+
+def merge(into, totals):
+    for model, counter in totals.items():
+        into[model].update(counter)
+
+
+def fmt_totals(totals, indent="  "):
+    lines = []
+    for model in sorted(totals):
+        c = totals[model]
+        lines.append(
+            f"{indent}{model}: in={c['input_tokens']:,} out={c['output_tokens']:,} "
+            f"cache_read={c['cache_read_input_tokens']:,} "
+            f"cache_write={c['cache_creation_input_tokens']:,}"
+        )
+    return "\n".join(lines) or f"{indent}(none)"
+
+
+def report(session_jsonl):
+    session_jsonl = os.path.abspath(session_jsonl)
+    session_id = os.path.splitext(os.path.basename(session_jsonl))[0]
+    print(f"=== session {session_id} ===")
+
+    controller_totals, first, last = scan_transcript(session_jsonl)
+    if first and last:
+        span = last - first
+        print(f"wall-clock: {first.isoformat()} -> {last.isoformat()}  ({span})")
+
+    subagent_dir = os.path.join(os.path.dirname(session_jsonl), session_id, "subagents")
+    role_counts = collections.Counter()
+    role_totals = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
+    dispatches = []
+    for meta_path in sorted(glob.glob(os.path.join(subagent_dir, "*.meta.json"))):
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        description = meta.get("description", "")
+        role = role_of(description)
+        role_counts[role] += 1
+        agent_jsonl = meta_path.replace(".meta.json", ".jsonl")
+        if os.path.exists(agent_jsonl):
+            totals, a_first, a_last = scan_transcript(agent_jsonl)
+            merge(role_totals[role], totals)
+            duration = (a_last - a_first) if a_first and a_last else None
+            dispatches.append((role, description, duration))
+
+    print(f"dispatches: {sum(role_counts.values())} total "
+          f"({', '.join(f'{r}={n}' for r, n in sorted(role_counts.items())) or 'none'})")
+    print("controller tokens:")
+    print(fmt_totals(controller_totals))
+    for role in sorted(role_totals):
+        print(f"{role} tokens ({role_counts[role]} dispatches):")
+        print(fmt_totals(role_totals[role]))
+    if dispatches:
+        print("dispatch list:")
+        for role, description, duration in dispatches:
+            dur = f"{duration}" if duration is not None else "?"
+            print(f"  [{role}] {description}  ({dur})")
+    print()
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    for path in argv[1:]:
+        report(path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
