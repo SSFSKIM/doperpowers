@@ -27,6 +27,8 @@
 #      pins that no transition is ever attempted. An escalation that cannot
 #      read the ticket's state does not happen at all: a record holding
 #      `"state": ""` would self-lift on the next tick and spam the human;
+#      and a registration whose response was lost meets `duplicate` on every
+#      retry, so the env-issue is recovered by title out of a COMPLETE walk;
 #   5. a standing suppression skips the ticket in phase 3 and lifts when the
 #      board state moved OR the env-issue closed — both halves pinned.
 #
@@ -1225,6 +1227,60 @@ t  "and phase 4 refuses the same ticket on the same tick" \
    "#13 already had its one recovery attempt this tick"    cat "$OUTJL"
 t  "releasing the run it was handed"   '"path": "/runs/72/end"'  cat "$RLOG"
 nt "so nothing is spawned for it"      "SPAWN name=13"           cat "$SPAWN_LOG"
+
+# ---- A DUPLICATE REFUSAL IS THE ESCALATION, AND FINDING IT WALKS ---------
+# The registration is not atomic with the suppression record it authorizes: A1
+# can commit the env-issue and the response still be lost, after which every
+# retry meets the server's dedup on this deterministic title — `409 duplicate`
+# forever, no suppression record ever written, and the ticket escalating again
+# every three cycles for as long as it lives. The refusal names the existing
+# ticket, so the env-issue is read back out of it by TITLE, and that scan is
+# the one production caller of the multi-page cursor walk: an env-issue filed
+# days ago sits behind whatever the board has accumulated since, so a scan that
+# reads only the first page finds nothing and raises.
+#
+# The page-1 decoy is a SUPERSTRING of the deterministic title: a scan matching
+# on containment rather than equality answers #88 off page 1 and never asks for
+# page 2 at all. The counter starts at 2 so this tick's single charge lands on
+# the rung that escalates.
+KC="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMjQ2ODEwKzAwIiwiMTIiXQ"
+KFIX="$TDIR/fix-dup-walk.json"
+cat > "$KFIX" <<JSON
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
+ {"method":"POST","path":"/tickets","status":409,
+  "body":{"error":{"code":"duplicate","message":"existing ticket 94"}}},
+ {"method":"GET","path":"/tickets?limit=200&cursor=$KC","status":200,
+  "body":{"items":[{"id":94,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived"}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":88,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived (superseded)"}],
+          "next":"$KC","as_of":118}}
+]
+JSON
+rboard "$KFIX"
+KDH="$TDIR/dh-dup-walk"; mkdir -p "$KDH/board-suppress"
+printf '2\n' > "$KDH/board-suppress/.attempts-12"
+OUTK="$TDIR/dup-walk.out"
+RSW "$KDH" > "$OUTK" 2>&1 || true
+t  "a lost registration's duplicate refusal still escalates" \
+   "escalated #12 → env-issue #94 (suppressed)"        cat "$OUTK"
+t  "the suppression names the env-issue the walk found on PAGE 2" \
+   '"env_issue": 94'                cat "$KDH/board-suppress/12.json"
+nt "not the page-1 row whose title merely CONTAINS the real one" \
+   '"env_issue": 88'                cat "$KDH/board-suppress/12.json"
+# The trailing quote is the delimiter: without it the first-page assertion is
+# also satisfied by the cursor request, and both pages would collapse into one.
+t  "the scan read the first page"       '"path": "/tickets?limit=200"'  cat "$RLOG"
+t  "and asked for the second carrying the cursor verbatim" \
+   "\"path\": \"/tickets?limit=200&cursor=$KC\""       cat "$RLOG"
 
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
