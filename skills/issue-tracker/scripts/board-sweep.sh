@@ -24,7 +24,7 @@
 #            (the reviewer IS what put the ticket in its terminal state)
 #            and are never board-cancelled.
 #   FINALIZE closed tickets still carrying a status:* label — an armed
-#            auto-merge lands after the review worker's turn ended, so the
+#            auto-merge lands after the Reviewer worker's turn ended, so the
 #            PR's "Closes #N" closed the issue but board-transition's
 #            terminal path (label strip, terminal sweeps, epic
 #            recomposition) never ran → re-run the terminal transition
@@ -45,7 +45,7 @@
 #            (authorAssociation OWNER/MEMBER/COLLABORATOR): they are
 #            comment-CONTROLLED board writes, and on a public repo anyone
 #            can comment.
-#   DISPATCH implement-dispatch.sh --sweep (cap-bounded).
+#   DISPATCH execute-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
 #   RELAY    needs-human tickets with a bound idle session whose newest
 #            REPO-SIDE issue comment (authorAssociation OWNER/MEMBER/
@@ -101,8 +101,8 @@ cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exi
 . "$SCRIPT_DIR/_binding.sh" || exit 1
 if [ "$BOARD_BINDING" = api ]; then exec "$SCRIPT_DIR/_sweep_api.sh" all; fi
 
-IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../implementing/scripts/implement-dispatch.sh}"
-REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../reviewing-prs/scripts/review-dispatch.sh}"
+IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../executing/scripts/execute-dispatch.sh}"
+REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../qa-loops/scripts/review-dispatch.sh}"
 BOARD_ANSWER_CMD="${BOARD_ANSWER_CMD:-$SCRIPT_DIR/board-answer.sh}"
 RECONCILE_CMD="${RECONCILE_CMD:-$SCRIPT_DIR/board-reconcile.sh}"
 GC_CMD="${GC_CMD:-$SCRIPT_DIR/board-gc.sh}"
@@ -297,7 +297,7 @@ pass_recover() {
             # lane QUEUE. A queue state is a HANDED-OFF state: whatever this
             # worker was doing, its writes on this ticket are done — the
             # ticket is waiting for the next lane's dispatch. Yet the meta
-            # still binds the ticket, and implement-dispatch charges it to
+            # still binds the ticket, and execute-dispatch charges it to
             # the destination lane's slots (and refuses to dispatch a ticket
             # with a bound working worker at all), so a cap-1 lane blocks for
             # as long as the process lingers. Retire the binding — not the
@@ -341,7 +341,7 @@ EOF
   log "[sweep] CANCEL: $acted acted"
 }
 
-# An armed auto-merge lands after the review worker's turn ended: the PR's
+# An armed auto-merge lands after the Reviewer worker's turn ended: the PR's
 # "Closes #N" closes the ticket, but the label strip, terminal sweeps, and
 # epic recomposition run only through board-transition — the issue sits
 # closed with a residual status:* label (lint flags it) and its parent
@@ -479,7 +479,7 @@ def lineage(node):
     if node.get("parent"):
         out.add(str(node["parent"]))
     # EVERY recorded parent, not just the newest: the pin accumulates across
-    # reparents (implement-dispatch appends on a differing parent), and an
+    # reparents (execute-dispatch appends on a differing parent), and an
     # older entry is exactly what keeps an undispositioned proposal about a
     # previous parent admissible after the child was redispatched.
     pin = B.parse_meta(node.get("body") or "").get("parent-pin") or ""

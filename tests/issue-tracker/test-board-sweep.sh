@@ -580,7 +580,7 @@ assert_contains "$log" "retire:aaaa0021-0000-4000-8000-000000000000" "dead ready
 assert_contains "$out" "pre-verdict worker" "retire log names the pre-verdict rule"
 assert_not_contains "$log" "resume:aaaa0021" "pre-verdict recovery never resumes"
 # A live-but-silent worker on a HANDED-OFF (queue) ticket holds the
-# destination lane: implement-dispatch charges its binding to that lane's
+# destination lane: execute-dispatch charges its binding to that lane's
 # slots and refuses to dispatch a ticket a working worker owns, so a cap-1
 # lane blocks for as long as the process lingers. Past the stall threshold
 # the binding is retired — not resumed; the worker owns no writes here.
@@ -621,7 +621,7 @@ assert_equals "$lab40" "" "the residual status label is stripped"
 assert_not_contains "$out" "FINALIZE: #13" "a closed ticket already label-stripped is not re-finalized"
 
 # DISPATCH + REVIEW lanes
-assert_contains "$log" "impl-dispatch:--sweep" "implement lane sweeps"
+assert_contains "$log" "impl-dispatch:--sweep" "execution lane sweeps"
 assert_contains "$log" "review-dispatch:--sweep" "review lane sweeps"
 
 # RELAY

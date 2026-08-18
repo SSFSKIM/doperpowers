@@ -15,8 +15,8 @@
 # The ONLY sanctioned write path for surface:* labels outside the automatic
 # matching moments (register, lane-entry transition, sweep SURFACE pass) —
 # the Board Write Hard Gate covers this family like status:*/priority:*.
-# A surface label serializes dispatch: one in-flight implement worker per
-# surface (see implement-dispatch.sh).
+# A surface label serializes dispatch: one in-flight Executor worker per
+# surface (see execute-dispatch.sh).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh

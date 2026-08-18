@@ -201,7 +201,7 @@ else:
     # PRE_PARK doesn't cover (needs-info / interactive-preferred /
     # deferred — see _board.py's PRE_PARK). Fall back on the BOUND
     # WORKER's own lane, persisted into the registry meta at spawn time
-    # (implement-dispatch.sh), rather than hardcoding in-progress: an
+    # (execute-dispatch.sh), rather than hardcoding in-progress: an
     # Architect resumed there would land in a state its protocol cannot
     # exit (LEGAL["in-progress"] has no ready-for-implementer edge).
     # Workers spawned by a route that stamps no role fall through to

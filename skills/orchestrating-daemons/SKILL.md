@@ -13,7 +13,7 @@ A **daemon** is a durable background `claude` session, spawned with `claude --bg
 
 | the work is… | it goes to… |
 |---|---|
-| ticket-shaped, or must survive your session | the board — register it (doperpowers:issue-tracker); implement workers (doperpowers:implementing) and review workers (doperpowers:reviewing-prs) are daemons the *dispatch rituals* spawn through this substrate |
+| ticket-shaped, or must survive your session | the board — register it (doperpowers:issue-tracker); Executor workers (doperpowers:executing) and Reviewer workers (doperpowers:qa-loops) are daemons the *dispatch rituals* spawn through this substrate |
 | needing the human's live steering | the board, parked `interactive-preferred` |
 | ephemeral fan-out inside this session | native subagents — they share your session's lifetime, and that's fine because the work does too |
 | must survive your session AND there is no board to hold it (a repo without issue-tracker, an overnight run in a bare directory) | a raw ad-hoc daemon — the escape hatch this skill's hand-driven loop below exists for |
@@ -26,7 +26,7 @@ Resuming a daemon *forks* a new `--bg` agent that carries the full conversation 
 
 ## Toolkit
 
-Paths are relative to this skill's directory. The scripts hide every sharp edge (UUID handling, cwd-scoped resume, ANSI, JSON parsing, macOS timeout) — **use them; don't hand-roll `claude` invocations.** The board pipeline's dispatchers (`issue-tracker`'s dispatch ritual, `reviewing-prs`' `review-dispatch.sh`) call `daemon-spawn.sh` mechanically and hard-code this location; the registry (`~/.claude/orchestrating-daemons`) is shared with the board scripts (`board-bind.sh`, `board-reconcile.sh`).
+Paths are relative to this skill's directory. The scripts hide every sharp edge (UUID handling, cwd-scoped resume, ANSI, JSON parsing, macOS timeout) — **use them; don't hand-roll `claude` invocations.** The board pipeline's dispatchers (`issue-tracker`'s dispatch ritual, `qa-loops`' `review-dispatch.sh`) call `daemon-spawn.sh` mechanically and hard-code this location; the registry (`~/.claude/orchestrating-daemons`) is shared with the board scripts (`board-bind.sh`, `board-reconcile.sh`).
 
 | Script | Does |
 |---|---|
@@ -50,7 +50,7 @@ For the escape-hatch case only — pipeline workers are spawned by their dispatc
 
 ## Escalation
 
-Fleet-of-workers escalation lives in the board pipeline: implement and review workers park their own tickets (`needs-human` / `needs-info` / `interactive-preferred`, per the who-unparks discriminant in doperpowers:issue-tracker, the board schema's single home), the human answers on the ticket at their next wake, and nobody sits between a worker and the board. A park is a pause, not a death: a `needs-human` answer is relayed to the worker's still-bound session by the wake ritual (issue-tracker's `board-answer.sh`), so the worker resumes with its orientation intact.
+Fleet-of-workers escalation lives in the board pipeline: implement and Reviewer workers park their own tickets (`needs-human` / `needs-info` / `interactive-preferred`, per the who-unparks discriminant in doperpowers:issue-tracker, the board schema's single home), the human answers on the ticket at their next wake, and nobody sits between a worker and the board. A park is a pause, not a death: a `needs-human` answer is relayed to the worker's still-bound session by the wake ritual (issue-tracker's `board-answer.sh`), so the worker resumes with its orientation intact.
 
 For a hand-driven ad-hoc daemon: answer mechanical/technical questions yourself and resume — you are trusted for those calls. A genuine product/taste/approval fork is the signal the work was ticket-shaped after all — register it on the board and park it `needs-human` with the question as the note. Only in a truly board-less context, `daemon-mark.sh <id> awaiting-human "<why>"` queues it for the human's next check-in; wake the human now (PushNotification) only for something destructive/irreversible about to happen or a security / data-loss / production risk that can't wait.
 

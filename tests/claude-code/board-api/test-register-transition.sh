@@ -221,7 +221,7 @@ nt "api transition never invokes gh" "GH-CALLED" \
 # assignment and this client has no body-edit route).
 # =========================================================================
 V board-register.sh "no spec here" enhancement P2 >/dev/null
-t "a bodyless default birth is demoted out of the implement queue" \
+t "a bodyless default birth is demoted out of the Executor queue" \
   '"birth": "needs-info"' last_register_body
 t "and says what to do about it" "re-register with --body-file" last_register_body
 # The demotion lands on needs-info — a park by outcome — so its auto-note is the

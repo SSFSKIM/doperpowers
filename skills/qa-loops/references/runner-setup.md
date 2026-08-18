@@ -1,0 +1,81 @@
+# Self-hosted runner setup (PR review dispatch)
+
+One-time setup of the machine that runs the daemon fleet (macOS assumed).
+**Private repos only** — a `pull_request`-triggered workflow on a self-hosted
+runner attached to a public repo can hand a stranger's fork PR a path onto
+this machine. The workflow template's actor gate and no-checkout design are
+defense in depth, not a substitute.
+
+## 1. Install the runner
+
+```bash
+mkdir -p ~/actions-runner-<repo> && cd ~/actions-runner-<repo>
+# latest version tag:
+gh api repos/actions/runner/releases/latest -q .tag_name        # e.g. v2.321.0
+curl -o runner.tar.gz -L \
+  "https://github.com/actions/runner/releases/download/<TAG>/actions-runner-osx-arm64-<TAG-without-v>.tar.gz"
+tar xzf runner.tar.gz
+```
+
+## 2. Register it (label: `claude-review`)
+
+```bash
+TOKEN="$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token -q .token)"
+./config.sh --url "https://github.com/<OWNER>/<REPO>" --token "$TOKEN" \
+  --labels claude-review --name "$(hostname -s)-claude" --unattended
+```
+
+## 3. Environment for the job
+
+The runner builds the job PATH from a `.path` file and env from `.env` in
+the runner directory. The dispatch script needs `gh`, `git`, `node`,
+`python3`, and `claude` reachable:
+
+```bash
+echo "$PATH" > .path                       # snapshot a PATH that has them all
+cat > .env <<'EOF'
+DOPERPOWERS_HOME=/Users/<you>/.claude/plugins/marketplaces/doperpowers
+EOF
+```
+
+## 4. Run as a service (launchd)
+
+```bash
+./svc.sh install && ./svc.sh start
+./svc.sh status
+```
+
+Note: `svc.sh` installs a LaunchAgent — it runs while the user is logged in.
+A PR opened while the machine is asleep queues on GitHub's side for up to
+24h; beyond that the sweep cron below catches it.
+
+## 5. Verify
+
+```bash
+gh api repos/<OWNER>/<REPO>/actions/runners \
+  -q '.runners[] | "\(.name) \(.status) \(.labels|map(.name)|join(","))"'
+# expect: <name> online ... claude-review
+```
+
+## 6. Sweep cron (self-heal)
+
+```bash
+# Find where the required CLIs live first:
+command -v gh git python3 claude
+crontab -e
+# cron does NOT inherit your shell PATH (same reason step 3 wrote .path for
+# the runner) — set it inline on the command, adjusted to the dirs found above.
+# Keep AUTO_MERGE_ENABLED in lock-step with the workflow's env (default off =
+# observation mode; sweep-dispatched reviewers honor the same rollout gate):
+*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> AUTO_MERGE_ENABLED=false $HOME/.claude/plugins/marketplaces/doperpowers/skills/qa-loops/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
+```
+
+## 7. (Optional) Per-repo risk-surface manifest
+
+Declare the repo's validated hot paths in
+`.doperpowers/risk-surfaces.md` on the branch(es) reviewers
+target. It's a plain list of globs and prose path/content rules the Reviewer
+worker reads against the diff — auth files, migration dirs, privileged
+routes, security-sensitive SQL — as lens-derivation input for the engine
+fan-out. It is read from the PR's **base ref** (never HEAD). Absent file →
+reviewers derive lenses from the diff alone.

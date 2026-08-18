@@ -165,7 +165,7 @@ create_test_plan() {
     mkdir -p "$(dirname "$plan_file")"
 
     cat > "$plan_file" <<'EOF'
-# Test Implementation Plan
+# Test Execution Plan
 
 ## Task 1: Create Hello Function
 

@@ -14,4 +14,4 @@ Which approach do you want?
 
 ---
 
-subagent-driven-development, please
+subagent-driven-execution, please

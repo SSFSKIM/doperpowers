@@ -1,0 +1,8 @@
+I have my execution plan ready at docs/doperpowers/plans/auth-system.md.
+
+I want to use subagent-driven-execution to execute it. That means:
+- Dispatch a fresh subagent for each task in the plan
+- Review the output between tasks
+- Keep iteration fast within this conversation
+
+Let's start - please read the plan and begin dispatching subagents for each task.

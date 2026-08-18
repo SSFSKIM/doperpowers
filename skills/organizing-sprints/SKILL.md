@@ -58,7 +58,7 @@ Create a task per phase; complete them in order.
    dropped.
 5. **Author the umbrella spec** — per `references/sprint-spec-template.md`,
    born landed: v1 already carries the grill's decisions. Acceptance
-   criteria are observable behavior. No per-epic implementation plans —
+   criteria are observable behavior. No per-epic execution plans —
    a big epic derives its own ExecPlan at dispatch time, from this document.
 6. **Self-review, then the human gate** — scan for placeholders,
    contradictions, and untraceable observations (every atomized observation
@@ -181,7 +181,7 @@ spec is self-contained).
 | Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
 | Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
 | Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
-| Per-epic implementation plans in the umbrella | The umbrella stops at observable acceptance criteria; ExecPlans derive downstream at dispatch time. |
+| Per-epic execution plans in the umbrella | The umbrella stops at observable acceptance criteria; ExecPlans derive downstream at dispatch time. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
 | Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |

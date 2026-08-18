@@ -34,13 +34,13 @@
 
 drill_start
 REPO="$(api_repo)"
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 
 BODY="$DRILL_TMP/spec.md"
 cat >"$BODY" <<'MD'
 ## Problem & intent
 
-A ticket with a real body, so birth lands in the implementer queue.
+A ticket with a real body, so birth lands in the executor queue.
 
 ## Success criteria
 

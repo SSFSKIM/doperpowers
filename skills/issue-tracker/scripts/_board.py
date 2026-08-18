@@ -178,7 +178,7 @@ ENV_ISSUE_COLOR = "e4a0f7"
 # contested code seam the CONSUMER repo declares in .doperpowers/surfaces.md
 # (read from the default branch — an entry takes effect when its PR lands,
 # never from a working tree). A ticket carrying `surface:<name>` is
-# serialized by implement-dispatch: one in-flight implement worker per
+# serialized by execute-dispatch: one in-flight Executor worker per
 # surface. Closed vocabulary — a surface label with no registry entry is a
 # lint FAIL. No registry file → surfaces_registry() is None → every surface
 # feature is inert (the opt-in contract).

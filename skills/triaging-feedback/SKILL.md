@@ -21,10 +21,10 @@ ticket honestly passes the Ticket Gate (the board schema's
 
 **The worker is a translator, not a fixer.** It writes no code and opens no
 PRs. Fixes happen downstream through the normal tri-CI pipeline: a
-`ready-for-implementer` ticket is dispatched by `implementing` (whose
+`ready-for-implementer` ticket is dispatched by `executing` (whose
 Ticket Gate re-runs at ORIENT — the triage worker's judgment is a
 recommendation, never inherited trust), and the resulting PR is reviewed by
-`reviewing-prs`. *(The v1 direct-fix path — a second `workspace-write` turn
+`qa-loops`. *(The v1 direct-fix path — a second `workspace-write` turn
 opening fix PRs — was deleted 2026-07-11 before ever going live; see the
 spec's Decision Log.)*
 
@@ -143,7 +143,7 @@ citation, risk-surface paths **and symbols** demote to `needs-human`,
 priority fixed at P2, provenance block, and the verdict id-echo check.
 Residual risk on the user tier (gate-passing tickets still carry
 model-authored prose influenced by untrusted text) is an explicitly accepted
-call — the implement-side Ticket Gate re-run and PR review are the backstops.
+call — the execution-side Ticket Gate re-run and PR review are the backstops.
 
 ## Model proposes, dispatcher disposes — scoped to execution, not authorship
 
@@ -159,9 +159,9 @@ authoring bar) and recommends the birth state.
 The dispatcher (`dispatch.ts`, running with real credentials) is the only
 thing that ever performs a side effect. It re-validates the recommendation
 (the registration gate in `gate.ts`), fixes priority at P2 (so an injected
-feedback body can never jump the implement-dispatch queue), and appends the
+feedback body can never jump the execute-dispatch queue), and appends the
 provenance block — the raw feedback inside a code fence, explicitly marked as
-data — so a downstream implement worker always sees the trust boundary inside
+data — so a downstream Executor worker always sees the trust boundary inside
 the ticket and no `@mention` or `#N` in the original ever fires as live
 markdown on the artifact.
 
@@ -169,7 +169,7 @@ markdown on the artifact.
 
 The feedback body is arbitrary end-user text — the least-trusted input in
 the system, unlike the repo-internal input (PRs, tickets) the codex
-review/implement workers consume. Network access would combine untrusted
+review/Executor workers consume. Network access would combine untrusted
 input + private codebase + an exfiltration channel, and an LLM approvals
 reviewer (`auto_review`) is itself promptable. A read-only
 diagnose-and-author worker also has nothing to escalate, so
@@ -189,8 +189,8 @@ into.)*
 
 This loop **writes the board's inbox**; it never implements or reviews.
 A `ready-for-implementer` triage ticket is picked up by the
-`implementing` dispatch loop exactly like any other ticket — the
-implement worker re-runs its own gate from fresh context, treating the
+`executing` dispatch loop exactly like any other ticket — the
+Executor worker re-runs its own gate from fresh context, treating the
 triage diagnosis as context, not inherited trust. Parked tickets surface in
 the human's wake queue (`issue-tracker`). Keep the legs separate: triage
 translates, implement builds, review judges.

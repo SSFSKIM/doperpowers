@@ -158,7 +158,7 @@ t "the edge is gone from the endpoint that cut it" "relates=[]" row "$TID_B"
 t "and from the other one"                         "relates=[]" row "$TID_A"
 
 # ---- 5. lineage: adopt, then orphan ---------------------------------------
-# Born design-first so the epic never sits in the implementer queue competing
+# Born design-first so the epic never sits in the executor queue competing
 # with A for the claims below.
 TID_E="$(register "human-verbs epic E" enhancement P2 --state ready-for-architect \
   --body-file "$(spec e 'Epic E exists to be a parent and then to stop being one.')")"
@@ -228,7 +228,7 @@ t "the review lane draws the leaf" "[drew #$TID_L]" drew "$TICK_L"
 # THE CLOSE IS THE REVIEW RUN'S. A1 grants `in-review → done` to a worker only
 # on the qagent lane and only with a URL-shaped pr_url (a numeric one is an
 # epic's closure package) — which is exactly the path R1 said this fork's
-# review workers take, and the one the fixture mock could not adjudicate.
+# Reviewer workers take, and the one the fixture mock could not adjudicate.
 t "and the run that claimed it closes it" "#$TID_L: → done" \
   in_repo BOARD_RUN_TOKEN="$BEARER_L" BOARD_RUN_ID="$RUN_L" BOARD_RUN_FENCE="$FENCE_L" \
     "$SCRIPTS/board-transition.sh" "$TID_L" "done"

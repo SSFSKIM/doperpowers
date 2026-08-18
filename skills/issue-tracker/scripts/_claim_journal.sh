@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # _claim_journal.sh — the API dispatchers' shared claim journal: how a claimed
 # run is recorded before it is handed to a worker, and how a crash mid-handover
-# is reconciled afterwards. Sourced by implement-dispatch.sh and
+# is reconciled afterwards. Sourced by execute-dispatch.sh and
 # review-dispatch.sh, which had verbatim copies of both halves.
 #
 # THE JOURNAL DIRECTORY IS SHARED ($DAEMON_HOME/board-claims) and every entry
 # names its lane. A dispatcher touches only its OWN lanes: replaying a qagent
-# nonce from the implement side would hand a review assignment an implementer
+# nonce from the implement side would hand a review assignment an executor
 # prompt, and ending a qagent run would strand the review dispatcher's ticket.
 # A lane nobody recognizes is skipped for the same reason — not acting is the
 # safe direction. The sweep's `successor` lane is outside both, and the sweep
@@ -63,7 +63,7 @@ PY
 # writer is still working from one a crash left behind. `control` is the review
 # lane's control directory, where the startup barrier and the worker ack live;
 # it is what separates a reviewer that crossed the barrier from one waiting on
-# a barrier nobody will publish. The implement lanes have no barrier and pass
+# a barrier nobody will publish. The execution lanes have no barrier and pass
 # none.
 _journal_write() {  # <path> <lane> <run-id ('' = null)> <spawn-completed 0|1> [ticket] [daemon] [control-dir]
   J_PATH="$1" J_LANE="$2" J_RUN="$3" J_DONE="$4" J_TICKET="${5:-}" J_DAEMON="${6:-}" \

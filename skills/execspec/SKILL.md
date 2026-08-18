@@ -28,7 +28,7 @@ The norms come from Codex's ExecPlan doctrine, vendored char-for-char at [refere
 |---|---|
 | "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | Human gates: design approval and spec review in doperpowers:brainstorming |
 | Single fenced code block, prose-first, no tables or checklists | Specs are files, not chat payloads; use tables/JSON/diagrams wherever they beat prose for precision |
-| Mandatory `Progress` section with timestamped checkboxes | The SDD ledger + git + plan checkboxes — externally verifiable, not self-report |
+| Mandatory `Progress` section with timestamped checkboxes | The SDE ledger + git + plan checkboxes — externally verifiable, not self-report |
 | Milestones narrative, Concrete Steps, Interfaces and Dependencies | doperpowers:writing-plans, with complete code and exact commands |
 | Idempotence and Recovery section | Worktree isolation + git |
 | Self-contained "for a complete novice" | The fresh-session bar in the Overview above |
@@ -62,7 +62,7 @@ For anything that changed design understanding: an assumption that proved false,
 
 - **Brainstorm end** (doperpowers:brainstorming): spec written in this shape, Decision Log seeded, committed.
 - **Plan-writing** (doperpowers:writing-plans Self-Review): planning is the first hostile read of the spec. If a spec statement proved wrong, fix the spec now and add a Revision Note — never let the plan silently diverge.
-- **Execution** (doperpowers:subagent-driven-development bookkeeping): task reports that change design understanding get routed into Surprises & Discoveries or the Decision Log in the same message as the ledger append.
+- **Execution** (doperpowers:subagent-driven-execution bookkeeping): task reports that change design understanding get routed into Surprises & Discoveries or the Decision Log in the same message as the ledger append.
 - **Finish** (doperpowers:finishing-a-development-branch): write Outcomes & Retrospective and commit it before presenting merge options.
 
 Whoever drives the session maintains the spec. There are no writer rules — in practice one spec has one working agent.

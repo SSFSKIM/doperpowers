@@ -7,7 +7,7 @@
 #                     [--body-file F] [--repair-path TEXT] [--surface HINT]...
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
-#             findings comment, never a merge — see doperpowers:implementing)
+#             findings comment, never a merge — see doperpowers:executing)
 #             | env-issue (environmental friction report — E2: defaults to
 #             needs-human unless the registrar names an agent-executable
 #             repair path via an explicit --state)
@@ -117,7 +117,7 @@ if (not explicit and env["T_CATEGORY"] == "env-issue"
 # defaults to ready-for-implementer, so the same call produced a dispatchable
 # ticket with no statement of work — the parity claim's exact counterexample,
 # and the failure gh mode's rule was written from (observed live: registered and
-# auto-dispatched within 45 seconds, spec never written, the implementer decided
+# auto-dispatched within 45 seconds, spec never written, the executor decided
 # the security contract itself).
 #
 # The RULING is mirrored; the skeleton is not. A1's body IS the assignment the
@@ -133,7 +133,7 @@ if not body and not env["T_BODY_FILE"]:
               "state — pass --body-file with the spec, or birth it "
               "needs-info/needs-human")
     if not explicit and env["T_CATEGORY"] != "env-issue":
-        # The implicit default is the implementer queue, and nothing enters it
+        # The implicit default is the executor queue, and nothing enters it
         # without a statement of work. env-issue keeps its own inverted default
         # (needs-human), which is a park rather than a lane.
         state = "needs-info"
@@ -215,12 +215,12 @@ if state in B.NOTE_REQUIRED and not note:
 # (A spike born ready-for-architect used to be refused here: role resolution
 # was category-first, so the spike protocol dispatched from either lane queue
 # and its gate-pass write — `in-progress` — had no LEGAL edge from the
-# architect queue. implement-dispatch.sh now routes that queue on STATE, so
+# architect queue. execute-dispatch.sh now routes that queue on STATE, so
 # such a ticket gets an ARCHITECT whose exit is `in-design`. A design-first
 # spike is a supported route and the ban is gone.)
 # E2 birth rule (inverted for this category only): environmental friction
 # that an authorized agent could reach would typically already be solved —
-# unsure defaults to the human, not the implement queue. An explicit
+# unsure defaults to the human, not the Executor queue. An explicit
 # --state is the registrar's positive claim of a named repair path.
 if category == "env-issue" and env["T_STATE_EXPLICIT"] != "1":
     state = "needs-human"
@@ -255,7 +255,7 @@ else:
 # A pre-spec skeleton is never implementable: born into a dispatchable lane
 # state, it is dispatchable before any spec exists (observed live: ticket
 # registered + auto-dispatched within 45 seconds, spec never written, the
-# implementer decided the security contract itself). Explicit birth into a
+# executor decided the security contract itself). Explicit birth into a
 # dispatchable lane state refuses a skeleton; the default demotes to needs-info.
 if state in ("ready-for-architect", "ready-for-implementer") and "(pre-spec: fill in)" in body:
     if env["T_STATE_EXPLICIT"] == "1":

@@ -26,7 +26,7 @@ fi
 VERBOSE=false
 SPECIFIC_TEST=""
 TIMEOUT=900  # Per-test-file budget; must exceed the file's worst case
-             # (test-subagent-driven-development.sh: 9 prompts x 90s each)
+             # (test-subagent-driven-execution.sh: 9 prompts x 90s each)
 RUN_INTEGRATION=false
 
 while [[ $# -gt 0 ]]; do
@@ -58,12 +58,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --help, -h           Show this help"
             echo ""
             echo "Tests:"
-            echo "  test-subagent-driven-development.sh  Test skill loading and requirements"
+            echo "  test-subagent-driven-execution.sh  Test skill loading and requirements"
             echo "  board-api/test-*.sh                  A2 board-API toolkit suites (fixture mock)"
             echo "  board-api/integration/test-*.sh      A2 vs. a real A1 service (needs \$ARKHO_DIR)"
             echo ""
             echo "Integration Tests (use --integration):"
-            echo "  test-subagent-driven-development-integration.sh  Full workflow execution"
+            echo "  test-subagent-driven-execution-integration.sh  Full workflow execution"
             exit 0
             ;;
         *)
@@ -77,8 +77,8 @@ done
 # List of skill tests to run (fast unit tests)
 tests=(
     "test-worktree-path-policy.sh"
-    "test-sdd-workspace.sh"
-    "test-subagent-driven-development.sh"
+    "test-sde-workspace.sh"
+    "test-subagent-driven-execution.sh"
     # board-api (A2): hermetic and fast — every suite below drives the toolkit's
     # verbs against the fixture mock in board-api/mock-server.py, no network and
     # no gh. They ran only by hand until this list picked them up.
@@ -111,16 +111,16 @@ tests=(
     "board-api/integration/test-escalation.sh"
     "board-api/integration/test-human-verbs.sh"
     "board-api/integration/test-lease-renewal.sh"
-    # reviewing-prs: the suites in tests/reviewing-prs/ are hand-run (the spec's
+    # qa-loops: the suites in tests/qa-loops/ are hand-run (the spec's
     # acceptance invokes them as a glob). The bootstrap parity fence is listed
     # here because it is hermetic and sub-second — no dispatcher, no gh, no
     # ports, just the two bootstrap templates rendered in-process.
-    "../reviewing-prs/test-bootstrap-parity.sh"
+    "../qa-loops/test-bootstrap-parity.sh"
 )
 
 # Integration tests (slow, full execution)
 integration_tests=(
-    "test-subagent-driven-development-integration.sh"
+    "test-subagent-driven-execution-integration.sh"
 )
 
 # Add integration tests if requested

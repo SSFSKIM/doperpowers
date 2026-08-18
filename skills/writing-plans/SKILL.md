@@ -7,11 +7,11 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write comprehensive execution plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
-**Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
+**Announce at start:** "I'm using the writing-plans skill to create the execution plan."
 
 **Context:** If working in an isolated worktree, it should have been created via the `doperpowers:using-git-worktrees` skill at execution time.
 
@@ -85,16 +85,16 @@ If the spec declares a prototyping milestone (doperpowers:execspec), plan it as 
 
 ## Final Verification Task
 
-End every plan with a verification task that executes the spec's acceptance section as written — the behavior-phrased checks with their exact commands and expected output — in addition to the full test suite. Tests prove the parts; the spec's acceptance proves the feature. Quote the spec's commands verbatim in the task's steps so the implementer needs no other context.
+End every plan with a verification task that executes the spec's acceptance section as written — the behavior-phrased checks with their exact commands and expected output — in addition to the full test suite. Tests prove the parts; the spec's acceptance proves the feature. Quote the spec's commands verbatim in the task's steps so the executor needs no other context.
 
 ## Plan Document Header
 
 **Every plan MUST start with this header:**
 
 ```markdown
-# [Feature Name] Implementation Plan
+# [Feature Name] Execution Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-execution to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -125,7 +125,7 @@ include this section.]
 **Interfaces:**
 - Consumes: [what this task uses from earlier tasks — exact signatures]
 - Produces: [what later tasks rely on — exact function names, parameter
-  and return types. A task's implementer sees only their own task; this
+  and return types. A task's executor sees only their own task; this
   block is how they learn the names and types neighboring tasks use.]
 
 - [ ] **Step 1: Write the failing test**
@@ -195,10 +195,10 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 
 After saving the plan, report the path ("Plan complete and saved to `docs/doperpowers/plans/<filename>.md`"), then run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper), in a background Bash, with the focus text:
 
-> Review the implementation plan at [PLAN_FILE_PATH] against its spec at [SPEC_FILE_PATH]. Verify the implementation architecture is sound and the plan is complete, spec-aligned, well-decomposed, and buildable by an engineer with zero context.
+> Review the execution plan at [PLAN_FILE_PATH] against its spec at [SPEC_FILE_PATH]. Verify the implementation architecture is sound and the plan is complete, spec-aligned, well-decomposed, and buildable by an engineer with zero context.
 
 Evaluate its findings rather than accepting them wholesale; fix what survives.
 
 Then execute:
-- **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-development
+- **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-execution
 - Fresh subagent per task + two-stage review

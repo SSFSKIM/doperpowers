@@ -7,7 +7,7 @@
 # with each step's legality resting on the state the previous step actually
 # wrote. The walk is
 #
-#   register (human) → claim + spawn + bind (implement-dispatch, API mode)
+#   register (human) → claim + spawn + bind (execute-dispatch, API mode)
 #     → gate verdict (in-progress + [gate] comment, as the RUN)
 #     → park needs-human → human answer → relay resume into the bound session
 #     → in-review with a PR → the human's closing verdict → done
@@ -29,7 +29,7 @@
 
 drill_start
 REPO="$(api_repo)"
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 
 # ---- register (human) ------------------------------------------------------
 BODY="$DRILL_TMP/spec.md"
@@ -47,12 +47,12 @@ reg="$(in_repo "$SCRIPTS/board-register.sh" "protocol walk ticket" enhancement P
   --body-file "$BODY" 2>&1)" || true
 t "register reports the ticket and its API url" "$BOARD_API_URL/tickets/" printf '%s\n' "$reg"
 TID="$(printf '%s\n' "$reg" | awk 'END{print $1}')"
-t "born into the implementer queue" "ready-for-implementer" ticket_state "$TID"
+t "born into the executor queue" "ready-for-implementer" ticket_state "$TID"
 
 # ---- claim → spawn → bind --------------------------------------------------
 OUT_D="$DRILL_TMP/dispatch.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D" 2>&1 || true
-t "the implementer lane claims the ticket" "claimed #$TID run=" cat "$OUT_D"
+t "the executor lane claims the ticket" "claimed #$TID run=" cat "$OUT_D"
 t "and hands it to a worker on its own lane" "lane=implementer" cat "$OUT_D"
 t "the worker is spawned with the run bearer in env" "BOARD_RUN_TOKEN=" cat "$SPAWN_LOG"
 t "and with the api url"  "BOARD_API_URL=$BOARD_API_URL" cat "$SPAWN_LOG"
@@ -129,7 +129,7 @@ t "in-review requires the artifact and takes it" "#$TID: → in-review" \
 t "the ended run's bearer is revoked" "unauthenticated" \
   api "$BEARER" GET /tickets
 # THE VERDICT IS THE CLOSE. `confident-ready` was retired from this fork's
-# state machine (the review worker merges what it is confident about, and the
+# state machine (the Reviewer worker merges what it is confident about, and the
 # merge closes the ticket), so the walk takes `in-review → done` — the one
 # in-review exit both canons still hold. A1's LEGAL_ROWS keeps a
 # `in-review → confident-ready` row it no longer has a client for; that

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-dispatch-claim.sh — implement-dispatch.sh's API branch: claim-based
+# test-dispatch-claim.sh — execute-dispatch.sh's API branch: claim-based
 # dispatch, the crash-recoverable claim journal, and the worker handover.
 #
 # Two halves, both against a real socket: what went on the wire (the fixture
@@ -9,7 +9,7 @@
 # the uuid the dispatcher hands to board-bind is parsed out of it.
 . "$(dirname "$0")/helpers.sh"
 
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 
 free_port() { python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
@@ -197,10 +197,10 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 1'        cat "$FIX.log"
-t "the implement lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
+t "the execution lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
 t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"
 # Three claims, not four and not an unbounded spin: architect (granted, then
-# the lane is full), implementer (empty), spike (empty) -> stop.
+# the lane is full), executor (empty), spike (empty) -> stop.
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }
 t "an empty lane stops the tick" "claims=3" claim_posts
 t "the claim speaks as automation" '"auth": "Bearer a"' cat "$FIX.log"
@@ -282,8 +282,8 @@ printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-implementer","sta
 printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
 # (f) THE REVIEW DISPATCHER'S JOURNAL. The claims directory is shared, and every
 #     entry names its lane. Replaying a qagent nonce here would hand a review
-#     assignment an implementer prompt; ending its run would strand the review
-#     dispatcher's ticket. Anything outside architect|implementer|spike is not
+#     assignment an executor prompt; ending its run would strand the review
+#     dispatcher's ticket. Anything outside architect|executor|spike is not
 #     this script's to touch.
 printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-f.json"
@@ -349,7 +349,7 @@ t  "and it is reported as in flight"     "nonce-h is in flight"           cat "$
 t  "its journal stays open for its own writer" '"spawn_completed": false' \
   cat "$DH2/board-claims/nonce-h.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
-# bind, the stranded run's end, and the two empty implement lanes. A repaired
+# bind, the stranded run's end, and the two empty execution lanes. A repaired
 # marker sends nothing (no end for its live run 41), and the architect lane —
 # already full in the registry, by the very meta that proved run 41 live —
 # claims nothing on top of it.
@@ -408,7 +408,7 @@ held_wire() {
     "$(grep -c '"method"' "$FIX3.log" || true)" \
     "$(grep -c '/end' "$FIX3.log" || true)"
 }
-# Three empty lane claims and nothing else: architect, implementer, spike.
+# Three empty lane claims and nothing else: architect, executor, spike.
 t "a held run sends nothing" "posts=3 ends=0" held_wire
 
 # =========================================================================
@@ -489,7 +489,7 @@ t "and it refuses rather than answering empty" "rc=[1]" nonce_guard
 # A claim that dies on the wire may still have landed; its journal is kept and
 # reconciliation replays it later. Reading that as "lane refused" and claiming
 # a spike NOW puts two workers on the machine for one slot — the replayed
-# implementer and the spike — over the combined cap the loop exists to hold.
+# executor and the spike — over the combined cap the loop exists to hold.
 # =========================================================================
 PORT5="$(free_port)"
 FIX5="$(mktemp)"; : > "$FIX5.log"

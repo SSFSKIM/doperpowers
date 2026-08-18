@@ -15,7 +15,7 @@ MAX_TURNS="${3:-3}"
 
 if [ -z "$SKILL_NAME" ] || [ -z "$PROMPT_FILE" ]; then
     echo "Usage: $0 <skill-name> <prompt-file> [max-turns]"
-    echo "Example: $0 subagent-driven-development ./prompts/subagent-driven-development-please.txt"
+    echo "Example: $0 subagent-driven-execution ./prompts/subagent-driven-execution-please.txt"
     exit 1
 fi
 
@@ -47,7 +47,7 @@ mkdir -p "$PROJECT_DIR/docs/doperpowers/plans"
 
 # Create a dummy plan file for mid-conversation tests
 cat > "$PROJECT_DIR/docs/doperpowers/plans/auth-system.md" << 'EOF'
-# Auth System Implementation Plan
+# Auth System Execution Plan
 
 ## Task 1: Add User Model
 Create user model with email and password fields.

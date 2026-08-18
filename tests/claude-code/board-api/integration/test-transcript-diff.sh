@@ -47,7 +47,7 @@
 . "$(dirname "$0")/drill-lib.sh"
 
 drill_start
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 GH_STUB_PY="$DRILL_DIR/gh-stub.py"
 COMPARE="$DRILL_DIR/transcript-compare.py"
 
