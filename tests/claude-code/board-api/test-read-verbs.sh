@@ -331,6 +331,10 @@ t "the by-id confirm is what said so" '"path": "/tickets/55"' cat "$FIX.log"
 # a shape lint never emits.
 nt "a daemon on a ticket the walk serves as open is no retire candidate" \
   "FAIL daemon a11ve123 bound to closed/absent ticket #12" VO board-lint.sh
+# ...and the positive partner, because the `nt` alone is also satisfied by a
+# lint that bailed before reaching a verdict in this world at all.
+t "and the DOPEN world still counts five open tickets" \
+  "board-lint: 5 open ticket(s), 0 FAIL" VO board-lint.sh
 # The exit code is the machine-readable half of lint; `t` only reads output.
 if ( VD board-lint.sh >/dev/null 2>&1 ); then
   echo "FAIL lint must exit non-zero on drift"; FAILS=$((FAILS+1))
