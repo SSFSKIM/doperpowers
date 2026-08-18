@@ -67,14 +67,21 @@ world() {  # world <name>  — fixtures on stdin; retires the previous world
 CORE="import _board_api as A"
 run_py() { PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
   BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$1"; }
-reqs() { echo "reqs=$(grep -c '"method"' "$FIX.log" || true)"; }
+# Delimited, because `t` matches a SUBSTRING: bare `reqs=3` is also satisfied
+# by a count of 30, and every count assertion here exists to catch a request
+# the client should not have made.
+reqs() { echo "reqs=[$(grep -c '"method"' "$FIX.log" || true)]"; }
 log() { cat "$FIX.log"; }
 
-# Real cursors, produced by arkho's encodeCursor (base64url of the JSON keyset
-# triple as SQL text). A synthetic "CURSOR-1" would pass a client that
-# re-encoded or truncated the token; these do not.
-C1="WyIyMDI2LTA4LTE4IDA0OjE1OjA5LjEyMzQ1NiswMCIsIjMiXQ"
-C2="WyIyMDI2LTA4LTE4IDA0OjE1OjA5Ljk4NzY1NCswMCIsIjQiXQ"
+# Real cursors, produced by arkho's encodeCursor (unpadded base64url of the
+# compact JSON keyset, every member SQL text). The two routes issue different
+# ARITIES — /tickets orders by (priority, created_at, id) so its cursor is a
+# TRIPLE, /queue/decisions by (raised_at, correlation_id) so its is a pair —
+# and decodeCursor refuses a token of the wrong arity for the route. A
+# synthetic "CURSOR-1" would pass a client that re-encoded or truncated the
+# token; these do not.
+C1="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMTIzNDU2KzAwIiwiMyJd"
+C2="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuOTg3NjU0KzAwIiwiNCJd"
 Q1="WyIyMDI2LTA4LTE4IDAxOjAyOjAzLjQ1Njc4OSswMCIsImV2dC1hIl0"
 
 # Expected substrings are always INTERPOLATED or %-formatted, never literals in
@@ -129,7 +136,7 @@ t "the probe is spent once per process, not once per absent ticket" \
   "absent=TrueTrue" \
   run_py "$CORE
 print('absent=%s%s' % (A.ticket(404001) is None, A.ticket(404001) is None))"
-t "so two absent reads cost two requests and one probe" "reqs=3" reqs
+t "so two absent reads cost two requests and one probe" "reqs=[3]" reqs
 # The other half: a successful by-id read proves the surface just as well as
 # the probe does, so a 404 arriving after one never probes at all.
 t "a successful read proves the surface for the 404s that follow it" \
@@ -183,7 +190,7 @@ world walk <<JSON
                    {"id":2,"title":"b","category":"work","state":"in-progress",
                     "priority":"P0","owner_run":43,"parent":null,"plan":null,
                     "pr_url":null,"branch":null,"blocked_by":[],"relates":[]},
-                   {"id":3,"title":"c-early","category":"work","state":"parked",
+                   {"id":3,"title":"stale","category":"work","state":"parked",
                     "priority":"P1","owner_run":null,"parent":null,"plan":null,
                     "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
           "next":"$C1","as_of":118}}
@@ -192,16 +199,18 @@ JSON
 
 # A row whose priority moves mid-walk is re-served on a later page. The walk
 # collapses it to ONE row and keeps the LATER read's data — the earlier page's
-# copy is the staler one by construction.
+# copy is the staler one by construction. The two titles are DISJOINT (neither
+# is a prefix of the other) and the printed value is bracketed, because the
+# whole drill turns on which of the two came back and `t` matches a substring.
 t "a three-page walk returns every row once, the later page's data winning" \
-  "ids=[1, 2, 3, 4, 5] title3=c" \
+  "ids=[1, 2, 3, 4, 5] title3=[c]" \
   run_py "$CORE
 rows = A.tickets_all()
-print('ids=%s title3=%s' % (sorted(r['id'] for r in rows),
-                            [r['title'] for r in rows if r['id'] == 3][0]))"
+print('ids=%s title3=[%s]' % (sorted(r['id'] for r in rows),
+                              [r['title'] for r in rows if r['id'] == 3][0]))"
 t "page 2 carried the first cursor back verbatim" "cursor=$C1" log
 t "page 3 carried the second cursor back verbatim" "cursor=$C2" log
-t "and the null next ended the walk" "reqs=3" reqs
+t "and the null next ended the walk" "reqs=[3]" reqs
 
 # ---- a walk that cannot finish never answers -------------------------------
 # (a) A REFUSAL mid-walk. Refusals are answers, so request() never retries one.
@@ -240,7 +249,7 @@ print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
 t "a transport loss mid-walk kills the walk after the retries" \
   "unreachable after 3 attempts" echo "$TR_OUT"
 nt "and no partial board escapes it either" "PARTIAL" echo "$TR_OUT"
-t "the walk spent one request on page 1 and three attempts on page 2" "reqs=4" reqs
+t "the walk spent one request on page 1 and three attempts on page 2" "reqs=[4]" reqs
 
 # ---- what a final page is, and what it is not ------------------------------
 # `next` is computed by over-fetching one row, so an exactly-full final page
@@ -261,7 +270,7 @@ JSON
 t "a full final page with a null next is a complete answer" "ids=[11, 12]" \
   run_py "$CORE
 print('ids=%s' % sorted(r['id'] for r in A.tickets_all()))"
-t "and costs exactly one request" "reqs=1" reqs
+t "and costs exactly one request" "reqs=[1]" reqs
 
 # A page with NO `next` key is not a page that ended — it is a malformed or
 # version-skewed answer, and reading it as `next: null` is the partial-board
@@ -319,6 +328,10 @@ JSON
 run_py "$CORE
 A.tickets_all(states='')" > /dev/null 2>&1 || true
 nt "an empty states filter is never put on the wire" "states=" log
+# The negative alone is also satisfied by a call that died before requesting
+# anything, so its positive partner says the read HAPPENED — one unfiltered
+# page, which is what dropping an empty filter means.
+t "and the read still happened, unfiltered" "reqs=[1]" reqs
 t "a non-empty states filter returns the server's filtered page" "ids=[21]" \
   run_py "$CORE
 print('ids=%s' % sorted(r['id'] for r in
@@ -352,7 +365,7 @@ t "an ids batch keys by int, and an id the server did not return has no key" \
   run_py "$CORE
 out = A.tickets_by_ids([7, 8, 9])
 print('keys=%s absent8=%s' % (sorted(out), 8 not in out))"
-t "and rode a single request" "reqs=1" reqs
+t "and rode a single request" "reqs=[1]" reqs
 
 # 200 ids per call is a documented BOUND (arkho API.md §1): 201 is a 400, not a
 # truncated answer, so the chunking is the contract and not an optimization.
@@ -364,7 +377,7 @@ world chunk <<'JSON'
 JSON
 run_py "$CORE
 A.tickets_by_ids(range(1, 402))" > /dev/null 2>&1 || true
-t "401 ids chunk into three requests" "reqs=3" reqs
+t "401 ids chunk into three requests" "reqs=[3]" reqs
 ids_range() { python3 -c "print('ids=' + ','.join(str(i) for i in range($1, $2)))"; }
 t "the first chunk stops at the 200-id cap" "$(ids_range 1 201)\"" log
 t "the second chunk takes the next 200" "$(ids_range 201 401)\"" log

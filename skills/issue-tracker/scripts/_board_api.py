@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import NoReturn
 
 SENTINEL = "[board-relay answer:%s]"
 _RETRIES = 3          # transport-level, idempotent requests only
@@ -39,7 +40,9 @@ class ClaimObsolete(Exception):
         self.code = code
 
 
-def die(msg):
+def die(msg) -> NoReturn:
+    # NoReturn, not decoration: callers treat `die` as terminal, so without it
+    # a checker reads every `x = die(...) or x` path as reachable with x=None.
     print("error: %s" % msg, file=sys.stderr)
     raise SystemExit(1)
 
@@ -282,19 +285,20 @@ def _envelope(payload, path):
 
 
 def _walk(base, principal):
-    """Yield every row of a complete cursor walk. The `next` token is passed
-    back VERBATIM. Never yields from a walk that cannot finish: a failed page
-    dies inside request(), so consumers that materialize (all callers do)
-    never observe a partial board."""
+    """Every row of a COMPLETE cursor walk, as a list. The `next` token is
+    passed back VERBATIM. Materializing here rather than yielding is what makes
+    the no-partial-board rule structural: a failed page dies inside request()
+    before this returns, so the rows read so far are unreachable — a partial
+    board is unrepresentable, not merely unconsumed by today's callers."""
+    rows = []
     cursor = None
     while True:
         path = base + ("&cursor=%s" % cursor if cursor else "")
         page = _envelope(request("GET", path, principal=principal), path)
-        for row in page["items"]:
-            yield row
+        rows.extend(page["items"])
         cursor = page["next"]   # _envelope proved the key present
         if cursor is None:
-            return
+            return rows
 
 
 def ticket(tid, principal="human"):
