@@ -171,7 +171,10 @@ server's code is the correct surface for it.
 1. `grep` proves no production script calls the bare list forms: every
    `/tickets` read is by-id, `ids=`, or a cursor walk; every
    `/queue/decisions` read is a walk. (The five flat-route sites are the
-   documented exceptions.)
+   documented exceptions. So is the helper's own one-shot rollback probe,
+   `GET /tickets?limit=1` at the choke point — a fourth read kind, on the
+   paged surface and not a bare listing, spent at most once per process; item
+   2 names it too.)
 2. `board-show <existing-id>` and `board-show <nonexistent-id>` answer
    correctly and neither performs a bare listing: the ticket comes from
    `GET /tickets/{id}`, its history from the documented flat timeline route,
@@ -260,6 +263,24 @@ Pending — written at finish.
   not yet proven — the one-shot rollback probe. The claim that carries the
   design is the absence of a bare listing, so item 2 now names all three
   reads instead. No behavior change; the shipped code was already correct.
+  Measurement method, on record so the inventory is reproducible: a logging
+  reverse proxy in front of the harness board service, with every request the
+  verb issued read off the proxy log rather than inferred from the source.
+- 2026-08-19: § Acceptance item 1 said every `/tickets` read is by-id, `ids=`
+  or a walk, which item 2 already contradicted by naming the rollback probe.
+  Item 1 now names the probe as the fourth documented read kind. Wording
+  alignment between two clauses about the same shipped behavior.
+- 2026-08-19: § Acceptance item 4's "the unit and integration suites are
+  green" is discharged as: every deterministic suite green, and the
+  integration tier green separately with `ARKHO_DIR` set. Recorded because
+  `tests/claude-code/run-skill-tests.sh` prints `STATUS: FAILED` on a machine
+  with no `ARKHO_DIR` — measured 18 passed / 7 failed, and all seven
+  "failures" are integration drills reporting the tier's own exit-77 skip
+  gate (`drill-lib.sh`, introduced on main in d52eee66), which the runner
+  counts as a nonzero exit like any other. `test-harness-smoke.sh` skips with
+  its own inline gate and exits 0, which is why the count is seven and not
+  eight. That accounting predates this branch — a runner follow-up
+  candidate (teach it 77), not a defect of this work.
 - 2026-08-19: § Semantics preservation now names both grades of retire
   evidence (the walk serving the ticket closed, OR a by-id 404) instead of
   reading as if only the 404 counted. Task 4's reviewer caught the divergence
