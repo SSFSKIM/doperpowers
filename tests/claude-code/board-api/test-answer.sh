@@ -3,13 +3,21 @@
 # answer + the inline relay, against a real socket and a real registry.
 #
 # What this pins:
-#   PARK NAMED   the answer always carries `correlationId`, read from
-#                GET /queue/decisions. Unnamed, the server answers whichever
+#   PARK NAMED   the answer always carries `correlationId`, read from a
+#                complete paged walk of GET /queue/decisions (the envelope
+#                surface, limit=200). Unnamed, the server answers whichever
 #                question happens to be standing when the request lands — so a
 #                delayed answer would be recorded against a question nobody
 #                wrote it for. The lookup is species-scoped and ticket-scoped:
 #                an `sdk-decision` park on the same ticket, and a `board` park
 #                on a different one, are both decoys in the fixture.
+#   RE-WALK ONCE walk absence is report-grade: a park COMMITTING while the
+#                walk ran can land behind an already-passed cursor, invisible
+#                to that walk. A first walk that serves no name is retried
+#                EXACTLY once — a second walk, started after the first
+#                finished, must serve any park committed before it began — and
+#                only a still-empty second walk grounds the refusal. A walk
+#                that serves the park is never retried.
 #   TWO TOKENS   the answer leg speaks HUMAN (park-answer admits no other
 #                principal), the ack leg speaks AUTOMATION (`ack-answer` admits
 #                no human). One script, two principals — the one scripted
@@ -57,21 +65,22 @@ PORT="$(free_port)"
 FIX="$TDIR/fixtures.json"; : > "$FIX.log"
 cat > "$FIX" <<'JSON'
 [
- {"method":"GET","path":"/queue/decisions","status":200,
-  "body":[{"correlation_id":"evt-301","ticket_id":99,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T01:00:00Z"},
-          {"correlation_id":"sdk-777","ticket_id":12,"species":"sdk-decision",
-           "state":"needs-human","raised_at":"2026-08-09T02:00:00Z"},
-          {"correlation_id":"evt-101","ticket_id":12,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T03:00:00Z"},
-          {"correlation_id":"evt-201","ticket_id":13,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T04:00:00Z"},
-          {"correlation_id":"evt-401","ticket_id":14,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T05:00:00Z"},
-          {"correlation_id":"sdk-888","ticket_id":15,"species":"sdk-decision",
-           "state":"needs-human","raised_at":"2026-08-09T06:00:00Z"},
-          {"correlation_id":"evt-501","ticket_id":16,"species":"board",
-           "state":"needs-human","raised_at":"2026-08-09T07:00:00Z"}]},
+ {"method":"GET","path":"/queue/decisions?limit=200","status":200,
+  "body":{"items":[{"correlation_id":"evt-301","ticket_id":99,"species":"board",
+                    "state":"needs-human","raised_at":"2026-08-09T01:00:00Z"},
+                   {"correlation_id":"sdk-777","ticket_id":12,"species":"sdk-decision",
+                    "state":"needs-human","raised_at":"2026-08-09T02:00:00Z"},
+                   {"correlation_id":"evt-101","ticket_id":12,"species":"board",
+                    "state":"needs-human","raised_at":"2026-08-09T03:00:00Z"},
+                   {"correlation_id":"evt-201","ticket_id":13,"species":"board",
+                    "state":"needs-human","raised_at":"2026-08-09T04:00:00Z"},
+                   {"correlation_id":"evt-401","ticket_id":14,"species":"board",
+                    "state":"needs-human","raised_at":"2026-08-09T05:00:00Z"},
+                   {"correlation_id":"sdk-888","ticket_id":15,"species":"sdk-decision",
+                    "state":"needs-human","raised_at":"2026-08-09T06:00:00Z"},
+                   {"correlation_id":"evt-501","ticket_id":16,"species":"board",
+                    "state":"needs-human","raised_at":"2026-08-09T07:00:00Z"}],
+          "next":null,"as_of":118}},
  {"method":"POST","path":"/tickets/16/park-answer","status":200,
   "body":{"answered":true,"returnedTo":"in-progress","answerEventId":161}},
  {"method":"POST","path":"/tickets/12/park-answer","status":200,
@@ -91,7 +100,8 @@ cat > "$FIX" <<'JSON'
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
-trap 'kill $MOCK 2>/dev/null' EXIT
+MOCK2=""   # the hide-a-row drill's own world, started (and reaped) below
+trap 'kill $MOCK ${MOCK2:-} 2>/dev/null' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
@@ -166,11 +176,18 @@ nt "no disposition is smuggled onto a bound park" '\"to\":'                   ca
 answer_leg() { grep park-answer "$FIX.log"; }
 ack_leg()    { grep '/answers/118/ack' "$FIX.log"; }
 queue_leg()  { grep 'queue/decisions' "$FIX.log"; }
+# Delimited, because `t` matches a SUBSTRING: bare `qreads=1` is also satisfied
+# by a count of 12, and both count assertions here exist to catch a walk the
+# client should not (or should) have run.
+qreads() { echo "qreads=[$(grep -c 'queue/decisions' "$FIX.log" || true)]"; }
 t  "the answer leg speaks human"      '"auth": "Bearer h"' answer_leg
 nt "and never automation"             '"auth": "Bearer a"' answer_leg
 t  "the queue read speaks human too"  '"auth": "Bearer h"' queue_leg
 t  "the ack leg speaks automation"    '"auth": "Bearer a"' ack_leg
 nt "and never the human token"        '"auth": "Bearer h"' ack_leg
+# The re-walk-once rule's other half: a walk that SERVED the park is never
+# retried — one queue read, not two, sits in this drill's log.
+t  "one walk suffices when it serves the park" "qreads=[1]" qreads
 
 # The relay ran INLINE — the worker is awake before this command returned.
 t "the sentinel reached the bound worker" "[board-relay answer:118]" cat "$TX"
@@ -223,7 +240,10 @@ nt "a superseded answer relays nothing"  "/answers/unrelayed"  cat "$FIX.log"
 # Decoy-only queue: #15 carries a park, but not a `board` one — there is no
 # name to send. An unnamed answer is the one thing this leg may never do (the
 # server would bind it to whatever question is standing when it lands), so the
-# refusal is CLIENT-SIDE: nothing goes on the wire past the queue read.
+# refusal is CLIENT-SIDE: nothing goes on the wire past the queue reads — and
+# READS is plural: walk absence is report-grade, so the refusal stands only on
+# a second walk (the re-walk-once rule; the fixture serves both). Exactly two,
+# though — a retry loop that never gave up would sit here rereading forever.
 # =========================================================================
 : > "$FIX.log"
 OUT15="$TDIR/answer15.out"
@@ -232,6 +252,7 @@ show_rc15() { echo "rc15=$rc15"; }
 t  "no standing board park is refused" "no standing board park" cat "$OUT15"
 t  "pointing at the decisions queue"   "GET /queue/decisions"    cat "$OUT15"
 t  "and exits nonzero"                 "rc15=1"                  show_rc15
+t  "the refusal stands on a second walk, and only one" "qreads=[2]" qreads
 t  "after reading the queue as the human" '"auth": "Bearer h"'   cat "$FIX.log"
 nt "no unnamed answer reaches the wire"   "park-answer"          cat "$FIX.log"
 nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
@@ -250,6 +271,66 @@ t  "a held sweep lock is surfaced, not swallowed" "the inline wake did not run" 
 t  "and the answer is still reported as recorded" "recorded on the board"       cat "$OUTLOCK"
 nt "no delivery is claimed"                       "delivered to"                cat "$OUTLOCK"
 rmdir "$DH/.sweep-api.lock"
+
+# =========================================================================
+# The hide-a-row drill (spec § Testing): a park that COMMITTED while the first
+# walk ran can land behind an already-passed cursor — invisible to that walk,
+# served by the next. Its OWN fixture world (the mock consumes `once` entries
+# globally, so these two queue pages inside the shared world would be eaten by
+# earlier drills): the first walk's page has no #12 park, the second's does.
+# The retry serves it, the POST names it, and the human never saw a refusal.
+# =========================================================================
+PORT2="$(free_port)"
+FIX2="$TDIR/fixtures-hidden.json"; : > "$FIX2.log"
+cat > "$FIX2" <<'JSON'
+[
+ {"method":"GET","path":"/queue/decisions?limit=200","status":200,"once":true,
+  "body":{"items":[{"ticket_id":99,"correlation_id":"cid-other","species":"board",
+                    "state":"parked"}],
+          "next":null,"as_of":10}},
+ {"method":"GET","path":"/queue/decisions?limit=200","status":200,"once":true,
+  "body":{"items":[{"ticket_id":99,"correlation_id":"cid-other","species":"board",
+                    "state":"parked"},
+                   {"ticket_id":12,"correlation_id":"cid-12","species":"board",
+                    "state":"parked"}],
+          "next":null,"as_of":11}},
+ {"method":"POST","path":"/tickets/12/park-answer","status":200,"once":true,
+  "body":{"ok":true,"returnedTo":"in-progress"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX2" "$PORT2" & MOCK2=$!
+wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; exit 1; }
+r2="$(mkrepo)"; mkdir -p "$r2/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT2" > "$r2/.doperpowers/board.json"
+ANS2() {  # ANS2 <args...> — one board-answer.sh run against the hidden world
+  ( cd "$r2" || exit 1
+    export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS"
+    bounded "$SCRIPTS/board-answer.sh" "$@" )
+}
+OUTHID="$TDIR/answer-hidden.out"
+rchid=0; ANS2 12 "the answer" > "$OUTHID" 2>&1 || rchid=$?
+show_rchid() { echo "rchid=[$rchid]"; }
+t  "a park the first walk hid is served by the retry" "answered #12 → in-progress" cat "$OUTHID"
+t  "and the call succeeds"                            "rchid=[0]" show_rchid
+# The wire order, off the log: exactly two queue walks, both BEFORE the POST.
+# The sequence is exhaustive over those two request classes, so a third walk,
+# a missing retry, or a POST that raced the walks all break the needle.
+qp_seq() { python3 - "$FIX2.log" <<'PY'
+import json, sys
+seq = ""
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r["method"] == "GET" and r["path"].startswith("/queue/decisions"):
+        seq += "Q"
+    elif r["path"].endswith("/park-answer"):
+        seq += "P"
+print("seq=[%s]" % seq)
+PY
+}
+t  "exactly two queue walks ran, both before the POST" "seq=[QQP]" qp_seq
+t  "and the answer names the park the retry served" '\"correlationId\": \"cid-12\"' cat "$FIX2.log"
 
 # =========================================================================
 # gh mode is untouched: --to has no gh half, and says so instead of being
