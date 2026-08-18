@@ -317,9 +317,14 @@ def ticket(tid, principal="human"):
     is AUTHORITATIVE (action-grade) — unlike walk absence, which is
     report-grade (spec § Helper primitives). Rollback guard: route-level and
     row-level 404 share one stable code, so an unproven process probes the
-    paged surface once before trusting a 404 as a real absence."""
-    out = request("GET", "/tickets/%s" % int(tid), principal=principal,
-                  absent=("not-found",))
+    paged surface once before trusting a 404 as a real absence.
+
+    The evidence an authoritative None rests on is a 404 OBSERVED ON A PROVEN
+    surface. A 404 that arrived before the proof is not that evidence, and the
+    probe cannot retroactively make it so, so the read is re-issued and the
+    second answer is the one returned."""
+    path = "/tickets/%s" % int(tid)
+    out = request("GET", path, principal=principal, absent=("not-found",))
     if out is None and not _SURFACE["proven"]:
         # The probe is held to the FULL envelope, not merely to carrying an
         # `items` key: a rolled-back or version-skewed answer may not be the
@@ -328,9 +333,19 @@ def ticket(tid, principal="human"):
         # daemons on that answer. _envelope marks the surface proven itself.
         _envelope(request("GET", "/tickets?limit=1", principal=principal),
                   "/tickets?limit=1",
-                  " — so the not-found on GET /tickets/%d is a route-level "
+                  " — so the not-found on GET %s is a route-level "
                   "404 from a pre-read-surface server, not a missing ticket"
-                  % int(tid))
+                  % path)
+        # The probe proves the surface exists NOW; it says nothing about the
+        # instance that served the 404 a moment ago. Across a version
+        # transition the two requests can land on different instances — the
+        # 404 from one that predates the read surface, the envelope from one
+        # that has it — and taking the probe as proof would then authenticate
+        # a route-level 404 as a missing ticket, which is the whole hazard
+        # this guard exists for. So the read is re-asked with the surface
+        # proven in-process: a row rescues the false absence, and a second
+        # 404 is the authoritative one.
+        out = request("GET", path, principal=principal, absent=("not-found",))
     if out is not None:
         _SURFACE["proven"] = True
     return out

@@ -141,6 +141,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/48/end","status":200,"body":{"ended":true}},
  {"method":"GET","path":"/tickets/12","status":404,"once":true,
   "body":{"error":{"code":"not-found","message":"no such ticket: 12"}}},
+ {"method":"GET","path":"/tickets/12","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 12"}}},
  {"method":"GET","path":"/tickets?limit=1","status":200,"once":true,
   "body":{"items":[{"id":13,"state":"in-progress","priority":"P2",
                     "title":"a board #12 is not on"}],"next":null,"as_of":118}},
@@ -487,7 +489,9 @@ nt "and still escalates nothing"           "env-issue"                 cat "$OUT
 # Cycle 3 reaches the escalation, but the by-id read answers not-found — the
 # board has no such ticket, authoritatively (the client proves the paged
 # surface with one probe before it believes that 404, or a rolled-back server
-# answering 404 to an unknown ROUTE would read as "no ticket anywhere"). The
+# answering 404 to an unknown ROUTE would read as "no ticket anywhere" — and
+# then re-asks by id, since the probe dates the SURFACE and not the answer that
+# preceded it, which is why this world carries two 404 fixtures for #12). The
 # escalation defers all the same: a record written from that empty answer would
 # say `"state": ""`, and the lift check — moved = current != recorded — then
 # reads ANY value as movement, so the suppression would lift on the very next

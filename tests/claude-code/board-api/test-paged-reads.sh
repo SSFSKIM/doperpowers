@@ -16,10 +16,12 @@
 #                `page.js` `encodeCursor`), and the log is asserted to prove
 #                each one went back on the wire VERBATIM.
 #   ABSENCE HAS TWO GRADES  a by-id 404 is authoritative absence (None) —
-#                but only once the paged surface has been PROVEN in this
-#                process, because a route-level 404 from a rolled-back server
-#                answers the same stable `not-found` code and would otherwise
-#                report every ticket on the board as missing.
+#                but only when it was OBSERVED ON A PROVEN surface, because a
+#                route-level 404 from a rolled-back server answers the same
+#                stable `not-found` code and would otherwise report every
+#                ticket on the board as missing. A 404 that arrived before the
+#                proof does not qualify and is re-asked after it: the probe
+#                dates the surface, not the answer that preceded it.
 #   THE DOCUMENTED CAPS  `limit=200` is the envelope opt-in; `ids=` chunks at
 #                arkho API.md §1's 200-id cap; an empty `states=` is a server
 #                refusal the client never sends.
@@ -80,6 +82,12 @@ run_py() { PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
 # by a count of 30, and every count assertion here exists to catch a request
 # the client should not have made.
 reqs() { echo "reqs=[$(grep -c '"method"' "$FIX.log" || true)]"; }
+# Every path the world was asked for, in the order it was asked — the shape a
+# count cannot state. Bracketed for the same reason `reqs` is: a bare prefix of
+# the sequence would otherwise satisfy an assertion about the whole of it.
+paths() { python3 -c 'import json, sys
+print("paths=[%s]" % " ".join(json.loads(ln)["path"]
+                              for ln in open(sys.argv[1]) if ln.strip()))' "$FIX.log"; }
 log() { cat "$FIX.log"; }
 
 # Real cursors, produced by arkho's encodeCursor (unpadded base64url of the
@@ -106,6 +114,8 @@ world byid <<'JSON'
           "branch":"feat/seven","blocked_by":[],"relates":[]}},
  {"method":"GET","path":"/tickets/404000","status":404,"once":true,
   "body":{"error":{"code":"not-found","message":"no such ticket: 404000"}}},
+ {"method":"GET","path":"/tickets/404000","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 404000"}}},
  {"method":"GET","path":"/tickets?limit=1","status":200,"once":true,
   "body":{"items":[],"next":null,"as_of":118}}
 ]
@@ -117,18 +127,59 @@ r = A.ticket(7)
 print('id=%s state=%s branch=%s' % (r['id'], r['state'], r['branch']))"
 t "and speaks as the human by default" '"auth": "Bearer human-tok"' log
 
-# A 404 is absence — but only once this process has SEEN the paged surface.
+# A 404 is absence — but only once this process has SEEN the paged surface, and
+# only if this 404 is one it saw AFTERWARDS. The probe proves the surface is
+# there now; it cannot vouch for the instance that answered a moment ago. So the
+# read is re-asked with the surface proven, and THAT 404 is the authoritative
+# one. The log is truncated first so the sequence below stands alone.
+: > "$FIX.log"
 t "a by-id 404 reports absence" "absent=True" \
   run_py "$CORE
 print('absent=%s' % (A.ticket(404000) is None))"
 t "and an unproven process probes the paged surface before trusting it" \
   '"path": "/tickets?limit=1"' log
+t "then re-asks, so the absence it reports was seen on a proven surface" \
+  "paths=[/tickets/404000 /tickets?limit=1 /tickets/404000]" paths
+
+# The other half of that rule, and the reason it is not ceremony: a service
+# mid-version-transition can answer the two requests from DIFFERENT instances —
+# the 404 from one that predates the read surface, the probe's envelope from one
+# that has it. A client that took the probe as proof of the earlier 404 would
+# report a live ticket as absent on a board that never lost it, and the absence
+# is action-grade: lint recommends retiring its daemon, show and transition die
+# "no ticket #N". Re-asking is what rescues it — the row is right there.
+world rescue <<'JSON'
+[
+ {"method":"GET","path":"/tickets/13","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"unknown route"}}},
+ {"method":"GET","path":"/tickets?limit=1","status":200,"once":true,
+  "body":{"items":[{"id":13,"title":"alive all along","category":"work",
+                    "state":"in-progress","priority":"P1","owner_run":41,
+                    "parent":null,"plan":null,"pr_url":null,
+                    "branch":"feat/thirteen","blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets/13","status":200,"once":true,
+  "body":{"id":13,"title":"alive all along","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
+          "branch":"feat/thirteen","blocked_by":[],"relates":[]}}
+]
+JSON
+t "a 404 the probe cannot vouch for is re-asked, and the row rescues it" \
+  "id=13 state=in-progress branch=feat/thirteen" \
+  run_py "$CORE
+r = A.ticket(13)
+print('id=%s state=%s branch=%s' % (r['id'], r['state'], r['branch']))"
+# The positive above is also satisfied by a client that never made the first
+# read at all; the sequence is what says the rescue happened where it had to.
+t "on exactly the three requests that rule implies, in that order" \
+  "paths=[/tickets/13 /tickets?limit=1 /tickets/13]" paths
 
 # The probe answers a question about the SERVER, not about a ticket, so one
 # answer settles it for the process. board-lint confirms every absent daemon
 # ticket by id, and a probe per confirmation would double that round trip
-# count. The probe fixture is `once`, so a second probe would find no fixture,
-# take the mock's plain 404 and die — which is the discrimination here.
+# count. The re-ask is the probe's passenger, so it is spent once with it. The
+# probe fixture is `once`, so a second probe would find no fixture, take the
+# mock's plain 404 and die — which is the discrimination here.
 world probecache <<'JSON'
 [
  {"method":"GET","path":"/tickets/404001","status":404,
@@ -145,7 +196,7 @@ t "the probe is spent once per process, not once per absent ticket" \
   "absent=TrueTrue" \
   run_py "$CORE
 print('absent=%s%s' % (A.ticket(404001) is None, A.ticket(404001) is None))"
-t "so two absent reads cost two requests and one probe" "reqs=[3]" reqs
+t "so two absent reads cost one probe, one re-ask, and nothing more" "reqs=[4]" reqs
 # The other half: a successful by-id read proves the surface just as well as
 # the probe does, so a 404 arriving after one never probes at all.
 t "a successful read proves the surface for the 404s that follow it" \
