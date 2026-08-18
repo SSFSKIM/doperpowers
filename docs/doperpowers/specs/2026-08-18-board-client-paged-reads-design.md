@@ -173,8 +173,10 @@ server's code is the correct surface for it.
    `/queue/decisions` read is a walk. (The five flat-route sites are the
    documented exceptions.)
 2. `board-show <existing-id>` and `board-show <nonexistent-id>` answer
-   correctly with the server's paged surface as the only read they perform
-   (verified against the docker board by the integration drills).
+   correctly and neither performs a bare listing: the ticket comes from
+   `GET /tickets/{id}`, its history from the documented flat timeline route,
+   and a 404 on a not-yet-proven server spends one `GET /tickets?limit=1`
+   rollback probe (verified against the docker board).
 3. A walk interrupted at page 2 (fixture server kills the connection)
    surfaces as a failure — no caller observes a partial board.
 4. The unit and integration suites are green; the plugin version is bumped
@@ -251,6 +253,13 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-19: § Acceptance item 2 claimed the paged surface was "the only
+  read" `board-show` performs. The acceptance walk measured it and found
+  three: the by-id read, the flat timeline route (§ site map's own
+  documented exception), and — on a 404 from a server whose paged surface is
+  not yet proven — the one-shot rollback probe. The claim that carries the
+  design is the absence of a bare listing, so item 2 now names all three
+  reads instead. No behavior change; the shipped code was already correct.
 - 2026-08-19: § Semantics preservation now names both grades of retire
   evidence (the walk serving the ticket closed, OR a by-id 404) instead of
   reading as if only the 404 counted. Task 4's reviewer caught the divergence
