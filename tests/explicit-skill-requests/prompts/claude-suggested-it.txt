@@ -8,4 +8,4 @@ Two execution options:
 Which approach do you want to use for implementation?
 
 [Your response]:
-subagent-driven-development, please
+subagent-driven-execution, please

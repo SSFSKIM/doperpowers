@@ -2,7 +2,7 @@
 # board-gc.sh — janitor for merged-branch worktrees and throwaway-DB docker
 # debris. Runs as the sweep's last pass (opt-in), or standalone.
 #
-# Why the sweep owns this and not the review worker: the merge that makes a
+# Why the sweep owns this and not the Reviewer worker: the merge that makes a
 # worktree garbage usually lands AFTER every worker's turn ended (armed
 # auto-merge, an orchestrator pin-merge, a human click) — there is no worker
 # present at merge time. The sweep is the janitor that already owns worker

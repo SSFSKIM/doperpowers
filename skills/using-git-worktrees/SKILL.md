@@ -1,6 +1,6 @@
 ---
 name: using-git-worktrees
-description: Use when starting feature work that needs isolation from current workspace or before executing implementation plans
+description: Use when starting feature work that needs isolation from current workspace or before running execution plans
 ---
 
 # Using Git Worktrees

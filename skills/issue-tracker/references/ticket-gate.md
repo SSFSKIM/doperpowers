@@ -4,7 +4,7 @@ The bar a ticket must pass before implement work begins — board schema,
 one copy, owned by doperpowers:issue-tracker. (This is the board rendering
 of the universal division gate — doctrine in doperpowers:decomposing,
 ticket procedure here.) Consumed everywhere a
-readiness judgment is made: the implement worker re-runs both checks at
+readiness judgment is made: the Executor worker re-runs both checks at
 every dispatch (a registrar's verdict is a
 recommendation, never inherited trust), and every registrar — follow-ups,
 decompose children, spike graduations, feedback triage, sprint

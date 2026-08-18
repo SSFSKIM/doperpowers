@@ -32,7 +32,7 @@ fi
 
 # Create a dummy plan file
 cat > "$PROJECT_DIR/docs/doperpowers/plans/auth-system.md" << 'EOF'
-# Auth System Implementation Plan
+# Auth System Execution Plan
 
 ## Task 1: Add User Model
 Create user model with email and password fields.
@@ -74,7 +74,7 @@ echo "Done."
 
 # Turn 3: Ask to write a plan
 echo ">>> Turn 3: Requesting plan..."
-claude -p "Great, write this up as an implementation plan." \
+claude -p "Great, write this up as an execution plan." \
     --continue \
     --model haiku \
     --plugin-dir "$PLUGIN_DIR" \
@@ -97,9 +97,9 @@ claude -p "The plan looks good. What are my options for executing it?" \
 echo "Done."
 
 # Turn 5: THE CRITICAL TEST
-echo ">>> Turn 5: Requesting subagent-driven-development..."
+echo ">>> Turn 5: Requesting subagent-driven-execution..."
 FINAL_LOG="$OUTPUT_DIR/turn5.json"
-claude -p "subagent-driven-development, please" \
+claude -p "subagent-driven-execution, please" \
     --continue \
     --model haiku \
     --plugin-dir "$PLUGIN_DIR" \
@@ -113,7 +113,7 @@ echo ""
 echo "=== Results (Haiku) ==="
 
 # Check final turn
-SKILL_PATTERN='"skill":"([^"]*:)?subagent-driven-development"'
+SKILL_PATTERN='"skill":"([^"]*:)?subagent-driven-execution"'
 if grep -q '"name":"Skill"' "$FINAL_LOG" && grep -qE "$SKILL_PATTERN" "$FINAL_LOG"; then
     echo "PASS: Skill was triggered"
     TRIGGERED=true

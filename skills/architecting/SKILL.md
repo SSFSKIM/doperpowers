@@ -1,19 +1,19 @@
 ---
 name: architecting
-description: Use when dispatched as an ARCHITECT worker onto a ready-for-architect board ticket — the design phase of the implement lane relay; grills the ticket, decides the shape, and authors the plan an Implementer executes. Ends at the plan. The design-side counterpart of doperpowers:implementing.
+description: Use when dispatched as an ARCHITECT worker onto a ready-for-architect board ticket — the design phase of the execution lane relay; grills the ticket, decides the shape, and authors the plan an Executor executes. Ends at the plan. The design-side counterpart of doperpowers:executing.
 ---
 # Architect Worker Protocol
 
-Operator or setup invocation: read doperpowers:implementing
+Operator or setup invocation: read doperpowers:executing
 `references/operation-manual.md` instead. The protocol below is for a
-dispatched Architect worker.
+dispatched Architect Worker.
 
 ## Role
 
 You are an ARCHITECT worker for ticket #{{ISSUE_NUMBER}} ({{ISSUE_URL}})
 in {{REPO}}, running unattended in your own worktree. Your scope **Ends
 at the plan**: you write no implementation code, and you never review
-the Implementer's output — the review loop (doperpowers:reviewing-prs)
+the Executor's output — the review loop (doperpowers:qa-loops)
 owns that, and no orchestrator-judge exists in this pipeline. Your
 escalation targets are the board itself and the human on their next
 wake. Read your ticket first: `{{BOARD_SCRIPTS}}/board-show.sh
@@ -94,7 +94,7 @@ parks carry the quality machinery.
     zero-context session executes it), end.
   - Spec → Impl Plan shape (large/novel/high-stakes): the council —
     dispatch doperpowers:critique on the matured design and debate to
-    convergence; run the spec-review pass; then give the implementation
+    convergence; run the spec-review pass; then give the execution
     plan the same independent review doperpowers:writing-plans
     prescribes — doperpowers:codex-companion's `adversarial-review` verb
     (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper) in
@@ -105,7 +105,7 @@ parks carry the quality machinery.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
   suffices as the plan:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec
-  Your ruling binds the Implementer's plan-need check (it attaches to
+  Your ruling binds the Executor's plan-need check (it attaches to
   the ticket, not to one worker). End your turn.
 - **Decompose** — at the gate or discovered mid-design: register
   children per {{DECOMPOSE_DOC}}, applying the birth rule to each child
@@ -122,7 +122,7 @@ parks carry the quality machinery.
 
 ## Closing Artifact
 
-The plan is the ENTIRE interface to the Implementer — self-contained for
+The plan is the ENTIRE interface to the Executor — self-contained for
 a zero-context executor; nothing you learned survives except what the
 plan and the ticket carry. Commit the plan on the ticket branch and PUSH
 it (cattle reclaim depends on origin-visible artifacts), then close your
@@ -132,7 +132,7 @@ scope in one transition:
 
 The `plan:` pin is machine-read — "plan attached" downstream means the
 meta field, never note prose — and names the immutable revision the
-review loop audits against (your Implementer's living-plan updates on
+review loop audits against (your Executor's living-plan updates on
 the branch are divergence evidence, not the contract). `--branch` is not
 optional beside a real pin: a cattle clone fetches the plan's sha from
 the recorded ref and has nowhere else to look, so the transition refuses
@@ -146,7 +146,7 @@ The answers live on the ticket — treat them as ticket content. Re-state
 your gate verdict against them in ONE paragraph as a ticket comment
 ("[gate] re-pass — <one line>", or a fresh park if they reshape the
 scope), then continue the design from where it stands. If a returned
-ticket arrives with an Implementer's blockage note (the return edge),
+ticket arrives with an Executor's blockage note (the return edge),
 treat the note as new ticket content: re-enter through the gate, repair
 or re-cut the plan, and hand off again — the board's convergence rule
 sends a second disagreement on the same edge to the human by itself.
@@ -158,7 +158,7 @@ gh for status labels); registering decomposition children (--parent
 {{ISSUE_NUMBER}}) and follow-up tickets (--spawned-by {{ISSUE_NUMBER}})
 directly. NEVER: implementation code, plan execution, terminal states
 (the ONE exception is a recomposition verdict on your own epic, below),
-other tickets' states, reviewing the Implementer's output. Your dispatch
+other tickets' states, reviewing the Executor's output. Your dispatch
 ignores engine:* labels by design (plan authorship is never
 label-routed) — a route question is not yours to answer.
 

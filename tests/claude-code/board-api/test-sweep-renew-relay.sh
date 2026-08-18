@@ -135,18 +135,18 @@ meta() {  # meta <uuid> <json>
 # It holds its OWN bearer: the repair speaks as the run it is repairing, and a
 # meta with no bearer at all is refused by board-bind rather than confirmed.
 meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
-           "lane":"implementer","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
+           "lane":"executor","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
 # alive, but the server already reaped run 40 -> routed, not fatal
 meta u-2 '{"uuid":"u-2","current":"u-2","status":"working","run_id":40,"fence":2,
-           "lane":"implementer","bind_confirmed":true,"ticket":"8"}'
+           "lane":"executor","bind_confirmed":true,"ticket":"8"}'
 # parked on #12 with its turn ended: still alive, still holds run 43, and it
 # is the relay target. The bearer at rest is what the relay speaks with.
 meta u-3 '{"uuid":"u-3","current":"u-3-cur","status":"idle","run_id":43,"fence":1,
-           "lane":"implementer","bind_confirmed":true,"ticket":"12","run_bearer":"tok-w3"}'
+           "lane":"executor","bind_confirmed":true,"ticket":"12","run_bearer":"tok-w3"}'
 chmod 600 "$DH/u-3.json"
 # the session is GONE — its lease must expire, not be renewed
 meta u-4 '{"uuid":"u-4","current":"u-4","status":"working","run_id":44,"fence":1,
-           "lane":"implementer","bind_confirmed":true,"ticket":"9"}'
+           "lane":"executor","bind_confirmed":true,"ticket":"9"}'
 # no run at all (a gh-era or review-species meta) — nothing to renew, no crash
 meta u-5 '{"uuid":"u-5","current":"u-5","status":"working","name":"review-pr-3"}'
 
@@ -237,10 +237,10 @@ slot_for() { python3 -c 'import json, sys
 m = json.load(open(sys.argv[1]))
 print("run=%s lane=%s bearer=%s" % (m.get("run_id") or "none", m.get("lane") or "none",
                                     "set" if m.get("run_bearer") else "none"))' "$DH/$1.json"; }
-t "an ended run releases its local dispatch slot" "run=none lane=implementer bearer=none" \
+t "an ended run releases its local dispatch slot" "run=none lane=executor bearer=none" \
   slot_for u-2
 t "and the retirement is recorded"          "run_ended_at"             cat "$DH/u-2.json"
-t "a live run keeps its slot"               "run=41 lane=implementer"  slot_for u-1
+t "a live run keeps its slot"               "run=41 lane=executor"  slot_for u-1
 
 # =========================================================================
 # Principal isolation — an inherited run token is not the sweep's voice.
@@ -253,7 +253,7 @@ t "a live run keeps its slot"               "run=41 lane=implementer"  slot_for 
 : > "$FIX.log"
 # Re-arm the bind-repair path: the pass above already confirmed u-1.
 meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
-           "lane":"implementer","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
+           "lane":"executor","bind_confirmed":false,"ticket":"7","run_bearer":"tok-w1"}'
 SWEVIL renew > "$TDIR/renew-evil.out" 2>&1 || true
 t  "renew still speaks as automation under an ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
 nt "an ambient run token never reaches the wire"  "tok-evil"     cat "$FIX.log"
@@ -268,7 +268,7 @@ t  "bind repair keeps the meta's OWN bearer, not the ambient one" "run_bearer=to
 # as it. Refused loudly, and the run is left for the lease to reclaim.
 : > "$FIX.log"
 meta u-1 '{"uuid":"u-1","current":"u-1","status":"working","run_id":41,"fence":3,
-           "lane":"implementer","bind_confirmed":false,"ticket":"7"}'
+           "lane":"executor","bind_confirmed":false,"ticket":"7"}'
 SW renew > "$TDIR/renew-nobearer.out" 2>&1 || true
 t  "a bearerless bind repair is refused"   "bind refused for run 41" cat "$TDIR/renew-nobearer.out"
 t  "and the tick reports the failed repair" "bind repair FAILED"     cat "$TDIR/renew-nobearer.out"
@@ -399,10 +399,10 @@ nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
 #        moment the run token is blank, so the worker would speak with broader
 #        authority than its own run and outside its fence.
 meta u-6 '{"uuid":"u-6","current":"u-6","status":"error","pending_short":"fk01",
-           "run_id":46,"fence":1,"lane":"implementer","bind_confirmed":true,
+           "run_id":46,"fence":1,"lane":"executor","bind_confirmed":true,
            "ticket":"77","run_bearer":"tok-w6"}'
 meta u-7 '{"uuid":"u-7","current":"u-7","status":"idle","run_id":47,"fence":1,
-           "lane":"implementer","bind_confirmed":false,"ticket":"78"}'
+           "lane":"executor","bind_confirmed":false,"ticket":"78"}'
 : > "$FIX.log"
 OUTC="$TDIR/relay-candidates.out"
 before_c="$(wc -l < "$RESUME_LOG")"
@@ -555,7 +555,7 @@ rm -rf "$LK"
 # moments before the resume phase gives the ticket a real successor.
 # =========================================================================
 meta u-8 '{"uuid":"u-8","current":"u-8","status":"working","run_id":50,"fence":2,
-           "lane":"implementer","bind_confirmed":true,"ticket":"99","run_bearer":"tok-w8"}'
+           "lane":"executor","bind_confirmed":true,"ticket":"99","run_bearer":"tok-w8"}'
 : > "$FIX.log"
 before_8="$(wc -l < "$RESUME_LOG")"
 OUTR="$TDIR/relay-renew-retired.out"

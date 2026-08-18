@@ -1,0 +1,430 @@
+#!/usr/bin/env bash
+#
+# Structural invariants over the implement-worker protocol + skill doctrine.
+# Prose is behavior here: these asserts pin the load-bearing clauses so a
+# future edit cannot silently drop the gate, resurrect the proposal block,
+# or reintroduce retired vocabulary.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# The skill IS the protocol: SKILL.md carries the Executor Worker Protocol
+# (mirroring qa-loops); the operator doctrine lives in
+# references/operation-manual.md; spawn goes through references/worker-bootstrap.md.
+PROTO="$REPO_ROOT/skills/executing/SKILL.md"
+SKILL="$REPO_ROOT/skills/executing/SKILL.md"
+MANUAL="$REPO_ROOT/skills/executing/references/operation-manual.md"
+BOOTSTRAP="$REPO_ROOT/skills/executing/references/worker-bootstrap.md"
+ARCHITECT="$REPO_ROOT/skills/architecting/SKILL.md"
+
+FAILURES=0
+pass() { echo "  [PASS] $1"; }
+fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
+assert_contains() {
+    if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
+        fail "$3"; echo "    expected to find: $2"; fi
+}
+assert_not_contains() {
+    if grep -Fq -- "$2" <<<"$1"; then
+        fail "$3"; echo "    expected NOT to find: $2"; else pass "$3"; fi
+}
+
+echo "protocol content:"
+[ -f "$PROTO" ] || { echo "missing $PROTO"; exit 1; }
+proto="$(cat "$PROTO")"
+assert_contains "$proto" "THE GATE comes before everything" "gate precedes everything"
+assert_contains "$proto" "WELL-DEFINED" "check 1 named"
+assert_contains "$proto" "WELL-SCOPED" "check 2 named"
+assert_contains "$proto" "/../references/ticket-gate.md" "gate definitions route to the schema file (BOARD_SCRIPTS-relative)"
+assert_not_contains "$proto" "internal naming" "fork taxonomy not re-vendored in the protocol"
+assert_contains "$proto" "VERDICT IS YOUR FIRST BOARD WRITE" "verdict-first-write present"
+assert_contains "$proto" "WHO UNPARKS IT" "park discriminant present"
+assert_contains "$proto" "{{DECOMPOSE_DOC}}" "decompose procedure pointer present (runtime-opened)"
+assert_contains "$proto" "FOLLOW-UPS: none" "follow-ups contract present"
+assert_contains "$proto" "A follow-up not registered does not exist" "direct registration doctrine"
+assert_contains "$proto" "doperpowers:issue-tracker" "registration routes through the issue-tracker skill"
+assert_contains "$proto" "author its body at register time" "follow-up body is authored at register time"
+assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
+assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
+assert_contains "$proto" "EXECUTION (gate passed)" "execution doctrine lives inline in the protocol (no binding indirection)"
+assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
+assert_contains "$proto" "ASK EARLY" "ask-early clause present (no assumption-building past human-grade forks)"
+assert_contains "$proto" "a pause, not a death" "park-pause doctrine present"
+assert_contains "$proto" "IF RESUMED WITH ANSWERS" "answer-relay resume clause present"
+assert_contains "$proto" "[gate] re-pass" "re-verdict guard present"
+assert_contains "$proto" "CLOSING ARTIFACT" "PR body is the closing artifact (FD-7: no live workpad)"
+assert_contains "$proto" "## Validation Evidence" "validation-evidence section mandated"
+assert_contains "$proto" "## Confusions" "confusions section (conditional) mandated"
+assert_contains "$proto" "ORIENTATION SUMMARY" "park orientation summary mandated"
+assert_contains "$proto" "no live progress mirror" "no-mirror doctrine stated in the protocol"
+assert_not_contains "$proto" "land on main independently" "landability criterion lives in the gate file, not the protocol"
+assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
+assert_not_contains "$proto" "Knowledge work anyone could do" "needs-info definition not re-vendored in the protocol"
+assert_contains "$proto" "doperpowers:qa-loops" "handoff to the review loop named"
+assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
+assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
+assert_not_contains "$proto" "status:blocked" "no retired blocked label"
+
+echo "mode selection (plan-execution vs DIRECT):"
+assert_contains "$proto" "MODE SELECTION" "mode selection section present"
+assert_contains "$proto" "plan-execution" "plan-execution mode named"
+assert_contains "$proto" "ready-for-architect" "architect escalation edge named"
+assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
+
+echo "placeholders:"
+# The protocol keeps only the tokens its own clauses use; the worker reads
+# its ticket and the repo-facts manifest itself (no inlined bodies).
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
+    fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+
+echo "skill-as-protocol shape:"
+assert_contains "$proto" "name: executing" "frontmatter survives on the protocol skill file"
+assert_contains "$proto" "references/operation-manual.md" "operator-routing line points at the operation manual"
+if [ -e "$REPO_ROOT/skills/executing/references/implement-worker-protocol.md" ]; then
+    fail "the old separate protocol file is retired (the skill IS the protocol)"
+else
+    pass "the old separate protocol file is retired (the skill IS the protocol)"
+fi
+
+echo "worker bootstrap:"
+[ -f "$BOOTSTRAP" ] || { echo "missing $BOOTSTRAP"; exit 1; }
+bootstrap="$(cat "$BOOTSTRAP")"
+assert_contains "$bootstrap" "dispatcher-pinned copy" "bootstrap: protocol comes from the dispatcher-pinned file"
+assert_contains "$bootstrap" "{{PROTOCOL_FILE}}" "bootstrap: dispatcher-owned protocol path token"
+assert_contains "$bootstrap" "open it first and follow it" "bootstrap: protocol-before-work instruction"
+assert_contains "$bootstrap" "{{ROLE}}" "bootstrap: one parameterized bootstrap for both lanes"
+assert_not_contains "$bootstrap" "ISSUE_BODY" "bootstrap: no inlined ticket body (the worker reads its ticket via gh)"
+assert_not_contains "$bootstrap" "REPO_FACTS" "bootstrap: no inlined repo-facts (the worker reads the manifest from its worktree)"
+assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-block binding (the doctrine lives in the protocol)"
+# PARENT_PIN and TICKET_BODY_FILE are the API binding's two additions: the
+# parent-contract window a claim was cut against (no read a worker may make
+# hands it over), and the assignment file the claim delivered in place of a
+# ticket-body read route.
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
+got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
+    fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
+
+echo "operation manual:"
+[ -f "$MANUAL" ] || { echo "missing $MANUAL"; exit 1; }
+manual="$(cat "$MANUAL")"
+assert_contains "$manual" "SKILL.md" "manual: names the skill file as the protocol"
+assert_contains "$manual" "worker-bootstrap.md" "manual: names the spawn bootstrap"
+assert_contains "$manual" "repo-facts" "manual: repo-facts doctrine present"
+assert_contains "$manual" "board-answer.sh" "manual: names the answer relay (park = pause)"
+assert_contains "$manual" "doperpowers:issue-tracker" "manual: points at the board schema"
+assert_not_contains "$manual" "status:blocked" "manual: no retired vocabulary"
+
+echo "spike protocol:"
+SPIKE="$REPO_ROOT/skills/executing/references/spike-worker-protocol.md"
+[ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
+spike="$(cat "$SPIKE")"
+# The brief/facts tails ride the bootstrap's binding sections for both lanes.
+want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
+    fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
+assert_contains "$spike" "DRAFT" "spike: evidence PR is draft-only"
+assert_not_contains "$spike" "{{EXECUTION_BLOCK}}" "spike: no engine execution block (exploration, not TDD)"
+assert_contains "$spike" 'NEVER "Closes #{{ISSUE_NUMBER}}"' "spike: Closes is forbidden"
+assert_contains "$spike" 'needs-human "findings ready:' "spike: findings-ready handoff park"
+assert_contains "$spike" "terminal states" "spike: terminal states stay the human's"
+assert_contains "$spike" "[findings]" "spike: structured findings comment mandated"
+assert_contains "$spike" "doperpowers:issue-tracker" "spike: graduation registration routes through the issue-tracker skill"
+assert_contains "$spike" "author its body at register time" "spike: graduated ticket body authored at register time"
+assert_not_contains "$spike" "no exploring" "spike: the decompose verdict states its deliverable, not an exploration ban"
+
+echo "decompose procedure (runtime-opened):"
+DECOMP="$REPO_ROOT/skills/executing/references/implement-decompose.md"
+[ -f "$DECOMP" ] || { echo "missing $DECOMP"; exit 1; }
+decomp="$(cat "$DECOMP")"
+assert_contains "$decomp" "a chain IS" "decompose doc: serialization-as-edges present"
+assert_contains "$decomp" "## Roadmap" "decompose doc: JIT roadmap escape hatch present"
+assert_contains "$decomp" "NO code" "decompose doc: write-no-code clause present"
+assert_contains "$decomp" "grants no authority beyond your prompt" "decompose doc: no-extra-authority framing"
+assert_not_contains "$decomp" "{{" "decompose doc: placeholder-free (opened at runtime, never rendered)"
+
+echo "execution doctrine (inline — no engine-blocks indirection):"
+# One harness, one doctrine: both model routes (gateway "codex" / plain
+# "claude") are Claude-harness sessions, and the execution text lives in
+# the protocol's own Execution section.
+if [ -e "$REPO_ROOT/skills/executing/references/engine-blocks" ]; then
+    fail "engine-blocks dir is retired (execution doctrine lives in the protocol)"
+else
+    pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
+fi
+assert_contains "$proto" "PLAN-EXECUTION:" "execution: plan-execution mode wired (not bare PLAN)"
+assert_contains "$proto" "doperpowers:architecting" "execution: routes plan authorship to the architect lane"
+assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
+assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
+assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
+assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
+assert_contains "$proto" "subagent-driven-execution" "execution: names the forbidden interactive skills"
+assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
+assert_contains "$proto" "AGENT-answerable" "gate: plan-need names agent-answerable design gaps (the E1 escalation criterion)"
+
+echo "skill doctrine:"
+[ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
+skill="$(cat "$SKILL")"
+assert_contains "$skill" "name: executing" "frontmatter name"
+assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
+assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
+assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
+
+echo "dispatch ritual (issue-tracker):"
+TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
+[ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
+tracker="$(cat "$TRACKER")"
+assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
+assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: gateway route rides daemon-spawn via settings env"
+assert_contains "$tracker" "daemon-spawn.sh" "ritual: one spawn command for both routes"
+assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
+assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
+assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
+assert_not_contains "$tracker" "implement-worker-protocol.md" "ritual: no reference to the retired protocol file"
+
+echo "ticket gate (schema file, single copy):"
+GATE="$REPO_ROOT/skills/issue-tracker/references/ticket-gate.md"
+[ -f "$GATE" ] || { echo "missing $GATE"; exit 1; }
+gate="$(cat "$GATE")"
+assert_contains "$gate" "WELL-DEFINED" "gate: check 1 canonical here"
+assert_contains "$gate" "WELL-SCOPED" "gate: check 2 canonical here"
+assert_contains "$gate" "protocol violation, not caution" "gate: mechanical forks are the worker's (parking them is the violation)"
+assert_contains "$gate" "never the worker's call" "gate: minor-taste rule canonical here"
+assert_contains "$gate" "big-but-ATOMIC" "gate: atomic-counts-as-one-unit sizing canonical here"
+assert_contains "$gate" "land on main independently" "gate: landability decompose criterion canonical here"
+assert_contains "$gate" "recommendation, never inherited trust" "gate: registrar verdicts are recommendations (gate re-runs)"
+assert_contains "$gate" "The human is a source too" "gate: human-as-async-answer-source clause carried over"
+assert_not_contains "$gate" "{{" "gate: placeholder-free (opened at runtime, never rendered)"
+assert_contains "$tracker" "ticket-gate.md" "tracker: both lane-queue rows name their bar (the gate file)"
+assert_contains "$manual" "ticket-gate.md" "manual: gate section routes to the schema file"
+assert_not_contains "$manual" "one obvious best answer" "manual: fork table not re-vendored"
+assert_contains "$spike" "ticket-gate.md" "spike: graduation bar routes to the gate file"
+assert_contains "$decomp" "ticket-gate.md" "decompose doc: child triage bar routes to the gate file"
+
+echo "board schema single-source (issue-tracker owns the discriminant):"
+assert_contains "$tracker" "Park discriminant — who unparks it?" "tracker: canonical discriminant lives here"
+assert_contains "$tracker" "recommended answer" "tracker: needs-human note contract (question list with recommendations)"
+assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-human rule is canonical here"
+assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + lane queues)"
+assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
+assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
+daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
+assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
+assert_not_contains "$daemons" "discriminant in doperpowers:executing" "daemons: no stale pointer at the old vendored copy"
+assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
+assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
+
+echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
+assert_contains "$proto" "review loop deliberately skips drafts" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
+assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
+assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
+assert_contains "$tracker" "execute-dispatch.sh" "tracker: ritual names its mechanical executable"
+assert_contains "$tracker" "Running the ritual by hand stays valid" "tracker: manual dispatch stays a first-class path"
+sweepdoc="$(cat "$REPO_ROOT/skills/issue-tracker/references/sweep-setup.md")"
+assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the macOS path"
+assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
+assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
+assert_not_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: retired land template stays absent"
+tbody="$(cat "$REPO_ROOT/skills/executing/references/issue-dispatch.yml")"
+assert_contains "$tbody" "permissions: {}" "issue-dispatch.yml: zero-permission job"
+assert_not_contains "$tbody" "uses: actions/checkout" "issue-dispatch.yml: never checks out repo code"
+assert_not_contains "$tbody" ".title" "issue-dispatch.yml: no title/body interpolation (injection surface)"
+
+echo "architecting protocol (Architect Worker, E1 skill split):"
+[ -f "$ARCHITECT" ] || { echo "missing $ARCHITECT"; exit 1; }
+arch="$(cat "$ARCHITECT")"
+assert_contains "$arch" "name: architecting" "frontmatter names the architecting skill"
+assert_contains "$arch" "ARCHITECT worker" "role names the ARCHITECT worker"
+assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
+assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
+assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
+assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
+assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
+
+echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
+REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
+[ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
+review="$(cat "$REVIEW")"
+# env-issue authority — all four worker protocols carry the same opt-in filing.
+assert_contains "$arch" "env-issue" "architect protocol carries env-issue authority"
+assert_contains "$proto" "env-issue" "executor protocol carries env-issue authority"
+assert_contains "$spike" "env-issue" "spike protocol carries env-issue authority"
+assert_contains "$review" "env-issue" "review protocol carries env-issue authority"
+assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-issue filing is fire-and-continue"
+# One doctrine in four voices: the load-bearing clauses are pinned in EVERY
+# copy. The --note pin is a regression guard — board-register.sh dies on an
+# env-issue with neither --state nor --note, i.e. on this block's own default
+# path, and a worker filing on a side errand would drop the report silently.
+for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE" "review:$REVIEW"; do
+    _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
+    assert_contains "$_body" 'env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note' "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
+    assert_contains "$_body" "Default birth is needs-human" "$_name: env-issue birth default is needs-human"
+    assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
+    assert_contains "$_body" "subagents never write the board" "$_name: subagent write doctrine restated"
+done
+# E2 upward revision, PRODUCER side. The sweep consumes [parent-impact]
+# proposals and the recomposing Architect reads them, but the duty to post one
+# lived only in decomposing/ — doctrine no dispatched worker opens. Every
+# protocol that can own a CHILD ticket instructs it (the reviewer cannot: it
+# reviews a child, it never owns one).
+for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE"; do
+    _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
+    assert_contains "$_body" "parent-pin: #<parent> @ <hash>" "$_name: the inherited parent contract is read from the parent-pin meta (a hash of the parent BODY, not a repo sha)"
+    # ONE VERB, BOTH BINDINGS. The proposal is posted through board-comment.sh
+    # --kind parent-impact, which renders the `[parent-impact] #<parent> …`
+    # marker under a gh board and records the typed event an API board's
+    # reconciler joins on. A hand-written marker is invisible to the second,
+    # so the verb — not the marker — is what each protocol must instruct.
+    assert_contains "$_body" '--kind parent-impact --text "#<parent> <affected clauses>:' "$_name: the proposal is one typed board-comment event on the worker's OWN ticket"
+    assert_contains "$_body" '[parent-impact] #<parent>' "$_name: and the gh rendering of that event is still named"
+    assert_contains "$_body" "never edit or transition the parent" "$_name: a child proposes upward, it never writes its parent"
+done
+# Recomposition protocol (Architect).
+# The council's plan-review step named doperpowers:plan-reviewer, an agent
+# deleted when plan review moved to the codex adversarial-review route — a
+# live instruction pointing at nothing. It now names the same mechanism
+# writing-plans prescribes, so the two cannot drift apart again.
+assert_not_contains "$arch" "plan-reviewer" \
+    "the council never dispatches the deleted plan-reviewer agent"
+assert_contains "$arch" "doperpowers:codex-companion's \`adversarial-review\` verb" \
+    "the plan gets the independent review writing-plans prescribes, by its real mechanism"
+assert_contains "$arch" "buildable by an engineer with" \
+    "...focused on the same bar (same voice as writing-plans, not a bespoke variant)"
+assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
+assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
+# T1: the check is only performable if the pin names a revision of the thing
+# it claims to pin. It named the repo HEAD sha, which a body edit does not
+# move — so the protocol has to say what the pin IS and how to recompute it.
+assert_contains "$arch" "with its \`board:meta\`" \
+    "the lineage check says the pin covers the contract text, not the board's own bookkeeping"
+assert_contains "$arch" "print(B.contract_hash(json.load(sys.stdin)['body']))" \
+    "...and reproduces the stamp by calling the SAME helper the dispatcher calls"
+assert_not_contains "$arch" "hashlib.sha256" \
+    "...never a hand-rolled hash the stamp could drift from"
+assert_contains "$arch" "marked consumed or not" "lineage check reads ALL [parent-impact] proposals, marker or none"
+# ...and the claim CLOSES the loop it opened: the sweep leaves proposals
+# unmarked while an Architect holds the claim, so an unmarked one re-triggers
+# a whole cycle the moment the claim exits. The marker format is the sweep's
+# dedupe key verbatim — a paraphrase would never match.
+assert_contains "$arch" '[board-epic] reconcile: #<child>@<comment-id>' \
+    "the claim marks every proposal it dispositioned, in the sweep's exact dedupe format"
+assert_contains "$arch" "Before you release the claim" \
+    "the marking duty binds to every exit, not just the closing verdict"
+# Scale review: the audit object and the trail's target are BOTH PR-shaped by
+# default, and an epic has neither a PR body nor an executor gate comment.
+assert_contains "$review" "object is the CLOSURE PACKAGE" \
+    "scale audit rebinds its object to the closure package, not a PR"
+assert_contains "$review" "artifact that cannot exist is never a finding" \
+    "scale audit never turns a nonexistent PR artifact into a finding"
+assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
+    "the scale run's review trail has a valid target"
+assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
+# The integration ref is per-cycle supply, not inherited state: the
+# recomposition return clears branch: with pr:, so what the handoff passes is
+# what the scale reviewer checks out, and silence means the default branch.
+assert_contains "$arch" 'in-review "<summary>" --pr <package URL> --branch <integration ref>' \
+    "the closure-package handoff supplies this cycle's integration ref"
+assert_contains "$arch" "omit it when the children landed on the default branch" \
+    "...and omitting it is the stated shape when there is no integration branch"
+# A real plan pin is only reclaimable from a recorded ref (cattle clone).
+assert_contains "$arch" "a cattle clone fetches the plan's sha from" \
+    "the handoff states why a pinned plan needs its branch recorded"
+assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
+assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
+# R9-O1: the corrective-child branch needs the SAME release. PULL_FROM excludes
+# in-design (correctly — an unclaimed reconciliation return must stay readable),
+# so an epic left in in-design after registering a corrective child is waiting
+# on a pull that can never arrive, and the sweep force-parks the finished
+# Architect every tick.
+assert_contains "$arch" 'needs-info "corrective child #<n> registered — waiting on children"' \
+    "a registered corrective child releases the epic to the pullable park"
+assert_contains "$arch" "is never pulled, so an epic left there waits on a child" \
+    "...and the protocol says why in-design is not a waiting state"
+# R9-O2: the reconciliation-due note is note-scoped, not epic-scoped. A proposer
+# reparented away from its former parent leaves that parent CHILDLESS while the
+# sweep still returns it with the note and writes the dedupe marker — a claim
+# that runs ordinary leaf design never retrieves the proposal, and the marker
+# blocks any retry.
+assert_contains "$arch" "binds whether or not the ticket has" \
+    "reconciliation-due handling does not depend on the ticket still having children"
+assert_contains "$arch" "continues into ordinary design of the ticket with" \
+    "...and a childless reconciliation claim folds the findings into ordinary design"
+# Scale-review variant (QAgent).
+assert_contains "$review" "scale review" "review protocol names the scale-review variant"
+assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"
+
+echo "E2 board + decomposing doctrine (the mechanics' own prose):"
+DECOMPOSING="$REPO_ROOT/skills/decomposing/SKILL.md"
+[ -f "$DECOMPOSING" ] || { echo "missing $DECOMPOSING"; exit 1; }
+decomposing="$(cat "$DECOMPOSING")"
+# Pin the load-bearing CLAUSES, not the bare vocabulary: a bare "env-issue"
+# is satisfied by the toolkit table row alone, and a bare "recomposition"
+# by any passing mention — neither would notice the doctrine going wrong.
+assert_contains "$tracker" '`bug` | `enhancement` | `spike` | `env-issue`' \
+    "board doctrine: the category set is the four-member one"
+assert_contains "$tracker" 'defaults to `needs-human`' \
+    "board doctrine: env-issue's birth default is the inverted one"
+assert_contains "$tracker" 'REQUIRES `--note` naming the' \
+    "board doctrine: the env-issue default path requires --note (register refuses otherwise)"
+assert_contains "$tracker" 'RETURNS to `ready-for-architect`' \
+    "board doctrine: a fully-terminal epic returns for recomposition instead of auto-closing"
+assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
+assert_contains "$tracker" "convergence counter" \
+    "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
+assert_contains "$tracker" '`in-design` from the architect queue' \
+    "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"
+# The command table said board-answer always returns a ticket to in-progress.
+# The lane-aware return shipped rounds ago: an Architect sent to in-progress
+# lands in a state its own protocol has no legal exit from.
+assert_contains "$tracker" "returns the ticket to the state it parked FROM" \
+    "board-answer's row describes the lane-aware return, not a hardcoded in-progress"
+assert_contains "$tracker" '`in-design` for an ARCHITECT' \
+    "...and names the architect-lane fallback the role meta drives"
+assert_contains "$tracker" "The other three parks are never pulled" \
+    "board doctrine: only the needs-info release is pulled; the parks that own a session or the human are not"
+assert_not_contains "$tracker" "are never dispatched" \
+    "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
+assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the proposal marker"
+# E2 made "epics are never dispatched" false: the recomposition/reconciliation
+# claim IS a dispatch, and a manual that tells a worker to refuse any epic
+# dispatch is instructing it to refuse a valid claim.
+OPS_MANUAL="$REPO_ROOT/skills/executing/references/operation-manual.md"
+DECOMPOSE_DOC="$REPO_ROOT/skills/executing/references/implement-decompose.md"
+ops="$(cat "$OPS_MANUAL")"; decompose_doc="$(cat "$DECOMPOSE_DOC")"
+assert_contains "$ops" "epics are never dispatched for implementation" \
+    "the operator manual's edge case bans IMPLEMENTATION dispatch, not every dispatch"
+assert_contains "$ops" "is NOT that mistake" \
+    "...and says the ARCHITECT claim onto a ready-for-architect epic is legitimate"
+assert_not_contains "$decompose_doc" "(never dispatched; the sweeps move" \
+    "the decompose reference no longer claims an epic is never dispatched at all"
+# Feedback triage never births into the architect lane (E1 lane-split plan):
+# a design-heavy item parks needs-human and the human routes it.
+TRIAGE="$REPO_ROOT/skills/triaging-feedback/references/triage-worker-protocol.md"
+triage="$(cat "$TRIAGE")"
+assert_contains "$triage" '이 프로토콜은 `ready-for-architect`로 티켓을 낳지 않습니다' \
+    "triage protocol states it never births an architect-lane ticket"
+assert_contains "$triage" "설계가 앞서야 하는 항목도 \`needs-human\`입니다" \
+    "design-heavy feedback parks needs-human for the human to route"
+assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the dispatch-time pin"
+
+# Worker mode is a SECOND implementation of the dispatcher (the live cloud
+# routine runs it, not src/dispatch.ts), so the provenance fencing that
+# dispatch.ts enforces in code has to be enforced here as prose or the
+# routine-created issue fires @mention/#N from untrusted feedback text.
+TRIAGE_SKILL="$REPO_ROOT/skills/triaging-feedback/SKILL.md"
+triage_skill="$(cat "$TRIAGE_SKILL")"
+assert_contains "$triage_skill" 'verbatim original **inside a
+     code fence**, marked as untrusted data' \
+    "Worker mode fences the verbatim original and marks it untrusted data"
+assert_contains "$triage_skill" "a blockquote will not do" \
+    "...and rules out the blockquote the fence replaced"
+assert_contains "$triage_skill" "one backtick
+     longer than the longest backtick run" \
+    "...and pins the variable fence length, so an original carrying its own fence cannot escape"
+
+echo
+if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
+echo "all tests passed"

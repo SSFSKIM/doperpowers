@@ -7,7 +7,7 @@ description: Use when taking a well-scoped, delegable piece of work through the 
 
 ## Overview
 
-This repo has two development tracks. The controlled pipeline (doperpowers:brainstorming → living spec → doperpowers:writing-plans → doperpowers:subagent-driven-development) places human gates throughout. This track places one: a grilling session that front-loads ALL human judgment, after which you author a single self-contained ExecPlan and execute it without interruption. The gate is moved, not removed — autonomy is safe only because the grill exhausted the ambiguity space while your human partner was present.
+This repo has two development tracks. The controlled pipeline (doperpowers:brainstorming → living spec → doperpowers:writing-plans → doperpowers:subagent-driven-execution) places human gates throughout. This track places one: a grilling session that front-loads ALL human judgment, after which you author a single self-contained ExecPlan and execute it without interruption. The gate is moved, not removed — autonomy is safe only because the grill exhausted the ambiguity space while your human partner was present.
 
 ## Which track?
 

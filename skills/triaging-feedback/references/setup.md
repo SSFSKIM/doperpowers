@@ -4,7 +4,7 @@
 일회성 설정. `scripts/feedback-poll.sh`를 launchd로 주기 실행시키고, 그
 안에서 `src/poll.ts`가 pending 피드백 행을 찾아 read-only Codex-SDK 워커를
 돌립니다. 워커는 코드를 쓰지 않습니다 — 진단하고 티켓을 저작할 뿐이며,
-수정은 보드 파이프라인(implementing → reviewing-prs)의 몫입니다.
+수정은 보드 파이프라인(implementing → qa-loops)의 몫입니다.
 
 ## 0. 전제조건 — 피드백 트리아지 마이그레이션(p86)이 먼저 적용돼 있어야 함
 

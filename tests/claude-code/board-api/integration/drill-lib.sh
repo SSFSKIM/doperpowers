@@ -314,7 +314,7 @@ EOF
 # leaves behind, so the sweep's registry scan reads it identically.
 seed_meta() {  # seed_meta <uuid> <ticket> <run> <fence> <bearer> [lane]
   T_DH="$DAEMON_HOME" T_UUID="$1" T_TID="$2" T_RUN="$3" T_FENCE="$4" T_BEARER="$5" \
-  T_LANE="${6:-implementer}" python3 - <<'PY'
+  T_LANE="${6:-executor}" python3 - <<'PY'
 import json, os
 e = os.environ
 path = os.path.join(e["T_DH"], e["T_UUID"] + ".json")

@@ -28,7 +28,7 @@ cd "$PROJECT_DIR"
 
 # Create a dummy plan file
 cat > "$PROJECT_DIR/docs/doperpowers/plans/auth-system.md" << 'EOF'
-# Auth System Implementation Plan
+# Auth System Execution Plan
 
 ## Task 1: Add User Model
 Create user model with email and password fields.
@@ -70,10 +70,10 @@ claude -p "Good analysis. I've already written the plan to docs/doperpowers/plan
 echo "Turn 2 complete."
 echo ""
 
-# Turn 3: The critical test - ask for subagent-driven-development
-echo ">>> Turn 3: Requesting subagent-driven-development..."
+# Turn 3: The critical test - ask for subagent-driven-execution
+echo ">>> Turn 3: Requesting subagent-driven-execution..."
 TURN3_LOG="$OUTPUT_DIR/turn3.json"
-claude -p "subagent-driven-development, please" \
+claude -p "subagent-driven-execution, please" \
     --continue \
     --plugin-dir "$PLUGIN_DIR" \
     --dangerously-skip-permissions \
@@ -87,12 +87,12 @@ echo ""
 echo "=== Results ==="
 
 # Check if skill was triggered in Turn 3
-SKILL_PATTERN='"skill":"([^"]*:)?subagent-driven-development"'
+SKILL_PATTERN='"skill":"([^"]*:)?subagent-driven-execution"'
 if grep -q '"name":"Skill"' "$TURN3_LOG" && grep -qE "$SKILL_PATTERN" "$TURN3_LOG"; then
-    echo "PASS: Skill 'subagent-driven-development' was triggered in Turn 3"
+    echo "PASS: Skill 'subagent-driven-execution' was triggered in Turn 3"
     TRIGGERED=true
 else
-    echo "FAIL: Skill 'subagent-driven-development' was NOT triggered in Turn 3"
+    echo "FAIL: Skill 'subagent-driven-execution' was NOT triggered in Turn 3"
     TRIGGERED=false
 fi
 

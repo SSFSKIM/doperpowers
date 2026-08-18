@@ -123,7 +123,7 @@ for i in 1 2 3 4 5; do
 done
 : > "$MOCK_GH_LOG"
 out="$(IMPLEMENT_MAX_CONCURRENT=0 ARCHITECT_MAX_CONCURRENT=0 \
-       "$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh" --sweep 2>&1)" || true
+       "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" --sweep 2>&1)" || true
 assert_contains "$out" "cap reached: both lanes full" "capped sweep reports and stops"
 assert_equals "$(graphql_calls)" "1" "sweep over 5 eligible tickets = exactly one GraphQL fetch"
 

@@ -24,7 +24,7 @@
 #          Three failed cycles register an env-issue and SUPPRESS the ticket:
 #          automation holds no transition authority, so a stuck ticket is
 #          never parked — the env-issue is the signal.
-#   CLAIM  fresh work, by handing the tick to implement-dispatch.sh and
+#   CLAIM  fresh work, by handing the tick to execute-dispatch.sh and
 #          review-dispatch.sh in their API claim modes. They own pick-order
 #          hand-off, the local cap and the claim journal; this tick only hands
 #          them the suppression directory the resume phase writes.
@@ -843,7 +843,7 @@ EOF
 # THE SUCCESSOR INHERITS ITS PREDECESSOR'S LANE. A fresh process has no earlier
 # conversation to carry the architect / spike / qagent protocol, so a fallback
 # that always spent IMPLEMENT_MODEL on a generic orientation prompt handed an
-# Architect's ticket to an implementer, on the wrong model, with no plan-
+# Architect's ticket to an executor, on the wrong model, with no plan-
 # authorship protocol anywhere in its context. The lane is read off the meta the
 # dispatcher stamped it on (the predecessor's), which survives the run's end —
 # see _retire_run_locally. Which is why the scan is the `all` one: by the time a
@@ -868,8 +868,8 @@ _protocol_for_lane() {
   local skills; skills="$(cd "$SCRIPT_DIR/../.." && pwd)"
   case "$1" in
     architect) echo "$skills/architecting/SKILL.md" ;;
-    spike)     echo "$skills/implementing/references/spike-worker-protocol.md" ;;
-    *)         echo "$skills/implementing/SKILL.md" ;;
+    spike)     echo "$skills/executing/references/spike-worker-protocol.md" ;;
+    *)         echo "$skills/executing/SKILL.md" ;;
   esac
 }
 
@@ -1158,9 +1158,9 @@ _resume_one() {
   lane="$(_lane_for_ticket "$tid")"; role="$(_role_for_lane "$lane")"
   # A FAILED SCAN IS NOT AN EMPTY LANE. "" is also what a scan that never ran
   # returns, and it routes an architect/spike/qagent ticket to a generic
-  # implementer on the wrong model with the wrong protocol. Left for the next
+  # executor on the wrong model with the wrong protocol. Left for the next
   # tick instead, exactly as the fork guard above does.
-  _scan_ok || { echo "resume: #$tid — registry scan failed; the predecessor's lane is unreadable, so this ticket is left for the next tick rather than recovered as an implementer" >&2; return 1; }
+  _scan_ok || { echo "resume: #$tid — registry scan failed; the predecessor's lane is unreadable, so this ticket is left for the next tick rather than recovered as an executor" >&2; return 1; }
   # A nonce handed in by reconciliation is a REPLAY of a claim that may already
   # have landed: the server answers it with the same run rather than a second.
   [ -n "$nonce" ] || nonce="$(_claim_nonce)" || return 1
@@ -1312,7 +1312,7 @@ PY
       echo "resume: #$tid run $C_RUN → the resume forked a turn whose session never resolved; delivery is AMBIGUOUS — no fresh spawn this tick, and no further successor until the fork (pending_short=$post_pending) resolves" >&2
       return 1
     fi
-    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A review worker only functions
+    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A Reviewer worker only functions
     # with its control directory, its accepted-commits ledger and its review
     # barrier — all built by review-dispatch's own handover, none of them
     # reproducible here except as a second, drifting copy of it. The designed
@@ -1423,7 +1423,7 @@ PY
 
 # Lane and role onto the DELIVERED meta. Without them the dispatchers' local cap
 # cannot see this open run at all — it counts lane-stamped metas holding a run —
-# so every recovery silently loosened the combined implementer+spike cap the
+# so every recovery silently loosened the combined executor+spike cap the
 # client owns by one. Non-fatal: the server's own laneCap still bounds it.
 #
 # The parent pin rides here too: this is the ONE stamp point BOTH delivery legs
@@ -1651,8 +1651,8 @@ PY
 # exactly that line.
 phase_dispatch() {
   local impl revw
-  impl="$SCRIPT_DIR/../../implementing/scripts/implement-dispatch.sh"
-  revw="$SCRIPT_DIR/../../reviewing-prs/scripts/review-dispatch.sh"
+  impl="$SCRIPT_DIR/../../executing/scripts/execute-dispatch.sh"
+  revw="$SCRIPT_DIR/../../qa-loops/scripts/review-dispatch.sh"
   # DAEMON_HOME/DAEMON_SCRIPTS are resolved here but NOT exported (see above),
   # so they are passed explicitly: without them a non-default registry — a
   # test seam, a second fleet on one host — would silently split in two, this
@@ -1679,7 +1679,7 @@ phase_dispatch() {
                     BOARD_RESUMED_LEDGER="${RESUMED_LEDGER:-}"
                     BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
   env "${env_common[@]}" "$impl" --sweep \
-    || echo "dispatch: the implement lanes failed this tick" >&2
+    || echo "dispatch: the execution lanes failed this tick" >&2
   env "${env_common[@]}" "$revw" --sweep \
     || echo "dispatch: the review lane failed this tick" >&2
 }

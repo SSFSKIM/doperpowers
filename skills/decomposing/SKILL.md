@@ -46,7 +46,7 @@ the board's ticket gate (doperpowers:issue-tracker
   needs real work.
 - **WELL-SCOPED** — one agent can reliably own it as one unit. "One
   agent" means one accountable context: an owner may marshal subagent
-  workers (an SDD plan's task workers, an ExecPlan's milestones) without
+  workers (an SDE plan's task workers, an ExecPlan's milestones) without
   that being decomposition — execution mechanics live below the tree's
   resolution. Fails ⇒ divide into work-children.
 
@@ -210,7 +210,7 @@ share no design surface, so there was nothing to mature jointly; phases
    Deferred list. Skip for document-only
    projects — the tracking map is the handoff contract either way. (A
    dispatched worker that finds its ticket gate-failing on scope runs this
-   same division at board altitude — doperpowers:implementing's
+   same division at board altitude — doperpowers:executing's
    decompose procedure is this skill's move in worker clothes.)
 7. **Dispatch and tend** — children go to their tracks per their track
    hint. As children land, the tracking map, Decision Log, and Surprises

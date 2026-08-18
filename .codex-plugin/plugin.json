@@ -12,7 +12,7 @@
   "license": "MIT",
   "keywords": [
     "brainstorming",
-    "subagent-driven-development",
+    "subagent-driven-execution",
     "skills",
     "planning",
     "tdd",
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Doperpowers",
     "shortDescription": "Planning, TDD, debugging, and delivery workflows for coding agents",
-    "longDescription": "Use Doperpowers to guide agent work through brainstorming, implementation planning, test-driven development, systematic debugging, parallel execution, code review, and finish-the-branch workflows.",
+    "longDescription": "Use Doperpowers to guide agent work through brainstorming, execution planning, test-driven development, systematic debugging, parallel execution, code review, and finish-the-branch workflows.",
     "developerName": "SSFSKIM",
     "category": "Coding",
     "capabilities": [

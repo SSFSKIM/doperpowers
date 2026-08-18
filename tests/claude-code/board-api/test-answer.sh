@@ -117,7 +117,7 @@ mkdir -p "$PROJ"
 TX="$PROJ/u-9-cur.jsonl"; : > "$TX"
 cat > "$DH/u-9.json" <<'META'
 {"uuid":"u-9","current":"u-9-cur","status":"idle","run_id":43,"fence":1,
- "lane":"implementer","bind_confirmed":true,"ticket":"12","run_bearer":"tok-w9"}
+ "lane":"executor","bind_confirmed":true,"ticket":"12","run_bearer":"tok-w9"}
 META
 chmod 600 "$DH/u-9.json"
 

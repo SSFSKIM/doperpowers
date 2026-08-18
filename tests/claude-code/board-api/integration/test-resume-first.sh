@@ -27,13 +27,13 @@
 
 drill_start
 REPO="$(api_repo)"
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 
 BODY="$DRILL_TMP/spec.md"
 cat >"$BODY" <<'MD'
 ## Problem & intent
 
-A ticket with a real body, so birth lands in the implementer queue.
+A ticket with a real body, so birth lands in the executor queue.
 
 ## Success criteria
 
@@ -87,9 +87,9 @@ t "and delivered by resuming the predecessor's own session" "→ resumed session
 t "the fresh ticket is claimed in the same tick" "claimed #$FRESH run=" cat "$OUT"
 
 # THE ORDERING. Both events are in one log, in the order the stubs saw them.
-order() { grep -E "^(resume $UUID|spawn $FRESH-api-implementer)$" "$SEQ_LOG" | head -2 | tr '\n' '|'; }
+order() { grep -E "^(resume $UUID|spawn $FRESH-api-executor)$" "$SEQ_LOG" | head -2 | tr '\n' '|'; }
 t "the resume is delivered BEFORE any fresh worker is started" \
-  "resume $UUID|spawn $FRESH-api-implementer|" order
+  "resume $UUID|spawn $FRESH-api-executor|" order
 
 # ---- and the successor is a real successor ---------------------------------
 SUCC_FENCE=$((FENCE + 1))

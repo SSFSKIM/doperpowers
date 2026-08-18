@@ -36,7 +36,7 @@ BODY="$DRILL_TMP/spec.md"
 cat >"$BODY" <<'MD'
 ## Problem & intent
 
-A ticket with a real body, so birth lands in the implementer queue.
+A ticket with a real body, so birth lands in the executor queue.
 
 ## Success criteria
 
@@ -56,10 +56,10 @@ T_D="$(register 'renewal — parked and dead' P3)"
 
 # The one-minute lease is the whole point of claiming through the route rather
 # than through the dispatcher, which has no flag for it.
-IFS=$'\t' read -r RUN_A TK_A FENCE_A BEAR_A <<<"$(claim_run implementer renewal-a 1)"
-IFS=$'\t' read -r RUN_B TK_B FENCE_B BEAR_B <<<"$(claim_run implementer renewal-b 1)"
-IFS=$'\t' read -r RUN_C TK_C FENCE_C BEAR_C <<<"$(claim_run implementer renewal-c 1)"
-IFS=$'\t' read -r RUN_D TK_D FENCE_D BEAR_D <<<"$(claim_run implementer renewal-d 1)"
+IFS=$'\t' read -r RUN_A TK_A FENCE_A BEAR_A <<<"$(claim_run executor renewal-a 1)"
+IFS=$'\t' read -r RUN_B TK_B FENCE_B BEAR_B <<<"$(claim_run executor renewal-b 1)"
+IFS=$'\t' read -r RUN_C TK_C FENCE_C BEAR_C <<<"$(claim_run executor renewal-c 1)"
+IFS=$'\t' read -r RUN_D TK_D FENCE_D BEAR_D <<<"$(claim_run executor renewal-d 1)"
 t "the claims landed on the four registered tickets in priority order" \
   "$T_A $T_B $T_C $T_D" printf '%s %s %s %s\n' "$TK_A" "$TK_B" "$TK_C" "$TK_D"
 

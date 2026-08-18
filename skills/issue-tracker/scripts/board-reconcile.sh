@@ -8,7 +8,7 @@
 # bound daemon, lists dispatchable tickets, and finishes with a board-lint
 # pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
-# register child/follow-up tickets directly (doperpowers:implementing).
+# register child/follow-up tickets directly (doperpowers:executing).
 #
 # API mode answers the same three questions from the server, and the middle one
 # differently: run liveness is server-owned there, so there is no local scan for
@@ -100,7 +100,7 @@ for t, n in by_id(tickets.items()):
 #    orphaned in-design ticket is mid-design work with nothing local to
 #    show for it (the plan lives only in the dead worker's context until
 #    its next park/handoff) — the pipeline's most expensive in-flight
-#    asset, so it must surface here exactly like an orphaned implementer.
+#    asset, so it must surface here exactly like an orphaned executor.
 for t, n in by_id(tickets.items()):
     if n["state"] not in ("in-progress", "in-design"):
         continue

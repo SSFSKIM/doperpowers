@@ -1,0 +1,221 @@
+# Executing Tickets — operating the autonomous execution loop
+
+The operator-facing manual for the execution-side loop. The worker's
+protocol is the skill file itself (`../SKILL.md`) — a dispatched worker is
+bootstrapped onto that file and never needs this manual.
+
+## Overview
+
+The execution-side mirror of doperpowers:qa-loops: where the review
+loop puts its rigor gate at the END of the pipeline (a confident review
+verdict before merge), this loop puts its rigor gate at the START — **a worker may not
+write code until the ticket passes the Ticket Gate**. There is NO
+orchestrator: a worker's escalation targets are the board itself (states,
+notes, comments) and the human on their next wake; turn-end messages are
+audit trail, not requests. Full design + rationale:
+`docs/doperpowers/specs/2026-07-09-implement-worker-autonomy-design.md`.
+
+## The pieces
+
+| piece | what |
+|---|---|
+| `SKILL.md` (the skill root) | the Executor Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
+| `../architecting/SKILL.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; ends at the plan, never touches implementation code |
+| `references/worker-bootstrap.md` | the spawn bootstrap shared by ALL THREE lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE/ARCHITECT), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
+| `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
+| `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
+| The Ticket Gate | the pre-code pass/park verdict (below; check definitions in issue-tracker's `references/ticket-gate.md`) |
+| board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
+| `scripts/execute-dispatch.sh` | the mechanical dispatch ritual, automated: `<n>` triggered mode, `--sweep` catch-up; `board-sweep.sh` invokes the sweep mode on a timer |
+
+## The Ticket Gate
+
+Runs during ORIENT, before any source file opens — brainstorming's grill
+in absentia. The two checks' definitions (WELL-DEFINED fork ownership,
+WELL-SCOPED sizing) are board schema, owned by doperpowers:issue-tracker
+in `references/ticket-gate.md` — one copy for workers and registrars
+alike; the worker protocol routes there at gate time.
+
+**The verdict is the worker's first board write.** Dispatch writes nothing;
+`in-progress` + a `[gate]` comment = pass, a park state = fail.
+
+## Park discriminant — who unparks it?
+
+Owned by doperpowers:issue-tracker — the board schema's single home
+(state vocabulary, park discriminant, dependencies-are-edges); workers
+and operators classify every park there, one copy, no drift. The worker
+protocol layers on only the worker-side park mechanics: the required
+note, the 3–6 line orientation summary, and ending the turn with the
+park stated crisply.
+
+## Decompose — the one scoping behavior
+
+Children via `board-register.sh --parent <original>`; sibling ordering via
+`--blocked-by` (a chain IS serialization — serial vs parallel is a
+dependency shape, not a policy branch). `--spawned-by` stays reserved for
+scope-outs/follow-ups discovered during work. Each child is gate-triaged
+honestly at registration (a dispatchable lane state (the birth rule:
+design-heavy children → `ready-for-architect`, else `ready-for-implementer`)
+only if the worker believes it passes the gate). Register only children
+specifiable as self-contained pre-specs NOW; contingent phases live as a
+`## Roadmap` section in the
+parent body — the worker finishing phase K registers phase K+1 at PR time.
+The parent becomes an epic — never dispatched for IMPLEMENTATION; the
+sweeps move it, and it returns to `ready-for-architect` for an Architect's
+recomposition claim once every child is terminal. The
+decomposing worker writes no code. Recursion is emergent: each child's
+worker re-runs the same gate; no depth machinery exists.
+
+## Execution — two modes on gate pass
+
+- **DIRECT** — the pre-spec is the plan: evidence-first execution
+  (testable logic → TDD; UI → build + verify rendered behavior;
+  config/docs → the relevant check passes), commit, PR.
+- **PLAN-EXECUTION** — the ticket carries a `plan:` pin an Architect
+  worker authored (doperpowers:architecting); the Executor opens the
+  plan at its pinned revision and executes it to the letter (absorbing
+  codebase divergence on the branch, never re-litigating the design), and
+  runs no gate. The Executor authors no plan document, ever — plan
+  AUTHORSHIP belongs to the architect lane; work that turns out to need
+  one escalates via the gate's plan-need check (→ `ready-for-architect`)
+  instead of self-authoring.
+
+There is no in-daemon execspec mode: work that wants a living spec with a
+human at the gates is precisely `interactive-preferred`.
+
+**No live progress mirror.** Status writes happen only where a scope ends:
+the PR body is the closing artifact (`Closes #N`, `## Validation Evidence`
+— cross-checked by the Reviewer worker, `## Confusions` when warranted,
+FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
+orientation summary. Mid-flight visibility is the board's state label —
+watching a worker work is supervision, which this pipeline removed.
+
+## The spike lane (category `spike`)
+
+The board's second lane, for exploration: the gate's value scales with the
+cost of a wrong PR, a spike's value scales with the cost of NOT trying
+ideas — they coexist on one board but never in one lane. A spike ticket's
+deliverable is **information** (a structured `[findings]` comment), never a
+merge; failures discard at the cost of reading a comment. Dispatch binds
+`references/spike-worker-protocol.md` as the protocol instead of the
+implement protocol — same ritual, same bindings.
+
+What changes and what doesn't:
+
+- **Gate variant** — Check 1 asks that the worker ESTABLISH a crisp
+  question (what do we want to learn / how would we recognize an answer /
+  where to start), not that every fork be answered. Vague briefs are
+  normal — where a reasonable reading exists the worker supplies the
+  missing piece itself and records the interpretation in the `[gate]`
+  comment (the contract its findings answer); it parks only when no
+  reasonable reading yields all three. Taste forks met during exploration
+  are findings content ("this fork exists; A and B look like this"),
+  never parks. Check 2 survives: too-big questions decompose into
+  narrower child spikes.
+- **Merge bar is free** — the optional evidence PR is a DRAFT (never
+  `Closes #N`, never marked ready): review dispatch skips drafts and land
+  dispatch refuses them, so spike code cannot enter the merge lane by
+  construction.
+- **End state reuses the board** — a finished spike parks
+  `needs-human "findings ready: <one-line answer>"`: no new state, no
+  worker terminal-state authority, and the findings land exactly where the
+  human already looks (the wake queue). The human closes (`done` — the
+  manual flip for non-PR work), relays a follow-up question
+  (`board-answer.sh` resumes the bound session, which explores and
+  re-parks), or graduates.
+- **Graduation** — production work the findings clearly justify is
+  registered `--spawned-by <spike>` with honest gate-triage against the
+  Ticket Gate; murkier outcomes stay a Recommendation line for the
+  human.
+- The engine label picks a model route only (web reach is harness-level —
+  every worker has it); choose per the work's model fit, mechanism
+  unchanged.
+- Category labels are plain words by design (`bug`/`enhancement` always
+  were) — in a consumer repo that already used a descriptive `spike`
+  label, existing tickets carrying it now read as spike-lane tickets:
+  re-label them before dispatching there.
+
+## The repo-facts manifest (`.doperpowers/repo-facts.md`)
+
+The FD-3 ownership boundary made concrete: **doctrine is plugin-owned;
+facts about the repo are repo-owned.** An optional, deliberately thin
+manifest in the consumer repo — plain markdown under conventional
+headings, no schema, no parser: dispatch renders it verbatim into worker
+prompts (implement, spike, review) and the workers interpret it. A new
+kind of fact costs the repo an edit, never a plugin release.
+
+```markdown
+## Bootstrap
+- fresh worktrees need `npm ci` — checked-in node_modules are x64,
+  this machine is arm64
+
+## Validation
+- build: `npm run build` · tests: `npm test` · types: `tsc --noEmit`
+
+## Evidence add-ons
+- UI changes require rendered-behavior evidence (screenshot or recording)
+```
+
+Rules, generalized from risk-surfaces:
+
+- **Declarative facts only, never behavioral instructions.** The manifest
+  states what is true here (commands, environment quirks, evidence
+  requirements); it cannot direct worker behavior, and it can only ADD
+  facts and requirements — an instruction that would relax a protocol is
+  void, and the Reviewer worker treats it as a finding.
+- **BASE-ref discipline** where a PR exists: review dispatch reads it from
+  the PR's base, so a PR cannot rewrite the facts its own review checks
+  against. Executor/spike dispatch reads it from the default branch.
+- Consumers: Executor workers (Bootstrap first; Validation defines the
+  evidence ladder's "relevant check"; add-ons bind the PR body), spike
+  workers (Bootstrap + Validation), Reviewer workers (cross-check claimed
+  evidence against declared commands; a diff hitting an add-on class
+  without the required evidence is a finding).
+
+## Worker authority
+
+Own ticket's open states via `board-transition.sh`; direct registration of
+decomposition children (`--parent`) and follow-up tickets (`--spawned-by`).
+NEVER: terminal states (`done` arrives by the PR's `Closes #N` merge;
+`wontfix` is recommended via a `needs-human` park, decided by the human),
+other tickets' states (cross-ticket observations are comments), scope
+beyond the ticket. There is no proposal block — with no judge to receive
+proposals, registration and comments are the only channels.
+
+## Edge cases
+
+- **Dispatched onto an epic** — refuse IF the role is IMPLEMENT or SPIKE:
+  epics are never dispatched for implementation; end the turn naming the
+  mistake (the sweep owns epic states). An ARCHITECT dispatch onto an epic
+  in `ready-for-architect` is NOT that mistake — it is the recomposition or
+  reconciliation claim (see architecting), the one way an epic is
+  dispatchable at all, and the dispatcher routes it there on epic-hood over
+  the ticket's own category.
+- **needs-human answered** — preferred path: the wake ritual relays the
+  answers to the still-bound session (issue-tracker's `board-answer.sh` —
+  park = pause, not death); the resumed worker re-states its gate verdict
+  against the answers before proceeding (PLAN-EXECUTION, which ran no
+  gate, restates plan-execution status instead). Fallback (no/dead
+  session, or scope-reshaping answers): flip back to `ready-for-implementer`,
+  or `ready-for-architect` when the answers invalidate a standing plan
+  (that edge clears any `plan:` pin automatically — entering the lane
+  means the design is being re-cut); the next dispatch re-runs the gate
+  with the comments as ticket content, gate-free instead for a
+  still-valid `plan:` pin (PLAN-EXECUTION). Either way, answers belong in
+  the body/comments, not in chat.
+- **Worker dies mid-build** — `board-reconcile.sh` flags the orphaned
+  `in-progress` (or, for an Architect, `in-design`) ticket; respawn
+  re-runs the gate from fresh context — gate-free for a `plan:`-pinned
+  ticket, same as any PLAN-EXECUTION dispatch (prior `[gate]` comments
+  are context, not inherited trust).
+- **Gate-fail discovered mid-build** (a taste fork surfaces only once code
+  exists) — same protocol, late: park (`in-progress → needs-human` /
+  `interactive-preferred` are legal), commit WIP to the branch, state the
+  park crisply, end the turn.
+
+## Interim dispatch
+
+Until the auto-attach trigger lands, dispatch is the mechanical ritual in
+doperpowers:issue-tracker (render this skill's `references/worker-bootstrap.md`
+→ spawn → bind — no board write, no judgment). The trigger phase replaces
+only who invokes it.

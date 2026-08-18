@@ -442,7 +442,7 @@ assert_equals "$("$SCRIPTS_DIR/daemon-finalize.sh" "$FIN5_UUID")" "idle" "state=
 assert_contains "$(cat "$DAEMON_HOME/$FIN5_UUID.reply.txt")" "ANSWER:FIN-TASK-5" "lingering finished turn's reply is recorded"
 
 # Second lying shape (observed live 2026-07-17 on a cleanly-parked gateway
-# implement worker): the ended session lingers with state=blocked while
+# Executor worker): the ended session lingers with state=blocked while
 # status=idle. `status` stays the turn signal — an ended blocked-shape turn
 # (clean park with a stuck flag, or a turn that ended ON a pending question)
 # must finalize resumable, with the reply recorded through the blocked

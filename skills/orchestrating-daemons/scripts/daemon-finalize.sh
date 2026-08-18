@@ -27,7 +27,7 @@ case "$status" in working|blocked) ;; *) echo "noop"; exit 0 ;; esac
 
 cur="$(_meta_get "$uuid" current)"; [ -n "$cur" ] || cur="$uuid"
 # `state` alone lies for a finished session whose harness process lingers —
-# it stays "working" (observed live 2026-07-15 on a finished review worker)
+# it stays "working" (observed live 2026-07-15 on a finished Reviewer worker)
 # or "blocked" (observed live 2026-07-17 on a cleanly-parked gateway implement
 # worker) indefinitely. `status` is the turn signal (busy while a turn runs,
 # idle after); normalize both lingering shapes before the case table. An ended

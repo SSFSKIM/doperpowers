@@ -47,7 +47,7 @@
 . "$(dirname "$0")/drill-lib.sh"
 
 drill_start
-DISPATCH="$REPO_ROOT/skills/implementing/scripts/implement-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
 GH_STUB_PY="$DRILL_DIR/gh-stub.py"
 COMPARE="$DRILL_DIR/transcript-compare.py"
 
@@ -163,7 +163,7 @@ gh_bind() {
 import json, os
 u = os.environ["T_U"]
 json.dump({"uuid": u, "current": u, "name": "gh-walk-worker", "status": "idle",
-           "role": "IMPLEMENT", "lane": "implementer", "ticket": os.environ["T_TID"],
+           "role": "IMPLEMENT", "lane": "executor", "ticket": os.environ["T_TID"],
            "updated": "2026-08-10T00:00:00Z"},
           open(os.path.join(os.environ["T_DH"], u + ".json"), "w"))
 PY

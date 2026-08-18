@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # test-review-dispatch-claim.sh — review-dispatch.sh's API branch: the qagent
 # lane claimed off the board, the crash-recoverable claim journal, and the
-# review worker's handover (spawn env, startup barrier, bind, lane stamp).
+# Reviewer worker's handover (spawn env, startup barrier, bind, lane stamp).
 #
-# Same two halves as the implement-side suite: what went on the wire (the
+# Same two halves as the execution-side suite: what went on the wire (the
 # fixture mock's request log) and what landed on disk (journal, assignment
 # body, registry meta, the environment the worker was spawned with). The
 # daemon-spawn stub prints the REAL --no-wait banner (the uuid handed to
@@ -11,7 +11,7 @@
 # barrier, which the review protocol makes a hard gate.
 . "$(dirname "$0")/helpers.sh"
 
-DISPATCH="$REPO_ROOT/skills/reviewing-prs/scripts/review-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
 
 free_port() { python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
@@ -210,7 +210,7 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names the qagent lane"      '\"lane\": \"qagent\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 2'       cat "$FIX.log"
-nt "no other lane is claimed from here"  '\"lane\": \"implementer\"' cat "$FIX.log"
+nt "no other lane is claimed from here"  '\"lane\": \"executor\"' cat "$FIX.log"
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }
 t "an empty lane stops the tick" "claims=2" claim_posts
 t "the claim speaks as automation" '"auth": "Bearer a"' cat "$FIX.log"
@@ -330,7 +330,7 @@ printf '{"uuid":"cccc0001","current":"cccc0001","name":"9-api-qagent","status":"
 # (d) another dispatcher's journal, mid-handoff. Replaying it here would spawn
 #     an IMPLEMENT assignment with a reviewer's prompt; ending it would strand
 #     that dispatcher's ticket. Neither is this script's business.
-printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false}\n' \
+printf '{"lane": "executor", "run_id": 77, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-d.json"
 # (e) THE SPAWN LANDED, THE BIND DID NOT — a crash inside the spawn/ack window,
 #     which is many seconds wide and leaves the session detached and running.
@@ -392,7 +392,7 @@ wire_summary() {
     "$(grep -c '"method"' "$FIX2.log" || true)" \
     "$(grep -c '/runs/51/end' "$FIX2.log" || true)" \
     "$(grep -c '/runs/77/end' "$FIX2.log" || true)" \
-    "$(grep -cF '\"lane\": \"implementer\"' "$FIX2.log" || true)"
+    "$(grep -cF '\"lane\": \"executor\"' "$FIX2.log" || true)"
 }
 t "reconcile sends only what it must" "posts=3 ends51=0 ends77=0 foreign=0" wire_summary
 

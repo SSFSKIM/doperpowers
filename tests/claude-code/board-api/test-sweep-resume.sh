@@ -200,7 +200,7 @@ TRANSCRIPT="$PROJ/u-old.jsonl"; : > "$TRANSCRIPT"
 
 # The predecessor: bound to #12, holding the run the server has since reaped.
 printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"working","run_id":41,
- "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' \
+ "fence":3,"lane":"executor","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' \
  > "$DH/u-old.json"
 chmod 600 "$DH/u-old.json"
 
@@ -525,7 +525,7 @@ printf '%s\n' '{"ticket": 14, "state": "in-progress", "env_issue": 92}' \
 OUT7="$TDIR/dispatch.out"
 SW dispatch > "$OUT7" 2>&1 || true
 t  "phase 4 claims the architect lane"     '\"lane\": \"architect\"'   cat "$FIX.log"
-t  "phase 4 claims the implementer lane"   '\"lane\": \"implementer\"' cat "$FIX.log"
+t  "phase 4 claims the executor lane"   '\"lane\": \"executor\"' cat "$FIX.log"
 t  "phase 4 claims the qagent lane"        '\"lane\": \"qagent\"'      cat "$FIX.log"
 nt "and nobody claims the ops lane"        '\"lane\": \"ops\"'         cat "$FIX.log"
 t  "a claim yielding a suppressed ticket is released" \
@@ -564,8 +564,8 @@ rmdir "$DH/.sweep-api.lock"
 # answered 409 run-ended is what put it there — and _retire_run_locally strips
 # run/bearer/fence while keeping ticket and lane. A lane read through the
 # run-carrying registry scan therefore sees NO predecessor at all: every
-# recovery fell back to a generic implementer, so an architect's ticket got an
-# implementer's protocol on the implementer's model. Here #16's predecessor is
+# recovery fell back to a generic executor, so an architect's ticket got an
+# executor's protocol on the executor's model. Here #16's predecessor is
 # in exactly that shape: bound to the ticket, stamped `architect`, no run.
 # =========================================================================
 : > "$FIX.log"; : > "$SPAWN_LOG"

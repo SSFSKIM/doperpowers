@@ -359,7 +359,7 @@ assert_contains "$(cat "$DAEMON_HOME/parked-two.json")" '"ticket":"2"' "parked n
 assert_not_contains "$(cat "$DAEMON_HOME/park-contender.json")" '"ticket"' "parked ticket rejects a new owner"
 # A working owner from a previous boot is a daemon that died without
 # finalizing — it cannot be a running process, so it must not refuse the
-# successor (observed: dead implementer metas on in-review tickets blocked
+# successor (observed: dead executor metas on in-review tickets blocked
 # every reviewer bind, and no recovery pass owns that state).
 python3 - <<PY
 import json
@@ -693,7 +693,7 @@ assert_not_contains "$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")" "confi
 
 # ---- in-review escalations: needs-info/needs-human (review-worker protocol
 # safety valves) -------------------------------------------------------------
-# The reviewing-prs Review Worker Protocol escalates in-review → needs-info
+# The qa-loops Review Worker Protocol escalates in-review → needs-info
 # (round cap reached, impasse) and in-review → needs-human (push conflict,
 # precondition failure) — both were illegal transitions before this fix.
 # Reuses #18 (left at in-review above).
@@ -958,7 +958,7 @@ assert_contains "$(state "s['issues']['$ans_rev_t']['labels']")" "status:in-revi
 # PRE_PARK has no entry for needs-info (or interactive-preferred/deferred),
 # so a needs-human park reached via needs-info records no pre-park: meta.
 # board-answer's fallback must consult the BOUND worker's own role (persisted
-# at spawn by implement-dispatch.sh) rather than hardcoding in-progress — an
+# at spawn by execute-dispatch.sh) rather than hardcoding in-progress — an
 # Architect resumed into in-progress has no legal exit from it.
 echo "unrecorded pre-park fallback:"
 out="$(run board-register.sh "Architect fallback probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
@@ -1074,7 +1074,7 @@ assert_equals "$(state "s['issues']['$spike_t']['state']")" "CLOSED" "needs-huma
 
 # ---- pre-spec guard (the #567 hole) --------------------------------------------
 # A ticket whose body is still the pre-spec skeleton was born ready-for-implementer
-# and auto-dispatched to an implementer 45 seconds later — before any spec
+# and auto-dispatched to an executor 45 seconds later — before any spec
 # existed. A skeleton is never implementable: explicit ready-for-implementer birth
 # refuses it, a default birth demotes to needs-info, and the promotion to
 # ready-for-implementer re-checks the body.
@@ -1106,7 +1106,7 @@ arch_t="${out%% *}"
 assert_contains "$(state "s['issues']['$arch_t']['labels']")" "status:ready-for-architect" "explicit architect-lane birth honored"
 out="$(run board-register.sh "Default lane probe" enhancement P2 --body-file "$SPEC_BODY")"
 impl_t="${out%% *}"
-assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the implementer lane (unsure → implementer)"
+assert_contains "$(state "s['issues']['$impl_t']['labels']")" "status:ready-for-implementer" "default birth is the executor lane (unsure → executor)"
 assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-architect   # skeleton refused in BOTH lanes
 
 # ---- spike / ready-for-architect: the ban is RETIRED ---------------------------
@@ -1114,7 +1114,7 @@ assert_fails run board-register.sh "Arch skeleton" bug P2 --state ready-for-arch
 # (registration) and every transition into it, because role resolution was
 # category-first: the spike protocol dispatched from either lane queue and its
 # gate-pass write (`in-progress`) has no LEGAL edge from ready-for-architect.
-# implement-dispatch.sh now routes that queue on STATE, so the ticket gets an
+# execute-dispatch.sh now routes that queue on STATE, so the ticket gets an
 # ARCHITECT and its exit is `in-design`. Both gates are gone and these two
 # asserts are the old refusals INVERTED — a design-first leaf spike is a
 # supported route.
@@ -1174,7 +1174,7 @@ assert_contains "$(state "s['issues']['$sc_t']['body']")" "plan: pre-spec" "down
 assert_fails run board-transition.sh "$plan_t" in-progress --plan "also/here.md@0123456789abcdef0123456789abcdef01234567"   # --plan only on the handoff edge
 # The EDGE, not the destination: every other legal promotion INTO
 # ready-for-implementer (a park return) would otherwise mint a plan pin,
-# and a pin is what makes the implementer skip its gate (PLAN-EXECUTION).
+# and a pin is what makes the executor skip its gate (PLAN-EXECUTION).
 run board-register.sh "Park-return plan probe" enhancement P2 --state needs-info \
   --note "waiting on a spec detail" --body-file "$SPEC_BODY" >/dev/null
 pr_t="$(state "s['next']-1")"
@@ -1191,7 +1191,7 @@ assert_not_contains "$(state "s['issues']['$pr_t']['body']")" "plan:" "a park re
 # positive "no plan" statement). Reproduces the reviewer's exact sequence:
 # --plan -> in-progress -> ready-for-architect "blocked" -> in-design ->
 # ready-for-implementer "decomposed" (no --plan) must leave no plan: pin —
-# otherwise an Implementer enters gate-free PLAN-EXECUTION against a plan
+# otherwise an Executor enters gate-free PLAN-EXECUTION against a plan
 # the Architect just declared blocked.
 echo "plan pin auto-clear:"
 run board-register.sh "Plan clear probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
@@ -1246,7 +1246,7 @@ out="$(run board-transition.sh "$child_ni_t" in-progress)"
 assert_contains "$out" "#$epic_ni_t: needs-info → in-progress" "a needs-info release IS pulled back in-flight by a child going active"
 assert_contains "$(state "s['issues']['$epic_ni_t']['body']")" "(was: reconciled: acceptance holds — waiting on children)" "the pull folds the release note into its bookkeeping note"
 # ACTIVE, not in-progress: an architect-lane child entering in-design is its
-# epic's first active child exactly as an implementer-lane child is — and the
+# epic's first active child exactly as an executor-lane child is — and the
 # from-non-ACTIVE half keeps the pull to ENTRIES, so a later in-review does
 # not re-fire it.
 run board-register.sh "Design-lane released epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
@@ -1360,7 +1360,7 @@ out="$(run board-transition.sh "$cv2_t" ready-for-architect "human-sanctioned re
 assert_contains "$out" "#$cv2_t: ready-for-implementer → ready-for-architect" "same-edge re-traversal passes after [answers] reset (no needs-human conversion)"
 
 # ---- mid-execution return edge: in-progress → ready-for-architect -------------
-# The Implementer's escalation when a plan turns out genuinely unbuildable
+# The Executor's escalation when a plan turns out genuinely unbuildable
 # mid-build (E1's fourth new edge) — distinct from the ready-for-implementer →
 # ready-for-architect gate-fail edge exercised above. It is convergence-counted
 # too (EDGE_NOTE_REQUIRED minus only the in-design→ready-for-implementer
@@ -1580,7 +1580,7 @@ assert_contains "$(state "s['issues']['$good_t']['body']")" "plan: docs/plans/re
 
 # ---- in-design orphan (board-reconcile) ----------------------------------------
 # The missing-daemon check must cover the Architect's in-flight state too,
-# not just the Implementer's — an orphaned in-design ticket is mid-design
+# not just the Executor's — an orphaned in-design ticket is mid-design
 # work with nothing local to show for it until its next park/handoff.
 echo "in-design orphan (board-reconcile):"
 run board-register.sh "In-design orphan probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
@@ -1906,7 +1906,7 @@ J
 printf -- '---\nid: T3\n---\n# T3\n' > "$LEGACY/tickets/T3.md"
 out="$(run board-migrate-gh.sh --board "$LEGACY/board-v6.json" --apply)"
 assert_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:ready-for-implementer" \
-  "the retired ready-for-agent state migrates into the implementer queue"
+  "the retired ready-for-agent state migrates into the executor queue"
 assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:ready-for-agent" \
   "no issue is ever labelled with the retired state"
 assert_not_contains "$(state "s['issues']['$legacy_rfa']['labels']")" "status:needs-human" \
