@@ -114,12 +114,14 @@ def _error(payload, status):
 
 
 def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
-            obsolete_codes=()):
+            obsolete_codes=(), absent=()):
     """One HTTP exchange. Dies with the contract's error identifier on
     refusal; raises RunEnded on 409 run-ended (callers route on it), and
     ClaimObsolete on any code the caller named in `obsolete_codes` — named
     per route rather than globally, because the same code is a routable
-    outcome on one route and an ordinary refusal on another."""
+    outcome on one route and an ordinary refusal on another. `absent` names
+    the codes whose whole meaning is "the row you asked for is not there",
+    which is an answer rather than a fault: those return None."""
     if retry is None:
         retry = method == "GET"
     data = json.dumps(body).encode() if body is not None else None
@@ -142,6 +144,8 @@ def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
                 raise RunEnded(message) from None
             if code in obsolete_codes:
                 raise ClaimObsolete(code, message) from None
+            if code in absent:
+                return None
             # a refusal is an answer, never retried
             die("%s %s refused: %s — %s" % (method, path, code, message))
         except (urllib.error.URLError, OSError) as e:
@@ -249,6 +253,110 @@ def timeline(tid, principal="human"):
 
 def queue_decisions():
     return request("GET", "/queue/decisions", principal="human")
+
+
+# ---- paged read surface (spec: board-client-paged-reads v1.1) --------------
+
+_PAGE_LIMIT = 200   # explicit limit= is the envelope opt-in
+_MAX_IDS = 200      # documented ids= cap (arkho API.md §1)
+_SURFACE = {"proven": False}   # per-process: has any envelope read succeeded?
+
+
+def _envelope(payload, path):
+    """A paged read must answer the COMPLETE envelope. A bare array means
+    the server predates the read surface; a dict missing `next` (or carrying
+    a wrong-typed member) is a malformed or version-skewed page — and
+    treating a MISSING `next` like the contract's `next: null` would end the
+    walk early and hand the caller a partial board as if complete. Strict or
+    dead: no partial result may escape."""
+    if (not isinstance(payload, dict)
+            or not isinstance(payload.get("items"), list)
+            or "next" not in payload
+            or not (payload["next"] is None or isinstance(payload["next"], str))
+            or not isinstance(payload.get("as_of"), int)):
+        die("GET %s answered no complete paged envelope "
+            "({items, next, as_of}) — a pre-read-surface or malformed "
+            "server; refusing to guess" % path)
+    _SURFACE["proven"] = True
+    return payload
+
+
+def _walk(base, principal):
+    """Yield every row of a complete cursor walk. The `next` token is passed
+    back VERBATIM. Never yields from a walk that cannot finish: a failed page
+    dies inside request(), so consumers that materialize (all callers do)
+    never observe a partial board."""
+    cursor = None
+    while True:
+        path = base + ("&cursor=%s" % cursor if cursor else "")
+        page = _envelope(request("GET", path, principal=principal), path)
+        for row in page["items"]:
+            yield row
+        cursor = page["next"]   # _envelope proved the key present
+        if cursor is None:
+            return
+
+
+def ticket(tid, principal="human"):
+    """GET /tickets/{id}. None = the ticket does not exist, and that answer
+    is AUTHORITATIVE (action-grade) — unlike walk absence, which is
+    report-grade (spec § Helper primitives). Rollback guard: route-level and
+    row-level 404 share one stable code, so an unproven process probes the
+    paged surface once before trusting a 404 as a real absence."""
+    out = request("GET", "/tickets/%s" % int(tid), principal=principal,
+                  absent=("not-found",))
+    if out is None and not _SURFACE["proven"]:
+        probe = request("GET", "/tickets?limit=1", principal=principal)
+        if not isinstance(probe, dict) or "items" not in probe:
+            die("GET /tickets/%s answered not-found, and the server serves "
+                "no paged surface — this is a pre-read-surface server "
+                "(route-level 404), not a missing ticket" % int(tid))
+        _SURFACE["proven"] = True
+    if out is not None:
+        _SURFACE["proven"] = True
+    return out
+
+
+def tickets_by_ids(ids, principal="human"):
+    """ids= batch read, chunked at the documented cap. Returns {int_id: row}.
+    An id absent from the completed result is authoritatively absent — a
+    targeted read, not a walk. (The board has no delete path today, so an
+    absent id here means the id never named a ticket.)"""
+    ids = [int(i) for i in ids]
+    out = {}
+    for i in range(0, len(ids), _MAX_IDS):
+        chunk = ids[i:i + _MAX_IDS]
+        base = "/tickets?limit=%d&ids=%s" % (
+            _PAGE_LIMIT, ",".join(str(c) for c in chunk))
+        for row in _walk(base, principal):
+            out[int(row["id"])] = row
+    return out
+
+
+def tickets_all(states=None, principal="human"):
+    """Complete cursor walk of /tickets. REPORT-grade completeness: contains
+    every row whose sort position was stable while the walk ran; a row
+    reprioritized behind an already-passed cursor mid-walk is missing from
+    every page. Absence that drives an ACTION needs ticket() instead.
+    Dedupe: a moved row can also be re-served — later data wins, first-seen
+    position kept (dict overwrite)."""
+    base = "/tickets?limit=%d" % _PAGE_LIMIT
+    if states:
+        base += "&states=%s" % states
+    seen = {}
+    for row in _walk(base, principal):
+        seen[int(row["id"])] = row
+    return list(seen.values())
+
+
+def queue_decisions_all():
+    """Complete cursor walk of /queue/decisions. Identity is correlation_id
+    (queue rows carry no `id`); the keyset (raised_at, correlation_id) is
+    immutable so re-serves are impossible — no dedupe. Walk absence is
+    report-grade here too: a park COMMITTING during the walk can land behind
+    the cursor — action-grade absence is a second walk started after the
+    first finished (board-answer's retry)."""
+    return list(_walk("/queue/decisions?limit=%d" % _PAGE_LIMIT, "human"))
 
 
 # The five routes below are human-only server-side: a run's bearer is refused

@@ -4,7 +4,10 @@
 Usage: mock-server.py <fixtures.json> <port>
 fixtures.json: [{"method": "POST", "path": "/tickets", "status": 200,
                  "body": {...}, "once": false}, ...]
-First match wins; "once" entries are consumed. Every request is appended to
+First match wins (by method + path PREFIX); "once" entries are consumed. An
+entry carrying "disconnect": true drops the socket instead of answering — a
+transport loss, which is what the client's retry path exists for, as opposed to
+a refusal, which is an answer. Every request is appended to
 <fixtures.json>.log as {"method","path","auth","body"} — tests assert on it.
 Responses are contract-shaped (API.md); awkward cases (409 bodies, empty
 lists) come from the real service's observed output — note that the error
@@ -29,6 +32,17 @@ class H(BaseHTTPRequestHandler):
                 if f.get("used"): continue
                 if f["method"] == self.command and self.path.startswith(f["path"]):
                     if f.get("once"): f["used"] = True
+                    # A "disconnect" entry is a TRANSPORT loss, not an answer:
+                    # the request is logged (so a retry drill can count the
+                    # attempts) and then the socket dies with no status line at
+                    # all, which is what the client's retry path exists for. It
+                    # matches and is consumed exactly like any other entry.
+                    # The socket is dropped, not self.wfile: closing the writer
+                    # makes the handler's own trailing flush raise, and that
+                    # traceback lands in the suite's output as noise.
+                    if f.get("disconnect"):
+                        self.close_connection = True
+                        self.connection.close(); return
                     body = json.dumps(f.get("body", {})).encode()
                     self.send_response(f.get("status", 200))
                     self.send_header("content-type", "application/json")
