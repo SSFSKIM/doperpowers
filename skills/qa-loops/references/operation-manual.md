@@ -99,9 +99,9 @@ let the worker merge its confident verdicts.
 
 ## Tech-debt sink
 
-Non-blocking findings the worker routes LOG — exit residue and
-stated-reason departures only; mid-loop non-blockers ride fix waves
-(SKILL.md TRIAGE) — go by DEFAULT
+Non-blocking findings the worker routes LOG — stated-reason departures
+and closing-wave fallback residue only; everything else rides fix
+waves, exit residue included (SKILL.md TRIAGE / RE-REVIEW) — go by DEFAULT
 to ONE standing GitHub issue per repo (label `tech-debt`)
 as structured comments — never to a tracked file:
 parallel workers on branches editing one file is a merge-conflict factory,
@@ -175,7 +175,12 @@ verify-then-fix contract: read the cited code first, then FIX (commit + test
 evidence) or REFUTE (code citation). The worker waits for the whole task tree
 to quiesce, snapshots the submitted board, grades every disposition, and
 validates the full unpushed commit range against its accepted-commit ledger.
-At most 4 waves per review inside the 5-engine-round cap; whole-range re-review
+At most 4 waves per review inside the 5-engine-round cap, plus ONE
+closing wave at exit — no engine round follows it (grading + CI are its
+coverage, so it stands outside the cap): a no-blocker exit merges its
+accepted fixes or falls back to the engine-reviewed head and LOGs; a
+cap park pushes them fixed-but-unverified and parks with a QA-request
+note. Whole-range re-review
 between waves with dedupe-by-substance. Full mechanics:
 `references/wave-board.md`. This
 separation keeps the merge judgment in a clean context and out of

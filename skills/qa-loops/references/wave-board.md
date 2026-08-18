@@ -182,3 +182,28 @@ remote head differs from <push-base> or the push is rejected, do not rebase
 or salvage the local chain: park needs-human with both SHAs. After a
 successful push, the new remote HEAD becomes the next push base
 and the ledger resets. Record per-item outcomes in the review trail.
+
+## The closing wave
+
+The review's exit (SKILL.md RE-REVIEW) may dispatch one CLOSING WAVE —
+exit residue at a no-blocker exit, or the final round's findings before
+a cap park. Everything above applies unchanged — board file (its wave
+number is `closing`), fixer contract, quiescence, grading, ledger, push
+gate — with one structural difference: no engine round follows it, so
+it stands outside the 4-wave cap (the cap bounds the wave→re-review
+loop) and its fixes' whole coverage is the fixer's test evidence, your
+grading, and CI.
+
+That difference licenses one additional reset, on the MERGE exit only:
+a closing-wave item still rejected or empty after its one re-wave must
+not park a PR that had already earned its merge. First fetch and
+confirm `origin/<head-branch>` still equals `<push-base>` (a moved
+remote is the existing park-with-both-SHAs case); then discard the
+board and its `.submitted` copy, remove the wave's ledger entries,
+`git reset --hard <wave-base>`, remove newly-untracked paths introduced
+after the wave boundary (never blanket `git clean`), and verify HEAD
+equals `<wave-base>` with a clean worktree/index. Merge the
+engine-reviewed head and LOG the residue exactly as if no closing wave
+had run. Scope matches the unauthorized-writer reset: UNPUBLISHED
+history only. The pre-park closing wave needs no reset — a failed item
+there just stays local under the push gate, and the park proceeds.
