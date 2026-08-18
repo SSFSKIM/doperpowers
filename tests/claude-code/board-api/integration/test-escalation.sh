@@ -55,7 +55,7 @@ CYCLE=0
 arm_cycle() {
   local run fence bearer tk
   CYCLE=$((CYCLE + 1))
-  IFS=$'\t' read -r run tk fence bearer <<<"$(claim_run executor "escalation-$CYCLE")"
+  IFS=$'\t' read -r run tk fence bearer <<<"$(claim_run implementer "escalation-$CYCLE")"
   [ "$tk" = "$TID" ] || { echo "FAIL $(basename "$0") — cycle $CYCLE claimed #$tk, not #$TID"; exit 1; }
   in_repo BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
     "$SCRIPTS/board-bind.sh" "$SESS" "$TID" >/dev/null

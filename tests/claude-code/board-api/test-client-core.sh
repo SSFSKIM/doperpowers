@@ -80,7 +80,7 @@ CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=auto-tok\nBOARD_HUMAN_TOKEN=hu
 
 t "claim returns dict + auth header sent" "41" \
   run_py "$CREDS" "$CORE
-print(A.claim('executor','n-1')['runId'])"
+print(A.claim('implementer','n-1')['runId'])"
 t "automation token on claim" '"auth": "Bearer auto-tok"' last_log runs/claim
 
 # What the client PUTS ON THE WIRE, not what it returns. The service reads
@@ -89,9 +89,9 @@ t "automation token on claim" '"auth": "Bearer auto-tok"' last_log runs/claim
 # Each body is pinned whole (leading brace to trailing brace), so an extra,
 # renamed, or reordered key fails the match.
 run_py "$CREDS" "$CORE
-A.claim('executor', 'n-7', lease_minutes=45)" > /dev/null 2>&1 || true
+A.claim('implementer', 'n-7', lease_minutes=45)" > /dev/null 2>&1 || true
 t "claim body pins dispatchNonce and leaseMinutes" \
-  '{"lane": "executor", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
+  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
   last_body runs/claim
 
 # A bind speaks as the RUN, not as automation: it is only ever posted for a run
@@ -178,7 +178,7 @@ t "worker context speaks as the run on a human-default verb" '"auth": "Bearer to
 
 t "missing creds file dies loud" "board credentials file" \
   run_py "/nonexistent" "$CORE
-A.claim('executor','n-2')"
+A.claim('implementer','n-2')"
 
 # The five human-only routes (arkho#7). Each body is pinned whole, because a
 # renamed camelCase key reaches the wire silently and fails only against the

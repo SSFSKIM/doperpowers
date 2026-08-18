@@ -123,7 +123,11 @@ PY
 # The journal and its reconciliation are SHARED with review-dispatch (they were
 # verbatim copies): _claim_journal.sh owns both, and this side supplies the
 # lanes, the per-lane cap and the journal-drop.
-CLAIM_LANES=architect,executor,spike
+#
+# `implementer` is the legacy wire literal for the Executor lane — the board
+# server's claim contract pins the string, on-disk claim journals and daemon
+# names (`<ticket>-api-<lane>`) already carry it, so it keeps its spelling.
+CLAIM_LANES=architect,implementer,spike
 _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
 _claim_drop_journal() {  # <nonce>
   rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
@@ -424,8 +428,8 @@ dispatch_api() {
   while [ "$(_api_registry_count architect)" -lt "$ARCH_CAP" ]; do
     _claim_one architect "$ARCH_CAP" || break
   done
-  while [ "$(_api_registry_count executor,spike)" -lt "$CAP" ]; do
-    rc=0; _claim_one executor "$CAP" || rc=$?
+  while [ "$(_api_registry_count implementer,spike)" -lt "$CAP" ]; do
+    rc=0; _claim_one implementer "$CAP" || rc=$?
     case "$rc" in
       0) : ;;
       # ONLY A CLEAN REFUSAL FALLS THROUGH TO SPIKE. rc 2 says the executor

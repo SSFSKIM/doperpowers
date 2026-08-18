@@ -110,9 +110,9 @@ CLAIMS="$DAEMON_HOME/board-claims"
 T2="$(register 'crash drill — lost claim response')"
 NONCE_D="crash-drill-lost-response"
 RUN_D="$(api automation POST /runs/claim \
-  "{\"lane\":\"executor\",\"dispatchNonce\":\"$NONCE_D\"}" | jget runId)"
+  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_D\"}" | jget runId)"
 mkdir -p "$CLAIMS"
-printf '{"lane": "executor", "run_id": null, "spawn_completed": false}\n' \
+printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
   >"$CLAIMS/$NONCE_D.json"
 OUT_D="$DRILL_TMP/dispatch-d.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D" 2>&1 || true
@@ -124,8 +124,8 @@ t  "so the ticket still has exactly one owner"         "owner=[$RUN_D]" owner_li
 T3="$(register 'crash drill — claimed but never spawned')"
 NONCE_E="crash-drill-never-spawned"
 RUN_E="$(api automation POST /runs/claim \
-  "{\"lane\":\"executor\",\"dispatchNonce\":\"$NONCE_E\"}" | jget runId)"
-printf '{"lane": "executor", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
+  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_E\"}" | jget runId)"
+printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
   "$RUN_E" "$T3" >"$CLAIMS/$NONCE_E.json"
 OUT_E="$DRILL_TMP/dispatch-e.out"
 in_repo "$DISPATCH" --sweep >"$OUT_E" 2>&1 || true
@@ -145,13 +145,13 @@ RUN_F="$(api automation GET /tickets | T_ID="$T4" python3 -c '
 import json, os, sys
 print(next((str(t["owner_run"]) for t in json.load(sys.stdin) if str(t["id"]) == os.environ["T_ID"]), ""))')"
 [ -n "$RUN_F" ] || { echo "FAIL $(basename "$0") — #$T4 was never claimed; case (f) has no boundary to test"; exit 1; }
-before_f="$(grep -c "SPAWN name=$T4-api-executor" "$SPAWN_LOG" || true)"
+before_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
 OUT_F2="$DRILL_TMP/dispatch-f2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_F2" 2>&1 || true
 t  "a spawned-but-unbound session is reported"         "but never bound it" cat "$OUT_F2"
 t  "and explicitly NOT ended"                          "is NOT being ended" cat "$OUT_F2"
 t  "the live run still owns its ticket"                "owner=[$RUN_F]" owner_line "$T4"
-after_f="$(grep -c "SPAWN name=$T4-api-executor" "$SPAWN_LOG" || true)"
+after_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
 t  "and no second worker is spawned onto it"           "spawns=[$before_f]" \
    printf 'spawns=[%s]\n' "$after_f"
 

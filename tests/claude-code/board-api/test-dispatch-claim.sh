@@ -197,7 +197,7 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 1'        cat "$FIX.log"
-t "the execution lane is tried"     '\"lane\": \"executor\"'  cat "$FIX.log"
+t "the execution lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
 t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"
 # Three claims, not four and not an unbounded spin: architect (granted, then
 # the lane is full), executor (empty), spike (empty) -> stop.
@@ -247,10 +247,10 @@ DH2="$(mktemp -d)"; mkdir -p "$DH2/board-claims"
 # (a) nonce persisted, response lost: no run_id was ever recorded, so the
 #     claim may or may not have landed — replaying the SAME nonce is the one
 #     legal replay.
-printf '{"lane": "executor", "run_id": null, "spawn_completed": false}\n' \
+printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-a.json"
 # (b) claimed but never handed off: a run exists, no session ever did.
-printf '{"lane": "executor", "run_id": 99, "spawn_completed": false}\n' \
+printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-b.json"
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
 # (c) the spawn DID complete — its worker is right there in the registry —
@@ -271,15 +271,15 @@ printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","statu
 #     is byte-for-byte the shape of (b) except for the daemon name written
 #     before the spawn — and that name is in the registry, alive. Ending this
 #     run would kill a live worker and hand its ticket to a second one.
-printf '{"lane": "executor", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-executor"}\n' \
+printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-implementer"}\n' \
   > "$DH2/board-claims/nonce-d.json"
 printf 'live assignment\n' > "$DH2/board-claims/nonce-d.body.md"
-printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-executor","status":"working"}' \
+printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-implementer","status":"working"}' \
   > "$DH2/dddd0001.json"
 # (e) a journal no reader can parse — a half-written file, or the truncated
 #     record a crash mid-write leaves. Skipping it silently hid a claimed run
 #     forever, every tick, with nothing on any log to say so.
-printf '{"lane": "executor", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
+printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
 # (f) THE REVIEW DISPATCHER'S JOURNAL. The claims directory is shared, and every
 #     entry names its lane. Replaying a qagent nonce here would hand a review
 #     assignment an executor prompt; ending its run would strand the review
@@ -292,16 +292,16 @@ printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false}\n' \
 #     entry into the same lane left a name that read as "spawned, live,
 #     unbound" for the NEXT claim, closing its journal and leaving the run
 #     ownerless until the lease expired. Only a RUNNING session is evidence.
-printf '{"lane": "executor", "run_id": 78, "spawn_completed": false, "ticket": "34", "daemon": "34-api-executor"}\n' \
+printf '{"lane": "implementer", "run_id": 78, "spawn_completed": false, "ticket": "34", "daemon": "34-api-implementer"}\n' \
   > "$DH2/board-claims/nonce-g.json"
-printf '{"uuid":"gggg0001","current":"gggg0001","name":"34-api-executor","status":"retired"}' \
+printf '{"uuid":"gggg0001","current":"gggg0001","name":"34-api-implementer","status":"retired"}' \
   > "$DH2/gggg0001.json"
 # (h) A JOURNAL WHOSE WRITER IS STILL ALIVE IS NOT A CRASH. Nothing serializes
 #     two dispatch processes, and a peer journals its nonce BEFORE the POST —
 #     so replaying it while that response is in flight makes A1 rotate the
 #     bearer under the peer and both callers spawn from their own answers.
 #     This test's own shell is the live writer.
-printf '{"lane": "executor", "run_id": null, "spawn_completed": false, "pid": %s}\n' "$$" \
+printf '{"lane": "implementer", "run_id": null, "spawn_completed": false, "pid": %s}\n' "$$" \
   > "$DH2/board-claims/nonce-h.json"
 
 OUT2="$(mktemp)"
@@ -326,11 +326,11 @@ t "and the delivery it confirms clears the ticket's failed-cycle count" \
 nt "a live unbound run is NOT ended" '"path": "/runs/77/end"' cat "$FIX2.log"
 t  "its journal is kept, closed to replay" '"spawn_completed": true' \
   cat "$DH2/board-claims/nonce-d.json"
-t  "and the orphaned session is reported by name" "33-api-executor" cat "$OUT2"
+t  "and the orphaned session is reported by name" "33-api-implementer" cat "$OUT2"
 t  "the report says the run was not ended"        "is NOT being ended"  cat "$OUT2"
 # The ticket must not reach a second worker: no end means the server lease
 # still holds #33, and reconcile itself spawns nothing for it.
-nt "the ticket is not re-dispatched" "name=33-api-executor" cat "$DH2/spawn-capture.txt"
+nt "the ticket is not re-dispatched" "name=33-api-implementer" cat "$DH2/spawn-capture.txt"
 # --- (e) a corrupt journal is loud, not invisible ---------------------------
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-e.json"       cat "$OUT2"
@@ -384,7 +384,7 @@ r3="$(apirepo "$PORT3")"
 DH3="$(mktemp -d)"; mkdir -p "$DH3/board-claims"
 # The same shape as scenario 2's (b) — claimed, no session, nothing to prove it
 # alive — which on a readable registry is ended. Here it must NOT be.
-printf '{"lane": "executor", "run_id": 99, "spawn_completed": false}\n' \
+printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
   > "$DH3/board-claims/nonce-g.json"
 printf 'held assignment\n' > "$DH3/board-claims/nonce-g.body.md"
 printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-imple' \
@@ -632,9 +632,9 @@ wait_for_port "$PORT8" || { echo "FAIL mock server never listened on $PORT8"; ex
 
 r8="$(apirepo "$PORT8")"
 DH8="$(mktemp -d)"; mkdir -p "$DH8/board-claims" "$DH8/board-suppress"
-printf '{"uuid":"eeee0001","current":"eeee0001","name":"15-api-executor","status":"working","run_id":43,"lane":"executor","ticket":"15"}' \
+printf '{"uuid":"eeee0001","current":"eeee0001","name":"15-api-implementer","status":"working","run_id":43,"lane":"implementer","ticket":"15"}' \
   > "$DH8/eeee0001.json"
-printf '{"lane": "executor", "run_id": 43, "spawn_completed": false, "ticket": "15"}\n' \
+printf '{"lane": "implementer", "run_id": 43, "spawn_completed": false, "ticket": "15"}\n' \
   > "$DH8/board-claims/nonce-i.json"
 chmod 444 "$DH8/board-claims/nonce-i.json"
 echo 2 > "$DH8/board-suppress/.attempts-15"
@@ -670,9 +670,9 @@ wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; ex
 
 r9="$(apirepo "$PORT9")"
 DH9="$(mktemp -d)"; mkdir -p "$DH9/board-claims" "$DH9/board-suppress"
-printf '{"uuid":"eeee0002","current":"eeee0002","name":"16-api-executor","status":"working","run_id":44,"lane":"executor","ticket":"16"}' \
+printf '{"uuid":"eeee0002","current":"eeee0002","name":"16-api-implementer","status":"working","run_id":44,"lane":"implementer","ticket":"16"}' \
   > "$DH9/eeee0002.json"
-printf '{"lane": "executor", "run_id": 44, "spawn_completed": false, "ticket": "16"}\n' \
+printf '{"lane": "implementer", "run_id": 44, "spawn_completed": false, "ticket": "16"}\n' \
   > "$DH9/board-claims/nonce-j.json"
 echo 2 > "$DH9/board-suppress/.attempts-16"
 chmod 555 "$DH9/board-suppress"      # an unlink needs write on the DIRECTORY
@@ -719,9 +719,9 @@ r10="$(apirepo "$PORT10")"
 
 mkjrepaired() {  # mkjrepaired <registry> <ticket> <run> — one repaired-shaped journal
   mkdir -p "$1/board-claims"
-  printf '{"uuid":"aaaa%s","current":"aaaa%s","name":"%s-api-executor","status":"working","run_id":%s,"lane":"executor","ticket":"%s"}' \
+  printf '{"uuid":"aaaa%s","current":"aaaa%s","name":"%s-api-implementer","status":"working","run_id":%s,"lane":"implementer","ticket":"%s"}' \
     "$2" "$2" "$2" "$3" "$2" > "$1/aaaa$2.json"
-  printf '{"lane": "executor", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
+  printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
     "$3" "$2" > "$1/board-claims/nonce-$2.json"
 }
 SWEEP10() {  # SWEEP10 <registry> [env...] — one dispatch tick against this board

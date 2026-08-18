@@ -156,7 +156,7 @@ assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries 
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
 assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
-assert_file_contains "$PROMPT" "implementing/SKILL.md" "execution lane opens the SKILL protocol"
+assert_file_contains "$PROMPT" "executing/SKILL.md" "execution lane opens the SKILL protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
 meta_ticket="$(python3 -c "
 import glob, json

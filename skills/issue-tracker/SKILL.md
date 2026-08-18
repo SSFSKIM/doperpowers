@@ -435,7 +435,7 @@ The worker registers the residue as tickets (`--spawned-by <n>`) BEFORE its
 turn-end message and lists the numbers in its FOLLOW-UPS section — a
 follow-up not registered does not exist. (A few-line residual inside the
 PR's own diff is in-scope polish the PR absorbs, not residue — see the
-implementing skill's Closing Artifact.)
+executing skill's Closing Artifact.)
 
 ## Edge cases
 

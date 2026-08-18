@@ -163,7 +163,7 @@ gh_bind() {
 import json, os
 u = os.environ["T_U"]
 json.dump({"uuid": u, "current": u, "name": "gh-walk-worker", "status": "idle",
-           "role": "IMPLEMENT", "lane": "executor", "ticket": os.environ["T_TID"],
+           "role": "IMPLEMENT", "lane": "implementer", "ticket": os.environ["T_TID"],
            "updated": "2026-08-10T00:00:00Z"},
           open(os.path.join(os.environ["T_DH"], u + ".json"), "w"))
 PY

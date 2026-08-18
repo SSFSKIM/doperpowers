@@ -87,9 +87,9 @@ t "and delivered by resuming the predecessor's own session" "→ resumed session
 t "the fresh ticket is claimed in the same tick" "claimed #$FRESH run=" cat "$OUT"
 
 # THE ORDERING. Both events are in one log, in the order the stubs saw them.
-order() { grep -E "^(resume $UUID|spawn $FRESH-api-executor)$" "$SEQ_LOG" | head -2 | tr '\n' '|'; }
+order() { grep -E "^(resume $UUID|spawn $FRESH-api-implementer)$" "$SEQ_LOG" | head -2 | tr '\n' '|'; }
 t "the resume is delivered BEFORE any fresh worker is started" \
-  "resume $UUID|spawn $FRESH-api-executor|" order
+  "resume $UUID|spawn $FRESH-api-implementer|" order
 
 # ---- and the successor is a real successor ---------------------------------
 SUCC_FENCE=$((FENCE + 1))

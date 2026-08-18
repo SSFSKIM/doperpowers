@@ -21,7 +21,7 @@ ticket honestly passes the Ticket Gate (the board schema's
 
 **The worker is a translator, not a fixer.** It writes no code and opens no
 PRs. Fixes happen downstream through the normal tri-CI pipeline: a
-`ready-for-implementer` ticket is dispatched by `implementing` (whose
+`ready-for-implementer` ticket is dispatched by `executing` (whose
 Ticket Gate re-runs at ORIENT — the triage worker's judgment is a
 recommendation, never inherited trust), and the resulting PR is reviewed by
 `qa-loops`. *(The v1 direct-fix path — a second `workspace-write` turn
@@ -189,7 +189,7 @@ into.)*
 
 This loop **writes the board's inbox**; it never implements or reviews.
 A `ready-for-implementer` triage ticket is picked up by the
-`implementing` dispatch loop exactly like any other ticket — the
+`executing` dispatch loop exactly like any other ticket — the
 Executor worker re-runs its own gate from fresh context, treating the
 triage diagnosis as context, not inherited trust. Parked tickets surface in
 the human's wake queue (`issue-tracker`). Keep the legs separate: triage

@@ -120,17 +120,17 @@ t "and cutting one that is not is no-such-edge" "no-such-edge" \
 # ---- 2. the edge GATES the dispatcher --------------------------------------
 # A is older than B and would be drawn first; blocked, it is passed over, and
 # with B taken the lane has nothing left to give.
-IFS=$'\t' read -r RUN_B TICK_B _ _ <<<"$(claim_run executor human-verbs-blocked)"
+IFS=$'\t' read -r RUN_B TICK_B _ _ <<<"$(claim_run implementer human-verbs-blocked)"
 t "the blocked leaf is passed over for the younger one" "[drew #$TID_B]" \
   drew "$TICK_B"
 t "and a blocked ticket is beyond the dispatcher's reach entirely" '"claimed":false' \
   api automation POST /runs/claim \
-    '{"lane":"executor","dispatchNonce":"human-verbs-blocked-probe"}'
+    '{"lane":"implementer","dispatchNonce":"human-verbs-blocked-probe"}'
 
 t "the unblock reports the cut" "#$TID_A: blocked_by -= #$TID_B" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --unblock "$TID_B"
 t "and the projection is empty again" "blocked_by=[]" row "$TID_A"
-IFS=$'\t' read -r RUN_A TICK_A _ _ <<<"$(claim_run executor human-verbs-unblocked)"
+IFS=$'\t' read -r RUN_A TICK_A _ _ <<<"$(claim_run implementer human-verbs-unblocked)"
 t "the same claim now draws the ticket the edge was holding back" "[drew #$TID_A]" \
   drew "$TICK_A"
 end_run "$RUN_A"
@@ -176,7 +176,7 @@ t "an unowned ticket takes the edit" "#$TID_A: body rewritten" \
 t "re-sending the standing body writes nothing" "#$TID_A: body rewritten (noop)" \
   in_repo "$SCRIPTS/board-body.sh" "$TID_A" --body-file "$BODY2"
 
-IFS=$'\t' read -r RUN_A2 TICK_A2 _ _ <<<"$(claim_run executor human-verbs-body)"
+IFS=$'\t' read -r RUN_A2 TICK_A2 _ _ <<<"$(claim_run implementer human-verbs-body)"
 t "the P0 ticket is what the lane draws" "[drew #$TID_A]" drew "$TICK_A2"
 BODY3="$(spec a3 'The edit that must not reach a worker holding an older assignment.')"
 OWNED="$(run_rc in_repo "$SCRIPTS/board-body.sh" "$TID_A" --body-file "$BODY3")"

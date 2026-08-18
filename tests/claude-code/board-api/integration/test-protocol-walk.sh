@@ -53,7 +53,7 @@ t "born into the executor queue" "ready-for-implementer" ticket_state "$TID"
 OUT_D="$DRILL_TMP/dispatch.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D" 2>&1 || true
 t "the executor lane claims the ticket" "claimed #$TID run=" cat "$OUT_D"
-t "and hands it to a worker on its own lane" "lane=executor" cat "$OUT_D"
+t "and hands it to a worker on its own lane" "lane=implementer" cat "$OUT_D"
 t "the worker is spawned with the run bearer in env" "BOARD_RUN_TOKEN=" cat "$SPAWN_LOG"
 t "and with the api url"  "BOARD_API_URL=$BOARD_API_URL" cat "$SPAWN_LOG"
 t "the bootstrap points the worker at its delivered assignment" \
@@ -77,7 +77,7 @@ OUT_D2="$DRILL_TMP/dispatch2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D2" 2>&1 || true
 nt "an owned ticket is not claimed a second time" "claimed #$TID run=" cat "$OUT_D2"
 t  "a bare claim on the lane answers empty" '"claimed":false' \
-   api automation POST /runs/claim '{"lane":"executor","dispatchNonce":"walk-exclusivity-probe"}'
+   api automation POST /runs/claim '{"lane":"implementer","dispatchNonce":"walk-exclusivity-probe"}'
 
 # ---- the worker's own writes, as the RUN -----------------------------------
 worker() { in_repo BOARD_RUN_TOKEN="$BEARER" BOARD_RUN_ID="$RUN" BOARD_RUN_FENCE="$FENCE" "$@"; }

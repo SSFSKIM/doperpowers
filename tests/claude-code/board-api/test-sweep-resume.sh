@@ -200,7 +200,7 @@ TRANSCRIPT="$PROJ/u-old.jsonl"; : > "$TRANSCRIPT"
 
 # The predecessor: bound to #12, holding the run the server has since reaped.
 printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"working","run_id":41,
- "fence":3,"lane":"executor","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' \
+ "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' \
  > "$DH/u-old.json"
 chmod 600 "$DH/u-old.json"
 
@@ -525,7 +525,7 @@ printf '%s\n' '{"ticket": 14, "state": "in-progress", "env_issue": 92}' \
 OUT7="$TDIR/dispatch.out"
 SW dispatch > "$OUT7" 2>&1 || true
 t  "phase 4 claims the architect lane"     '\"lane\": \"architect\"'   cat "$FIX.log"
-t  "phase 4 claims the executor lane"   '\"lane\": \"executor\"' cat "$FIX.log"
+t  "phase 4 claims the executor lane"   '\"lane\": \"implementer\"' cat "$FIX.log"
 t  "phase 4 claims the qagent lane"        '\"lane\": \"qagent\"'      cat "$FIX.log"
 nt "and nobody claims the ops lane"        '\"lane\": \"ops\"'         cat "$FIX.log"
 t  "a claim yielding a suppressed ticket is released" \
