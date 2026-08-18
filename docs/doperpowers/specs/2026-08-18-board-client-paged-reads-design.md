@@ -57,7 +57,7 @@ resolves `BOARD_API_URL` + credentials) — with zero inline curl. Dispatch
 | `board-reconcile.sh` dispatchables | whole `/tickets` → state/owner filter | `tickets_all(states='ready-for-architect,ready-for-implementer')` + client-side `owner_run is null` filter (null is not a server predicate) |
 | `board-reconcile.sh` queue | whole `/queue/decisions` | `queue_decisions_all()` walk |
 | `board-list.sh` | `/tickets?state=<arg>` bare | `tickets_all(states=<arg>)` (the promoted plural) |
-| `board-answer.sh` cid lookup | whole `/queue/decisions` → first match | `queue_decisions_all()` walk + same filter |
+| `board-answer.sh` cid lookup | whole `/queue/decisions` → first match | `queue_decisions_all()` walk + same filter; **on miss, one re-walk before refusing** (a park committing mid-walk is invisible to that walk; the retry, starting after it, must serve it) |
 
 **Not migrating — no paged form exists server-side (5 sites, decision):**
 `_sweep_api.sh` `_unrelayed_dump` + `_fold_answers` (`GET /answers/unrelayed`,
@@ -80,22 +80,41 @@ remain until every caller is off them, then are deleted in this same patch):
 
 - `ticket(tid, principal=...)` → `GET /tickets/{tid}`. `404 not-found`
   returns `None`; callers map it to their existing absent-handling. Any
-  other refusal dies exactly as `request()` does today.
+  other refusal dies exactly as `request()` does today. **Rollback guard:**
+  the server answers the same stable `not-found` code for a missing ticket
+  and for an unknown ROUTE, so against a pre-read-surface server (an arkho
+  rollback) every by-id read would masquerade as a missing ticket — lint
+  would retire every daemon. On the first 404 in a process the helper
+  probes once (`GET /tickets?limit=1`): an `{items, next, as_of}` envelope
+  proves the paged surface exists and the 404 was a real absence; a bare
+  array means the server predates the surface and the helper dies naming
+  that, never returning `None`. The probe result is cached per process.
 - `tickets_by_ids(ids, principal=...)` → `GET /tickets?ids=` in chunks of
   ≤200 (the documented cap), concatenated. An id absent from a completed
   response is authoritatively absent (the filter answers found rows; it
   does not 404 on a missing id).
 - `tickets_all(states=None, principal=...)` and `queue_decisions_all()` →
   cursor walks over the paged envelope (`limit=200` explicit — the opt-in),
-  following `next` until `null`, concatenating `items`, **deduplicating by
-  id keeping the later occurrence** (a keyset walk can re-serve a row whose
-  priority moved mid-walk). THE CONTRACT: the walk returns only when the
-  final page answered `next: null`; any page failure raises after
-  `request()`'s existing per-page retries (3×2s on transport errors). A
-  partial concatenation is never returned. This single property is what
-  makes "absent from a paged response ≠ absent from the board" a hazard the
-  call sites cannot re-introduce: absence is only observable in a value the
-  helper has proven complete.
+  following `next` until `null` and concatenating `items`. The ticket walk
+  **deduplicates by `id`, keeping the later occurrence** (a keyset walk can
+  re-serve a row whose priority moved mid-walk). The queue walk needs no
+  dedupe: its keyset `(raised_at, correlation_id)` is immutable end to end,
+  so a row can never move between pages — and queue rows carry no `id` at
+  all; their identity is `correlation_id`. THE CONTRACT, in two halves:
+  (1) *no partial results* — the walk returns only when the final page
+  answered `next: null`; any page failure raises after `request()`'s
+  existing per-page retries (3×2s on transport errors). (2) *walk absence
+  is report-grade, not action-grade* — a completed walk contains every row
+  whose sort position was stable while it ran, but a row whose keyset
+  position moved (or was committed) behind an already-passed cursor during
+  the walk is silently missing from every page: a mid-walk reprioritization
+  hides a ticket, and a park transaction's start-time `raised_at` can land
+  behind the queue cursor. A walk therefore proves completeness only as of
+  a quiet board; absence that drives an ACTION needs stronger evidence —
+  a targeted `ticket(tid)` read (its 404 is authoritative), or for the
+  queue a **second walk started after the first finished** (misses only
+  afflict writes concurrent with a walk, so any row committed before the
+  retry began is guaranteed served).
 
 ### Semantics preservation
 
@@ -105,10 +124,15 @@ a completed walk" or "404 from a targeted read". `_check_lift`'s recorded
 conservatism ("AN ABSENT ROW IS NOT A STATE") is preserved for transport
 failures — the sweep tick fails as today — while a clean `ids=` response's
 absence becomes authoritative, which is strictly better evidence than the
-whole-read it replaces. The one deliberate behavior change is board-lint's
-absence-confirm rule (above): it converts the last residual false-positive
-path (a row moving mid-walk) into a targeted read, and is the only site
-where walk-absence triggers an action rather than a report line.
+whole-read it replaces. Two sites gain a deliberate confirm step because their
+walk-absence triggers an action rather than a report line: board-lint's
+absence-confirm rule (a retire recommendation only after `ticket(tid)`
+answers 404 — the targeted read outranks the walk) and board-answer's
+re-walk-once rule (above). Report-only walk consumers (map, reconcile,
+list) accept the transient: a row hidden by a concurrent move is re-read
+on the next invocation. The escalate title-scan site self-heals the same
+way — a transient miss costs one extra escalation cycle, and the
+suppression it failed to write is retried on the next.
 
 ### Error surface
 
@@ -126,7 +150,13 @@ server's code is the correct surface for it.
   round-trip, multi-page walk, `not-found` by-id, empty `states=` → 400.
   New drills: a 3-page walk equals the whole read; a mid-walk transport
   failure raises with no partial result observable; a cross-page duplicate
-  id dedupes to the later row; `tickets_by_ids` chunks at >200 ids.
+  id dedupes to the later row; `tickets_by_ids` chunks at >200 ids; a
+  scripted walk that HIDES a row (present in the board, absent from every
+  served page) drives board-answer's retry — the second scripted walk
+  serves it and the answer posts; by-id 404 against a bare-array (pre-
+  read-surface) fake dies naming the rollback, and against an envelope
+  fake returns `None`; a multi-page multi-question queue walk preserves
+  every distinct `correlation_id`.
 - **Integration (docker board, `tests/claude-code/board-api/`):** existing
   suites keep passing; `drill-lib.sh`'s `ticket_state()`/`ticket_owner()`
   move to by-id so the test substrate exercises the same reads production
@@ -181,6 +211,21 @@ operation after this patch ships (grill decision — soak, then retire).
 - **by-id 404 returns None from the helper** (design): rejected raising a
   typed exception — every caller has an existing absent-branch; None maps
   onto it with the least ceremony.
+- **Walk absence demoted to report-grade** (codex spec review, adopted):
+  the v1 contract claimed a completed walk proves absence; a mid-walk
+  reprioritization (or a park committing behind the cursor) hides a row
+  from EVERY page of a completed walk. Rejected keeping the claim with
+  dedupe alone — dedupe only cures the duplicate-producing direction.
+  Action-grade absence now requires by-id (tickets) or re-walk-once
+  (queue).
+- **Queue walk carries no dedupe** (codex spec review, adopted): queue rows
+  have no `id` — identity is `correlation_id` — and the immutable keyset
+  makes duplicates impossible; a literal by-id dedupe would have crashed on
+  any nonempty queue.
+- **404 rollback guard** (codex spec review, adopted): route-level and
+  row-level `not-found` share one stable code, and messages are unstable by
+  contract; a server-side capability endpoint was rejected as cross-repo
+  scope — the one-probe client guard closes the same hole.
 - **Controlled track** (grill): live production sweep + per-site semantics
   decisions warranted the full spec → plan → reviewed-SDD pipeline.
 
@@ -204,6 +249,12 @@ Pending — written at finish.
 
 ## Revision Notes
 
+- 2026-08-18: v1.1, codex adversarial spec review (2 high, 1 medium — all
+  adopted): the walk-completeness claim was demoted to report-grade with
+  per-site action-grade evidence rules (by-id / re-walk-once); queue dedupe
+  removed (no `id` field, immutable keyset); by-id 404 gained the
+  pre-read-surface rollback probe. Acceptance and unit drills extended to
+  pin all three.
 - 2026-08-18: v1, authored from the patch-2 brainstorming round (2 grill
   rounds; design approved same day). Site map measured by exploration, not
   inherited from the parent's estimate.
