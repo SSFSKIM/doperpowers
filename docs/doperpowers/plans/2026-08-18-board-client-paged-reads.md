@@ -1,6 +1,6 @@
 # Board Client Paged Reads Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-execution to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Migrate every production board read in `skills/issue-tracker/scripts/` off the read-whole bare arrays onto arkho's paged surface (by-id, `ids=` batch, cursor walks), per spec `docs/doperpowers/specs/2026-08-18-board-client-paged-reads-design.md` **v1.1**.
 
@@ -87,7 +87,12 @@ Drills (each a `python3` invocation whose stdout the shell asserts; follow the f
 2. `A.ticket(404000)` after drill 1 (surface NOT yet proven — no envelope read has run; the 404 must trigger the probe): add a probe fixture `{"method":"GET","path":"/tickets?limit=1","status":200,"once":true,"body":{"items":[],"next":null,"as_of":44}}` and assert the result is `None` AND the `.log` shows the probe request happened.
 3. Rollback guard: a SECOND mock world (fresh fixtures file) where `/tickets/9` answers route-style `{"error":{"code":"not-found","message":"unknown route"}}` and `/tickets?limit=1` answers a BARE ARRAY `[]` (status 200) — `A.ticket(9)` must die (`SystemExit`), stderr naming the pre-read-surface server; assert exit code 1 and the message.
 4. `A.tickets_all()` on the 3-page fixture: returns exactly ids `[1,2,3,4,5]` (5 rows — the duplicate id 3 collapsed), and the id-3 row's title is `"c"` (the LATER page's data won). Assert from the `.log` that request 2 carried `cursor=CURSOR-1` and request 3 `cursor=CURSOR-2` VERBATIM.
-5. Mid-walk failure: a fixture world where page 1 answers `next:"CURSOR-X"` and there is NO fixture for the cursor request (mock answers 404 with a non-envelope body) — `tickets_all()` must die; assert no partial value is printed (the drill's python prints only on success).
+5. Mid-walk failure, both flavors, each proving death-not-partial (the drill's python prints only on success):
+   (a) REFUSAL mid-walk: page 1 answers `next:"CURSOR-X"` and no fixture matches the cursor request (the mock answers a plain 404) — `tickets_all()` dies (refusals are never retried).
+   (b) TRANSPORT loss mid-walk: extend `mock-server.py` with a disconnect fixture — in `_handle`, before the normal matching, `if f.get("disconnect"): f["used"]=True; self.wfile.close(); return` (match it like any entry, `once` respected) — page 1 normal, the cursor request hits `{"method":"GET","path":"/tickets?limit=200&cursor=CURSOR-X","disconnect":true,"once":true}` THREE queued copies; `tickets_all()` dies after the transport retries, and the `.log` shows 1 + 3 requests (page 1, then three attempts on page 2).
+5b. Exact-full final page: a single-page world whose one envelope carries `next: null` with a NON-EMPTY items list — `tickets_all()` returns exactly those rows (pins that null-next on a full page is a legal, complete answer — the server's exact-full contract).
+5c. Malformed envelope: a world where page 1 is `{"items":[…]}` with NO `next` key — `tickets_all()` must DIE, not answer the one page (missing-next masquerading as null-next is the partial-board bug).
+5d. Empty promoted filter refused server-side: `/tickets?limit=200&states=` answering the contract 400 `{"error":{"code":"invalid-argument",…}}` — `tickets_all(states="")` never sends it (empty states falls through to no filter client-side: assert from the `.log` the request had no `states=`), so instead drive `request("GET", "/tickets?limit=200&states=", principal=...)` raw and assert the die carries `invalid-argument` (pins the server refusal shape our fixtures encode).
 6. `A.tickets_by_ids([7,8,9])` against a fixture `{"method":"GET","path":"/tickets?limit=200&ids=7,8,9","status":200,...,"body":{"items":[{"id":7,...},{"id":9,...}],"next":null,"as_of":44}}` (the implementation sends `limit=` BEFORE `ids=` — the fixture path must be a prefix of the real request) → returns keys `{7, 9}` only; absent 8 is an absent key. Chunking: `A.tickets_by_ids(range(1, 402))` must issue 3 requests (assert from `.log`: `ids=1,…,200`, `ids=201,…,400`, `ids=401`) — fixtures can answer empty item lists.
 7. `A.queue_decisions_all()` on the 2-page queue fixture → both `correlation_id`s present, order `["cid-a","cid-b"]`.
 8. Bare-array walk refusal: `tickets_all()` against a world where `/tickets?limit=200` answers a bare `[]` → dies naming the missing envelope.
@@ -118,12 +123,20 @@ _SURFACE = {"proven": False}   # per-process: has any envelope read succeeded?
 
 
 def _envelope(payload, path):
-    """A paged read must answer the envelope. A bare array means the server
-    predates the read surface — treating it as a page would read the whole
-    board as page one and then walk nothing."""
-    if not isinstance(payload, dict) or "items" not in payload:
-        die("GET %s answered no paged envelope — the server predates the "
-            "read surface (arkho#10); refusing to guess" % path)
+    """A paged read must answer the COMPLETE envelope. A bare array means
+    the server predates the read surface; a dict missing `next` (or carrying
+    a wrong-typed member) is a malformed or version-skewed page — and
+    treating a MISSING `next` like the contract's `next: null` would end the
+    walk early and hand the caller a partial board as if complete. Strict or
+    dead: no partial result may escape."""
+    if (not isinstance(payload, dict)
+            or not isinstance(payload.get("items"), list)
+            or "next" not in payload
+            or not (payload["next"] is None or isinstance(payload["next"], str))
+            or not isinstance(payload.get("as_of"), int)):
+        die("GET %s answered no complete paged envelope "
+            "({items, next, as_of}) — a pre-read-surface or malformed "
+            "server; refusing to guess" % path)
     _SURFACE["proven"] = True
     return payload
 
@@ -139,7 +152,7 @@ def _walk(base, principal):
         page = _envelope(request("GET", path, principal=principal), path)
         for row in page["items"]:
             yield row
-        cursor = page.get("next")
+        cursor = page["next"]   # _envelope proved the key present
         if cursor is None:
             return
 
@@ -206,11 +219,13 @@ def queue_decisions_all():
     return list(_walk("/queue/decisions?limit=%d" % _PAGE_LIMIT, "human"))
 ```
 
-- [ ] **Step 4: Run to verify pass.** `bash tests/claude-code/board-api/test-paged-reads.sh` → PASS. Also `bash tests/claude-code/board-api/test-client-core.sh` → still PASS (request() signature growth is additive).
+- [ ] **Step 4: Register the new file in the full-suite runner.** `tests/claude-code/run-skill-tests.sh` runs an EXPLICIT `tests=(...)` array (~line 78) — an unregistered file is silently skipped by every later "full suite green" gate. Add `"board-api/test-paged-reads.sh"` to the array beside the other board-api entries.
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Run to verify pass.** `bash tests/claude-code/board-api/test-paged-reads.sh` → PASS. Also `bash tests/claude-code/board-api/test-client-core.sh` → still PASS (request() signature growth is additive). Confirm the runner picks the new file up: `bash tests/claude-code/run-skill-tests.sh 2>&1 | grep paged-reads` shows it executing.
+
+- [ ] **Step 6: Commit.**
 ```bash
-git add skills/issue-tracker/scripts/_board_api.py tests/claude-code/board-api/test-paged-reads.sh
+git add skills/issue-tracker/scripts/_board_api.py tests/claude-code/board-api/test-paged-reads.sh tests/claude-code/board-api/mock-server.py tests/claude-code/run-skill-tests.sh
 git commit -m "feat(board-api): paged read primitives — walks, by-id, ids batch"
 ```
 
@@ -425,11 +440,24 @@ grep -rn 'A\.tickets(\|A\.queue_decisions(' skills/ && echo "CALLERS REMAIN — 
 ```
 Expected: `clean`. (`tickets_all`/`tickets_by_ids`/`queue_decisions_all` don't match those patterns — the `(` pins the bare names.)
 
-- [ ] **Step 2: drill-lib by-id.** `ticket_state()`/`ticket_owner()` currently `GET /tickets` and filter one id with an `"(absent)"` fallback — the exact production hazard this epic removes; the test substrate should exercise the same reads production now does. Rewrite both on `api GET "/tickets/$1"` (drill-lib's own `api()` wrapper), mapping HTTP 404 → `(absent)` and extracting `.state` / `.owner // "(none)"` as today (read the current jq expressions and keep the output contracts IDENTICAL — every integration suite asserts on them).
+- [ ] **Step 2: drill-lib by-id.** `ticket_state()`/`ticket_owner()` (drill-lib.sh ~189-197) currently `GET /tickets` and filter one id in python with an `"(absent)"` fallback — the exact production hazard this epic removes. Their OUTPUT CONTRACTS are asserted across the integration suites and must be preserved to the byte: `ticket_state` prints the state or `(absent)`; `ticket_owner` prints `str(t["owner_run"])` — a null owner prints the Python string `None` (test-escalation.sh asserts on it), the field is `owner_run` (there is no `.owner`). Rewrite both on drill-lib's `api()` wrapper against `/tickets/$1`; `api()` exposes no HTTP status, so absence is detected from the STABLE error envelope: a body whose `error.code == "not-found"` prints `(absent)` (never parse `error.message` — messages are unstable by contract). E.g. for `ticket_state`:
+
+```sh
+ticket_state() { api automation GET "/tickets/$1" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)
+if isinstance(t, dict) and isinstance(t.get("error"), dict) \
+        and t["error"].get("code") == "not-found":
+    print("(absent)")
+else:
+    print(t["state"])'; }
+```
+
+(`ticket_owner` identical but printing `str(t["owner_run"])`.) CHECK FIRST that `api()` passes non-2xx bodies through rather than dying — if it dies on 404, thread a tolerant variant for these two helpers rather than weakening `api()` for every caller.
 
 - [ ] **Step 3: Run the unit tier fully.** `bash tests/claude-code/run-skill-tests.sh` → green.
 
-- [ ] **Step 4: Run the integration tier** against a local board (docker; `ARKHO_DIR="$HOME/Developer/GitHub/arkho"`, per `tests/claude-code/board-api/integration/` docs — NEVER a production URL/DSN): at minimum `test-harness-smoke.sh` and one suite that leans on `ticket_state` (`test-protocol-walk.sh`). Expected: green. If the harness cannot boot in this environment, report the exact blocker in your task report instead of skipping silently.
+- [ ] **Step 4: Run the integration tier** against a local board (docker; `ARKHO_DIR="$HOME/Developer/GitHub/arkho"`, per `tests/claude-code/board-api/integration/` docs — NEVER a production URL/DSN): at minimum `test-harness-smoke.sh`, `test-protocol-walk.sh` (leans on `ticket_state`), and `test-escalation.sh` (asserts `ticket_owner`'s `None` rendering — the contract most at risk in Step 2). Expected: green. If the harness cannot boot in this environment, report the exact blocker in your task report instead of skipping silently.
 
 - [ ] **Step 5: Commit.**
 ```bash
@@ -450,6 +478,11 @@ git commit -m "feat(board-api): the bare-array readers are gone; drills read by 
 4. `bash tests/claude-code/run-skill-tests.sh` fully green; integration suites from Task 6 green.
 5. The arkho parent spec carries the sixteen-site Revision Note (v1.10 — already committed on arkho main as c11b079; verify it is there: `grep -n 'sixteen' "$HOME/Developer/GitHub/arkho/docs/specs/2026-08-18-a1-read-surface-design.md"`).
 
-- [ ] **Step 2: Version bump.** `scripts/bump-version.sh` minor (a feature release; read `.version-bump.json` — never hand-edit manifests). Commit as the script directs.
+- [ ] **Step 2: Version bump.** The script takes an EXPLICIT version only (`Usage: bump-version.sh <new-version> | --check | --audit`). Read the current version from `.claude-plugin/plugin.json`, bump the MINOR (a feature release — e.g. 7.55.0 if current is 7.54.x; recompute from what main actually says at execution time), then:
+```bash
+scripts/bump-version.sh <X.Y.0>
+scripts/bump-version.sh --check
+```
+Never hand-edit manifests (`.version-bump.json` lists them). Commit as the script directs.
 
 - [ ] **Step 3: Report** — suite counts, acceptance walk results, and any spec drift you had to reconcile (flow it into the spec's Revision Notes rather than diverging silently).
