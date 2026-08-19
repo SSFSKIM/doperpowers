@@ -10,7 +10,9 @@
 #
 # Gated: with no arkho checkout (or no container runtime for the scratch
 # Postgres) the harness prints its reason and exits 77, and this file skips
-# LOUDLY and exits 0. It never fails on a machine that cannot host the service.
+# LOUDLY and propagates the 77 — a skip that exits 0 reads as a pass to
+# anything counting exit statuses (the run-skill-tests.sh tally included).
+# It never fails on a machine that cannot host the service.
 . "$(dirname "$0")/../helpers.sh"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -19,8 +21,8 @@ H="$HERE/harness.sh"
 rc=0
 "$H" start || rc=$?
 if [ "$rc" -eq 77 ]; then
-  echo "SKIP $(basename "$0") — prerequisites missing (reason above); the tier is gated, not failed"
-  exit 0
+  echo "SKIP $(basename "$0") — prerequisites missing (reason above); the tier is gated, not failed (exit 77)"
+  exit 77
 elif [ "$rc" -ne 0 ]; then
   echo "FAIL $(basename "$0") — harness start failed (exit $rc)"
   exit 1

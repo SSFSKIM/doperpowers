@@ -347,6 +347,11 @@ retirement) only after days of clean live operation on this client.
   its own inline gate and exits 0, which is why the count is seven and not
   eight. That accounting predates this branch — a runner follow-up
   candidate (teach it 77), not a defect of this work.
+- 2026-08-19 (post-merge follow-up): the runner quirk above is resolved.
+  `run-skill-tests.sh` now counts exit 77 as a SKIP (surfacing the gate's
+  printed reason), and `test-harness-smoke.sh` propagates 77 instead of
+  exiting 0 — the eight integration suites tally as Skipped on a machine
+  without `ARKHO_DIR`, not seven failures and a phantom pass.
 - 2026-08-19: § Semantics preservation now names both grades of retire
   evidence (the walk serving the ticket closed, OR a by-id 404) instead of
   reading as if only the 404 counted. Task 4's reviewer caught the divergence
