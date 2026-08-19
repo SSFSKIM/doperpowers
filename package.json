@@ -3,21 +3,11 @@
   "version": "7.56.1",
   "description": "Doperpowers skills and runtime bootstrap for coding agents",
   "type": "module",
-  "main": ".opencode/plugins/doperpowers.js",
   "keywords": [
-    "pi-package",
     "skills",
     "tdd",
     "debugging",
     "collaboration",
     "workflow"
-  ],
-  "pi": {
-    "extensions": [
-      "./.pi/extensions/doperpowers.ts"
-    ],
-    "skills": [
-      "./skills"
-    ]
-  }
+  ]
 }

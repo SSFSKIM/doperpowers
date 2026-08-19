@@ -60,30 +60,33 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty-three skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
 - `execspec` — living design specs: decision log, rejected alternatives, retrospective
-- `codebase-design` — deep-module interface design and where to put a seam
-- `domain-modeling` — pin down the ubiquitous language and record ADRs
+- `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
+- `domain-modeling` — pin down the ubiquitous language, map bounded contexts, record ADRs
+- `decomposing` — carve a large goal into a tree of well-scoped tickets
 - `writing-plans` — break a spec into bite-sized, exactly-specified tasks
 - `organizing-sprints` — turn a pile of raw observations into the next sprint
+- `transcribing-meeting-recordings` — diarized, visually grounded transcripts from meeting recordings
 
 **Build it**
 - `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
 - `subagent-driven-execution` — one fresh subagent per task, two-stage review
 - `execplan` — the autonomous single-plan track, gates front-loaded
-- `dispatching-parallel-agents` — fan independent work out concurrently
 - `using-git-worktrees` — isolated workspaces so parallel work never clashes
 
 **Keep it honest**
 - `systematic-debugging` — four-phase root-cause process, not guess-and-check
 - `verification-before-completion` — run the check, show the output, then claim success
+- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues
 - `executing` — dispatch workers onto tickets, gate before building
+- `architecting` — the design lane: grill the ticket, decide the shape, author the plan
 - `qa-loops` — the autonomous PR-review and self-merge loop
 - `orchestrating-daemons` — durable background sessions that survive the session ending
 - `triaging-feedback` — turn product feedback into grounded board tickets
