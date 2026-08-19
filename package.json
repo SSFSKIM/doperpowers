@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.55.1",
+  "version": "7.56.0",
   "description": "Doperpowers skills and runtime bootstrap for coding agents",
   "type": "module",
   "main": ".opencode/plugins/doperpowers.js",
