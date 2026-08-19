@@ -108,14 +108,16 @@ PY
 import os
 import _board_api as A
 env = os.environ
+tid = A.ref(env["T_ID"])   # '#12' → 12, and a junk ref dies as a junk
+                           # ref — not as A.transition's int() traceback
 fence = os.environ.get("BOARD_RUN_FENCE") or None
-out = A.transition(env["T_ID"].lstrip("#"), env["T_TO"],
+out = A.transition(tid, env["T_TO"],
                    note=env["T_NOTE"] or None, pr=env["T_PR"] or None,
                    plan=env["T_PLAN"] or None, branch=env["T_BRANCH"] or None,
                    fence=int(fence) if fence else None)
 # Print the state the server WROTE — convergence can transmute the target.
 suffix = " (converged)" if out.get("converged") else ""
-print("#%s: → %s%s" % (env["T_ID"].lstrip("#"), out["to"], suffix))
+print("#%s: → %s%s" % (tid, out["to"], suffix))
 PY
   _rerender_if_serving
   exit 0

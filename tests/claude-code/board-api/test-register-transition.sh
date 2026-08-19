@@ -193,6 +193,13 @@ t "a non-numeric parent dies like the gh path" "not an issue number: abc" \
   V board-register.sh "bad ref" enhancement P2 --parent abc
 nt "a non-numeric parent raises no traceback" "Traceback" \
   V board-register.sh "bad ref" enhancement P2 --blocked-by 4,xyz
+# ...and the same caller mistake on the transition verb, whose plain path
+# (no --plan) reached A.transition's int() as a raw ValueError traceback
+# while the --plan gate validated the very same argv through A.ref.
+t "a non-numeric transition ref dies like the gh path" "not an issue number: abc" \
+  V board-transition.sh abc in-progress
+nt "a non-numeric transition ref raises no traceback" "Traceback" \
+  V board-transition.sh abc in-progress
 
 t "category maps bug->work" '\"category\": \"work\"' \
   bash -c "V board-register.sh 'a bug' bug P1 --body-file '$SPEC' >/dev/null; cat '$FIX.log'"
