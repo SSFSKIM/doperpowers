@@ -159,6 +159,15 @@ for test in "${tests[@]}"; do
         chmod +x "$test_path"
     fi
 
+    # Exit 77 is a skip only where a tier defines it that way — here, the
+    # board-api integration drills (see integration/drill-lib.sh: 77 means
+    # "prerequisite missing"). Anywhere else 77 is an ordinary nonzero exit and
+    # stays a failure. A future gated tier has to be added to this predicate.
+    gated_tier=false
+    if [[ "$test" == *board-api/integration/* ]]; then
+        gated_tier=true
+    fi
+
     start_time=$(date +%s)
 
     if [ "$VERBOSE" = true ]; then
@@ -173,9 +182,7 @@ for test in "${tests[@]}"; do
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo ""
-            if [ $exit_code -eq 77 ]; then
-                # The gated tiers' contract (see integration/drill-lib.sh):
-                # 77 means "prerequisite missing" — the suite never ran.
+            if [ $exit_code -eq 77 ] && [ "$gated_tier" = true ]; then
                 echo "  [SKIP] $test (${duration}s)"
                 skipped=$((skipped + 1))
             elif [ $exit_code -eq 124 ]; then
@@ -197,7 +204,7 @@ for test in "${tests[@]}"; do
             exit_code=$?
             end_time=$(date +%s)
             duration=$((end_time - start_time))
-            if [ $exit_code -eq 77 ]; then
+            if [ $exit_code -eq 77 ] && [ "$gated_tier" = true ]; then
                 echo "  [SKIP] (${duration}s)"
                 grep '^SKIP' <<<"$output" | sed 's/^/    /' || true
                 skipped=$((skipped + 1))
