@@ -97,7 +97,8 @@ tests=(
     "board-api/test-sweep-resume.sh"
     # The integration tier carries its OWN gate rather than living under
     # --integration: it needs $ARKHO_DIR plus a container runtime for the
-    # scratch Postgres, and skips loudly (exit 0) when either is missing. On a
+    # scratch Postgres, and skips loudly (exit 77, counted as a SKIP below)
+    # when either is missing. On a
     # machine that has them the smoke test is ~20s and the six fast drills are
     # ~30s each — each boots and tears down its own scratch database, so they
     # are independent in any order. test-lease-renewal.sh is the outlier at
@@ -172,12 +173,18 @@ for test in "${tests[@]}"; do
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo ""
-            if [ $exit_code -eq 124 ]; then
+            if [ $exit_code -eq 77 ]; then
+                # The gated tiers' contract (see integration/drill-lib.sh):
+                # 77 means "prerequisite missing" — the suite never ran.
+                echo "  [SKIP] $test (${duration}s)"
+                skipped=$((skipped + 1))
+            elif [ $exit_code -eq 124 ]; then
                 echo "  [FAIL] $test (timeout after ${TIMEOUT}s)"
+                failed=$((failed + 1))
             else
                 echo "  [FAIL] $test (${duration}s)"
+                failed=$((failed + 1))
             fi
-            failed=$((failed + 1))
         fi
     else
         # Capture output for non-verbose mode
@@ -185,24 +192,28 @@ for test in "${tests[@]}"; do
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "  [PASS] (${duration}s)"
-            # A gated tier that skipped exits 0 like a pass. Non-verbose mode
-            # captures output and only prints it on failure, which would turn
-            # every skip into a silent pass — so surface the reason it printed.
-            grep '^SKIP' <<<"$output" | sed 's/^/    /' || true
             passed=$((passed + 1))
         else
             exit_code=$?
             end_time=$(date +%s)
             duration=$((end_time - start_time))
-            if [ $exit_code -eq 124 ]; then
+            if [ $exit_code -eq 77 ]; then
+                echo "  [SKIP] (${duration}s)"
+                grep '^SKIP' <<<"$output" | sed 's/^/    /' || true
+                skipped=$((skipped + 1))
+            elif [ $exit_code -eq 124 ]; then
                 echo "  [FAIL] (timeout after ${TIMEOUT}s)"
+                echo ""
+                echo "  Output:"
+                echo "$output" | sed 's/^/    /'
+                failed=$((failed + 1))
             else
                 echo "  [FAIL] (${duration}s)"
+                echo ""
+                echo "  Output:"
+                echo "$output" | sed 's/^/    /'
+                failed=$((failed + 1))
             fi
-            echo ""
-            echo "  Output:"
-            echo "$output" | sed 's/^/    /'
-            failed=$((failed + 1))
         fi
     fi
 
