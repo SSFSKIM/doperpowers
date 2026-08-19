@@ -9,7 +9,8 @@
 #   - references/*.{md,sh,yml} and scripts/*.sh mentions (must exist
 #     relative to the file, its skill root, or a skill named in the same
 #     paragraph — prose wraps lines, so context is paragraph-scoped)
-#   - doperpowers:<skill> names (the skill directory must exist)
+#   - doperpowers:<name> references (must be a skill directory or an
+#     agent definition under agents/)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +21,7 @@ import re, sys, pathlib
 
 root = pathlib.Path(sys.argv[1]) / "skills"
 skills = {p.name for p in root.iterdir() if p.is_dir()}
+agents = {p.stem for p in (pathlib.Path(sys.argv[1]) / "agents").glob("*.md")}
 fails, checked = [], 0
 
 def paragraphs(text):
@@ -61,8 +63,8 @@ for f in sorted(root.rglob("*.md")):
                     fails.append(f"{f}:{start}: {kind}-path resolves nowhere: {rel}")
         for m in re.finditer(r'doperpowers:([a-z0-9-]+)', para):
             checked += 1
-            if m.group(1) not in skills:
-                fails.append(f"{f}:{start}: dangling skill reference doperpowers:{m.group(1)}")
+            if m.group(1) not in skills and m.group(1) not in agents:
+                fails.append(f"{f}:{start}: dangling reference doperpowers:{m.group(1)}")
 
 print(f"checked {checked} references across {len(skills)} skills")
 if fails:

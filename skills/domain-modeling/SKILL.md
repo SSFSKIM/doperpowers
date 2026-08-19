@@ -21,7 +21,7 @@ Most repos have a single context:
 └── src/
 ```
 
-If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
+If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map records where each one lives and how their models relate — integration patterns and translation points, per the multi-context section of [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md):
 
 ```
 /
@@ -59,7 +59,7 @@ When your human partner states how something works, check whether the code agree
 
 ### Update CONTEXT.md inline
 
-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
+When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md). In a multi-context repo the same applies to `CONTEXT-MAP.md`: when a cross-context relationship or translation contract is settled, record it in the map immediately.
 
 `CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
 

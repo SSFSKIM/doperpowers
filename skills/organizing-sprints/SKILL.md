@@ -1,6 +1,7 @@
 ---
 name: organizing-sprints
 description: Use when a pile of raw observations or half-formed ideas — an ideadump, a walkthrough, a meeting transcript — needs to become the next sprint of work, especially when the notes may misread the code. A single idea is doperpowers:brainstorming; a deliberate goal that needs dividing is doperpowers:decomposing.
+disable-model-invocation: true
 ---
 
 # Organizing Sprints
