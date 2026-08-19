@@ -583,6 +583,11 @@ _metas_for_ticket() {  # <ticket> [all]
 # One page of the unrelayed feed, spilled to files under $1 (id/ticket in
 # <i>.meta, the replies verbatim in <i>.replies) so multi-line answer text
 # never has to survive a shell round-trip. Prints the row count.
+#
+# GET /answers/unrelayed IS A FLAT ROUTE, capped at 500 rows (arkho API.md §1
+# Boundary bounds) with no cursor to page it. That is sound here because the
+# drain loop below re-reads until the feed answers empty: a full page just
+# costs another lap.
 _unrelayed_dump() {
   T_DIR="$1" _api_py - <<'PY'
 import os
@@ -744,13 +749,18 @@ _suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
 # ticket should not also have to close the env-issue, and closing the
 # env-issue is the natural "I fixed the substrate" gesture.
 #
-# AN ABSENT ROW IS NOT A STATE — a truncated or partial /tickets read must
-# never lift a suppression. The listing is read whole, with no cursor and no
-# envelope, so a short read looks exactly like a smaller board; treating a
-# missing row as a value fired BOTH triggers on it (absent != the recorded
-# state, and absent read as "closed"), lifting every suppression the read
-# could not see and minting the human a fresh env-issue every three cycles.
-# Absent is UNKNOWN on both sides: keep waiting for a read that can name it.
+# AN ABSENT ROW IS NOT A STATE. This is a TARGETED `ids=` read of exactly the
+# two rows the record names, so absence in a completed answer is authoritative
+# rather than truncation — the failure this guard was written against (one
+# short whole-board listing lifting every suppression it could not see, because
+# a missing row read as a value fires BOTH triggers: absent != the recorded
+# state, and absent sits in the closed tuple) is now structurally impossible.
+# tickets_by_ids either completes or dies.
+# The conservative rule stands anyway, on the other absence this read can
+# answer: the board has no delete path, so an id missing from a completed
+# answer names a record pointing at a ticket that never existed — registry
+# corruption, or a record carried over from a foreign board. That is not a
+# state either. Absent is UNKNOWN on both sides: keep waiting.
 # This is the read-site mirror of the write-site guard at _escalate.
 _check_lift() {
   T_TID="$1" T_DIR="$SUPPRESS_DIR" _api_py - <<'PY'
@@ -761,10 +771,13 @@ if not os.path.exists(path):
     raise SystemExit(0)
 with open(path) as f:
     rec = json.load(f)
-rows = {str(t["id"]): t["state"] for t in A.tickets(principal="automation")}
-cur = rows.get(str(rec["ticket"]))
+rows = A.tickets_by_ids([rec["ticket"], rec["env_issue"]],
+                        principal="automation")
+row = rows.get(int(rec["ticket"]))
+cur = row["state"] if row else None
 moved = cur is not None and cur != rec["state"]
-env = rows.get(str(rec["env_issue"]))
+env_row = rows.get(int(rec["env_issue"]))
+env = env_row["state"] if env_row else None
 closed = env in ("done", "wontfix")   # absent env-issue: unknown, keep waiting
 if moved or closed:
     os.remove(path)
@@ -790,6 +803,13 @@ PY
 # ever saw. text-first fails the other way — answers ride the prompt, nothing
 # is acked, and the feed re-serves them next tick (the sentinel makes the
 # duplicate visible). Never-ack is the recoverable direction.
+#
+# THE CAP MATTERS MORE HERE than at the drain loop. /answers/unrelayed is flat,
+# capped at 500 rows (arkho API.md §1), and this is the one site that FILTERS
+# that capped read down to ONE ticket: with more than 500 standing unrelayed
+# answers, this ticket's replies could sit past the cap and simply not be
+# folded — silently, until the backlog drains. Nothing approaches the cap
+# today; paging this route is an arkho follow-up if the board ever nears it.
 _fold_answers() {  # <ticket> <dir>
   T_TID="$1" T_DIR="$2" _api_py - <<'PY'
 import os
@@ -1509,20 +1529,21 @@ _escalate() {  # <ticket>
   state="$(T_TID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
-tid = os.environ["T_TID"]
-print(next((t["state"] for t in A.tickets(principal="automation")
-            if str(t["id"]) == tid), ""))
+row = A.ticket(os.environ["T_TID"], principal="automation")
+print(row["state"] if row else "")
 PY
 )" || { echo "resume: #$tid — board state unreadable; escalation deferred" >&2; return 1; }
-  # AN EMPTY READ IS NOT A STATE. A ticket absent from the listing answers
-  # through a SUCCESSFUL exit with "", and a record written from it would say
-  # `"state": ""` — against which _check_lift's `moved = current != recorded`
-  # is true for every value the board can ever return. The suppression would
-  # lift on the very next tick, the ladder would run again, and the human would
-  # collect a fresh env-issue every three cycles. The counter stands, so the
-  # next tick retries the escalation with a state it can actually name.
+  # AN EMPTY ANSWER IS NOT A STATE. The read is by id now, so "" is the board
+  # saying authoritatively that no such ticket exists rather than a listing
+  # that might merely have been short — but the deferral is right either way,
+  # because a suppression record needs a state it can NAME. A record written
+  # from "" would say `"state": ""`, against which _check_lift's
+  # `moved = current != recorded` is true for every value the board can ever
+  # return: the suppression would lift on the very next tick, the ladder would
+  # run again, and the human would collect a fresh env-issue every three
+  # cycles. The counter stands, so the next tick retries.
   [ -n "$state" ] || {
-    echo "resume: #$tid — board state came back empty (ticket not in the listing); escalation deferred" >&2
+    echo "resume: #$tid — board state came back empty (no such ticket); escalation deferred" >&2
     return 1; }
   # THE REGISTRATION IS RECOVERABLE, because it is not atomic with the record
   # it authorizes. A1 can commit the env-issue and the response still be lost;
@@ -1556,12 +1577,16 @@ except BaseException:
     sys.stderr.write(msg)
     # A `duplicate` refusal means the registration ALREADY LANDED — this is the
     # lost-response retry, not a new failure. The title is deterministic, so the
-    # env-issue is found by it in the same listing the lift check reads (rather
-    # than by parsing an id out of a human-facing message). Nothing found means
-    # nothing to record, and the next tick retries.
+    # env-issue is found by it in a full walk (rather than by parsing an id out
+    # of a human-facing message); title is not a server predicate and `category`
+    # is bare-only on the paged surface, so the scan stays client-side.
+    # Walk absence is report-grade: a row whose sort position moved behind the
+    # cursor mid-walk is missing from every page. That costs one extra
+    # escalation cycle and self-heals — the raise below leaves the counter
+    # standing and the next tick reads again (spec § Semantics preservation).
     if "duplicate" not in msg:
         raise
-    hit = next((t["id"] for t in A.tickets(principal="automation")
+    hit = next((t["id"] for t in A.tickets_all(principal="automation")
                 if t.get("title") == payload["title"]), None)
     if hit is None:
         raise
@@ -1606,6 +1631,10 @@ phase_resume() {
   RESUMED_LEDGER="$(mktemp "$SCRATCH/resumed.XXXXXX")"
   _reconcile_successors
   dir="$(mktemp -d "$SCRATCH/feed.XXXXXX")"
+  # GET /runs/needing-resume is a FLAT route too — capped at 500 rows by the
+  # service's FEED_LIMIT (arkho API.md §1), with no cursor. A backlog longer
+  # than that is served on the next tick; the sweep's own budget stops this one
+  # well before 500 recoveries anyway.
   _api_py - > "$dir/feed" <<'PY' || { echo "resume: needing-resume feed unavailable this tick" >&2; return 0; }
 import _board_api as A
 for e in A.needing_resume():

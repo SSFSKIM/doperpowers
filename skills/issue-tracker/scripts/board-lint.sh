@@ -51,8 +51,24 @@ import _board_api as A
 # int() on the server's id, not a bare take: this is the one comparison in the
 # check, and the local side of it is parsed out of a registry file as text. A
 # type mismatch here would silently match nothing and report a clean board.
-open_ids = {int(t["id"]) for t in A.tickets(principal="automation")
-            if t["state"] not in ("done", "wontfix")}
+# The map keeps the CLOSED rows too, where the old open-only set dropped them:
+# "the board closed it" and "the walk never served it" are different findings
+# now, and only the second one has to be confirmed before it recommends.
+walked = {int(t["id"]): t["state"]
+          for t in A.tickets_all(principal="automation")}
+
+
+def board_state(tid_int):
+    """Walk absence is report-grade; a retire recommendation is an ACTION.
+    A ticket missing from the walk (a concurrent reprioritization can hide
+    a row from every page) is re-read by id — 404 is the authoritative
+    absence the recommendation may stand on."""
+    if tid_int in walked:
+        return walked[tid_int]
+    row = A.ticket(tid_int, principal="automation")
+    return row["state"] if row else None
+
+
 fails = 0
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if p.endswith(".reply.json"):
@@ -68,11 +84,16 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     # from. A non-numeric `ticket` is registry garbage, not board drift.
     if not tid.isdigit() or not m.get("run_id"):
         continue
-    if int(tid) not in open_ids:
+    st = board_state(int(tid))
+    if st is None or st in ("done", "wontfix"):
         print("FAIL daemon %s bound to closed/absent ticket #%s FIX: daemon-retire"
               % (m.get("uuid", "?")[:8], tid))
         fails += 1
-print("board-lint: %d open ticket(s), %d FAIL" % (len(open_ids), fails))
+# The count is the WALK's: it is a report line about the board, and a row the
+# walk missed is not one an operator is counting. Only the FAILs above needed
+# the stronger evidence.
+open_count = sum(1 for s in walked.values() if s not in ("done", "wontfix"))
+print("board-lint: %d open ticket(s), %d FAIL" % (open_count, fails))
 raise SystemExit(1 if fails else 0)
 PY
   exit $?

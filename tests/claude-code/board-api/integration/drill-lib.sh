@@ -187,14 +187,22 @@ import json, sys
 for e in json.load(sys.stdin):
     print(e["ticketId"])'
 }
-ticket_state() { api automation GET /tickets | T_ID="$1" python3 -c '
-import json, os, sys
-tid = os.environ["T_ID"]
-print(next((t["state"] for t in json.load(sys.stdin) if str(t["id"]) == tid), "(absent)"))'; }
-ticket_owner() { api automation GET /tickets | T_ID="$1" python3 -c '
-import json, os, sys
-tid = os.environ["T_ID"]
-print(next((str(t["owner_run"]) for t in json.load(sys.stdin) if str(t["id"]) == tid), "(absent)"))'; }
+ticket_state() { api automation GET "/tickets/$1" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)
+if isinstance(t, dict) and isinstance(t.get("error"), dict) \
+        and t["error"].get("code") == "not-found":
+    print("(absent)")
+else:
+    print(t["state"])'; }
+ticket_owner() { api automation GET "/tickets/$1" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)
+if isinstance(t, dict) and isinstance(t.get("error"), dict) \
+        and t["error"].get("code") == "not-found":
+    print("(absent)")
+else:
+    print(str(t["owner_run"]))'; }
 
 # ---- closing an id ---------------------------------------------------------
 # `t`/`nt` match with `grep -qF`, which has no anchor of its own, so an id that

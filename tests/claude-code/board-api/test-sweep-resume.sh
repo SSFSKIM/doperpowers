@@ -27,6 +27,8 @@
 #      pins that no transition is ever attempted. An escalation that cannot
 #      read the ticket's state does not happen at all: a record holding
 #      `"state": ""` would self-lift on the next tick and spam the human;
+#      and a registration whose response was lost meets `duplicate` on every
+#      retry, so the env-issue is recovered by title out of a COMPLETE walk;
 #   5. a standing suppression skips the ticket in phase 3 and lifts when the
 #      board state moved OR the env-issue closed — both halves pinned.
 #
@@ -57,7 +59,12 @@ NEWUUID="deadbeef-0000-4000-8000-00000000cafe"
 # Fixtures are consumed in the order the eight invocations below make their
 # calls; `once` entries are the script, the trailing defaults are the
 # background. Ordering note: the mock matches on path PREFIX, so every
-# /runs/claim-successor entry must precede the /runs/claim default.
+# /runs/claim-successor entry must precede the /runs/claim default — and every
+# `/tickets?limit=200&ids=` entry must precede a bare `/tickets?limit=200` one.
+# The board reads here are PAGED: `_check_lift` asks `ids=`, `_escalate` asks
+# by id, and the duplicate-recovery scan walks. Prefix matching makes the exact
+# id list in an `ids=` request irrelevant to which fixture answers, so the tests
+# that care assert the requested ids out of the .log.
 PORT="$(free_port)"
 FIX="$TDIR/fixtures.json"; : > "$FIX.log"
 cat > "$FIX" <<'JSON'
@@ -132,8 +139,13 @@ cat > "$FIX" <<'JSON'
           "plan":null,"body":"work on"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"POST","path":"/runs/48/end","status":200,"body":{"ended":true}},
- {"method":"GET","path":"/tickets","status":200,"once":true,
-  "body":[{"id":13,"state":"in-progress","priority":"P2","title":"a listing #12 has fallen out of"}]},
+ {"method":"GET","path":"/tickets/12","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 12"}}},
+ {"method":"GET","path":"/tickets/12","status":404,"once":true,
+  "body":{"error":{"code":"not-found","message":"no such ticket: 12"}}},
+ {"method":"GET","path":"/tickets?limit=1","status":200,"once":true,
+  "body":{"items":[{"id":13,"state":"in-progress","priority":"P2",
+                    "title":"a board #12 is not on"}],"next":null,"as_of":118}},
 
  {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":48}]},
@@ -143,14 +155,15 @@ cat > "$FIX" <<'JSON'
           "plan":null,"body":"work on"}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,"body":[]},
  {"method":"POST","path":"/runs/50/end","status":200,"body":{"ended":true}},
- {"method":"GET","path":"/tickets","status":200,"once":true,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]},
+ {"method":"GET","path":"/tickets/12","status":200,"once":true,
+  "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
  {"method":"POST","path":"/tickets","status":200,"once":true,
   "body":{"id":90,"state":"needs-human"}},
 
- {"method":"GET","path":"/tickets","status":200,"once":true,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
-          {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,"once":true,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+                   {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}],
+          "next":null,"as_of":118}},
  {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":50}]},
 
@@ -159,11 +172,12 @@ cat > "$FIX" <<'JSON'
           "body":"a ticket the sweep already gave up on"}},
  {"method":"POST","path":"/runs/60/end","status":200,"body":{"ended":true}},
 
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
-          {"id":13,"state":"done","priority":"P2","title":"the moved one"},
-          {"id":90,"state":"done","priority":null,"title":"stuck resume"},
-          {"id":91,"state":"needs-human","priority":null,"title":"stuck resume 2"}]},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+                   {"id":13,"state":"done","priority":"P2","title":"the moved one"},
+                   {"id":90,"state":"done","priority":null,"title":"stuck resume"},
+                   {"id":91,"state":"needs-human","priority":null,"title":"stuck resume 2"}],
+           "next":null,"as_of":118}},
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
  {"method":"POST","path":"/runs/claim-successor","status":200,
   "body":{"runId":70,"ticketId":16,"fence":1,"bearer":"tok-arch","predecessorRun":69,
@@ -472,19 +486,27 @@ RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 SW resume > "$OUT4" 2>&1 || true
 t  "cycle 2 is counted"                    "recovery cycle 2 of 3"     cat "$OUT4"
 nt "and still escalates nothing"           "env-issue"                 cat "$OUT4"
 
-# Cycle 3 reaches the escalation, but the board answers with a listing this
-# ticket has fallen out of. A record written from that empty read would say
-# `"state": ""`, and the lift check — moved = current != recorded — then reads
-# ANY value as movement, so the suppression would lift on the very next tick
-# and the whole ladder would run again, spamming the human an env-issue every
-# three cycles. An escalation that cannot name the state it froze does not
-# happen at all; the counter stands and the next tick retries.
+# Cycle 3 reaches the escalation, but the by-id read answers not-found — the
+# board has no such ticket, authoritatively (the client proves the paged
+# surface with one probe before it believes that 404, or a rolled-back server
+# answering 404 to an unknown ROUTE would read as "no ticket anywhere" — and
+# then re-asks by id, since the probe dates the SURFACE and not the answer that
+# preceded it, which is why this world carries two 404 fixtures for #12). The
+# escalation defers all the same: a record written from that empty answer would
+# say `"state": ""`, and the lift check — moved = current != recorded — then
+# reads ANY value as movement, so the suppression would lift on the very next
+# tick and the whole ladder would run again, spamming the human an env-issue
+# every three cycles. An escalation that cannot name the state it froze does
+# not happen at all; the counter stands and the next tick retries.
 : > "$FIX.log"
 OUT4B="$TDIR/resume4b.out"
 RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 SW resume > "$OUT4B" 2>&1 || true
 t  "cycle 3 is counted"                    "recovery cycle 3 of 3"     cat "$OUT4B"
 t  "an escalation whose board state reads empty is refused" \
    "board state came back empty"                                       cat "$OUT4B"
+t  "and it asked for that state by id"  '"path": "/tickets/12"'        cat "$FIX.log"
+t  "probing the paged surface before believing the 404" \
+   '"path": "/tickets?limit=1"'                                        cat "$FIX.log"
 nt "it registers no env-issue"             '\"category\": \"env-issue\"' cat "$FIX.log"
 suppression_for() { cat "$DH/board-suppress/$1.json" 2>/dev/null || echo "no suppression record"; }
 t  "and writes no suppression record"      "no suppression record"     suppression_for 12
@@ -725,9 +747,9 @@ kill $DMOCKS 2>/dev/null || true
 # cheapest place to see which directory this phase is actually working in.
 # =========================================================================
 SUPD="$TDIR/operator-suppress"; mkdir -p "$SUPD"
-# Env-issue 90 is `done` in this board's standing listing, so the lift fires on
+# Env-issue 90 is `done` in this board's standing rows, so the lift fires on
 # the closed-env-issue trigger without depending on any other scenario's
-# leftovers. (An env-issue absent from the listing would NOT do: absent is
+# leftovers. (An env-issue the board does not carry would NOT do: absent is
 # unknown, not closed — see the absent-row scenarios at the end of this file.)
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
   > "$SUPD/12.json"
@@ -908,10 +930,13 @@ cat > "$AFIX" <<'JSON'
   "body":{"error":{"code":"internal","message":"boom"}}},
  {"method":"POST","path":"/tickets","status":200,"once":true,
   "body":{"id":93,"state":"needs-human"}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
-          {"id":93,"state":"needs-human","priority":null,
-           "title":"stuck resume: ticket #12 cannot be revived"}]}
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+                   {"id":93,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$AFIX"
@@ -954,10 +979,13 @@ cat > "$BFIX" <<'JSON'
   "body":{"error":{"code":"internal","message":"boom"}}},
  {"method":"POST","path":"/tickets","status":200,
   "body":{"id":90,"state":"needs-human"}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"needs-human","priority":"P1","title":"the stuck one"},
-          {"id":90,"state":"needs-human","priority":null,
-           "title":"stuck resume: ticket #12 cannot be revived"}]}
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"needs-human","priority":"P1","title":"the stuck one"}},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"needs-human","priority":"P1","title":"the stuck one"},
+                   {"id":90,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$BFIX"
@@ -979,9 +1007,10 @@ cat > "$CFIX2" <<'JSON'
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
  {"method":"POST","path":"/runs/claim-successor","status":500,
   "body":{"error":{"code":"internal","message":"boom"}}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
-          {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]}
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+                   {"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$CFIX2"
@@ -1006,9 +1035,10 @@ cat > "$DFIX" <<'JSON'
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
  {"method":"POST","path":"/runs/claim-successor","status":500,
   "body":{"error":{"code":"internal","message":"boom"}}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
-          {"id":90,"state":"done","priority":null,"title":"stuck resume"}]}
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"},
+                   {"id":90,"state":"done","priority":null,"title":"stuck resume"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$DFIX"
@@ -1043,8 +1073,9 @@ cat > "$EFIX" <<'JSON'
   "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
  {"method":"POST","path":"/runs/claim-successor","status":500,
   "body":{"error":{"code":"internal","message":"boom"}}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$EFIX"
@@ -1061,13 +1092,16 @@ nt "not two"                           "recovery cycle 2 of 3"  cat "$OUTT"
 t  "the waiting journal is left untouched"  "n-b.json"  standing_journal "$TDH"
 
 # ---- AN ABSENT ROW IS NOT A STATE ----------------------------------------
-# `/tickets` is read whole, with no cursor and no envelope, so a truncated or
-# partial listing is indistinguishable from a smaller board. Reading a missing
-# row as a value fired BOTH lift triggers on it — `moved` because None is not
-# the recorded state, `closed` because None sat in the closed tuple — and one
-# short read lifted every suppression it could not see: the ladder re-ran and
-# the human collected a fresh env-issue every three cycles. Absent is UNKNOWN,
-# and the suppression waits for a read that can name the state.
+# The lift check reads the two rows the record names BY ID (`ids=`), so absence
+# in a completed answer is authoritative and the hazard this guard was written
+# against — a truncated whole-board listing lifting every suppression it could
+# not see — is gone. The rule stands on the absence that is left: the board has
+# no delete path, so a record naming an id the board does not carry is a record
+# from a corrupt registry or a foreign board. Reading that missing row as a
+# value would still fire BOTH lift triggers on it — `moved` because None is not
+# the recorded state, `closed` because None sat in the closed tuple — re-running
+# the whole ladder and minting the human a fresh env-issue every three cycles.
+# Absent is UNKNOWN on both sides, and the suppression keeps waiting.
 suppression_present() {  # suppression_present <registry> <ticket>
   if [ -e "$1/board-suppress/$2.json" ]; then echo "still-there"; else echo "gone"; fi
 }
@@ -1080,8 +1114,9 @@ GFIX="$TDIR/fix-absent-ticket.json"
 cat > "$GFIX" <<'JSON'
 [
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}]}
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":90,"state":"needs-human","priority":null,"title":"stuck resume"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$GFIX"
@@ -1090,10 +1125,20 @@ printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
   > "$GDH/board-suppress/12.json"
 OUTG="$TDIR/absent-ticket.out"
 tick_exit "$GDH" "$OUTG"
-t  "a suppression whose ticket is off the listing is not lifted" \
+t  "a suppression whose ticket the board does not carry is not lifted" \
    "still-there"                        suppression_present "$GDH" 12
 nt "and the tick says nothing about lifting it"  "suppression lifted"  cat "$OUTG"
 t  "and the tick still succeeds"        "tick exit=0"                 cat "$OUTG"
+# Prefix matching answers any `ids=` request from that one fixture, so the
+# REQUEST is where the targeting is visible: both ids the record names, and no
+# whole-board read beside them. The trailing quote is the delimiter — a bare
+# `ids=12,90` would also be satisfied by `ids=12,900`.
+asked_ids() { grep -o '"path": "/tickets?[^"]*"' "$1" || echo "no /tickets read"; }
+t  "and it asked for exactly the two ids the record names" \
+   '"path": "/tickets?limit=200&ids=12,90"'   asked_ids "$RLOG"
+reads() { echo "ticket-reads=[$(grep -c '"path": "/tickets' "$1" || true)]"; }
+t  "in one targeted read, with no whole-board listing beside it" \
+   "ticket-reads=[1]"                   reads "$RLOG"
 
 # The env-issue half of the same read. `closed` alone must not fire on absence:
 # an env-issue nobody can see is not an env-issue somebody closed.
@@ -1101,8 +1146,9 @@ HFIX="$TDIR/fix-absent-env.json"
 cat > "$HFIX" <<'JSON'
 [
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$HFIX"
@@ -1111,7 +1157,7 @@ printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
   > "$HDH/board-suppress/12.json"
 OUTH="$TDIR/absent-env.out"
 tick_exit "$HDH" "$OUTH"
-t  "an env-issue off the listing is not a closed env-issue" \
+t  "an env-issue the board does not carry is not a closed env-issue" \
    "still-there"                        suppression_present "$HDH" 12
 nt "so nothing is lifted on it"         "suppression lifted"          cat "$OUTH"
 t  "and that tick succeeds too"         "tick exit=0"                 cat "$OUTH"
@@ -1132,8 +1178,9 @@ cat > "$IFIX" <<'JSON'
           "body":"work on","parentPin":null}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/70/end","status":200,"body":{"ended":true}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$IFIX"
@@ -1167,8 +1214,9 @@ cat > "$JFIX" <<'JSON'
           "body":"work on","parentPin":null}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/72/end","status":200,"body":{"ended":true}},
- {"method":"GET","path":"/tickets","status":200,
-  "body":[{"id":13,"state":"in-progress","priority":"P1","title":"the stuck one"}]}
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":13,"state":"in-progress","priority":"P1","title":"the stuck one"}],
+          "next":null,"as_of":118}}
 ]
 JSON
 rboard "$JFIX"
@@ -1183,6 +1231,60 @@ t  "and phase 4 refuses the same ticket on the same tick" \
    "#13 already had its one recovery attempt this tick"    cat "$OUTJL"
 t  "releasing the run it was handed"   '"path": "/runs/72/end"'  cat "$RLOG"
 nt "so nothing is spawned for it"      "SPAWN name=13"           cat "$SPAWN_LOG"
+
+# ---- A DUPLICATE REFUSAL IS THE ESCALATION, AND FINDING IT WALKS ---------
+# The registration is not atomic with the suppression record it authorizes: A1
+# can commit the env-issue and the response still be lost, after which every
+# retry meets the server's dedup on this deterministic title — `409 duplicate`
+# forever, no suppression record ever written, and the ticket escalating again
+# every three cycles for as long as it lives. The refusal names the existing
+# ticket, so the env-issue is read back out of it by TITLE, and that scan is
+# the one production caller of the multi-page cursor walk: an env-issue filed
+# days ago sits behind whatever the board has accumulated since, so a scan that
+# reads only the first page finds nothing and raises.
+#
+# The page-1 decoy is a SUPERSTRING of the deterministic title: a scan matching
+# on containment rather than equality answers #88 off page 1 and never asks for
+# page 2 at all. The counter starts at 2 so this tick's single charge lands on
+# the rung that escalates.
+KC="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMjQ2ODEwKzAwIiwiMTIiXQ"
+KFIX="$TDIR/fix-dup-walk.json"
+cat > "$KFIX" <<JSON
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":500,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
+ {"method":"POST","path":"/tickets","status":409,
+  "body":{"error":{"code":"duplicate","message":"existing ticket 94"}}},
+ {"method":"GET","path":"/tickets?limit=200&cursor=$KC","status":200,
+  "body":{"items":[{"id":94,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived"}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200","status":200,
+  "body":{"items":[{"id":88,"state":"needs-human","priority":null,
+                    "title":"stuck resume: ticket #12 cannot be revived (superseded)"}],
+          "next":"$KC","as_of":118}}
+]
+JSON
+rboard "$KFIX"
+KDH="$TDIR/dh-dup-walk"; mkdir -p "$KDH/board-suppress"
+printf '2\n' > "$KDH/board-suppress/.attempts-12"
+OUTK="$TDIR/dup-walk.out"
+RSW "$KDH" > "$OUTK" 2>&1 || true
+t  "a lost registration's duplicate refusal still escalates" \
+   "escalated #12 → env-issue #94 (suppressed)"        cat "$OUTK"
+t  "the suppression names the env-issue the walk found on PAGE 2" \
+   '"env_issue": 94'                cat "$KDH/board-suppress/12.json"
+nt "not the page-1 row whose title merely CONTAINS the real one" \
+   '"env_issue": 88'                cat "$KDH/board-suppress/12.json"
+# The trailing quote is the delimiter: without it the first-page assertion is
+# also satisfied by the cursor request, and both pages would collapse into one.
+t  "the scan read the first page"       '"path": "/tickets?limit=200"'  cat "$RLOG"
+t  "and asked for the second carrying the cursor verbatim" \
+   "\"path\": \"/tickets?limit=200&cursor=$KC\""       cat "$RLOG"
 
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true

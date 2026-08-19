@@ -30,17 +30,24 @@ if [ "$BOARD_BINDING" = api ]; then
 import _board_api as A
 
 print("== wake queue (standing parks) ==")
-for q in A.queue_decisions():
+for q in A.queue_decisions_all():
     print("#%s [%s] %s" % (q["ticket_id"], q["state"],
                            (q.get("question") or {}).get("note") or ""))
 print("== needing resume ==")
+# GET /runs/needing-resume is a FLAT route — capped at 500 rows by the
+# service's FEED_LIMIT (arkho API.md §1), with no cursor to page it. This is a
+# report, so a longer backlog simply lists short; paging the route is arkho
+# work if the board ever approaches the cap.
 for e in A.needing_resume():
     print("#%s %s (predecessor run %s)" % (e["ticketId"], e["state"],
                                            e["predecessorRunId"]))
 print("== dispatchables ==")
-for t in A.tickets(principal="automation"):
-    if t["state"] in ("ready-for-architect", "ready-for-implementer") \
-       and not t.get("owner_run"):
+# The lane half of "dispatchable" is a server filter; the unowned half is not.
+# `owner_run` filters by ID only server-side, so "no owning run" stays a
+# client-side predicate over the walked rows.
+for t in A.tickets_all(states="ready-for-architect,ready-for-implementer",
+                       principal="automation"):
+    if not t.get("owner_run"):
         print("#%s %s %s %s" % (t["id"], t["state"],
                                 t.get("priority") or "-", t["title"]))
 PY

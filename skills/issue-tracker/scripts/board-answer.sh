@@ -70,8 +70,20 @@ tid = os.environ["T_ID"].lstrip("#")
 # the human's reply to a question nobody wrote it for. The queue publishes the
 # name; the species filter matters because one ticket can carry an sdk-decision
 # park alongside its board park, and only the board one is answerable here.
-cid = next((q["correlation_id"] for q in A.queue_decisions()
-            if str(q["ticket_id"]) == tid and q.get("species") == "board"), None)
+def find_cid():
+    return next((q["correlation_id"] for q in A.queue_decisions_all()
+                 if str(q["ticket_id"]) == tid and q.get("species") == "board"),
+                None)
+
+cid = find_cid()
+if cid is None:
+    # A park COMMITTING while the walk ran is invisible to that walk (its
+    # transaction-start raised_at can land behind an already-passed cursor).
+    # A second walk, started after the first finished, must serve any park
+    # committed before it began — that retry is the queue's action-grade
+    # absence evidence (spec § Helper primitives). Still None after it, and
+    # the refusal below is standing on ground as firm as the old whole read.
+    cid = find_cid()
 if cid is None:
     # No name, no answer. Sending it unnamed is exactly the failure the
     # comment above forbids — the server would bind it to whatever question

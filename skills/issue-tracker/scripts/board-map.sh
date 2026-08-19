@@ -105,7 +105,10 @@ TOPOLOGY_PROJECTED = True
 
 
 def api_snapshot():
-    """GET /tickets, normalized to the node shape the renderer below consumes.
+    """A completed /tickets walk, normalized to the node shape the renderer
+    below consumes. Report-grade completeness is the right grade for a
+    rendered map — nothing here acts on a row's absence, and a row a
+    concurrent reprioritization hid from every page draws on the next render.
 
     The projection now carries blocked_by / relates / branch / pr_url
     (arkho#7), so dependency and relates edges render and a recorded PR link
@@ -124,7 +127,7 @@ def api_snapshot():
     import _board_api as A
     global TOPOLOGY_PROJECTED
     out = {}
-    rows = A.tickets(principal="automation")
+    rows = A.tickets_all(principal="automation")
     # WHOLE-RESPONSE absence, decided once: `row.get("blocked_by") or []` reads
     # a server that projects no topology at all (any pre-arkho#7 deployment)
     # exactly like a board with no dependencies, and the map then renders a

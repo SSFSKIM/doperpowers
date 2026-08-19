@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import NoReturn
 
 SENTINEL = "[board-relay answer:%s]"
 _RETRIES = 3          # transport-level, idempotent requests only
@@ -39,7 +40,9 @@ class ClaimObsolete(Exception):
         self.code = code
 
 
-def die(msg):
+def die(msg) -> NoReturn:
+    # NoReturn, not decoration: callers treat `die` as terminal, so without it
+    # a checker reads every `x = die(...) or x` path as reachable with x=None.
     print("error: %s" % msg, file=sys.stderr)
     raise SystemExit(1)
 
@@ -114,12 +117,14 @@ def _error(payload, status):
 
 
 def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
-            obsolete_codes=()):
+            obsolete_codes=(), absent=()):
     """One HTTP exchange. Dies with the contract's error identifier on
     refusal; raises RunEnded on 409 run-ended (callers route on it), and
     ClaimObsolete on any code the caller named in `obsolete_codes` — named
     per route rather than globally, because the same code is a routable
-    outcome on one route and an ordinary refusal on another."""
+    outcome on one route and an ordinary refusal on another. `absent` names
+    the codes whose whole meaning is "the row you asked for is not there",
+    which is an answer rather than a fault: those return None."""
     if retry is None:
         retry = method == "GET"
     data = json.dumps(body).encode() if body is not None else None
@@ -142,6 +147,8 @@ def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
                 raise RunEnded(message) from None
             if code in obsolete_codes:
                 raise ClaimObsolete(code, message) from None
+            if code in absent:
+                return None
             # a refusal is an answer, never retried
             die("%s %s refused: %s — %s" % (method, path, code, message))
         except (urllib.error.URLError, OSError) as e:
@@ -236,19 +243,154 @@ def park_answer(tid, replies, to=None, correlation_id=None):
     return request("POST", "/tickets/%s/park-answer" % int(tid), body, "human")
 
 
-def tickets(state=None, category=None, principal="human"):
-    qs = "&".join("%s=%s" % (k, v) for k, v in
-                  (("state", state), ("category", category)) if v)
-    return request("GET", "/tickets" + ("?" + qs if qs else ""),
-                   principal=principal)
-
-
 def timeline(tid, principal="human"):
     return request("GET", "/tickets/%s/timeline" % int(tid), principal=principal)
 
 
-def queue_decisions():
-    return request("GET", "/queue/decisions", principal="human")
+# ---- paged read surface (spec: board-client-paged-reads v1.1) --------------
+
+_PAGE_LIMIT = 200   # explicit limit= is the envelope opt-in
+_MAX_IDS = 200      # documented ids= cap (arkho API.md §1)
+_SURFACE = {"proven": False}   # per-process: has any envelope read succeeded?
+
+
+def _envelope(payload, path, context=""):
+    """A paged read must answer the COMPLETE envelope. A bare array means
+    the server predates the read surface; a dict missing `next` (or carrying
+    a wrong-typed member) is a malformed or version-skewed page — and
+    treating a MISSING `next` like the contract's `next: null` would end the
+    walk early and hand the caller a partial board as if complete. An EMPTY
+    `next` is malformed too, and it is the one shape a type check alone lets
+    through: the walk appends no cursor, refetches page 1 and never ends. So
+    `next` is null or a NON-EMPTY cursor, nothing else. Strict or dead: no
+    partial result may escape.
+
+    `context` appends the caller's own diagnosis to the die, for the callers
+    that know something this function cannot — the rollback probe knows a
+    404 preceded it, and that is what makes the failure legible."""
+    if (not isinstance(payload, dict)
+            or not isinstance(payload.get("items"), list)
+            or "next" not in payload
+            or not (payload["next"] is None
+                    or (isinstance(payload["next"], str) and payload["next"]))
+            or not isinstance(payload.get("as_of"), int)):
+        die("GET %s answered no complete paged envelope ({items, next, "
+            "as_of}, where next is null or a NON-EMPTY cursor) — a "
+            "pre-read-surface or malformed server; refusing to guess%s"
+            % (path, context))
+    _SURFACE["proven"] = True
+    return payload
+
+
+def _walk(base, principal):
+    """Every row of a COMPLETE cursor walk, as a list. The `next` token is
+    passed back VERBATIM. Materializing here rather than yielding is what makes
+    the no-partial-board rule structural: a failed page dies inside request()
+    before this returns, so the rows read so far are unreachable — a partial
+    board is unrepresentable, not merely unconsumed by today's callers.
+
+    A cursor is followed at most ONCE. `_envelope` rejects the empty `next`
+    that would refetch page 1 forever, but a well-formed cursor that REPEATS —
+    the same token again, or a cycle A→B→A — walks just as endlessly, and a
+    hang or an exhausted heap is not the fail-closed death this module owes
+    its callers. The first page carries no cursor and cannot collide with one,
+    since a cursor is a non-empty string, so the set of followed tokens is the
+    whole guard."""
+    rows = []
+    cursor = None
+    followed = set()
+    while True:
+        path = base + ("&cursor=%s" % cursor if cursor else "")
+        page = _envelope(request("GET", path, principal=principal), path)
+        rows.extend(page["items"])
+        cursor = page["next"]   # _envelope proved it null or a NON-EMPTY token
+        if cursor is None:
+            return rows
+        if cursor in followed:
+            die("GET %s answered a cursor already followed — a looping or "
+                "version-skewed server; refusing an unbounded walk" % path)
+        followed.add(cursor)
+
+
+def ticket(tid, principal="human"):
+    """GET /tickets/{id}. None = the ticket does not exist, and that answer
+    is AUTHORITATIVE (action-grade) — unlike walk absence, which is
+    report-grade (spec § Helper primitives). Rollback guard: route-level and
+    row-level 404 share one stable code, so an unproven process probes the
+    paged surface once before trusting a 404 as a real absence.
+
+    The evidence an authoritative None rests on is a 404 OBSERVED ON A PROVEN
+    surface. A 404 that arrived before the proof is not that evidence, and the
+    probe cannot retroactively make it so, so the read is re-issued and the
+    second answer is the one returned."""
+    path = "/tickets/%s" % int(tid)
+    out = request("GET", path, principal=principal, absent=("not-found",))
+    if out is None and not _SURFACE["proven"]:
+        # The probe is held to the FULL envelope, not merely to carrying an
+        # `items` key: a rolled-back or version-skewed answer may not be the
+        # thing that proves the surface, because proving it is what turns this
+        # 404 into an authoritative absence — and board-lint retires live
+        # daemons on that answer. _envelope marks the surface proven itself.
+        _envelope(request("GET", "/tickets?limit=1", principal=principal),
+                  "/tickets?limit=1",
+                  " — so the not-found on GET %s is a route-level "
+                  "404 from a pre-read-surface server, not a missing ticket"
+                  % path)
+        # The probe proves the surface exists NOW; it says nothing about the
+        # instance that served the 404 a moment ago. Across a version
+        # transition the two requests can land on different instances — the
+        # 404 from one that predates the read surface, the envelope from one
+        # that has it — and taking the probe as proof would then authenticate
+        # a route-level 404 as a missing ticket, which is the whole hazard
+        # this guard exists for. So the read is re-asked with the surface
+        # proven in-process: a row rescues the false absence, and a second
+        # 404 is the authoritative one.
+        out = request("GET", path, principal=principal, absent=("not-found",))
+    if out is not None:
+        _SURFACE["proven"] = True
+    return out
+
+
+def tickets_by_ids(ids, principal="human"):
+    """ids= batch read, chunked at the documented cap. Returns {int_id: row}.
+    An id absent from the completed result is authoritatively absent — a
+    targeted read, not a walk. (The board has no delete path today, so an
+    absent id here means the id never named a ticket.)"""
+    ids = [int(i) for i in ids]
+    out = {}
+    for i in range(0, len(ids), _MAX_IDS):
+        chunk = ids[i:i + _MAX_IDS]
+        base = "/tickets?limit=%d&ids=%s" % (
+            _PAGE_LIMIT, ",".join(str(c) for c in chunk))
+        for row in _walk(base, principal):
+            out[int(row["id"])] = row
+    return out
+
+
+def tickets_all(states=None, principal="human"):
+    """Complete cursor walk of /tickets. REPORT-grade completeness: contains
+    every row whose sort position was stable while the walk ran; a row
+    reprioritized behind an already-passed cursor mid-walk is missing from
+    every page. Absence that drives an ACTION needs ticket() instead.
+    Dedupe: a moved row can also be re-served — later data wins, first-seen
+    position kept (dict overwrite)."""
+    base = "/tickets?limit=%d" % _PAGE_LIMIT
+    if states:
+        base += "&states=%s" % states
+    seen = {}
+    for row in _walk(base, principal):
+        seen[int(row["id"])] = row
+    return list(seen.values())
+
+
+def queue_decisions_all():
+    """Complete cursor walk of /queue/decisions. Identity is correlation_id
+    (queue rows carry no `id`); the keyset (raised_at, correlation_id) is
+    immutable so re-serves are impossible — no dedupe. Walk absence is
+    report-grade here too: a park COMMITTING during the walk can land behind
+    the cursor — action-grade absence is a second walk started after the
+    first finished (board-answer's retry)."""
+    return list(_walk("/queue/decisions?limit=%d" % _PAGE_LIMIT, "human"))
 
 
 # The five routes below are human-only server-side: a run's bearer is refused
