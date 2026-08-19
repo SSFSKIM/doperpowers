@@ -33,7 +33,8 @@ _Avoid_: Client, buyer, account
 
 **Single context (most repos):** One `CONTEXT.md` at the repo root.
 
-**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the
+contexts, where they live, and how their models relate:
 
 ```md
 # Context Map
@@ -46,10 +47,32 @@ _Avoid_: Client, buyer, account
 
 ## Relationships
 
-- **Ordering → Fulfillment**: Ordering emits `OrderPlaced` events; Fulfillment consumes them to start picking
-- **Fulfillment → Billing**: Fulfillment emits `ShipmentDispatched` events; Billing consumes them to generate invoices
-- **Ordering ↔ Billing**: Shared types for `CustomerId` and `Money`
+- **Ordering → Fulfillment** — customer–supplier via published language.
+  Ordering emits versioned `OrderPlaced` events; the event schema is the
+  contract, and neither side reaches into the other's model.
+- **Billing → Fulfillment** — conformist. Billing reads Fulfillment's
+  `Shipment` model as-is; when Fulfillment's model changes, Billing changes.
+- **Ordering ↔ Billing** — shared kernel. `CustomerId` and `Money` live in
+  `src/shared/`, changed only with both contexts' agreement.
+- **Legacy ERP → Ordering** — anticorruption layer at `src/ordering/erp/`.
+  It translates ERP records into Ordering terms; ERP vocabulary never
+  appears outside that directory.
 ```
+
+Each relationship carries three things: the **direction**, the
+**integration pattern**, and **where translation happens**. The data flow
+alone is not a relationship — when two models disagree, the pattern name
+is what says which side must conform. Use the standard vocabulary
+(partnership, shared kernel, customer–supplier, conformist,
+anticorruption layer, published language / open-host service, separate
+ways) and name the translation point as a real code location when one
+exists. "Separate ways" is worth recording too — a deliberate
+non-integration stops a future session from inventing one.
+
+Physical boundaries — layers, dependency direction, module seams — belong
+to `ARCHITECTURE.md` (doperpowers:architecture-mapping), which
+cross-references this map. `CONTEXT-MAP.md` records meaning boundaries
+only.
 
 The skill infers which structure applies:
 
