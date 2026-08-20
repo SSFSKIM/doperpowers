@@ -164,6 +164,10 @@ def main():
             page = int(os.environ.get("MOCK_GH_COMMENT_PAGE") or 100)
             print(json.dumps({"comments": comment_objs(it)[:page]}))
             return
+        if opt(argv, "--json") == "state":
+            # The live-binding fence's already-closed probe (board-transition).
+            print(json.dumps({"state": it.get("state", "OPEN")}))
+            return
         die("unhandled issue view fields: %s" % " ".join(argv))
 
     # REST: pulls/<n>/files — the surface sweep/lint diff read. Files come

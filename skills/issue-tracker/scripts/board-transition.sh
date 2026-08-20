@@ -58,8 +58,22 @@ done
 # invisible here. Runs ahead of the mode fork — the API server adjudicates
 # RUNS via fences, but this client-side fence is what stands between a
 # non-run session and a ticket a local worker owns, in either binding.
+#
+# Two scope cuts keep the fence honest. (1) Ticket numbers are BOARD-local
+# and the registry is machine-global, so a binding only counts when its
+# board-bind-stamped `board` key names THIS board; a meta predating the stamp
+# fences anyway — bindings live hours, the ambiguity ages out. (2) A ticket
+# already CLOSED on GitHub is past preventing: the fence exists to stop a
+# second completion, and for a closed ticket that write is finalization
+# bookkeeping (label strip + terminal sweeps) that refusing only delays —
+# lingering `working` metas on merge-auto-closed tickets are routine
+# (--no-wait workers finalize on the dispatcher's cadence, not the merge's).
+# The probe runs only on the would-refuse path, gh mode only (API tickets
+# close through the server, never outside the machine).
+if [ "$BOARD_BINDING" = api ]; then _fence_board="api:$BOARD_API_URL"
+else _fence_board="gh:$BOARD_REPO"; fi
 T_ID="$tid" T_DHOME="$DAEMON_HOME" T_SELF="${CLAUDE_CODE_SESSION_ID:-}" \
-T_OVR="${BOARD_OWNER_OVERRIDE:-}" python3 - <<'PY'
+T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" python3 - <<'PY'
 import glob
 import json
 import os
@@ -89,6 +103,8 @@ if tid:
             continue
         if str(meta.get("ticket", "")).lstrip("#") != tid:
             continue
+        if meta.get("board") and meta["board"] != env["T_BOARD"]:
+            continue   # another board's #N — the number collision, not an owner
         if meta.get("status") not in ("working", "blocked"):
             continue   # only a MID-TURN owner fences; parked/idle owners are
                        # board-answer's and the dispatchers' business
@@ -102,6 +118,18 @@ if tid:
             print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
                   % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))
             break
+        if env.get("BOARD_BINDING") == "gh":
+            import subprocess
+            r = subprocess.run(["gh", "issue", "view", tid, "-R",
+                                env.get("BOARD_REPO", ""), "--json", "state"],
+                               capture_output=True, text=True)
+            try:
+                closed = r.returncode == 0 and \
+                    json.loads(r.stdout).get("state") == "CLOSED"
+            except ValueError:
+                closed = False   # an unreadable probe fails CLOSED — refuse below
+            if closed:
+                break
         sys.stderr.write(
             "error: #%s is mid-turn under live worker %s (%s, status=%s) — a "
             "transition by anyone but the binding owner completes work that "

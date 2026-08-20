@@ -197,6 +197,12 @@ try:
 
     target_meta["ticket"] = tid
     target_meta["updated"] = env["T_NOW"]
+    # The BOARD the ticket number belongs to. Ticket numbers are board-local
+    # but this registry is machine-global, so the transition fence (dp#63)
+    # needs the pair to adjudicate — a live worker on another board's #9 says
+    # nothing about this board's #9. Same shape the fence computes for itself.
+    target_meta["board"] = ("api:" + env.get("BOARD_API_URL", "")) if API \
+        else ("gh:" + B.repo())
     if API:
         # bind_confirmed is a claim about what the SERVER accepted, and a
         # resume rehydrates from it — so it is written only on this side of

@@ -341,6 +341,8 @@ J
 out="$(run board-bind.sh aaaa 9)"
 assert_contains "$out" "bound #9 ← aaaa-bbbb" "bind writes registry"
 assert_equals "$(python3 -c "import json;print(json.load(open('$DAEMON_HOME/aaaa-bbbb.json'))['ticket'])")" "9" "registry meta has ticket"
+assert_contains "$(cat "$DAEMON_HOME/aaaa-bbbb.json")" '"board": "gh:test/repo"' \
+    "bind stamps the board key — ticket numbers are repo-local, the registry is not"
 assert_not_contains "$(cat "$DAEMON_HOME/old9-impl.json")" '"ticket"' "exclusive bind strips the old ticket owner before binding the new one"
 # A live owner is stable: a second reviewer cannot steal its answer route.
 python3 - <<PY
@@ -475,12 +477,17 @@ assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-implem
 python3 - <<'PY'
 import json, os, re
 p = os.environ['MOCK_GH_STATE']; s = json.load(open(p)); src = dict(s['issues']['8'])
-for n in (701, 702, 703, 704):
+for n in (701, 702, 703, 704, 705, 706):
     it = dict(src)
     it.update(number=n, id='ID_%d' % n, title='guard fixture %d' % n, state='OPEN',
               stateReason=None, body='## Problem & intent\n\nguard',
               labels=['bug', 'status:ready-for-implementer', 'priority:P2'])
     s['issues'][str(n)] = it
+# 706: a PR's "Closes #N" already closed it, labels left behind — the finalize
+# shape, with a reviewer meta still lingering `working` (--no-wait metas are
+# finalized on the dispatcher's cadence, not the merge's).
+s['issues']['706'].update(state='CLOSED', stateReason='COMPLETED',
+                          labels=['bug', 'status:in-review', 'priority:P2'])
 json.dump(s, open(p, 'w'))
 
 def boot():   # the same probe board-bind stamps metas with
@@ -502,6 +509,8 @@ meta('guard-live-701', '701', 'working', host=socket.gethostname(), boot_id=boot
 meta('guard-dead-702', '702', 'working', host=socket.gethostname(), boot_id='dead-boot-0000')
 meta('guard-idle-703', '703', 'idle')
 meta('guard-live-704', '704', 'blocked')
+meta('guard-foreign-705', '705', 'working', board='gh:other/repo')
+meta('guard-live-706', '706', 'working', board='gh:test/repo')
 PY
 assert_fails run_as orch-0000 board-transition.sh 701 in-progress # stamped current-boot owner fences
 out="$(run_as guard-resumed-701 board-transition.sh 701 in-progress)"
@@ -516,6 +525,12 @@ assert_contains "$out" "#703: ready-for-implementer → in-progress" \
 out="$(BOARD_OWNER_OVERRIDE="test: deliberate overrule" run board-transition.sh 704 in-progress)"
 assert_contains "$out" "#704: ready-for-implementer → in-progress" "a stated override passes"
 assert_contains "$out" "override" "the override is acknowledged out loud"
+out="$(run board-transition.sh 705 in-progress)"
+assert_contains "$out" "#705: ready-for-implementer → in-progress" \
+    "another board's binding does not fence this board's ticket (numbers are repo-local)"
+out="$(run board-transition.sh 706 "done")"
+assert_contains "$out" "#706: done — stripped residual status labels" \
+    "a ticket already closed outside the machine finalizes past a lingering working meta"
 # The owner itself moves its ticket — the flow every dispatched worker rides.
 run_as aaaa-bbbb board-transition.sh 9 in-progress >/dev/null
 out="$(run board-reconcile.sh)"
