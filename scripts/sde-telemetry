@@ -25,9 +25,10 @@ import sys
 IDLE_GAP = datetime.timedelta(minutes=15)
 
 ROLE_PATTERNS = [
-    (re.compile(r"re-review|review task", re.I), "task-reviewer"),
-    (re.compile(r"^(implement|execute|run) task|^task \d+:", re.I), "executor"),
-    (re.compile(r"\bfix", re.I), "fixer"),
+    (re.compile(r"re-review|review task|^t\d+ reviewer", re.I), "task-reviewer"),
+    (re.compile(r"^(implement|execute|run) task|^task \d+:"
+                r"|^t\d+ (implementer|executor)", re.I), "executor"),
+    (re.compile(r"^t\d+ fixer|\bfix", re.I), "fixer"),
 ]
 
 

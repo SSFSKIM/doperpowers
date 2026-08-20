@@ -59,6 +59,15 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    on deferral, not the floor: a DONE_WITH_CONCERNS, a doubt of your own,
    or a first task whose brief style the executor may have misread are
    reasons to review that task now.
+   A deferred review reads a tree that has moved past its package —
+   Task 1's package is BASE1..HEAD1 while the checkout sits at the
+   wave's last HEAD. Name the current HEAD and what landed since the
+   task's own HEAD (the sibling commits and files) in the dispatch, so
+   a sibling's effect is not read as this task's; a check that must see
+   the task's own tree — a focused test, a named risk — runs in a
+   detached worktree at the packaged HEAD (`git worktree add --detach
+   <workspace>/review-N <HEAD_N>`, removed after the review) rather
+   than in the shared checkout.
 5. **Findings:** Critical/Important findings go back to the executor that
    wrote the code — resume it with the findings; it holds the task's
    context and skips the orientation a fresh fixer pays. Several tasks

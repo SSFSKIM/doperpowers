@@ -114,6 +114,15 @@ The loop's steps 3–5 become:
 >    on deferral, not the floor: a DONE_WITH_CONCERNS, a doubt of your own,
 >    or a first task whose brief style the executor may have misread are
 >    reasons to review that task now.
+>    A deferred review reads a tree that has moved past its package —
+>    Task 1's package is BASE1..HEAD1 while the checkout sits at the
+>    wave's last HEAD. Name the current HEAD and what landed since the
+>    task's own HEAD (the sibling commits and files) in the dispatch, so
+>    a sibling's effect is not read as this task's; a check that must see
+>    the task's own tree — a focused test, a named risk — runs in a
+>    detached worktree at the packaged HEAD (`git worktree add --detach
+>    <workspace>/review-N <HEAD_N>`, removed after the review) rather
+>    than in the shared checkout.
 > 5. **Findings:** Critical/Important findings go back to the executor that
 >    wrote the code — resume it with the findings; it holds the task's
 >    context and skips the orientation a fresh fixer pays. Several tasks
@@ -339,12 +348,13 @@ in skill text — it is the monitoring window's, not the method's.
   resume is impossible or the executor's frame is the problem (two failed
   re-reviews the usual sign) — phrased as a default with its reason, not a
   gate.
-  Rationale: fixer dispatches outnumber executors (70 vs 57 over the
-  session; 16 vs 11 in run A) and every one re-orients; the executor holds
-  the context; the reviewer's re-review — not the fixer's freshness — is
-  the independence guard. Upstream's SDD resumes the implementer for rounds
-  ≤ 3 (prior art). The resume message names what landed since the
-  executor's HEAD, because its context predates its siblings' commits.
+  Rationale: fixer dispatches are of the same order as executors (70 to 92
+  over the session; 13 to 11 in run A) and every one re-orients; the
+  executor holds the context; the reviewer's re-review — not the fixer's
+  freshness — is the independence guard. Upstream's SDD resumes the
+  implementer for rounds ≤ 3 (prior art). The resume message names what
+  landed since the executor's HEAD, because its context predates its
+  siblings' commits.
   Date/Author: 2026-08-21 / fable session
 
 - Decision: the ledger gains an `executed` line at dispatch (base, executor
@@ -406,6 +416,19 @@ in skill text — it is the monitoring window's, not the method's.
   wording; the collector instruction is the monitoring window's.
   Date/Author: 2026-08-21 / human
 
+- Decision: a deferred review's dispatch names the current HEAD and what
+  landed since the package's HEAD, and a check that must see the task's
+  own tree runs in a detached worktree at the packaged HEAD — the
+  conditional default, not every deferred review.
+  Rationale: once review is deferred to the frontier the shared checkout
+  sits at the wave's last HEAD, so a focused test or named-risk check
+  outside the package's diff observes sibling changes and can hide a
+  failure or manufacture one. Always-detaching was declined: a fresh
+  worktree may need its dependencies installed before anything runs — a
+  real per-review cost — and most deferred reviews read the package
+  rather than run something outside it.
+  Date/Author: 2026-08-21 / fable session (codex finding adopted)
+
 ## Surprises & Discoveries
 
 - Observation: across the four runs reviewer time equals or exceeds executor
@@ -413,9 +436,13 @@ in skill text — it is the monitoring window's, not the method's.
   batteries, 20–40 minutes and 26–77k output tokens per review in run A.
   Evidence: `scripts/sde-telemetry` + per-dispatch durations, session
   `e92c7422`, computed 2026-08-21.
-- Observation: fixer dispatches outnumber executors (session-wide 70 vs 57;
-  run A 16 vs 11); each fixer is a fresh dispatch paying orientation again.
-  Evidence: same.
+- Observation: fixer dispatches are of the same order as executors, not
+  more numerous as the pre-v2 classification read — session-wide 70 fixers
+  to 92 executors; within run A's task window (2026-08-18 01:30–08:30 UTC)
+  13 to 11, where they do outnumber them. Each fixer is a fresh dispatch
+  paying orientation again.
+  Evidence: same, recomputed 2026-08-21 after the collector learned the
+  task-prefixed description forms (`T1 implementer: …`).
 - Observation: practice had drifted coarse before the doctrine moved — July
   plans carried 8–17 tasks, the four August runs 11/7/6/5; the coarsest
   (PR #76, 300- and 276-line briefs) was the fastest to last task (1h33m)
@@ -503,3 +530,6 @@ Pending — written at finish.
   v1.1 clause licenses; re-test observations recorded.
 - v1.3 (2026-08-21): codex review adopted — concurrent-review predicate,
   telemetry dedupe and active time; token figures recomputed.
+- v1.4 (2026-08-21): codex round 2 adopted — deferred-review tree clause;
+  telemetry recognizes task-prefixed noun descriptions; dispatch-count
+  citations corrected.
