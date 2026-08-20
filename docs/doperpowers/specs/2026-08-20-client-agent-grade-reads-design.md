@@ -71,9 +71,12 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
   hydrated hit's body prints indented under its row; hits beyond 20
   stay rows-only and the tail says so. An empty result is an empty
   listing, exit 0.
-- **gh arm**: delegates to the prose's exact proven spelling —
-  `gh issue list --state open --limit 200 --search "<query>"` (the
-  explicit `--limit` matters; the default truncates at 30 silently).
+- **gh arm**: delegates to the proven spelling —
+  `gh issue list --state open --limit 200 -R "$BOARD_REPO" --search
+  "<query>"` (the explicit `--limit` matters; the default truncates at
+  30 silently). `-R` is unconditional: `_lib.sh` resolves `BOARD_REPO`
+  from the checkout whenever it is unset, so a conditional spelling is
+  unreachable — the `board-comment.sh` precedent.
   In gh mode `--bodies` is a stderr note and the search PROCEEDS
   (gh's search already matches bodies, so the flag's intent is already
   served) — note-and-proceed is what keeps §4's one-route sentence true
@@ -186,7 +189,8 @@ spellings mirror API.md (see Delegated unknowns).
 4. `board-show.sh <id>` (human/automation) prints header, body, timeline;
    the body is byte-identical to what `board-body.sh` last wrote.
 5. On a gh-bound repo, `board-search.sh <word>` delegates to
-   `gh issue list --state open --limit 200 --search "<word>"`; `--bodies`
+   `gh issue list --state open --limit 200 -R <repo> --search "<word>"`;
+   `--bodies`
    notes on stderr and the search proceeds; `--states` is refused
    (stderr note, exit 2).
 6. SKILL.md's pre-registration section names `board-search.sh` as the one
@@ -257,6 +261,10 @@ Pending — written at finish.
 ## Revision Notes
 
 - v1 (2026-08-20): initial design, approved in session (controlled track).
+- v1.2 (2026-08-20): planning-discovered drift (plan verification review
+  C3): the gh delegate spelling carries `-R "$BOARD_REPO"`
+  unconditionally — `_lib.sh` always resolves the repo in gh mode, so
+  the bare spelling was unreachable; §2 and acceptance 5 corrected.
 - v1.1 (2026-08-20): independent review (fable) adopted in full — §5
   rewritten fixture-driven (behavioral-mock misread killed; run-403 and
   unknown-include arms dropped as unreachable through the client);
