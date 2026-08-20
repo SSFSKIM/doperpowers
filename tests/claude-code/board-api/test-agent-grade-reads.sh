@@ -193,6 +193,9 @@ JSON
 t "verb prints rows in server order with state visible" "#4 done" verb walker
 t "verb header says all states" "all states" verb walker
 nt "API arm never invokes gh" "GH-INVOKED" verb walker
+# Exit codes are contract, and the drills above tolerate any of them: rc pins
+# the status alone. 2 = usage/refusal, 1 = a die, 0 = served (degrades included).
+rc 0 "a served search exits 0" verb walker
 
 world verb-search-states <<JSON
 [
@@ -211,12 +214,22 @@ world verb-none <<JSON
 ]
 JSON
 t "an empty result is the header only, exit 0" "0 hit(s)" verb nothing
+rc 0 "no hits is a served answer, not a failure" verb nothing
 
 world verb-empty <<JSON
 []
 JSON
 t "an empty query is usage" "Usage:" verb ""
 t "a whitespace-only query is usage" "Usage:" verb "   "
+# Every arm of the option loop that refuses, held to the same 2 — including the
+# two routes to "no query at all": no argv whatsoever, and flags that leave the
+# query unset once the loop has consumed them.
+rc 2 "no argv at all exits 2" verb
+rc 2 "flags without a query exit 2" verb --bodies
+rc 2 "an empty query exits 2" verb ""
+rc 2 "a whitespace-only query exits 2" verb "   "
+rc 2 "an unknown flag exits 2" verb --nope walker
+rc 2 "a second positional exits 2" verb walker stray
 t "no usage error reached the wire" "reqs=[0]" reqs
 
 # ---- `--` ends the options: the ?q= negation grammar stays reachable ----
@@ -235,6 +248,7 @@ JSON
 t "a dash-leading query without -- is still usage" "Usage:" verb "-alpha beta"
 t "an empty --states value is usage, not a silent widening" "Usage:" \
   verb walker --states ""
+rc 2 "an empty --states value exits 2" verb walker --states ""
 t "neither refusal reached the wire" "reqs=[0]" reqs
 
 world verb-run-ctx <<JSON
@@ -242,6 +256,9 @@ world verb-run-ctx <<JSON
 JSON
 t "run context dies claim-gated before any request" "claim-gated" \
   verb_as_run walker
+# A die, not a refusal (1, not 2) — and the verb's trailing `exit 0` sits after
+# the API arm, so this also pins that _api_py's status propagates past it.
+rc 1 "the claim-gate die exits 1" verb_as_run walker
 t "the run-context die made no request" "reqs=[0]" reqs
 
 # ---- board-search.sh --bodies: first-20 bound, one budgeted read ----
@@ -292,6 +309,8 @@ t "gh arm --bodies notes and proceeds" "noted, proceeding" \
 t "gh arm --bodies still runs the search" "GH-INVOKED" ghverb walker --bodies
 t "gh arm --states is refused" "API-binding only" ghverb walker --states "done"
 nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states "done"
+rc 0 "the gh delegate exits 0" ghverb walker
+rc 2 "the gh arm's --states refusal exits 2" ghverb walker --states "done"
 
 # ---- board-show.sh: body between header and timeline ----
 world show-body <<JSON
@@ -339,6 +358,9 @@ world show-run <<JSON
 JSON
 t "a run context degrades to the claim-served line" "claim-served" \
   show_as_run 12
+# The degrade is a SERVED read, not a refusal: a guard that started firing on
+# show would surface here as a 1 while the claim-served line still printed.
+rc 0 "the run-context degrade exits 0" show_as_run 12
 nt "a run context sends no include=body" "include=body" paths
 
 finish
