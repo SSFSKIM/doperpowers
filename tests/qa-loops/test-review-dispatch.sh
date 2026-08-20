@@ -327,7 +327,10 @@ case "${1:-} ${2:-}" in
     esac ;;
   "pr list")
     [ "${MOCK_PR_LIST_FAILS:-0}" = "1" ] && { echo "gh: pr list exploded" >&2; exit 1; }
-    cat "$MOCK_DIR/pr-list.json" ;;
+    case "$*" in
+      *"--label"*) cat "$MOCK_DIR/pr-list-prio.json" 2>/dev/null || echo "[]" ;;
+      *) cat "$MOCK_DIR/pr-list.json" ;;
+    esac ;;
   "issue view")
     case "$*" in
       *"--json url"*)  N="$3" python3 -c 'import json,os;print(json.load(open(os.environ["MOCK_DIR"]+"/issue-"+os.environ["N"]+".json"))["url"])' ;;
@@ -906,6 +909,24 @@ out="$(REVIEW_PRIORITY_LABEL=review-priority REVIEW_MAX_CONCURRENT=1 "$DISPATCH"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "the labeled cohort jumps the newest-first order"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-4" "cap=1: the unlabeled PR queues behind it"
 assert_contains "$out" "#4: review cap reached (1 live) — queued for a later tick" "the deferred PR is still reported by name"
+# The starved cohort can sit BEYOND the 100-newest window the main listing
+# sees. With the hint on, a dedicated --label listing fetches it: a labeled
+# PR absent from the main listing must still lead the enumeration.
+reset_state
+python3 - <<'PY'
+import json, os
+d = os.environ["MOCK_DIR"]
+json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: something",
+            "body": "No ticket for this one.", "closingIssuesReferences": []}],
+          open(os.path.join(d, "pr-list.json"), "w"))
+json.dump([{"number": 5, "isDraft": False, "labels": [{"name": "review-priority"}],
+            "title": "feat: add f", "body": "Adds f.\n\nCloses #7",
+            "closingIssuesReferences": []}],
+          open(os.path.join(d, "pr-list-prio.json"), "w"))
+PY
+out="$(REVIEW_PRIORITY_LABEL=review-priority REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a labeled PR beyond the listing window still enumerates first"
+rm -f "$MOCK_DIR/pr-list-prio.json"
 
 # restore the canonical pr list for later sections
 SHA="$HEAD_SHA" python3 - <<'PY'

@@ -46,7 +46,9 @@
 #   REVIEW_PRIORITY_LABEL  opt-in sweep ordering hint (dp#64): PRs carrying
 #                       this label enumerate FIRST in --sweep (stable within
 #                       both groups), so a priority cohort cannot be starved
-#                       by newest-first inflow under a full review cap.
+#                       by newest-first inflow under a full review cap. The
+#                       cohort rides its own --label listing, so it is found
+#                       even beyond the main listing's 100-newest window.
 #                       Unset = enumeration order untouched.
 #   AUTO_MERGE_ENABLED  merge kill switch (default false = observation mode:
 #                       the worker reviews and judges the verdict but parks
@@ -1714,24 +1716,54 @@ if [ "${1:-}" = "--sweep" ]; then
   pr_list_json="$(gh pr list -R "$BOARD_REPO" --state open --limit 100 \
       --json number,isDraft,labels,title,body,closingIssuesReferences)" \
     || { pr_list_json="[]"; pr_list_ok=0; }
+  # The dp#64 cohort can sit BEYOND the 100-newest window the main listing
+  # sees — the starved-oldest case is the point of the hint. When it is on,
+  # one dedicated --label listing fetches the cohort by itself: its rows lead
+  # the enumeration and count as open for the cleanup pass (a labeled PR
+  # outside the window must not read as "gone", or its completed dedupe
+  # record is retired and the next healthy sweep re-reviews it). A failed
+  # cohort read degrades to the in-window sort — the hint never fails the
+  # sweep.
+  pr_prio_json="[]"
+  if [ -n "${REVIEW_PRIORITY_LABEL:-}" ]; then
+    pr_prio_json="$(gh pr list -R "$BOARD_REPO" --state open --limit 100 \
+        --label "$REVIEW_PRIORITY_LABEL" \
+        --json number,isDraft,labels,title,body,closingIssuesReferences)" \
+      || pr_prio_json="[]"
+  fi
   # Every open PR number, drafts included — the registry cleanup below asks
   # "is this reviewer's PR still open?", and a draft is open (it is merely
   # never dispatched, so a meta for one should not exist in the first place).
-  open_prs="$(printf '%s' "$pr_list_json" | python3 -c '
-import json, sys
+  open_prs="$(printf '%s' "$pr_list_json" | PR_PRIO_JSON="$pr_prio_json" python3 -c '
+import json, os, sys
 try:
-    print(" ".join(str(p["number"]) for p in json.load(sys.stdin)))
+    ns = [str(p["number"]) for p in json.load(sys.stdin)]
 except Exception:
-    pass')" || open_prs=""
+    ns = []
+try:
+    ns += [str(p["number"]) for p in json.loads(os.environ["PR_PRIO_JSON"])
+           if str(p["number"]) not in ns]
+except Exception:
+    pass
+print(" ".join(ns))')" || open_prs=""
   printf '%s' "$pr_list_json" \
-    | python3 -c '
+    | PR_PRIO_JSON="$pr_prio_json" python3 -c '
 import json, os, re, sys
 prs = json.load(sys.stdin)
 # Priority pre-pass (dp#64): the listing rides gh'"'"'s newest-first server
 # order, so under sustained inflow a full review cap starves the old cohort —
 # its turn never comes. REVIEW_PRIORITY_LABEL names an opt-in first-pass
-# cohort: labeled PRs enumerate ahead of the rest, order untouched within
-# both groups (stable sort). Unset, the enumeration is exactly the listing.
+# cohort: the dedicated --label listing leads the enumeration (rows beyond
+# the main window included), the stable sort covers in-window labels when
+# that listing failed, and order is untouched within both groups. Unset,
+# the enumeration is exactly the listing.
+try:
+    _prio = json.loads(os.environ["PR_PRIO_JSON"])
+except Exception:
+    _prio = []
+if _prio:
+    _seen = {p.get("number") for p in _prio}
+    prs = _prio + [p for p in prs if p.get("number") not in _seen]
 _pl = os.environ.get("REVIEW_PRIORITY_LABEL")
 if _pl:
     prs.sort(key=lambda p: 0 if any(

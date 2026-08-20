@@ -83,6 +83,10 @@ _codex_resume_flags "$model" "$effort"
 addroot="$(_codex_main_root "$cwd")"
 [ -n "$addroot" ] && CODEX_FLAGS=( "${CODEX_FLAGS[@]}" -c "sandbox_workspace_write.writable_roots=[\"$addroot\"]" )
 
+# The resumed codex process has no harness session id, so board-transition's
+# live-binding fence (dp#63) could not recognize it as its own ticket's owner;
+# the daemon uuid IS its identity, handed over explicitly.
+export DAEMON_SELF_UUID="$uuid"
 _codex_launch "$cwd" "$taskf" "$run" exec resume "$uuid" "${CODEX_FLAGS[@]}"
 
 # Wait for the new pid (catches a `cd` failure, which never even backgrounds

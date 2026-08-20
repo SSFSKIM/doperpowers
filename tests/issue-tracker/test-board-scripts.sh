@@ -52,7 +52,7 @@ export DAEMON_HOME="$TEST_ROOT/registry"; mkdir -p "$DAEMON_HOME"
 # The live-binding guard (dp#63) reads the caller's session identity and an
 # override from the ambient environment — a harness run inside a real Claude
 # session would otherwise smuggle its own identity into every transition.
-unset CLAUDE_CODE_SESSION_ID BOARD_OWNER_OVERRIDE
+unset CLAUDE_CODE_SESSION_ID DAEMON_SELF_UUID BOARD_OWNER_OVERRIDE
 export BOARD_REPO="test/repo"
 export MOCK_GH_STATE="$TEST_ROOT/gh-state.json"
 # Plan pins are verified against the remote (N3): the mock serves
@@ -477,7 +477,7 @@ assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-implem
 python3 - <<'PY'
 import json, os, re
 p = os.environ['MOCK_GH_STATE']; s = json.load(open(p)); src = dict(s['issues']['8'])
-for n in (701, 702, 703, 704, 705, 706):
+for n in (701, 702, 703, 704, 705, 706, 707):
     it = dict(src)
     it.update(number=n, id='ID_%d' % n, title='guard fixture %d' % n, state='OPEN',
               stateReason=None, body='## Problem & intent\n\nguard',
@@ -511,6 +511,7 @@ meta('guard-idle-703', '703', 'idle')
 meta('guard-live-704', '704', 'blocked')
 meta('guard-foreign-705', '705', 'working', board='gh:other/repo')
 meta('guard-live-706', '706', 'working', board='gh:test/repo')
+meta('guard-codex-707', '707', 'working')
 PY
 assert_fails run_as orch-0000 board-transition.sh 701 in-progress # stamped current-boot owner fences
 out="$(run_as guard-resumed-701 board-transition.sh 701 in-progress)"
@@ -531,6 +532,9 @@ assert_contains "$out" "#705: ready-for-implementer → in-progress" \
 out="$(run board-transition.sh 706 "done")"
 assert_contains "$out" "#706: done — stripped residual status labels" \
     "a ticket already closed outside the machine finalizes past a lingering working meta"
+out="$(DAEMON_SELF_UUID=guard-codex-707 run board-transition.sh 707 in-progress)"
+assert_contains "$out" "#707: ready-for-implementer → in-progress" \
+    "a codex turn's explicit daemon identity (no harness session id) is the owner too"
 # The owner itself moves its ticket — the flow every dispatched worker rides.
 run_as aaaa-bbbb board-transition.sh 9 in-progress >/dev/null
 out="$(run board-reconcile.sh)"

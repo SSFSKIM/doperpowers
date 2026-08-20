@@ -70,9 +70,18 @@ done
 # (--no-wait workers finalize on the dispatcher's cadence, not the merge's).
 # The probe runs only on the would-refuse path, gh mode only (API tickets
 # close through the server, never outside the machine).
+#
+# The scan is deliberately UNLOCKED: a bind publishing concurrently with this
+# read can slip a fresh owner in behind a transition already past the fence.
+# Closing that window would mean holding the registry metalock across the
+# transition's own gh/API calls — seconds of machine-wide bind starvation
+# against a millisecond race — and gh mode has no arbiter that could give the
+# pair a total order anyway. The fence's job is the HOURS-scale divergence
+# (two sessions completing one ticket), not linearization.
 if [ "$BOARD_BINDING" = api ]; then _fence_board="api:$BOARD_API_URL"
 else _fence_board="gh:$BOARD_REPO"; fi
 T_ID="$tid" T_DHOME="$DAEMON_HOME" T_SELF="${CLAUDE_CODE_SESSION_ID:-}" \
+T_DSELF="${DAEMON_SELF_UUID:-}" \
 T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" python3 - <<'PY'
 import glob
 import json
@@ -94,6 +103,13 @@ if tid:
             return m.group(1) if m else ""
 
     HOST, BOOT = socket.gethostname(), cur_boot()
+
+    # Board keys compare NORMALIZED: _board_api.url() strips a trailing
+    # slash before use, so "api:http://x/" and "api:http://x" name one
+    # board — a raw compare would let a slash unfence a live owner.
+    def _board_key(b):
+        return "api:" + b[4:].rstrip("/") if b.startswith("api:") else b
+
     for path in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
         if path.endswith(".reply.json"):
             continue
@@ -103,7 +119,7 @@ if tid:
             continue
         if str(meta.get("ticket", "")).lstrip("#") != tid:
             continue
-        if meta.get("board") and meta["board"] != env["T_BOARD"]:
+        if meta.get("board") and _board_key(meta["board"]) != _board_key(env["T_BOARD"]):
             continue   # another board's #N — the number collision, not an owner
         if meta.get("status") not in ("working", "blocked"):
             continue   # only a MID-TURN owner fences; parked/idle owners are
@@ -114,6 +130,9 @@ if tid:
         owner = str(meta.get("uuid") or os.path.basename(path)[:-5])
         if env["T_SELF"] and env["T_SELF"] in (owner, str(meta.get("current") or "")):
             break      # the binding owner moves its own ticket
+        if env["T_DSELF"] and env["T_DSELF"] == owner:
+            break      # a legacy codex-CLI turn: no harness session id, so
+                       # codex-resume hands it its daemon uuid explicitly
         if env["T_OVR"]:
             print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
                   % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))
