@@ -49,6 +49,10 @@ assert_fails() { # cmd... — passes when the command exits non-zero
 # ---- environment: throwaway git repo, mock gh, fake daemon registry ---------
 export HOME="$TEST_ROOT/home"; mkdir -p "$HOME"
 export DAEMON_HOME="$TEST_ROOT/registry"; mkdir -p "$DAEMON_HOME"
+# The live-binding guard (dp#63) reads the caller's session identity and an
+# override from the ambient environment — a harness run inside a real Claude
+# session would otherwise smuggle its own identity into every transition.
+unset CLAUDE_CODE_SESSION_ID BOARD_OWNER_OVERRIDE
 export BOARD_REPO="test/repo"
 export MOCK_GH_STATE="$TEST_ROOT/gh-state.json"
 # Plan pins are verified against the remote (N3): the mock serves
@@ -451,7 +455,69 @@ out="$(run board-show.sh 9)"
 assert_contains "$out" "daemon: aaaa-bbbb" "show finds bound daemon"
 assert_contains "$out" '"state": "ready-for-implementer"' "show prints node"
 
-run board-transition.sh 9 in-progress >/dev/null
+# ---- transition guard: a live worker binding fences the state machine (dp#63) ----
+echo "board-transition: live-binding guard:"
+run_as() { local _id="$1"; shift; CLAUDE_CODE_SESSION_ID="$_id" run "$@"; }
+# #9 is owned by aaaa-bbbb (status=working; no host/boot stamp → assumed
+# live, board-bind's legacy-meta rule). Observed 2026-08-12 (ida#1584): an
+# orchestrator two-hop-closed a ticket a dispatched worker was mid-turn on —
+# the state machine consulted only labels, never the registry.
+assert_fails run board-transition.sh 9 in-progress                # no identity at all
+if out="$(run_as orch-0000 board-transition.sh 9 in-progress 2>&1)"; then
+    fail "a non-owner session is refused"
+else pass "refused: a non-owner session"; fi
+assert_contains "$out" "aaaa-bbbb" "the refusal names the live owner"
+assert_contains "$out" "BOARD_OWNER_OVERRIDE" "the refusal names the deliberate override"
+assert_contains "$(state "s['issues']['9']['labels']")" "status:ready-for-implementer" \
+    "a refused transition writes nothing"
+# Stamped-alive, resumed-identity, dead-boot, idle, and override corners ride
+# fresh fixtures so #9's own flow stays canonical.
+python3 - <<'PY'
+import json, os, re
+p = os.environ['MOCK_GH_STATE']; s = json.load(open(p)); src = dict(s['issues']['8'])
+for n in (701, 702, 703, 704):
+    it = dict(src)
+    it.update(number=n, id='ID_%d' % n, title='guard fixture %d' % n, state='OPEN',
+              stateReason=None, body='## Problem & intent\n\nguard',
+              labels=['bug', 'status:ready-for-implementer', 'priority:P2'])
+    s['issues'][str(n)] = it
+json.dump(s, open(p, 'w'))
+
+def boot():   # the same probe board-bind stamps metas with
+    try:
+        return open('/proc/sys/kernel/random/boot_id').read().strip()
+    except OSError:
+        m = re.search(r'sec = (\d+)', os.popen('sysctl -n kern.boottime 2>/dev/null').read())
+        return m.group(1) if m else ''
+
+import socket
+D = os.environ['DAEMON_HOME']
+def meta(uuid, ticket, status, **kw):
+    m = dict(uuid=uuid, current=uuid, name='guard-%s' % ticket, ticket=ticket,
+             status=status)
+    m.update(kw)
+    json.dump(m, open(os.path.join(D, uuid + '.json'), 'w'))
+meta('guard-live-701', '701', 'working', host=socket.gethostname(), boot_id=boot(),
+     current='guard-resumed-701')
+meta('guard-dead-702', '702', 'working', host=socket.gethostname(), boot_id='dead-boot-0000')
+meta('guard-idle-703', '703', 'idle')
+meta('guard-live-704', '704', 'blocked')
+PY
+assert_fails run_as orch-0000 board-transition.sh 701 in-progress # stamped current-boot owner fences
+out="$(run_as guard-resumed-701 board-transition.sh 701 in-progress)"
+assert_contains "$out" "#701: ready-for-implementer → in-progress" \
+    "the resumed session id (meta current) is the owner too"
+out="$(run board-transition.sh 702 in-progress)"
+assert_contains "$out" "#702: ready-for-implementer → in-progress" \
+    "a working owner from a dead boot does not fence (died without finalizing)"
+out="$(run board-transition.sh 703 in-progress)"
+assert_contains "$out" "#703: ready-for-implementer → in-progress" \
+    "an idle owner does not fence — only mid-turn statuses do"
+out="$(BOARD_OWNER_OVERRIDE="test: deliberate overrule" run board-transition.sh 704 in-progress)"
+assert_contains "$out" "#704: ready-for-implementer → in-progress" "a stated override passes"
+assert_contains "$out" "override" "the override is acknowledged out loud"
+# The owner itself moves its ticket — the flow every dispatched worker rides.
+run_as aaaa-bbbb board-transition.sh 9 in-progress >/dev/null
 out="$(run board-reconcile.sh)"
 assert_contains "$out" "parked    #2: needs-human — waiting on A" "reconcile lists the wake queue"
 assert_not_contains "$out" "proposal" "the proposal scanner is gone (v8: no orchestrator)"
@@ -529,7 +595,8 @@ unset BOARD_PORT BOARD_NO_OPEN
 echo "worktree:"
 out="$(cd "$TEST_ROOT/wt" && "$SCRIPTS_DIR/board-list.sh")"
 assert_contains "$out" "#9" "reads fine from a worktree"
-out="$(cd "$TEST_ROOT/wt" && "$SCRIPTS_DIR/board-transition.sh" 9 in-review "wt" --pr https://x/pr/1)"
+out="$(cd "$TEST_ROOT/wt" && CLAUDE_CODE_SESSION_ID=aaaa-bbbb \
+    "$SCRIPTS_DIR/board-transition.sh" 9 in-review "wt" --pr https://x/pr/1)"
 assert_contains "$out" "#9: in-progress → in-review" "writes fine from a worktree"
 
 # ---- migrate ----------------------------------------------------------------------
