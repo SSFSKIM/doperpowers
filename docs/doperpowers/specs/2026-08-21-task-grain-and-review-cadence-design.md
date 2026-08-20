@@ -271,11 +271,16 @@ in skill text — it is the monitoring window's, not the method's.
 4. A fresh opus subagent given the new subagent-driven-execution skill and
    the PR #74 plan (`docs/doperpowers/plans/2026-08-18-board-client-paged-
    reads.md`), asked for its review schedule before dispatching anything,
-   answers {1} | {2,3,4,5} | {6} | {7} in at least two of three reps —
-   inferring the producers from the briefs where that plan's older
-   Interfaces blocks do not name them (the inference is intended; the old
-   skill text reviews after every task by construction, so no control rep
-   is needed).
+   answers a frontier schedule — Task 1 alone, Task 7 alone, the four
+   migrations batched ({2,3,4,5}) or split only at the Task 3→4
+   `test-read-verbs.sh` overlap it names as load-bearing ({2,3} | {4,5}) —
+   with concurrent reviewers inside each multi-task set, in at least two of
+   three reps; inferring the producers from the briefs where that plan's
+   older Interfaces blocks do not name them (the inference is intended; the
+   old skill text reviews after every task by construction, so no control
+   rep is needed). Asked what it appends to the ledger at dispatch and what
+   it does after compaction with `executed`-but-not-`complete` tasks, it
+   writes the `executed` line and does not re-execute them.
 5. `scripts/sde-telemetry ~/.claude/projects/<dir>/e92c7422-….jsonl` prints
    `dispatches: N total` with N ≥ 277 (the session is still live), the
    four role counts summing to N, and a dispatch list in start-time order.
@@ -440,6 +445,19 @@ in skill text — it is the monitoring window's, not the method's.
   early if load-bearing. Inference was needed — that plan's Interfaces
   blocks predate producer naming.
   Evidence: three subagent transcripts, this session.
+- Observation (acceptance 4 re-run on the v1.1 text, 2026-08-21): two more
+  opus controllers answered {1} | {2,3} | {4,5} | {6} | {7} and
+  {1} | {2,3,4,5} | {6} | {7} respectively — the new undeclared-overlap
+  clause tipped one rep to review Task 3 before Task 4 (matching the real
+  run's ledger, which recorded that handoff as MUST-carry) and left the
+  other batching with the promotion rule held ready. Both wrote the
+  `executed` ledger line with base and executor handle, refused to
+  re-execute executed-but-unreviewed tasks after a simulated compaction,
+  and resumed Task 3's executor with the list of what landed since its
+  HEAD. Five of five reps across both texts produced a frontier schedule
+  with at least one multi-task set and concurrent reviewers — the old text
+  cannot produce that.
+  Evidence: two subagent transcripts, this session.
 - Observation: `claude -p --plugin-dir <worktree>` loads the worktree's
   skill text over the installed plugin (probe quoted both new sentences
   verbatim), so the keyword tests can exercise an unreleased edit through a
@@ -469,3 +487,5 @@ Pending — written at finish.
   executor prompt's "more capable model" sentence; PR #76 example corrected
   (it is a chain — per-task schedule); baseline max fix rounds (2) and the
   P1/P2 mapping recorded.
+- v1.2 (2026-08-21): acceptance 4 admits the split-at-overlap reading the
+  v1.1 clause licenses; re-test observations recorded.
