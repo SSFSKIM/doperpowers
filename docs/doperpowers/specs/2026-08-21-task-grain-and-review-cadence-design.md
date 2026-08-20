@@ -216,10 +216,10 @@ incident):
 | C arkho#17 search | 6 | 17 | 6 / 2h02m (2h02m active) | 7 / 0h38m (0h38m active) | 2 / 0h30m (0h30m active) | 2 of 6 | 3h34m |
 | D dp PR #76 client reads | 5 | 14 | 5 / 0h44m (0h44m active) | 5 / 0h42m (0h42m active) | 2 / 0h11m (0h11m active) | 1 of 5 | 3h59m (1h33m to last task) |
 
-The collector now also reports active time per dispatch and per role —
-the span with idle gaps over 15 minutes excluded, so a resumed agent's
-waiting does not count — and deduplicates token totals by message id;
-the time columns above are summed spans and are unchanged.
+The collector reports both span and active time per dispatch and per role
+— active excludes idle gaps over 15 minutes, so a resumed agent's waiting
+does not count — and deduplicates token totals by message id; the table
+carries both measures, active in parentheses.
 
 Fix rounds per task never exceeded two in the baseline (run A's tasks 2 and
 8 took two fixers each; every other fixed task took one). Escaped defects at
