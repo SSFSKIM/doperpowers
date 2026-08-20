@@ -128,8 +128,11 @@ The loop's steps 3–5 become:
 >    wrote the code — resume it with the findings; it holds the task's
 >    context and skips the orientation a fresh fixer pays. Several tasks
 >    with findings in one wave resume one at a time (shared worktree).
->    Re-review by resuming the reviewer with the fix commits' package;
->    repeat until both verdicts are clean. A fresh fixer when the executor
+>    Re-review by resuming the reviewer with the fix commits' package
+>    (`scripts/review-package PLAN_FILE FIX_BASE FIX_HEAD` — the fix range:
+>    the reviewer already holds the task's original package, and a deferred
+>    task's fix lands past its siblings' commits); repeat until both
+>    verdicts are clean. A fresh fixer when the executor
 >    cannot be resumed, or when its frame is the problem — two failed
 >    re-reviews is the usual sign. Record Minor findings in the ledger —
 >    the final review triages that list, so it is read, not discarded. Fix
@@ -161,14 +164,32 @@ reproduces today's cadence where the plan gives it no siblings.
 > yourself and re-dispatch, or split the task.
 
 The final-whole-branch-review paragraph and "name the model in every
-dispatch" are unchanged. Executor statuses, BLOCKED: "reasoning capacity
-(sonnet → opus; from opus, resolve the hard call in the brief)". The two
+dispatch" are unchanged. Executor statuses, DONE — the old "review package
+→ task reviewer" contradicted step 4's deferral: "**DONE** → review at the
+frontier (step 4): package and reviewer now when something downstream
+consumes the task or an early-review reason applies, otherwise it waits for
+the wave." BLOCKED: "reasoning capacity (sonnet → opus; from opus,
+resolve the hard call in the brief)". The two
 prompt templates' `[MODEL]` placeholders read "opus at high reasoning effort
 per SKILL.md Model Selection (sonnet for a simple task; never the top tier)";
 executor-prompt.md's escalation sentence becomes "The controller can provide
 more context, resolve the hard call in your brief, move the task to a
 stronger worker tier where one exists, or break the task into smaller
 pieces."
+
+**task-reviewer-prompt.md**, Diff Under Review: `[HEAD_SHA]` is documented
+as "the task's last commit — the package's head", and an optional line
+follows **Head:** in the block —
+
+>     **Checkout:** [CHECKOUT_SHA] — the shared tree sits here, past this
+>     task's head; landed since: [SINCE]
+
+— filled for a deferred review with the sibling commits and files that
+landed since the packaged head, and omitted when the checkout is at
+`[HEAD_SHA]`. The fallback `git diff [BASE_SHA]..[HEAD_SHA]` stays: it is
+task-scoped. One added sentence tells the reviewer that a check which must
+see the task's own tree runs in the detached worktree the controller names
+(step 4), not in this moved-on checkout.
 
 **Dispatch hygiene**, the fix-message bullet:
 
@@ -179,6 +200,20 @@ pieces."
 >   executor's view of the tree ends at its own HEAD: name what landed
 >   since (commits and files) and have it re-read before editing; its
 >   covering tests include sibling suites touching the same files.
+
+Two more hygiene bullets change — what a deferred review's dispatch carries,
+and the range a re-review's package spans:
+
+> - The task reviewer gets three paths — brief, report, review package — plus
+>   the plan's binding constraints copied verbatim (exact values, formats,
+>   stated relationships) and, for a deferred review, the checkout head and
+>   what landed since (the template's Checkout line). Its template already
+>   carries the process rules.
+> - `review-package` BASE is the commit you recorded before dispatching the
+>   executor — never `HEAD~1`, which silently drops all but the last
+>   commit of a multi-commit task. A re-review's BASE is the ledger's
+>   `fix-base` — the HEAD when the fix dispatched — so the package is the
+>   fix alone.
 
 **Durable progress** — with frontier review, several tasks can be executed
 but unreviewed at once, and the old resume rule ("resume at the first task
@@ -196,13 +231,17 @@ skill's own named most-expensive failure. The ledger bullets become:
 >   <handle>)`; add `head <sha7>` when the executor returns and
 >   `reviewer <handle>` when the review dispatches — a fix resumes those
 >   handles, and after compaction the ledger is the only place they
->   survive.
-> - When a task's review comes back clean, append
->   `Task N: complete (commits <base7>..<head7>, review clean)`.
+>   survive. When a fix dispatches append `fix-base <sha7>` (the HEAD at
+>   that moment) and `fix-head <sha7>` when it lands: a deferred task's
+>   fix commits sit past its siblings', so `base..head` no longer bounds
+>   the task's history.
+> - When a task's review comes back clean, append `Task N: complete
+>   (commits <base7>..<head7>[, fix <base7>..<head7>], review clean)`.
 
-Unchanged: pre-flight; ⚠️ resolution by the controller; the other dispatch
-hygiene bullets (including the final-review fix wave's single fixer); the
-reviewer prompt's contract; the final whole-branch review; Integration.
+Unchanged: pre-flight; ⚠️ resolution by the controller; the remaining
+dispatch hygiene bullets (including the final-review fix wave's single
+fixer); the reviewer prompt's rubric, tests rule, and output format; the
+final whole-branch review; Integration.
 
 ## §3 Telemetry, baseline, and the monitoring protocol
 
@@ -272,8 +311,10 @@ in skill text — it is the monitoring window's, not the method's.
    smallest unit" skills/writing-plans/SKILL.md` prints `1`; the Task
    Structure `Consumes:` line names the producing task.
 2. `skills/subagent-driven-execution/SKILL.md` carries the §2 text (loop
-   steps 3–5, model selection, the fix-message bullet, the three ledger
-   bullets); both prompt templates' `[MODEL]` placeholders and
+   steps 3–5, model selection, the DONE status line, the fix-message and
+   two changed hygiene bullets, the three ledger bullets);
+   task-reviewer-prompt.md carries the Checkout line and its placeholder
+   docs; both prompt templates' `[MODEL]` placeholders and
    executor-prompt.md's escalation sentence read as §2 states.
 3. Wording smoke check (doperpowers:writing-skills micro-test, three reps —
    a smoke check on the wording's binding effect, not the eval; the eval is
@@ -430,6 +471,23 @@ in skill text — it is the monitoring window's, not the method's.
   rather than run something outside it.
   Date/Author: 2026-08-21 / fable session (codex finding adopted)
 
+- Decision: fix loops record their own commit range (fix-base/fix-head)
+  and re-review packages cover only that range.
+  Rationale: a deferred task's fix lands after sibling commits; the
+  original base..head no longer bounds it, and a package from the original
+  base would drag siblings into a task-scoped re-review.
+  Date/Author: 2026-08-21 / fable session (codex finding adopted)
+
+- Decision: declined — codex round 3 asked for adversarial before/after
+  pressure evals (a real run exercising deferred review, fixes, and
+  compaction) before release.
+  Rationale: the human chose adopt-now-and-monitor as the evidence path
+  (first Decision Log entry); the monitored next features are exactly that
+  before/after run on real work, with reopen criteria pre-stated in §3; the
+  smoke checks cover the wording's binding effect. Recorded so the
+  disagreement is visible, not relitigated.
+  Date/Author: 2026-08-21 / fable session
+
 ## Surprises & Discoveries
 
 - Observation: across the four runs reviewer time equals or exceeds executor
@@ -534,3 +592,7 @@ Pending — written at finish.
 - v1.4 (2026-08-21): codex round 2 adopted — deferred-review tree clause;
   telemetry recognizes task-prefixed noun descriptions; dispatch-count
   citations corrected.
+- v1.5 (2026-08-21): codex round 3 — fix-range ledger and re-review
+  packaging, DONE routes through the frontier, reviewer template gains
+  task-head/checkout-head; eval-before-release finding recorded as
+  declined.

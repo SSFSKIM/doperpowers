@@ -72,8 +72,11 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    wrote the code — resume it with the findings; it holds the task's
    context and skips the orientation a fresh fixer pays. Several tasks
    with findings in one wave resume one at a time (shared worktree).
-   Re-review by resuming the reviewer with the fix commits' package;
-   repeat until both verdicts are clean. A fresh fixer when the executor
+   Re-review by resuming the reviewer with the fix commits' package
+   (`scripts/review-package PLAN_FILE FIX_BASE FIX_HEAD` — the fix range:
+   the reviewer already holds the task's original package, and a deferred
+   task's fix lands past its siblings' commits); repeat until both
+   verdicts are clean. A fresh fixer when the executor
    cannot be resumed, or when its frame is the problem — two failed
    re-reviews is the usual sign. Record Minor findings in the ledger —
    the final review triages that list, so it is read, not discarded. Fix
@@ -112,7 +115,9 @@ session's, usually the most expensive.
 
 ## Executor statuses
 
-- **DONE** → review package → task reviewer.
+- **DONE** → review at the frontier (step 4): package and reviewer now
+  when something downstream consumes the task or an early-review reason
+  applies, otherwise it waits for the wave.
 - **DONE_WITH_CONCERNS** → read the concerns first: correctness or scope
   concerns get addressed before review; observations ride along to it.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
@@ -146,10 +151,14 @@ pasted prior-task history):
   status, commits, a one-line test summary, and concerns.
 - The task reviewer gets three paths — brief, report, review package — plus
   the plan's binding constraints copied verbatim (exact values, formats,
-  stated relationships). Its template already carries the process rules.
+  stated relationships) and, for a deferred review, the checkout head and
+  what landed since (the template's Checkout line). Its template already
+  carries the process rules.
 - `review-package` BASE is the commit you recorded before dispatching the
   executor — never `HEAD~1`, which silently drops all but the last
-  commit of a multi-commit task.
+  commit of a multi-commit task. A re-review's BASE is the ledger's
+  `fix-base` — the HEAD when the fix dispatched — so the package is the
+  fix alone.
 - Let the reviewer judge: don't pre-rate severity or list things not to
   flag ("don't treat X as a defect", "at most Minor") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
@@ -188,9 +197,12 @@ expensive failure observed. The ledger file, not your todos, is the record:
   <handle>)`; add `head <sha7>` when the executor returns and
   `reviewer <handle>` when the review dispatches — a fix resumes those
   handles, and after compaction the ledger is the only place they
-  survive.
-- When a task's review comes back clean, append
-  `Task N: complete (commits <base7>..<head7>, review clean)`.
+  survive. When a fix dispatches append `fix-base <sha7>` (the HEAD at
+  that moment) and `fix-head <sha7>` when it lands: a deferred task's
+  fix commits sit past its siblings', so `base..head` no longer bounds
+  the task's history.
+- When a task's review comes back clean, append `Task N: complete
+  (commits <base7>..<head7>[, fix <base7>..<head7>], review clean)`.
 - After compaction, trust the ledger and `git log` over your own
   recollection. (`git clean -fdx` destroys the workspace — recover from
   `git log`.)
