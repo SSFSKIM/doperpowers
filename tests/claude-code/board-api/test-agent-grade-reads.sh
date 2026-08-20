@@ -280,8 +280,9 @@ t "--bodies is one hydration read beside the search walk" "reqs=[2]" reqs
 
 # ---- board-search.sh: gh arm ----
 GH_REPO="$(mkrepo)"   # no board.json → gh binding
-# env -u BOARD_REPO: the spelling drill pins the bare form; a BOARD_REPO in
-# the suite's environment would legitimately add `-R <repo>` and break it.
+# env -u BOARD_REPO: `-R` is unconditional, so the spelling drill pins the slug
+# _lib.sh resolves from the stub's `gh repo view` (o/r); a BOARD_REPO in the
+# suite's environment would be spelled there instead and break it.
 ghverb() { (cd "$GH_REPO" && env -u BOARD_REPO PATH="$GHSTUB:$PATH" "$SCRIPTS/board-search.sh" "$@"); }
 t "gh arm delegates across all states" \
   "GH-INVOKED: issue list --state all --limit 200 -R o/r --search walker" \

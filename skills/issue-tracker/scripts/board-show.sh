@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# board-show.sh — one ticket in full. API mode: header, statement of work (body), timeline. gh mode: node JSON, issue URL, bound daemon.
+# board-show.sh — one ticket in full. API mode: header, statement of work
+# (body), timeline. gh mode: node JSON, issue URL, bound daemon.
 #
 # Usage: board-show.sh <number>
 #
