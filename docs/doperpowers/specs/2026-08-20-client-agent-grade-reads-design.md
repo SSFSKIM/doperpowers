@@ -267,11 +267,54 @@ spellings mirror API.md (see Delegated unknowns).
 
 ## Surprises & Discoveries
 
-(running)
+- **The integration tier doubled as this epic's real-server acceptance.**
+  With `ARKHO_DIR` pointing at an arkho checkout already carrying the
+  agent-grade reads server (main, post arkho#17/#18), the pre-existing
+  8-test board-api integration tier drove the new client against the
+  real service on a scratch Postgres — 8/8 PASS. The mock tier proved
+  the wire contract; this proved the live one, unplanned and free.
+- **Docker's credential helper hangs (not fails) in headless shells.**
+  The integration harness defaults to `postgres:16`; the image was
+  absent locally, the pull consulted the macOS keychain, and the
+  credential helper blocked forever in a sandboxed background shell —
+  each of 8 tests burned its full 900s timeout (~2h) before
+  `A2_PG_IMAGE=postgres:17` (image already local, no credential path)
+  ran the tier clean in about a minute.
+- **A stale brief is a real controller failure mode.** Task 4's brief
+  was extracted before the Task-2 plan sync landed, so it still said
+  `--state open`; the implementer caught the contradiction against the
+  dispatch record and shipped the adjudicated spelling. Briefs must be
+  re-extracted after any plan sync that touches later tasks.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped as intended, v7.58.0. The client now speaks the whole
+agent-grade read surface arkho#12 opened: `tickets_search` /
+`include_body` helpers with the 20-id chunk cap, the client-side
+claim-gate guard (a run bearer dies pre-request with the same verdict
+the server would 403), the `board-search.sh` verb on both bindings,
+body consumption in `board-show.sh` with the run-context degrade, and
+SKILL.md prose routing dedup/prior-art checks through one verb. 41 new
+mock drills; hermetic suite green throughout; the 8-test integration
+tier passed against the real server as an unplanned live acceptance.
+
+Two contract points moved during execution and are Decision Log/v1.3
+entries, not drift: the gh arm searches all states, and `--` makes
+negation-leading queries reachable. Both surfaced by task review,
+adjudicated by the controller as reversible, and carried into spec,
+verb, prose, and drills together.
+
+Gaps carried forward: the suite's `t`/`nt` helpers still assert output
+substrings only (exit codes hand-confirmed this epic; a suite-wide `rc`
+helper plus `BOARD_RUN_TOKEN` hermeticity is filed as a follow-up), and
+acceptance item 4's byte-identity half remains a server-side invariant
+proven by arkho's drills, by design.
+
+Lessons: the empirically-verified plan (a reviewer building and running
+the plan in a scratch repo) caught five would-be Critical harness
+defects before any implementer saw them — cheapest review of the epic;
+and the final whole-branch reviewer triaging a ledgered Minor list
+turned nine deferred judgment calls into dispositions instead of noise.
 
 ## Revision Notes
 
