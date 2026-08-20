@@ -8,8 +8,9 @@ again, and the controller composes a dispatch, reads a report, adjudicates
 smallest unit that carries its own test cycle and is worth a fresh reviewer's
 gate" — maximizes the number of those boundaries. Telemetry over the last four
 real runs (§3) shows where the time actually goes: reviewer time often equals
-or exceeds executor time, fixer dispatches outnumber executors, and practice
-has already drifted to fewer, larger tasks than the rule describes. This
+or exceeds executor time, fixer dispatches are of the same order as
+executor dispatches — each a fresh orientation — and practice has already
+drifted to fewer, larger tasks than the rule describes. This
 design moves the doctrine to where practice is heading and removes two
 structural repetitions of orientation — per-task review when nothing
 downstream needs it yet, and fresh fixers where the executor that wrote the
