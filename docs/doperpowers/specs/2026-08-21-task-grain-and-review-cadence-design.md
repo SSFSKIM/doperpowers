@@ -205,16 +205,16 @@ dispatch list. Subagent transcripts are read from
 `<transcript-dir>/<session-id>/subagents/`.
 
 **Baseline** — the four controlled-track runs of 2026-08-18..20 (session
-`e92c7422`, all workers opus; times are summed dispatch durations; run B's
+`e92c7422`, all workers opus; times are summed dispatch spans, with active time — idle gaps over 15 minutes excluded, the measure monitoring rows compare against — in parentheses; run B's
 reviewer time includes one review inflated to 3h47m by the 2026-08-18 opus
 incident):
 
-| Run | Tasks | Dispatches | Executor n / time | Reviewer n / time | Fixer n / time | Tasks needing a fix | Span (first executor → last task-level dispatch) |
+| Run | Tasks | Dispatches | Executor n / span (active) | Reviewer n / span (active) | Fixer n / span (active) | Tasks needing a fix | Span (first executor → last task-level dispatch) |
 |---|---|---|---|---|---|---|---|
-| A arkho#11 read-surface | 11 | 37 | 11 / 1h50m | 10 / 3h39m | 16 / 2h18m | 9 of 10 | 9h50m (incl. PR-review fix waves) |
-| B dp PR #74 paged-reads | 7 | 22 | 8 / 6h01m | 7 / 5h09m* | 6 / 1h21m | 2 of 7 | 8h13m |
-| C arkho#17 search | 6 | 17 | 6 / 2h03m | 7 / 0h38m | 3 / 0h32m | 2 of 6 | 3h34m |
-| D dp PR #76 client reads | 5 | 14 | 5 / 0h45m | 5 / 0h42m | 3 / 0h12m | 1 of 5 | 3h59m (1h33m to last task) |
+| A arkho#11 read-surface | 11 | 37 | 11 / 1h49m (1h49m active) | 10 / 3h39m (3h15m active) | 14 / 2h05m (2h05m active) | 9 of 10 | 9h50m (incl. PR-review fix waves) |
+| B dp PR #74 paged-reads | 7 | 22 | 8 / 6h00m (3h29m active) | 7 / 5h08m (2h04m active)* | 5 / 1h14m (1h14m active) | 2 of 7 | 8h13m |
+| C arkho#17 search | 6 | 17 | 6 / 2h02m (2h02m active) | 7 / 0h38m (0h38m active) | 2 / 0h30m (0h30m active) | 2 of 6 | 3h34m |
+| D dp PR #76 client reads | 5 | 14 | 5 / 0h44m (0h44m active) | 5 / 0h42m (0h42m active) | 2 / 0h11m (0h11m active) | 1 of 5 | 3h59m (1h33m to last task) |
 
 The collector now also reports active time per dispatch and per role —
 the span with idle gaps over 15 minutes excluded, so a resumed agent's
