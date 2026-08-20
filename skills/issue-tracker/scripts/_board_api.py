@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import NoReturn
 
@@ -251,6 +252,7 @@ def timeline(tid, principal="human"):
 
 _PAGE_LIMIT = 200   # explicit limit= is the envelope opt-in
 _MAX_IDS = 200      # documented ids= cap (arkho API.md §1)
+_MAX_BODY_IDS = 20  # include=body chunk cap (arkho API.md §1)
 _SURFACE = {"proven": False}   # per-process: has any envelope read succeeded?
 
 
@@ -312,7 +314,21 @@ def _walk(base, principal):
         followed.add(cursor)
 
 
-def ticket(tid, principal="human"):
+def _claim_gated(what):
+    """q and include=body are refused to run bearers server-side
+    (arkho#12): a run's statement of work arrives in its claim payload,
+    and a run's search would be a term-membership oracle over body text
+    it cannot read. token() speaks as the run whenever BOARD_RUN_TOKEN
+    is set, so the refusal is deterministic — die here, before any
+    request, with the reason instead of a bare `forbidden`."""
+    if os.environ.get("BOARD_RUN_TOKEN"):
+        die("%s is claim-gated for runs (arkho#12): this process speaks "
+            "as its run (BOARD_RUN_TOKEN is set) and the server refuses "
+            "q/include=body to run bearers — a run reads its statement "
+            "of work from the claim payload" % what)
+
+
+def ticket(tid, principal="human", include_body=False):
     """GET /tickets/{id}. None = the ticket does not exist, and that answer
     is AUTHORITATIVE (action-grade) — unlike walk absence, which is
     report-grade (spec § Helper primitives). Rollback guard: route-level and
@@ -324,6 +340,9 @@ def ticket(tid, principal="human"):
     probe cannot retroactively make it so, so the read is re-issued and the
     second answer is the one returned."""
     path = "/tickets/%s" % int(tid)
+    if include_body:
+        _claim_gated("include=body")
+        path += "?include=body"
     out = request("GET", path, principal=principal, absent=("not-found",))
     if out is None and not _SURFACE["proven"]:
         # The probe is held to the FULL envelope, not merely to carrying an
@@ -351,17 +370,28 @@ def ticket(tid, principal="human"):
     return out
 
 
-def tickets_by_ids(ids, principal="human"):
+def tickets_by_ids(ids, principal="human", include_body=False):
     """ids= batch read, chunked at the documented cap. Returns {int_id: row}.
     An id absent from the completed result is authoritatively absent — a
     targeted read, not a walk. (The board has no delete path today, so an
-    absent id here means the id never named a ticket.)"""
+    absent id here means the id never named a ticket.)
+
+    include_body hydrates each row's statement of work: the chunk cap
+    drops to the server's 20-id bound and `include=body` rides each
+    chunk's read. The 8 MiB serialized budget is not a reachable bound at
+    this toolkit's body sizes (KBs) — a budget 400 passes through as the
+    server's own message (spec Decision Log)."""
+    if include_body:
+        _claim_gated("include=body")
     ids = [int(i) for i in ids]
     out = {}
-    for i in range(0, len(ids), _MAX_IDS):
-        chunk = ids[i:i + _MAX_IDS]
+    cap = _MAX_BODY_IDS if include_body else _MAX_IDS
+    for i in range(0, len(ids), cap):
+        chunk = ids[i:i + cap]
         base = "/tickets?limit=%d&ids=%s" % (
             _PAGE_LIMIT, ",".join(str(c) for c in chunk))
+        if include_body:
+            base += "&include=body"
         for row in _walk(base, principal):
             out[int(row["id"])] = row
     return out
@@ -375,6 +405,24 @@ def tickets_all(states=None, principal="human"):
     Dedupe: a moved row can also be re-served — later data wins, first-seen
     position kept (dict overwrite)."""
     base = "/tickets?limit=%d" % _PAGE_LIMIT
+    if states:
+        base += "&states=%s" % states
+    seen = {}
+    for row in _walk(base, principal):
+        seen[int(row["id"])] = row
+    return list(seen.values())
+
+
+def tickets_search(q, states=None, principal="automation"):
+    """Complete cursor walk of /tickets?q= — the server's websearch filter
+    over title+body (arkho#12: unquoted terms AND, `or`, `-` negation,
+    quoted phrases; the grammar is the server's to judge). Report-grade
+    completeness and id-keyed dedupe, same as tickets_all. The query
+    rides urlencoded inside ONE parameter — quote(q, safe=""), never
+    quote_plus, whose space-as-+ is a different wire spelling."""
+    _claim_gated("search (?q=)")
+    base = "/tickets?limit=%d&q=%s" % (
+        _PAGE_LIMIT, urllib.parse.quote(q, safe=""))
     if states:
         base += "&states=%s" % states
     seen = {}
