@@ -212,7 +212,9 @@ pick by repo visibility:
    Claude-harness daemon; the engine names only its model route (`codex` =
    the clodex gateway settings, GPT models through the local proxy;
    `claude` = plain Claude models). Label `engine:codex` to put one ticket
-   back on the gateway; `engine:claude` is redundant now but still valid.
+   back on the gateway; `engine:claude` is redundant only while no
+   `WORKER_ENGINE` override is set — under `WORKER_ENGINE=codex` it is the
+   one per-ticket way back onto plain Claude, so it is never safe to strip.
    Render the spawn bootstrap
    (`doperpowers:executing` `references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
