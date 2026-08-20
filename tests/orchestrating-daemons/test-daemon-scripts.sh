@@ -120,6 +120,13 @@ if [ $has_bg -eq 1 ]; then
     echo "stub: simulated --bg launch failure" >&2
     exit 1
   fi
+  # STUB_LINGER backgrounds a child that outlives this stub holding every fd
+  # the stub inherited EXCEPT stdout/stderr — the stand-in for the detached
+  # --bg agent process. The resume-mutex tests use it to prove the lock fd
+  # never rides the fork. stdout must be detached or the child pins the
+  # banner pipe open and the command substitution blocks until it dies —
+  # which also means it would be dead before the assertion runs (vacuous).
+  [ "${STUB_LINGER:-0}" = "1" ] && { sleep 5 >/dev/null 2>&1 & }
   n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
@@ -360,6 +367,44 @@ assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop $SHORT1" "second resu
     || fail "second resume purges the middle turn's transcript"
 SHORT2="$(meta_field short)"
 assert_contains "$("$SCRIPTS_DIR/daemon-list.sh")" "$SHORT2" "list SHORT column shows the current turn's short"
+
+# ---- 4a) one resume per daemon at a time (dp#66) -------------------------------
+# Two concurrent resumes of the same daemon race the current-chain: both fork
+# from the same turn, one fork is purged or orphaned, and status/current land
+# on whichever wrote last (observed: two wrappers holding a 5h watch on a dead
+# fork while the ticket sat silent). The mutex is a per-daemon flock held for
+# the wrapper's lifetime — kernel-released on death, so a dead holder can
+# never wedge a successor.
+echo "resume mutex:"
+RLOCK="$DAEMON_HOME/$UUID.resume.lock"
+HELD="$TEST_ROOT/rlock-held"
+RLOCK="$RLOCK" HELD="$HELD" python3 - <<'PY' & rlock_pid=$!
+import fcntl, os, time
+f = open(os.environ['RLOCK'], 'a')
+fcntl.flock(f, fcntl.LOCK_EX)
+open(os.environ['HELD'], 'w').write('held')
+time.sleep(4)
+PY
+while [ ! -f "$HELD" ]; do sleep 0.01; done
+CALLS_BEFORE="$(wc -l < "$STUB_STATE/log/calls.log")"
+if TWIN_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$SHORT2" "twin attempt" 2>&1)"; then
+    fail "a second in-flight resume is refused"
+else pass "a second in-flight resume is refused"; fi
+assert_contains "$TWIN_OUT" "already in flight" "the refusal says a resume is in flight"
+assert_equals "$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')" "$(tr -d ' ' <<<"$CALLS_BEFORE")" \
+    "the refused twin never reaches the claude CLI (no stop, no fork)"
+assert_contains "$(cat "$DAEMON_HOME/$UUID.json")" '"status": "idle"' \
+    "the refused twin leaves the meta untouched"
+kill "$rlock_pid" 2>/dev/null || true; wait "$rlock_pid" 2>/dev/null || true
+# The holder is DEAD now (kernel released its flock) and the lockfile is still
+# on disk — a successor must sail through: liveness is the lock, not the file.
+RESUME3_OUT="$(STUB_LINGER=1 "$SCRIPTS_DIR/daemon-resume.sh" "$SHORT2" "after the holder died" 2>&1)" || true
+assert_contains "$RESUME3_OUT" "ANSWER:after the holder died" "a dead holder's lockfile does not wedge the successor"
+# STUB_LINGER left a backgrounded child of the forked agent alive. The lock fd
+# must not leak into the fork: if it did, that child still holds the mutex and
+# this next resume — the sweep's stall-recovery shape — would be refused.
+RESUME4_OUT="$("$SCRIPTS_DIR/daemon-resume.sh" "$(meta_field short)" "lock must not ride the fork" 2>&1)" || true
+assert_contains "$RESUME4_OUT" "ANSWER:lock must not ride the fork" "the forked agent does not inherit the mutex"
 
 # ---- 4b) gateway settings/effort dimension ------------------------------------
 # A daemon spawned with DAEMON_CLAUDE_SETTINGS/DAEMON_CLAUDE_EFFORT must carry
