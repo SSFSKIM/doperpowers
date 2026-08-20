@@ -13,9 +13,9 @@
 - A run context (`BOARD_RUN_TOKEN` set) NEVER sends `q` or `include=body`: the claim-gate guard dies client-side, before any request, with a message containing `claim-gated` (spec §1 — `token()` always speaks as the run, and the server 403s the class).
 - Body hydration chunks at `_MAX_BODY_IDS = 20` (arkho API.md §1); plain `ids=` reads keep `_MAX_IDS = 200`. Rows carry `body` iff requested.
 - `q` is urlencoded with `urllib.parse.quote(q, safe="")` — never `quote_plus` (space is `%20`, not `+`).
-- The search verb's API arm spans ALL states by default, prints rows in server order as `#<id> <state> <priority> <title>`; `--bodies` hydrates the FIRST ≤20 hits in exactly one budgeted read, hydration completing BEFORE any row prints.
-- gh arm: delegate spelling is exactly `gh issue list --state open --limit 200 -R "$BOARD_REPO" --search "<query>"` (`-R` unconditional; `_lib.sh` resolves `BOARD_REPO` from the checkout when unset); `--states` is refused (stderr note, exit 2); `--bodies` is a stderr note and the search proceeds.
-- An empty, missing, or whitespace-only query (trimmed before the check) is a usage error: stderr usage, exit 2, zero requests.
+- The search verb's API arm spans ALL states by default, prints rows in server order as `#<id> <state> <priority> <title>`; `--bodies` hydrates the FIRST ≤20 hits in exactly one budgeted read, hydration completing BEFORE any output at all — the header included, so a hydration death leaves no partial listing.
+- gh arm: delegate spelling is exactly `gh issue list --state all --limit 200 -R "$BOARD_REPO" --search "<query>"` (`--state all` because a closed hit is the prior-art evidence the check exists to find, matching the API arm; `-R` unconditional — `_lib.sh` resolves `BOARD_REPO` from the checkout when unset); `--states` is refused (stderr note, exit 2); `--bodies` is a stderr note and the search proceeds.
+- An empty, missing, or whitespace-only query (trimmed before the check) is a usage error: stderr usage, exit 2, zero requests. So is `--states` with an empty value (an assigned empty string would silently widen back to all states). A query that LEADS with the `-` negation rides behind the `--` end-of-options escape.
 - `mock-server.py` stays fixture-driven — no behavioral additions to the mock; new coverage is fixture worlds + request-log assertions in the new test file. Nothing asserts on the mock itself.
 - Budget 400s pass through as the server's message — no fallback code (spec Decision Log).
 - Every new POSITIVE drill must fail against the parent commit (naming signature — record which assertion discriminates). Negative controls (`nt` drills, the `reqs=[0]` guards) pass in both directions by construction — record them as such rather than chasing a red they cannot produce.
@@ -341,25 +341,30 @@ git commit -m "feat(board-client): tickets_search, include_body hydration, and t
 # board-search.sh — full-text ticket search for the pre-registration dedup /
 # prior-art check (query by SEAM: file paths, function names, table names).
 #
-# Usage: board-search.sh <query> [--states s1,s2] [--bodies]
+# Usage: board-search.sh [--states s1,s2] [--bodies] [--] <query>
 #
 # API mode speaks the paged surface's ?q= (arkho#12): websearch grammar —
 # unquoted terms AND, `or` = OR, `-` negation, quoted phrases — judged
-# server-side. Rows print in SERVER order across ALL states (a done/wontfix
-# hit is prior-art evidence). --states narrows via the promoted filter.
+# server-side. A query that LEADS with the negation `-` rides behind `--`
+# (board-search.sh -- "-deprecated migration"); without it the leading dash
+# reads as a flag. Rows print in SERVER order across ALL states (a done/wontfix
+# hit is prior-art evidence). --states narrows via the promoted filter (an
+# empty value is a usage error, not a silent widening back to all states).
 # --bodies hydrates the FIRST ≤20 hits (exactly one budgeted read) and
 # prints each body indented under its row; hydration completes BEFORE any
-# row prints, so a mid-hydration death leaves no half-printed listing.
+# output at all, so a mid-hydration death leaves no partial listing.
 # Claim-gated: a run context (BOARD_RUN_TOKEN) dies before any request —
 # a run cannot search (its statement of work arrives in the claim payload).
 #
-# gh mode delegates to the proven spelling `gh issue list --state open
-# --limit 200 -R "$BOARD_REPO" --search <query>` (the explicit --limit
-# matters: the default caps at 30 and truncates silently; -R is
-# unconditional — _lib.sh resolves BOARD_REPO from the checkout when unset,
-# the board-comment.sh precedent). gh's search already matches bodies,
-# so --bodies is a stderr note and the search proceeds; --states is refused
-# (exit 2) — gh's OPEN/CLOSED is not the board's state vocabulary.
+# gh mode delegates to `gh issue list --state all --limit 200
+# -R "$BOARD_REPO" --search <query>`. --state all because a closed hit IS the
+# prior-art evidence this verb exists to find — the same reason the API arm
+# spans every state. The explicit --limit matters: the default caps at 30 and
+# truncates silently; -R is unconditional — _lib.sh resolves BOARD_REPO from
+# the checkout when unset, the board-comment.sh precedent. gh's search already
+# matches bodies, so --bodies is a stderr note and the search proceeds;
+# --states is refused (exit 2) — gh's OPEN/CLOSED is not the board's state
+# vocabulary.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -368,9 +373,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 query="" states="" bodies=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --states) [ $# -ge 2 ] || { usage_from_header "$0" >&2; exit 2; }
+    # An empty value is refused with the missing one: `--states ""` is
+    # indistinguishable from "flag absent" once assigned, and silently
+    # widening back to all states is not what that caller asked for.
+    --states) [ $# -ge 2 ] && [ -n "$2" ] || { usage_from_header "$0" >&2; exit 2; }
               states="$2"; shift 2 ;;
     --bodies) bodies=1; shift ;;
+    # End of options — the one route to a query that leads with the `-`
+    # negation, which the arm below would otherwise read as a flag.
+    --) shift
+        [ $# -eq 1 ] && [ -z "$query" ] || { usage_from_header "$0" >&2; exit 2; }
+        query="$1"; shift ;;
     -*) usage_from_header "$0" >&2; exit 2 ;;
     *) [ -n "$query" ] && { usage_from_header "$0" >&2; exit 2; }
        query="$1"; shift ;;
@@ -391,15 +404,16 @@ rows = A.tickets_search(os.environ["T_Q"],
                         states=os.environ["T_STATES"] or None,
                         principal="automation")
 states = os.environ["T_STATES"]
-print("# %d hit(s), server order, %s" %
-      (len(rows), ("states=%s" % states) if states else "all states"))
 hydrate = rows[:A._MAX_BODY_IDS]   # the first budgeted read's worth
 bodies = {}
 if os.environ["T_BODIES"] == "1" and hydrate:
-    # Hydration completes BEFORE any row prints: a death here (budget 400,
-    # transport) may not leave a half-printed listing.
+    # Hydration completes BEFORE anything prints — the header included: a
+    # death here (budget 400, transport) leaves NO listing rather than a
+    # partial one, which is why the header waits below.
     bodies = A.tickets_by_ids([t["id"] for t in hydrate],
                               principal="automation", include_body=True)
+print("# %d hit(s), server order, %s" %
+      (len(rows), ("states=%s" % states) if states else "all states"))
 for t in rows:
     print("#%s %s %s %s" % (t["id"], t["state"],
                             t.get("priority") or "-", t["title"]))
@@ -417,7 +431,7 @@ fi
 # gh mode.
 [ -z "$states" ] || { echo "board-search: --states is API-binding only — gh's OPEN/CLOSED is not the board's state vocabulary" >&2; exit 2; }
 [ "$bodies" -eq 0 ] || echo "board-search: gh search already matches bodies — --bodies noted, proceeding" >&2
-exec gh issue list --state open --limit 200 -R "$BOARD_REPO" --search "$query"
+exec gh issue list --state all --limit 200 -R "$BOARD_REPO" --search "$query"
 ```
 
 - [ ] **Step 2: Append the verb drills** to `tests/claude-code/board-api/test-agent-grade-reads.sh`, before `finish`:
@@ -455,13 +469,23 @@ verb_as_run() {  # same, speaking as a run
 world verb-search <<JSON
 [
  {"method":"GET","path":"/tickets?limit=200&q=walker","status":200,
-  "body":{"items":[$(row 4 done "walker prior art"),
-                   $(row 9 in-progress "walker live")],"next":null,"as_of":7}}
+  "body":{"items":[$(row 4 "done" "walker prior art"),
+                   $(row 9 "in-progress" "walker live")],"next":null,"as_of":7}}
 ]
 JSON
 t "verb prints rows in server order with state visible" "#4 done" verb walker
 t "verb header says all states" "all states" verb walker
 nt "API arm never invokes gh" "GH-INVOKED" verb walker
+
+world verb-search-states <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker&states=done","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art")],"next":null,"as_of":7}}
+]
+JSON
+t "--states narrows the header" "server order, states=done" \
+  verb walker --states "done"
+t "--states rode the wire beside q" "q=walker&states=done" paths
 
 world verb-none <<JSON
 [
@@ -477,6 +501,24 @@ JSON
 t "an empty query is usage" "Usage:" verb ""
 t "a whitespace-only query is usage" "Usage:" verb "   "
 t "no usage error reached the wire" "reqs=[0]" reqs
+
+# ---- `--` ends the options: the ?q= negation grammar stays reachable ----
+world verb-dash <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=-alpha%20beta","status":200,
+  "body":{"items":[],"next":null,"as_of":3}}
+]
+JSON
+verb -- "-alpha beta" >/dev/null || true
+t "-- carries a negation-leading query to the wire" "q=-alpha%20beta" paths
+
+world verb-refusals <<JSON
+[]
+JSON
+t "a dash-leading query without -- is still usage" "Usage:" verb "-alpha beta"
+t "an empty --states value is usage, not a silent widening" "Usage:" \
+  verb walker --states ""
+t "neither refusal reached the wire" "reqs=[0]" reqs
 
 world verb-run-ctx <<JSON
 []
@@ -512,9 +554,11 @@ t "--bodies indents the hydrated statement under its row" \
 t "--bodies stops at the first 20 and says so" \
   "first 20 of 21 hits hydrated" verb crowded --bodies
 # reqs counts the CUMULATIVE world log — reset it and run once silently, or
-# the two verb calls above make this count 6, not 2.
+# the two verb calls above make this count 6, not 2. `|| true` for the same
+# reason the states setup above carries it: a broken verb must fail the
+# reqs= drill below, not abort the file before the gh arm ever runs.
 : > "$FIX.log"
-verb crowded --bodies >/dev/null
+verb crowded --bodies >/dev/null || true
 t "--bodies is one hydration read beside the search walk" "reqs=[2]" reqs
 
 # ---- board-search.sh: gh arm ----
@@ -522,14 +566,14 @@ GH_REPO="$(mkrepo)"   # no board.json → gh binding
 # env -u BOARD_REPO: the spelling drill pins the bare form; a BOARD_REPO in
 # the suite's environment would legitimately add `-R <repo>` and break it.
 ghverb() { (cd "$GH_REPO" && env -u BOARD_REPO PATH="$GHSTUB:$PATH" "$SCRIPTS/board-search.sh" "$@"); }
-t "gh arm delegates with the proven spelling" \
-  "GH-INVOKED: issue list --state open --limit 200 -R o/r --search walker" \
+t "gh arm delegates across all states" \
+  "GH-INVOKED: issue list --state all --limit 200 -R o/r --search walker" \
   ghverb walker
 t "gh arm --bodies notes and proceeds" "noted, proceeding" \
   ghverb walker --bodies
 t "gh arm --bodies still runs the search" "GH-INVOKED" ghverb walker --bodies
-t "gh arm --states is refused" "API-binding only" ghverb walker --states done
-nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states done
+t "gh arm --states is refused" "API-binding only" ghverb walker --states "done"
+nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states "done"
 ```
 
 - [ ] **Step 3: Run to verify the new drills fail** (verb absent):
@@ -706,7 +750,7 @@ stays the guard. Then triage the hits:
 - [ ] **Step 2: Toolkit table.** Insert a new row directly after the `board-list.sh` row:
 
 ```
-| `board-search.sh <query> [--states s1,s2] [--bodies]` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read). gh binding: `gh issue list --state open --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
+| `board-search.sh [--states s1,s2] [--bodies] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read); a query that leads with `-` rides behind `--`. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
 ```
 
 and replace the `board-show.sh` row (`| `board-show.sh <n>` | node + issue URL + bound daemon |`) with:

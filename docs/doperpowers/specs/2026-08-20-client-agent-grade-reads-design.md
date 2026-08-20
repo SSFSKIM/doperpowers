@@ -51,12 +51,19 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
 
 ## §2 New verb: `scripts/board-search.sh`
 
-    board-search.sh <query> [--states s1,s2] [--bodies]
+    board-search.sh [--states s1,s2] [--bodies] [--] <query>
 
 - An empty, missing, or whitespace-only `<query>` (trimmed before the
   check) is a usage error (stderr usage, exit 2)
   — the toolkit's arity-guard convention; the server's blank-`q` 400 is
   never the first line of defense for a caller this client can check.
+  `--states` with an empty value is refused the same way: an assigned
+  empty string is indistinguishable from an absent flag, so accepting it
+  would silently widen the search back to all states.
+- A query that LEADS with the `-` negation rides behind the `--`
+  end-of-options escape (`board-search.sh -- "-deprecated migration"`);
+  without it the leading dash reads as a flag and the grammar §2
+  advertises is unreachable from the command line.
 - **API arm**: `tickets_search` under the automation principal (as are
   the `--bodies` hydration reads). Prints one
   row per hit in server order — `#<id> <state> <priority> <title>` — under
@@ -66,15 +73,19 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
   `--states` passes through to the promoted filter. `--bodies` hydrates
   the FIRST ≤20 hits (exactly one budgeted read via
   `tickets_by_ids(..., include_body=True)`), and hydration completes
-  BEFORE any row prints — the module's materializing discipline: a
-  mid-hydration death may not leave a half-printed listing. Each
+  BEFORE any output at all — the header included — the module's
+  materializing discipline: a mid-hydration death leaves NO listing
+  rather than a partial one. Each
   hydrated hit's body prints indented under its row; hits beyond 20
   stay rows-only and the tail says so. An empty result is an empty
   listing, exit 0.
-- **gh arm**: delegates to the proven spelling —
-  `gh issue list --state open --limit 200 -R "$BOARD_REPO" --search
+- **gh arm**: delegates to
+  `gh issue list --state all --limit 200 -R "$BOARD_REPO" --search
   "<query>"` (the explicit `--limit` matters; the default truncates at
-  30 silently). `-R` is unconditional: `_lib.sh` resolves `BOARD_REPO`
+  30 silently). `--state all` matches the API arm: a closed hit is the
+  prior-art evidence the check exists to find, so an open-only gh arm
+  would answer a different question than the same verb on the other
+  binding. `-R` is unconditional: `_lib.sh` resolves `BOARD_REPO`
   from the checkout whenever it is unset, so a conditional spelling is
   unreachable — the `board-comment.sh` precedent.
   In gh mode `--bodies` is a stderr note and the search PROCEEDS
@@ -189,7 +200,7 @@ spellings mirror API.md (see Delegated unknowns).
 4. `board-show.sh <id>` (human/automation) prints header, body, timeline;
    the body is byte-identical to what `board-body.sh` last wrote.
 5. On a gh-bound repo, `board-search.sh <word>` delegates to
-   `gh issue list --state open --limit 200 -R <repo> --search "<word>"`;
+   `gh issue list --state all --limit 200 -R <repo> --search "<word>"`;
    `--bodies`
    notes on stderr and the search proceeds; `--states` is refused
    (stderr note, exit 2).
@@ -216,12 +227,16 @@ spellings mirror API.md (see Delegated unknowns).
   contracts).
 - **All-states default** (vs gh's open-only): a terminal hit is prior-art
   evidence — the dedup/prior-art check is exactly where `done` matters.
-  State prints on every row so triage stays informed. The gh arm
-  keeps the proven open-only spelling deliberately: gh's OPEN/CLOSED
-  cannot distinguish `done` from `wontfix`, and the spelling is the
-  prose-tested one — the same state-model mismatch that refuses
-  `--states` there. Rejected: open-only default (API arm) and
-  `--state all` (gh arm).
+  State prints on every row so triage stays informed. **Both** arms span
+  every state: the gh arm delegates `--state all`. v1.2 had it keep gh's
+  open-only default on a "proven spelling" rationale, but that lapsed
+  once §4 routed all prior-art prose through this one verb — the Task-2
+  review's purpose argument won instead: the check needs closed hits, and
+  which binding the caller happens to be on may not change the question
+  the verb answers. gh's state model still cannot distinguish `done` from
+  `wontfix`, which is why `--states` stays refused there — a coarse
+  all-states sweep is the honest delegate; a state *filter* would be a
+  lie. Rejected: open-only (either arm).
 - **Body default-on in `board-show`** (vs `--body` flag): the verb's
   charter is "one ticket in full"; Linear's issue view serves the
   description by default. The run-context degrade (claim-served line)
@@ -261,6 +276,10 @@ Pending — written at finish.
 ## Revision Notes
 
 - v1 (2026-08-20): initial design, approved in session (controlled track).
+- v1.3 (2026-08-20): Task-2 review adjudications — gh arm searches all
+  states (prior-art purpose outweighs the lapsed proven-spelling
+  rationale); `--` end-of-options escape for negation-leading queries;
+  empty `--states` value refused; header prints only after hydration.
 - v1.2 (2026-08-20): planning-discovered drift (plan verification review
   C3): the gh delegate spelling carries `-R "$BOARD_REPO"`
   unconditionally — `_lib.sh` always resolves the repo in gh mode, so
