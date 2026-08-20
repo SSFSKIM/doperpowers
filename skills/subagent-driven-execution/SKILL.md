@@ -6,8 +6,8 @@ description: Use when running an execution plan with independent tasks in the cu
 # Subagent-Driven Execution
 
 Execute a plan by dispatching a fresh executor subagent per task, a task
-review (spec compliance + code quality) after each, and a broad whole-branch
-review at the end.
+review (spec compliance + code quality) at each dependency frontier, and a
+broad whole-branch review at the end.
 
 **Why subagents:** each worker gets exactly the context its task needs — no
 session history, no other tasks' noise — and your own context stays free for
@@ -36,18 +36,33 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    a clean scan proceeds without comment.
 3. **Per task:** extract the brief (`scripts/task-brief PLAN_FILE N`),
    record BASE (the current commit), dispatch the executor
-   ([executor-prompt.md](executor-prompt.md)). Answer its questions
-   before it proceeds. One executor at a time — parallel executors
-   conflict in a shared worktree.
-4. On DONE: generate the review package
-   (`scripts/review-package PLAN_FILE BASE HEAD`), dispatch the task
-   reviewer ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the
-   printed path.
-5. **Findings:** dispatch a fix subagent for Critical/Important findings,
-   then re-review; repeat until both verdicts are clean. Record Minor
-   findings in the ledger — the final review triages that list, so it is
-   read, not discarded. Fix through a subagent, not your own edits: manual
-   fixes pollute your context and skip review.
+   ([executor-prompt.md](executor-prompt.md)) and note its agent handle
+   in the ledger — fixes resume it. Answer its questions before it
+   proceeds. One executor at a time — parallel executors conflict in a
+   shared worktree.
+4. **Review at the frontier:** a task is reviewed before any task that
+   consumes what it produced dispatches — the briefs' Interfaces name the
+   producers. Tasks nothing downstream consumes yet may keep executing and
+   are reviewed together when the frontier closes (the next task consumes
+   from them, or the plan ends): one review package per task
+   (`scripts/review-package PLAN_FILE BASE HEAD`, each task's own
+   BASE..HEAD), one task reviewer per task
+   ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the printed
+   path, dispatched in parallel — reviews are read-only. The frontier is
+   the ceiling on deferral, not the floor: a DONE_WITH_CONCERNS, a doubt
+   of your own, or a first task whose brief style the executor may have
+   misread are reasons to review now.
+5. **Findings:** Critical/Important findings go back to the executor that
+   wrote the code — resume it with the findings; it holds the task's
+   context and skips the orientation a fresh fixer pays. Several tasks
+   with findings in one wave resume one at a time (shared worktree).
+   Re-review by resuming the reviewer with the fix commits' package;
+   repeat until both verdicts are clean. Dispatch a fresh fixer only when
+   the executor cannot be resumed or its fix has failed re-review twice —
+   then the executor's own frame is the problem. Record Minor findings in
+   the ledger — the final review triages that list, so it is read, not
+   discarded. Fix through a worker, not your own edits: manual fixes
+   pollute your context and skip review.
 6. Mark the task complete in todos and the ledger; route anything that
    changed design understanding into the spec's living tail
    (doperpowers:execspec). Implementation noise stays in commit messages.
@@ -61,13 +76,15 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 ## Model selection
 
-Dispatch workers — executors, task reviewers, fixers — on the mid-tier
-model at high reasoning effort (Claude: sonnet, effort high). This default
-is empirical: cheap-tier executors take 2–3× the turns and cost more
-overall, and top-tier workers add cost without adding reliability — the
-plan and the brief absorb the difficulty, not the model. Escalate per
-incident: when a worker reports BLOCKED on reasoning capacity rather than
-missing context, re-dispatch that one task on a stronger model.
+Dispatch workers — executors, task reviewers, fixers — on opus at high
+reasoning effort; the task grain is calibrated to that tier. A simple
+task — a doc update, a mechanical rename, a verification walk with every
+command given — can go to sonnet. Never dispatch workers on the top tier
+(fable): it adds cost without adding reliability and is the controller's
+tier, not the worker's — the plan and the brief absorb the difficulty,
+not the model. When a worker reports BLOCKED on reasoning capacity rather
+than missing context, the difficulty moves into the brief: resolve the
+hard call yourself and re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: strongest
 available model, highest effort — it is the last gate before merge and the
@@ -83,8 +100,8 @@ session's, usually the most expensive.
   concerns get addressed before review; observations ride along to it.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
-  reasoning capacity (stronger model), task too large (split it), plan
-  wrong (escalate to the human). Something must change — a bare retry
+  reasoning capacity (resolve the hard call in the brief), task too large
+  (split it), plan wrong (escalate to the human). Something must change — a bare retry
   answers an escalation with nothing.
 
 **Reviewer ⚠️ items** — requirements the reviewer could not verify from the
@@ -121,10 +138,10 @@ pasted prior-task history):
   come back. A finding that conflicts with the plan's own text is the
   human's decision: present the finding and the plan text, ask which
   governs.
-- Fix dispatches carry the executor contract: re-run the covering tests
-  (name them in the dispatch — a one-line fix doesn't need the whole
-  suite), report the command and output; confirm all three are in the fix
-  report before re-review.
+- Fix messages — to a resumed executor or a fresh fixer — carry the
+  executor contract: re-run the covering tests (name them — a one-line
+  fix doesn't need the whole suite), report the command and output;
+  confirm all three are in the fix report before re-review.
 - Final-review findings go to ONE fixer with the complete list — per-finding
   fixers each rebuild context and re-run suites; a real session's
   per-finding fix wave cost more than all its tasks combined.
@@ -144,6 +161,9 @@ expensive failure observed. The ledger file, not your todos, is the record:
   tasks with a `Task <N>: complete` line are done — resume at the first
   task without one. A ledger naming a different plan file is another plan's
   progress: leave it, start your own.
+- Record each task's BASE and its executor's and reviewer's agent
+  handles as you dispatch them — a fix resumes those handles, and after
+  compaction the ledger is the only place they survive.
 - When a task's review comes back clean, append
   `Task N: complete (commits <base7>..<head7>, review clean)`.
 - After compaction, trust the ledger and `git log` over your own

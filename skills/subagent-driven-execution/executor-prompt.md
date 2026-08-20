@@ -5,8 +5,8 @@ Use this template when dispatching an executor subagent.
 ```
 Subagent (general-purpose):
   description: "Implement Task N: [task name]"
-  model: [MODEL — REQUIRED: the mid-tier model at high reasoning effort
-         (Claude: sonnet, effort high) per SKILL.md Model Selection; an
+  model: [MODEL — REQUIRED: opus at high reasoning effort per SKILL.md
+         Model Selection (sonnet for a simple task; never the top tier); an
          omitted model silently inherits the session's most expensive one]
   prompt: |
     You are implementing Task N: [task name]

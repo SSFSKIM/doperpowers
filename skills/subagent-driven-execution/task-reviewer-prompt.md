@@ -10,8 +10,8 @@ more, nothing less) and is well-built (clean, tested, maintainable)
 ```
 Subagent (general-purpose):
   description: "Review Task N (spec + quality)"
-  model: [MODEL — REQUIRED: the mid-tier model at high reasoning effort
-         (Claude: sonnet, effort high) per SKILL.md Model Selection; an
+  model: [MODEL — REQUIRED: opus at high reasoning effort per SKILL.md
+         Model Selection (sonnet for a simple task; never the top tier); an
          omitted model silently inherits the session's most expensive one]
   prompt: |
     You are reviewing one task's implementation: first whether it matches its
