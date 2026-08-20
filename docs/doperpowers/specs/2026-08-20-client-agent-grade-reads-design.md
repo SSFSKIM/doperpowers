@@ -7,7 +7,9 @@ and are live (arkho#12 → arkho PR #17): a `?q=` websearch filter over
 title+body, and an opt-in `?include=body` on the by-id and paged reads
 (paged form: explicit `ids`, at most 20 per read, an 8,388,608-octet
 serialized budget; both parameters answer `403 forbidden` to any `run`
-bearer, before value judgment). This epic teaches the client both reads and
+bearer — for `q` the contract states the class is refused before the
+value is judged; for `include` the client never depends on the ordering,
+since the §1 guard dies pre-request). This epic teaches the client both reads and
 routes the toolkit's duplicate-registration judgment onto them — replacing
 the pre-registration search prose's standing hole: *"an API-bound repo has
 no client search verb yet"* (SKILL.md §The ticket body). The gh binding
@@ -22,7 +24,9 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
   cursor walk of `/tickets?q=<urlencoded>&limit=200[&states=<states>]`,
   same shape as `tickets_all`: report-grade completeness, id-keyed dedupe
   (later data wins), fail-closed walk (`_walk`/`_envelope` unchanged).
-  `q` is sent through `urllib.parse.quote` — the server's grammar
+  `q` is sent through `urllib.parse.quote(q, safe="")` — not
+  `quote_plus`, whose space-as-`+` is a different wire spelling — so the
+  server's grammar
   (websearch: unquoted AND, `or`, `-` negation, quoted phrases) rides
   inside one query parameter, never split client-side.
 - `ticket(tid, principal="human", include_body=False)` — appends
@@ -49,7 +53,8 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
 
     board-search.sh <query> [--states s1,s2] [--bodies]
 
-- An empty or missing `<query>` is a usage error (stderr usage, exit 2)
+- An empty, missing, or whitespace-only `<query>` (trimmed before the
+  check) is a usage error (stderr usage, exit 2)
   — the toolkit's arity-guard convention; the server's blank-`q` 400 is
   never the first line of defense for a caller this client can check.
 - **API arm**: `tickets_search` under the automation principal (as are
@@ -60,14 +65,21 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
   point of the check; gh's open-only default is deliberately not copied).
   `--states` passes through to the promoted filter. `--bodies` hydrates
   the FIRST ≤20 hits (exactly one budgeted read via
-  `tickets_by_ids(..., include_body=True)`) and prints each hydrated
-  hit's body indented under its row; hits beyond 20 stay rows-only and
-  the tail says so. An empty result is an empty listing, exit 0.
+  `tickets_by_ids(..., include_body=True)`), and hydration completes
+  BEFORE any row prints — the module's materializing discipline: a
+  mid-hydration death may not leave a half-printed listing. Each
+  hydrated hit's body prints indented under its row; hits beyond 20
+  stay rows-only and the tail says so. An empty result is an empty
+  listing, exit 0.
 - **gh arm**: delegates to the prose's exact proven spelling —
   `gh issue list --state open --limit 200 --search "<query>"` (the
   explicit `--limit` matters; the default truncates at 30 silently).
-  `--states`/`--bodies` are refused with a note in gh mode: gh's search
-  already matches bodies, and its state model is not the board's.
+  In gh mode `--bodies` is a stderr note and the search PROCEEDS
+  (gh's search already matches bodies, so the flag's intent is already
+  served) — note-and-proceed is what keeps §4's one-route sentence true
+  on both bindings. `--states` is refused (stderr note, exit 2): gh's
+  OPEN/CLOSED model is not the board's state vocabulary, and no
+  cross-binding prose recommends the flag.
 - In a run context the API arm dies via the §1 guard before any request.
 
 ## §3 `board-show.sh` — the body joins the read (API arm)
@@ -100,26 +112,38 @@ The pre-registration search paragraph is re-routed onto the verb:
   replaced. One clause remains for run-context workers: they cannot
   search (claim-gated by design), and the server's registration-time
   dedupe stays their guard.
+- The Toolkit table (SKILL.md's verb-discovery surface) gains a
+  `board-search.sh` row (usage + one-line behavior, per-binding note),
+  and `board-show.sh`'s row is touched up — its API arm now prints the
+  body, which the current row does not say.
 - Prose edits follow the writing-skills conventions: the fewest words
   that reroute the instruction; no new constraints.
 
-## §5 Mock fidelity (`tests/claude-code/board-api/mock-server.py`)
+## §5 Mock coverage (`tests/claude-code/board-api/mock-server.py`)
 
 The mock tier is this epic's primary test bed (the integration tier
-needs local docker and SKIPs via exit-77 where absent). The mock gains
-the server behaviors the new client code depends on, shaped from the
-live contract (API.md + arkho's own drills), per the mock-fidelity rule
-(awkward-case raw output, not the caller's shape):
+needs local docker and SKIPs via exit-77 where absent). The mock is
+FIXTURE-DRIVEN and stays that way: method + path matching over static
+entries, request-logged; it interprets nothing and inspects no bearer.
+New coverage is therefore fixture worlds in the new test file plus
+request-log assertions, per the paged-reads precedent
+(`test-paged-reads.sh`'s world blocks and `paths`/`reqs` helpers):
 
-- `q` selects the envelope; matching is a stand-in (substring over
-  title+body is acceptable — the CLIENT under test never interprets
-  match semantics), but the envelope shape, dispatch order and
-  composition with `states`/`ids` are contract-faithful.
-- `include=body`: body present iff requested; unknown values →
-  `400 invalid-argument`; paged form without `ids` → 400; >20 ids → 400
-  (message carrying `at most 20 ids`).
-- A run bearer sending `q` or `include=body` → `403 forbidden`, before
-  any value judgment (blank `q` from a run is the 403, not the 400).
+- a `q=`-bearing path entry answering a contract-shaped envelope
+  (the client never interprets match semantics, so a canned answer
+  tests everything the client does);
+- `ids=…&include=body` entries answering body-carrying rows (and the
+  plain-row twins for the parity drill);
+- request-log assertions pinning the exact wire spelling: the
+  urlencoded `q`, `include=body` present iff requested, the ≤20-id
+  chunk boundary.
+
+Run-bearer 403s and unknown-`include` 400s are NOT mocked: a run's
+`q`/`include=body` never reaches the wire (the §1 guard dies
+pre-request — the drills assert exactly that), an unknown `include`
+value is never sent (the helper takes a boolean), and those server
+behaviors are already pinned by arkho's own drills. Fixture message
+spellings mirror API.md (see Delegated unknowns).
 
 ## Non-goals
 
@@ -142,16 +166,17 @@ live contract (API.md + arkho's own drills), per the mock-fidelity rule
   gh arm delegation spelling, run-context refusals), show drills (body
   between header and timeline; run-context degrade line).
 - Every new drill must fail against the parent commit (naming
-  signature); mock additions themselves get contract-shape assertions.
+  signature); mock fixtures are exercised only through the client under
+  test — nothing asserts on the mock itself.
 - SKILL.md prose change sanity-checked per writing-skills; full
   `tests/claude-code/run-skill-tests.sh` green; `scripts/bump-version.sh`
   at finish.
 
 ## Acceptance
 
-1. On an API-bound repo, `board-search.sh <word>` prints every ticket
-   whose title or body matches, one row per hit with state visible, exit
-   0; an empty result exits 0 with the header only.
+1. On an API-bound repo, `board-search.sh <word>` prints one row per
+   ticket the server's `q` filter answers, state visible on every row,
+   exit 0; an empty result exits 0 with the header only.
 2. `board-search.sh <word> --bodies` additionally prints the bodies of
    the first ≤20 hits indented under their rows, produced by exactly one
    hydration read; a hit beyond 20 stays rows-only and the output says so.
@@ -162,7 +187,8 @@ live contract (API.md + arkho's own drills), per the mock-fidelity rule
    the body is byte-identical to what `board-body.sh` last wrote.
 5. On a gh-bound repo, `board-search.sh <word>` delegates to
    `gh issue list --state open --limit 200 --search "<word>"`; `--bodies`
-   and `--states` are refused with a note.
+   notes on stderr and the search proceeds; `--states` is refused
+   (stderr note, exit 2).
 6. SKILL.md's pre-registration section names `board-search.sh` as the one
    route on both bindings; the "no client search verb yet" sentence is
    gone; the run-context guard clause is present.
@@ -186,8 +212,12 @@ live contract (API.md + arkho's own drills), per the mock-fidelity rule
   contracts).
 - **All-states default** (vs gh's open-only): a terminal hit is prior-art
   evidence — the dedup/prior-art check is exactly where `done` matters.
-  State prints on every row so triage stays informed. Rejected:
-  open-only default.
+  State prints on every row so triage stays informed. The gh arm
+  keeps the proven open-only spelling deliberately: gh's OPEN/CLOSED
+  cannot distinguish `done` from `wontfix`, and the spelling is the
+  prose-tested one — the same state-model mismatch that refuses
+  `--states` there. Rejected: open-only default (API arm) and
+  `--state all` (gh arm).
 - **Body default-on in `board-show`** (vs `--body` flag): the verb's
   charter is "one ticket in full"; Linear's issue view serves the
   description by default. The run-context degrade (claim-served line)
@@ -207,6 +237,11 @@ live contract (API.md + arkho's own drills), per the mock-fidelity rule
   rejected — adds a request to every register, duplicates the agent's
   judgment, and the golden rule (no enforcement beyond the necessary)
   points at prose + verb.
+- **`tickets_search` as its own helper** (vs a `q=` parameter on
+  `tickets_all`): the separate helper is the claim-gate guard's natural
+  home and keeps `tickets_all`'s signature stable for its existing
+  callers; the walk plumbing is shared either way. Rejected: parameter
+  on `tickets_all` (marginally smaller, guard placement muddier).
 - **Prose: one route via the verb** (vs keeping the gh spelling inline):
   the verb owns the binding branch; prose that branches on binding is a
   second, staler copy of that logic.
@@ -222,3 +257,12 @@ Pending — written at finish.
 ## Revision Notes
 
 - v1 (2026-08-20): initial design, approved in session (controlled track).
+- v1.1 (2026-08-20): independent review (fable) adopted in full — §5
+  rewritten fixture-driven (behavioral-mock misread killed; run-403 and
+  unknown-include arms dropped as unreachable through the client);
+  gh-arm `--bodies` became note-and-proceed so §4's one-route stays
+  true, `--states` pinned refuse/exit-2; Toolkit-table row +
+  `board-show` row touch-up joined §4; lead's 403-ordering claim scoped
+  to `q`; acceptance 1 rephrased to the server-answers grain;
+  `quote(q, safe="")`, whitespace-trim arity, hydrate-before-print, and
+  the helper-grain Decision Log clause added.
