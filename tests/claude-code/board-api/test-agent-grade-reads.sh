@@ -292,4 +292,52 @@ t "gh arm --bodies still runs the search" "GH-INVOKED" ghverb walker --bodies
 t "gh arm --states is refused" "API-binding only" ghverb walker --states "done"
 nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states "done"
 
+# ---- board-show.sh: body between header and timeline ----
+world show-body <<JSON
+[
+ {"method":"GET","path":"/tickets/12/timeline","status":200,
+  "body":{"records":[{"source":"board","cursor":"5","observedAt":"t",
+    "sourceTime":null,"runId":1,"kind":"transition",
+    "body":{"note":"n1","from":"a","to":"b","actor":"run:1","actor_kind":"worker"}}]}},
+ {"method":"GET","path":"/tickets/12?include=body","status":200,
+  "body":{"id":12,"title":"T one","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":41,"parent":null,"plan":null,
+          "pr_url":null,"branch":"feat/x","blocked_by":[],"relates":[],
+          "body":"## The statement\nof work"}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"title":"T one","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":41,"parent":null,"plan":null,
+          "pr_url":null,"branch":"feat/x","blocked_by":[],"relates":[]}}
+]
+JSON
+# The bare /tickets/12 entry above is LOAD-BEARING FOR THE RED RUN: before
+# the implementation lands, show sends no include=body, and without this
+# entry that read 404s — the drill would then red-fail for the wrong reason.
+show() { (cd "$API_REPO" && PATH="$GHSTUB:$PATH" \
+    BOARD_API_URL="http://127.0.0.1:$PORT" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-show.sh" "$@"); }
+show_as_run() { (cd "$API_REPO" && PATH="$GHSTUB:$PATH" \
+    BOARD_API_URL="http://127.0.0.1:$PORT" BOARD_RUN_TOKEN=run-tok \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-show.sh" "$@"); }
+t "show prints the statement of work" "## The statement" show 12
+t "show still prints the header row" "#12 in-progress" show 12
+t "show still prints the timeline" "transition" show 12
+t "the body ride is on the wire" "/tickets/12?include=body" paths
+
+world show-run <<JSON
+[
+ {"method":"GET","path":"/tickets/12/timeline","status":200,
+  "body":{"records":[{"source":"board","cursor":"5","observedAt":"t",
+    "sourceTime":null,"runId":1,"kind":"transition",
+    "body":{"note":"n1","from":"a","to":"b","actor":"run:1","actor_kind":"worker"}}]}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"title":"T one","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":41,"parent":null,"plan":null,
+          "pr_url":null,"branch":"feat/x","blocked_by":[],"relates":[]}}
+]
+JSON
+t "a run context degrades to the claim-served line" "claim-served" \
+  show_as_run 12
+nt "a run context sends no include=body" "include=body" paths
+
 finish

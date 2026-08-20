@@ -230,11 +230,12 @@ t "show refuses a junk ref the way the gh path does" "not an issue number: abc" 
 nt "and raises no traceback doing it" "Traceback" V board-show.sh abc
 # ONE TICKET, ONE READ. The row comes from GET /tickets/:id — the whole-board
 # scan this replaces cost the entire board to answer a single-row question. Both
-# assertions carry the closing quote: `"path": "/tickets/12"` is not satisfied
-# by the timeline read, and `"path": "/tickets"` matches the bare listing only.
+# assertions carry the closing quote: `"path": "/tickets/12?include=body"` is
+# not satisfied by the timeline read, and `"path": "/tickets"` matches the bare
+# listing only.
 : > "$FIX.log"
 V board-show.sh 12 >/dev/null
-t "show resolves its ticket by id" '"path": "/tickets/12"' cat "$FIX.log"
+t "show resolves its ticket by id" '"path": "/tickets/12?include=body"' cat "$FIX.log"
 nt "and reads no whole board to do it" '"path": "/tickets"' cat "$FIX.log"
 # Absence is now the SERVER's answer rather than a scan coming up empty — and
 # the client proves the paged surface exists before it believes a 404, since a
