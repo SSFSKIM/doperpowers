@@ -34,6 +34,23 @@ assert_not_contains() {
 assert_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2"; echo "    missing: $1"; fi
 }
+# Spawn NAMES only. $SPAWN_LOG holds `spawn:<args>` lines whose args include the
+# whole rendered worker prompt, and that prompt carries absolute plugin paths —
+# so the log quotes the directory the suite is running FROM. A bare substring
+# test therefore reads the checkout's own name as a spawn: run from a review
+# worktree named `review-pr-35`, `grep -F review-pr-3` hit nine times and failed
+# a negative assertion for a PR that was never dispatched. Match the spawn-name
+# field as a whole token instead, so neither a path nor a longer sibling name
+# (`review-pr-3` vs `review-pr-35`) can satisfy it.
+spawn_names() {
+    sed -n -e 's/^spawn:\(--no-wait \)\{0,1\}\([^ ]*\).*/\2/p' \
+           -e 's/^codex-spawn:\(--no-wait \)\{0,1\}\([^ ]*\).*/\2/p' "$SPAWN_LOG"
+}
+assert_no_spawn() {  # assert_no_spawn <worker-name> <label>
+    if spawn_names | grep -qx -- "$1"; then
+        fail "$2"; echo "    unexpected spawn of: $1"; echo "    spawned: $(spawn_names | tr '\n' ' ')"
+    else pass "$2"; fi
+}
 # A binding is only bound when it arrives with a VALUE. Anchored on the rendered
 # roster line shape (- `NAME`: value), so a binding that rendered as a blank —
 # the shape an unsupplied placeholder used to take — reads as unbound here.
@@ -259,14 +276,36 @@ for p in "$DAEMON_HOME"/*.json; do
 done
 [ -n "$hit" ] || exit 1
 M="$hit" T="$ticket" D="$DAEMON_HOME" python3 - <<'PY'
-import glob, json, os
-p=os.environ["M"]; ticket=os.environ["T"]
+import glob, json, os, socket, sys
+p=os.environ["M"]; ticket=os.environ["T"].lstrip("#")
+HOST=socket.gethostname()
+# The real script derives the current boot from the kernel (/proc boot_id, else
+# sysctl kern.boottime); this suite expresses the same fact through
+# $DAEMON_BOOT_ID, which its fixtures already use to mean "this boot".
+CUR_BOOT=os.environ.get("DAEMON_BOOT_ID", "")
+def alive_here(m):
+    mh, mb = str(m.get("host") or ""), str(m.get("boot_id") or "")
+    if mh and mh != HOST: return False
+    if mb and CUR_BOOT and mb != CUR_BOOT: return False
+    return True
+owners=[]
 for q in glob.glob(os.path.join(os.environ["D"], "*.json")):
     if q == p or q.endswith(".reply.json"): continue
     m=json.load(open(q))
-    if str(m.get("ticket", "")).lstrip("#") == ticket.lstrip("#"):
-        del m["ticket"]; json.dump(m, open(q,"w"), indent=2)
-m=json.load(open(p)); m["ticket"]=ticket
+    if str(m.get("ticket", "")).lstrip("#") == ticket:
+        owners.append((q, m))
+# The ACTIVE-owner refusal, not stub detail: it is the whole reason the
+# dispatcher normalizes lingering owners before binding. A stub that stripped
+# unconditionally made every such test vacuous — finalize could be deleted and
+# the bind would still succeed.
+for q, m in owners:
+    if m.get("status") in ("working", "blocked") and alive_here(m):
+        sys.stderr.write("error: #%s is owned by active daemon %s\n"
+                         % (ticket, m.get("name") or m.get("uuid") or "unknown"))
+        raise SystemExit(1)
+for q, m in owners:
+    del m["ticket"]; json.dump(m, open(q, "w"), indent=2)
+m=json.load(open(p)); m["ticket"]=os.environ["T"]
 json.dump(m, open(p,"w"), indent=2)
 PY
 STUB
@@ -765,6 +804,70 @@ echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "
 out="$("$DISPATCH" 5)"
 assert_contains "$out" "active reviewer" "busy reviewer still skips as active"
 assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
+
+# ---- normalize lingering ticket owners BEFORE binding --------------------------
+# The incoming reviewer binds to the PR's primary ticket, but the OUTGOING
+# worker on that ticket is a claude-species daemon with no self-finalizer: its
+# meta lingers status=working after its turn ends, and board-bind protects a
+# working owner as ACTIVE. Left alone that refuses the reviewer's bind on every
+# tick — which retired three reviewers in the 2026-07-18 live shakedown. The
+# dispatcher therefore runs daemon-finalize.sh over every meta bound to the
+# ticket first, so the registry states the truth before ownership is adjudicated.
+# The scale-review half of this is covered further down (the epic's Architect);
+# these two cases pin the PR half, and pin BOTH directions of what finalize
+# decides — the point is that dispatch does not assume, it asks.
+echo "normalize ticket owners before bind:"
+ticket_owner() {  # <ticket> → name of whichever meta currently holds it
+    T="$1" python3 - <<'PY'
+import glob, json, os
+for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    m = json.load(open(p))
+    if str(m.get("ticket", "")).lstrip("#") == os.environ["T"]:
+        print(m.get("name") or m.get("uuid") or "")
+PY
+}
+seed_ticket_owner() {  # lingering executor meta bound to #7 (PR 5's primary ticket)
+    python3 - <<'PY'
+import json, os
+u = "beef0001-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "7-add-f", "role": "IMPLEMENT",
+           "ticket": "7", "status": "working", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+}
+OWNER_META="$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.json"
+
+# (a) the owner's turn is OVER — finalize settles it, and the reviewer binds.
+reset_state; seed_ticket_owner
+echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
+# rc captured rather than let errexit kill the run: losing the normalization is
+# a bind refusal, and a regression should NAME itself here instead of aborting
+# the suite at this line with no assertion output.
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a finished owner"
+assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering finished ticket owner is finalized before the bind"
+assert_file_exists "$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.reply.txt" "finalize recorded the owner's closing reply"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "reviewer is dispatched over the normalized owner"
+assert_equals "$(ticket_owner 7)" "review-pr-5" "the reviewer's bind succeeded — it now owns #7"
+
+# (b) counter-case: the owner is genuinely mid-turn. finalize keeps it live,
+# board-bind refuses (correctly — a live worker's ticket is not up for grabs),
+# and the reviewer is retired with its startup barrier never published, so the
+# spawned session cannot begin reviewing work it does not own.
+reset_state; seed_ticket_owner
+echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' > "$MOCK_DIR/agents.json"
+out="$(REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$OWNER_META")" '"status": "working"' "a genuinely live ticket owner survives finalize as live"
+assert_equals "$(ticket_owner 7)" "7-add-f" "the live owner keeps #7 — the reviewer never takes it"
+assert_contains "$out" "bind to ticket #7 failed" "board-bind refuses the reviewer over a live owner"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "the refused reviewer is retired rather than left running"
+if compgen -G "$DAEMON_HOME/review-pr-5-control.*" > /dev/null; then
+    fail "the refused reviewer's startup barrier is torn down"
+else
+    pass "the refused reviewer's startup barrier is torn down"
+fi
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -1428,7 +1531,7 @@ out="$("$DISPATCH" --sweep 2>&1)" || true
 assert_contains "$out" "#3: gh pr view failed" "first-PR gh failure surfaced as a per-step error"
 assert_contains "$out" "#3: dispatch error (continuing sweep)" "first-PR gh failure reaches the sweep reporter"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "loop survives a first-PR gh failure (no nounset kill)"
-assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-3" "failing first PR is not spawned"
+assert_no_spawn "review-pr-3" "failing first PR is not spawned"
 
 # (b) contamination: [good-A(5), bad(3), good-B(4)] — good-B on its OWN
 # branch feat/y with a distinct SHA, so a stale-state dispatch is detectable
@@ -1458,7 +1561,7 @@ PY
 reset_state
 rm -f "$PROMPT_DIR/review-pr-3.prompt"
 out="$("$DISPATCH" --sweep 2>&1)" || true
-assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-3" "bad PR after a good one is never spawned (no stale-state dispatch)"
+assert_no_spawn "review-pr-3" "bad PR after a good one is never spawned (no stale-state dispatch)"
 if [ -f "$PROMPT_DIR/review-pr-3.prompt" ]; then
     fail "no prompt rendered for the bad PR"; else pass "no prompt rendered for the bad PR"; fi
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "good-B after the bad PR still dispatched"
@@ -1521,8 +1624,12 @@ PY
 run_dispatch() { "$DISPATCH" "$@"; }
 
 echo "engine switch (one harness, two model routes):"
+# Every route check below is an INDEPENDENT dispatch, and all four canned PRs
+# close the same ticket #7 — so each one starts from reset_state, not merely a
+# cleared spawn log. Leaving the previous reviewer's `working` meta in place
+# would have it own #7 when the next reviewer binds, which board-bind refuses
+# (correctly: one ticket, one active owner).
 reset_state
-: > "$SPAWN_LOG"
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
 WORKER_ENGINE=codex run_dispatch 41
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
@@ -1536,7 +1643,7 @@ assert_not_contains "$prompt" "developer_instructions" "no developer instruction
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
 
-: > "$SPAWN_LOG"
+reset_state
 gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:claude label overrides env"
@@ -1549,7 +1656,7 @@ fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
 assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
 
-: > "$SPAWN_LOG"
+reset_state
 gh_pr 43 OPEN 0 "engine:claude"
 # The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
 # itself be running inside a gateway-routed daemon whose environment exports
@@ -1563,7 +1670,7 @@ assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient ga
 
 # The built-in default (no label, no WORKER_ENGINE in the environment) is the
 # plain-Claude route — the clodex gateway is opt-in only.
-: > "$SPAWN_LOG"
+reset_state
 gh_pr 44 OPEN 0 ""
 env -u WORKER_ENGINE "$DISPATCH" 44
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
@@ -1575,6 +1682,7 @@ else
 fi
 
 echo "codex reviewer liveness in dedupe:"
+reset_state
 sleep 300 & LIVEPID=$!
 python3 - "$DAEMON_HOME" "$LIVEPID" <<'PY'
 import json, sys
