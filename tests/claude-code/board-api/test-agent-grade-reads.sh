@@ -194,6 +194,16 @@ t "verb prints rows in server order with state visible" "#4 done" verb walker
 t "verb header says all states" "all states" verb walker
 nt "API arm never invokes gh" "GH-INVOKED" verb walker
 
+world verb-search-states <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker&states=done","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art")],"next":null,"as_of":7}}
+]
+JSON
+t "--states narrows the header" "server order, states=done" \
+  verb walker --states "done"
+t "--states rode the wire beside q" "q=walker&states=done" paths
+
 world verb-none <<JSON
 [
  {"method":"GET","path":"/tickets?limit=200&q=nothing","status":200,
@@ -208,6 +218,24 @@ JSON
 t "an empty query is usage" "Usage:" verb ""
 t "a whitespace-only query is usage" "Usage:" verb "   "
 t "no usage error reached the wire" "reqs=[0]" reqs
+
+# ---- `--` ends the options: the ?q= negation grammar stays reachable ----
+world verb-dash <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=-alpha%20beta","status":200,
+  "body":{"items":[],"next":null,"as_of":3}}
+]
+JSON
+verb -- "-alpha beta" >/dev/null || true
+t "-- carries a negation-leading query to the wire" "q=-alpha%20beta" paths
+
+world verb-refusals <<JSON
+[]
+JSON
+t "a dash-leading query without -- is still usage" "Usage:" verb "-alpha beta"
+t "an empty --states value is usage, not a silent widening" "Usage:" \
+  verb walker --states ""
+t "neither refusal reached the wire" "reqs=[0]" reqs
 
 world verb-run-ctx <<JSON
 []
@@ -255,8 +283,8 @@ GH_REPO="$(mkrepo)"   # no board.json → gh binding
 # env -u BOARD_REPO: the spelling drill pins the bare form; a BOARD_REPO in
 # the suite's environment would legitimately add `-R <repo>` and break it.
 ghverb() { (cd "$GH_REPO" && env -u BOARD_REPO PATH="$GHSTUB:$PATH" "$SCRIPTS/board-search.sh" "$@"); }
-t "gh arm delegates with the proven spelling" \
-  "GH-INVOKED: issue list --state open --limit 200 -R o/r --search walker" \
+t "gh arm delegates across all states" \
+  "GH-INVOKED: issue list --state all --limit 200 -R o/r --search walker" \
   ghverb walker
 t "gh arm --bodies notes and proceeds" "noted, proceeding" \
   ghverb walker --bodies
