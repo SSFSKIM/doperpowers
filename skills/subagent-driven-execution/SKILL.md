@@ -34,35 +34,40 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    asserts nothing). Present findings to your human partner as one batched
    question — each beside the plan text that mandates it — before execution;
    a clean scan proceeds without comment.
-3. **Per task:** extract the brief (`scripts/task-brief PLAN_FILE N`),
-   record BASE (the current commit), dispatch the executor
-   ([executor-prompt.md](executor-prompt.md)) and note its agent handle
-   in the ledger — fixes resume it. Answer its questions before it
-   proceeds. One executor at a time — parallel executors conflict in a
-   shared worktree.
-4. **Review at the frontier:** a task is reviewed before any task that
-   consumes what it produced dispatches — the briefs' Interfaces name the
-   producers. Tasks nothing downstream consumes yet may keep executing and
-   are reviewed together when the frontier closes (the next task consumes
-   from them, or the plan ends): one review package per task
-   (`scripts/review-package PLAN_FILE BASE HEAD`, each task's own
-   BASE..HEAD), one task reviewer per task
-   ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the printed
-   path, dispatched in parallel — reviews are read-only. The frontier is
-   the ceiling on deferral, not the floor: a DONE_WITH_CONCERNS, a doubt
-   of your own, or a first task whose brief style the executor may have
-   misread are reasons to review now.
+3. **Per task, in plan order:** extract the brief (`scripts/task-brief
+   PLAN_FILE N`), record BASE (the current commit), dispatch the executor
+   ([executor-prompt.md](executor-prompt.md)) and write the task's
+   `executed` ledger line with its agent handle (Durable Progress below)
+   — fixes resume it. Answer its questions before it proceeds. One
+   executor at a time — parallel executors conflict in a shared worktree.
+4. **Review at the frontier:** a task is reviewed clean — findings fixed
+   and re-reviewed — before any task that consumes what it produced
+   dispatches; the briefs' Interfaces name the producers, and the plan's
+   final verification task consumes the whole branch. Tasks nothing
+   downstream consumes yet may keep executing and are reviewed together
+   when the frontier closes (the next task consumes from them, or the
+   plan ends): one review package per task (`scripts/review-package
+   PLAN_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
+   per task ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the
+   printed path, dispatched together — reviews read their package, not
+   the tree, and run at most a focused test, so they run concurrently.
+   Where no interface is declared but two tasks touch the same files,
+   judge from their Files lists: an overlap that looks load-bearing is
+   reviewed before the later task dispatches. The frontier is the ceiling
+   on deferral, not the floor: a DONE_WITH_CONCERNS, a doubt of your own,
+   or a first task whose brief style the executor may have misread are
+   reasons to review that task now.
 5. **Findings:** Critical/Important findings go back to the executor that
    wrote the code — resume it with the findings; it holds the task's
    context and skips the orientation a fresh fixer pays. Several tasks
    with findings in one wave resume one at a time (shared worktree).
    Re-review by resuming the reviewer with the fix commits' package;
-   repeat until both verdicts are clean. Dispatch a fresh fixer only when
-   the executor cannot be resumed or its fix has failed re-review twice —
-   then the executor's own frame is the problem. Record Minor findings in
-   the ledger — the final review triages that list, so it is read, not
-   discarded. Fix through a worker, not your own edits: manual fixes
-   pollute your context and skip review.
+   repeat until both verdicts are clean. A fresh fixer when the executor
+   cannot be resumed, or when its frame is the problem — two failed
+   re-reviews is the usual sign. Record Minor findings in the ledger —
+   the final review triages that list, so it is read, not discarded. Fix
+   through a worker, not your own edits: manual fixes pollute your
+   context and skip review.
 6. Mark the task complete in todos and the ledger; route anything that
    changed design understanding into the spec's living tail
    (doperpowers:execspec). Implementation noise stays in commit messages.
@@ -83,8 +88,9 @@ command given — can go to sonnet. Never dispatch workers on the top tier
 (fable): it adds cost without adding reliability and is the controller's
 tier, not the worker's — the plan and the brief absorb the difficulty,
 not the model. When a worker reports BLOCKED on reasoning capacity rather
-than missing context, the difficulty moves into the brief: resolve the
-hard call yourself and re-dispatch, or split the task.
+than missing context, a sonnet task moves to opus; from opus there is no
+tier above — the difficulty moves into the brief: resolve the hard call
+yourself and re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: strongest
 available model, highest effort — it is the last gate before merge and the
@@ -100,8 +106,9 @@ session's, usually the most expensive.
   concerns get addressed before review; observations ride along to it.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
-  reasoning capacity (resolve the hard call in the brief), task too large
-  (split it), plan wrong (escalate to the human). Something must change — a bare retry
+  reasoning capacity (sonnet → opus; from opus, resolve the hard call in
+  the brief), task too large (split it), plan wrong (escalate to the
+  human). Something must change — a bare retry
   answers an escalation with nothing.
 
 **Reviewer ⚠️ items** — requirements the reviewer could not verify from the
@@ -141,7 +148,10 @@ pasted prior-task history):
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;
-  confirm all three are in the fix report before re-review.
+  confirm all three are in the fix report before re-review. A resumed
+  executor's view of the tree ends at its own HEAD: name what landed
+  since (commits and files) and have it re-read before editing; its
+  covering tests include sibling suites touching the same files.
 - Final-review findings go to ONE fixer with the complete list — per-finding
   fixers each rebuild context and re-run suites; a real session's
   per-finding fix wave cost more than all its tasks combined.
@@ -158,12 +168,16 @@ expensive failure observed. The ledger file, not your todos, is the record:
   directory is never yours to read or write.
 - The ledger lives at `<workspace>/progress.md`, first line
   `# SDE ledger — plan: <plan file path>`. If that line names your plan,
-  tasks with a `Task <N>: complete` line are done — resume at the first
-  task without one. A ledger naming a different plan file is another plan's
-  progress: leave it, start your own.
-- Record each task's BASE and its executor's and reviewer's agent
-  handles as you dispatch them — a fix resumes those handles, and after
-  compaction the ledger is the only place they survive.
+  tasks with a `Task <N>: complete` line are done; a task with an
+  `executed` line but no `complete` line is awaiting review or fixes —
+  resume its review (or its handles), never re-execute it; resume
+  executing at the first task with neither. A ledger naming a different
+  plan file is another plan's progress: leave it, start your own.
+- At dispatch, append `Task N: executed (base <sha7>, executor
+  <handle>)`; add `head <sha7>` when the executor returns and
+  `reviewer <handle>` when the review dispatches — a fix resumes those
+  handles, and after compaction the ledger is the only place they
+  survive.
 - When a task's review comes back clean, append
   `Task N: complete (commits <base7>..<head7>, review clean)`.
 - After compaction, trust the ledger and `git log` over your own
