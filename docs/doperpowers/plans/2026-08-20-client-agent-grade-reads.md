@@ -14,11 +14,11 @@
 - Body hydration chunks at `_MAX_BODY_IDS = 20` (arkho API.md §1); plain `ids=` reads keep `_MAX_IDS = 200`. Rows carry `body` iff requested.
 - `q` is urlencoded with `urllib.parse.quote(q, safe="")` — never `quote_plus` (space is `%20`, not `+`).
 - The search verb's API arm spans ALL states by default, prints rows in server order as `#<id> <state> <priority> <title>`; `--bodies` hydrates the FIRST ≤20 hits in exactly one budgeted read, hydration completing BEFORE any row prints.
-- gh arm: delegate spelling is exactly `gh issue list --state open --limit 200 [--repo …] --search "<query>"`; `--states` is refused (stderr note, exit 2); `--bodies` is a stderr note and the search proceeds.
+- gh arm: delegate spelling is exactly `gh issue list --state open --limit 200 -R "$BOARD_REPO" --search "<query>"` (`-R` unconditional; `_lib.sh` resolves `BOARD_REPO` from the checkout when unset); `--states` is refused (stderr note, exit 2); `--bodies` is a stderr note and the search proceeds.
 - An empty, missing, or whitespace-only query (trimmed before the check) is a usage error: stderr usage, exit 2, zero requests.
 - `mock-server.py` stays fixture-driven — no behavioral additions to the mock; new coverage is fixture worlds + request-log assertions in the new test file. Nothing asserts on the mock itself.
 - Budget 400s pass through as the server's message — no fallback code (spec Decision Log).
-- Every new drill must fail against the parent commit (naming signature — record which assertion discriminates).
+- Every new POSITIVE drill must fail against the parent commit (naming signature — record which assertion discriminates). Negative controls (`nt` drills, the `reqs=[0]` guards) pass in both directions by construction — record them as such rather than chasing a red they cannot produce.
 - Commit style `feat(board-client): …` / `test(board-client): …` / `docs(skill): …`; NO `Co-Authored-By` or attribution lines.
 - Prose edits are minimal reroutes (writing-skills bar); the spec §4 text governs.
 
@@ -111,20 +111,26 @@ print(json.dumps(r))' "$@"
 }
 
 # ---- tickets_search: wire spelling + walk + dedupe ----
+# A real-shaped cursor (unpadded base64url of a keyset triple). The client
+# passes `next` back VERBATIM — the walk drill pins that, plus completeness.
+# Fixture order is longest-prefix-first: the cursor-bearing entry goes FIRST,
+# or the page-1 entry prefix-swallows the page-2 request.
+SC="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMTIzNDU2KzAwIiwiMyJd"
 world search <<JSON
 [
- {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta&cursor=","status":404},
+ {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta&cursor=$SC","status":200,
+  "body":{"items":[$(row 7 ready-for-implementer "alpha beta now")],
+          "next":null,"as_of":9}},
  {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta","status":200,
-  "body":{"items":[$(row 3 done "alpha beta prior art"),
-                   $(row 7 ready-for-implementer "alpha beta now")],
-          "next":null,"as_of":9}}
+  "body":{"items":[$(row 3 done "alpha beta prior art")],
+          "next":"$SC","as_of":9}}
 ]
 JSON
-t "search answers the hits" "3" \
+t "search walks every page and answers the hits" "[3, 7]" \
   run_py "import _board_api as A
 print(sorted(t['id'] for t in A.tickets_search('alpha beta')))"
 t "search urlencodes the space as %20" "q=alpha%20beta" paths
-t "search is one request" "reqs=[1]" reqs
+t "the walk followed the cursor: two pages" "reqs=[2]" reqs
 
 world search-states <<JSON
 [
@@ -132,14 +138,14 @@ world search-states <<JSON
   "body":{"items":[$(row 3 done "x archived")],"next":null,"as_of":4}}
 ]
 JSON
-t "states composes onto the search path" "states=done" \
-  bash -c 'PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:'"$PORT"'" \
-    BOARD_CREDENTIALS_FILE="'"$CREDS"'" python3 -c "import _board_api as A
-A.tickets_search(\"x\", states=\"done\")" >/dev/null 2>&1; '"'"'paths'"'"' 2>/dev/null || true; python3 -c "import json,sys
-print(\"paths=[%s]\" % \" \".join(json.loads(l)[\"path\"] for l in open(sys.argv[1]) if l.strip()))" "'"$FIX"'.log"'
+run_py "import _board_api as A
+A.tickets_search('x', states='done')" >/dev/null
+t "states composes onto the search path" "states=done" paths
 
 # ---- include_body: 20-chunk boundary + body-iff-requested parity ----
-world hydrate < <(python3 - <<'PY'
+# NOT process substitution: bash 3.2 (the suite's runtime) brace-expands the
+# heredoc body while scanning <( … ) and a dict literal's comma breaks it.
+python3 - > "$TDIR/hydrate.src" <<'PY'
 import json
 def row(i, body=None):
     r = {"id": i, "title": "T%d" % i, "category": "work",
@@ -161,7 +167,7 @@ print(json.dumps([
    "body": {"items": [row(21)], "next": None, "as_of": 30}}
 ]))
 PY
-)
+world hydrate < "$TDIR/hydrate.src"
 t "21 hydrated ids come back whole" "B21" \
   run_py "import _board_api as A
 out = A.tickets_by_ids(range(1, 22), include_body=True)
@@ -198,7 +204,7 @@ finish
 - [ ] **Step 2: Run the new file to verify it fails.**
 
 Run: `bash tests/claude-code/board-api/test-agent-grade-reads.sh`
-Expected: FAIL lines — `tickets_search` raises `AttributeError` (function absent), the include_body drills fail with `TypeError: … unexpected keyword argument 'include_body'`, the guard drills fail (no `claim-gated` in output). The scaffolding itself must run (mock boots, worlds load); fix scaffolding errors now, before implementing.
+Expected: the POSITIVE drills fail — `tickets_search` raises `AttributeError` (function absent), the include_body drills `TypeError: … unexpected keyword argument 'include_body'`, the guard drills find no `claim-gated`. The negative controls (`no gated call reached the wire` = reqs=[0]) pass by construction — that is healthy, not a miswrite. The scaffolding itself must run (mock boots, worlds load); fix scaffolding errors now, before implementing.
 
 - [ ] **Step 3: Implement the helpers in `skills/issue-tracker/scripts/_board_api.py`.**
 
@@ -302,15 +308,17 @@ def tickets_search(q, states=None, principal="automation"):
 Run: `bash tests/claude-code/board-api/test-agent-grade-reads.sh`
 Expected: every `ok` line, `PASS test-agent-grade-reads.sh`.
 
-- [ ] **Step 5: Regression check the sibling read suites** (the two files that exercise the functions whose signatures changed):
+- [ ] **Step 5: Register the new file in the test runner.** `tests/claude-code/run-skill-tests.sh` runs a hardcoded `tests=(…)` array — a file absent from it never runs in CI. Add the entry `"board-api/test-agent-grade-reads.sh"` directly after the `"board-api/test-paged-reads.sh"` line.
+
+- [ ] **Step 6: Regression check the sibling read suites** (the two files that exercise the functions whose signatures changed):
 
 Run: `bash tests/claude-code/board-api/test-paged-reads.sh && bash tests/claude-code/board-api/test-read-verbs.sh`
 Expected: both PASS (the new parameters default off; no caller changed).
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 7: Commit.**
 
 ```bash
-git add skills/issue-tracker/scripts/_board_api.py tests/claude-code/board-api/test-agent-grade-reads.sh
+git add skills/issue-tracker/scripts/_board_api.py tests/claude-code/board-api/test-agent-grade-reads.sh tests/claude-code/run-skill-tests.sh
 git commit -m "feat(board-client): tickets_search, include_body hydration, and the claim-gate guard"
 ```
 
@@ -346,8 +354,10 @@ git commit -m "feat(board-client): tickets_search, include_body hydration, and t
 # a run cannot search (its statement of work arrives in the claim payload).
 #
 # gh mode delegates to the proven spelling `gh issue list --state open
-# --limit 200 --search <query>` (the explicit --limit matters: the default
-# caps at 30 and truncates silently). gh's search already matches bodies,
+# --limit 200 -R "$BOARD_REPO" --search <query>` (the explicit --limit
+# matters: the default caps at 30 and truncates silently; -R is
+# unconditional — _lib.sh resolves BOARD_REPO from the checkout when unset,
+# the board-comment.sh precedent). gh's search already matches bodies,
 # so --bodies is a stderr note and the search proceeds; --states is refused
 # (exit 2) — gh's OPEN/CLOSED is not the board's state vocabulary.
 set -euo pipefail
@@ -383,7 +393,7 @@ rows = A.tickets_search(os.environ["T_Q"],
 states = os.environ["T_STATES"]
 print("# %d hit(s), server order, %s" %
       (len(rows), ("states=%s" % states) if states else "all states"))
-hydrate = rows[:20]   # the first budgeted read's worth (MAX_BODY_IDS)
+hydrate = rows[:A._MAX_BODY_IDS]   # the first budgeted read's worth
 bodies = {}
 if os.environ["T_BODIES"] == "1" and hydrate:
     # Hydration completes BEFORE any row prints: a death here (budget 400,
@@ -407,7 +417,7 @@ fi
 # gh mode.
 [ -z "$states" ] || { echo "board-search: --states is API-binding only — gh's OPEN/CLOSED is not the board's state vocabulary" >&2; exit 2; }
 [ "$bodies" -eq 0 ] || echo "board-search: gh search already matches bodies — --bodies noted, proceeding" >&2
-exec gh issue list --state open --limit 200 ${BOARD_REPO:+-R "$BOARD_REPO"} --search "$query"
+exec gh issue list --state open --limit 200 -R "$BOARD_REPO" --search "$query"
 ```
 
 - [ ] **Step 2: Append the verb drills** to `tests/claude-code/board-api/test-agent-grade-reads.sh`, before `finish`:
@@ -417,7 +427,13 @@ exec gh issue list --state open --limit 200 ${BOARD_REPO:+-R "$BOARD_REPO"} --se
 # A stub gh on PATH for every API-arm call: "API mode never invokes gh" is
 # asserted, not assumed (test-read-verbs.sh precedent).
 GHSTUB="$TDIR/ghbin"; mkdir -p "$GHSTUB"
-printf '#!/usr/bin/env bash\necho "GH-INVOKED: $*"\n' > "$GHSTUB/gh"
+# The stub answers `gh repo view` (which _lib.sh calls to resolve BOARD_REPO
+# in gh mode) with a fixed slug, and echoes everything else — so the spelling
+# drill sees a deterministic `-R o/r`.
+cat > "$GHSTUB/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "repo view" ]; then echo "o/r"; else echo "GH-INVOKED: $*"; fi
+STUB
 chmod +x "$GHSTUB/gh"
 
 API_REPO="$(mkrepo)"
@@ -470,7 +486,7 @@ t "run context dies claim-gated before any request" "claim-gated" \
 t "the run-context die made no request" "reqs=[0]" reqs
 
 # ---- board-search.sh --bodies: first-20 bound, one budgeted read ----
-world verb-bodies < <(python3 - <<'PY'
+python3 - > "$TDIR/verb-bodies.src" <<'PY'
 import json
 def row(i, state="ready-for-implementer", body=None):
     r = {"id": i, "title": "hit %d" % i, "category": "work", "state": state,
@@ -490,11 +506,15 @@ print(json.dumps([
    "body": {"items": [row(i) for i in ids21], "next": None, "as_of": 40}}
 ]))
 PY
-)
+world verb-bodies < "$TDIR/verb-bodies.src"
 t "--bodies indents the hydrated statement under its row" \
   "    statement 1" verb crowded --bodies
 t "--bodies stops at the first 20 and says so" \
   "first 20 of 21 hits hydrated" verb crowded --bodies
+# reqs counts the CUMULATIVE world log — reset it and run once silently, or
+# the two verb calls above make this count 6, not 2.
+: > "$FIX.log"
+verb crowded --bodies >/dev/null
 t "--bodies is one hydration read beside the search walk" "reqs=[2]" reqs
 
 # ---- board-search.sh: gh arm ----
@@ -503,7 +523,7 @@ GH_REPO="$(mkrepo)"   # no board.json → gh binding
 # the suite's environment would legitimately add `-R <repo>` and break it.
 ghverb() { (cd "$GH_REPO" && env -u BOARD_REPO PATH="$GHSTUB:$PATH" "$SCRIPTS/board-search.sh" "$@"); }
 t "gh arm delegates with the proven spelling" \
-  "GH-INVOKED: issue list --state open --limit 200 --search walker" \
+  "GH-INVOKED: issue list --state open --limit 200 -R o/r --search walker" \
   ghverb walker
 t "gh arm --bodies notes and proceeds" "noted, proceeding" \
   ghverb walker --bodies
@@ -515,7 +535,7 @@ nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states done
 - [ ] **Step 3: Run to verify the new drills fail** (verb absent):
 
 Run: `bash tests/claude-code/board-api/test-agent-grade-reads.sh`
-Expected: Task-1 drills still `ok`; every verb drill FAILs with `No such file or directory` for `board-search.sh`.
+Expected: Task-1 drills still `ok`; the POSITIVE verb drills FAIL with `No such file or directory` for `board-search.sh`. The negative controls (`API arm never invokes gh`, `no usage error reached the wire`, `the run-context die made no request`, `gh arm --states never reaches gh`) pass by construction — around 8 passes on a red run is the healthy shape.
 
 - [ ] **Step 4: `chmod 755 skills/issue-tracker/scripts/board-search.sh`, re-run, verify all pass.**
 
@@ -543,7 +563,7 @@ git commit -m "feat(board-client): board-search — the ?q= verb, both bindings"
 - Test: `tests/claude-code/board-api/test-agent-grade-reads.sh` (append before `finish`)
 
 **Interfaces:**
-- Consumes: `ticket(tid, principal="automation", include_body=…)` from Task 1.
+- Consumes: `ticket(tid, principal="automation", include_body=…)` from Task 1; the `$API_REPO`/`$GHSTUB` scaffolding Task 2's appended block defines (task order 2→3 is load-bearing in this shared test file).
 - Produces: the API-arm output contract — header line, blank line, body (or the claim-served line), blank line, timeline records.
 
 - [ ] **Step 1: Append the show drills** before `finish`:
@@ -567,6 +587,9 @@ world show-body <<JSON
           "pr_url":null,"branch":"feat/x","blocked_by":[],"relates":[]}}
 ]
 JSON
+# The bare /tickets/12 entry above is LOAD-BEARING FOR THE RED RUN: before
+# the implementation lands, show sends no include=body, and without this
+# entry that read 404s — the drill would then red-fail for the wrong reason.
 show() { (cd "$API_REPO" && PATH="$GHSTUB:$PATH" \
     BOARD_API_URL="http://127.0.0.1:$PORT" \
     BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-show.sh" "$@"); }
@@ -600,7 +623,7 @@ nt "a run context sends no include=body" "include=body" paths
 - [ ] **Step 2: Run to verify the show drills fail.**
 
 Run: `bash tests/claude-code/board-api/test-agent-grade-reads.sh`
-Expected: earlier drills `ok`; `show prints the statement of work` FAILs (no body printed today), `a run context degrades` FAILs (no claim-served line).
+Expected: earlier drills `ok`; `show prints the statement of work` and `a run context degrades to the claim-served line` FAIL (no body, no claim-served line today); `the body ride is on the wire` FAILs (no include=body sent yet). The `nt` control and `show still prints…` drills pass by construction.
 
 - [ ] **Step 3: Edit `skills/issue-tracker/scripts/board-show.sh`'s API-mode python block.** Two changes. First, the fetch (currently `t = A.ticket(tid, principal="automation")`):
 
@@ -621,7 +644,7 @@ if run_ctx:
     print("body: claim-served (a run reads its statement of work from "
           "the claim payload)")
 else:
-    print(t.get("body", ""))
+    print(t.get("body") or "")
 print()
 ```
 
@@ -632,10 +655,10 @@ Also update the file's header comment (line 2): `# board-show.sh — one ticket 
 Run: `bash tests/claude-code/board-api/test-agent-grade-reads.sh`
 Expected: `PASS test-agent-grade-reads.sh`.
 
-- [ ] **Step 5: Regression: the read-verbs suite pins show's old output.**
+- [ ] **Step 5: Regression: the read-verbs suite pins show's by-id WIRE path.**
 
 Run: `bash tests/claude-code/board-api/test-read-verbs.sh`
-Expected: PASS — but if a show drill there asserts on exact line adjacency (header directly followed by timeline) it now legitimately fails; update THAT drill's expectation to the new contract (header, blank, body/claim-line, blank, timeline) rather than weakening this task. Its fixture `/tickets/12` entry also needs an `?include=body` twin (the mock 404s unmatched paths — show's new read would die). Record in your report which of the two cases you hit.
+Expected: exactly ONE failure — `show resolves its ticket by id` (test-read-verbs.sh:237): that drill pins the wire path as `"path": "/tickets/12"` WITH the closing quote, and show's read is now `/tickets/12?include=body`. Update that drill's expectation to `'"path": "/tickets/12?include=body"'` (keep the closing-quote discrimination; the `nt "and reads no whole board to do it"` beside it holds unchanged). No fixture edit is needed: the mock prefix-matches, so the existing `/tickets/12` entry already serves the new path (its row carries no body, which show prints as empty — no drill there asserts the body). Re-run; expected PASS.
 
 - [ ] **Step 6: Commit.**
 
@@ -683,7 +706,7 @@ stays the guard. Then triage the hits:
 - [ ] **Step 2: Toolkit table.** Insert a new row directly after the `board-list.sh` row:
 
 ```
-| `board-search.sh <query> [--states s1,s2] [--bodies]` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read). gh binding: `gh issue list --state open --limit 200 --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
+| `board-search.sh <query> [--states s1,s2] [--bodies]` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read). gh binding: `gh issue list --state open --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
 ```
 
 and replace the `board-show.sh` row (`| `board-show.sh <n>` | node + issue URL + bound daemon |`) with:
@@ -695,7 +718,7 @@ and replace the `board-show.sh` row (`| `board-show.sh <n>` | node + issue URL +
 - [ ] **Step 3: Sanity greps** (the reroute is complete and nothing stale remains):
 
 Run: `grep -n "no client search verb" skills/issue-tracker/SKILL.md; grep -c "board-search.sh" skills/issue-tracker/SKILL.md`
-Expected: first grep empty (exit 1); second ≥ 3 (table row, ticket-body prose, and the row's cross-reference).
+Expected: first grep empty (exit 1); second exactly `2` — `grep -c` counts LINES, and the string lands on two (the Toolkit row, the ticket-body prose).
 
 - [ ] **Step 4: Commit.**
 
