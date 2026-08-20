@@ -43,6 +43,11 @@
 #   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
 #   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-5.6-sol)
 #   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
+#   REVIEW_PRIORITY_LABEL  opt-in sweep ordering hint (dp#64): PRs carrying
+#                       this label enumerate FIRST in --sweep (stable within
+#                       both groups), so a priority cohort cannot be starved
+#                       by newest-first inflow under a full review cap.
+#                       Unset = enumeration order untouched.
 #   AUTO_MERGE_ENABLED  merge kill switch (default false = observation mode:
 #                       the worker reviews and judges the verdict but parks
 #                       the ticket needs-human instead of merging). Supplied
@@ -1720,8 +1725,18 @@ except Exception:
     pass')" || open_prs=""
   printf '%s' "$pr_list_json" \
     | python3 -c '
-import json, re, sys
-for p in json.load(sys.stdin):
+import json, os, re, sys
+prs = json.load(sys.stdin)
+# Priority pre-pass (dp#64): the listing rides gh'"'"'s newest-first server
+# order, so under sustained inflow a full review cap starves the old cohort —
+# its turn never comes. REVIEW_PRIORITY_LABEL names an opt-in first-pass
+# cohort: labeled PRs enumerate ahead of the rest, order untouched within
+# both groups (stable sort). Unset, the enumeration is exactly the listing.
+_pl = os.environ.get("REVIEW_PRIORITY_LABEL")
+if _pl:
+    prs.sort(key=lambda p: 0 if any(
+        (l or {}).get("name") == _pl for l in (p.get("labels") or [])) else 1)
+for p in prs:
     if p.get("isDraft"):
         continue
     linked = [str(n["number"]) for n in (p.get("closingIssuesReferences") or [])]
