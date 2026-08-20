@@ -49,7 +49,11 @@ bounds; `GET /tickets` filter table; `GET /tickets/:id`).
 
     board-search.sh <query> [--states s1,s2] [--bodies]
 
-- **API arm**: `tickets_search` under the automation principal. Prints one
+- An empty or missing `<query>` is a usage error (stderr usage, exit 2)
+  — the toolkit's arity-guard convention; the server's blank-`q` 400 is
+  never the first line of defense for a caller this client can check.
+- **API arm**: `tickets_search` under the automation principal (as are
+  the `--bodies` hydration reads). Prints one
   row per hit in server order — `#<id> <state> <priority> <title>` — under
   a header line that says the order is server-owned and the search spans
   ALL states (a `done`/`wontfix` hit is prior-art evidence, which is the
