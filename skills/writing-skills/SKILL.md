@@ -7,6 +7,10 @@ description: Use when creating new skills, editing existing skills, or verifying
 
 ## What a skill is for
 
+This applies to any authored agent behavior — a skill, a subagent or
+dispatch prompt, a worker protocol. The reader is a model either way,
+and the same economics hold.
+
 The model reading your skill carries its own situational judgment. A
 skill's job is to supply what that judgment cannot derive on its own —
 domain facts, validated tribal knowledge (the incident, the footgun, the
@@ -27,9 +31,20 @@ than bans: "never `HEAD~1` — it silently drops all but the last commit"
 lets the reader recognize when the rule applies and when it doesn't; a
 bare "never" teaches nothing and invites negotiation.
 
+Cite the incident; generalize the rule. A case-study finding encoded
+as-is covers only that case — distill it into the principle it taught,
+so the reader recognizes the next instance that doesn't look like the
+first.
+
 Write for the weakest model that will actually consume the skill. A
 worker-facing prompt template can justify denser scaffolding than a
 skill read by frontier orchestrators.
+
+Before calling a draft done, walk it line by line and ask of each line
+whether it rightfully claims its place. A line earns it only by
+changing behavior the reader wouldn't already produce; cut the rest. A
+draft that survives this pass is normally much shorter than the one
+that entered it.
 
 ## Overview
 
