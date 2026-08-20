@@ -49,8 +49,10 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    plan ends): one review package per task (`scripts/review-package
    PLAN_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
    per task ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the
-   printed path, dispatched together — reviews read their package, not
-   the tree, and run at most a focused test, so they run concurrently.
+   printed path, dispatched together when their focused tests cannot
+   collide — reviews read their package, not the tree, so hermetic suites
+   run concurrently; suites that share mutable state — a test database, a
+   fixed port — run one reviewer at a time.
    Where no interface is declared but two tasks touch the same files,
    judge from their Files lists: an overlap that looks load-bearing is
    reviewed before the later task dispatches. The frontier is the ceiling

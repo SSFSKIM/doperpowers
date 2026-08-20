@@ -3,6 +3,10 @@
 
 For each session transcript given, prints: wall-clock span, dispatch counts
 by role, and token totals by model for the controller and its subagents.
+Token totals are deduplicated by message id (one assistant response is
+written as several rows repeating the same usage). Durations are reported
+both as the transcript's span and as active time — the span with idle gaps
+(a resumed agent waiting between messages) excluded.
 Subagent transcripts are read from the sibling directory
 <transcript-dir>/<session-id>/subagents/.
 
@@ -15,6 +19,10 @@ import json
 import os
 import re
 import sys
+
+# Heuristic: a single tool call running longer than this is rare, so a larger
+# gap between transcript entries is the agent idling between resumes.
+IDLE_GAP = datetime.timedelta(minutes=15)
 
 ROLE_PATTERNS = [
     (re.compile(r"re-review|review task", re.I), "task-reviewer"),
@@ -31,9 +39,15 @@ def role_of(description):
 
 
 def scan_transcript(path):
-    """Return (token totals by model, first timestamp, last timestamp)."""
-    totals = collections.defaultdict(collections.Counter)
-    first = last = None
+    """Return (token totals by model, first timestamp, last timestamp, active time).
+
+    Usage is deduped by (model, message id), keeping the last snapshot seen
+    for that id: one assistant response is written as several rows — thinking,
+    tool use — that share a message id and repeat its usage.
+    """
+    usage_by_id = {}
+    anonymous = 0
+    times = []
     with open(path) as fh:
         for line in fh:
             try:
@@ -42,21 +56,44 @@ def scan_transcript(path):
                 continue
             ts = entry.get("timestamp")
             if ts:
-                t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                first = t if first is None else min(first, t)
-                last = t if last is None else max(last, t)
+                times.append(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")))
             message = entry.get("message")
             if isinstance(message, dict) and isinstance(message.get("usage"), dict):
-                usage = message["usage"]
                 model = message.get("model") or "unknown"
-                for key in (
-                    "input_tokens",
-                    "output_tokens",
-                    "cache_read_input_tokens",
-                    "cache_creation_input_tokens",
-                ):
-                    totals[model][key] += usage.get(key) or 0
-    return totals, first, last
+                message_id = message.get("id")
+                if message_id is None:
+                    anonymous += 1
+                    message_id = ("no-id", anonymous)
+                usage_by_id[(model, message_id)] = message["usage"]
+
+    totals = collections.defaultdict(collections.Counter)
+    for (model, _), usage in usage_by_id.items():
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            totals[model][key] += usage.get(key) or 0
+
+    times.sort()
+    first = times[0] if times else None
+    last = times[-1] if times else None
+    return totals, first, last, active_time(times)
+
+
+def active_time(times):
+    """Sum of the segment spans, splitting wherever a gap exceeds IDLE_GAP."""
+    active = datetime.timedelta()
+    if not times:
+        return active
+    segment_start = previous = times[0]
+    for t in times[1:]:
+        if t - previous > IDLE_GAP:
+            active += previous - segment_start
+            segment_start = t
+        previous = t
+    return active + previous - segment_start
 
 
 def merge(into, totals):
@@ -81,14 +118,17 @@ def report(session_jsonl):
     session_id = os.path.splitext(os.path.basename(session_jsonl))[0]
     print(f"=== session {session_id} ===")
 
-    controller_totals, first, last = scan_transcript(session_jsonl)
+    controller_totals, first, last, controller_active = scan_transcript(session_jsonl)
     if first and last:
         span = last - first
-        print(f"wall-clock: {first.isoformat()} -> {last.isoformat()}  ({span})")
+        print(f"wall-clock: {first.isoformat()} -> {last.isoformat()}  "
+              f"(span {span}, active {controller_active})")
 
     subagent_dir = os.path.join(os.path.dirname(session_jsonl), session_id, "subagents")
     role_counts = collections.Counter()
     role_totals = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
+    role_span = collections.defaultdict(datetime.timedelta)
+    role_active = collections.defaultdict(datetime.timedelta)
     dispatches = []
     for meta_path in sorted(glob.glob(os.path.join(subagent_dir, "*.meta.json"))):
         with open(meta_path) as fh:
@@ -98,11 +138,16 @@ def report(session_jsonl):
         role_counts[role] += 1
         agent_jsonl = meta_path.replace(".meta.json", ".jsonl")
         if os.path.exists(agent_jsonl):
-            totals, a_first, a_last = scan_transcript(agent_jsonl)
+            totals, a_first, a_last, a_active = scan_transcript(agent_jsonl)
             merge(role_totals[role], totals)
             duration = (a_last - a_first) if a_first and a_last else None
+            if duration is not None:
+                role_span[role] += duration
+            role_active[role] += a_active
             out_tokens = sum(c["output_tokens"] for c in totals.values())
-            dispatches.append((a_first, role, meta.get("model") or "?", out_tokens, description, duration))
+            dispatches.append(
+                (a_first, role, meta.get("model") or "?", out_tokens, description, duration, a_active)
+            )
 
     print(f"dispatches: {sum(role_counts.values())} total "
           f"({', '.join(f'{r}={n}' for r, n in sorted(role_counts.items())) or 'none'})")
@@ -111,14 +156,16 @@ def report(session_jsonl):
     for role in sorted(role_totals):
         print(f"{role} tokens ({role_counts[role]} dispatches):")
         print(fmt_totals(role_totals[role]))
+        print(f"  time: span={role_span[role]} active={role_active[role]}")
     if dispatches:
-        print("dispatch list (start time, duration, model, output tokens):")
-        for start, role, model, out_tokens, description, duration in sorted(
+        print("dispatch list (start time, span, active, model, output tokens):")
+        for start, role, model, out_tokens, description, duration, active in sorted(
             dispatches, key=lambda d: (d[0] is None, d[0])
         ):
             when = start.strftime("%m-%d %H:%M") if start else "?"
             dur = str(duration).split(".")[0] if duration is not None else "?"
-            print(f"  {when}  {dur:>8}  {model:6}  out={out_tokens:>7,}  [{role}] {description}")
+            act = str(active).split(".")[0]
+            print(f"  {when}  {dur:>8}  {act:>8}  {model:6}  out={out_tokens:>7,}  [{role}] {description}")
     print()
 
 

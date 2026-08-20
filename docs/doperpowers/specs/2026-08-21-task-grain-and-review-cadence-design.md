@@ -104,8 +104,10 @@ The loop's steps 3–5 become:
 >    plan ends): one review package per task (`scripts/review-package
 >    PLAN_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
 >    per task ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the
->    printed path, dispatched together — reviews read their package, not
->    the tree, and run at most a focused test, so they run concurrently.
+>    printed path, dispatched together when their focused tests cannot
+>    collide — reviews read their package, not the tree, so hermetic suites
+>    run concurrently; suites that share mutable state — a test database, a
+>    fixed port — run one reviewer at a time.
 >    Where no interface is declared but two tasks touch the same files,
 >    judge from their Files lists: an overlap that looks load-bearing is
 >    reviewed before the later task dispatches. The frontier is the ceiling
@@ -213,6 +215,11 @@ incident):
 | B dp PR #74 paged-reads | 7 | 22 | 8 / 6h01m | 7 / 5h09m* | 6 / 1h21m | 2 of 7 | 8h13m |
 | C arkho#17 search | 6 | 17 | 6 / 2h03m | 7 / 0h38m | 3 / 0h32m | 2 of 6 | 3h34m |
 | D dp PR #76 client reads | 5 | 14 | 5 / 0h45m | 5 / 0h42m | 3 / 0h12m | 1 of 5 | 3h59m (1h33m to last task) |
+
+The collector now also reports active time per dispatch and per role —
+the span with idle gaps over 15 minutes excluded, so a resumed agent's
+waiting does not count — and deduplicates token totals by message id;
+the time columns above are summed spans and are unchanged.
 
 Fix rounds per task never exceeded two in the baseline (run A's tasks 2 and
 8 took two fixers each; every other fixed task took one). Escaped defects at
@@ -379,8 +386,10 @@ in skill text — it is the monitoring window's, not the method's.
   reviewer for the whole wave diff.
   Rationale: per-task packages already exist and keep each review within
   one pass; cross-task interplay is the final whole-branch review's job
-  today and stays there. Reviews read the package and run at most a
-  focused test, which is what makes concurrency safe in a shared worktree.
+  today and stays there. Reviews read the package, not the tree, so
+  concurrency in a shared worktree is safe as long as their focused tests
+  are hermetic; suites that share mutable state — a test database, a fixed
+  port — run one reviewer at a time.
   Date/Author: 2026-08-21 / fable session
 
 - Decision: parallel executors and plan resolution out of scope (§4).
@@ -401,7 +410,7 @@ in skill text — it is the monitoring window's, not the method's.
 
 - Observation: across the four runs reviewer time equals or exceeds executor
   time in two (A: 3h39m vs 1h50m; D: 42m vs 45m) — reviewers run mutation
-  batteries, 20–40 minutes and 50–77k output tokens per review in run A.
+  batteries, 20–40 minutes and 26–77k output tokens per review in run A.
   Evidence: `scripts/sde-telemetry` + per-dispatch durations, session
   `e92c7422`, computed 2026-08-21.
 - Observation: fixer dispatches outnumber executors (session-wide 70 vs 57;
@@ -418,11 +427,14 @@ in skill text — it is the monitoring window's, not the method's.
   per-task gate's unique value is early, local; correctness across tasks is
   the final gate's.
   Evidence: `.doperpowers/sde/2026-08-18-board-client-paged-reads/progress.md`.
-- Observation: the controller's own output (7.0M tokens, fable) is of the
-  same order as all workers combined (8.8M) over the session — the
-  "frontier plans once, cheap executes" picture does not hold; every task
-  costs controller turns, so fewer tasks cut controller cost too.
-  Evidence: telemetry token totals.
+- Observation: the controller's own output (2.9M tokens, fable) is about a
+  third of all workers combined (9.0M) over the session, and larger than any
+  single worker role except executors (3.5M) — the "frontier plans once,
+  cheap executes" picture understates the controller: every task costs
+  controller turns, so fewer tasks cut controller cost too.
+  Evidence: telemetry token totals, deduplicated by message id; the earlier
+  7.0M / 8.8M reading double-counted multi-row assistant messages, which
+  inflated the fable controller far more than the workers.
 - Observation: PR #72's recommended feature (arkho#9 paged envelope) had
   already shipped in arkho PR #11 on 2026-08-18, the day before the spec was
   written — the experiment's target was stale at birth.
@@ -489,3 +501,5 @@ Pending — written at finish.
   P1/P2 mapping recorded.
 - v1.2 (2026-08-21): acceptance 4 admits the split-at-overlap reading the
   v1.1 clause licenses; re-test observations recorded.
+- v1.3 (2026-08-21): codex review adopted — concurrent-review predicate,
+  telemetry dedupe and active time; token figures recomputed.
