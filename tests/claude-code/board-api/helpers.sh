@@ -11,6 +11,12 @@ SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 # run context sets the bearer on the invocation itself, so nothing here loses
 # reach by starting from none.
 unset BOARD_RUN_TOKEN
+# The live-binding guard (board-transition.sh, dp#63) adjudicates on the LOCAL
+# daemon registry — an operator's real registry (a live worker bound to a
+# ticket number these fixtures reuse) would inject refusals into suites that
+# never seeded a binding. Every suite starts from an empty registry of its
+# own; `finish` takes it away again.
+DAEMON_HOME="$(mktemp -d)"; export DAEMON_HOME
 FAILS=0
 t() {  # t <name> <expected-substring> cmd...
   local name="$1" want="$2"; shift 2 || { echo "t: bad call"; exit 2; }
@@ -55,5 +61,6 @@ _mkrepo_cleanup() {
 }
 finish() {
   _mkrepo_cleanup
+  rm -rf "$DAEMON_HOME"
   [ "$FAILS" -eq 0 ] && echo "PASS $(basename "$0")" || { echo "FAIL $(basename "$0") ($FAILS)"; exit 1; }
 }

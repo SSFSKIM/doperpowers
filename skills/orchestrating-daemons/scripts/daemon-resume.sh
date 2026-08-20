@@ -32,6 +32,27 @@ msg="${2:?missing message}"
 [ "$(_meta_get "$uuid" engine)" = "codex" ] \
   && { echo "daemon-resume: $uuid is a codex daemon — use codex-resume.sh" >&2; exit 1; }
 
+# ONE RESUME PER DAEMON AT A TIME (dp#66). Two concurrent resumes race the
+# current-chain: both fork from the same turn, one fork is purged or orphaned,
+# and status/current land on whichever wrote last — observed as two wrappers
+# holding a five-hour watch on a dead fork while the ticket sat silent. The
+# mutex is a flock on fd 9, held for this wrapper's whole lifetime: the child
+# that takes it inherits the fd, so the lock lands on the shared open-file
+# description and survives the child — and the kernel releases it the moment
+# this process dies, so a dead holder can never wedge a successor (no
+# timeouts, no stale-pid bookkeeping; the lockFILE lingering on disk means
+# nothing). The fork invocation below closes fd 9 (9>&-) so the detached
+# agent never carries the lock beyond this wrapper's life.
+exec 9>>"$DAEMON_HOME/$uuid.resume.lock"
+if ! python3 -c 'import fcntl,sys
+try: fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError: sys.exit(1)'; then
+  holder="$(cat "$DAEMON_HOME/$uuid.resume.lock" 2>/dev/null || true)"
+  echo "daemon-resume: a resume of $uuid is already in flight${holder:+ ($holder)} — not spawning a twin (dp#66). The mutex releases the moment that process exits; check it with daemon-list.sh / ps before trying again." >&2
+  exit 1
+fi
+printf 'pid %s since %s' "$$" "$(_now)" > "$DAEMON_HOME/$uuid.resume.lock"
+
 name="$(_meta_get "$uuid" name)"
 cwd="$(_meta_get "$uuid" cwd)"; model="$(_meta_get "$uuid" model)"
 # Gateway dimension: restore --settings/--effort on the fork, or a gateway
@@ -79,7 +100,7 @@ args+=( "$msg" )
 # job's post-job cleanup, which kills marker-carrying processes (see
 # daemon-spawn.sh).
 newshort=""
-if banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"; then
+if banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 9>&- | _strip_ansi)"; then
   newshort="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 fi
 if [ -z "$newshort" ]; then
