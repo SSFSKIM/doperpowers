@@ -95,7 +95,7 @@ world search-states <<JSON
 ]
 JSON
 run_py "import _board_api as A
-A.tickets_search('x', states='done')" >/dev/null
+A.tickets_search('x', states='done')" >/dev/null || true
 t "states composes onto the search path" "states=done" paths
 
 # ---- include_body: 20-chunk boundary + body-iff-requested parity ----
@@ -153,5 +153,115 @@ t "by-id include_body in a run context dies claim-gated" "claim-gated" \
   run_py_as_run "import _board_api as A
 A.ticket(1, include_body=True)"
 t "no gated call reached the wire" "reqs=[0]" reqs
+
+# ---- board-search.sh: API arm ----
+# A stub gh on PATH for every API-arm call: "API mode never invokes gh" is
+# asserted, not assumed (test-read-verbs.sh precedent).
+GHSTUB="$TDIR/ghbin"; mkdir -p "$GHSTUB"
+# The stub answers `gh repo view` (which _lib.sh calls to resolve BOARD_REPO
+# in gh mode) with a fixed slug, and echoes everything else — so the spelling
+# drill sees a deterministic `-R o/r`.
+cat > "$GHSTUB/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "repo view" ]; then echo "o/r"; else echo "GH-INVOKED: $*"; fi
+STUB
+chmod +x "$GHSTUB/gh"
+
+API_REPO="$(mkrepo)"
+mkdir -p "$API_REPO/.doperpowers"
+printf '{"binding":"api","url":"http://example.invalid"}\n' > "$API_REPO/.doperpowers/board.json"
+# BOARD_API_URL (env) overrides board.json's url, so one repo serves every
+# world — the port travels in the environment.
+verb() {  # verb <args…> — board-search.sh in the api-bound repo, gh stubbed
+  (cd "$API_REPO" && PATH="$GHSTUB:$PATH" \
+     BOARD_API_URL="http://127.0.0.1:$PORT" \
+     BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-search.sh" "$@")
+}
+verb_as_run() {  # same, speaking as a run
+  (cd "$API_REPO" && PATH="$GHSTUB:$PATH" \
+     BOARD_API_URL="http://127.0.0.1:$PORT" BOARD_RUN_TOKEN=run-tok \
+     BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-search.sh" "$@")
+}
+
+world verb-search <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art"),
+                   $(row 9 "in-progress" "walker live")],"next":null,"as_of":7}}
+]
+JSON
+t "verb prints rows in server order with state visible" "#4 done" verb walker
+t "verb header says all states" "all states" verb walker
+nt "API arm never invokes gh" "GH-INVOKED" verb walker
+
+world verb-none <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=nothing","status":200,
+  "body":{"items":[],"next":null,"as_of":2}}
+]
+JSON
+t "an empty result is the header only, exit 0" "0 hit(s)" verb nothing
+
+world verb-empty <<JSON
+[]
+JSON
+t "an empty query is usage" "Usage:" verb ""
+t "a whitespace-only query is usage" "Usage:" verb "   "
+t "no usage error reached the wire" "reqs=[0]" reqs
+
+world verb-run-ctx <<JSON
+[]
+JSON
+t "run context dies claim-gated before any request" "claim-gated" \
+  verb_as_run walker
+t "the run-context die made no request" "reqs=[0]" reqs
+
+# ---- board-search.sh --bodies: first-20 bound, one budgeted read ----
+python3 - > "$TDIR/verb-bodies.src" <<'PY'
+import json
+def row(i, state="ready-for-implementer", body=None):
+    r = {"id": i, "title": "hit %d" % i, "category": "work", "state": state,
+         "priority": "P2", "owner_run": None, "parent": None, "plan": None,
+         "pr_url": None, "branch": None, "blocked_by": [], "relates": []}
+    if body is not None: r["body"] = body
+    return r
+ids21 = list(range(1, 22))
+first20 = ",".join(str(i) for i in ids21[:20])
+print(json.dumps([
+  {"method": "GET",
+   "path": "/tickets?limit=200&ids=%s&include=body" % first20,
+   "status": 200,
+   "body": {"items": [row(i, body="statement %d" % i) for i in ids21[:20]],
+            "next": None, "as_of": 40}},
+  {"method": "GET", "path": "/tickets?limit=200&q=crowded", "status": 200,
+   "body": {"items": [row(i) for i in ids21], "next": None, "as_of": 40}}
+]))
+PY
+world verb-bodies < "$TDIR/verb-bodies.src"
+t "--bodies indents the hydrated statement under its row" \
+  "    statement 1" verb crowded --bodies
+t "--bodies stops at the first 20 and says so" \
+  "first 20 of 21 hits hydrated" verb crowded --bodies
+# reqs counts the CUMULATIVE world log — reset it and run once silently, or
+# the two verb calls above make this count 6, not 2. `|| true` for the same
+# reason the states setup above carries it: a broken verb must fail the
+# reqs= drill below, not abort the file before the gh arm ever runs.
+: > "$FIX.log"
+verb crowded --bodies >/dev/null || true
+t "--bodies is one hydration read beside the search walk" "reqs=[2]" reqs
+
+# ---- board-search.sh: gh arm ----
+GH_REPO="$(mkrepo)"   # no board.json → gh binding
+# env -u BOARD_REPO: the spelling drill pins the bare form; a BOARD_REPO in
+# the suite's environment would legitimately add `-R <repo>` and break it.
+ghverb() { (cd "$GH_REPO" && env -u BOARD_REPO PATH="$GHSTUB:$PATH" "$SCRIPTS/board-search.sh" "$@"); }
+t "gh arm delegates with the proven spelling" \
+  "GH-INVOKED: issue list --state open --limit 200 -R o/r --search walker" \
+  ghverb walker
+t "gh arm --bodies notes and proceeds" "noted, proceeding" \
+  ghverb walker --bodies
+t "gh arm --bodies still runs the search" "GH-INVOKED" ghverb walker --bodies
+t "gh arm --states is refused" "API-binding only" ghverb walker --states "done"
+nt "gh arm --states never reaches gh" "GH-INVOKED" ghverb walker --states "done"
 
 finish
