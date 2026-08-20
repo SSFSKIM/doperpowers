@@ -165,8 +165,9 @@ checkout's repo.
 | `board-surface.sh <n> --add NAME \| --remove NAME` | add/remove a `surface:*` label (see Surfaces below). `--add` validates against the registry; `--remove` never does — it is the cleanup for an orphaned label and the escape hatch for a false-positive match |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
 | `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see the ritual) |
+| `board-search.sh [--states s1,s2] [--bodies] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read); a query that leads with `-` rides behind `--`. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
-| `board-show.sh <n>` | node + issue URL + bound daemon |
+| `board-show.sh <n>` | one ticket in full. API binding: header row, the statement of work (body), then the server-side timeline — a run context sees `body: claim-served` (its body arrived in the claim payload). gh binding: node JSON + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
 | `board-answer.sh <n> <answers \| --posted>` | the wake ritual's `needs-human` relay: posts the answers as an `[answers]` comment (the ticket is the record), returns the ticket to the state it parked FROM — the `pre-park:` meta the park recorded, and when the park entered from a state `PRE_PARK` does not cover, the bound worker's own lane (`in-design` for an ARCHITECT, `in-review` for a QAGENT with the ticket's own `pr:` re-supplied, else `in-progress`) — and resumes the BOUND session with the answers verbatim — park = pause, not death. Refuses unbound / mid-turn sessions (fresh dispatch is the fallback), and refuses a review-lane return whose ticket carries no `pr:` (the answers still post; the ticket stays parked until the link is restored). Blocks for the worker's turn: bg shell |
 | `board-answer.sh <n> <answers> --to <state>` | API binding only, and only for a park **nobody is bound to**: the server has no run whose lane it could return the ticket to, answers `409 no-return-mapping`, and `--to` is how the human names the disposition themselves (the server refuses it on a bound park — a bound park's return state is the server's) |
@@ -331,13 +332,14 @@ they write against.
 Before registering, run the pre-registration search — and search by
 SEAM: the identifiers your ticket touches (file paths, function/RPC
 names, table names). Title-keyword search may not be enough — different
-authors word the same work differently. GitHub issue search hits
-bodies, so query each seam identifier
-(`gh issue list --state open --limit 200 --search "<function-or-file-name>"`
-— the explicit `--limit` matters: the default caps at 30 and truncates
-silently). This search is a gh-binding route; an API-bound repo has no
-client search verb yet — rely on the server's registration-time dedupe
-until one lands (the arkho#7 route family). Then triage the hits:
+authors word the same work differently. Query each seam identifier with
+`board-search.sh "<function-or-file-name>"` — one route, both bindings
+(the verb owns the branch: gh-bound repos ride gh's body-matching issue
+search, API-bound repos the board's `?q=` full-text filter). Where a
+title is not enough to judge a hit, `--bodies` prints the first ≤20
+hits' statements of work. A worker in a run context cannot search
+(claim-gated by design) — there the server's registration-time dedupe
+stays the guard. Then triage the hits:
 
 - **Same defect or scope** → comment your evidence on the existing
   ticket instead of registering a duplicate — parallel workers hit the

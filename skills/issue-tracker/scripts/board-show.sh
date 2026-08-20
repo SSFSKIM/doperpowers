@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# board-show.sh — one ticket in full: node JSON, issue URL, bound daemon.
+# board-show.sh — one ticket in full. API mode: header, statement of work
+# (body), timeline. gh mode: node JSON, issue URL, bound daemon.
 #
 # Usage: board-show.sh <number>
 #
@@ -24,7 +25,12 @@ import _board_api as A
 
 tid = A.ref(os.environ["T_ID"])   # '#12' → 12, and a junk ref dies as a junk
                                   # ref rather than as a request nobody can build
-t = A.ticket(tid, principal="automation")
+run_ctx = bool(os.environ.get("BOARD_RUN_TOKEN"))
+# The body rides the by-id read for every non-run reader — "one ticket in
+# full" finally includes the statement of work. A run context omits the
+# opt-in (the server refuses the class; its body arrived in the claim
+# payload) so the worker bootstrap's timeline read keeps working unchanged.
+t = A.ticket(tid, principal="automation", include_body=not run_ctx)
 if t is None:
     # A targeted 404 is AUTHORITATIVE absence: the ticket is not on this board.
     # The whole-board scan this replaces could only ever prove it was not in
@@ -40,6 +46,13 @@ print("#%s %s %s %s  owner_run=%s plan=%s pr=%s branch=%s "
        t.get("branch"),
        " ".join(str(b) for b in t.get("blocked_by") or []),
        " ".join(str(x) for x in t.get("relates") or [])))
+print()
+if run_ctx:
+    print("body: claim-served (a run reads its statement of work from "
+          "the claim payload)")
+else:
+    print(t.get("body") or "")
+print()
 # THE TIMELINE IS A FLAT READ. GET /tickets/:id/timeline has no paged form at
 # all: arkho API.md §4.2 serves both halves whole and calls their cursors "the
 # seam a paged read would grow from" — so there is no cap to page against and
