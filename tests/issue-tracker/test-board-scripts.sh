@@ -431,17 +431,33 @@ json.dump({'uuid':'park-race-old','name':'review-pr-999','status':'idle','ticket
 json.dump({'uuid':'park-race-new','name':'review-pr-1000','status':'working'},
           open(os.path.join(os.environ['DAEMON_HOME'],'park-race-new.json'),'w'))
 PY
-LOCK="$DAEMON_HOME/.metalock" MARK="$TEST_ROOT/lock-held" python3 - <<'PY' & lock_pid=$!
+# The handoff is a MARKER, not a timer. Holding the lock for a fixed 1.0s made
+# the case a race against board-transition.sh's own runtime: when the
+# transition ran long the lock released while #999 was still
+# ready-for-implementer, the contender bound legitimately, and all three
+# assertions failed together — indistinguishable from a real regression, and
+# reproduced as pass/FAIL/pass on identical code. The holder now releases only
+# once the transition has RETURNED, so the ordering under test holds at any
+# speed. The bounded wait is a deadlock backstop, not the mechanism.
+rm -f "$TEST_ROOT/lock-release"
+LOCK="$DAEMON_HOME/.metalock" MARK="$TEST_ROOT/lock-held" RELEASE="$TEST_ROOT/lock-release" \
+    python3 - <<'PY' & lock_pid=$!
 import fcntl,os,time
 f=open(os.environ['LOCK'],'a'); fcntl.flock(f,fcntl.LOCK_EX)
 open(os.environ['MARK'],'w').write('held')
-time.sleep(1.0)
+rel=os.environ['RELEASE']; deadline=time.time()+60
+while not os.path.exists(rel) and time.time()<deadline:
+    time.sleep(0.01)
 fcntl.flock(f,fcntl.LOCK_UN); f.close()
 PY
 while [ ! -f "$TEST_ROOT/lock-held" ]; do sleep 0.01; done
 ( set +e; run board-bind.sh park-race-new 999 >"$TEST_ROOT/park-race.out" 2>&1; echo $? >"$TEST_ROOT/park-race.rc" ) & bind_pid=$!
+# Best-effort head start so the contender is genuinely parked on the lock when
+# the state changes (that is the shape being reproduced). Correctness no longer
+# depends on it — the release marker below owns the ordering.
 sleep 0.2
 run board-transition.sh 999 needs-human "human decision" >/dev/null
+touch "$TEST_ROOT/lock-release"
 wait "$lock_pid"; wait "$bind_pid"
 assert_equals "$(cat "$TEST_ROOT/park-race.rc")" "1" "bind re-reads needs-human after lock acquisition"
 assert_contains "$(cat "$DAEMON_HOME/park-race-old.json")" '"ticket": "999"' "lock-wait park keeps the original owner"
@@ -789,7 +805,14 @@ assert_not_contains "$(state "s['issues']['$rfa_t']['labels']")" "status:ready-f
 
 # ---- map: v8 park classes ------------------------------------------------------
 echo "board-map (v8 park classes):"
-run board-map.sh --write >/dev/null 2>&1
+# Surface the render's own rc instead of discarding it: when this write fails
+# the three payload assertions below all fail together with nothing to explain
+# why, which is how one intermittent failure here cost a review its afternoon.
+set +e
+map_out="$(run board-map.sh --write 2>&1)"; map_rc=$?
+set -e
+if [ "$map_rc" = "0" ]; then pass "board-map --write renders the board"; else
+    fail "board-map --write renders the board"; echo "    rc=$map_rc"; echo "    $map_out"; fi
 BOARD_HTML="$(cat "$WORK/doperpowers/issue-tracker/BOARD.html")"
 assert_contains "$BOARD_HTML" '"cls": "s_needh"' "html payload carries the needs-human class"
 assert_contains "$BOARD_HTML" '"cls": "s_ipref"' "html payload carries the interactive-preferred class"
