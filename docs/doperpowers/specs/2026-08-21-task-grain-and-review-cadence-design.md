@@ -561,6 +561,45 @@ in skill text — it is the monitoring window's, not the method's.
   with at least one multi-task set and concurrent reviewers — the old text
   cannot produce that.
   Evidence: two subagent transcripts, this session.
+- Observation (historical-spec before/after, 2026-08-21, human-proposed):
+  the eight controlled-track specs that shipped between 2026-08-03 and
+  2026-08-20 (six dp, two arkho) were re-cut from their pre-execution spec
+  text at their fork-point checkouts — two opus planners on the new
+  writing-plans text and one opus planner on the old text per spec (24
+  breakdowns, Interfaces only, no plan bodies; plans directories hidden;
+  the shipped plan and its real run are the "before" evidence). Totals:
+  shipped plans 72 tasks; same-model controls on the old text 81; new-text
+  medians 49.5 (−31% vs shipped, −39% vs the same-model control); review
+  points under the frontier rule derived from the new breakdowns'
+  `Consumes` 37 against 72 per-task reviews (−49%), with concurrent
+  reviewers inside each multi-task set. Every new-text breakdown named its
+  producer in every earlier-task `Consumes` (16 of 16); old-text controls
+  cut finer than the frontier-authored shipped plans in five of eight
+  specs. Spread between new-text reps is up to three tasks (#43: 6 vs 9) —
+  the wording leaves the judgment room it was meant to. Alignment with the
+  runs' pain: the two runs whose fix loops dominated (#50 — 19 fixers for
+  14 tasks, 13 fixed, a five-round final loop; #43 — every task fixed,
+  fixer active time twice the executors') are exactly where resume-based
+  fixes remove re-orientation, and the run where per-task review was
+  mostly idle (#65 — 9 reviews, 1 fix) loses the most review points
+  (−68%); the chain-shaped specs (arkho#11, arkho#17, #76) gain from grain
+  only, their frontier schedule staying per-task. PR #74's four cross-task
+  final-review defects sat inside the primitives task in every cut, old
+  and new — grain does not move that class, the final gate does. This is
+  before/after on proposals, not executed runs: no quality measurement of
+  the new cuts exists yet; that remains the §3 monitoring's job.
+  Evidence: 24 subagent transcripts; the table below, this session.
+
+  | Spec (real run) | Shipped plan tasks | Real run: dispatches exec/rev/fix · tasks needing fix · final-gate | Control (old text, opus) | New text (opus) reps | New frontier review points | Δ tasks new-median vs shipped | Δ review points vs shipped per-task |
+  |---|---|---|---|---|---|---|---|
+  | #43 codex-workflow-engine (08-03..05) | 8 | 37: 8/8/11 · every task (retro) · 4 P1 + 2 P2; dogfood 17 in 3 waves | 13 | 6, 9 (median 7.5) | 5, 6 | -6% | -31% |
+  | #50 a2-board-adapter (08-09..10) | 14 | 50: 14/14/19 · 13 of 14 · 5 rounds: 33→8→3→3→1 confirmed | 14 | 9, 8 (median 8.5) | 8, 6 | -39% | -50% |
+  | #61 dp51-a1-consumption (08-11) | 10 | 63: 22/21/16 · 10 task-ids fixed · PR-review flow-back (api-scale) | 9 | 8, 8 (median 8.0) | 5, 5 | -20% | -50% |
+  | #65 dp51-deferrals-dp60 (08-12..13) | 11 | 28: 10/9/4 · 1 of 11 (+final panel) · final panel findings, 1 wave | 12 | 6, 6 (median 6.0) | 4, 3 | -45% | -68% |
+  | #74 board-client-paged-reads (08-18) | 7 | 22: 8/7/5 · 2 of 7 · 4 P2 over 4 rounds | 10 | 5, 6 (median 5.5) | 3, 4 | -21% | -50% |
+  | #76 client-agent-grade-reads (08-20) | 5 | 14: 5/5/2 · 1 of 5 · 0 Critical/Important | 7 | 3, 4 (median 3.5) | 3, 4 | -30% | -30% |
+  | arkho#11 read-surface (08-18) | 11 | 37: 11/10/14 · 9 of 10 · 3 codex + 3 PR-level | 11 | 6, 7 (median 6.5) | 6, 4 | -41% | -55% |
+  | arkho#17 agent-grade-reads (08-19) | 6 | 17: 6/7/2 · 2 of 6 · 0 Critical/Important | 5 | 4, 4 (median 4.0) | 4, 4 | -33% | -33% |
 - Observation: `claude -p --plugin-dir <worktree>` loads the worktree's
   skill text over the installed plugin (probe quoted both new sentences
   verbatim), so the keyword tests can exercise an unreleased edit through a
@@ -643,3 +682,5 @@ executors, plan resolution, reviewer depth).
   declined.
 - v1.6 (2026-08-21): codex round 4 — re-review messages refresh the
   reviewer's report, checkout, and worktree inputs.
+- v1.7 (2026-08-21): historical-spec before/after comparison (8 specs ×
+  new×2 + control×1) recorded under Surprises.
