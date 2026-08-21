@@ -318,4 +318,24 @@ nt "and no transition was attempted on it" '"path": "/tickets/77/transition"' ca
     ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" ) >/dev/null 2>&1 || true
 t "the plan gate reads as the human, not as the fleet" '"auth": "Bearer h"' cat "$FIX.log"
 
+# The live-binding fence (dp#63) holds in the API binding too, and board keys
+# compare NORMALIZED (_board_api.url() strips a trailing slash): a meta whose
+# stamp carries the slashed spelling still names THIS board, and a non-owner
+# transition is refused before anything reaches the wire.
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT/" <<'PY'
+import json, os, sys
+json.dump({"uuid": "fence-live-9", "current": "fence-live-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2]},
+          open(os.path.join(sys.argv[1], "fence-live-9.json"), "w"))
+PY
+: > "$FIX.log"
+rc 1 "api fence: a non-owner transition on a live-bound ticket is refused" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+nt "and the refusal never reached the wire" '"path": "/tickets/9/transition"' cat "$FIX.log"
+t "the owner's own session passes the fence" "#9:" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=fence-live-9 BOARD_CREDENTIALS_FILE='$CREDS' \
+    BOARD_RUN_TOKEN=rt '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+rm -f "$DAEMON_HOME/fence-live-9.json"
+
 finish

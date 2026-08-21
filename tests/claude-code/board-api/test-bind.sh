@@ -115,6 +115,9 @@ t "registry meta gains the fence"     '"fence": 3'           cat "$DH/u-1234.jso
 t "bind_confirmed recorded"           '"bind_confirmed": true' cat "$DH/u-1234.json"
 t "the run bearer is stored at rest"  '"run_bearer": "tok-w"' cat "$DH/u-1234.json"
 t "ticket ownership still recorded"   '"ticket": "12"'       cat "$DH/u-1234.json"
+# Ticket numbers are board-local, the registry is machine-global: the board
+# key is what board-transition's live-binding fence matches on (dp#63).
+t "registry meta names its board"     '"board": "api:'       cat "$DH/u-1234.json"
 # The bearer at rest is why the mode matters: the meta sits beside the session
 # transcripts and must be no more readable than they are.
 t "the meta holding a bearer is 0600" "600" statmode "$DH/u-1234.json"

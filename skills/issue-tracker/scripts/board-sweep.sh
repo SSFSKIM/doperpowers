@@ -230,7 +230,12 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
   local tk="$1" uuid="$2" recov="$3" why="$4"
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
     log "[sweep] RECOVER: #$tk worker $uuid $why — cap ($RECOVERY_CAP) exhausted, parking needs-human"
-    "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
+    # The one sanctioned cross-session transition on a LIVE binding: a stalled
+    # worker at cap still holds a working meta, and the live-binding guard
+    # (board-transition.sh, dp#63) refuses everyone but the owner without a
+    # stated override. Recovery-exhaustion is that stated case.
+    BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound worker $uuid ($why)" \
+      "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
       "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (daemon-resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"

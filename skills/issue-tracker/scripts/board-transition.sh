@@ -44,6 +44,122 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# THE REGISTRY FENCES THE STATE MACHINE (dp#63). A ticket bound to a live
+# worker mid-turn belongs to that worker: with 'already in-progress' as the
+# only conflict signal, an orchestrator two-hop-closed a ticket a dispatched
+# worker was completing, and both sessions shipped independent solutions
+# (ida#1584). The liveness predicate is board-bind's live-owner rule (host +
+# boot survival); the owner is recognized by its session id — every worker is
+# a claude-harness session, so CLAUDE_CODE_SESSION_ID matches the meta's
+# uuid/current across resumes. Deliberate exceptions state their reason in
+# BOARD_OWNER_OVERRIDE (the sweep's recovery-cap park on a live-but-stalled
+# worker rides it) and are acknowledged on stdout. Adjudication is LOCAL by
+# construction, like the rule it reuses: a binding on another machine is
+# invisible here. Runs ahead of the mode fork — the API server adjudicates
+# RUNS via fences, but this client-side fence is what stands between a
+# non-run session and a ticket a local worker owns, in either binding.
+#
+# Two scope cuts keep the fence honest. (1) Ticket numbers are BOARD-local
+# and the registry is machine-global, so a binding only counts when its
+# board-bind-stamped `board` key names THIS board; a meta predating the stamp
+# fences anyway — bindings live hours, the ambiguity ages out. (2) A ticket
+# already CLOSED on GitHub is past preventing: the fence exists to stop a
+# second completion, and for a closed ticket that write is finalization
+# bookkeeping (label strip + terminal sweeps) that refusing only delays —
+# lingering `working` metas on merge-auto-closed tickets are routine
+# (--no-wait workers finalize on the dispatcher's cadence, not the merge's).
+# The probe runs only on the would-refuse path, gh mode only (API tickets
+# close through the server, never outside the machine).
+#
+# The scan is deliberately UNLOCKED: a bind publishing concurrently with this
+# read can slip a fresh owner in behind a transition already past the fence.
+# Closing that window would mean holding the registry metalock across the
+# transition's own gh/API calls — seconds of machine-wide bind starvation
+# against a millisecond race — and gh mode has no arbiter that could give the
+# pair a total order anyway. The fence's job is the HOURS-scale divergence
+# (two sessions completing one ticket), not linearization.
+if [ "$BOARD_BINDING" = api ]; then _fence_board="api:$BOARD_API_URL"
+else _fence_board="gh:$BOARD_REPO"; fi
+T_ID="$tid" T_DHOME="$DAEMON_HOME" T_SELF="${CLAUDE_CODE_SESSION_ID:-}" \
+T_DSELF="${DAEMON_SELF_UUID:-}" \
+T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" python3 - <<'PY'
+import glob
+import json
+import os
+import re
+import socket
+import sys
+
+env = os.environ
+tid = env["T_ID"].lstrip("#")
+if tid:
+    def cur_boot():
+        try:
+            with open("/proc/sys/kernel/random/boot_id") as f:
+                return f.read().strip()
+        except OSError:
+            out = os.popen("sysctl -n kern.boottime 2>/dev/null").read()
+            m = re.search(r"sec = (\d+)", out)
+            return m.group(1) if m else ""
+
+    HOST, BOOT = socket.gethostname(), cur_boot()
+
+    # Board keys compare NORMALIZED: _board_api.url() strips a trailing
+    # slash before use, so "api:http://x/" and "api:http://x" name one
+    # board — a raw compare would let a slash unfence a live owner.
+    def _board_key(b):
+        return "api:" + b[4:].rstrip("/") if b.startswith("api:") else b
+
+    for path in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
+        if path.endswith(".reply.json"):
+            continue
+        try:
+            meta = json.load(open(path))
+        except Exception:
+            continue
+        if str(meta.get("ticket", "")).lstrip("#") != tid:
+            continue
+        if meta.get("board") and _board_key(meta["board"]) != _board_key(env["T_BOARD"]):
+            continue   # another board's #N — the number collision, not an owner
+        if meta.get("status") not in ("working", "blocked"):
+            continue   # only a MID-TURN owner fences; parked/idle owners are
+                       # board-answer's and the dispatchers' business
+        mh, mb = str(meta.get("host") or ""), str(meta.get("boot_id") or "")
+        if (mh and mh != HOST) or (mb and BOOT and mb != BOOT):
+            continue   # another boot: a worker that died without finalizing
+        owner = str(meta.get("uuid") or os.path.basename(path)[:-5])
+        if env["T_SELF"] and env["T_SELF"] in (owner, str(meta.get("current") or "")):
+            break      # the binding owner moves its own ticket
+        if env["T_DSELF"] and env["T_DSELF"] == owner:
+            break      # a legacy codex-CLI turn: no harness session id, so
+                       # codex-resume hands it its daemon uuid explicitly
+        if env["T_OVR"]:
+            print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
+                  % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))
+            break
+        if env.get("BOARD_BINDING") == "gh":
+            import subprocess
+            r = subprocess.run(["gh", "issue", "view", tid, "-R",
+                                env.get("BOARD_REPO", ""), "--json", "state"],
+                               capture_output=True, text=True)
+            try:
+                closed = r.returncode == 0 and \
+                    json.loads(r.stdout).get("state") == "CLOSED"
+            except ValueError:
+                closed = False   # an unreadable probe fails CLOSED — refuse below
+            if closed:
+                break
+        sys.stderr.write(
+            "error: #%s is mid-turn under live worker %s (%s, status=%s) — a "
+            "transition by anyone but the binding owner completes work that "
+            "worker already owns (dp#63). Let it finish or resume it "
+            "(daemon-list.sh / daemon-resume.sh), retire the binding first "
+            "(daemon-retire.sh %s), or overrule with a stated reason: "
+            "BOARD_OWNER_OVERRIDE=\"<why>\" board-transition.sh ...\n"
+            % (tid, meta.get("name") or owner, owner, meta.get("status"), owner))
+        sys.exit(1)
+PY
+
 # API mode: legality, the convergence rule, the note/PR/plan requirements and
 # every sweep above live server-side — the client sends the edge and reports
 # the state the server wrote.
