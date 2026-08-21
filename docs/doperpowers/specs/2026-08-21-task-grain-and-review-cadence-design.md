@@ -569,7 +569,47 @@ in skill text — it is the monitoring window's, not the method's.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Shipped 2026-08-21 as v7.59.0 on `task-grain-cadence` (direct track with this
+spec; no plan, no SDE run). Everything the purpose named is in place:
+writing-plans sizes tasks by ownability and interface frontiers in the
+human's wording, with `Consumes` naming its producer; subagent-driven-
+execution reviews clean at dependency frontiers, batches siblings with
+concurrent reviewers when their tests are hermetic, resumes the executor
+for fixes and the reviewer for re-reviews over a fix-range package, and
+keeps an `executed`/fix-range ledger that survives compaction without
+re-executing; the worker-model text matches the standing directive; and
+`scripts/sde-telemetry` reports dispatches by role with span, active time,
+and message-id-deduplicated tokens.
+
+Review shape: one independent spec review (fable, 15 findings, all but the
+relitigation of settled human calls adopted in v1.1) and five codex native
+rounds over the branch (3 → 2 → 4 → 1 → clean), each fixed by a single
+fix-wave subagent. Every codex finding was a real seam the first drafts
+left open — concurrent reviewers racing shared test state, the telemetry's
+double-counted usage rows and idle-inflated spans, a deferred review's
+moved-on checkout, fix commits breaking a task's contiguous range, the DONE
+status row contradicting deferral, a resumed reviewer's stale report. One
+codex finding was declined on the human's evidence decision (before/after
+pressure evals before release) and is recorded as such.
+
+Evidence collected: the four-run baseline; the wording smoke checks
+(7/6/6 tasks vs 8 on the old text; producer-naming Consumes 3/3; frontier
+schedules with batched siblings 5/5; ledger `executed` lines and no
+re-execution after simulated compaction); the SDE keyword test green
+against the worktree skill through a `--plugin-dir` shim.
+
+Lessons: the first telemetry read overstated the controller's share by
+2.5× (duplicate `message.id` rows) — verify a collector's arithmetic on
+one transcript before quoting its totals; a direct-track spec that quotes
+the skill text verbatim made five review rounds cheap to apply and check
+(byte-identical quote checks); step 4 of the SDE loop is dense after those
+rounds — each clause closes a validated gap, but a wording-diet pass is the
+natural follow-up once monitoring shows which clauses bind.
+
+Residue: the §3 monitoring duty (next three controlled-track features);
+the version collision with PR #80 (both 7.59.0 — whichever merges second
+rebumps on the manifest conflict); §4's deferred levers (parallel
+executors, plan resolution, reviewer depth).
 
 ## Revision Notes
 
