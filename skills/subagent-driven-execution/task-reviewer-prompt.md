@@ -55,8 +55,9 @@ Subagent (general-purpose):
     Your review is read-only on this checkout. Do not mutate the working
     tree, the index, HEAD, or branch state in any way. A check that must
     see this task's own tree — a focused test, a named risk — runs in the
-    detached worktree the controller names, not in this checkout, which
-    may sit past the task's head.
+    detached worktree the controller names when a Checkout line appears
+    above, since this checkout then sits past the task's head; with no
+    Checkout line the checkout is at the task's head, so run it here.
 
     ## Do Not Trust the Report
 

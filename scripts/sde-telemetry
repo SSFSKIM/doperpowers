@@ -6,7 +6,8 @@ by role, and token totals by model for the controller and its subagents.
 Token totals are deduplicated by message id (one assistant response is
 written as several rows repeating the same usage). Durations are reported
 both as the transcript's span and as active time — the span with idle gaps
-(a resumed agent waiting between messages) excluded.
+excluded: gaps over 15 minutes that precede a new user message (a resume)
+rather than a tool result, which is one slow tool call and stays counted.
 Subagent transcripts are read from the sibling directory
 <transcript-dir>/<session-id>/subagents/.
 
@@ -20,15 +21,18 @@ import os
 import re
 import sys
 
-# Heuristic: a single tool call running longer than this is rare, so a larger
-# gap between transcript entries is the agent idling between resumes.
+# A gap this long is the agent idling between resumes, unless a tool result
+# follows it — then it is one slow tool call, which counts as active.
 IDLE_GAP = datetime.timedelta(minutes=15)
 
+# Tried in order: the narrow roles before the broad "task N" executor match,
+# so "Task 2: fix pagination" reads as a fixer rather than an executor.
 ROLE_PATTERNS = [
-    (re.compile(r"re-review|review task|^t\d+ reviewer", re.I), "task-reviewer"),
+    (re.compile(r"re-review|review task|^t\d+ reviewer|^task \d+:\s*review",
+                re.I), "task-reviewer"),
+    (re.compile(r"^t\d+ fixer|\bfix", re.I), "fixer"),
     (re.compile(r"^(implement|execute|run) task|^task \d+:"
                 r"|^t\d+ (implementer|executor)", re.I), "executor"),
-    (re.compile(r"^t\d+ fixer|\bfix", re.I), "fixer"),
 ]
 
 
@@ -37,6 +41,24 @@ def role_of(description):
         if pattern.search(description or ""):
             return role
     return "other"
+
+
+def is_tool_result(entry):
+    """True when this entry is a tool result — the gap before it was one call.
+
+    Human turns and tool results share `type: "user"`: a tool result carries a
+    `tool_result` content block, while a resume is a string or plain text
+    blocks. Everything else — assistant entries and the sidecar entries a
+    human turn arrives with (attachments, queued messages, hook output) —
+    is not a tool result, so a gap before one is the agent waiting.
+    """
+    if entry.get("type") != "user":
+        return False
+    content = (entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
 
 
 def scan_transcript(path):
@@ -57,7 +79,8 @@ def scan_transcript(path):
                 continue
             ts = entry.get("timestamp")
             if ts:
-                times.append(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")))
+                times.append((datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")),
+                              is_tool_result(entry)))
             message = entry.get("message")
             if isinstance(message, dict) and isinstance(message.get("usage"), dict):
                 model = message.get("model") or "unknown"
@@ -78,19 +101,25 @@ def scan_transcript(path):
             totals[model][key] += usage.get(key) or 0
 
     times.sort()
-    first = times[0] if times else None
-    last = times[-1] if times else None
+    first = times[0][0] if times else None
+    last = times[-1][0] if times else None
     return totals, first, last, active_time(times)
 
 
 def active_time(times):
-    """Sum of the segment spans, splitting wherever a gap exceeds IDLE_GAP."""
+    """Sum of the segment spans, splitting at each idle gap.
+
+    `times` is (timestamp, is_tool_result) per entry. A gap over IDLE_GAP is
+    idle unless the entry after it is a tool result: then the gap is one slow
+    tool call (a 20-minute suite), which is work, not waiting. Every other
+    long gap ends in a new human turn — a resume — so it is excluded.
+    """
     active = datetime.timedelta()
     if not times:
         return active
-    segment_start = previous = times[0]
-    for t in times[1:]:
-        if t - previous > IDLE_GAP:
+    segment_start = previous = times[0][0]
+    for t, tool_result in times[1:]:
+        if not tool_result and t - previous > IDLE_GAP:
             active += previous - segment_start
             segment_start = t
         previous = t

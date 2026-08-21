@@ -192,9 +192,11 @@ follows **Head:** in the block —
 — filled for a deferred review with the sibling commits and files that
 landed since the packaged head, and omitted when the checkout is at
 `[HEAD_SHA]`. The fallback `git diff [BASE_SHA]..[HEAD_SHA]` stays: it is
-task-scoped. One added sentence tells the reviewer that a check which must
-see the task's own tree runs in the detached worktree the controller names
-(step 4), not in this moved-on checkout.
+task-scoped. One added sentence tells the reviewer where a check that must
+see the task's own tree runs, keyed to the observable: in the detached
+worktree the controller names (step 4) when the Checkout line is present —
+the checkout has moved on — and in this checkout when it is absent, since
+the checkout is then at the task's head.
 
 **Dispatch hygiene**, the fix-message bullet:
 
@@ -684,3 +686,7 @@ executors, plan resolution, reviewer depth).
   reviewer's report, checkout, and worktree inputs.
 - v1.7 (2026-08-21): historical-spec before/after comparison (8 specs ×
   new×2 + control×1) recorded under Surprises.
+- v1.8 (2026-08-21): GitHub Codex review adopted — telemetry role order
+  (fixer/reviewer before the broad task-N executor match) and resume-aware
+  idle rule; reviewer template's detached-worktree sentence conditional on
+  the Checkout line.
