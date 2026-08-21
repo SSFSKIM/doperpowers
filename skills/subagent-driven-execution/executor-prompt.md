@@ -5,8 +5,8 @@ Use this template when dispatching an executor subagent.
 ```
 Subagent (general-purpose):
   description: "Implement Task N: [task name]"
-  model: [MODEL — REQUIRED: the mid-tier model at high reasoning effort
-         (Claude: sonnet, effort high) per SKILL.md Model Selection; an
+  model: [MODEL — REQUIRED: opus at high reasoning effort per SKILL.md
+         Model Selection (sonnet for a simple task; never the top tier); an
          omitted model silently inherits the session's most expensive one]
   prompt: |
     You are implementing Task N: [task name]
@@ -75,8 +75,9 @@ Subagent (general-purpose):
 
     **How to escalate:** Report back with status BLOCKED or NEEDS_CONTEXT. Describe
     specifically what you're stuck on, what you've tried, and what kind of help you need.
-    The controller can provide more context, re-dispatch with a more capable model,
-    or break the task into smaller pieces.
+    The controller can provide more context, resolve the hard call in your
+    brief, move the task to a stronger worker tier where one exists, or
+    break the task into smaller pieces.
 
     ## Before Reporting Back: Self-Review
 

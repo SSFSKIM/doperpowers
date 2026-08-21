@@ -10,8 +10,8 @@ more, nothing less) and is well-built (clean, tested, maintainable)
 ```
 Subagent (general-purpose):
   description: "Review Task N (spec + quality)"
-  model: [MODEL — REQUIRED: the mid-tier model at high reasoning effort
-         (Claude: sonnet, effort high) per SKILL.md Model Selection; an
+  model: [MODEL — REQUIRED: opus at high reasoning effort per SKILL.md
+         Model Selection (sonnet for a simple task; never the top tier); an
          omitted model silently inherits the session's most expensive one]
   prompt: |
     You are reviewing one task's implementation: first whether it matches its
@@ -34,6 +34,8 @@ Subagent (general-purpose):
 
     **Base:** [BASE_SHA]
     **Head:** [HEAD_SHA]
+    **Checkout:** [CHECKOUT_SHA] — the shared tree sits here, past this
+    task's head; landed since: [SINCE]
     **Diff file:** [DIFF_FILE]
 
     Read the diff file once — it contains the commit list, a stat summary,
@@ -51,7 +53,11 @@ Subagent (general-purpose):
     checking the call sites is the right method.
 
     Your review is read-only on this checkout. Do not mutate the working
-    tree, the index, HEAD, or branch state in any way.
+    tree, the index, HEAD, or branch state in any way. A check that must
+    see this task's own tree — a focused test, a named risk — runs in the
+    detached worktree the controller names when a Checkout line appears
+    above, since this checkout then sits past the task's head; with no
+    Checkout line the checkout is at the task's head, so run it here.
 
     ## Do Not Trust the Report
 
@@ -177,7 +183,11 @@ Subagent (general-purpose):
 - `[REPORT_FILE]` — REQUIRED: the file the executor wrote its detailed
   report to
 - `[BASE_SHA]` — commit before this task
-- `[HEAD_SHA]` — current commit
+- `[HEAD_SHA]` — the task's last commit — the package's head
+- `[CHECKOUT_SHA]`, `[SINCE]` — for a deferred review: where the shared
+  checkout sits, and the sibling commits and files that landed since
+  `[HEAD_SHA]`; omit the Checkout line when the checkout is at
+  `[HEAD_SHA]`
 - `[DIFF_FILE]` — REQUIRED: the path the controller wrote the review
   package to (`scripts/review-package PLAN_FILE BASE HEAD` prints the unique path it
   wrote; the package never enters the controller's context)

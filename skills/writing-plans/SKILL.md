@@ -7,7 +7,7 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 ## Overview
 
-Write comprehensive execution plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write comprehensive execution plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as tasks built from bite-sized steps. DRY. YAGNI. TDD. Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
@@ -63,14 +63,29 @@ This structure informs the task decomposition. Each task should produce self-con
 
 ## Task Right-Sizing
 
-A task is the smallest unit that carries its own test cycle and is worth a
-fresh reviewer's gate. When drawing task boundaries: fold setup,
-configuration, scaffolding, and documentation steps into the task whose
-deliverable needs them; split only where a reviewer could meaningfully
-reject one task while approving its neighbor. Each task ends with an
-independently testable deliverable.
+A task is the unit one executor can reliably own from a single
+self-contained brief, but it isn't the smallest unit a reviewer could
+gate. Every task boundary costs a fresh worker's orientation (executor,
+reviewer, and any fixer each read in from zero) plus your own
+dispatch-and-adjudicate turn; draw the fewest boundaries that keep these
+true:
 
-## Bite-Sized Task Granularity
+- **Interface frontiers.** Anything a later task consumes must be
+  produced — and reviewed — before that task dispatches: keep producer
+  and consumer in one task, or put the contract at a task edge.
+  Interfaces internal to a task are free.
+- **Reviewable diff.** One reviewer reads one task's diff in a single
+  pass.
+- **Ownability.** One task holds one coherent verification strategy and
+  closely related state owners; its brief needs nothing from neighbors
+  beyond the declared Interfaces.
+
+Fold setup, configuration, scaffolding, and documentation into the task
+whose deliverable needs them. Inside a task, organize the work as
+sequential deliverables, each with its full step sequence and its own
+commit.
+
+## Bite-Sized Steps
 
 **Each step is one action (2-5 minutes):**
 - "Write the failing test" - step
@@ -123,7 +138,10 @@ include this section.]
 - Test: `tests/exact/path/to/test.py`
 
 **Interfaces:**
-- Consumes: [what this task uses from earlier tasks — exact signatures]
+- Consumes: [what this task uses from earlier tasks, naming the task —
+  "from Task 2: `walk(cursor) -> list[dict]`" — exact signatures. The
+  controller schedules reviews from these: a producer is reviewed before
+  its consumer dispatches.]
 - Produces: [what later tasks rely on — exact function names, parameter
   and return types. A task's executor sees only their own task; this
   block is how they learn the names and types neighboring tasks use.]
@@ -201,4 +219,4 @@ Evaluate its findings rather than accepting them wholesale; fix what survives.
 
 Then execute:
 - **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-execution
-- Fresh subagent per task + two-stage review
+- Fresh executor per task; reviews at dependency frontiers; fixes resume the executor
