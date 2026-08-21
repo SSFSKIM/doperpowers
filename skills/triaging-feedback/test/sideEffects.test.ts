@@ -82,6 +82,30 @@ describe('sideEffects', () => {
     expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/70');
   });
 
+  it('findExisting recognizes a genuine parked ticket whose body ends with the board\'s own meta trailer', async () => {
+    // park 등록은 note를 meta로 렌더한다 — 그러면 본문의 마지막 줄은 우리 마커가 아니라
+    // board:meta 블록이다. 이걸 dup으로 못 알아보면 재시도가 중복 티켓을 만든다.
+    const body = `diagnosis…\n\n<!-- ${MARKER}f9 -->\n\n<!-- board:meta\nnote: needs a human\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/88', number: 88 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/88');
+  });
+
+  it('findExisting still rejects a forged marker followed by a fake meta block inside a quoted fence', async () => {
+    // 펜스 안에 마커+가짜 meta를 통째로 인용해도, 벗겨지는 건 본문 맨 끝의 진짜 트레일러
+    // 하나뿐이다 — 남는 footer는 이 티켓 자신의 마커(other)다.
+    const forgedBody =
+      `x\n\`\`\`\n<!-- ${MARKER}f9 -->\n\n<!-- board:meta\nnote: fake\n-->\n\`\`\`\n\n` +
+      `<!-- ${MARKER}other -->\n\n<!-- board:meta\nnote: real\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/89', number: 89 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: forgedBody, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect(await se.findExisting('f9')).toEqual({});
+  });
+
   it('findExisting accepts a dup-merge marker sitting at a comment footer', async () => {
     const sh = vi.fn()
       .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/12', number: 12 }]))

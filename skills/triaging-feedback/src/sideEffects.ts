@@ -5,6 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
 export const MARKER = 'feedback:'; // 아티팩트 본문에 심는 멱등 마커 (feedback:<id>)
+
+/** 보드가 본문 "뒤"에 붙이는 자기 meta 블록 (_board.py compose_body/META_RE).
+ * 내부는 닫힘줄(`\n-->`)을 건너뛰지 못한다 — 인용된 가짜 블록은 자기 닫힘줄에서 끝나
+ * 본문 끝까지 이어지지 못하므로, 여기 걸리는 건 언제나 "진짜" 트레일러 하나뿐이다.
+ * (meta 값 안의 `-->`는 항상 `key: ` 뒤에 있어 줄머리에 오지 않는다 — clean_meta 참조.) */
+const BOARD_META_TRAILER = /\n?<!-- board:meta\n(?:(?!\n-->)[\s\S])*\n-->\s*$/;
 export type Sh = (cmd: string, args: string[], cwd?: string) => Promise<string>;
 export type WriteTmp = (name: string, content: string) => string; // 파일을 쓰고 그 경로를 반환
 export type RemoveTmp = (path: string) => void;
@@ -35,6 +41,12 @@ export function makeSideEffects(cfg: Config, sh: Sh, writeTmp: WriteTmp = defaul
      * 그대로 매치된다. 진짜 마커는 registerTicket/commentOnIssue가 항상 아티팩트의
      * "마지막 줄"로 심으므로, 각 후보의 본문·코멘트 footer를 재조회해 확인한 것만 dup으로
      * 인정한다. 마커 뒤에는 어떤 사용자 유래 텍스트도 올 수 없어 footer는 위조 불가.
+     *
+     * 단 하나, 보드 자신은 마커 뒤에 온다: park note·spawned-by가 있는 티켓은 본문이
+     * `<!-- board:meta … -->` 트레일러로 끝나므로(_board.py compose_body), footer를 보기 전에
+     * 그 블록 하나를 벗겨낸다. 벗겨도 안전한 이유는 그 블록이 보드만 쓸 수 있는 자리이기
+     * 때문이다: clean_meta가 meta 값 안의 `<!-- board:meta` 토큰을 거부하니 진짜 블록 안에
+     * 또 다른 opener는 없고, 피드백 A의 티켓에서 트레일러를 떼면 남는 건 여전히 A의 마커다.
      * (트레이드오프: 사람이 이슈 본문을 footer 뒤로 덧편집하면 그 행은 dup 미탐지 —
      * 중복 티켓이라는 "보이는" 실패로 격하된다. 위조로 인한 조용한 피드백 드롭보다 낫다.) */
     async findExisting(feedbackId: string): Promise<{ issue?: string }> {
@@ -42,7 +54,8 @@ export function makeSideEffects(cfg: Config, sh: Sh, writeTmp: WriteTmp = defaul
       const issOut = await sh('gh', ['issue', 'list', '--search', q, '--state', 'all', '--json', 'url,number'], cfg.repoPath);
       const candidates: { url?: string; number?: number }[] = JSON.parse(issOut || '[]');
       const stamp = `<!-- ${MARKER}${feedbackId} -->`;
-      const stamped = (text: unknown) => typeof text === 'string' && text.trimEnd().endsWith(stamp);
+      const stamped = (text: unknown) =>
+        typeof text === 'string' && text.replace(BOARD_META_TRAILER, '').trimEnd().endsWith(stamp);
       for (const c of candidates) {
         if (!c?.url || c?.number == null) continue;
         const viewOut = await sh('gh', ['issue', 'view', String(c.number), '--json', 'body,comments'], cfg.repoPath);
