@@ -132,7 +132,12 @@ The loop's steps 3–5 become:
 >    (`scripts/review-package PLAN_FILE FIX_BASE FIX_HEAD` — the fix range:
 >    the reviewer already holds the task's original package, and a deferred
 >    task's fix lands past its siblings' commits); repeat until both
->    verdicts are clean. A fresh fixer when the executor
+>    verdicts are clean. That message names the fix range, sends the
+>    reviewer back to the report (the executor appended the fix's test
+>    evidence there), and carries the refreshed checkout head and what
+>    landed since — plus a fresh detached worktree at the fix head if the
+>    review needs the task's own tree. A resumed reviewer otherwise judges
+>    the fix against its pre-fix memory. A fresh fixer when the executor
 >    cannot be resumed, or when its frame is the problem — two failed
 >    re-reviews is the usual sign. Record Minor findings in the ledger —
 >    the final review triages that list, so it is read, not discarded. Fix
@@ -596,3 +601,5 @@ Pending — written at finish.
   packaging, DONE routes through the frontier, reviewer template gains
   task-head/checkout-head; eval-before-release finding recorded as
   declined.
+- v1.6 (2026-08-21): codex round 4 — re-review messages refresh the
+  reviewer's report, checkout, and worktree inputs.
