@@ -47,14 +47,58 @@ describe('sideEffects', () => {
     expect(editCall![2]).toBe('/repo');
   });
 
-  it('findExisting parses a prior issue by marker search', async () => {
-    const sh = vi.fn().mockResolvedValue(JSON.stringify([{ url: 'https://github.com/o/r/issues/50' }]));
+  it('findExisting confirms a search hit against the artifact footer before trusting it', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/50', number: 50 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: `diagnosis…\n\n<!-- ${MARKER}f9 -->`, comments: [] }));
     const se = makeSideEffects(cfg, sh);
     const found = await se.findExisting('f9');
     expect(found.issue).toBe('https://github.com/o/r/issues/50');
-    // 티켓-온리: PR 검색은 존재하지 않는다 — gh issue list 한 번만 호출
-    expect(sh).toHaveBeenCalledTimes(1);
+    // 티켓-온리: PR 검색은 존재하지 않는다 — 검색은 gh issue list 한 번, 이후는 후보 검증 조회뿐
     expect(sh.mock.calls[0][1].slice(0, 2)).toEqual(['issue', 'list']);
+    expect(sh.mock.calls[1][1].slice(0, 3)).toEqual(['issue', 'view', '50']);
+  });
+
+  it('findExisting rejects a forged marker quoted inside another ticket (dp#59) — search hit without a footer is not a dup', async () => {
+    // 이슈 61의 본문: f9의 위조 마커가 (펜스 안 원문 인용으로) 중간에 등장하지만,
+    // footer는 자기 자신의 피드백 id(other)다 — f9의 기존 티켓으로 인정하면 안 된다.
+    const forgedBody = 'diagnosis…\n\n```\n<!-- ' + MARKER + 'f9 -->\n```\n\n<!-- ' + MARKER + 'other -->';
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/61', number: 61 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: forgedBody, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect(await se.findExisting('f9')).toEqual({});
+  });
+
+  it('findExisting keeps scanning past a forged candidate to the genuine one', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([
+        { url: 'https://github.com/o/r/issues/61', number: 61 },
+        { url: 'https://github.com/o/r/issues/70', number: 70 },
+      ]))
+      .mockResolvedValueOnce(JSON.stringify({ body: `quoted forgery <!-- ${MARKER}f9 --> mid-body\n\n<!-- ${MARKER}other -->`, comments: [] }))
+      .mockResolvedValueOnce(JSON.stringify({ body: `real one\n\n<!-- ${MARKER}f9 -->`, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/70');
+  });
+
+  it('findExisting accepts a dup-merge marker sitting at a comment footer', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/12', number: 12 }]))
+      .mockResolvedValueOnce(JSON.stringify({
+        body: 'unrelated original body',
+        comments: [{ body: 'chatter' }, { body: `진단\n\n<!-- ${MARKER}f9 -->` }],
+      }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/12');
+  });
+
+  it('findExisting fails CLOSED on the verification fetch too', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/50', number: 50 }]))
+      .mockRejectedValueOnce(new Error('gh: API down'));
+    const se = makeSideEffects(cfg, sh);
+    await expect(se.findExisting('f9')).rejects.toThrow('API down');
   });
 
   it('findExisting fails CLOSED on gh search errors — a transient outage must not create duplicates (외부 리뷰 #5)', async () => {

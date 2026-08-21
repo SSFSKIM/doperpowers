@@ -26,14 +26,32 @@ const defaultRemoveTmp: RemoveTmp = (p) => {
 export function makeSideEffects(cfg: Config, sh: Sh, writeTmp: WriteTmp = defaultWriteTmp, removeTmp: RemoveTmp = defaultRemoveTmp) {
   return {
     /** 이 feedback_id로 이미 등록된 이슈가 있으면 반환(멱등 가드). gh는 cwd의 git remote로 repo 추론.
-     * fail-closed(외부 리뷰 #5): gh 검색 실패를 "없음"으로 치환하지 않는다 — 에러는 그대로
+     * fail-closed(외부 리뷰 #5): gh 호출 실패를 "없음"으로 치환하지 않는다 — 에러는 그대로
      * 던져 이 행을 failed로 남긴다. 일시적 GitHub 장애가 중복 티켓을 만들면 안 된다.
-     * in:body,comments — dup-병합 경로는 마커를 기존 이슈의 "코멘트"에 남기므로 둘 다 본다. */
+     * in:body,comments — dup-병합 경로는 마커를 기존 이슈의 "코멘트"에 남기므로 둘 다 본다.
+     *
+     * 검색은 후보 수집일 뿐, 확정이 아니다(dp#59): GitHub 검색은 전문(full-text) 매치라
+     * 다른 티켓에 인용된 원문 속 위조 마커도 — 펜스 안이든, 인젝션된 진단문 속이든 —
+     * 그대로 매치된다. 진짜 마커는 registerTicket/commentOnIssue가 항상 아티팩트의
+     * "마지막 줄"로 심으므로, 각 후보의 본문·코멘트 footer를 재조회해 확인한 것만 dup으로
+     * 인정한다. 마커 뒤에는 어떤 사용자 유래 텍스트도 올 수 없어 footer는 위조 불가.
+     * (트레이드오프: 사람이 이슈 본문을 footer 뒤로 덧편집하면 그 행은 dup 미탐지 —
+     * 중복 티켓이라는 "보이는" 실패로 격하된다. 위조로 인한 조용한 피드백 드롭보다 낫다.) */
     async findExisting(feedbackId: string): Promise<{ issue?: string }> {
       const q = `${MARKER}${feedbackId} in:body,comments`;
-      const issOut = await sh('gh', ['issue', 'list', '--search', q, '--state', 'all', '--json', 'url'], cfg.repoPath);
-      const issue = (JSON.parse(issOut || '[]')[0]?.url) as string | undefined;
-      return { issue };
+      const issOut = await sh('gh', ['issue', 'list', '--search', q, '--state', 'all', '--json', 'url,number'], cfg.repoPath);
+      const candidates: { url?: string; number?: number }[] = JSON.parse(issOut || '[]');
+      const stamp = `<!-- ${MARKER}${feedbackId} -->`;
+      const stamped = (text: unknown) => typeof text === 'string' && text.trimEnd().endsWith(stamp);
+      for (const c of candidates) {
+        if (!c?.url || c?.number == null) continue;
+        const viewOut = await sh('gh', ['issue', 'view', String(c.number), '--json', 'body,comments'], cfg.repoPath);
+        const view = JSON.parse(viewOut || '{}');
+        if (stamped(view.body) || ((view.comments ?? []) as { body?: string }[]).some((cm) => stamped(cm?.body))) {
+          return { issue: c.url };
+        }
+      }
+      return {};
     },
 
     /** 중복/관련 판단용 후보: 열린 이슈의 번호+제목(최대 40개). 실패는 빈 목록으로 —
