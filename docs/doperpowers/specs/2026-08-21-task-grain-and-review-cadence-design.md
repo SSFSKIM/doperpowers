@@ -610,7 +610,8 @@ in skill text — it is the monitoring window's, not the method's.
 
 ## Outcomes & Retrospective
 
-Shipped 2026-08-21 as v7.59.0 on `task-grain-cadence` (direct track with this
+Shipped 2026-08-21 as v7.60.0 on `task-grain-cadence` (7.59.0 was taken by PR
+#80 while the branch flew; direct track with this
 spec; no plan, no SDE run). Everything the purpose named is in place:
 writing-plans sizes tasks by ownability and interface frontiers in the
 human's wording, with `Consumes` naming its producer; subagent-driven-
@@ -648,8 +649,8 @@ rounds — each clause closes a validated gap, but a wording-diet pass is the
 natural follow-up once monitoring shows which clauses bind.
 
 Residue: the §3 monitoring duty (next three controlled-track features);
-the version collision with PR #80 (both 7.59.0 — whichever merges second
-rebumps on the manifest conflict); §4's deferred levers (parallel
+the version collision with PR #80 resolved by rebumping to 7.60.0 after
+merging origin/main; §4's deferred levers (parallel
 executors, plan resolution, reviewer depth).
 
 ## Revision Notes
