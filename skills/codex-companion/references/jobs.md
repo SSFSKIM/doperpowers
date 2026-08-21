@@ -23,12 +23,16 @@ The broker kill-switch (`CODEX_COMPANION_APP_SERVER_ENDPOINT` pointed at
 a never-existing socket) belongs on `review`/`adversarial-review`/`task`
 only. Left off those, the first run spawns a detached broker +
 `codex app-server` pair per workspace that outlives the session —
-upstream reaped these with a SessionEnd hook this bundle doesn't have;
-with it, each call fails over to a per-call direct app-server that dies
-with it. The job verbs above never spawn a broker and take only the
+upstream reaped these with a SessionEnd hook this bundle doesn't have.
+The broker self-reaps after 30 minutes with no client connection
+(`CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS` overrides; `0` disables), so
+an orphaned pair is now bounded by that window instead of living
+forever. With the kill-switch, each call instead fails over to a
+per-call direct app-server that dies with it. The job verbs above never
+spawn a broker and take only the
 state-root and session envs; `setup`'s auth probe would actually misread the dead
-endpoint as an auth failure. If leaked pairs accumulate anyway (from
-running work verbs without the kill-switch), find them with
+endpoint as an auth failure. If leaked pairs accumulate anyway (reaper
+disabled, or brokers from a pre-reaper cache), find them with
 `ps -axo pid,command | grep app-server-broker`, kill the pids, and
 delete the workspace's stale `broker.json` under the state root —
 `setup`/`status` keep probing the dead socket it records until it's

@@ -37,6 +37,31 @@ function isInterruptRequest(message) {
   return message?.method === "turn/interrupt";
 }
 
+// The broker is workspace-scoped and spawned detached, so a session that dies
+// mid-run — or a review worktree that gets deleted — orphans a live broker +
+// codex app-server pair forever: its socket stays healthy, and nobody who could
+// reach its workspace's broker.json exists anymore (19h55m pairs observed,
+// dp#56). Whether anyone still wants this broker is knowledge only it has — a
+// client holds its connection open for as long as it is being served, and the
+// OS closes that socket the instant the client dies. So: no client connection
+// for this long ⇒ shut down cleanly, taking the app-server child along.
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Unparseable input falls back to the default rather than disabling — a typo
+// must not silently resurrect the leak. Only an explicit 0 (or negative)
+// switches the reaper off.
+function resolveIdleTimeoutMs(env) {
+  const raw = env.CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return DEFAULT_IDLE_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_IDLE_TIMEOUT_MS;
+  }
+  return value > 0 ? value : 0;
+}
+
 function writePidFile(pidFile) {
   if (!pidFile) {
     return;
@@ -65,6 +90,7 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
+  const idleTimeoutMs = resolveIdleTimeoutMs(process.env);
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
@@ -115,7 +141,33 @@ async function main() {
 
   appClient.setNotificationHandler(routeNotification);
 
+  // Armed whenever the broker has no client connections (including from boot:
+  // a broker whose spawner dies before ever connecting is the orphan case too).
+  // The callback re-checks sockets.size — a connection can land after the timer
+  // fires but before the callback runs, and that client is owed service.
+  let idleTimer = null;
+  function cancelIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+  function armIdleTimer(server) {
+    if (!idleTimeoutMs) {
+      return;
+    }
+    cancelIdleTimer();
+    idleTimer = setTimeout(async () => {
+      if (sockets.size > 0) {
+        return;
+      }
+      await shutdown(server);
+      process.exit(0);
+    }, idleTimeoutMs);
+  }
+
   const server = net.createServer((socket) => {
+    cancelIdleTimer();
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -225,11 +277,17 @@ async function main() {
     socket.on("close", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      if (sockets.size === 0) {
+        armIdleTimer(server);
+      }
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      if (sockets.size === 0) {
+        armIdleTimer(server);
+      }
     });
   });
 
@@ -244,6 +302,7 @@ async function main() {
   });
 
   server.listen(listenTarget.path);
+  armIdleTimer(server);
 }
 
 main().catch((error) => {

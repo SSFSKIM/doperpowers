@@ -32,8 +32,9 @@ session's job.
 `adversarial-review`, and `task` only — those verbs otherwise spawn a
 detached broker + codex process pair that outlives the session (upstream
 reaped these with a SessionEnd hook this bundle deliberately lacks; ~30
-leaked pairs observed before this kill-switch); pointing it at a socket
-that never exists forces the per-call direct path. Leave it OFF
+pairs had leaked forever before the broker learned to self-reap after
+30 minutes with no client); pointing it at a socket that never exists
+forces the per-call direct path, so nothing detached spawns at all. Leave it OFF
 `setup`/`status`/`result`/`cancel`: they never spawn a broker, and
 `setup`'s auth probe has no direct fallback, so the dead endpoint makes
 it misreport auth failure. references/jobs.md has the details on both.
