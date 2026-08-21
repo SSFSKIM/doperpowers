@@ -197,11 +197,21 @@ rc=0; "$ENGINE" --base origin/main --criteria "$TEST_ROOT/x.md" --out "$TEST_ROO
 assert_equals "$rc" "2" "retired --criteria flag is a usage error"
 
 echo "missing dependencies:"
-NODE_ONLY="$TEST_ROOT/node-only"; mkdir -p "$NODE_ONLY"; cp "$STUB_BIN/node" "$NODE_ONLY/node"
-CODEX_ONLY="$TEST_ROOT/codex-only"; mkdir -p "$CODEX_ONLY"; cp "$STUB_BIN/codex" "$CODEX_ONLY/codex"
-rc=0; PATH="$NODE_ONLY:/usr/bin:/bin" "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>/dev/null || rc=$?
+# Each directory is the ENTIRE PATH for its run: with /usr/bin still on it, the
+# absent dependency would be found anyway on any host that ships one (Debian's
+# /usr/bin/node, a system-installed codex), and the case would assert nothing.
+# Nothing more is needed, either — both preflights are `command -v` builtins and
+# both 127 exits happen before the engine runs a single external command. bash
+# is there only because the engine's `#!/usr/bin/env bash` shebang resolves bash
+# through the child's PATH.
+REAL_BASH="$(command -v bash)"
+NODE_ONLY="$TEST_ROOT/node-only"; mkdir -p "$NODE_ONLY"
+cp "$STUB_BIN/node" "$NODE_ONLY/node"; ln -s "$REAL_BASH" "$NODE_ONLY/bash"
+CODEX_ONLY="$TEST_ROOT/codex-only"; mkdir -p "$CODEX_ONLY"
+cp "$STUB_BIN/codex" "$CODEX_ONLY/codex"; ln -s "$REAL_BASH" "$CODEX_ONLY/bash"
+rc=0; PATH="$NODE_ONLY" "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>/dev/null || rc=$?
 assert_equals "$rc" "127" "missing codex CLI exits 127"
-rc=0; PATH="$CODEX_ONLY:/usr/bin:/bin" "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>/dev/null || rc=$?
+rc=0; PATH="$CODEX_ONLY" "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2>/dev/null || rc=$?
 assert_equals "$rc" "127" "missing node exits 127"
 
 echo
