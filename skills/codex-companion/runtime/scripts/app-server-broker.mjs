@@ -8,6 +8,7 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { clearBrokerSession, loadBrokerSession } from "./lib/broker-lifecycle.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -96,6 +97,7 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  let shuttingDown = false;
 
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
@@ -126,6 +128,7 @@ async function main() {
   }
 
   async function shutdown(server) {
+    shuttingDown = true;
     for (const socket of sockets) {
       socket.end();
     }
@@ -136,6 +139,22 @@ async function main() {
     }
     if (pidFile && fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);
+    }
+    // The workspace's broker.json outlives the socket, and the readers that
+    // matter never probe it: `status` calls it a live shared session on the
+    // strength of the record alone, and `setup`'s auth path then dials the dead
+    // endpoint and reports an auth failure — until some work verb's
+    // ensureBrokerSession finally sweeps it. So a broker that reaps itself takes
+    // its own record with it. Only its OWN: ensureBrokerSession may already have
+    // replaced the record with a successor's, and deleting that would strand a
+    // live broker. resolveStateDir reads CLAUDE_PLUGIN_DATA from the env we
+    // inherited from the spawner, so this is the same file the spawner wrote.
+    try {
+      if (loadBrokerSession(cwd)?.endpoint === endpoint) {
+        clearBrokerSession(cwd);
+      }
+    } catch {
+      // The record is advisory; never let its cleanup break shutdown.
     }
   }
 
@@ -167,6 +186,16 @@ async function main() {
   }
 
   const server = net.createServer((socket) => {
+    // The listener keeps accepting until server.close() runs, which is several
+    // awaits into shutdown() — so a client can land after the idle timer read
+    // sockets.size as 0. That socket missed shutdown's end-loop, its requests
+    // would reach an already-closing app client, and holding it open can stall
+    // server.close indefinitely. Refuse it instead: the client sees a failed
+    // probe, which ensureBrokerSession already answers by respawning.
+    if (shuttingDown) {
+      socket.destroy();
+      return;
+    }
     cancelIdleTimer();
     sockets.add(socket);
     socket.setEncoding("utf8");

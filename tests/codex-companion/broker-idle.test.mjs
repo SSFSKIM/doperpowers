@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir } from "./helpers.mjs";
 import {
+  loadBrokerSession,
+  saveBrokerSession,
   spawnBrokerProcess,
   waitForBrokerEndpoint
 } from "../../skills/codex-companion/runtime/scripts/lib/broker-lifecycle.mjs";
@@ -49,7 +51,10 @@ async function waitFor(predicate, { timeoutMs = 8000, intervalMs = 50 } = {}) {
   return false;
 }
 
-function startBroker(idleTimeoutMs) {
+// `beforeSpawn` runs once the workspace and endpoint are chosen but before the
+// process exists, so a test that plants a broker.json cannot lose a race with
+// the reap it is about to observe.
+function startBroker(idleTimeoutMs, { env: envOverrides = {}, beforeSpawn = null } = {}) {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   const workspace = makeTempDir();
@@ -58,12 +63,34 @@ function startBroker(idleTimeoutMs) {
   const endpoint = createBrokerEndpoint(sessionDir);
   const pidFile = path.join(sessionDir, "broker.pid");
   const logFile = path.join(sessionDir, "broker.log");
-  const env = buildEnv(binDir);
+  const env = { ...buildEnv(binDir), ...envOverrides };
   if (idleTimeoutMs !== undefined) {
     env.CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS = String(idleTimeoutMs);
   }
+  if (beforeSpawn) {
+    beforeSpawn({ workspace, endpoint, sessionDir, pidFile, logFile });
+  }
   const child = spawnBrokerProcess({ scriptPath: BROKER_SCRIPT, cwd: workspace, endpoint, pidFile, logFile, env });
-  return { pid: child.pid, endpoint, pidFile, logFile };
+  return { pid: child.pid, endpoint, pidFile, logFile, workspace, sessionDir };
+}
+
+// The state root has to be the same one on both sides: this process resolves it
+// from its own environment (save/load), the broker from the env it was spawned
+// with. The await matters — restoring on the way out of a synchronous call would
+// hand the assertions back their original root.
+async function withPluginData(fn) {
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  const dataDir = makeTempDir("codex-brokerdata-");
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  try {
+    return await fn(dataDir);
+  } finally {
+    if (previous == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
 }
 
 function stopBroker(pid) {
@@ -114,6 +141,62 @@ test("a held client connection is service, not idleness — the window opens onl
     }
     stopBroker(broker.pid);
   }
+});
+
+// broker.json is read WITHOUT a probe: `status` calls a recorded endpoint a live
+// shared session, and `setup`'s auth path dials it and blames auth when it is
+// dead. A reap that leaves the record behind therefore lies about the runtime
+// until some later work verb sweeps it.
+test("a reaped broker deletes the workspace record that names it", async () => {
+  await withPluginData(async (pluginData) => {
+    const broker = startBroker(500, {
+      env: { CLAUDE_PLUGIN_DATA: pluginData },
+      beforeSpawn: ({ workspace, endpoint, sessionDir, pidFile, logFile }) =>
+        saveBrokerSession(workspace, { endpoint, pidFile, logFile, sessionDir, pid: null, pidStart: null })
+    });
+    try {
+      assert.ok(await waitForBrokerEndpoint(broker.endpoint, 8000), "broker never came up");
+      const exited = await waitFor(() => !processAlive(broker.pid));
+      assert.ok(exited, "broker did not exit after its idle window");
+      assert.equal(loadBrokerSession(broker.workspace), null, "the reap left a record pointing at a dead broker");
+    } finally {
+      stopBroker(broker.pid);
+    }
+  });
+});
+
+// ensureBrokerSession can replace the record before a doomed broker finishes
+// exiting; deleting a successor's record would strand a live broker.
+test("a record naming a different endpoint survives the reap", async () => {
+  await withPluginData(async (pluginData) => {
+    let successor = null;
+    const broker = startBroker(500, {
+      env: { CLAUDE_PLUGIN_DATA: pluginData },
+      beforeSpawn: ({ workspace }) => {
+        successor = {
+          endpoint: `unix:${path.join(makeTempDir(), "broker.sock")}`,
+          pidFile: null,
+          logFile: null,
+          sessionDir: null,
+          pid: null,
+          pidStart: null
+        };
+        saveBrokerSession(workspace, successor);
+      }
+    });
+    try {
+      assert.ok(await waitForBrokerEndpoint(broker.endpoint, 8000), "broker never came up");
+      const exited = await waitFor(() => !processAlive(broker.pid));
+      assert.ok(exited, "broker did not exit after its idle window");
+      assert.deepEqual(
+        loadBrokerSession(broker.workspace),
+        successor,
+        "the reap deleted a record that belonged to another broker"
+      );
+    } finally {
+      stopBroker(broker.pid);
+    }
+  });
 });
 
 test("idle timeout 0 disables the reaper", async () => {
