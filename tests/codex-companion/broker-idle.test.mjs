@@ -20,6 +20,7 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir } from "./helpers.mjs";
 import {
   loadBrokerSession,
+  resolveBrokerStateFile,
   saveBrokerSession,
   spawnBrokerProcess,
   waitForBrokerEndpoint
@@ -193,6 +194,36 @@ test("a record naming a different endpoint survives the reap", async () => {
         successor,
         "the reap deleted a record that belonged to another broker"
       );
+    } finally {
+      stopBroker(broker.pid);
+    }
+  });
+});
+
+// The workspace a broker serves can be deleted while it still runs — a review
+// worktree is the ordinary case, and it is exactly the case that produced the
+// orphans this reaper exists for. The state directory is derived from the
+// workspace root, so the record has to be resolved at boot; resolved at reap
+// time it names a different directory and the stale record is never cleared.
+test("a reaped broker clears its record even after its workspace is deleted", async () => {
+  await withPluginData(async (pluginData) => {
+    let stateFile = null;
+    const broker = startBroker(700, {
+      env: { CLAUDE_PLUGIN_DATA: pluginData },
+      beforeSpawn: ({ workspace, endpoint, sessionDir, pidFile, logFile }) => {
+        saveBrokerSession(workspace, { endpoint, pidFile, logFile, sessionDir, pid: null, pidStart: null });
+        stateFile = resolveBrokerStateFile(workspace);
+      }
+    });
+    try {
+      assert.ok(await waitForBrokerEndpoint(broker.endpoint, 8000), "broker never came up");
+      assert.ok(fs.existsSync(stateFile), "the planted record is not where this test thinks it is");
+      // The record is read straight off the captured path from here on: the cwd
+      // that loadBrokerSession would resolve no longer exists.
+      fs.rmSync(broker.workspace, { recursive: true, force: true });
+      const exited = await waitFor(() => !processAlive(broker.pid));
+      assert.ok(exited, "broker did not exit after its idle window");
+      assert.ok(!fs.existsSync(stateFile), "the record survived a reap whose workspace was already gone");
     } finally {
       stopBroker(broker.pid);
     }

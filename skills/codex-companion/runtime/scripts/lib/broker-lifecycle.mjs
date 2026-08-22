@@ -70,7 +70,10 @@ export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile
   return child;
 }
 
-function resolveBrokerStateFile(cwd) {
+// Exported because the broker itself must resolve this path AT BOOT and keep it:
+// resolveStateDir derives the directory from the workspace root, and a workspace
+// deleted mid-run (a review worktree) resolves to a different one by reap time.
+export function resolveBrokerStateFile(cwd) {
   return path.join(resolveStateDir(cwd), BROKER_STATE_FILE);
 }
 

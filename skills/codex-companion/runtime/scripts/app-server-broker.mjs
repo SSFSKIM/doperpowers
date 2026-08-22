@@ -8,7 +8,7 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
-import { clearBrokerSession, loadBrokerSession } from "./lib/broker-lifecycle.mjs";
+import { resolveBrokerStateFile } from "./lib/broker-lifecycle.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -91,6 +91,18 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
+  // Resolved NOW, while cwd still resolves the way it did at spawn time. The
+  // state directory is derived from the workspace root, so a workspace deleted
+  // mid-run — a review worktree is the ordinary case — hashes to a different
+  // directory by the time the reaper runs, and the record we came to delete
+  // would be left behind forever.
+  let brokerStateFile = null;
+  try {
+    brokerStateFile = resolveBrokerStateFile(cwd);
+  } catch {
+    brokerStateFile = null;
+  }
+
   const idleTimeoutMs = resolveIdleTimeoutMs(process.env);
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
   let activeRequestSocket = null;
@@ -129,32 +141,38 @@ async function main() {
 
   async function shutdown(server) {
     shuttingDown = true;
+    // Discoverability goes FIRST, before anything that awaits. Refusing new
+    // connections is not enough on its own: a prober's transport-level connect
+    // can succeed before the shuttingDown destroy lands, so ensureBrokerSession
+    // would hand a caller this dying broker instead of respawning. Unlinking the
+    // socket path makes that probe fail immediately, and the record that names
+    // the same endpoint goes with it — nothing that reads broker.json probes it,
+    // so `status` would keep calling a dead broker a live shared session and
+    // `setup`'s auth path would dial it and blame auth.
+    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
+      fs.unlinkSync(listenTarget.path);
+    }
+    // Only OUR record: ensureBrokerSession may already have replaced it with a
+    // successor's, and deleting that would strand a live broker. A review asked
+    // for this compare-and-delete to be atomic; declined — broker.json has no
+    // lock regime anywhere (ensureBrokerSession's own load/save is unlocked
+    // too), the record is now withdrawn at decision time before any await, and a
+    // successor would have to land its whole teardown → respawn → save pipeline
+    // between these two adjacent syscalls.
+    try {
+      if (brokerStateFile && JSON.parse(fs.readFileSync(brokerStateFile, "utf8"))?.endpoint === endpoint) {
+        fs.unlinkSync(brokerStateFile);
+      }
+    } catch {
+      // The record is advisory; never let its cleanup break shutdown.
+    }
     for (const socket of sockets) {
       socket.end();
     }
     await appClient.close().catch(() => {});
     await new Promise((resolve) => server.close(resolve));
-    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
-      fs.unlinkSync(listenTarget.path);
-    }
     if (pidFile && fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);
-    }
-    // The workspace's broker.json outlives the socket, and the readers that
-    // matter never probe it: `status` calls it a live shared session on the
-    // strength of the record alone, and `setup`'s auth path then dials the dead
-    // endpoint and reports an auth failure — until some work verb's
-    // ensureBrokerSession finally sweeps it. So a broker that reaps itself takes
-    // its own record with it. Only its OWN: ensureBrokerSession may already have
-    // replaced the record with a successor's, and deleting that would strand a
-    // live broker. resolveStateDir reads CLAUDE_PLUGIN_DATA from the env we
-    // inherited from the spawner, so this is the same file the spawner wrote.
-    try {
-      if (loadBrokerSession(cwd)?.endpoint === endpoint) {
-        clearBrokerSession(cwd);
-      }
-    } catch {
-      // The record is advisory; never let its cleanup break shutdown.
     }
   }
 
