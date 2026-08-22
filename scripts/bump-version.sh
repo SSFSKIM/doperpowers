@@ -46,6 +46,20 @@ declared_files() {
   jq -r '.files[] | "\(.path)\t\(.field)"' "$CONFIG"
 }
 
+# Verify every declared manifest is readable before writing any —
+# a bump either lands everywhere or touches nothing.
+preflight_manifests() {
+  local path field fullpath
+  while IFS=$'\t' read -r path field; do
+    fullpath="$REPO_ROOT/$path"
+    [[ -f "$fullpath" ]] || continue
+    if ! read_json_field "$fullpath" "$field" >/dev/null; then
+      echo "error: cannot read declared manifest: $path ($field)" >&2
+      return 1
+    fi
+  done < <(declared_files)
+}
+
 # Read the audit exclude patterns from config.
 audit_excludes() {
   jq -r '.audit.exclude[]' "$CONFIG" 2>/dev/null
@@ -171,6 +185,8 @@ cmd_bump() {
     echo "error: '$new_version' doesn't look like a version (expected X.Y.Z)" >&2
     exit 1
   fi
+
+  preflight_manifests
 
   echo "Bumping all declared files to $new_version..."
   echo ""
