@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # test-bump-version.sh — bump-version.sh bumps every declared manifest
-# together, and an unreadable manifest aborts the bump before anything
-# is written (no partial bumps).
+# together, and a declared manifest that is missing or unreadable aborts
+# the bump before anything is written (no partial bumps).
 #
 # BUMP_SCRIPT overrides the script under test (used to verify the test
 # fails against a pre-preflight version of the script).
@@ -74,5 +74,20 @@ cmp -s "$TEST_ROOT/package.before" "$invalid_repo/package.json" \
   || fail "package.json changed before manifest validation failed"
 cmp -s "$TEST_ROOT/plugin.before" "$invalid_repo/.claude-plugin/plugin.json" \
   || fail "unreadable manifest changed"
+
+# Missing manifest: a declared file that does not exist must abort the bump
+# too — a partial bump is still a broken bump.
+missing_repo="$TEST_ROOT/missing"
+make_fixture "$missing_repo" '{ "name": "fixture-plugin", "version": "1.2.3" }'
+rm "$missing_repo/.claude-plugin/plugin.json"
+cp "$missing_repo/package.json" "$TEST_ROOT/package.before-missing"
+
+if /bin/bash "$missing_repo/scripts/bump-version.sh" 2.3.4 \
+  >"$TEST_ROOT/missing.out" 2>&1; then
+  fail "bump accepted a missing declared manifest"
+fi
+
+cmp -s "$TEST_ROOT/package.before-missing" "$missing_repo/package.json" \
+  || fail "package.json changed despite a missing declared manifest"
 
 echo "Version-bump tests passed"

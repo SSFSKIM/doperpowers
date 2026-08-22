@@ -52,7 +52,10 @@ preflight_manifests() {
   local path field fullpath
   while IFS=$'\t' read -r path field; do
     fullpath="$REPO_ROOT/$path"
-    [[ -f "$fullpath" ]] || continue
+    if [[ ! -f "$fullpath" ]]; then
+      echo "error: declared manifest missing: $path" >&2
+      return 1
+    fi
     if ! read_json_field "$fullpath" "$field" >/dev/null; then
       echo "error: cannot read declared manifest: $path ($field)" >&2
       return 1
@@ -193,10 +196,6 @@ cmd_bump() {
 
   while IFS=$'\t' read -r path field; do
     local fullpath="$REPO_ROOT/$path"
-    if [[ ! -f "$fullpath" ]]; then
-      echo "  SKIP (missing): $path"
-      continue
-    fi
     local old_ver
     old_ver=$(read_json_field "$fullpath" "$field")
     write_json_field "$fullpath" "$field" "$new_version"
