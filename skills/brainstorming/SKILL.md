@@ -74,6 +74,11 @@ Three tracks leave this skill. The controlled track is the rest of this skill: d
   - **Large, novel, taste-heavy, or high-stakes** — taste questions keep arising that can't be settled up front, or the work needs human judgment mid-flight → **recommend controlled**.
   - **Narrow and small** — a focused change an engineer would just do (a config tweak, a small bugfix, one thin feature slice), where a spec or ExecPlan would outweigh the work itself → **recommend direct**.
 - State the recommendation and its reason in one message, then wait — e.g. *"This is well-scoped and the open questions are closed, so I'd take the autonomous track (execplan) and run it end to end. Good with that, or would you rather stay controlled?"*
+- When in doubt between two tracks, take the heavier one — and the choice
+  ratchets one way: complexity discovered mid-flight (a direct task that
+  sprouts design questions, hidden scope that turns a bounded change
+  architectural) upgrades the track, returning here for the design pass it
+  now deserves; never downgrade mid-task.
 - Routing still requires your human partner's explicit confirmation — never route silently, and never treat "just handle it" as the choice. Their explicit yes to autonomous is the approval the gate requires; doperpowers:execplan's contract governs from there.
 - If they override your recommendation, follow their choice. On a confirmed controlled track (whether you recommended it or they chose it), continue this skill.
 

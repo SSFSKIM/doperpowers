@@ -117,6 +117,10 @@ End every plan with a verification task that executes the spec's acceptance sect
 
 **Tech Stack:** [Key technologies/libraries]
 
+**Spec:** [path to the spec/design doc this plan implements — the plan
+argues from the spec, so the spec travels with it; conflicts found during
+execution resolve against it]
+
 ## Global Constraints
 
 [The spec's project-wide requirements — version floors, dependency limits,
