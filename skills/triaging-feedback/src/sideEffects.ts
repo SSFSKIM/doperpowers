@@ -6,11 +6,11 @@ import { join, dirname } from 'node:path';
 
 export const MARKER = 'feedback:'; // 아티팩트 본문에 심는 멱등 마커 (feedback:<id>)
 
-/** 보드가 본문 "뒤"에 붙이는 자기 meta 블록 (_board.py compose_body/META_RE).
- * 내부는 닫힘줄(`\n-->`)을 건너뛰지 못한다 — 인용된 가짜 블록은 자기 닫힘줄에서 끝나
- * 본문 끝까지 이어지지 못하므로, 여기 걸리는 건 언제나 "진짜" 트레일러 하나뿐이다.
- * (meta 값 안의 `-->`는 항상 `key: ` 뒤에 있어 줄머리에 오지 않는다 — clean_meta 참조.) */
-const BOARD_META_TRAILER = /\n?<!-- board:meta\n(?:(?!\n-->)[\s\S])*\n-->\s*$/;
+/** 진짜 마커 뒤에 올 수 있는 유일한 꼬리: 공백 + (보드가 렌더한 meta 블록 최대 한 개) + 끝.
+ * 블록 내부는 줄머리 `-->`를 건너뛰지 못한다 — clean_meta가 meta 값 안의 `<!-- board:meta`
+ * 토큰을 거부하므로 진짜 블록 내부엔 opener도 닫힘줄도 없고, 인용된 가짜 블록은 자기
+ * 닫힘줄에서 끝나 그 뒤에 프로즈가 남으므로 이 문법에서 탈락한다. */
+const TRAILER_TAIL_RE = /^(?:\s*<!-- board:meta\n(?:(?!\n-->)[\s\S])*\n-->)?\s*$/;
 export type Sh = (cmd: string, args: string[], cwd?: string) => Promise<string>;
 export type WriteTmp = (name: string, content: string) => string; // 파일을 쓰고 그 경로를 반환
 export type RemoveTmp = (path: string) => void;
@@ -43,19 +43,30 @@ export function makeSideEffects(cfg: Config, sh: Sh, writeTmp: WriteTmp = defaul
      * 인정한다. 마커 뒤에는 어떤 사용자 유래 텍스트도 올 수 없어 footer는 위조 불가.
      *
      * 단 하나, 보드 자신은 마커 뒤에 온다: park note·spawned-by가 있는 티켓은 본문이
-     * `<!-- board:meta … -->` 트레일러로 끝나므로(_board.py compose_body), footer를 보기 전에
-     * 그 블록 하나를 벗겨낸다. 벗겨도 안전한 이유는 그 블록이 보드만 쓸 수 있는 자리이기
-     * 때문이다: clean_meta가 meta 값 안의 `<!-- board:meta` 토큰을 거부하니 진짜 블록 안에
-     * 또 다른 opener는 없고, 피드백 A의 티켓에서 트레일러를 떼면 남는 건 여전히 A의 마커다.
+     * `<!-- board:meta … -->` 트레일러로 끝난다(_board.py compose_body). 그래서 검사는
+     * 트레일러의 opener를 "찾지" 않는다 — 신뢰할 수 있는 위치는 stamp뿐이므로, 마지막 stamp
+     * 뒤의 꼬리가 문법에 맞는지만 본다: 공백 + (정상 meta 블록 최대 한 개) + 끝
+     * (TRAILER_TAIL_RE). opener를 고르려 드는 순간 _board.py의 meta_match가 존재하는 이유인
+     * 그 모호성 — 인용된 예시, 닫히지 않은 opener, 값 안에 박힌 opener — 을 여기서 다시
+     * 풀어야 하고, 하나라도 틀리면 진짜 마커까지 함께 잘려 나간다.
+     * 위조 안전성은 그대로다: 진짜 stamp 뒤엔 정확히 저 꼬리만 오고, 사용자 텍스트 속 위조
+     * stamp 뒤엔 최소한 펜스 닫힘과 이 티켓 자신의 마커가 더 붙어 문법에서 탈락한다.
      * (트레이드오프: 사람이 이슈 본문을 footer 뒤로 덧편집하면 그 행은 dup 미탐지 —
      * 중복 티켓이라는 "보이는" 실패로 격하된다. 위조로 인한 조용한 피드백 드롭보다 낫다.) */
     async findExisting(feedbackId: string): Promise<{ issue?: string }> {
       const q = `${MARKER}${feedbackId} in:body,comments`;
-      const issOut = await sh('gh', ['issue', 'list', '--search', q, '--state', 'all', '--json', 'url,number'], cfg.repoPath);
+      // --limit: gh의 기본 30 페이지는 조용한 상한이다 — 위조 인용 티켓은 피드백 제출당
+      // 하나씩 찍어낼 수 있고, 진짜 아티팩트가 30등 밖으로 밀리면 검증 루프가 위조본만 보고
+      // 재시도가 중복 티켓을 만든다. 100은 보드의 현실적 규모를 한참 넘고, 그 위에서의 실패는
+      // "조용한 드롭"이 아니라 "보이는 중복"으로 격하된다.
+      const issOut = await sh('gh', ['issue', 'list', '--search', q, '--state', 'all', '--json', 'url,number', '--limit', '100'], cfg.repoPath);
       const candidates: { url?: string; number?: number }[] = JSON.parse(issOut || '[]');
       const stamp = `<!-- ${MARKER}${feedbackId} -->`;
-      const stamped = (text: unknown) =>
-        typeof text === 'string' && text.replace(BOARD_META_TRAILER, '').trimEnd().endsWith(stamp);
+      const stamped = (text: unknown) => {
+        if (typeof text !== 'string') return false;
+        const at = text.lastIndexOf(stamp);
+        return at !== -1 && TRAILER_TAIL_RE.test(text.slice(at + stamp.length));
+      };
       for (const c of candidates) {
         if (!c?.url || c?.number == null) continue;
         const viewOut = await sh('gh', ['issue', 'view', String(c.number), '--json', 'body,comments'], cfg.repoPath);

@@ -93,6 +93,30 @@ describe('sideEffects', () => {
     expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/88');
   });
 
+  it('findExisting accepts a genuine ticket whose quoted prose leaves a board:meta opener UNCLOSED', async () => {
+    // opener를 찾아 벗겨내는 방식이 무너지는 자리: 인용된 opener는 자기 닫힘줄이 없어
+    // 진짜 트레일러의 닫힘줄까지 삼키고, 그 사이의 진짜 마커가 함께 잘려 나간다.
+    const body =
+      'diag\n```\nuser text mentioning\n<!-- board:meta\nwithout closing it\n```\n\n' +
+      `<!-- ${MARKER}A -->\n\n<!-- board:meta\nnote: x\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/90', number: 90 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('A')).issue).toBe('https://github.com/o/r/issues/90');
+  });
+
+  it('findExisting accepts the same unclosed quoted opener when the marker is the very last line', async () => {
+    const body =
+      'diag\n```\nuser text mentioning\n<!-- board:meta\nwithout closing it\n```\n\n' +
+      `<!-- ${MARKER}A -->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/91', number: 91 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('A')).issue).toBe('https://github.com/o/r/issues/91');
+  });
+
   it('findExisting still rejects a forged marker followed by a fake meta block inside a quoted fence', async () => {
     // 펜스 안에 마커+가짜 meta를 통째로 인용해도, 벗겨지는 건 본문 맨 끝의 진짜 트레일러
     // 하나뿐이다 — 남는 footer는 이 티켓 자신의 마커(other)다.
@@ -131,12 +155,14 @@ describe('sideEffects', () => {
     await expect(se.findExisting('f9')).rejects.toThrow('rate limit');
   });
 
-  it('findExisting searches comments too — dup-merge leaves its marker in a comment, not an issue body', async () => {
+  it('findExisting searches comments too, past gh\'s default 30-row page — a forged-quote flood must not push the genuine artifact off it', async () => {
     const sh = vi.fn().mockResolvedValue('[]');
     const se = makeSideEffects(cfg, sh);
     await se.findExisting('f9');
-    const q = sh.mock.calls[0][1][sh.mock.calls[0][1].indexOf('--search') + 1];
+    const args = sh.mock.calls[0][1];
+    const q = args[args.indexOf('--search') + 1];
     expect(q).toContain('in:body,comments');
+    expect(args).toEqual(expect.arrayContaining(['--limit', '100']));
   });
 
   it('listOpenTickets returns number+title candidates, fails OPEN to [] (advisory feature)', async () => {
