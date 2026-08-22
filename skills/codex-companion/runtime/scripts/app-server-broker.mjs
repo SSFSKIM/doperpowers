@@ -8,6 +8,7 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { resolveBrokerStateFile } from "./lib/broker-lifecycle.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -35,6 +36,31 @@ function send(socket, message) {
 
 function isInterruptRequest(message) {
   return message?.method === "turn/interrupt";
+}
+
+// The broker is workspace-scoped and spawned detached, so a session that dies
+// mid-run — or a review worktree that gets deleted — orphans a live broker +
+// codex app-server pair forever: its socket stays healthy, and nobody who could
+// reach its workspace's broker.json exists anymore (19h55m pairs observed,
+// dp#56). Whether anyone still wants this broker is knowledge only it has — a
+// client holds its connection open for as long as it is being served, and the
+// OS closes that socket the instant the client dies. So: no client connection
+// for this long ⇒ shut down cleanly, taking the app-server child along.
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Unparseable input falls back to the default rather than disabling — a typo
+// must not silently resurrect the leak. Only an explicit 0 (or negative)
+// switches the reaper off.
+function resolveIdleTimeoutMs(env) {
+  const raw = env.CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return DEFAULT_IDLE_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_IDLE_TIMEOUT_MS;
+  }
+  return value > 0 ? value : 0;
 }
 
 function writePidFile(pidFile) {
@@ -65,11 +91,25 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
+  // Resolved NOW, while cwd still resolves the way it did at spawn time. The
+  // state directory is derived from the workspace root, so a workspace deleted
+  // mid-run — a review worktree is the ordinary case — hashes to a different
+  // directory by the time the reaper runs, and the record we came to delete
+  // would be left behind forever.
+  let brokerStateFile = null;
+  try {
+    brokerStateFile = resolveBrokerStateFile(cwd);
+  } catch {
+    brokerStateFile = null;
+  }
+
+  const idleTimeoutMs = resolveIdleTimeoutMs(process.env);
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  let shuttingDown = false;
 
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
@@ -100,14 +140,37 @@ async function main() {
   }
 
   async function shutdown(server) {
+    shuttingDown = true;
+    // Discoverability goes FIRST, before anything that awaits. Refusing new
+    // connections is not enough on its own: a prober's transport-level connect
+    // can succeed before the shuttingDown destroy lands, so ensureBrokerSession
+    // would hand a caller this dying broker instead of respawning. Unlinking the
+    // socket path makes that probe fail immediately, and the record that names
+    // the same endpoint goes with it — nothing that reads broker.json probes it,
+    // so `status` would keep calling a dead broker a live shared session and
+    // `setup`'s auth path would dial it and blame auth.
+    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
+      fs.unlinkSync(listenTarget.path);
+    }
+    // Only OUR record: ensureBrokerSession may already have replaced it with a
+    // successor's, and deleting that would strand a live broker. A review asked
+    // for this compare-and-delete to be atomic; declined — broker.json has no
+    // lock regime anywhere (ensureBrokerSession's own load/save is unlocked
+    // too), the record is now withdrawn at decision time before any await, and a
+    // successor would have to land its whole teardown → respawn → save pipeline
+    // between these two adjacent syscalls.
+    try {
+      if (brokerStateFile && JSON.parse(fs.readFileSync(brokerStateFile, "utf8"))?.endpoint === endpoint) {
+        fs.unlinkSync(brokerStateFile);
+      }
+    } catch {
+      // The record is advisory; never let its cleanup break shutdown.
+    }
     for (const socket of sockets) {
       socket.end();
     }
     await appClient.close().catch(() => {});
     await new Promise((resolve) => server.close(resolve));
-    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
-      fs.unlinkSync(listenTarget.path);
-    }
     if (pidFile && fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);
     }
@@ -115,7 +178,43 @@ async function main() {
 
   appClient.setNotificationHandler(routeNotification);
 
+  // Armed whenever the broker has no client connections (including from boot:
+  // a broker whose spawner dies before ever connecting is the orphan case too).
+  // The callback re-checks sockets.size — a connection can land after the timer
+  // fires but before the callback runs, and that client is owed service.
+  let idleTimer = null;
+  function cancelIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+  function armIdleTimer(server) {
+    if (!idleTimeoutMs) {
+      return;
+    }
+    cancelIdleTimer();
+    idleTimer = setTimeout(async () => {
+      if (sockets.size > 0) {
+        return;
+      }
+      await shutdown(server);
+      process.exit(0);
+    }, idleTimeoutMs);
+  }
+
   const server = net.createServer((socket) => {
+    // The listener keeps accepting until server.close() runs, which is several
+    // awaits into shutdown() — so a client can land after the idle timer read
+    // sockets.size as 0. That socket missed shutdown's end-loop, its requests
+    // would reach an already-closing app client, and holding it open can stall
+    // server.close indefinitely. Refuse it instead: the client sees a failed
+    // probe, which ensureBrokerSession already answers by respawning.
+    if (shuttingDown) {
+      socket.destroy();
+      return;
+    }
+    cancelIdleTimer();
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -225,11 +324,17 @@ async function main() {
     socket.on("close", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      if (sockets.size === 0) {
+        armIdleTimer(server);
+      }
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      if (sockets.size === 0) {
+        armIdleTimer(server);
+      }
     });
   });
 
@@ -244,6 +349,7 @@ async function main() {
   });
 
   server.listen(listenTarget.path);
+  armIdleTimer(server);
 }
 
 main().catch((error) => {

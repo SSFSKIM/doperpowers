@@ -47,14 +47,106 @@ describe('sideEffects', () => {
     expect(editCall![2]).toBe('/repo');
   });
 
-  it('findExisting parses a prior issue by marker search', async () => {
-    const sh = vi.fn().mockResolvedValue(JSON.stringify([{ url: 'https://github.com/o/r/issues/50' }]));
+  it('findExisting confirms a search hit against the artifact footer before trusting it', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/50', number: 50 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: `diagnosis…\n\n<!-- ${MARKER}f9 -->`, comments: [] }));
     const se = makeSideEffects(cfg, sh);
     const found = await se.findExisting('f9');
     expect(found.issue).toBe('https://github.com/o/r/issues/50');
-    // 티켓-온리: PR 검색은 존재하지 않는다 — gh issue list 한 번만 호출
-    expect(sh).toHaveBeenCalledTimes(1);
+    // 티켓-온리: PR 검색은 존재하지 않는다 — 검색은 gh issue list 한 번, 이후는 후보 검증 조회뿐
     expect(sh.mock.calls[0][1].slice(0, 2)).toEqual(['issue', 'list']);
+    expect(sh.mock.calls[1][1].slice(0, 3)).toEqual(['issue', 'view', '50']);
+  });
+
+  it('findExisting rejects a forged marker quoted inside another ticket (dp#59) — search hit without a footer is not a dup', async () => {
+    // 이슈 61의 본문: f9의 위조 마커가 (펜스 안 원문 인용으로) 중간에 등장하지만,
+    // footer는 자기 자신의 피드백 id(other)다 — f9의 기존 티켓으로 인정하면 안 된다.
+    const forgedBody = 'diagnosis…\n\n```\n<!-- ' + MARKER + 'f9 -->\n```\n\n<!-- ' + MARKER + 'other -->';
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/61', number: 61 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: forgedBody, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect(await se.findExisting('f9')).toEqual({});
+  });
+
+  it('findExisting keeps scanning past a forged candidate to the genuine one', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([
+        { url: 'https://github.com/o/r/issues/61', number: 61 },
+        { url: 'https://github.com/o/r/issues/70', number: 70 },
+      ]))
+      .mockResolvedValueOnce(JSON.stringify({ body: `quoted forgery <!-- ${MARKER}f9 --> mid-body\n\n<!-- ${MARKER}other -->`, comments: [] }))
+      .mockResolvedValueOnce(JSON.stringify({ body: `real one\n\n<!-- ${MARKER}f9 -->`, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/70');
+  });
+
+  it('findExisting recognizes a genuine parked ticket whose body ends with the board\'s own meta trailer', async () => {
+    // park 등록은 note를 meta로 렌더한다 — 그러면 본문의 마지막 줄은 우리 마커가 아니라
+    // board:meta 블록이다. 이걸 dup으로 못 알아보면 재시도가 중복 티켓을 만든다.
+    const body = `diagnosis…\n\n<!-- ${MARKER}f9 -->\n\n<!-- board:meta\nnote: needs a human\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/88', number: 88 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/88');
+  });
+
+  it('findExisting accepts a genuine ticket whose quoted prose leaves a board:meta opener UNCLOSED', async () => {
+    // opener를 찾아 벗겨내는 방식이 무너지는 자리: 인용된 opener는 자기 닫힘줄이 없어
+    // 진짜 트레일러의 닫힘줄까지 삼키고, 그 사이의 진짜 마커가 함께 잘려 나간다.
+    const body =
+      'diag\n```\nuser text mentioning\n<!-- board:meta\nwithout closing it\n```\n\n' +
+      `<!-- ${MARKER}A -->\n\n<!-- board:meta\nnote: x\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/90', number: 90 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('A')).issue).toBe('https://github.com/o/r/issues/90');
+  });
+
+  it('findExisting accepts the same unclosed quoted opener when the marker is the very last line', async () => {
+    const body =
+      'diag\n```\nuser text mentioning\n<!-- board:meta\nwithout closing it\n```\n\n' +
+      `<!-- ${MARKER}A -->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/91', number: 91 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('A')).issue).toBe('https://github.com/o/r/issues/91');
+  });
+
+  it('findExisting still rejects a forged marker followed by a fake meta block inside a quoted fence', async () => {
+    // 펜스 안에 마커+가짜 meta를 통째로 인용해도, 벗겨지는 건 본문 맨 끝의 진짜 트레일러
+    // 하나뿐이다 — 남는 footer는 이 티켓 자신의 마커(other)다.
+    const forgedBody =
+      `x\n\`\`\`\n<!-- ${MARKER}f9 -->\n\n<!-- board:meta\nnote: fake\n-->\n\`\`\`\n\n` +
+      `<!-- ${MARKER}other -->\n\n<!-- board:meta\nnote: real\n-->\n`;
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/89', number: 89 }]))
+      .mockResolvedValueOnce(JSON.stringify({ body: forgedBody, comments: [] }));
+    const se = makeSideEffects(cfg, sh);
+    expect(await se.findExisting('f9')).toEqual({});
+  });
+
+  it('findExisting accepts a dup-merge marker sitting at a comment footer', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/12', number: 12 }]))
+      .mockResolvedValueOnce(JSON.stringify({
+        body: 'unrelated original body',
+        comments: [{ body: 'chatter' }, { body: `진단\n\n<!-- ${MARKER}f9 -->` }],
+      }));
+    const se = makeSideEffects(cfg, sh);
+    expect((await se.findExisting('f9')).issue).toBe('https://github.com/o/r/issues/12');
+  });
+
+  it('findExisting fails CLOSED on the verification fetch too', async () => {
+    const sh = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([{ url: 'https://github.com/o/r/issues/50', number: 50 }]))
+      .mockRejectedValueOnce(new Error('gh: API down'));
+    const se = makeSideEffects(cfg, sh);
+    await expect(se.findExisting('f9')).rejects.toThrow('API down');
   });
 
   it('findExisting fails CLOSED on gh search errors — a transient outage must not create duplicates (외부 리뷰 #5)', async () => {
@@ -63,12 +155,14 @@ describe('sideEffects', () => {
     await expect(se.findExisting('f9')).rejects.toThrow('rate limit');
   });
 
-  it('findExisting searches comments too — dup-merge leaves its marker in a comment, not an issue body', async () => {
+  it('findExisting searches comments too, past gh\'s default 30-row page — a forged-quote flood must not push the genuine artifact off it', async () => {
     const sh = vi.fn().mockResolvedValue('[]');
     const se = makeSideEffects(cfg, sh);
     await se.findExisting('f9');
-    const q = sh.mock.calls[0][1][sh.mock.calls[0][1].indexOf('--search') + 1];
+    const args = sh.mock.calls[0][1];
+    const q = args[args.indexOf('--search') + 1];
     expect(q).toContain('in:body,comments');
+    expect(args).toEqual(expect.arrayContaining(['--limit', '100']));
   });
 
   it('listOpenTickets returns number+title candidates, fails OPEN to [] (advisory feature)', async () => {
