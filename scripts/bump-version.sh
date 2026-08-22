@@ -46,6 +46,23 @@ declared_files() {
   jq -r '.files[] | "\(.path)\t\(.field)"' "$CONFIG"
 }
 
+# Verify every declared manifest is readable before writing any —
+# a bump either lands everywhere or touches nothing.
+preflight_manifests() {
+  local path field fullpath
+  while IFS=$'\t' read -r path field; do
+    fullpath="$REPO_ROOT/$path"
+    if [[ ! -f "$fullpath" ]]; then
+      echo "error: declared manifest missing: $path" >&2
+      return 1
+    fi
+    if ! read_json_field "$fullpath" "$field" >/dev/null; then
+      echo "error: cannot read declared manifest: $path ($field)" >&2
+      return 1
+    fi
+  done < <(declared_files)
+}
+
 # Read the audit exclude patterns from config.
 audit_excludes() {
   jq -r '.audit.exclude[]' "$CONFIG" 2>/dev/null
@@ -172,15 +189,13 @@ cmd_bump() {
     exit 1
   fi
 
+  preflight_manifests
+
   echo "Bumping all declared files to $new_version..."
   echo ""
 
   while IFS=$'\t' read -r path field; do
     local fullpath="$REPO_ROOT/$path"
-    if [[ ! -f "$fullpath" ]]; then
-      echo "  SKIP (missing): $path"
-      continue
-    fi
     local old_ver
     old_ver=$(read_json_field "$fullpath" "$field")
     write_json_field "$fullpath" "$field" "$new_version"

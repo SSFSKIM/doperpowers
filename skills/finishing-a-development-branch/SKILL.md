@@ -97,6 +97,11 @@ Which option?
 #### Option 1: Merge Locally
 
 ```bash
+# Capture the worktree identity BEFORE leaving it — Step 6 needs these
+GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
+GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+WORKTREE_PATH=$(git rev-parse --show-toplevel)
+
 # Get main repo root for CWD safety
 MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
 cd "$MAIN_ROOT"
@@ -149,6 +154,11 @@ Wait for exact confirmation.
 
 If confirmed:
 ```bash
+# Capture the worktree identity BEFORE leaving it — Step 6 needs these
+GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
+GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+WORKTREE_PATH=$(git rev-parse --show-toplevel)
+
 MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
 cd "$MAIN_ROOT"
 ```
@@ -162,22 +172,31 @@ git branch -D <feature-branch>
 
 **Only runs for Options 1 and 4.** Options 2 and 3 always preserve the worktree.
 
-```bash
-GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
-GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
-WORKTREE_PATH=$(git rev-parse --show-toplevel)
-```
+Use the `GIT_DIR`, `GIT_COMMON`, and `WORKTREE_PATH` captured before
+`cd "$MAIN_ROOT"` — recomputed from the main checkout they describe a
+normal repo and skip cleanup.
 
 **If `GIT_DIR == GIT_COMMON`:** Normal repo, no worktree to clean up. Done.
 
 **If worktree path is under `.worktrees/` or `worktrees/`:** Doperpowers created this worktree — we own cleanup.
 
 ```bash
-MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
-cd "$MAIN_ROOT"
 git worktree remove "$WORKTREE_PATH"
 git worktree prune  # Self-healing: clean up any stale registrations
 ```
+
+**If removal is refused** (`contains modified or untracked files`): the
+worktree holds files that exist nowhere else. Never `--force` on your own
+initiative — show your human partner what is at stake:
+
+```bash
+git -C "$WORKTREE_PATH" status --porcelain -uall
+```
+
+Ask whether to commit them to the branch (not on the discard path —
+Option 4 deletes the branch next, so a rescue commit dies with it; there,
+offer only the other two), move them into the main repo, or delete them
+(unrecoverable); carry out the choice, then remove the worktree.
 
 **Otherwise:** The host environment (harness) owns this workspace. Do NOT remove it. If your platform provides a workspace-exit tool, use it. Otherwise, leave the workspace in place.
 
@@ -190,3 +209,5 @@ git worktree prune  # Self-healing: clean up any stale registrations
 - Remove a worktree before confirming merge success
 - Clean up worktrees you didn't create (provenance check)
 - Run `git worktree remove` from inside the worktree
+- `--force` a refused worktree removal — the refusal means those files
+  exist nowhere else

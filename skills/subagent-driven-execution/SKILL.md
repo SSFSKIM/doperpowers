@@ -26,7 +26,9 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 ## The loop
 
-1. Read the plan once. Note the Global Constraints, create todos, resolve
+1. Read the plan once — and the spec its header names: the spec is the
+   authority the plan argues from when a finding or ⚠️ item needs
+   adjudicating. Note the Global Constraints, create todos, resolve
    the workspace (`scripts/sde-workspace PLAN_FILE`) and check for an
    existing ledger (Durable Progress below) before dispatching anything.
 2. **Pre-flight:** scan the plan for tasks that contradict each other, the
