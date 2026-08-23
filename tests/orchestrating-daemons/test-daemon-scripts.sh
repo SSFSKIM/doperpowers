@@ -46,6 +46,15 @@ assert_file_absent() {
 }
 
 # ---- environment: isolated HOME, registry, PATH-shadowed claude stub ---------
+# The transport env starts EMPTY. The stub below snapshots exactly these names
+# into calls.log, and several assertion-failure paths print that log whole — so
+# a real credential exported in the runner's own shell would end up in the test
+# output. Every test that needs these vars exports fixture values per
+# invocation, so nothing here depends on inheriting them.
+unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
+echo "environment:"
+assert_equals "${ANTHROPIC_AUTH_TOKEN:-}" "" "transport env starts empty (no ambient credential can reach the stub's log)"
+
 export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
@@ -116,7 +125,9 @@ PY
 if [ $has_bg -eq 1 ]; then
   # Transport-env snapshot (dp#38): what the launched agent would actually
   # inherit. Keyed by the prompt so tests can grep the exact launch.
-  echo "bg-env:$prompt base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-}" >> "$STUB_STATE/log/calls.log"
+  # `path=` records only whether PATH survived — the value is the runner's own
+  # and has no place in a log the assertions print.
+  echo "bg-env:$prompt base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};path=${PATH:+set}" >> "$STUB_STATE/log/calls.log"
   # Failure-mode switch: make the --bg launch itself fail (e.g. session not
   # resumable). Exercises daemon-resume's fork-launch-failure path.
   if [ "${STUB_FAIL_BG:-0}" = "1" ]; then
@@ -504,6 +515,23 @@ NOF_OUT="$(CLODEX_SETTINGS="$TEST_ROOT/no-such-settings.json" \
 assert_contains "$NOF_OUT" "daemon spawned" "missing settings file does not break a plain spawn"
 NOF_ENV="$(grep -- "bg-env:NOF-TASK-5" "$STUB_STATE/log/calls.log" | head -1)"
 assert_contains "$NOF_ENV" "base=http://corp-proxy:9999" "no settings file: nothing declared, ambient transport env survives"
+
+# A settings file that declares PATH in its env block: PATH is exempt from the
+# scrub, because `env -u PATH claude …` resolves the binary against the system
+# default path and a claude outside it exits 127 — the plain route would stop
+# working entirely. The transport key beside it is still scrubbed.
+# Failure here is a dead spawn, so capture stderr and keep the rc from aborting
+# the suite: the asserts must be able to report it.
+PATHF_FIXTURE="$TEST_ROOT/clodex-with-path.json"
+cat > "$PATHF_FIXTURE" <<'JSON'
+{"env": {"ANTHROPIC_BASE_URL": "http://localhost:8317", "PATH": "/nonexistent"}}
+JSON
+PATHF_OUT="$(CLODEX_SETTINGS="$PATHF_FIXTURE" ANTHROPIC_BASE_URL="http://localhost:8317" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "pathdaemon" "PATHF-TASK-7" "$WORK" 2>&1 || true)"
+assert_contains "$PATHF_OUT" "daemon spawned" "a settings file declaring env.PATH still spawns a plain daemon"
+PATHF_ENV="$(grep -- "bg-env:PATHF-TASK-7" "$STUB_STATE/log/calls.log" | head -1 || true)"
+assert_contains "$PATHF_ENV" "path=set" "PATH reaches the launched agent (unsetting it makes claude unresolvable)"
+assert_contains "$PATHF_ENV" "base=;" "the transport key declared beside PATH is still scrubbed"
 
 # Malformed settings file: fail open — scrub nothing, spawn proceeds.
 BAD_FIXTURE="$TEST_ROOT/bad-clodex.json"

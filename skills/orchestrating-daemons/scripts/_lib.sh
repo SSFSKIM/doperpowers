@@ -66,6 +66,12 @@ _strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 # (the auth token among them) are never read into argv or logs. No file, or
 # an unparseable one, prints nothing: ambient transport vars on a host with
 # no gateway config are the operator's own and must survive.
+#
+# PATH is never printed, whatever the settings file declares. The scrub exists
+# to block transport redirection; PATH is how `env` resolves the `claude`
+# binary itself, so `env -u PATH claude …` sends execvp to the system default
+# path and any claude outside it (~/.local/bin, Homebrew) exits 127 on every
+# plain spawn and resume.
 _gateway_env_keys() {
   local f="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}"
   [ -r "$f" ] || return 0
@@ -77,7 +83,7 @@ except Exception:
     sys.exit(0)
 if isinstance(env, dict):
     for k in env:
-        if isinstance(k, str) and k:
+        if isinstance(k, str) and k and k != "PATH":
             print(k)
 PY
 }
