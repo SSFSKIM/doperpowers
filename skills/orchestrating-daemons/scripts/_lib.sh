@@ -53,6 +53,35 @@ _err_path()   { printf '%s/%s.err' "$DAEMON_HOME" "$1"; }
 # Strip ANSI color codes (the `claude --bg` banner is colored even when piped).
 _strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
+# Gateway transport scrub (dp#38). A caller can itself be running inside a
+# gateway-routed daemon: the gateway settings file's `env` block
+# (ANTHROPIC_BASE_URL, auth token, model aliases, …) is live in that session's
+# environment, and a plain-route child would inherit it — first turn on the
+# gateway, nothing recorded in its meta, so the first resume restores nothing
+# and the daemon silently changes model provider mid-life. Launch sites for a
+# PLAIN-route turn pass `env` a `-u KEY` pair for every name this prints.
+#
+# The key list is never hardcoded: it is the top-level `env` keys of the
+# gateway settings file this deployment routes through — names only; values
+# (the auth token among them) are never read into argv or logs. No file, or
+# an unparseable one, prints nothing: ambient transport vars on a host with
+# no gateway config are the operator's own and must survive.
+_gateway_env_keys() {
+  local f="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}"
+  [ -r "$f" ] || return 0
+  python3 - "$f" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    env = json.load(open(sys.argv[1])).get("env")
+except Exception:
+    sys.exit(0)
+if isinstance(env, dict):
+    for k in env:
+        if isinstance(k, str) and k:
+            print(k)
+PY
+}
+
 # rc 0 iff a meta's recorded host/boot identity belongs to this boot. Empty
 # values preserve legacy local behavior.
 _identity_local() {
