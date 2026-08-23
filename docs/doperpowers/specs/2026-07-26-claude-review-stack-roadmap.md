@@ -505,11 +505,65 @@ Epic: doperpowers#27. Materialized 2026-07-26 after approval.
 
 ## Outcomes & Retrospective
 
-Pending — written when the unit closes. Closing is a RECOMPOSITION check:
-verify Parent-Level Acceptance as written — all children landed is not the
-same event — then retrospect.
+**Unit closed 2026-08-23.** Recomposition check run against the acceptance
+as re-scoped by v1.5/v1.6 (the argus clauses are rescinded; the surviving
+engine carries their intent):
+
+1. A label-less review dispatch spawns a plain-Claude worker whose engine
+   is native codex review through the loop's own `review-engine.sh`
+   (post-v7.47 it rides the codex-companion runtime), with diff-scale
+   lens fan-out as the ensemble mechanism — pinned by
+   `tests/qa-loops/test-review-dispatch.sh` ("built-in default route is
+   plain Claude"). The bench rider re-reads under v1.5 as "the surviving
+   engine's ensemble value is bench-proven": the lenscell run recovered
+   F3 and the 2026-08-03 panel-x1 round re-validated the panel shape.
+2. The execplan exit-gate names codex native review as the final-branch
+   reviewer (`skills/execplan/SKILL.md:39`); argus appears nowhere.
+3. A label-less implement dispatch spawns a plain-Claude worker
+   (`tests/executing/test-execute-dispatch.sh`), `engine:codex` opts back
+   into the gateway, and the architect dispatch is exempt per the v1.6
+   amendment ("architect route never rides the gateway" is a pinned
+   assert).
+
+Children at close: C1 #28 (spike, landed), C2 #29 (landed, stands as
+history), C3 #30 (wontfix — rescinded by v1.5), C4 #31 (wontfix — engine
+swap inverted by the PR752 evidence), C5 #32 (satisfied through the
+qa-loops rebuild + land-lane retirement; every criterion test-pinned),
+C6 #33 (PR #35).
+
+**What was achieved against the purpose:** the pipeline's worker defaults
+are Claude end to end, and the review methodology decision was settled by
+measurement rather than by the plan — the epic's central bet (transplant
+the methodology to argus) was refuted by its own benchmark, and the
+ensemble value the transplant was chasing shipped instead as the
+multi-lens native fan-out inside the loop (2026-07-28 ExecPlan).
+
+**Gaps / follow-ons (tracked, not blockers):** the default flips exposed a
+gateway-environment residue family — #33's dispatcher leak (PR #35), #37
+(review lane, closed satisfied), #38 (substrate transport scrub), #39
+(seeded-host upgrade note; the operator half waits on the worker host
+coming back online) — and X1 fixture debt from the C2 scored runs (#40).
+
+**Lessons:**
+- The benchmark redirected the epic and that is X1 working as designed:
+  building the measuring stick first (C1) is what made discarding the
+  central bet cheap — the inversion cost a spike and two children instead
+  of a shipped-then-regretted engine swap.
+- Default flips leave residue in persistent state the diff never touches
+  (seeded host env files, inherited process environments). #37/#38/#39
+  were all of that one shape; a flip child should budget its own residue
+  sweep instead of leaking it as surprise follow-ups.
+- "Satisfied through a rebuild" (C5) is a legitimate close only because
+  the criteria were outcome-phrased and test-pinned, so satisfaction
+  survived the code being rewritten under it. Acceptance written against
+  implementation shape would have been unverifiable by close time.
 
 ## Revision Notes
+
+- **2026-08-23 (v1.7, unit closed):** recomposition check passed as
+  re-scoped; C3 #30 closed wontfix per v1.5, C5 #32 closed
+  satisfied-by-rebuild with test-pinned evidence, Outcomes &
+  Retrospective written. Board umbrella #27 closed.
 
 - **2026-07-31 (v1.6, X4 narrowed per the E1 lane-split spec):** the
   architect dispatch is exempt from `engine:*` (plan authorship is
