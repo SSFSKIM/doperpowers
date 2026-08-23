@@ -218,6 +218,14 @@ case4's two non-truth findings:
   bait should mark a defensible-looking correct decision, and this one rests on
   a checkable factual error rather than on anything the diff does.
 
+**case4 re-run after the dereference guard** (`case4-r2.codex.txt`,
+secs=355): exactly six findings — b4, b1, b2, u1, u2, b3 — every one
+truth-matched, FP 0, no unseeded candidate, no bait flagged. Neither the
+dangling-link candidate nor the -mindepth portability claim recurred. With
+case1 3/3 and case3 3/3 above, the #40 acceptance holds as stated: a fresh
+engine run on the updated fixtures produces no finding that is neither
+truth-matched nor a deliberate bait, with no known-item exclusion list.
+
 ## Not handled
 
 Nothing from `new_unseeded_candidates_excluded` was left unaddressed; all six

@@ -1,0 +1,25 @@
+# Codex Review
+
+Target: branch diff against main
+
+The new manifest format disables pruning, while the default force value unintentionally bypasses the new disk-space protection. Replication also leaks failed staging files and does not provide the claimed atomicity or private permissions.
+
+Full review comments:
+
+- [P1] Parse the v2 manifest before pruning — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/snapshot.sh:114-114
+  Every successful snapshot now emits four fields, but `prune.sh` still reads three as `epoch bytes path`; Bash therefore assigns `bytes<TAB>archive-path` to `path`, so its file check fails and rotation is skipped on every normal run. Update the consumer to read the label field and use it instead of recovering the label from the filename.
+
+- [P1] Keep the default force value disabled — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/lib/common.sh:81-81
+  `snapshot.sh` initializes `FORCE` to the nonempty string `0`, and `[ "$force" ]` treats every nonempty value as true. Consequently, a normal invocation always overrides a free-space shortfall and can fill the archive or staging filesystem; test explicitly for the enabled value instead.
+
+- [P1] Clean the staging directory on failed runs — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/snapshot.sh:90-90
+  After staging is created, there is no longer an `EXIT` trap to remove it. Any tar, replication, or move failure leaves the temporary directory and potentially a full archive behind; during a persistent remote outage, each scheduled run can leak another archive into `/tmp` until the filesystem fills.
+
+- [P1] Publish replicas only after verifying the full transfer — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/lib/common.sh:97-99
+  If SSH disconnects after transmitting part of an archive, the remote redirection has already created the final-name file and leaves the received bytes there even though the local command fails. This makes a truncated replica indistinguishable by name from a valid one; transfer to a temporary path, verify completion remotely, and only then rename it into place.
+
+- [P1] Apply a private umask on the remote host — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/lib/common.sh:97-99
+  When replication is enabled on a multi-user host with the common remote umask `022`, this command creates the directory as `0755` and the archive as `0644`; the local `umask 077` is not propagated through SSH. If parent directories are traversable, other remote users can read backup contents, so set a private umask or permissions in the remote command.
+
+- [P2] Escape remote paths before invoking the shell — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.eK2h7R/lib/common.sh:97-99
+  If `BACKUP_REMOTE_DIR` or the label-derived archive name contains a single quote, interpolation closes the remote shell quote, causing replication to fail and potentially interpreting the remainder as shell commands. These values are only validated as nonempty, so pass them as safely quoted arguments or escape them for the remote shell.
