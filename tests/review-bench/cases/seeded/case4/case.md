@@ -24,14 +24,28 @@ record fails its `[ -f "$path" ]` test and rotation silently stops.
 empty source tree — this looks like broken exit-code handling, but it is
 documented in the header comment and in intent.md, and `run-backup.sh`
 explicitly consumes 3 as a success-with-no-work case. (2) `prune.sh`
-replaces the `"$dir/$label"-*.tar.gz` glob with `find -maxdepth 1 -type f
--name '*.tar.gz' -print0` plus a literal `case` filter on the label; it looks
+replaces the `"$dir/$label"-*.tar.gz` glob with `find -maxdepth 1 \( -type f
+-o -type l \) -name '*.tar.gz' -print0` plus a literal `case` filter on the
+label; it looks
 like a recursion/ordering change but the set and the newest-first ordering are
 identical, and the motivation (ARG_MAX on directories with tens of thousands of
 archives) is in the comment. (3)
 `umask 077` moves from `snapshot.sh` into `lib/common.sh`, so it now also
 applies to prune.sh and run-backup.sh — a real behavior change, intentional
-and explained in the comment and intent.md. (4) The free-space check
+and explained in the comment and intent.md. The sharpest form of this candidate
+(call it *the umask hoist*) is that the hoist makes the umask apply at library
+*source* time, so `mkdir -p "$BACKUP_ARCHIVE_DIR"` in snapshot.sh now creates
+the archive directory 0700 where the base created it 0755. That is still not a
+defect, and flagging it costs a false positive: in the base the archive *files*
+were already written 0600 under the very same `umask 077`, which was set before
+`mktemp -d` and tar and survives the publishing `mv` (which preserves the mode),
+so no other account could ever read an archive's contents. The only capability
+the hoist removes is listing and stat-ing the names of files that were already
+unreadable, and no consumer of that capability exists anywhere in the
+toolchain. It is also exactly what the comment above the umask says it is doing.
+Note that this is a *different* claim from `case4-u2` below: u2 is about the
+copy the **replica** creates under its own account's default umask, which no
+local umask governs — that one is real and counts. (4) The free-space check
 deliberately compares against the *uncompressed* `du -sk` size of the source
 rather than an estimated compressed size; that over-reserves on purpose and
 says so in the comment. (5) `replicate` runs *before* `mv "$staged" "$archive"`,

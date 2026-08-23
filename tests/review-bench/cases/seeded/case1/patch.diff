@@ -257,7 +257,7 @@ index d6a3664..099356a 100644
 +        "dropped_late": report["dropped_late"],
 +    }
 diff --git a/records.py b/records.py
-index ac9adab..048af45 100644
+index ac9adab..f8a1ae3 100644
 --- a/records.py
 +++ b/records.py
 @@ -3,9 +3,12 @@
@@ -301,7 +301,7 @@ index ac9adab..048af45 100644
      """
      try:
          payload = json.loads(line)
-@@ -40,10 +53,17 @@ def parse_line(line: str) -> Reading:
+@@ -40,10 +53,22 @@ def parse_line(line: str) -> Reading:
      if missing:
          raise MalformedReading("missing fields: %s" % ", ".join(missing))
  
@@ -311,12 +311,17 @@ index ac9adab..048af45 100644
 +    if isinstance(value, float) and not math.isfinite(value):
 +        raise MalformedReading("value must be a finite JSON number")
 +
++    # An explicit ``"tenant": null`` means the producer had no tenant to send,
++    # not that the reading belongs to one named "None": treat it as absent and
++    # fall back to the default tenant, the same as a line that omits the key.
++    raw_tenant = payload.get("tenant", DEFAULT_TENANT)
++
      return Reading(
          device_id=str(payload["device_id"]),
          ts=int(payload["ts"]),
 -        value=float(payload["value"]),
 +        value=float(value),
-+        tenant=str(payload.get("tenant", DEFAULT_TENANT)),
++        tenant=DEFAULT_TENANT if raw_tenant is None else str(raw_tenant),
      )
  
  
@@ -339,10 +344,10 @@ index 0000000..5121d7f
 +}
 diff --git a/tenants.py b/tenants.py
 new file mode 100644
-index 0000000..ff8de39
+index 0000000..39cb37b
 --- /dev/null
 +++ b/tenants.py
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,56 @@
 +"""Per-tenant ingest limits, sourced from a JSON config file."""
 +
 +from __future__ import annotations
@@ -386,6 +391,13 @@ index 0000000..ff8de39
 +    entry = config.get(tenant)
 +    if entry is None:
 +        entry = config.get(DEFAULT_TENANT, {})
++    if not isinstance(entry, dict):
++        # A ``"default": null`` line, or an entry someone wrote as a bare
++        # scalar, reaches here as a non-mapping and would raise on the .get
++        # below. The contract above says an absent config is an empty entry is
++        # no limits — a malformed one is not allowed to be the exception that
++        # aborts the whole ingest instead.
++        entry = {}
 +
 +    raw_max = entry.get("max_value")
 +    return TenantLimits(
