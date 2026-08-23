@@ -154,6 +154,19 @@ lived on the body. The triage tenant needs no step at all: the
 timer is re-armed by cloud-init and its `ExecCondition` finds the seeded
 `.env` already on the volume.
 
+**Upgrading an existing body (layer-3 state is persistent by design).** The
+volume outlives every template fix, so a body seeded from an older
+`env.example` keeps the old values until an operator edits them. One such
+change so far: `WORKER_ENGINE=codex` left the template when the lanes moved
+to their own claude defaults — on any body seeded before that, remove the
+`WORKER_ENGINE` line from BOTH `/data/worker/.env` and
+`/data/worker/runner/.env` (the runner file is a §2.6 *copy*, not a symlink;
+editing only `~/.env` leaves event-triggered dispatches on the old route),
+then restart the runner so it rereads its env:
+`cd /data/worker/runner && sudo ./svc.sh stop && sudo ./svc.sh start`.
+Verify: `grep WORKER_ENGINE ~/.env ~/runner/.env` returns nothing, and the
+next label-less implement dispatch spawns a plain-Claude worker.
+
 ## 5. Triage tenant (`skills/triaging-feedback` poller)
 
 The first production tenant, and deliberately the burn-in one: real value
