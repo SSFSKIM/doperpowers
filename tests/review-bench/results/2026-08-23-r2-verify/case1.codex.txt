@@ -1,0 +1,16 @@
+# Codex Review
+
+Target: branch diff against main
+
+Positive lateness allowances discard valid readings, and batch flushing retains and re-emits prior data. Per-reading configuration loading also introduces substantial avoidable I/O overhead.
+
+Full review comments:
+
+- [P1] Subtract the lateness allowance from the watermark — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.b7WF5V/windows.py:70-71
+  When `allowed_lateness > 0`, this cutoff lies ahead of the watermark, so after an event at timestamp 100, an in-order event at 101 is dropped with an allowance of 30. The late threshold must be `watermark - allowed_lateness`; otherwise the documented grace period rejects valid readings.
+
+- [P1] Retire windows after flushing a batch — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.b7WF5V/aggregate.py:85-87
+  For any `summarize_files` call with multiple batches, `flush()` only snapshots `_pending` and never clears it. Consequently later batches re-emit earlier windows, merge values into prior batch rows when keys coincide, and retain every window in memory instead of producing independent per-batch results.
+
+- [P2] Cache tenant limits outside the reading loop — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.b7WF5V/pipeline.py:40-40
+  This call occurs once per reading, and `load_tenant_limits` opens and JSON-decodes `tenants.json` each time. A batch containing N readings therefore performs N filesystem reads, making normal large telemetry batches unnecessarily I/O-bound; load the configuration once or cache limits by tenant.

@@ -1,0 +1,16 @@
+# Codex Review
+
+Target: branch diff against main
+
+The bulk export leaks cross-tenant documents to ordinary members, PUT responses report row counts instead of persisted revisions, and pagination returns overlapping oversized pages. These are functional and security regressions that require correction.
+
+Full review comments:
+
+- [P1] Restrict bulk exports to admins — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.NP0tqJ/app.py:211-211
+  When any authenticated non-admin requests `GET /exports/all`, this decorator permits the request and the handler returns documents from every tenant. This violates the documented admin-only and tenancy boundaries and exposes cross-tenant data; use the admin authorization check here.
+
+- [P1] Return the persisted revision from save_document — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.NP0tqJ/store.py:122-122
+  Whenever `len(rows)` differs from `current + 1`, this returns a row count even though `handle_put_document` exposes it as the revision and ETag. For example, creating an empty document persists revision 1 but reports revision 0, so a subsequent conditional write using that response incorrectly conflicts.
+
+- [P2] Stop the page slice at the exclusive bound — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.NP0tqJ/app.py:103-103
+  When at least `limit + 1` documents remain, `last` is already the exclusive boundary (`first + limit`), but slicing through `last + 1` returns one extra document. Consecutive pages therefore contain `limit + 1` entries and duplicate the boundary document.

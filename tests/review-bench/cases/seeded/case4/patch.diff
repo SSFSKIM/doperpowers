@@ -144,10 +144,10 @@ index 743590c..caa7ec3 100644
 +  log "replicated $name to $BACKUP_REMOTE:$BACKUP_REMOTE_DIR"
 +}
 diff --git a/prune.sh b/prune.sh
-index 6f64a0e..511f9c1 100755
+index 6f64a0e..f675978 100755
 --- a/prune.sh
 +++ b/prune.sh
-@@ -19,12 +19,34 @@ esac
+@@ -19,12 +19,38 @@ esac
  [ "$KEEP" -ge 1 ] || die "BACKUP_KEEP must be at least 1"
  
  # list_archives <dir> <label> -- archive paths for one label, newest first.
@@ -165,19 +165,22 @@ index 6f64a0e..511f9c1 100755
 +# "$dir/", with the slash: find does not descend a symlinked start point
 +# without it, and an archive directory that is a symlink to a mounted volume is
 +# a normal layout the glob expanded through. And the type test accepts symlinks
-+# alongside regular files, because the glob matched a symlinked archive too;
-+# rotation deletes it with `rm -f`, which removes the link and leaves whatever
-+# it pointed at alone, so an archive parked on another volume is still counted
-+# against BACKUP_KEEP instead of accumulating unseen.
++# alongside regular files, paired with the `[ -f "$file" ]` inside the loop:
++# that pair is what reproduces the glob exactly, because the glob's own `[ -f ]`
++# dereferenced. `find -type f` alone would have dropped an archive parked on
++# another volume behind a symlink, and `-type l` alone would have started
++# counting dead links.
  list_archives() {
    local dir="$1" label="$2" file
 -  for file in "$dir/$label"-*.tar.gz; do
--    [ -f "$file" ] || continue
 +  while IFS= read -r -d '' file; do
 +    case "${file##*/}" in
 +      "$label"-*.tar.gz) ;;
 +      *) continue ;;
 +    esac
++    # Dereferences, exactly as the glob-era `[ -f "$file" ]` did: a symlink to
++    # a real archive counts, a dangling one never occupies a retention slot.
+     [ -f "$file" ] || continue
      printf '%s\t%s\n' "$(epoch_of "$file")" "$file"
 -  done | sort -rn | cut -f2-
 +  done < <(find "$dir/" -maxdepth 1 \( -type f -o -type l \) -name '*.tar.gz' -print0) |

@@ -20,9 +20,11 @@ bug lives in or depends on. **No seeded bug (`caseN-b*`), no promoted entry
 (`case4-u1`, `case4-u2`, `case5-u1`) and no `truth.json` was changed** — every
 seeded bug of an edited case was re-triggered after the edits (evidence below).
 
-All six candidates this round are patch-side: none of the defect sites exists
-in `base/`, so no `base/` tree was touched. Each edit was made on the
-materialized post-patch tree and `patch.diff` was regenerated from it.
+All seven items this round are patch-side — the six C2 candidates and the one
+regression the verification run caught in this round's own work. None of the
+defect sites exists in `base/`, so no `base/` tree was touched. Each edit was
+made on the materialized post-patch tree and `patch.diff` was regenerated from
+it.
 
 ## Per-item decisions
 
@@ -34,6 +36,7 @@ materialized post-patch tree and `patch.diff` was regenerated from it.
 | 4 | case3: explicit-null `expected_revision` skips validation (codex r3 [P2]) | **fix** | `app.py` `handle_put_document`: the guard is now keyed on presence, `if "expected_revision" in body and (expected is None or isinstance(expected, bool) or not isinstance(expected, int))`. `body.get(...)` made present-but-null indistinguishable from absent, so `{"expected_revision": null}` silently became an unconditional write — the one thing the conditional-write contract exists to prevent. The docstring gained a sentence: omitting the field is what asks for an unconditional write, and an explicit `null` is rejected rather than treated as absent. The `store.save_document(...)` call and the `return Response(200, …)` line were not touched — `case3-b2` quotes them and must keep returning the row count bound to `revision`. |
 | 5 | case1: null/non-dict config entry crashes `load_tenant_limits` (high r2 [P3] PLAUSIBLE) | **fix** | `tenants.py`: after the default-tenant fallback, `if not isinstance(entry, dict): entry = {}`, with a comment tying it back to the docstring's contract — a missing config is an empty entry is no limits, and a malformed one is not allowed to be the exception that aborts the whole ingest instead. A `"default": null` line (or an entry written as a bare scalar) survived both `.get`s as a non-mapping and raised `AttributeError` on `entry.get("max_value")`. The function stays cache-free and is still called once per reading, which is the mechanism `case1-b3` measures at the `pipeline.py` call site. |
 | 6 | case1: explicit-null tenant stringified to `"None"` (high r2 [P3] PLAUSIBLE) | **fix** | `records.py`: `raw_tenant = payload.get("tenant", DEFAULT_TENANT)` followed by `tenant=DEFAULT_TENANT if raw_tenant is None else str(raw_tenant)`, plus a comment. `{"tenant": null}` produced the phantom tenant `"None"` — a partition that exists in no config and matches nothing the README documents — where the README says a reading with no tenant belongs to the `default` tenant. Non-null non-strings are still stringified, as before. `parse_line`'s NaN/Infinity guard is #36's fix and was left as it stands. |
+| 7 | case4: `\( -type f -o -type l \)` admits *dangling* symlinks, so a dead link can occupy a retention slot — **introduced by this round's fix 3, caught by the engine verification run** (`2026-08-23-r2-verify`, codex [P1]) | **fix** | `prune.sh` `list_archives`: the find stays as fix 3 left it and a dereferencing guard, `[ -f "$file" ] || continue`, goes back inside the read loop after the label filter, with a one-sentence comment. Fix 3 restored the symlinks the glob matched but overshot: the glob-era reader tested `[ -f "$file" ]`, which *dereferences*, so a symlink to a real archive counted while a dangling one never occupied a retention slot. `-type l` alone admitted dead links, which sort by their own mtime and can push a valid older archive out of `BACKUP_KEEP` — and it falsified the comment's "same set as the glob" claim in exactly that case. The find plus the `[ -f ]` guard is the pair that reproduces the glob exactly; the third detail in the comment now says so. In the regenerated `patch.diff` the guard is an unchanged *context* line, so the patch shows the base's `[ -f ]` surviving the glob→find conversion rather than being newly added. |
 
 ## The u2 adjudication (documentation only — no code or truth change)
 
@@ -153,6 +156,10 @@ Every drill below ran against the tree materialized from the fixture's **new**
   `manifest points at a missing archive, skipping: 200661<TAB>…/nightly-….tar.gz`
   and rotates nothing (4 archives on disk afterwards, `BACKUP_KEEP=1`).
 
+`bash -n`, b3 and b4 were re-run unchanged after item 7's follow-up edit, which
+touched `prune.sh` only (`git diff --name-only` across it lists that one file),
+leaving `snapshot.sh` and `lib/common.sh` byte-identical.
+
 ### Fixes verified behaviorally, and against the pre-edit tree
 
 Each fix was run on both the post-edit and the pre-edit tree, so the drill is
@@ -162,10 +169,54 @@ known to discriminate rather than merely to pass.
 |---|---|---|
 | 1 — symlinked source dir | `BACKUP_SOURCE_DIR` a symlink: exit **0**, manifest record written, `wrote …/nightly-….tar.gz (120629 bytes)`. `du -sk` on the link reads **0 KB** without the slash and **120 KB** with it. | exit **3**, `source tree is empty, nothing to archive` — the host silently stops backing up. |
 | 2 — staging free-space check | `grep -n check_free_space snapshot.sh` → 2 calls (line 82 archive dir, line 88 `${TMPDIR:-/tmp}`); with the `df` stub both fire, the `$TMPDIR` one naming the real temp filesystem. Constructing a genuinely full filesystem was skipped on macOS in favour of the stub, as the brief allows. | 1 call. |
-| 3 — symlinked archive file | `list_archives` returns **4** paths including the symlinked `nightly-20190101T000000Z.tar.gz`; a `prune.sh` run at `BACKUP_KEEP=2` logs `kept up to 2 of 4 archives` and prunes the symlink among them, leaving its off-volume target `old.tar.gz` in place. | `list_archives` returns 3; `kept up to 2 of 3 archives`; the symlink survives rotation forever. |
+| 3 — symlinked archive file (re-verified after item 7) | A symlink to a **real** archive still counts: `list_archives` returns **4** paths including the symlinked `nightly-20190101T000000Z.tar.gz`; a `prune.sh` run at `BACKUP_KEEP=2` logs `kept up to 2 of 4 archives` and prunes the symlink among them, leaving its off-volume target `old.tar.gz` in place. | `list_archives` returns 3; `kept up to 2 of 3 archives`; the symlink survives rotation forever. |
 | 4 — explicit-null `expected_revision` | `PUT` with `{"expected_revision": null, "rows": […]}` → **400** `expected_revision must be an integer`. Absent field still **200**, matching int still **200**, `"2"` as a string still **400**, stale int still **409**. | (present-but-null took the unconditional-write path.) |
 | 5 — null/non-dict config entry | `{"default": null, "acme": 17}` loads without raising: `default`, `acme` and an unknown tenant all come back `max_value=None`. | `AttributeError: 'NoneType' object has no attribute 'get'`, aborting the ingest. |
 | 6 — explicit-null tenant | `{"tenant": null}` parses to `tenant='default'`, the same as a line that omits the key; a non-string `7` is still stringified to `'7'`; the reading lands in the `default` tenant's window in the report. | `tenant='None'`. |
+| 7 — dangling archive symlink | Three real archives plus a **dangling** `nightly-20250101T000000Z.tar.gz` link (newest by mtime), `BACKUP_KEEP=2`: the dead link is absent from `list_archives`, the run logs `kept up to 2 of 3 archives`, and **both** valid archives `20200102` and `20200103` survive. The dead link itself is left on disk untouched — the glob never pruned one either. | Against the pre-guard tree (this round's fix 3 alone): the dead link sorts first, `kept up to 2 of 4 archives`, and the valid `nightly-20200102T000000Z.tar.gz` is **deleted** — one real archive kept where two were configured. |
+
+## Engine verification
+
+The edited fixtures were re-reviewed by codex (`gpt-5.6-sol` at xhigh, the
+production `review-engine.sh` path) to confirm the seeded bugs still land and
+the fixed candidates no longer surface. Transcripts in
+`results/2026-08-23-r2-verify/`.
+
+| case | truth-matched | other findings | secs |
+|---|---|---|---|
+| case1 | 3/3 exact — b1, b2, b3 and nothing else | none | 192 |
+| case3 | 3/3 exact — b1, b2, b3 and nothing else | none | 221 |
+| case4 | 6/6 — b1, b2, b3, b4, u1, u2 | 1 engine FP, 1 genuine regression | 471 |
+
+case1 and case3 came back clean: the six fixes removed exactly the candidates
+they were meant to remove and introduced nothing new. case4 matched all six
+truth entries, and codex found **u2 again**, in its own terms and independently
+of the r2 argus disagreement ("With a common remote umask of `022`, this command
+creates replicated archives as mode `0644`; the local `umask 077` is not
+inherited over SSH") — which reinforces the adjudication above rather than
+merely restating it.
+
+case4's two non-truth findings:
+
+- **Genuine regression, fixed in place.** [P1] "Exclude dangling symlinks from
+  retention counts" — item 7 in the decision table. codex had the mechanism
+  exactly right: "The previous `[ -f "$file" ]` followed symlinks and rejected
+  dangling or non-file links, whereas `-type l` admits all of them. If a linked
+  archive's target volume is unavailable, that dangling link can occupy a
+  retention slot and cause an older valid regular archive to be deleted." A
+  case4 re-run follows this fix.
+- **Engine false positive, recorded only — no fixture change.** [P1] "Use
+  portable find depth checks", claiming that on macOS's native `find` the
+  `-mindepth` predicate is unsupported, "as is `-maxdepth` in `prune.sh`", so
+  "snapshots therefore fail before archiving on that platform". This is
+  factually wrong. BSD `find` has both: on the macOS 26.5.2 host used here,
+  `man find` documents `-maxdepth n` and `-mindepth n`, and
+  `/usr/bin/find <dir> -mindepth 1 -maxdepth 1` runs and exits 0. The claim is
+  also self-refuting against the fixture's own history — `prune.sh` has carried
+  `-maxdepth 1` since the #36 round and no run across two campaigns has flagged
+  it. Scored as an FP against this fixture; no bait was added for it, because a
+  bait should mark a defensible-looking correct decision, and this one rests on
+  a checkable factual error rather than on anything the diff does.
 
 ## Not handled
 
@@ -182,7 +233,8 @@ Two carry-forwards for the next adjudicator:
   triggers.
 - `epoch_of()` uses `stat -f %m` / `stat -c %Y`, which report a *symlink's*
   own mtime rather than its target's. With item 3 admitting symlinks into
-  `list_archives`, a relocated archive now sorts by the age of its link. This
+  `list_archives`, a relocated archive now sorts by the age of its link — for
+  links that resolve, which after item 7 is the only kind that gets listed. This
   was deliberately not changed: the glob that `find` replaced handed
   `epoch_of` the same symlink path and got the same answer, so the set *and*
   its ordering still match the base behavior exactly, which is what the

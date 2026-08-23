@@ -1,0 +1,31 @@
+# Codex Review
+
+Target: branch diff against main
+
+The manifest change disables pruning, while the default force value bypasses the new disk-space protection. Replication also has cleanup, integrity, permission, quoting, and portability regressions that can leak data or leave unusable backups.
+
+Full review comments:
+
+- [P1] Parse the new manifest field in prune.sh — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/snapshot.sh:114-114
+  This emits four fields, but `prune.sh` still uses `read -r epoch bytes path`. Bash therefore sets `path` to `<bytes>\t<archive-path>`, its `-f` test fails, and every successful backup skips rotation; update the consumer to read and use the label field.
+
+- [P1] Treat the default force value as disabled — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/lib/common.sh:81-81
+  Without `--force`, `FORCE` is the literal string `0`, and `[ "$force" ]` is true for every nonempty string. Any free-space shortfall is therefore only warned about, making the new safety check ineffective; compare explicitly with `1` or default the value to empty.
+
+- [P1] Restore cleanup for the staging directory — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/snapshot.sh:90-90
+  After `STAGE` is created, any tar, SSH, or move failure exits under `set -e`, but the former cleanup trap was removed and only the success path calls `rmdir`. A repeated remote outage therefore leaks one full compressed archive under `TMPDIR` per run and can exhaust that filesystem.
+
+- [P1] Publish remote archives atomically — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/lib/common.sh:98-98
+  If the SSH connection drops or the remote disk fills mid-transfer, shell redirection has already created or truncated the final archive and `cat` leaves the received prefix there. The failed run thus exposes a corrupt file as a complete replica; stream to a temporary remote name and rename it only after a successful transfer.
+
+- [P1] Preserve private permissions on the replica — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/lib/common.sh:98-98
+  With a common remote umask of `022`, this command creates replicated archives as mode `0644`; the local `umask 077` is not inherited over SSH. On a multi-user replica host, other users can therefore read snapshot contents, so the remote command must set a restrictive umask or permissions.
+
+- [P1] Use portable find depth checks — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/snapshot.sh:68-68
+  On macOS's native `find`, the newly used GNU `-mindepth` predicate is unsupported, as is `-maxdepth` in `prune.sh`, even though `epoch_of` retains explicit Darwin/BSD support. Snapshots therefore fail before archiving on that platform; use portable depth logic.
+
+- [P1] Exclude dangling symlinks from retention counts — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/prune.sh:48-48
+  The previous `[ -f "$file" ]` followed symlinks and rejected dangling or non-file links, whereas `-type l` admits all of them. If a linked archive's target volume is unavailable, that dangling link can occupy a retention slot and cause an older valid regular archive to be deleted.
+
+- [P2] Escape remote shell operands safely — /private/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.W3tpKi/lib/common.sh:98-98
+  If `BACKUP_REMOTE_DIR` or the CLI label contains a single quote, it terminates these hand-built quotes, causing a syntax error or allowing following shell metacharacters to execute on the remote host. Both inputs are only checked for non-emptiness, so they need robust remote-shell escaping rather than direct interpolation.
