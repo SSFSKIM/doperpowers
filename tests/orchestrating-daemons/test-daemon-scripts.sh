@@ -46,6 +46,15 @@ assert_file_absent() {
 }
 
 # ---- environment: isolated HOME, registry, PATH-shadowed claude stub ---------
+# The transport env starts EMPTY. The stub below snapshots exactly these names
+# into calls.log, and several assertion-failure paths print that log whole — so
+# a real credential exported in the runner's own shell would end up in the test
+# output. Every test that needs these vars exports fixture values per
+# invocation, so nothing here depends on inheriting them.
+unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
+echo "environment:"
+assert_equals "${ANTHROPIC_AUTH_TOKEN:-}" "" "transport env starts empty (no ambient credential can reach the stub's log)"
+
 export HOME="$TEST_ROOT/home"
 export DAEMON_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
@@ -114,6 +123,11 @@ PY
 }
 
 if [ $has_bg -eq 1 ]; then
+  # Transport-env snapshot (dp#38): what the launched agent would actually
+  # inherit. Keyed by the prompt so tests can grep the exact launch.
+  # `path=` records only whether PATH survived — the value is the runner's own
+  # and has no place in a log the assertions print.
+  echo "bg-env:$prompt base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};path=${PATH:+set}" >> "$STUB_STATE/log/calls.log"
   # Failure-mode switch: make the --bg launch itself fail (e.g. session not
   # resumable). Exercises daemon-resume's fork-launch-failure path.
   if [ "${STUB_FAIL_BG:-0}" = "1" ]; then
@@ -437,6 +451,94 @@ PLAIN_CALL="$(grep -- "PLAIN-TASK-9" "$STUB_STATE/log/calls.log" | head -1)"
 assert_not_contains "$PLAIN_CALL" "--settings" "plain spawn argv carries no --settings"
 assert_not_contains "$PLAIN_CALL" "--effort" "plain spawn argv carries no --effort"
 assert_not_contains "$(cat "$DAEMON_HOME/$PLAIN_UUID.json")" '"settings"' "plain spawn meta has no settings field"
+
+# ---- 4b2) gateway transport scrub on the plain route (dp#38) -------------------
+# Clearing DAEMON_CLAUDE_SETTINGS/EFFORT stops a dispatcher from RECORDING the
+# gateway — it does not stop the child from USING it: a gateway-routed session's
+# environment already carries the settings file's env block (ANTHROPIC_BASE_URL,
+# auth token, …) and `claude --bg` inherits it. A plain-route daemon would ride
+# the gateway on its first turn, then revert on the first resume (its meta
+# restores nothing) — a silent mid-life provider change. The substrate scrubs
+# exactly the keys the gateway settings file declares: names read from the file,
+# never hardcoded, values never touched.
+echo "gateway transport scrub (dp#38):"
+CLODEX_FIXTURE="$TEST_ROOT/clodex-settings.json"
+cat > "$CLODEX_FIXTURE" <<'JSON'
+{"env": {"ANTHROPIC_BASE_URL": "http://localhost:8317", "ANTHROPIC_AUTH_TOKEN": "fixture-token", "CLAUDE_CODE_SUBAGENT_MODEL": "gw-sub"}}
+JSON
+
+# Plain spawn inside a gateway-polluted environment: declared keys scrubbed,
+# undeclared ambient env untouched (the key list is the file's, not a blanket).
+SCRUB_OUT="$(CLODEX_SETTINGS="$CLODEX_FIXTURE" \
+  ANTHROPIC_BASE_URL="http://localhost:8317" ANTHROPIC_AUTH_TOKEN="ambient-secret" \
+  CLAUDE_CODE_SUBAGENT_MODEL="gw-sub" UNRELATED_TRANSPORT_VAR="stays" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "scrubdaemon" "SCRUB-TASK-1" "$WORK")"
+assert_contains "$SCRUB_OUT" "daemon spawned" "plain spawn under a polluted environment still spawns"
+SCRUB_ENV="$(grep -- "bg-env:SCRUB-TASK-1" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$SCRUB_ENV" "base=;token=;sub=" "plain spawn scrubs every env key the gateway settings file declares"
+assert_contains "$SCRUB_ENV" "keep=stays" "ambient env NOT declared by the settings file survives a plain spawn"
+SCRUB_UUID="$(printf '%s' "$SCRUB_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+SCRUB_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$SCRUB_UUID.json")"
+
+# Plain resume from the same polluted environment: the fork is scrubbed too —
+# otherwise the route invariant breaks on turn 2 instead of turn 1.
+mkdir -p "$HOME/.claude/jobs/$SCRUB_SHORT"
+CLODEX_SETTINGS="$CLODEX_FIXTURE" \
+  ANTHROPIC_BASE_URL="http://localhost:8317" ANTHROPIC_AUTH_TOKEN="ambient-secret" \
+  "$SCRIPTS_DIR/daemon-resume.sh" "$SCRUB_SHORT" "SCRUB-FOLLOWUP-2" > /dev/null
+SCRUB_FORK_ENV="$(grep -- "bg-env:SCRUB-FOLLOWUP-2" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$SCRUB_FORK_ENV" "base=;token=;sub=" "plain resume fork scrubs the gateway transport env"
+
+# Gateway route stays inheritance-unchanged on spawn AND resume: --settings
+# rides the argv and the ambient transport env is NOT scrubbed.
+GWA_OUT="$(CLODEX_SETTINGS="$CLODEX_FIXTURE" DAEMON_CLAUDE_SETTINGS="$CLODEX_FIXTURE" \
+  ANTHROPIC_BASE_URL="http://localhost:8317" ANTHROPIC_AUTH_TOKEN="ambient-secret" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "gwadaemon" "GWA-TASK-3" "$WORK")"
+GWA_ENV="$(grep -- "bg-env:GWA-TASK-3" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GWA_ENV" "base=http://localhost:8317" "gateway spawn keeps its transport env (route unchanged)"
+GWA_CALL="$(grep -- "GWA-TASK-3" "$STUB_STATE/log/calls.log" | grep -v "bg-env:" | head -1)"
+assert_contains "$GWA_CALL" "--settings $CLODEX_FIXTURE" "gateway spawn still carries --settings"
+GWA_UUID="$(printf '%s' "$GWA_OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+GWA_SHORT="$(sed -n 's/.*"short": "\([^"]*\)".*/\1/p' "$DAEMON_HOME/$GWA_UUID.json")"
+mkdir -p "$HOME/.claude/jobs/$GWA_SHORT"
+CLODEX_SETTINGS="$CLODEX_FIXTURE" \
+  ANTHROPIC_BASE_URL="http://localhost:8317" ANTHROPIC_AUTH_TOKEN="ambient-secret" \
+  "$SCRIPTS_DIR/daemon-resume.sh" "$GWA_SHORT" "GWA-FOLLOWUP-4" > /dev/null
+GWA_FORK_ENV="$(grep -- "bg-env:GWA-FOLLOWUP-4" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$GWA_FORK_ENV" "base=http://localhost:8317" "gateway resume fork keeps its transport env"
+
+# No gateway settings file on the host: ambient ANTHROPIC_* is the operator's
+# own (not gateway pollution) and must survive a plain spawn.
+NOF_OUT="$(CLODEX_SETTINGS="$TEST_ROOT/no-such-settings.json" \
+  ANTHROPIC_BASE_URL="http://corp-proxy:9999" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "nofdaemon" "NOF-TASK-5" "$WORK")"
+assert_contains "$NOF_OUT" "daemon spawned" "missing settings file does not break a plain spawn"
+NOF_ENV="$(grep -- "bg-env:NOF-TASK-5" "$STUB_STATE/log/calls.log" | head -1)"
+assert_contains "$NOF_ENV" "base=http://corp-proxy:9999" "no settings file: nothing declared, ambient transport env survives"
+
+# A settings file that declares PATH in its env block: PATH is exempt from the
+# scrub, because `env -u PATH claude …` resolves the binary against the system
+# default path and a claude outside it exits 127 — the plain route would stop
+# working entirely. The transport key beside it is still scrubbed.
+# Failure here is a dead spawn, so capture stderr and keep the rc from aborting
+# the suite: the asserts must be able to report it.
+PATHF_FIXTURE="$TEST_ROOT/clodex-with-path.json"
+cat > "$PATHF_FIXTURE" <<'JSON'
+{"env": {"ANTHROPIC_BASE_URL": "http://localhost:8317", "PATH": "/nonexistent"}}
+JSON
+PATHF_OUT="$(CLODEX_SETTINGS="$PATHF_FIXTURE" ANTHROPIC_BASE_URL="http://localhost:8317" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "pathdaemon" "PATHF-TASK-7" "$WORK" 2>&1 || true)"
+assert_contains "$PATHF_OUT" "daemon spawned" "a settings file declaring env.PATH still spawns a plain daemon"
+PATHF_ENV="$(grep -- "bg-env:PATHF-TASK-7" "$STUB_STATE/log/calls.log" | head -1 || true)"
+assert_contains "$PATHF_ENV" "path=set" "PATH reaches the launched agent (unsetting it makes claude unresolvable)"
+assert_contains "$PATHF_ENV" "base=;" "the transport key declared beside PATH is still scrubbed"
+
+# Malformed settings file: fail open — scrub nothing, spawn proceeds.
+BAD_FIXTURE="$TEST_ROOT/bad-clodex.json"
+echo 'not json' > "$BAD_FIXTURE"
+BADF_OUT="$(CLODEX_SETTINGS="$BAD_FIXTURE" ANTHROPIC_BASE_URL="http://corp-proxy:9999" \
+  "$SCRIPTS_DIR/daemon-spawn.sh" "badfdaemon" "BADF-TASK-6" "$WORK")"
+assert_contains "$BADF_OUT" "daemon spawned" "malformed settings file does not break a plain spawn"
 
 # ---- 4c) finalize (the claude-species finisher) --------------------------------
 # A --no-wait daemon registers status=working and NOTHING ever finalized it:

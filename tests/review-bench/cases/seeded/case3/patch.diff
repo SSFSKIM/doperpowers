@@ -33,7 +33,7 @@ index dd03244..e2c681e 100644
  
  A session may only ever touch its own tenant's documents. The tenant is taken
 diff --git a/app.py b/app.py
-index 8a40ce3..dfac7b8 100644
+index 8a40ce3..fb87961 100644
 --- a/app.py
 +++ b/app.py
 @@ -2,8 +2,9 @@
@@ -174,7 +174,7 @@ index 8a40ce3..dfac7b8 100644
      return Response(
          200,
          {
-@@ -79,47 +145,118 @@ def handle_get_document(request: Request, name: str) -> Response:
+@@ -79,47 +145,123 @@ def handle_get_document(request: Request, name: str) -> Response:
      )
  
  
@@ -189,7 +189,10 @@ index 8a40ce3..dfac7b8 100644
  
 +    An ``expected_revision`` in the body makes the write conditional: it lands
 +    only if the document is still at that revision (0 meaning "must not exist
-+    yet"), otherwise the caller gets a 409 and can re-read.
++    yet"), otherwise the caller gets a 409 and can re-read. Omitting the field
++    is what asks for an unconditional write; an explicit ``null`` is rejected,
++    not treated as absent, so a client whose revision variable came back empty
++    cannot silently overwrite whatever is there now.
 +    """
      body = request.body or {}
      rows = body.get("rows")
@@ -197,7 +200,9 @@ index 8a40ce3..dfac7b8 100644
          return Response(400, {"error": "rows must be a list"})
  
 +    expected = body.get("expected_revision")
-+    if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
++    if "expected_revision" in body and (
++        expected is None or isinstance(expected, bool) or not isinstance(expected, int)
++    ):
 +        return Response(400, {"error": "expected_revision must be an integer"})
 +
      try:

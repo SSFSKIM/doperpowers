@@ -144,10 +144,10 @@ index 743590c..caa7ec3 100644
 +  log "replicated $name to $BACKUP_REMOTE:$BACKUP_REMOTE_DIR"
 +}
 diff --git a/prune.sh b/prune.sh
-index 6f64a0e..c5d4656 100755
+index 6f64a0e..f675978 100755
 --- a/prune.sh
 +++ b/prune.sh
-@@ -19,12 +19,30 @@ esac
+@@ -19,12 +19,38 @@ esac
  [ "$KEEP" -ge 1 ] || die "BACKUP_KEEP must be at least 1"
  
  # list_archives <dir> <label> -- archive paths for one label, newest first.
@@ -158,25 +158,32 @@ index 6f64a0e..c5d4656 100755
 +# with find instead: -maxdepth 1 keeps it as non-recursive as the glob was, and
 +# -print0 keeps names with spaces intact. Ordering is unchanged.
 +#
-+# Two details keep the set identical to the glob's. The label is matched by the
-+# `case` below rather than by `find -name`, because -name takes a pattern and a
-+# label carrying *, ? or [ would have matched archives belonging to other
-+# labels, where the quoted glob matched the label literally. And the start point
-+# is "$dir/", with the slash: find does not descend a symlinked start point
++# Three details keep the set identical to the glob's. The label is matched by
++# the `case` below rather than by `find -name`, because -name takes a pattern
++# and a label carrying *, ? or [ would have matched archives belonging to other
++# labels, where the quoted glob matched the label literally. The start point is
++# "$dir/", with the slash: find does not descend a symlinked start point
 +# without it, and an archive directory that is a symlink to a mounted volume is
-+# a normal layout the glob expanded through.
++# a normal layout the glob expanded through. And the type test accepts symlinks
++# alongside regular files, paired with the `[ -f "$file" ]` inside the loop:
++# that pair is what reproduces the glob exactly, because the glob's own `[ -f ]`
++# dereferenced. `find -type f` alone would have dropped an archive parked on
++# another volume behind a symlink, and `-type l` alone would have started
++# counting dead links.
  list_archives() {
    local dir="$1" label="$2" file
 -  for file in "$dir/$label"-*.tar.gz; do
--    [ -f "$file" ] || continue
 +  while IFS= read -r -d '' file; do
 +    case "${file##*/}" in
 +      "$label"-*.tar.gz) ;;
 +      *) continue ;;
 +    esac
++    # Dereferences, exactly as the glob-era `[ -f "$file" ]` did: a symlink to
++    # a real archive counts, a dangling one never occupies a retention slot.
+     [ -f "$file" ] || continue
      printf '%s\t%s\n' "$(epoch_of "$file")" "$file"
 -  done | sort -rn | cut -f2-
-+  done < <(find "$dir/" -maxdepth 1 -type f -name '*.tar.gz' -print0) |
++  done < <(find "$dir/" -maxdepth 1 \( -type f -o -type l \) -name '*.tar.gz' -print0) |
 +    sort -rn | cut -f2-
  }
  
@@ -238,7 +245,7 @@ index 37873c3..7a96d2b 100755
  
  "$HERE/prune.sh" <"$manifest"
 diff --git a/snapshot.sh b/snapshot.sh
-index 01cfcd4..aede4cf 100755
+index 01cfcd4..d320352 100755
 --- a/snapshot.sh
 +++ b/snapshot.sh
 @@ -1,10 +1,15 @@
@@ -284,7 +291,7 @@ index 01cfcd4..aede4cf 100755
      -h|--help) usage; exit 0 ;;
      *)         usage; die "unknown argument: $1" ;;
    esac
-@@ -44,23 +52,51 @@ require_cmd tar gzip
+@@ -44,23 +52,64 @@ require_cmd tar gzip
  [ -d "$BACKUP_SOURCE_DIR" ] || die "source directory missing: $BACKUP_SOURCE_DIR"
  mkdir -p "$BACKUP_ARCHIVE_DIR"
  
@@ -302,7 +309,12 @@ index 01cfcd4..aede4cf 100755
 +# find's own exit status is checked: an unreadable source tree prints nothing
 +# either, and reporting "nothing to archive" for a tree we simply could not
 +# read would tell run-backup.sh that a failed run had succeeded.
-+if ! first_entry="$(find "$BACKUP_SOURCE_DIR" -mindepth 1 -print -quit)"; then
++#
++# The start point carries a trailing slash, for the same reason prune.sh's
++# list_archives does: find does not descend a symlinked start point without it,
++# so a BACKUP_SOURCE_DIR that is a symlink to the volume actually holding the
++# data would probe as empty on every run and exit 3 forever.
++if ! first_entry="$(find "$BACKUP_SOURCE_DIR/" -mindepth 1 -print -quit)"; then
 +  die "could not read source tree: $BACKUP_SOURCE_DIR"
 +fi
 +if [ -z "$first_entry" ]; then
@@ -312,9 +324,17 @@ index 01cfcd4..aede4cf 100755
 +
 +# Headroom is checked against the *uncompressed* size on purpose. The ratio
 +# tar will get on an arbitrary source tree is not knowable ahead of time, and
-+# over-reserving errs in the direction that leaves the host bootable.
-+need_kb="$(du -sk "$BACKUP_SOURCE_DIR" | awk '{ print $1 }')"
++# over-reserving errs in the direction that leaves the host bootable. The
++# trailing slash matters here too: without it du sizes a symlinked source
++# directory as the link (a few bytes) instead of the tree behind it.
++need_kb="$(du -sk "$BACKUP_SOURCE_DIR/" | awk '{ print $1 }')"
 +check_free_space "$BACKUP_ARCHIVE_DIR" "$need_kb" "$FORCE"
++
++# The staging filesystem needs the same headroom, and it is usually not the
++# same filesystem: tar writes the whole archive under ${TMPDIR:-/tmp} and it
++# only moves to the archive directory after replication, so a check that only
++# looks at the archive directory passes and then fills /tmp instead.
++check_free_space "${TMPDIR:-/tmp}" "$need_kb" "$FORCE"
 +
 +STAGE="$(make_stage)"
  

@@ -58,6 +58,14 @@ cwd="$(_meta_get "$uuid" cwd)"; model="$(_meta_get "$uuid" model)"
 # Gateway dimension: restore --settings/--effort on the fork, or a gateway
 # daemon silently reverts to plain models mid-conversation (see daemon-spawn.sh).
 gw_settings="$(_meta_get "$uuid" settings)"; gw_effort="$(_meta_get "$uuid" effort)"
+# A plain daemon (no recorded gateway) gets the same transport scrub as
+# daemon-spawn: this resume may itself run inside a gateway-routed session,
+# and the fork would otherwise inherit its endpoint for just this one turn
+# (dp#38; see _gateway_env_keys).
+scrub=()
+if [ -z "$gw_settings" ]; then
+  while IFS= read -r k; do scrub+=( -u "$k" ); done < <(_gateway_env_keys)
+fi
 turns="$(_meta_get "$uuid" turns)"; [ -n "$turns" ] || turns=0
 # Worktree'd daemon → purge needs the worktree path to dirty-guard it while
 # `claude rm` runs (rm deletes a CLEAN worktree with the owning turn).
@@ -100,7 +108,7 @@ args+=( "$msg" )
 # job's post-job cleanup, which kills marker-carrying processes (see
 # daemon-spawn.sh).
 newshort=""
-if banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID claude "${args[@]}" </dev/null 2>&1 9>&- | _strip_ansi)"; then
+if banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID ${scrub[@]+"${scrub[@]}"} claude "${args[@]}" </dev/null 2>&1 9>&- | _strip_ansi)"; then
   newshort="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 fi
 if [ -z "$newshort" ]; then
