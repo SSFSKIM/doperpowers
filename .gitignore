@@ -1,7 +1,12 @@
 .worktrees/
 .private-journal/
 .claude/
-.doperpowers/
+# .doperpowers/ holds runtime workspaces (sdd/, sde/) — ignored; board.json is
+# the repo's committed board binding (A2 spec: checked-in so every fresh
+# worktree's workers resolve the same substrate), so the dir pattern must not
+# swallow it: a `dir/` exclusion makes children un-reincludable.
+.doperpowers/*
+!.doperpowers/board.json
 .DS_Store
 node_modules/
 inspo
