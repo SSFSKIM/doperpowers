@@ -37,6 +37,13 @@ export MOCK_GH_LOG="$TEST_ROOT/gh-log.jsonl"
 export BOARD_REPO="test/repo"
 export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 export PATH="$SCRIPT_DIR/mock-gh:$PATH"
+# Anchor on a fixture repo, not the host checkout: _binding.sh resolves the
+# board binding from cwd's repo root, and the real repo is api-bound now —
+# these are gh-mode cache tests, and the suite must not inherit the host's
+# substrate.
+FIXTURE_REPO="$TEST_ROOT/repo"; mkdir -p "$FIXTURE_REPO"
+git -C "$FIXTURE_REPO" init -q
+cd "$FIXTURE_REPO"
 
 seed_board() {
     rm -f "$MOCK_GH_STATE"

@@ -90,9 +90,9 @@ _py() { PYTHONPATH="$BOARD_SCRIPTS${PYTHONPATH:+:$PYTHONPATH}" python3 "$@"; }
 # what board-migrate-gh actually is. The caller says what IT is; the pointer is
 # shared.
 _refuse_no_api_route() {  # <what this verb does>
-  [ "$BOARD_BINDING" != api ] || die "$1 has no API-mode counterpart yet — \
-an A1 follow-up route, tracked as arkho#7 (https://github.com/SSFSKIM/arkho/issues/7); \
-until it lands, run this against a gh-bound repo only"
+  [ "$BOARD_BINDING" != api ] || die "$1 has no API-mode counterpart — \
+file a server-side ticket in the arkho repo if the need is real; \
+until such a route lands, run this against a gh-bound repo only"
 }
 
 # The script's own header block — the CONTIGUOUS run of column-0 `#` lines
