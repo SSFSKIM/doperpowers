@@ -69,3 +69,7 @@ spawn-preamble.md`), and its environment carries `AGORA_GROUP`, `AGORA_ALIAS`,
 and `AGORA_PARENT=<its own alias>` — so daemons it spawns in turn become its
 children automatically. Spawn without `AGORA_GROUP` and nothing agora-related
 happens at all.
+
+Always spawn agora daemons with `--no-wait`: a session whose persistent
+listener is armed reports `state=working` for as long as the monitor lives
+(verified empirically), so the blocking spawn watcher would never return.
