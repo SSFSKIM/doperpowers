@@ -61,16 +61,16 @@ meta_extra=()
 # Agora dimension (env-injected, same pattern as the gateway dimension above):
 # AGORA_GROUP enrolls the daemon as a node in an agora group (skills/agora —
 # the inter-agent CLI comm surface); AGORA_PARENT names its spawner. The child
-# gets the agora preamble prepended to its task, AGORA_GROUP/AGORA_ALIAS in its
-# env (so `agora send` defaults its --from), and is auto-joined once its
-# session uuid materializes. The child's env gets AGORA_PARENT set to the
-# CHILD's own alias, so any daemon the child spawns becomes its child in the
-# topology with zero effort. The node is pre-registered BEFORE the spawn —
-# the daemon may `agora send` during its very first turn, and a sender must
-# already be a member; the post-uuid re-join back-fills the session id.
+# gets the agora preamble prepended to its task and is auto-joined. Its agora
+# identity travels ONLY in the preamble text — the harness Bash tool
+# initializes shells from the user's profile, NOT from the claude process env,
+# so exporting AGORA_* to the child process would never reach its commands
+# (observed live: a daemon-run spawn silently lost the dimension that way).
+# The node is pre-registered BEFORE the spawn — the daemon may `agora send`
+# during its very first turn, and a sender must already be a member; the
+# post-uuid re-join back-fills the session id.
 agora_group="${AGORA_GROUP:-}"
 agora_parent="${AGORA_PARENT:-}"
-agora_env=()
 if [ -n "$agora_group" ]; then
   agora_cli="$(cd "$DIR/../../agora/scripts" && pwd)/agora"
   preamble="$(sed -e "s|{{GROUP}}|$agora_group|g" -e "s|{{ALIAS}}|$name|g" \
@@ -80,7 +80,6 @@ if [ -n "$agora_group" ]; then
 
 $task"
   meta_extra+=( agora_group "$agora_group" )
-  agora_env=( AGORA_GROUP="$agora_group" AGORA_ALIAS="$name" AGORA_PARENT="$name" )
   (cd "$cwd" && "$agora_cli" join "$agora_group" "$name" --parent "$agora_parent" >/dev/null) \
     || echo "warning: agora pre-join failed for $name in group $agora_group" >&2
 fi
@@ -111,7 +110,7 @@ args+=( "$task" )
 # process whose environ still has it — nohup/--bg detach the session, not the
 # env. Stripping it at spawn is what actually lets the daemon outlive a
 # dispatch job (a no-op everywhere else: env -u of an unset var).
-banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID ${scrub[@]+"${scrub[@]}"} ${agora_env[@]+"${agora_env[@]}"} claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
+banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID ${scrub[@]+"${scrub[@]}"} claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
 short="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 [ -n "$short" ] || { echo "spawn failed — could not parse background id from:" >&2; echo "$banner" >&2; exit 1; }
 

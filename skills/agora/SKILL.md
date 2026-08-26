@@ -32,8 +32,12 @@ it is pre-joined and its task opens with this protocol rendered):
    session restart; the listener resumes from a cursor, so queued messages
    from your dormant time are delivered first (an interrupted listener may
    re-deliver the last message once — duplicates are visible, drops are not).
-3. Send with explicit targets: `agora send <group> --to <alias>[,<alias>] "…"`
-   (long bodies via stdin). `--from` defaults from `$AGORA_ALIAS` in your env.
+3. Send with explicit targets AND explicit identity:
+   `agora send <group> --from <you> --to <alias>[,<alias>] "…"` (long bodies
+   via stdin). Always pass `--from`: the harness Bash tool does not inherit
+   session env, and an omitted `--from` falls back to `human` — your message
+   would masquerade as the operator. (`$AGORA_ALIAS` defaulting exists for
+   shells where you exported it yourself.)
 4. `agora topology <group>` is the machine view (nodes, edges, unread counts);
    consult it before messaging someone new.
 
@@ -63,12 +67,14 @@ agora dimension:
 
     AGORA_GROUP=<group> [AGORA_PARENT=<your alias>] daemon-spawn.sh <name> <task> …
 
-The child is pre-joined as a node (parent → child edge recorded), its task is
-prefixed with the agora protocol preamble (`skills/agora/references/
-spawn-preamble.md`), and its environment carries `AGORA_GROUP`, `AGORA_ALIAS`,
-and `AGORA_PARENT=<its own alias>` — so daemons it spawns in turn become its
-children automatically. Spawn without `AGORA_GROUP` and nothing agora-related
-happens at all.
+The child is pre-joined as a node (parent → child edge recorded) and its task
+is prefixed with the agora protocol preamble (`skills/agora/references/
+spawn-preamble.md`), which carries its rendered identity and the exact
+commands to use — including the inline-prefix form its own child spawns need.
+The variables must be on the `daemon-spawn.sh` command line itself (as above):
+the harness Bash tool does not inherit session env, so an exported variable in
+a parent daemon never reaches its spawn commands. Spawn without `AGORA_GROUP`
+and nothing agora-related happens at all.
 
 Always spawn agora daemons with `--no-wait`: a session whose persistent
 listener is armed reports `state=working` for as long as the monitor lives
