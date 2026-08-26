@@ -151,6 +151,30 @@ else
 fi
 rm -rf "$h"
 
+# --- listen: a multiline body is still ONE envelope line --------------------
+# Each stdout line becomes exactly one Monitor event in the consuming session,
+# so an embedded newline must survive as a character reference, not a split.
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
+AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
+printf 'line1\nline2\n' | AGORA_HOME="$h" "$AGORA" send g --from archi --to impl >/dev/null
+
+out3="$h/listen3.out"
+AGORA_HOME="$h" "$AGORA" listen g impl > "$out3" 2>/dev/null &
+lp=$!
+disown "$lp" 2>/dev/null || true
+sleep 1.5
+stop_listen "$lp" "$h"
+env3="$(grep -c '^<agora-message ' "$out3" || true)"
+all3="$(wc -l < "$out3" | tr -d ' ')"
+if [ "$env3" = 1 ] && [ "$all3" = 1 ] && grep -q 'line1&#10;line2' "$out3"; then
+  ok "multiline body renders as one envelope line with character references"
+else
+  fail "multiline envelope (envelopes=$env3 stdout-lines=$all3)"; cat "$out3" >&2 || true
+fi
+rm -rf "$h"
+
 # --- topology + view --------------------------------------------------------
 
 h="$(fresh)"
@@ -174,10 +198,13 @@ else
 fi
 
 vout="$(AGORA_HOME="$h" "$AGORA" view g)"
-if printf '%s' "$vout" | grep -q "└── rev" \
+# archi → impl → rev: the grandchild must sit one level deeper than the child,
+# so indentation has to accumulate down the recursion, not reset each level.
+if printf '%s\n' "$vout" | grep -qE '^└── impl' \
+   && printf '%s\n' "$vout" | grep -qE '^    └── rev' \
    && printf '%s' "$vout" | grep -q "dangling — parent 'gone'" \
    && printf '%s' "$vout" | grep -q "⚡ rev ⇢ archi (1)"; then
-  ok "view renders tree, dangling section, off-edge traffic"
+  ok "view nests each depth one level deeper; dangling section, off-edge traffic"
 else
   fail "view rendering"; printf '%s\n' "$vout" >&2
 fi
@@ -186,6 +213,33 @@ AGORA_HOME="$h" "$AGORA" leave g rev >/dev/null
 left="$(AGORA_HOME="$h" "$AGORA" list g | grep -c '^rev ' || true)"
 [ "$left" = 0 ] && [ -f "$h/groups/g/inbox/rev.jsonl" ] \
   && ok "leave removes membership, keeps history" || fail "leave semantics"
+rm -rf "$h"
+
+# --- path safety: no argument reaches the filesystem unvalidated ------------
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
+rc=0; AGORA_HOME="$h" "$AGORA" leave g '../../x' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "leave rejects a traversing alias (exit 2)" || fail "leave traversal (rc=$rc)"
+rc=0; AGORA_HOME="$h" "$AGORA" listen g '../../x' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "listen rejects a traversing alias (exit 2)" || fail "listen traversal (rc=$rc)"
+rc=0; AGORA_HOME="$h" "$AGORA" join . a >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "join rejects '.' as a name (exit 2)" || fail "'.' accepted as group (rc=$rc)"
+rc=0; AGORA_HOME="$h" "$AGORA" join .. a >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "join rejects '..' as a name (exit 2)" || fail "'..' accepted as group (rc=$rc)"
+rm -rf "$h"
+
+# --- state is private to the owner regardless of the caller's umask ---------
+
+h="$(fresh)"
+(umask 022; AGORA_HOME="$h" "$AGORA" join g archi >/dev/null)
+gmode="$(stat -f %Lp "$h/groups/g" 2>/dev/null || stat -c %a "$h/groups/g")"
+imode="$(stat -f %Lp "$h/groups/g/inbox/archi.jsonl" 2>/dev/null || stat -c %a "$h/groups/g/inbox/archi.jsonl")"
+if [ "$gmode" = 700 ] && [ "$imode" = 600 ]; then
+  ok "script umask wins over a 022 caller: group dir 700, inbox 600"
+else
+  fail "state permissions (group=$gmode inbox=$imode)"
+fi
 rm -rf "$h"
 
 # ----------------------------------------------------------------------------

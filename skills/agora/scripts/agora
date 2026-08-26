@@ -21,6 +21,9 @@
 # Exit codes: 0 ok, 2 usage, 3 edge rule (needs --off-edge), 4 unknown
 # group/alias.
 set -euo pipefail
+# Conversations are private to the agent fleet: everything this CLI creates is
+# 700/600. All agents run as the same OS user, so nothing needs group/other.
+umask 077
 
 AGORA_HOME="${AGORA_HOME:-$HOME/.claude/agora}"
 
@@ -29,8 +32,10 @@ die()  { echo "agora: $1" >&2; exit "${2:-2}"; }
 _now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 _valid() {
+  # '.' and '..' are path segments, not names: they would resolve to the group
+  # root / $AGORA_HOME itself. Names that merely contain dots (v1.2) are fine.
   case "$1" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   [ "${#1}" -le 64 ]
 }
@@ -105,6 +110,7 @@ cmd_join() {
 
 cmd_leave() {
   local g="${1:?usage: agora leave <group> <alias>}" a="${2:?missing alias}"
+  _valid "$a" || die "bad alias: $a"
   _need_group "$g"
   rm -f "$gd/nodes/$a.json"
   echo "left $g: $a (history kept)"
@@ -182,6 +188,7 @@ cmd_send() {
 
 cmd_listen() {
   local g="${1:?usage: agora listen <group> <alias>}" a="${2:?missing alias}" ib cu n
+  _valid "$a" || die "bad alias: $a"
   _need_group "$g"
   mkdir -p "$gd/inbox" "$gd/cursor"
   ib="$gd/inbox/$a.jsonl"; cu="$gd/cursor/$a"
@@ -190,9 +197,14 @@ cmd_listen() {
   # Emit-then-checkpoint: a listener killed between the two re-delivers (a
   # visible duplicate) rather than silently dropping. -F follows the file NAME,
   # so an atomic replace of the inbox cannot detach the tail.
+  #
+  # One envelope = one stdout line: each line becomes exactly one Monitor event
+  # in the consuming session, so an embedded newline would split a message in
+  # two. @html runs FIRST and gsub second — the other order would re-escape the
+  # '&' of the character reference into '&amp;#10;'.
   tail -n "+$((n + 1))" -F "$ib" | while IFS= read -r line; do
     printf '%s' "$line" | jq -r --arg g "$g" \
-      '"<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html) + "</agora-message>"'
+      '"<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"'
     n=$((n + 1))
     printf '%s' "$n" > "$cu.tmp" && mv "$cu.tmp" "$cu"
   done
@@ -235,19 +247,21 @@ cmd_list() {
   done
 }
 
-_tree() { # group-dir alias indent child-prefix   (recursive)
-  local a="$2" indent="$3" nf d u un kids k last count i
+# Canonical tree rendering: line_prefix draws THIS node's row, child_prefix is
+# what every descendant row inherits — so depth accumulates instead of resetting.
+_tree() { # group-dir alias line-prefix child-prefix   (recursive)
+  local a="$2" lp="$3" cp="$4" nf d u un kids k glyph cont count i
   nf="$1/nodes/$a.json"
   d="$(jq -r '.desc' "$nf")"; [ -n "$d" ] && d=" — $d"
   u="$(_unread "$1" "$a")"; un=""; [ "$u" -gt 0 ] && un=" [$u unread]"
-  printf '%s%s%s%s\n' "$indent" "$a" "$d" "$un"
+  printf '%s%s%s%s\n' "$lp" "$a" "$d" "$un"
   kids="$(_children_of "$1" "$a")"
   count=0; for k in $kids; do count=$((count + 1)); done
   i=0
   for k in $kids; do
     i=$((i + 1))
-    if [ "$i" -eq "$count" ]; then last="└── "; else last="├── "; fi
-    _tree "$1" "$k" "    $last"
+    if [ "$i" -eq "$count" ]; then glyph="└── "; cont="    "; else glyph="├── "; cont="│   "; fi
+    _tree "$1" "$k" "$cp$glyph" "$cp$cont"
   done
 }
 
@@ -260,7 +274,7 @@ cmd_view() {
     any=true
     p="$(jq -r '.parent' "$nf")"
     if [ -z "$p" ]; then
-      _tree "$gd" "$(jq -r '.alias' "$nf")" ""
+      _tree "$gd" "$(jq -r '.alias' "$nf")" "" ""
     fi
   done
   [ "$any" = false ] && echo "(no members)"
@@ -269,7 +283,7 @@ cmd_view() {
     p="$(jq -r '.parent' "$nf")"
     if [ -n "$p" ] && [ ! -f "$gd/nodes/$p.json" ]; then
       echo "(dangling — parent '$p' unknown)"
-      _tree "$gd" "$(jq -r '.alias' "$nf")" "    "
+      _tree "$gd" "$(jq -r '.alias' "$nf")" "    " "    "
     fi
   done
   offs="$(tail -n 200 "$gd/log.jsonl" | jq -r 'select(.off_edge == true) | .from + " ⇢ " + (.to|join(","))' | sort | uniq -c | sed 's/^ *\([0-9][0-9]*\) \(.*\)/⚡ \2 (\1)/')"

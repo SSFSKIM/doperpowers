@@ -66,8 +66,10 @@ meta_extra=()
 # initializes shells from the user's profile, NOT from the claude process env,
 # so exporting AGORA_* to the child process would never reach its commands
 # (observed live: a daemon-run spawn silently lost the dimension that way).
-# The node is pre-registered BEFORE the spawn — the daemon may `agora send`
-# during its very first turn, and a sender must already be a member; the
+# The node is pre-registered as soon as the launch is known to have SUCCEEDED
+# (right after the banner parse) and before the first turn is polled — the
+# daemon may `agora send` during its very first turn and a sender must already
+# be a member, while a failed launch must leave no phantom member behind. The
 # post-uuid re-join back-fills the session id.
 agora_group="${AGORA_GROUP:-}"
 agora_parent="${AGORA_PARENT:-}"
@@ -80,8 +82,6 @@ if [ -n "$agora_group" ]; then
 
 $task"
   meta_extra+=( agora_group "$agora_group" )
-  (cd "$cwd" && "$agora_cli" join "$agora_group" "$name" --parent "$agora_parent" >/dev/null) \
-    || echo "warning: agora pre-join failed for $name in group $agora_group" >&2
 fi
 
 # Register the daemon as an agora node. A join failure warns instead of dying:
@@ -113,6 +113,11 @@ args+=( "$task" )
 banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID ${scrub[@]+"${scrub[@]}"} claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
 short="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 [ -n "$short" ] || { echo "spawn failed — could not parse background id from:" >&2; echo "$banner" >&2; exit 1; }
+
+if [ -n "$agora_group" ]; then
+  (cd "$cwd" && "$agora_cli" join "$agora_group" "$name" --parent "$agora_parent" >/dev/null) \
+    || echo "warning: agora pre-join failed for $name in group $agora_group" >&2
+fi
 
 if [ "$nowait" -eq 1 ]; then
   # Fire-and-forget: register and return; the turn keeps running (it is an
