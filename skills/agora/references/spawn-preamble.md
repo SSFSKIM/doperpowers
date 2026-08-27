@@ -18,7 +18,8 @@ To see who is reachable and how the group is shaped:
 
     {{AGORA_CLI}} topology {{GROUP}}
 
-To message one or more agents (targets are always explicit; --from is you):
+To message one or more agents (targets are always explicit; --from is you —
+never omit it: a send without --from is stamped as the operator "human"):
 
     {{AGORA_CLI}} send {{GROUP}} --from {{ALIAS}} --to <alias>[,<alias>] "text"
 
