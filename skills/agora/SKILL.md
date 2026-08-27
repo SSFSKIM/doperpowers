@@ -30,14 +30,13 @@ it is pre-joined and its task opens with this protocol rendered):
    `Monitor(persistent: true, command: "<path>/agora listen <group> <alias>")`.
    Messages arrive as `<agora-message from=… …>` events. Re-arm after any
    session restart; the listener resumes from a cursor, so queued messages
-   from your dormant time are delivered first (an interrupted listener may
-   re-deliver the last message once — duplicates are visible, drops are not).
+   from your dormant time are delivered first (a restarted listener may
+   re-deliver the last message once).
 3. Send with explicit targets AND explicit identity:
    `agora send <group> --from <you> --to <alias>[,<alias>] "…"` (long bodies
    via stdin). Always pass `--from`: the harness Bash tool does not inherit
    session env, and an omitted `--from` falls back to `human` — your message
-   would masquerade as the operator. (`$AGORA_ALIAS` defaulting exists for
-   shells where you exported it yourself.)
+   would masquerade as the operator.
 4. `agora topology <group>` is the machine view (nodes, edges, unread counts);
    consult it before messaging someone new.
 
@@ -56,7 +55,7 @@ them. From any terminal:
 
     agora groups                 # what groups exist
     agora view <group>           # ASCII spawn tree, unread counts, off-edge traffic
-    agora list <group>           # member table (the advanced ListAgents)
+    agora list <group>           # member table: alias, parent, unread, session
     agora log <group> [-n N|-f]  # the conversation, rendered; -f to follow
     agora send <group> --to <alias> "…"   # nudge any agent directly
 
@@ -77,5 +76,5 @@ a parent daemon never reaches its spawn commands. Spawn without `AGORA_GROUP`
 and nothing agora-related happens at all.
 
 Always spawn agora daemons with `--no-wait`: a session whose persistent
-listener is armed reports `state=working` for as long as the monitor lives
-(verified empirically), so the blocking spawn watcher would never return.
+listener is armed reports `state=working` for as long as the monitor lives,
+so the blocking spawn watcher would never return.
