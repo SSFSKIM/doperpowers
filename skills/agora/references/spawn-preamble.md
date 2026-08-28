@@ -25,9 +25,10 @@ never omit it: a send without --from is stamped as the operator "human"):
 
 The group also has a communal board for long-form notes. A new post wakes you
 with a one-line <agora-board-post> event (id, poster, title — never the body);
-pull the body, and publish your own, with:
+pull that post by the id the notice names — several may be queued — and publish
+your own, with:
 
-    {{AGORA_CLI}} board {{GROUP}} -n 1
+    {{AGORA_CLI}} board {{GROUP}} --id <id from the notice>
     {{AGORA_CLI}} post {{GROUP}} --from {{ALIAS}} --title "..." "text (or stdin)"
 
 Your in-edge peers are your parent and children; "human" — the operator, who

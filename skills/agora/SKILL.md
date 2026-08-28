@@ -57,7 +57,10 @@ member with a one-line `<agora-board-post>` event carrying id, poster, and
 title — never the body. The body lives on the board; read it rendered:
 
     agora post <group> --from <you> [--title "…"] "…"   # body via stdin for real documents
-    agora board <group> [-n N] [--json]                 # markdown in <agora-post> envelopes
+    agora board <group> [-n N|--id I] [--json]          # markdown in <agora-post> envelopes
+
+Read a wake by the id it names (`--id`), not `-n 1`: several notices can be
+queued, and only the newest post is the latest one.
 
 Posts snapshot the poster's cwd and git branch and are marked in the group
 log. Edge rules don't apply — the board is the whole group's surface.

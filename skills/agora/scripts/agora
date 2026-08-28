@@ -8,7 +8,7 @@
 #                   $AGORA_ALIAS, then to the operator identity 'human')
 #   agora listen   <group> <alias>   # never exits; stdout = one XML envelope per message
 #   agora post     <group> [--from F] [--title T] [text...]   # board post; stdin if no text
-#   agora board    <group> [-n N] [--json]   # read the board (posts notify; bodies live here)
+#   agora board    <group> [-n N|--id I] [--json]   # read the board (bodies live here)
 #   agora log      <group> [-n N] [-f]
 #   agora list     <group>
 #   agora view     <group>
@@ -124,7 +124,9 @@ _children_of() { # group-dir alias -> child aliases, one per line
   local nf
   for nf in "$1"/nodes/*.json; do
     [ -e "$nf" ] || continue
-    jq -r --arg p "$2" 'select(.parent == $p) | .alias' "$nf"
+    # `leave` unlinks node files without the lock, so one can vanish between
+    # the glob and the read: a departed member is simply not a child.
+    jq -r --arg p "$2" 'select(.parent == $p) | .alias' "$nf" 2>/dev/null || continue
   done
 }
 
@@ -206,16 +208,25 @@ cmd_listen() {
   # '&' of the character reference into '&amp;#10;'.
   # A board-post marker in the inbox is a wake, not a delivery: the notice
   # carries id/from/title only, and the body is pulled with `agora board`.
-  # `|| true`: a listener outlives the binary that armed it, so a record it
-  # cannot render (newer writer, malformed line) must complain on stderr and
-  # keep the loop alive — not kill the receive surface (observed: pre-board
-  # listeners died on the first marker and delivered nothing after it).
+  #
+  # Render and emit are separated because their failures mean opposite things.
+  # A render error (a listener outlives the binary that armed it, so a newer
+  # writer's record or a malformed line is structural) must complain on stderr,
+  # skip that one record and advance — killing the receive surface over it
+  # loses every later message. An emit error means the consumer's stdout is
+  # gone: the loop dies WITHOUT checkpointing, so re-arming replays the record
+  # rather than checkpointing something that was never delivered. Rendering
+  # into a variable first keeps the two apart — inside the command
+  # substitution jq writes to the capture pipe, so a closed stdout cannot
+  # masquerade as a render failure.
   tail -n "+$((n + 1))" -F "$ib" | while IFS= read -r line; do
-    printf '%s' "$line" | jq -r --arg g "$g" \
+    if out="$(printf '%s' "$line" | jq -r --arg g "$g" \
       'if .type == "post"
        then "<agora-board-post group=\"" + $g + "\" id=\"" + (.post|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\">" + (.title|@html|gsub("\n"; "&#10;")) + "</agora-board-post>"
        else "<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"
-       end' || true
+       end')"; then
+      printf '%s\n' "$out" || exit 0
+    fi
     n=$((n + 1))
     printf '%s' "$n" > "$cu.tmp" && mv "$cu.tmp" "$cu"
   done
@@ -268,7 +279,11 @@ cmd_post() {
   printf '%s\n' "$marker" >> "$gd/log.jsonl"
   for nf in "$gd"/nodes/*.json; do
     [ -e "$nf" ] || continue
-    m="$(jq -r '.alias' "$nf")"
+    # A concurrent `leave` can unlink this node between the glob and the read;
+    # a member that just left simply isn't notified. Dying here instead would
+    # abort the fan-out holding send.lock — the group would stall until the
+    # 30s stale-break, with only some inboxes woken.
+    m="$(jq -r '.alias' "$nf" 2>/dev/null)" || continue
     [ "$m" = "$from" ] && continue
     touch "$gd/inbox/$m.jsonl"
     printf '%s\n' "$marker" >> "$gd/inbox/$m.jsonl"
@@ -279,22 +294,37 @@ cmd_post() {
 }
 
 cmd_board() {
-  local g="${1:?usage: agora board <group> [-n N] [--json]}"; shift
+  local g="${1:?usage: agora board <group> [-n N|--id I] [--json]}"; shift
   _need_group "$g"
-  local n=0 json=false
+  local n=0 id="" json=false sel
   while [ $# -gt 0 ]; do case "$1" in
     -n) n="${2:-0}"; shift 2 ;;
+    --id) id="${2:-}"; shift 2 ;;
     --json) json=true; shift ;;
     *) die "board: unknown option $1" ;;
   esac; done
   [ -s "$gd/board.jsonl" ] || { [ "$json" = true ] || echo "(no posts)"; return 0; }
-  { if [ "$n" -gt 0 ]; then tail -n "$n" "$gd/board.jsonl"; else cat "$gd/board.jsonl"; fi; } |
+  # --id is what a wake notice needs: it names a post number, and a member with
+  # several notices queued must be able to fetch each one, not just the latest.
+  if [ -n "$id" ]; then
+    sel="$(jq -c --argjson i "$id" 'select(.id == $i)' "$gd/board.jsonl")"
+    [ -n "$sel" ] || die "no such post on the $g board: #$id" 4
+  elif [ "$n" -gt 0 ]; then sel="$(tail -n "$n" "$gd/board.jsonl")"
+  else sel="$(cat "$gd/board.jsonl")"
+  fi
+  printf '%s\n' "$sel" |
   if [ "$json" = true ]; then cat; else
-    jq -r '"<agora-post id=\"" + (.id|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\""
-           + (if .branch != "" then " branch=\"" + .branch + "\"" else "" end)
-           + " cwd=\"" + .cwd + "\">"
-           + (if .title != "" then "\n## " + .title else "" end)
-           + "\n" + .text + "\n</agora-post>\n"'
+    # Only the envelope's own grammar is neutralized: a body carrying
+    # '</agora-post>' would otherwise close the frame early and forge an
+    # apparent next post with fake provenance. Both forms need escaping — the
+    # opening pattern does not match the closing one. Everything else in a body
+    # stays raw; readable markdown is the whole point of the board.
+    jq -r 'def esc: gsub("<agora-post"; "&lt;agora-post") | gsub("</agora-post"; "&lt;/agora-post");
+           "<agora-post id=\"" + (.id|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\""
+           + (if .branch != "" then " branch=\"" + (.branch|@html) + "\"" else "" end)
+           + " cwd=\"" + (.cwd|@html) + "\">"
+           + (if .title != "" then "\n## " + (.title|esc) else "" end)
+           + "\n" + (.text|esc) + "\n</agora-post>\n"'
   fi
 }
 
