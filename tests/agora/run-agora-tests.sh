@@ -311,6 +311,32 @@ bmode="$(stat -f %Lp "$h/groups/g/board.jsonl" 2>/dev/null || stat -c %a "$h/gro
 [ "$bmode" = 600 ] && ok "board file is private (600)" || fail "board perms ($bmode)"
 rm -rf "$h"
 
+# --- listen survives a record it cannot render ------------------------------
+# A listener outlives the binary that armed it (version skew is structural):
+# an unrenderable line must not kill the receive surface.
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
+AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
+AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "before" >/dev/null
+printf '{"ts":"2026-08-28T00:00:00Z","from":"archi","type":"mystery-v9"}\n' \
+  >> "$h/groups/g/inbox/impl.jsonl"
+AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "after" >/dev/null
+
+outx="$h/listen-skew.out"
+AGORA_HOME="$h" "$AGORA" listen g impl > "$outx" 2>/dev/null &
+lp=$!
+disown "$lp" 2>/dev/null || true
+sleep 1.5
+stop_listen "$lp" "$h"
+curx="$(cat "$h/groups/g/cursor/impl" 2>/dev/null || echo none)"
+if grep -q '>before<' "$outx" && grep -q '>after<' "$outx" && [ "$curx" = 3 ]; then
+  ok "listen skips an unrenderable record and keeps delivering (cursor advances)"
+else
+  fail "listen version-skew survival (cursor=$curx)"; cat "$outx" >&2 || true
+fi
+rm -rf "$h"
+
 # --- state is private to the owner regardless of the caller's umask ---------
 
 h="$(fresh)"

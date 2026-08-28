@@ -206,12 +206,16 @@ cmd_listen() {
   # '&' of the character reference into '&amp;#10;'.
   # A board-post marker in the inbox is a wake, not a delivery: the notice
   # carries id/from/title only, and the body is pulled with `agora board`.
+  # `|| true`: a listener outlives the binary that armed it, so a record it
+  # cannot render (newer writer, malformed line) must complain on stderr and
+  # keep the loop alive — not kill the receive surface (observed: pre-board
+  # listeners died on the first marker and delivered nothing after it).
   tail -n "+$((n + 1))" -F "$ib" | while IFS= read -r line; do
     printf '%s' "$line" | jq -r --arg g "$g" \
       'if .type == "post"
        then "<agora-board-post group=\"" + $g + "\" id=\"" + (.post|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\">" + (.title|@html|gsub("\n"; "&#10;")) + "</agora-board-post>"
        else "<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"
-       end'
+       end' || true
     n=$((n + 1))
     printf '%s' "$n" > "$cu.tmp" && mv "$cu.tmp" "$cu"
   done
