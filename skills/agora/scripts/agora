@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+# agora — CLI communication surface for groups of coding agents.
+#
+#   agora join     <group> <alias> [--parent P] [--desc D] [--session S]
+#   agora leave    <group> <alias>
+#   agora send     <group> [--from F] --to A[,B...] [--off-edge] [text...]
+#                  (no text args = body read from stdin; --from defaults to
+#                   $AGORA_ALIAS, then to the operator identity 'human')
+#   agora listen   <group> <alias>   # never exits; stdout = one XML envelope per message
+#   agora post     <group> [--from F] [--title T] [text...]   # board post; stdin if no text
+#   agora board    <group> [-n N|--id I] [--json]   # read the board (bodies live here)
+#   agora log      <group> [-n N] [-f]
+#   agora list     <group>
+#   agora view     <group>
+#   agora topology <group>           # machine-readable JSON
+#   agora groups
+#
+# State lives under $AGORA_HOME (default ~/.claude/agora), machine-global —
+# members span repos and worktrees. Group names and aliases are
+# [A-Za-z0-9._-]{1,64}; the alias 'human' is the reserved operator identity:
+# it never joins, may always be messaged, and its sends bypass edge rules.
+#
+# Exit codes: 0 ok, 2 usage, 3 edge rule (needs --off-edge), 4 unknown
+# group/alias.
+set -euo pipefail
+# Conversations are private to the agent fleet: everything this CLI creates is
+# 700/600. All agents run as the same OS user, so nothing needs group/other.
+umask 077
+
+AGORA_HOME="${AGORA_HOME:-$HOME/.claude/agora}"
+
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+die()  { echo "agora: $1" >&2; exit "${2:-2}"; }
+_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+_valid() {
+  # '.' and '..' are path segments, not names: they would resolve to the group
+  # root / $AGORA_HOME itself. Names that merely contain dots (v1.2) are fine.
+  case "$1" in
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
+_gdir() { printf '%s/groups/%s' "$AGORA_HOME" "$1"; }
+
+# Sets the global gd for the calling subcommand.
+_need_group() {
+  _valid "$1" || die "bad group name: $1"
+  gd="$(_gdir "$1")"
+  [ -d "$gd" ] || die "no such group: $1 (a group is created by its first join)" 4
+}
+
+# mkdir spinlock: portable to macOS (no flock there). A lock dir that stays
+# for >30s is presumed leaked by a killed process and is broken.
+_lock() {
+  local lk="$1/locks/send.lock" tries=0 now lkage
+  until mkdir "$lk" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 200 ]; then
+      now=$(date +%s)
+      lkage=$(stat -f %m "$lk" 2>/dev/null || stat -c %Y "$lk" 2>/dev/null || echo "$now")
+      [ $((now - lkage)) -gt 30 ] && rmdir "$lk" 2>/dev/null
+      tries=0
+    fi
+    sleep 0.05
+  done
+}
+_unlock() { rmdir "$1/locks/send.lock" 2>/dev/null || true; }
+
+_unread() { # group-dir alias -> unread count on stdout
+  local ib="$1/inbox/$2.jsonl" cu="$1/cursor/$2" total=0 seen=0
+  [ -f "$ib" ] && total=$(wc -l < "$ib" | tr -d ' ')
+  [ -f "$cu" ] && seen=$(cat "$cu")
+  echo $((total - seen))
+}
+
+# ---------------------------------------------------------------- join / leave
+
+cmd_join() {
+  local g="${1:?usage: agora join <group> <alias> [--parent P] [--desc D] [--session S]}"; shift
+  local a="${1:?missing alias}"; shift
+  local parent="" desc="" session="" joined branch
+  while [ $# -gt 0 ]; do case "$1" in
+    --parent)  parent="${2:-}";  shift 2 ;;
+    --desc)    desc="${2:-}";    shift 2 ;;
+    --session) session="${2:-}"; shift 2 ;;
+    *) die "join: unknown option $1" ;;
+  esac; done
+  _valid "$g" || die "bad group name: $g"
+  _valid "$a" || die "bad alias: $a"
+  [ "$a" = "human" ] && die "the alias 'human' is reserved for the operator"
+  [ -z "$parent" ] || _valid "$parent" || die "bad parent alias: $parent"
+  gd="$(_gdir "$g")"
+  mkdir -p "$gd/inbox" "$gd/cursor" "$gd/nodes" "$gd/locks"
+  touch "$gd/log.jsonl" "$gd/inbox/$a.jsonl"
+  joined="$(_now)"
+  if [ -f "$gd/nodes/$a.json" ]; then
+    joined="$(jq -r '.joined' "$gd/nodes/$a.json")"
+  fi
+  branch="$(git -C "$PWD" branch --show-current 2>/dev/null || true)"
+  jq -n --arg alias "$a" --arg parent "$parent" --arg session "$session" \
+        --arg cwd "$PWD" --arg branch "$branch" --arg desc "$desc" \
+        --arg joined "$joined" --arg updated "$(_now)" \
+        '{alias:$alias,parent:$parent,session:$session,cwd:$cwd,branch:$branch,desc:$desc,joined:$joined,updated:$updated}' \
+        > "$gd/nodes/$a.json.tmp"
+  mv "$gd/nodes/$a.json.tmp" "$gd/nodes/$a.json"
+  echo "joined $g as $a (parent: ${parent:-none})"
+  echo "  arm your receive surface (Monitor tool, persistent: true):"
+  echo "    command: $0 listen $g $a"
+}
+
+cmd_leave() {
+  local g="${1:?usage: agora leave <group> <alias>}" a="${2:?missing alias}"
+  _valid "$a" || die "bad alias: $a"
+  _need_group "$g"
+  rm -f "$gd/nodes/$a.json"
+  echo "left $g: $a (history kept)"
+}
+
+# ----------------------------------------------------------------------- send
+
+_children_of() { # group-dir alias -> child aliases, one per line
+  local nf
+  for nf in "$1"/nodes/*.json; do
+    [ -e "$nf" ] || continue
+    # `leave` unlinks node files without the lock, so one can vanish between
+    # the glob and the read: a departed member is simply not a child.
+    jq -r --arg p "$2" 'select(.parent == $p) | .alias' "$nf" 2>/dev/null || continue
+  done
+}
+
+cmd_send() {
+  local g="${1:?usage: agora send <group> [--from F] --to A[,B...] [--off-edge] [text...]}"; shift
+  _need_group "$g"
+  local from="${AGORA_ALIAS:-human}" to="" off_edge=false text=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --from)     from="${2:-}"; shift 2 ;;
+    --to)       to="${2:-}";   shift 2 ;;
+    --off-edge) off_edge=true; shift ;;
+    --) shift; text="$*"; break ;;
+    *)  if [ -z "$text" ]; then text="$1"; else text="$text $1"; fi; shift ;;
+  esac; done
+  [ -n "$to" ] || die "send: --to is required (targets are always explicit; see 'agora list $g')"
+  [ -n "$text" ] || text="$(cat)"
+  [ -n "$text" ] || die "send: empty message"
+  _valid "$from" || die "bad --from alias: $from"
+  if [ "$from" != "human" ] && [ ! -f "$gd/nodes/$from.json" ]; then
+    die "sender $from has not joined $g (run: agora join $g $from)" 4
+  fi
+
+  # Resolve + validate targets; apply the soft-edge rule for non-human senders.
+  local targets="" parent="" kids="" t k in_edge nbrs
+  [ "$from" = "human" ] || parent="$(jq -r '.parent' "$gd/nodes/$from.json")"
+  [ "$from" = "human" ] || kids="$(_children_of "$gd" "$from")"
+  # shellcheck disable=SC2086  # intentional word-split of comma list
+  for t in $(printf '%s' "$to" | tr ',' ' '); do
+    _valid "$t" || die "bad target alias: $t"
+    if [ "$t" != "human" ] && [ ! -f "$gd/nodes/$t.json" ]; then
+      die "no such member in $g: $t" 4
+    fi
+    if [ "$from" != "human" ] && [ "$t" != "human" ] && [ "$off_edge" = false ]; then
+      in_edge=false
+      [ "$t" = "$parent" ] && in_edge=true
+      for k in $kids; do [ "$t" = "$k" ] && in_edge=true; done
+      if [ "$in_edge" = false ]; then
+        nbrs="$(printf '%s\n%s' "$parent" "$kids" | grep -v '^$' | tr '\n' ' ' || true)"
+        die "$t is not a graph neighbor of $from (neighbors: ${nbrs:-none}— plus 'human'). Use --off-edge to send anyway; it will be marked." 3
+      fi
+    fi
+    targets="$targets $t"
+  done
+  [ -n "$targets" ] || die "send: no valid targets in --to"
+
+  local to_json rec
+  # shellcheck disable=SC2086
+  to_json="$(printf '%s\n' $targets | jq -R . | jq -cs .)"
+  rec="$(jq -cn --arg ts "$(_now)" --arg from "$from" --argjson to "$to_json" \
+                --arg text "$text" --argjson off "$off_edge" \
+                '{ts:$ts,from:$from,to:$to,text:$text,off_edge:$off}')"
+  _lock "$gd"
+  printf '%s\n' "$rec" >> "$gd/log.jsonl"
+  for t in $targets; do
+    touch "$gd/inbox/$t.jsonl"
+    printf '%s\n' "$rec" >> "$gd/inbox/$t.jsonl"
+  done
+  _unlock "$gd"
+  echo "sent to$targets"
+}
+
+# --------------------------------------------------------------------- listen
+
+cmd_listen() {
+  local g="${1:?usage: agora listen <group> <alias>}" a="${2:?missing alias}" ib cu n
+  _valid "$a" || die "bad alias: $a"
+  _need_group "$g"
+  mkdir -p "$gd/inbox" "$gd/cursor"
+  ib="$gd/inbox/$a.jsonl"; cu="$gd/cursor/$a"
+  touch "$ib"
+  n=0; [ -f "$cu" ] && n="$(cat "$cu")"
+  # Emit-then-checkpoint: a listener killed between the two re-delivers (a
+  # visible duplicate) rather than silently dropping. -F follows the file NAME,
+  # so an atomic replace of the inbox cannot detach the tail.
+  #
+  # One envelope = one stdout line: each line becomes exactly one Monitor event
+  # in the consuming session, so an embedded newline would split a message in
+  # two. @html runs FIRST and gsub second — the other order would re-escape the
+  # '&' of the character reference into '&amp;#10;'.
+  # A board-post marker in the inbox is a wake, not a delivery: the notice
+  # carries id/from/title only, and the body is pulled with `agora board`.
+  #
+  # Render and emit are separated because their failures mean opposite things.
+  # A render error (a listener outlives the binary that armed it, so a newer
+  # writer's record or a malformed line is structural) must complain on stderr,
+  # skip that one record and advance — killing the receive surface over it
+  # loses every later message. An emit error means the consumer's stdout is
+  # gone: the loop dies WITHOUT checkpointing, so re-arming replays the record
+  # rather than checkpointing something that was never delivered. Rendering
+  # into a variable first keeps the two apart — inside the command
+  # substitution jq writes to the capture pipe, so a closed stdout cannot
+  # masquerade as a render failure.
+  tail -n "+$((n + 1))" -F "$ib" | while IFS= read -r line; do
+    if out="$(printf '%s' "$line" | jq -r --arg g "$g" \
+      'if .type == "post"
+       then "<agora-board-post group=\"" + $g + "\" id=\"" + (.post|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\">" + (.title|@html|gsub("\n"; "&#10;")) + "</agora-board-post>"
+       else "<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"
+       end')"; then
+      printf '%s\n' "$out" || exit 0
+    fi
+    n=$((n + 1))
+    printf '%s' "$n" > "$cu.tmp" && mv "$cu.tmp" "$cu"
+  done
+}
+
+# ---------------------------------------------------------------------- board
+
+# The board is the group's communal surface: durable long-form posts, JSONL
+# on disk like everything else, rendered as markdown inside XML envelopes on
+# read. Delivery is notify-then-pull: a post fans a fixed-size marker into
+# every other member's inbox (the listener renders it as a one-line
+# <agora-board-post> wake event); the body never travels through the event
+# channel — readers pull it with `agora board`. Unlike listen envelopes (one
+# line-framed Monitor event each), a board read is a whole document, so
+# bodies keep their real newlines and markdown unescaped. Edge rules don't
+# apply: the board is the whole group's surface.
+
+cmd_post() {
+  local g="${1:?usage: agora post <group> [--from F] [--title T] [text...]}"; shift
+  _need_group "$g"
+  local from="${AGORA_ALIAS:-human}" title="" text="" branch ts id rec marker nf m notified=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --from)  from="${2:-}";  shift 2 ;;
+    --title) title="${2:-}"; shift 2 ;;
+    --) shift; text="$*"; break ;;
+    *)  if [ -z "$text" ]; then text="$1"; else text="$text $1"; fi; shift ;;
+  esac; done
+  [ -n "$text" ] || text="$(cat)"
+  [ -n "$text" ] || die "post: empty body"
+  _valid "$from" || die "bad --from alias: $from"
+  if [ "$from" != "human" ] && [ ! -f "$gd/nodes/$from.json" ]; then
+    die "poster $from has not joined $g (run: agora join $g $from)" 4
+  fi
+  # cwd/branch are snapshotted at post time — the join-time registry values
+  # describe where a member started, not where this post was written.
+  branch="$(git -C "$PWD" branch --show-current 2>/dev/null || true)"
+  ts="$(_now)"
+  _lock "$gd"
+  touch "$gd/board.jsonl"
+  id=$(( $(wc -l < "$gd/board.jsonl") + 1 ))
+  rec="$(jq -cn --argjson id "$id" --arg ts "$ts" --arg from "$from" \
+                --arg title "$title" --arg cwd "$PWD" --arg branch "$branch" \
+                --arg text "$text" \
+                '{id:$id,ts:$ts,from:$from,title:$title,cwd:$cwd,branch:$branch,text:$text}')"
+  printf '%s\n' "$rec" >> "$gd/board.jsonl"
+  # The same fixed-size marker goes to the shared log (one timeline) and to
+  # every other member's inbox (the wake). The body stays on the board only.
+  marker="$(jq -cn --arg ts "$ts" --arg from "$from" --argjson id "$id" --arg title "$title" \
+     '{ts:$ts,from:$from,type:"post",post:$id,title:$title}')"
+  printf '%s\n' "$marker" >> "$gd/log.jsonl"
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || continue
+    # A concurrent `leave` can unlink this node between the glob and the read;
+    # a member that just left simply isn't notified. Dying here instead would
+    # abort the fan-out holding send.lock — the group would stall until the
+    # 30s stale-break, with only some inboxes woken.
+    m="$(jq -r '.alias' "$nf" 2>/dev/null)" || continue
+    [ "$m" = "$from" ] && continue
+    touch "$gd/inbox/$m.jsonl"
+    printf '%s\n' "$marker" >> "$gd/inbox/$m.jsonl"
+    notified=$((notified + 1))
+  done
+  _unlock "$gd"
+  echo "posted #$id to $g board ($notified member(s) notified; they read it via: agora board $g)"
+}
+
+cmd_board() {
+  local g="${1:?usage: agora board <group> [-n N|--id I] [--json]}"; shift
+  _need_group "$g"
+  local n=0 id="" json=false sel
+  while [ $# -gt 0 ]; do case "$1" in
+    -n) n="${2:-0}"; shift 2 ;;
+    --id) id="${2:-}"; shift 2 ;;
+    --json) json=true; shift ;;
+    *) die "board: unknown option $1" ;;
+  esac; done
+  [ -s "$gd/board.jsonl" ] || { [ "$json" = true ] || echo "(no posts)"; return 0; }
+  # --id is what a wake notice needs: it names a post number, and a member with
+  # several notices queued must be able to fetch each one, not just the latest.
+  if [ -n "$id" ]; then
+    sel="$(jq -c --argjson i "$id" 'select(.id == $i)' "$gd/board.jsonl")"
+    [ -n "$sel" ] || die "no such post on the $g board: #$id" 4
+  elif [ "$n" -gt 0 ]; then sel="$(tail -n "$n" "$gd/board.jsonl")"
+  else sel="$(cat "$gd/board.jsonl")"
+  fi
+  printf '%s\n' "$sel" |
+  if [ "$json" = true ]; then cat; else
+    # Only the envelope's own grammar is neutralized: a body carrying
+    # '</agora-post>' would otherwise close the frame early and forge an
+    # apparent next post with fake provenance. Both forms need escaping — the
+    # opening pattern does not match the closing one. Everything else in a body
+    # stays raw; readable markdown is the whole point of the board.
+    jq -r 'def esc: gsub("<agora-post"; "&lt;agora-post") | gsub("</agora-post"; "&lt;/agora-post");
+           "<agora-post id=\"" + (.id|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\""
+           + (if .branch != "" then " branch=\"" + (.branch|@html) + "\"" else "" end)
+           + " cwd=\"" + (.cwd|@html) + "\">"
+           + (if .title != "" then "\n## " + (.title|esc) else "" end)
+           + "\n" + (.text|esc) + "\n</agora-post>\n"'
+  fi
+}
+
+# ----------------------------------------------------------- log / list / view
+
+_render_log() {
+  # The log carries two record types: messages, and board-post markers.
+  jq --unbuffered -r 'if .type == "post"
+    then "[" + (.ts|split("T")[1]|rtrimstr("Z")) + "] " + .from + " ▸ board #" + (.post|tostring) + (if .title != "" then " — " + .title else "" end)
+    else (if .off_edge then "⚡" else "" end) + "[" + (.ts|split("T")[1]|rtrimstr("Z")) + "] " + .from + " → " + (.to|join(",")) + ": " + .text
+    end'
+}
+
+cmd_log() {
+  local g="${1:?usage: agora log <group> [-n N] [-f]}"; shift
+  _need_group "$g"
+  local n=30 follow=false
+  while [ $# -gt 0 ]; do case "$1" in
+    -n) n="${2:-30}"; shift 2 ;;
+    -f) follow=true; shift ;;
+    *) die "log: unknown option $1" ;;
+  esac; done
+  if [ "$follow" = true ]; then
+    tail -n "$n" -F "$gd/log.jsonl" | _render_log
+  else
+    tail -n "$n" "$gd/log.jsonl" | _render_log
+  fi
+}
+
+cmd_list() {
+  local g="${1:?usage: agora list <group>}" nf a
+  _need_group "$g"
+  printf '%-16s %-16s %7s  %-36s %s\n' ALIAS PARENT UNREAD SESSION DESC
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || { echo "(no members)"; return 0; }
+    a="$(jq -r '.alias' "$nf")"
+    printf '%-16s %-16s %7s  %-36s %s\n' \
+      "$a" "$(jq -r '.parent | if .=="" then "-" else . end' "$nf")" \
+      "$(_unread "$gd" "$a")" \
+      "$(jq -r '.session | if .=="" then "-" else . end' "$nf")" \
+      "$(jq -r '.desc' "$nf")"
+  done
+}
+
+# Canonical tree rendering: line_prefix draws THIS node's row, child_prefix is
+# what every descendant row inherits — so depth accumulates instead of resetting.
+_tree() { # group-dir alias line-prefix child-prefix   (recursive)
+  local a="$2" lp="$3" cp="$4" nf d u un kids k glyph cont count i
+  nf="$1/nodes/$a.json"
+  d="$(jq -r '.desc' "$nf")"; [ -n "$d" ] && d=" — $d"
+  u="$(_unread "$1" "$a")"; un=""; [ "$u" -gt 0 ] && un=" [$u unread]"
+  printf '%s%s%s%s\n' "$lp" "$a" "$d" "$un"
+  kids="$(_children_of "$1" "$a")"
+  count=0; for k in $kids; do count=$((count + 1)); done
+  i=0
+  for k in $kids; do
+    i=$((i + 1))
+    if [ "$i" -eq "$count" ]; then glyph="└── "; cont="    "; else glyph="├── "; cont="│   "; fi
+    _tree "$1" "$k" "$cp$glyph" "$cp$cont"
+  done
+}
+
+cmd_view() {
+  local g="${1:?usage: agora view <group>}" nf p any=false offs bc
+  _need_group "$g"
+  echo "agora group: $g"
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || break
+    any=true
+    p="$(jq -r '.parent' "$nf")"
+    if [ -z "$p" ]; then
+      _tree "$gd" "$(jq -r '.alias' "$nf")" "" ""
+    fi
+  done
+  [ "$any" = false ] && echo "(no members)"
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || break
+    p="$(jq -r '.parent' "$nf")"
+    if [ -n "$p" ] && [ ! -f "$gd/nodes/$p.json" ]; then
+      echo "(dangling — parent '$p' unknown)"
+      _tree "$gd" "$(jq -r '.alias' "$nf")" "    " "    "
+    fi
+  done
+  if [ -s "$gd/board.jsonl" ]; then
+    bc="$(wc -l < "$gd/board.jsonl" | tr -d ' ')"
+    echo "board: $bc post(s) — latest: $(tail -n 1 "$gd/board.jsonl" | jq -r '"#" + (.id|tostring) + (if .title != "" then " \"" + .title + "\"" else "" end) + " by " + .from + " @ " + .ts')"
+  fi
+  offs="$(tail -n 200 "$gd/log.jsonl" | jq -r 'select(.off_edge == true) | .from + " ⇢ " + (.to|join(","))' | sort | uniq -c | sed 's/^ *\([0-9][0-9]*\) \(.*\)/⚡ \2 (\1)/')"
+  [ -n "$offs" ] && { echo "off-edge traffic (last 200 msgs):"; echo "$offs"; }
+  return 0
+}
+
+cmd_topology() {
+  local g="${1:?usage: agora topology <group>}" nf a node nodes="[]" acts
+  _need_group "$g"
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || break
+    a="$(jq -r '.alias' "$nf")"
+    node="$(jq -c --argjson u "$(_unread "$gd" "$a")" '. + {unread:$u}' "$nf")"
+    nodes="$(printf '%s\n%s' "$nodes" "$node" | jq -cs '.[0] + [.[1]]')"
+  done
+  acts="$(tail -n 200 "$gd/log.jsonl" | jq -c 'select(.off_edge == true) | {from:.from, to:.to[]}' | sort | uniq -c |
+          sed 's/^ *\([0-9][0-9]*\) \(.*\)/{"count":\1,"pair":\2}/' | jq -cs 'map({from:.pair.from,to:.pair.to,count:.count})')"
+  [ -n "$acts" ] || acts="[]"
+  jq -n --arg g "$g" --argjson nodes "$nodes" --argjson acts "$acts" \
+    '{group:$g, nodes:$nodes,
+      edges:[$nodes[] | select(.parent != "") | {from:.parent, to:.alias}],
+      off_edge_activity:$acts}'
+}
+
+cmd_groups() {
+  local d="$AGORA_HOME/groups" gp gn mc last found=false
+  [ -d "$d" ] || { echo "(no groups)"; return 0; }
+  for gp in "$d"/*/; do
+    [ -e "$gp" ] || break
+    found=true
+    gn="$(basename "$gp")"
+    mc=$(find "$gp/nodes" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+    last="-"
+    [ -s "$gp/log.jsonl" ] && last="$(tail -n 1 "$gp/log.jsonl" | jq -r '.ts')"
+    printf '%-24s %3s members   last: %s\n' "$gn" "$mc" "$last"
+  done
+  [ "$found" = false ] && echo "(no groups)"
+  return 0
+}
+
+# ------------------------------------------------------------------- dispatch
+
+cmd="${1:-}"; [ -n "$cmd" ] || { usage; exit 2; }
+shift
+case "$cmd" in
+  join)     cmd_join "$@" ;;
+  leave)    cmd_leave "$@" ;;
+  send)     cmd_send "$@" ;;
+  listen)   cmd_listen "$@" ;;
+  post)     cmd_post "$@" ;;
+  board)    cmd_board "$@" ;;
+  log)      cmd_log "$@" ;;
+  list)     cmd_list "$@" ;;
+  view)     cmd_view "$@" ;;
+  topology) cmd_topology "$@" ;;
+  groups)   cmd_groups "$@" ;;
+  -h|--help|help) usage ;;
+  *) die "unknown command: $cmd (try: agora help)" ;;
+esac

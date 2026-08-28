@@ -58,6 +58,41 @@ meta_extra=()
 [ -n "$gw_settings" ] && meta_extra+=( settings "$gw_settings" )
 [ -n "$gw_effort" ] && meta_extra+=( effort "$gw_effort" )
 
+# Agora dimension (env-injected, same pattern as the gateway dimension above):
+# AGORA_GROUP enrolls the daemon as a node in an agora group (skills/agora —
+# the inter-agent CLI comm surface); AGORA_PARENT names its spawner. The child
+# gets the agora preamble prepended to its task and is auto-joined. Its agora
+# identity travels ONLY in the preamble text — the harness Bash tool
+# initializes shells from the user's profile, NOT from the claude process env,
+# so exporting AGORA_* to the child process would never reach its commands
+# (observed live: a daemon-run spawn silently lost the dimension that way).
+# The node is pre-registered as soon as the launch is known to have SUCCEEDED
+# (right after the banner parse) and before the first turn is polled — the
+# daemon may `agora send` during its very first turn and a sender must already
+# be a member, while a failed launch must leave no phantom member behind. The
+# post-uuid re-join back-fills the session id.
+agora_group="${AGORA_GROUP:-}"
+agora_parent="${AGORA_PARENT:-}"
+if [ -n "$agora_group" ]; then
+  agora_cli="$(cd "$DIR/../../agora/scripts" && pwd)/agora"
+  preamble="$(sed -e "s|{{GROUP}}|$agora_group|g" -e "s|{{ALIAS}}|$name|g" \
+    -e "s|{{PARENT}}|${agora_parent:-none}|g" -e "s|{{AGORA_CLI}}|$agora_cli|g" \
+    "$DIR/../../agora/references/spawn-preamble.md")"
+  task="$preamble
+
+$task"
+  meta_extra+=( agora_group "$agora_group" )
+fi
+
+# Register the daemon as an agora node. A join failure warns instead of dying:
+# the daemon matters more than its directory entry.
+_agora_join() { # uuid runcwd
+  [ -n "$agora_group" ] || return 0
+  (cd "$2" && "$agora_cli" join "$agora_group" "$name" \
+      --parent "$agora_parent" --session "$1" >/dev/null) \
+    || echo "warning: agora join failed for $name in group $agora_group" >&2
+}
+
 # --bg manages the session id (it ignores --session-id), so we capture the short
 # id it prints and resolve the full UUID from `claude agents`.
 args=( --bg --permission-mode auto -n "$name" )
@@ -78,6 +113,11 @@ args+=( "$task" )
 banner="$(cd "$cwd" && env -u RUNNER_TRACKING_ID ${scrub[@]+"${scrub[@]}"} claude "${args[@]}" </dev/null 2>&1 | _strip_ansi)"
 short="$(printf '%s\n' "$banner" | sed -n 's/.*backgrounded · \([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
 [ -n "$short" ] || { echo "spawn failed — could not parse background id from:" >&2; echo "$banner" >&2; exit 1; }
+
+if [ -n "$agora_group" ]; then
+  (cd "$cwd" && "$agora_cli" join "$agora_group" "$name" --parent "$agora_parent" >/dev/null) \
+    || echo "warning: agora pre-join failed for $name in group $agora_group" >&2
+fi
 
 if [ "$nowait" -eq 1 ]; then
   # Fire-and-forget: register and return; the turn keeps running (it is an
@@ -104,6 +144,7 @@ if [ "$nowait" -eq 1 ]; then
     worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
     status "$status" created "$(_now)" updated "$(_now)" turns "1" \
     ${meta_extra[@]+"${meta_extra[@]}"}
+  _agora_join "$uuid" "$runcwd"
   echo "daemon spawned (no-wait): $name  [$short / $uuid]  status=$status  (reply: daemon-reply.sh $short)"
   exit 0
 fi
@@ -134,6 +175,7 @@ _meta_set "$uuid" \
   worktree "$worktree" model "$model" host "$DAEMON_HOST" boot_id "$DAEMON_BOOT_ID" \
   status "$status" created "$(_now)" updated "$(_now)" turns "1" \
   ${meta_extra[@]+"${meta_extra[@]}"}
+_agora_join "$uuid" "$runcwd"
 
 wtnote=""; [ -n "$worktree" ] && wtnote="  worktree=$runcwd (branch worktree-$wt)"
 echo "daemon spawned: $name  [$short / $uuid]  state=$state${wtnote}  (visible in 'claude agents')"
