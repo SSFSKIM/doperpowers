@@ -229,6 +229,88 @@ rc=0; AGORA_HOME="$h" "$AGORA" join .. a >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "join rejects '..' as a name (exit 2)" || fail "'..' accepted as group (rc=$rc)"
 rm -rf "$h"
 
+# --- board: notify-then-pull — JSONL storage, marker wakes, markdown render --
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
+AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
+
+printf '# Findings\nline two with <code>\n' \
+  | AGORA_HOME="$h" "$AGORA" post g --from archi --title "M2 findings" >/dev/null
+AGORA_HOME="$h" "$AGORA" post g --from impl "short note" >/dev/null
+AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "check the board (#1)" >/dev/null
+
+bids="$(jq -r '.id' "$h/groups/g/board.jsonl" | tr '\n' ',')"
+[ "$bids" = "1,2," ] && ok "post ids increment per board" || fail "board ids (got $bids)"
+
+rc=0; AGORA_HOME="$h" "$AGORA" post g --from ghost "hi" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] && ok "non-member post refused (exit 4)" || fail "ghost post (rc=$rc)"
+
+ibl="$(wc -l < "$h/groups/g/inbox/impl.jsonl" | tr -d ' ')"
+abl="$(wc -l < "$h/groups/g/inbox/archi.jsonl" | tr -d ' ')"
+mtype="$(head -n 1 "$h/groups/g/inbox/impl.jsonl" | jq -r '.type')"
+mbody="$(head -n 1 "$h/groups/g/inbox/impl.jsonl" | jq -r 'has("text")')"
+if [ "$ibl" = 2 ] && [ "$abl" = 1 ] && [ "$mtype" = "post" ] && [ "$mbody" = "false" ]; then
+  ok "post fans a body-less marker to every other member (poster excluded)"
+else
+  fail "post marker fan-out (impl=$ibl archi=$abl type=$mtype has-text=$mbody)"
+fi
+
+bout="$(AGORA_HOME="$h" "$AGORA" board g)"
+if printf '%s\n' "$bout" | grep -q '^<agora-post id="1" from="archi"' \
+   && printf '%s\n' "$bout" | grep -q '^## M2 findings' \
+   && printf '%s\n' "$bout" | grep -q '^line two with <code>' \
+   && printf '%s\n' "$bout" | grep -q '^</agora-post>'; then
+  ok "board renders XML envelope + title heading + raw multiline markdown body"
+else
+  fail "board render"; printf '%s\n' "$bout" >&2
+fi
+
+jout="$(AGORA_HOME="$h" "$AGORA" board g --json | jq -r '.from' | tr '\n' ',')"
+[ "$jout" = "archi,impl," ] && ok "board --json emits the raw records" \
+  || fail "board --json (got $jout)"
+
+pcwd="$(tail -n 1 "$h/groups/g/board.jsonl" | jq -r '.cwd')"
+[ "$pcwd" = "$PWD" ] && ok "post snapshots cwd at post time" || fail "post cwd (got $pcwd)"
+
+lg="$(AGORA_HOME="$h" "$AGORA" log g)"
+if printf '%s\n' "$lg" | grep -q 'archi ▸ board #1 — M2 findings' \
+   && printf '%s\n' "$lg" | grep -q 'archi → impl: check the board'; then
+  ok "shared log carries board markers; renderer handles both record types"
+else
+  fail "log board marker"; printf '%s\n' "$lg" >&2
+fi
+
+vb="$(AGORA_HOME="$h" "$AGORA" view g | grep '^board:')"
+if printf '%s' "$vb" | grep -q '2 post(s)' && printf '%s' "$vb" | grep -q '#2 by impl'; then
+  ok "view summarizes the board (count + latest)"
+else
+  fail "view board line (got: $vb)"
+fi
+
+# The wake path: a listener delivers the board marker as a one-line
+# <agora-board-post> notice (id/from/title, never the body).
+outb="$h/listen-board.out"
+AGORA_HOME="$h" "$AGORA" listen g impl > "$outb" 2>/dev/null &
+lp=$!
+disown "$lp" 2>/dev/null || true
+sleep 1.5
+stop_listen "$lp" "$h"
+nposts="$(grep -c '^<agora-board-post ' "$outb" || true)"
+nmsgs="$(grep -c '^<agora-message ' "$outb" || true)"
+if [ "$nposts" = 1 ] && [ "$nmsgs" = 1 ] \
+   && grep -q '<agora-board-post group="g" id="1" from="archi"' "$outb" \
+   && grep -q '>M2 findings<' "$outb" \
+   && ! grep -q 'line two' "$outb"; then
+  ok "listen wakes with a board notice: id/from/title only, body stays on disk"
+else
+  fail "board notice (posts=$nposts msgs=$nmsgs)"; cat "$outb" >&2 || true
+fi
+
+bmode="$(stat -f %Lp "$h/groups/g/board.jsonl" 2>/dev/null || stat -c %a "$h/groups/g/board.jsonl")"
+[ "$bmode" = 600 ] && ok "board file is private (600)" || fail "board perms ($bmode)"
+rm -rf "$h"
+
 # --- state is private to the owner regardless of the caller's umask ---------
 
 h="$(fresh)"

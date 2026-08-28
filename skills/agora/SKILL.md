@@ -10,7 +10,8 @@ description: Use when agents need to communicate as a group — joining an agora
 Agora is a CLI (`skills/agora/scripts/agora`) that gives a set of Claude
 sessions on one machine a shared working group: a durable conversation log,
 a spawn topology (who spawned whom), per-member inboxes with push delivery,
-and views of all of it for both humans and agents. It layers on top of the
+a communal board for long-form posts, and views of all of it for both humans
+and agents. It layers on top of the
 harness's native point-to-point messaging — think of a group as a room and
 the topology as an advanced ListAgents; native SendMessage still exists for
 one-off contact outside any group.
@@ -47,6 +48,19 @@ when the work genuinely needs it.
 
 A member whose process is gone is not an error: sends to it queue in its inbox
 and drain on its next wake. Escalate to `human` if a dependency stays dormant.
+
+## The group board
+
+Each group has a communal board for long-form markdown (design notes,
+findings, status). Delivery is notify-then-pull: a post wakes every other
+member with a one-line `<agora-board-post>` event carrying id, poster, and
+title — never the body. The body lives on the board; read it rendered:
+
+    agora post <group> --from <you> [--title "…"] "…"   # body via stdin for real documents
+    agora board <group> [-n N] [--json]                 # markdown in <agora-post> envelopes
+
+Posts snapshot the poster's cwd and git branch and are marked in the group
+log. Edge rules don't apply — the board is the whole group's surface.
 
 ## The operator (human) surface
 

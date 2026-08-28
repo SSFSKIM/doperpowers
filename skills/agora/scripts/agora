@@ -7,6 +7,8 @@
 #                  (no text args = body read from stdin; --from defaults to
 #                   $AGORA_ALIAS, then to the operator identity 'human')
 #   agora listen   <group> <alias>   # never exits; stdout = one XML envelope per message
+#   agora post     <group> [--from F] [--title T] [text...]   # board post; stdin if no text
+#   agora board    <group> [-n N] [--json]   # read the board (posts notify; bodies live here)
 #   agora log      <group> [-n N] [-f]
 #   agora list     <group>
 #   agora view     <group>
@@ -27,7 +29,7 @@ umask 077
 
 AGORA_HOME="${AGORA_HOME:-$HOME/.claude/agora}"
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
 die()  { echo "agora: $1" >&2; exit "${2:-2}"; }
 _now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -202,18 +204,104 @@ cmd_listen() {
   # in the consuming session, so an embedded newline would split a message in
   # two. @html runs FIRST and gsub second — the other order would re-escape the
   # '&' of the character reference into '&amp;#10;'.
+  # A board-post marker in the inbox is a wake, not a delivery: the notice
+  # carries id/from/title only, and the body is pulled with `agora board`.
   tail -n "+$((n + 1))" -F "$ib" | while IFS= read -r line; do
     printf '%s' "$line" | jq -r --arg g "$g" \
-      '"<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"'
+      'if .type == "post"
+       then "<agora-board-post group=\"" + $g + "\" id=\"" + (.post|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\">" + (.title|@html|gsub("\n"; "&#10;")) + "</agora-board-post>"
+       else "<agora-message group=\"" + $g + "\" from=\"" + .from + "\" to=\"" + (.to|join(",")) + "\" ts=\"" + .ts + "\"" + (if .off_edge then " off-edge=\"true\"" else "" end) + ">" + (.text|@html|gsub("\n"; "&#10;")) + "</agora-message>"
+       end'
     n=$((n + 1))
     printf '%s' "$n" > "$cu.tmp" && mv "$cu.tmp" "$cu"
   done
 }
 
+# ---------------------------------------------------------------------- board
+
+# The board is the group's communal surface: durable long-form posts, JSONL
+# on disk like everything else, rendered as markdown inside XML envelopes on
+# read. Delivery is notify-then-pull: a post fans a fixed-size marker into
+# every other member's inbox (the listener renders it as a one-line
+# <agora-board-post> wake event); the body never travels through the event
+# channel — readers pull it with `agora board`. Unlike listen envelopes (one
+# line-framed Monitor event each), a board read is a whole document, so
+# bodies keep their real newlines and markdown unescaped. Edge rules don't
+# apply: the board is the whole group's surface.
+
+cmd_post() {
+  local g="${1:?usage: agora post <group> [--from F] [--title T] [text...]}"; shift
+  _need_group "$g"
+  local from="${AGORA_ALIAS:-human}" title="" text="" branch ts id rec marker nf m notified=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --from)  from="${2:-}";  shift 2 ;;
+    --title) title="${2:-}"; shift 2 ;;
+    --) shift; text="$*"; break ;;
+    *)  if [ -z "$text" ]; then text="$1"; else text="$text $1"; fi; shift ;;
+  esac; done
+  [ -n "$text" ] || text="$(cat)"
+  [ -n "$text" ] || die "post: empty body"
+  _valid "$from" || die "bad --from alias: $from"
+  if [ "$from" != "human" ] && [ ! -f "$gd/nodes/$from.json" ]; then
+    die "poster $from has not joined $g (run: agora join $g $from)" 4
+  fi
+  # cwd/branch are snapshotted at post time — the join-time registry values
+  # describe where a member started, not where this post was written.
+  branch="$(git -C "$PWD" branch --show-current 2>/dev/null || true)"
+  ts="$(_now)"
+  _lock "$gd"
+  touch "$gd/board.jsonl"
+  id=$(( $(wc -l < "$gd/board.jsonl") + 1 ))
+  rec="$(jq -cn --argjson id "$id" --arg ts "$ts" --arg from "$from" \
+                --arg title "$title" --arg cwd "$PWD" --arg branch "$branch" \
+                --arg text "$text" \
+                '{id:$id,ts:$ts,from:$from,title:$title,cwd:$cwd,branch:$branch,text:$text}')"
+  printf '%s\n' "$rec" >> "$gd/board.jsonl"
+  # The same fixed-size marker goes to the shared log (one timeline) and to
+  # every other member's inbox (the wake). The body stays on the board only.
+  marker="$(jq -cn --arg ts "$ts" --arg from "$from" --argjson id "$id" --arg title "$title" \
+     '{ts:$ts,from:$from,type:"post",post:$id,title:$title}')"
+  printf '%s\n' "$marker" >> "$gd/log.jsonl"
+  for nf in "$gd"/nodes/*.json; do
+    [ -e "$nf" ] || continue
+    m="$(jq -r '.alias' "$nf")"
+    [ "$m" = "$from" ] && continue
+    touch "$gd/inbox/$m.jsonl"
+    printf '%s\n' "$marker" >> "$gd/inbox/$m.jsonl"
+    notified=$((notified + 1))
+  done
+  _unlock "$gd"
+  echo "posted #$id to $g board ($notified member(s) notified; they read it via: agora board $g)"
+}
+
+cmd_board() {
+  local g="${1:?usage: agora board <group> [-n N] [--json]}"; shift
+  _need_group "$g"
+  local n=0 json=false
+  while [ $# -gt 0 ]; do case "$1" in
+    -n) n="${2:-0}"; shift 2 ;;
+    --json) json=true; shift ;;
+    *) die "board: unknown option $1" ;;
+  esac; done
+  [ -s "$gd/board.jsonl" ] || { [ "$json" = true ] || echo "(no posts)"; return 0; }
+  { if [ "$n" -gt 0 ]; then tail -n "$n" "$gd/board.jsonl"; else cat "$gd/board.jsonl"; fi; } |
+  if [ "$json" = true ]; then cat; else
+    jq -r '"<agora-post id=\"" + (.id|tostring) + "\" from=\"" + .from + "\" ts=\"" + .ts + "\""
+           + (if .branch != "" then " branch=\"" + .branch + "\"" else "" end)
+           + " cwd=\"" + .cwd + "\">"
+           + (if .title != "" then "\n## " + .title else "" end)
+           + "\n" + .text + "\n</agora-post>\n"'
+  fi
+}
+
 # ----------------------------------------------------------- log / list / view
 
 _render_log() {
-  jq --unbuffered -r '(if .off_edge then "⚡" else "" end) + "[" + (.ts|split("T")[1]|rtrimstr("Z")) + "] " + .from + " → " + (.to|join(",")) + ": " + .text'
+  # The log carries two record types: messages, and board-post markers.
+  jq --unbuffered -r 'if .type == "post"
+    then "[" + (.ts|split("T")[1]|rtrimstr("Z")) + "] " + .from + " ▸ board #" + (.post|tostring) + (if .title != "" then " — " + .title else "" end)
+    else (if .off_edge then "⚡" else "" end) + "[" + (.ts|split("T")[1]|rtrimstr("Z")) + "] " + .from + " → " + (.to|join(",")) + ": " + .text
+    end'
 }
 
 cmd_log() {
@@ -266,7 +354,7 @@ _tree() { # group-dir alias line-prefix child-prefix   (recursive)
 }
 
 cmd_view() {
-  local g="${1:?usage: agora view <group>}" nf p any=false offs
+  local g="${1:?usage: agora view <group>}" nf p any=false offs bc
   _need_group "$g"
   echo "agora group: $g"
   for nf in "$gd"/nodes/*.json; do
@@ -286,6 +374,10 @@ cmd_view() {
       _tree "$gd" "$(jq -r '.alias' "$nf")" "    " "    "
     fi
   done
+  if [ -s "$gd/board.jsonl" ]; then
+    bc="$(wc -l < "$gd/board.jsonl" | tr -d ' ')"
+    echo "board: $bc post(s) — latest: $(tail -n 1 "$gd/board.jsonl" | jq -r '"#" + (.id|tostring) + (if .title != "" then " \"" + .title + "\"" else "" end) + " by " + .from + " @ " + .ts')"
+  fi
   offs="$(tail -n 200 "$gd/log.jsonl" | jq -r 'select(.off_edge == true) | .from + " ⇢ " + (.to|join(","))' | sort | uniq -c | sed 's/^ *\([0-9][0-9]*\) \(.*\)/⚡ \2 (\1)/')"
   [ -n "$offs" ] && { echo "off-edge traffic (last 200 msgs):"; echo "$offs"; }
   return 0
@@ -334,6 +426,8 @@ case "$cmd" in
   leave)    cmd_leave "$@" ;;
   send)     cmd_send "$@" ;;
   listen)   cmd_listen "$@" ;;
+  post)     cmd_post "$@" ;;
+  board)    cmd_board "$@" ;;
   log)      cmd_log "$@" ;;
   list)     cmd_list "$@" ;;
   view)     cmd_view "$@" ;;

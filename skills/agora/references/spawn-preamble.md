@@ -23,6 +23,13 @@ never omit it: a send without --from is stamped as the operator "human"):
 
     {{AGORA_CLI}} send {{GROUP}} --from {{ALIAS}} --to <alias>[,<alias>] "text"
 
+The group also has a communal board for long-form notes. A new post wakes you
+with a one-line <agora-board-post> event (id, poster, title — never the body);
+pull the body, and publish your own, with:
+
+    {{AGORA_CLI}} board {{GROUP}} -n 1
+    {{AGORA_CLI}} post {{GROUP}} --from {{ALIAS}} --title "..." "text (or stdin)"
+
 Your in-edge peers are your parent and children; "human" — the operator, who
 sees everything — is always a legal target for escalation. A send to anyone
 else needs --off-edge and is marked in the shared log. To spawn a child daemon
