@@ -53,6 +53,33 @@ session id that `result <job-id>` prints and open it with
 `codex resume <id>` (there is no per-thread flag on `task`). `--fresh`
 forces a new thread when the request merely sounds like a follow-up.
 
+## Computer use
+
+Codex's computer-use stack rides into task threads: the app-server path
+loads whatever plugins the user's codex install has enabled (the bundled
+`computer-use` and `browser` plugins run through the `node_repl`
+code-mode host), and nothing here strips them. Three things gate whether
+desktop control actually works headless:
+
+- `--write` is required. The read-only default's `approvalPolicy: never`
+  auto-denies the per-app Computer Use approval, so every desktop action
+  dies with "not approved" regardless of what the prompt says.
+- Codex must run its computer-use plugin skill's bootstrap
+  (`setupComputerUseRuntime`) before `sky.*` exists — left unprompted it
+  can skip it and report `sky is not defined`. The REPL global dies with
+  the turn: a resumed thread gets a fresh app-server and fresh
+  node_repl, so tell it to re-bootstrap every turn.
+- First approval for an app the service hasn't seen can block forever —
+  the approval UI belongs to the desktop app, and this client implements
+  no permission callback. If a call hangs, have your human partner
+  approve that app once in an interactive Codex session; for browser
+  work prefer the Chrome plugin (`agent.browsers.get("chrome")`) over
+  Computer Use, as Codex's own instructions direct.
+
+A capture of an app with no open window fails with the opaque
+`Computer Use server error -10005: cgWindowNotFound` — target something
+visible, not a windowless background app.
+
 ## As design critic
 
 doperpowers:brainstorming's peer-review layer routes technical-heavy
