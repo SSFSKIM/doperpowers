@@ -51,9 +51,21 @@ are gone (net −339 lines).
   SendMessage and its board-post nudge both arrived as
   `<cross-session-message>` events, and board post #1 rendered with
   branch/cwd snapshot intact. Probe daemon and dogfood group retired.
-- [ ] Exit gate, review half: codex whole-branch review (gpt-5.6-sol,
-  xhigh), findings verified, fix wave if warranted, fixes re-verified.
-- [ ] Finish: version bump, execplan cross-links, PR.
+- [x] (2026-08-31) Exit gate, review half: codex whole-branch review
+  (gpt-5.6-sol, xhigh) returned 2 findings, both P1, both verified real:
+  (a) v1 node records — the state root is persistent and machine-global —
+  carry no `addr` field, so every addr read site emitted the literal
+  string "null" into nudge lists, `list`, and `topology`; (b) addrs are
+  machine-wide SendMessage names while aliases are only group-unique, so
+  two live groups reusing an alias collide. Fixed by a subagent fix wave
+  (commit 44fce349): read-time `.addr // .alias` fallback at all three
+  sites (no on-disk migration), and a non-blocking join-time warning that
+  scans other groups for the same effective addr (rejection is impossible
+  anyway — agora cannot see non-agora sessions; the harness's own
+  disambiguation at send time is the final authority). Independently
+  re-verified: 34 assertions green (v1-record fixture + collision cases
+  added), shell lint clean.
+- [x] (2026-08-31) Finish: version bump 7.67.0, execplan cross-links, PR.
 
 ## Surprises & Discoveries
 
@@ -77,6 +89,14 @@ are gone (net −339 lines).
   hook event either fires inside an active turn or (async events) fires
   while idle but cannot start a turn. Wake belongs to messages, not hooks —
   confirmed against the hooks reference before this design was chosen.
+- Observation: (exit-gate review, 2026-08-31) both review findings were
+  upgrade-boundary defects, not new-code logic bugs: a machine-global,
+  persistent state root means a "rewrite" is actually an in-place upgrade,
+  so every new field needs a read-time answer for records that predate it,
+  and every identifier that leaves the CLI's namespace (alias → machine-wide
+  session name) needs its uniqueness assumptions re-checked at the wider
+  scope. The fresh-`$AGORA_HOME` test style is blind to both by
+  construction; a v1-shaped fixture is now part of the suite.
 
 ## Decision Log
 
@@ -112,4 +132,18 @@ are gone (net −339 lines).
 
 ## Outcomes & Retrospective
 
-(To be written at finish, after the exit gate.)
+The pivot landed as a deletion-heavy diff (−586/+247 in the core commit)
+that removed v1's entire delivery layer without touching the group layer's
+semantics, and the live fleet proof exercised every new-path behavior
+end-to-end on the first attempt: the scout daemon resolved its parent's
+addr from the topology, its direct message and board-post nudge both
+arrived as native cross-session events, and the blocking spawn watcher
+returned normally — the v1 `--no-wait` hang is structurally gone. The
+review wave found nothing wrong in the new protocol itself; both findings
+sat on the upgrade boundary (persistent v1 records, alias→machine-wide
+namespace widening), the species now recorded in Surprises. What v2 gives
+up knowingly: the operator's group-wide DM timeline (the board and
+harness-side transcripts are the record now) and CLI-originated targeted
+sends; neither surfaced as a real cost during validation, and a
+resume-based (`claude --resume -p`) wake path remains buildable if a
+script ever genuinely needs to nudge an agent.
