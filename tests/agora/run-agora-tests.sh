@@ -15,17 +15,9 @@ fresh() { # new isolated state root; echoes it
   mktemp -d "${TMPDIR:-/tmp}/agora-test.XXXXXX"
 }
 
-# Kill a backgrounded listen (script pid + its orphaned tail, matched by the
-# unique temp path — macOS has no timeout(1) or setsid).
-stop_listen() { # pid home
-  kill "$1" 2>/dev/null || true
-  pkill -f "tail -n .*$2" 2>/dev/null || true
-  wait "$1" 2>/dev/null || true
-}
-
 unset AGORA_ALIAS || true
 
-# --- join: idempotency, validation ------------------------------------------
+# --- join: idempotency, validation, addr ------------------------------------
 
 h="$(fresh)"
 AGORA_HOME="$h" "$AGORA" join g1 archi --desc "the architect" >/dev/null
@@ -41,138 +33,38 @@ else
   fail "join idempotency (j1=$j1 j2=$j2 u2=$u2 d2=$d2)"
 fi
 
+adef="$(jq -r '.addr' "$h/groups/g1/nodes/archi.json")"
+[ "$adef" = "archi" ] && ok "addr defaults to the alias" || fail "addr default (got $adef)"
+
+AGORA_HOME="$h" "$AGORA" join g1 orch --addr "wispy session 7" --session "abc-123" >/dev/null
+aov="$(jq -r '.addr' "$h/groups/g1/nodes/orch.json")"
+sov="$(jq -r '.session' "$h/groups/g1/nodes/orch.json")"
+if [ "$aov" = "wispy session 7" ] && [ "$sov" = "abc-123" ]; then
+  ok "--addr records a harness session name verbatim (spaces legal); --session recorded"
+else
+  fail "addr/session override (addr=$aov session=$sov)"
+fi
+
 rc=0; AGORA_HOME="$h" "$AGORA" join g1 'bad alias!' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "join rejects bad charset (exit 2)" || fail "bad charset accepted (rc=$rc)"
 rc=0; AGORA_HOME="$h" "$AGORA" join g1 human >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "join rejects reserved alias human" || fail "human join accepted (rc=$rc)"
 rm -rf "$h"
 
-# --- send: edge rules, fan-out, marking -------------------------------------
+# --- removed transport surface stays refused, with a pointer ----------------
+# Long-lived sessions carry transcripts (and old preambles) that still say
+# `agora send` / `listen` / `log`; the refusal must name the replacement.
 
 h="$(fresh)"
 AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl-1 --parent archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl-2 --parent archi >/dev/null
-
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl-1 "start M1" >/dev/null \
-  && ok "parent→child send allowed" || fail "parent→child send refused"
-AGORA_HOME="$h" "$AGORA" send g --from impl-1 --to archi "ack" >/dev/null \
-  && ok "child→parent send allowed" || fail "child→parent send refused"
-
-rc=0; err="$(AGORA_HOME="$h" "$AGORA" send g --from impl-1 --to impl-2 "psst" 2>&1 >/dev/null)" || rc=$?
-if [ "$rc" -eq 3 ] && printf '%s' "$err" | grep -q "archi"; then
-  ok "sibling send refused with exit 3, error names real neighbors"
-else
-  fail "sibling send (rc=$rc err=$err)"
-fi
-
-AGORA_HOME="$h" "$AGORA" send g --from impl-1 --to impl-2 --off-edge "psst" >/dev/null
-last_off="$(tail -n 1 "$h/groups/g/log.jsonl" | jq -r '.off_edge')"
-[ "$last_off" = "true" ] && ok "--off-edge send succeeds and record is marked" \
-  || fail "off-edge marking (off_edge=$last_off)"
-
-AGORA_HOME="$h" "$AGORA" send g --from impl-1 --to human "escalating" >/dev/null \
-  && ok "human is always a legal target" || fail "send to human refused"
-AGORA_HOME="$h" "$AGORA" send g --to impl-1,impl-2 "operator ping" >/dev/null \
-  && ok "human sender (default --from) bypasses edge rules" || fail "human bypass refused"
-
-from_env="$(AGORA_ALIAS=archi AGORA_HOME="$h" "$AGORA" send g --to impl-1 "env from" >/dev/null \
-  && tail -n 1 "$h/groups/g/log.jsonl" | jq -r '.from')"
-[ "$from_env" = "archi" ] && ok "--from defaults from AGORA_ALIAS" || fail "AGORA_ALIAS default (got $from_env)"
-
-logl="$(wc -l < "$h/groups/g/log.jsonl" | tr -d ' ')"
-i1="$(wc -l < "$h/groups/g/inbox/impl-1.jsonl" | tr -d ' ')"
-i2="$(wc -l < "$h/groups/g/inbox/impl-2.jsonl" | tr -d ' ')"
-# sends so far: archi→impl-1, impl-1→archi, impl-1→impl-2(off), impl-1→human,
-# human→both, archi→impl-1(env)  = 6 log lines; impl-1 inbox: 3; impl-2 inbox: 2
-if [ "$logl" = 6 ] && [ "$i1" = 3 ] && [ "$i2" = 2 ]; then
-  ok "fan-out: one log line per send, one inbox line per target"
-else
-  fail "fan-out counts (log=$logl impl-1=$i1 impl-2=$i2)"
-fi
-multi_log="$(grep 'operator ping' "$h/groups/g/log.jsonl")"
-multi_i1="$(grep 'operator ping' "$h/groups/g/inbox/impl-1.jsonl")"
-multi_i2="$(grep 'operator ping' "$h/groups/g/inbox/impl-2.jsonl")"
-if [ "$(printf '%s' "$multi_log" | jq -r '.to|join(",")')" = "impl-1,impl-2" ] \
-   && [ "$multi_log" = "$multi_i1" ] && [ "$multi_log" = "$multi_i2" ]; then
-  ok "multi-target record carries full to-list, identical in log and inboxes"
-else
-  fail "multi-target record"
-fi
-
-echo "line one from stdin" | AGORA_HOME="$h" "$AGORA" send g --from archi --to impl-1 >/dev/null
-stext="$(tail -n 1 "$h/groups/g/log.jsonl" | jq -r '.text')"
-[ "$stext" = "line one from stdin" ] && ok "empty text args reads body from stdin" \
-  || fail "stdin body (got: $stext)"
-
-rc=0; AGORA_HOME="$h" "$AGORA" send g --from archi --to ghost "hi" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 4 ] && ok "unknown target refused (exit 4)" || fail "unknown target (rc=$rc)"
-rm -rf "$h"
-
-# --- listen: backlog, cursor, envelope, escaping ----------------------------
-
-h="$(fresh)"
-AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "first" >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl 'has <tags> & "quotes"' >/dev/null
-
-out="$h/listen1.out"
-AGORA_HOME="$h" "$AGORA" listen g impl > "$out" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-lines="$(grep -c '^<agora-message ' "$out" || true)"
-cur="$(cat "$h/groups/g/cursor/impl" 2>/dev/null || echo none)"
-if [ "$lines" = 2 ] && [ "$cur" = 2 ]; then
-  ok "listen delivers backlog and checkpoints cursor"
-else
-  fail "listen backlog (lines=$lines cursor=$cur)"; cat "$out" >&2 || true
-fi
-if grep -q 'from="archi" to="impl"' "$out" && grep -q '&lt;tags&gt; &amp; &quot;quotes&quot;' "$out"; then
-  ok "envelope carries provenance attrs; text is html-escaped, one line per message"
-else
-  fail "envelope format"; cat "$out" >&2 || true
-fi
-
-out2="$h/listen2.out"
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "third" >/dev/null
-AGORA_HOME="$h" "$AGORA" listen g impl > "$out2" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-lines2="$(grep -c '^<agora-message ' "$out2" || true)"
-if [ "$lines2" = 1 ] && grep -q '>third<' "$out2"; then
-  ok "restarted listen resumes from cursor (only the new message)"
-else
-  fail "cursor resume (lines=$lines2)"; cat "$out2" >&2 || true
-fi
-rm -rf "$h"
-
-# --- listen: a multiline body is still ONE envelope line --------------------
-# Each stdout line becomes exactly one Monitor event in the consuming session,
-# so an embedded newline must survive as a character reference, not a split.
-
-h="$(fresh)"
-AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
-printf 'line1\nline2\n' | AGORA_HOME="$h" "$AGORA" send g --from archi --to impl >/dev/null
-
-out3="$h/listen3.out"
-AGORA_HOME="$h" "$AGORA" listen g impl > "$out3" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-env3="$(grep -c '^<agora-message ' "$out3" || true)"
-all3="$(wc -l < "$out3" | tr -d ' ')"
-if [ "$env3" = 1 ] && [ "$all3" = 1 ] && grep -q 'line1&#10;line2' "$out3"; then
-  ok "multiline body renders as one envelope line with character references"
-else
-  fail "multiline envelope (envelopes=$env3 stdout-lines=$all3)"; cat "$out3" >&2 || true
-fi
+for c in send listen log; do
+  rc=0; err="$(AGORA_HOME="$h" "$AGORA" "$c" g --from archi --to x "hi" 2>&1 >/dev/null)" || rc=$?
+  if [ "$rc" -eq 2 ] && printf '%s' "$err" | grep -q "SendMessage"; then
+    ok "removed command '$c' refused (exit 2), error points at SendMessage"
+  else
+    fail "removed command '$c' (rc=$rc err=$err)"
+  fi
+done
 rm -rf "$h"
 
 # --- topology + view --------------------------------------------------------
@@ -182,18 +74,15 @@ AGORA_HOME="$h" "$AGORA" join g archi --desc root >/dev/null
 AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
 AGORA_HOME="$h" "$AGORA" join g rev --parent impl >/dev/null
 AGORA_HOME="$h" "$AGORA" join g lost --parent gone >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "one" >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from rev --to archi --off-edge "skip level" >/dev/null
 
 topo="$(AGORA_HOME="$h" "$AGORA" topology g)"
 nn="$(printf '%s' "$topo" | jq '.nodes | length')"
 edge_ok="$(printf '%s' "$topo" | jq '[.edges[] | select(.from=="archi" and .to=="impl")] | length')"
-unread_impl="$(printf '%s' "$topo" | jq '.nodes[] | select(.alias=="impl") | .unread')"
-offact="$(printf '%s' "$topo" | jq '[.off_edge_activity[] | select(.from=="rev" and .to=="archi" and .count==1)] | length')"
-if [ "$nn" = 4 ] && [ "$edge_ok" = 1 ] && [ "$unread_impl" = 1 ] && [ "$offact" = 1 ]; then
-  ok "topology JSON: nodes+unread, parent-derived edges, off-edge activity"
+addr_impl="$(printf '%s' "$topo" | jq -r '.nodes[] | select(.alias=="impl") | .addr')"
+if [ "$nn" = 4 ] && [ "$edge_ok" = 1 ] && [ "$addr_impl" = "impl" ]; then
+  ok "topology JSON: nodes carry addr, edges derived from parents"
 else
-  fail "topology (nodes=$nn edge=$edge_ok unread=$unread_impl offact=$offact)"
+  fail "topology (nodes=$nn edge=$edge_ok addr=$addr_impl)"
   printf '%s\n' "$topo" >&2
 fi
 
@@ -202,17 +91,26 @@ vout="$(AGORA_HOME="$h" "$AGORA" view g)"
 # so indentation has to accumulate down the recursion, not reset each level.
 if printf '%s\n' "$vout" | grep -qE '^└── impl' \
    && printf '%s\n' "$vout" | grep -qE '^    └── rev' \
-   && printf '%s' "$vout" | grep -q "dangling — parent 'gone'" \
-   && printf '%s' "$vout" | grep -q "⚡ rev ⇢ archi (1)"; then
-  ok "view nests each depth one level deeper; dangling section, off-edge traffic"
+   && printf '%s' "$vout" | grep -q "dangling — parent 'gone'"; then
+  ok "view nests each depth one level deeper; dangling section present"
 else
   fail "view rendering"; printf '%s\n' "$vout" >&2
 fi
 
+listed="$(AGORA_HOME="$h" "$AGORA" list g)"
+if printf '%s\n' "$listed" | head -n 1 | grep -q 'ADDR' \
+   && printf '%s\n' "$listed" | grep -q '^impl .*archi'; then
+  ok "list shows the member table with an ADDR column"
+else
+  fail "list table"; printf '%s\n' "$listed" >&2
+fi
+
+AGORA_HOME="$h" "$AGORA" post g --from archi "history marker" >/dev/null
 AGORA_HOME="$h" "$AGORA" leave g rev >/dev/null
 left="$(AGORA_HOME="$h" "$AGORA" list g | grep -c '^rev ' || true)"
-[ "$left" = 0 ] && [ -f "$h/groups/g/inbox/rev.jsonl" ] \
-  && ok "leave removes membership, keeps history" || fail "leave semantics"
+bkept="$(AGORA_HOME="$h" "$AGORA" board g --json | jq -r '.text')"
+[ "$left" = 0 ] && [ "$bkept" = "history marker" ] \
+  && ok "leave removes membership, keeps board history" || fail "leave semantics"
 rm -rf "$h"
 
 # --- path safety: no argument reaches the filesystem unvalidated ------------
@@ -221,40 +119,41 @@ h="$(fresh)"
 AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
 rc=0; AGORA_HOME="$h" "$AGORA" leave g '../../x' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "leave rejects a traversing alias (exit 2)" || fail "leave traversal (rc=$rc)"
-rc=0; AGORA_HOME="$h" "$AGORA" listen g '../../x' >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "listen rejects a traversing alias (exit 2)" || fail "listen traversal (rc=$rc)"
+rc=0; AGORA_HOME="$h" "$AGORA" post g --from '../../x' "hi" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "post rejects a traversing --from (exit 2)" || fail "post traversal (rc=$rc)"
 rc=0; AGORA_HOME="$h" "$AGORA" join . a >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "join rejects '.' as a name (exit 2)" || fail "'.' accepted as group (rc=$rc)"
 rc=0; AGORA_HOME="$h" "$AGORA" join .. a >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "join rejects '..' as a name (exit 2)" || fail "'..' accepted as group (rc=$rc)"
 rm -rf "$h"
 
-# --- board: notify-then-pull — JSONL storage, marker wakes, markdown render --
+# --- board: storage, render, nudge hint -------------------------------------
 
 h="$(fresh)"
 AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
 AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
+AGORA_HOME="$h" "$AGORA" join g scout --parent archi --addr "scout session" >/dev/null
 
-printf '# Findings\nline two with <code>\n' \
-  | AGORA_HOME="$h" "$AGORA" post g --from archi --title "M2 findings" >/dev/null
+pout="$(printf '# Findings\nline two with <code>\n' \
+  | AGORA_HOME="$h" "$AGORA" post g --from archi --title "M2 findings")"
 AGORA_HOME="$h" "$AGORA" post g --from impl "short note" >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "check the board (#1)" >/dev/null
 
 bids="$(jq -r '.id' "$h/groups/g/board.jsonl" | tr '\n' ',')"
 [ "$bids" = "1,2," ] && ok "post ids increment per board" || fail "board ids (got $bids)"
 
+# Delivery is the poster's job: the command must hand the poster the exact
+# addrs to nudge — every other member, by addr (not alias), poster excluded.
+if printf '%s\n' "$pout" | grep -q 'SendMessage' \
+   && printf '%s\n' "$pout" | grep -q 'impl' \
+   && printf '%s\n' "$pout" | grep -q 'scout session' \
+   && ! printf '%s\n' "$pout" | grep -qE 'addrs:.*archi'; then
+  ok "post prints the other members' addrs to nudge (poster excluded)"
+else
+  fail "post nudge hint"; printf '%s\n' "$pout" >&2
+fi
+
 rc=0; AGORA_HOME="$h" "$AGORA" post g --from ghost "hi" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] && ok "non-member post refused (exit 4)" || fail "ghost post (rc=$rc)"
-
-ibl="$(wc -l < "$h/groups/g/inbox/impl.jsonl" | tr -d ' ')"
-abl="$(wc -l < "$h/groups/g/inbox/archi.jsonl" | tr -d ' ')"
-mtype="$(head -n 1 "$h/groups/g/inbox/impl.jsonl" | jq -r '.type')"
-mbody="$(head -n 1 "$h/groups/g/inbox/impl.jsonl" | jq -r 'has("text")')"
-if [ "$ibl" = 2 ] && [ "$abl" = 1 ] && [ "$mtype" = "post" ] && [ "$mbody" = "false" ]; then
-  ok "post fans a body-less marker to every other member (poster excluded)"
-else
-  fail "post marker fan-out (impl=$ibl archi=$abl type=$mtype has-text=$mbody)"
-fi
 
 bout="$(AGORA_HOME="$h" "$AGORA" board g)"
 if printf '%s\n' "$bout" | grep -q '^<agora-post id="1" from="archi"' \
@@ -273,14 +172,6 @@ jout="$(AGORA_HOME="$h" "$AGORA" board g --json | jq -r '.from' | tr '\n' ',')"
 pcwd="$(tail -n 1 "$h/groups/g/board.jsonl" | jq -r '.cwd')"
 [ "$pcwd" = "$PWD" ] && ok "post snapshots cwd at post time" || fail "post cwd (got $pcwd)"
 
-lg="$(AGORA_HOME="$h" "$AGORA" log g)"
-if printf '%s\n' "$lg" | grep -q 'archi ▸ board #1 — M2 findings' \
-   && printf '%s\n' "$lg" | grep -q 'archi → impl: check the board'; then
-  ok "shared log carries board markers; renderer handles both record types"
-else
-  fail "log board marker"; printf '%s\n' "$lg" >&2
-fi
-
 vb="$(AGORA_HOME="$h" "$AGORA" view g | grep '^board:')"
 if printf '%s' "$vb" | grep -q '2 post(s)' && printf '%s' "$vb" | grep -q '#2 by impl'; then
   ok "view summarizes the board (count + latest)"
@@ -288,31 +179,19 @@ else
   fail "view board line (got: $vb)"
 fi
 
-# The wake path: a listener delivers the board marker as a one-line
-# <agora-board-post> notice (id/from/title, never the body).
-outb="$h/listen-board.out"
-AGORA_HOME="$h" "$AGORA" listen g impl > "$outb" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-nposts="$(grep -c '^<agora-board-post ' "$outb" || true)"
-nmsgs="$(grep -c '^<agora-message ' "$outb" || true)"
-if [ "$nposts" = 1 ] && [ "$nmsgs" = 1 ] \
-   && grep -q '<agora-board-post group="g" id="1" from="archi"' "$outb" \
-   && grep -q '>M2 findings<' "$outb" \
-   && ! grep -q 'line two' "$outb"; then
-  ok "listen wakes with a board notice: id/from/title only, body stays on disk"
+gline="$(AGORA_HOME="$h" "$AGORA" groups | grep '^g ')"
+if printf '%s' "$gline" | grep -q '3 members' && printf '%s' "$gline" | grep -q 'last post: 2'; then
+  ok "groups lists member count and last post time"
 else
-  fail "board notice (posts=$nposts msgs=$nmsgs)"; cat "$outb" >&2 || true
+  fail "groups line (got: $gline)"
 fi
 
 bmode="$(stat -f %Lp "$h/groups/g/board.jsonl" 2>/dev/null || stat -c %a "$h/groups/g/board.jsonl")"
 [ "$bmode" = 600 ] && ok "board file is private (600)" || fail "board perms ($bmode)"
 rm -rf "$h"
 
-# --- board --id: a wake names a post number, and several can be queued -------
-# `-n 1` only ever returns the latest post, so a member waking with notices #1
+# --- board --id: a nudge names a post number, several can be pending ---------
+# `-n 1` only ever returns the latest post, so a member with nudges for #1
 # and #2 pending must be able to fetch each by id.
 
 h="$(fresh)"
@@ -330,6 +209,15 @@ if printf '%s\n' "$b1" | grep -q 'id="1"' && ! printf '%s\n' "$b1" | grep -q 'id
   ok "board --id renders exactly that post (--json too); unknown id exits 4"
 else
   fail "board --id (rc=$rc)"; printf '%s\n' "$b1" >&2
+fi
+
+# A sole member's post has nobody to nudge — no dangling hint line.
+solo="$(printf 'x\n' | AGORA_HOME="$h" "$AGORA" post g --from archi)"
+if printf '%s\n' "$solo" | grep -q '^posted #3' \
+   && ! printf '%s\n' "$solo" | grep -q 'SendMessage'; then
+  ok "post with no other members prints no nudge hint"
+else
+  fail "solo post output"; printf '%s\n' "$solo" >&2
 fi
 
 # --- board render: a body cannot terminate or forge an envelope --------------
@@ -354,67 +242,55 @@ else
 fi
 rm -rf "$h"
 
-# --- listen survives a record it cannot render ------------------------------
-# A listener outlives the binary that armed it (version skew is structural):
-# an unrenderable line must not kill the receive surface.
+# --- v1 records (no addr field) read back as their alias ---------------------
+# The state root is machine-global and persistent, so node files written before
+# `addr` existed are still on disk. Every read site must fall back to the alias
+# instead of surfacing jq's literal "null" as a SendMessage target.
 
 h="$(fresh)"
 AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "before" >/dev/null
-printf '{"ts":"2026-08-28T00:00:00Z","from":"archi","type":"mystery-v9"}\n' \
-  >> "$h/groups/g/inbox/impl.jsonl"
-AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "after" >/dev/null
+jq -n --arg alias old --arg parent archi --arg session "" --arg cwd /tmp \
+      --arg branch "" --arg desc "a v1 record" --arg joined 2024-01-01T00:00:00Z \
+      --arg updated 2024-01-01T00:00:00Z \
+      '{alias:$alias,parent:$parent,session:$session,cwd:$cwd,branch:$branch,desc:$desc,joined:$joined,updated:$updated}' \
+      > "$h/groups/g/nodes/old.json"
 
-outx="$h/listen-skew.out"
-AGORA_HOME="$h" "$AGORA" listen g impl > "$outx" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-curx="$(cat "$h/groups/g/cursor/impl" 2>/dev/null || echo none)"
-if grep -q '>before<' "$outx" && grep -q '>after<' "$outx" && [ "$curx" = 3 ]; then
-  ok "listen skips an unrenderable record and keeps delivering (cursor advances)"
+lrow="$(AGORA_HOME="$h" "$AGORA" list g | grep '^old ')"
+if printf '%s' "$lrow" | grep -q 'old .*old' && ! printf '%s' "$lrow" | grep -q 'null'; then
+  ok "list shows a v1 record's alias in the ADDR column, never 'null'"
 else
-  fail "listen version-skew survival (cursor=$curx)"; cat "$outx" >&2 || true
+  fail "list addr fallback (got: $lrow)"
+fi
+
+taddr="$(AGORA_HOME="$h" "$AGORA" topology g | jq -r '.nodes[] | select(.alias=="old") | .addr')"
+[ "$taddr" = "old" ] && ok "topology normalizes a v1 record's addr to its alias" \
+  || fail "topology addr fallback (got $taddr)"
+
+nudge="$(AGORA_HOME="$h" "$AGORA" post g --from archi "hello v1" | grep 'addrs:')"
+if printf '%s' "$nudge" | grep -q 'old' && ! printf '%s' "$nudge" | grep -q 'null'; then
+  ok "post nudges a v1 member by alias, never by 'null'"
+else
+  fail "post addr fallback (got: $nudge)"
 fi
 rm -rf "$h"
 
-# --- listen: a lost consumer must not checkpoint what it never delivered -----
-# The opposite failure mode from version skew: `head -n 1` closes the listener's
-# stdout after one line. Everything past that point is undelivered, so the
-# cursor must stay behind it and a re-armed listener must replay the rest.
+# --- join warns when an addr is already live in another group ----------------
+# Aliases are group-unique but addrs are machine-wide SendMessage names: two
+# live groups each holding an 'archi' misroute. Warn, never reject.
 
 h="$(fresh)"
-AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
-AGORA_HOME="$h" "$AGORA" join g impl --parent archi >/dev/null
-for m in one two three; do
-  AGORA_HOME="$h" "$AGORA" send g --from archi --to impl "$m" >/dev/null
-done
-
-outp="$h/listen-epipe.out"
-( AGORA_HOME="$h" "$AGORA" listen g impl 2>/dev/null | head -n 1 > "$outp" ) &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-# 1 or 2, depending on how much reached the pipe buffer before head exited —
-# what matters is that the un-emitted tail of the backlog was not checkpointed.
-curp="$(cat "$h/groups/g/cursor/impl" 2>/dev/null || echo 0)"
-
-outq="$h/listen-replay.out"
-AGORA_HOME="$h" "$AGORA" listen g impl > "$outq" 2>/dev/null &
-lp=$!
-disown "$lp" 2>/dev/null || true
-sleep 1.5
-stop_listen "$lp" "$h"
-replayed="$(grep -c '^<agora-message ' "$outq" || true)"
-if [ "$curp" -lt 3 ] && [ "$replayed" = "$((3 - curp))" ]; then
-  ok "listen with a dead consumer dies un-checkpointed; re-arm replays the rest"
+AGORA_HOME="$h" "$AGORA" join alpha archi >/dev/null
+rc=0; werr="$(AGORA_HOME="$h" "$AGORA" join beta archi 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$werr" | grep -q 'alpha' \
+   && printf '%s' "$werr" | grep -qi 'warning'; then
+  ok "cross-group addr collision warns on stderr, join still succeeds"
 else
-  fail "listen output-failure checkpointing (cursor=$curp replayed=$replayed)"
-  cat "$outq" >&2 || true
+  fail "addr collision warning (rc=$rc err=$werr)"
 fi
+
+rc=0; qerr="$(AGORA_HOME="$h" "$AGORA" join beta impl 2>&1 >/dev/null)" || rc=$?
+[ "$rc" -eq 0 ] && [ -z "$qerr" ] && ok "a non-colliding join is silent" \
+  || fail "unexpected join output (rc=$rc err=$qerr)"
 rm -rf "$h"
 
 # --- state is private to the owner regardless of the caller's umask ---------
@@ -422,11 +298,11 @@ rm -rf "$h"
 h="$(fresh)"
 (umask 022; AGORA_HOME="$h" "$AGORA" join g archi >/dev/null)
 gmode="$(stat -f %Lp "$h/groups/g" 2>/dev/null || stat -c %a "$h/groups/g")"
-imode="$(stat -f %Lp "$h/groups/g/inbox/archi.jsonl" 2>/dev/null || stat -c %a "$h/groups/g/inbox/archi.jsonl")"
-if [ "$gmode" = 700 ] && [ "$imode" = 600 ]; then
-  ok "script umask wins over a 022 caller: group dir 700, inbox 600"
+nmode="$(stat -f %Lp "$h/groups/g/nodes/archi.json" 2>/dev/null || stat -c %a "$h/groups/g/nodes/archi.json")"
+if [ "$gmode" = 700 ] && [ "$nmode" = 600 ]; then
+  ok "script umask wins over a 022 caller: group dir 700, node file 600"
 else
-  fail "state permissions (group=$gmode inbox=$imode)"
+  fail "state permissions (group=$gmode node=$nmode)"
 fi
 rm -rf "$h"
 

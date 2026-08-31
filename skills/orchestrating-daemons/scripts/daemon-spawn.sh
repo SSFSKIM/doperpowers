@@ -60,17 +60,19 @@ meta_extra=()
 
 # Agora dimension (env-injected, same pattern as the gateway dimension above):
 # AGORA_GROUP enrolls the daemon as a node in an agora group (skills/agora —
-# the inter-agent CLI comm surface); AGORA_PARENT names its spawner. The child
-# gets the agora preamble prepended to its task and is auto-joined. Its agora
-# identity travels ONLY in the preamble text — the harness Bash tool
-# initializes shells from the user's profile, NOT from the claude process env,
-# so exporting AGORA_* to the child process would never reach its commands
-# (observed live: a daemon-run spawn silently lost the dimension that way).
-# The node is pre-registered as soon as the launch is known to have SUCCEEDED
-# (right after the banner parse) and before the first turn is polled — the
-# daemon may `agora send` during its very first turn and a sender must already
-# be a member, while a failed launch must leave no phantom member behind. The
-# post-uuid re-join back-fills the session id.
+# the inter-agent group registry/topology/board; messaging itself is the
+# harness's native SendMessage, addressed by the node's addr = the daemon
+# name); AGORA_PARENT names its spawner. The child gets the agora preamble
+# prepended to its task and is auto-joined. Its agora identity travels ONLY
+# in the preamble text — the harness Bash tool initializes shells from the
+# user's profile, NOT from the claude process env, so exporting AGORA_* to
+# the child process would never reach its commands (observed live: a
+# daemon-run spawn silently lost the dimension that way). The node is
+# pre-registered as soon as the launch is known to have SUCCEEDED (right
+# after the banner parse) and before the first turn is polled — the daemon
+# may post or be looked up in the topology during its very first turn, while
+# a failed launch must leave no phantom member behind. The post-uuid re-join
+# back-fills the session id.
 agora_group="${AGORA_GROUP:-}"
 agora_parent="${AGORA_PARENT:-}"
 if [ -n "$agora_group" ]; then

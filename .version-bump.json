@@ -21,6 +21,7 @@
     "exclude": [
       "CHANGELOG.md",
       "RELEASE-NOTES.md",
+      "docs/doperpowers/execplans",
       "node_modules",
       ".git",
       ".version-bump.json",
