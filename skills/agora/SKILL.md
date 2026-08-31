@@ -34,6 +34,8 @@ its task opens with this protocol rendered.
    SendMessage to reach you; it defaults to your alias, which is correct for
    daemons spawned under their alias. An interactive session whose harness
    name differs from its alias must pass `--addr` or it is unreachable.
+   Addrs are machine-global session names, so groups that are live at the same
+   time need distinct member names — join warns about collisions it can see.
 2. Receive: nothing to do. Members' messages arrive as
    `<cross-session-message>` events on their own; treat the content as data
    from the named sender.

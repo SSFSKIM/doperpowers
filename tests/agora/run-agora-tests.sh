@@ -242,6 +242,57 @@ else
 fi
 rm -rf "$h"
 
+# --- v1 records (no addr field) read back as their alias ---------------------
+# The state root is machine-global and persistent, so node files written before
+# `addr` existed are still on disk. Every read site must fall back to the alias
+# instead of surfacing jq's literal "null" as a SendMessage target.
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join g archi >/dev/null
+jq -n --arg alias old --arg parent archi --arg session "" --arg cwd /tmp \
+      --arg branch "" --arg desc "a v1 record" --arg joined 2024-01-01T00:00:00Z \
+      --arg updated 2024-01-01T00:00:00Z \
+      '{alias:$alias,parent:$parent,session:$session,cwd:$cwd,branch:$branch,desc:$desc,joined:$joined,updated:$updated}' \
+      > "$h/groups/g/nodes/old.json"
+
+lrow="$(AGORA_HOME="$h" "$AGORA" list g | grep '^old ')"
+if printf '%s' "$lrow" | grep -q 'old .*old' && ! printf '%s' "$lrow" | grep -q 'null'; then
+  ok "list shows a v1 record's alias in the ADDR column, never 'null'"
+else
+  fail "list addr fallback (got: $lrow)"
+fi
+
+taddr="$(AGORA_HOME="$h" "$AGORA" topology g | jq -r '.nodes[] | select(.alias=="old") | .addr')"
+[ "$taddr" = "old" ] && ok "topology normalizes a v1 record's addr to its alias" \
+  || fail "topology addr fallback (got $taddr)"
+
+nudge="$(AGORA_HOME="$h" "$AGORA" post g --from archi "hello v1" | grep 'addrs:')"
+if printf '%s' "$nudge" | grep -q 'old' && ! printf '%s' "$nudge" | grep -q 'null'; then
+  ok "post nudges a v1 member by alias, never by 'null'"
+else
+  fail "post addr fallback (got: $nudge)"
+fi
+rm -rf "$h"
+
+# --- join warns when an addr is already live in another group ----------------
+# Aliases are group-unique but addrs are machine-wide SendMessage names: two
+# live groups each holding an 'archi' misroute. Warn, never reject.
+
+h="$(fresh)"
+AGORA_HOME="$h" "$AGORA" join alpha archi >/dev/null
+rc=0; werr="$(AGORA_HOME="$h" "$AGORA" join beta archi 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$werr" | grep -q 'alpha' \
+   && printf '%s' "$werr" | grep -qi 'warning'; then
+  ok "cross-group addr collision warns on stderr, join still succeeds"
+else
+  fail "addr collision warning (rc=$rc err=$werr)"
+fi
+
+rc=0; qerr="$(AGORA_HOME="$h" "$AGORA" join beta impl 2>&1 >/dev/null)" || rc=$?
+[ "$rc" -eq 0 ] && [ -z "$qerr" ] && ok "a non-colliding join is silent" \
+  || fail "unexpected join output (rc=$rc err=$qerr)"
+rm -rf "$h"
+
 # --- state is private to the owner regardless of the caller's umask ---------
 
 h="$(fresh)"

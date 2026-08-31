@@ -70,6 +70,26 @@ _unlock() { rmdir "$1/locks/board.lock" 2>/dev/null || true; }
 
 # ---------------------------------------------------------------- join / leave
 
+# Aliases are unique per group, but an addr is a machine-wide SendMessage name:
+# two live groups each holding an `architect` make sends to that name ambiguous.
+# agora cannot see sessions outside its own groups, so this warns about the
+# collisions it can see rather than rejecting the join.
+_warn_addr_clash() { # group addr
+  local nf other
+  for nf in "$AGORA_HOME"/groups/*/nodes/*.json; do
+    [ -e "$nf" ] || break
+    other="$(basename "$(dirname "$(dirname "$nf")")")"
+    if [ "$other" = "$1" ]; then continue; fi
+    # A node file can vanish mid-scan; an unreadable one simply doesn't clash.
+    if [ "$(jq -r '.addr // .alias' "$nf" 2>/dev/null || true)" = "$2" ]; then
+      echo "agora: warning: addr '$2' is already held by $other/$(basename "$nf" .json)" \
+           "— SendMessage names are machine-wide, so concurrently-live groups need distinct member names" >&2
+      return 0
+    fi
+  done
+  return 0
+}
+
 cmd_join() {
   local g="${1:?usage: agora join <group> <alias> [--parent P] [--desc D] [--session S] [--addr A]}"; shift
   local a="${1:?missing alias}"; shift
@@ -87,8 +107,11 @@ cmd_join() {
   [ -z "$parent" ] || _valid "$parent" || die "bad parent alias: $parent"
   # addr is a harness session name, never a filesystem path, so it is not
   # name-validated — interactive sessions have names like "organize sprint".
-  # Daemons spawned under their alias leave it defaulted: alias == addr.
+  # Daemons spawned under their alias leave it defaulted: alias == addr — which
+  # is also why every read site falls back to the alias: the state root is
+  # persistent, so records predating the addr field carry no addr at all.
   [ -n "$addr" ] || addr="$a"
+  _warn_addr_clash "$g" "$addr"
   gd="$(_gdir "$g")"
   mkdir -p "$gd/nodes" "$gd/locks"
   joined="$(_now)"
@@ -156,7 +179,7 @@ cmd_post() {
     [ -e "$nf" ] || continue
     # A concurrent `leave` can unlink this node between the glob and the read;
     # a member that just left simply isn't suggested.
-    m="$(jq -r --arg f "$from" 'select(.alias != $f) | .addr' "$nf" 2>/dev/null)" || continue
+    m="$(jq -r --arg f "$from" 'select(.alias != $f) | .addr // .alias' "$nf" 2>/dev/null)" || continue
     [ -n "$m" ] && others="$others, $m"
   done
   echo "posted #$id to $g board"
@@ -212,7 +235,7 @@ cmd_list() {
     printf '%-16s %-16s %-20s %-36s %s\n' \
       "$(jq -r '.alias' "$nf")" \
       "$(jq -r '.parent | if .=="" then "-" else . end' "$nf")" \
-      "$(jq -r '.addr | if .=="" then "-" else . end' "$nf")" \
+      "$(jq -r '(.addr // .alias) | if .=="" then "-" else . end' "$nf")" \
       "$(jq -r '.session | if .=="" then "-" else . end' "$nf")" \
       "$(jq -r '.desc' "$nf")"
   done
@@ -278,7 +301,7 @@ cmd_topology() {
   _need_group "$g"
   for nf in "$gd"/nodes/*.json; do
     [ -e "$nf" ] || break
-    nodes="$(printf '%s\n%s' "$nodes" "$(cat "$nf")" | jq -cs '.[0] + [.[1]]')"
+    nodes="$(printf '%s\n%s' "$nodes" "$(cat "$nf")" | jq -cs '.[0] + [.[1] | .addr = (.addr // .alias)]')"
   done
   jq -n --arg g "$g" --argjson nodes "$nodes" \
     '{group:$g, nodes:$nodes,
