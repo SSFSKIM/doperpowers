@@ -99,8 +99,11 @@ board pipeline's run credentials ride it); it interrupts a live turn, so prefer
                 [--cwd DIR] [--worktree NAME] [--model M] [--settings FILE] [--effort E] [--wait]
 
 The session starts detached (`claude --bg`, permission mode `auto`, display name
-= alias), the seat is registered as soon as its session id exists, and the
-command returns; `--wait` blocks to the turn's end and prints the reply.
+= addr, which defaults to the alias), the seat is registered as soon as its
+session id exists, and the command returns; `--wait` blocks to the turn's end
+and prints the reply. Spawning an alias whose seat is retired, vacant, or dead
+re-fills that seat with the fresh session (the pipeline's deterministic worker
+names rely on this); a live seat is refused.
 Without `--group` the seat files under a group named after the repository at
 `--cwd` and gets no preamble (this is how pipeline workers spawn). `--settings`
 and `--effort` (or `DAEMON_CLAUDE_SETTINGS`/`DAEMON_CLAUDE_EFFORT` in the
