@@ -59,7 +59,7 @@ skill directory is deleted.
 - [x] (2026-09-01 22:05Z) M1 — `skills/agora/scripts/agora.py` (1956 lines, stdlib only) + 6-line bash launcher + `lib.sh`; registry model with read-time fallbacks; atomic-rename migration with the `.migrated-v3` one-time pass (group stamping + codex retirement); all verbs including the review-added `resume`, lifecycle locks, live-name refusal, and the acknowledged `wake --wait`; `tests/agora/run-agora-tests.sh` rebuilt (755 lines, stub `claude` with same-id resume and a copy mode, a real unix-socket inbox server, fabricated peer records) — 251 assertions green, independently re-run by the orchestrator; shell lint clean on the three shell files. Commit 758fd1ea (M1 worker).
 - [x] (2026-09-01 22:50Z) M2 — board pipeline repointed (commits 4921f5ee, 27b18aa9, 65897e99, de096f6c; M2 worker): five dispatch/sweep scripts call `agora` verbs (spawn / resume --wait / sync / retire) through the `AGORA_CLI` seam and run `agora migrate --quiet` after their preflight; `review-dispatch.sh` sources `skills/agora/scripts/lib.sh`; the registry default is `~/.claude/agora` in every script (`_lib.sh`, `board-gc.sh`, `board-register.sh`, `board-bind.sh`, `board-lint.sh`, `_board.py` included); `board-answer.sh` lost the codex engine branch and gained the codex-binding refusal before any board write (+2 assertions); twelve pipeline test files stub one `agora` executable (verbs spawn / retire / sync / resume / migrate / meta get); all 23 hermetic suites green with assertion counts identical to the pre-M2 baseline (+2), shellcheck unchanged. The eight `board-api/integration` drills skip (exit 77, no board service) before and after — the rewritten stub was exercised by hand instead.
 - [ ] M3 — skill surface: `skills/agora/SKILL.md` and `references/spawn-preamble.md` rewritten for seats (daemon doctrine absorbed), `skills/orchestrating-daemons/` and `tests/orchestrating-daemons/` deleted, every cross-reference in other skills/docs/manifests updated, `tests/skill-links` green.
-- [ ] M4 — live fleet proof on real `claude`: a three-seat group spawned through `agora spawn` (child spawned by an agent from its preamble), `agora send` from the shell woke an idle seat, `agora retire` + `agora fill --resume` continued the same session id, `agora view`/`list` showed roles and live state; migration of the real registry verified (`~/.claude/orchestrating-daemons` became a symlink); probe seats retired.
+- [x] (2026-09-02 07:40Z local / 2026-09-01 22:40Z) M4 — live fleet proof on real `claude` (transcript in Artifacts): the real registry migrated by rename+symlink (36 records stamped, 3 v2 nodes converted, 2 codex records retired, `agora list` prints no `null`); this session registered as `orchestrator`; `agora spawn scout` (sonnet) → scout spawned `scribe` from its preamble → three-level `agora view` tree with roles and live state; scribe's board post and scout's native `SCOUT-READY` arrived unprompted; `agora send scribe` from the shell woke the idle seat (`PONG-FROM-SCRIBE` arrived natively); `agora retire scribe` then `agora fill scribe --resume` continued the same session id and short (`RESUMED-VIA-AGORA` arrived). The first `fill --resume` attempts exposed the saved-options rule (flags on `--bg --resume` start a copy) — fixed in 66dec83f, 262 assertions. Dogfood seats purged, harness rows removed, group board deleted.
 - [ ] M5 — exit gate: whole-branch codex review (`--base main`), verified findings fixed by a subagent fix wave, all suites re-run, version bump via `scripts/bump-version.sh`, PR opened and merged, retrospective written below.
 
 ## Surprises & Discoveries
@@ -669,6 +669,16 @@ M4 live proof (2026-09-01/02, real harness, this session as `orchestrator`):
     $ agora send scribe "… SendMessage the orchestrator PONG-FROM-SCRIBE …" --from human
     sent to seats-dogfood/scribe (scribe)
     $ agora list seats-dogfood      → scribe LIVE busy   (was idle one second earlier: the shell frame woke it)
+    # arrived here natively: <cross-session-message from-name="scribe">PONG-FROM-SCRIBE</cross-session-message>
+    $ agora retire scribe
+    retired seats-dogfood/scribe [4d6ccff7-75c3-4c53-9f73-3b4a0be480e6] (seat kept; re-fill with: agora fill seats-dogfood/scribe --resume "<task>")
+    $ agora list seats-dogfood      → scribe STATUS retired LIVE stopped
+    # first two attempts (before commit 66dec83f) hit the saved-options rule and were refused as copies — see Surprises
+    $ agora fill scribe --resume "… SendMessage the orchestrator RESUMED-VIA-AGORA …"
+    filled seats-dogfood/scribe  [4d6ccff7 / 4d6ccff7-75c3-4c53-9f73-3b4a0be480e6]  via --bg --resume  status=working  turns=2
+    $ agora meta get scribe current → 4d6ccff7-75c3-4c53-9f73-3b4a0be480e6   (same session id; same short)
+    # arrived here natively: <cross-session-message from-name="scribe">RESUMED-SCRIBE</cross-session-message> (raw no-flag resume)
+    #                        <cross-session-message from-name="scribe">RESUMED-VIA-AGORA</cross-session-message> (agora fill --resume)
 
 ## Interfaces and Dependencies
 
