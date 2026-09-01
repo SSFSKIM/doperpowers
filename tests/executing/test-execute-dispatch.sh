@@ -4,8 +4,8 @@
 # dispatcher (the dispatch ritual, automated).
 #
 # Side channels: `gh` is the shared issue-tracker mock (state in
-# $MOCK_GH_STATE); the orchestrating-daemons scripts are stubs that log and
-# write registry meta like the real --no-wait spawn; the BOARD scripts
+# $MOCK_GH_STATE); the agora CLI is a stub that logs and writes seat records
+# like the real no-wait spawn; the BOARD scripts
 # (_board.py eligibility, board-bind) are REAL and run against the mock gh.
 # git is real: a bare origin + clone carrying .doperpowers/repo-facts.md.
 set -euo pipefail
@@ -49,11 +49,11 @@ export PROMPT_DIR="$TEST_ROOT/prompts"; mkdir -p "$PROMPT_DIR"
 export STUB_COUNT="$TEST_ROOT/count"
 export BOARD_REPO="test/repo"
 export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
-# Ambient gateway route, as a gateway-routed daemon (or an operator shell that
+# Ambient gateway route, as a gateway-routed seat (or an operator shell that
 # sourced one) exports it. Present for the WHOLE suite on purpose: it makes every
 # "no gateway env" assertion below a regression test — the claude route must hand
-# daemon-spawn.sh nothing, since daemon-spawn.sh persists what it inherits into
-# the registry meta and every later resume would silently ride the gateway.
+# `agora spawn` nothing, since agora persists what it inherits into the seat
+# record and every later wake would silently ride the gateway.
 export DAEMON_CLAUDE_SETTINGS="$TEST_ROOT/ambient-gateway.json"
 export DAEMON_CLAUDE_EFFORT="high"
 
@@ -71,40 +71,58 @@ git -C "$CLONE" push -q -u origin main
 git -C "$CLONE" remote set-head origin main
 export LOCAL_REPO="$CLONE"
 
-# stub daemon scripts: log + register meta like the real --no-wait spawn
-STUB_DAEMONS="$TEST_ROOT/stub-daemons"; mkdir -p "$STUB_DAEMONS"
-export DAEMON_SCRIPTS="$STUB_DAEMONS"
-cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
+# stub agora CLI: one executable whose first argument selects the verb — it
+# logs argv and registers a seat record like the real no-wait `agora spawn`.
+STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
+export AGORA_CLI="$STUB_AGORA/agora"
+cat > "$AGORA_CLI" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-flag=""; [ "${1:-}" = "--no-wait" ] && { flag="--no-wait"; shift; }
-name="$1"; task="$2"
-echo "spawn:$flag $name wt=${4:-} model=${5:-}" >> "$SPAWN_LOG"
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate)
+  exit 0 ;;
+retire)
+  echo "retire:$*" >> "$SPAWN_LOG"
+  exit 0 ;;
+spawn) ;;
+*)
+  echo "stub agora: unexpected verb '$verb'" >&2
+  exit 2 ;;
+esac
+name="$1"; task="$2"; shift 2
+cwd=""; wt=""; model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cwd)      cwd="$2"; shift 2 ;;
+    --worktree) wt="$2"; shift 2 ;;
+    --model)    model="$2"; shift 2 ;;
+    --wait|--no-wait) shift ;;
+    *) shift ;;
+  esac
+done
+echo "spawn: $name wt=$wt model=$model" >> "$SPAWN_LOG"
 echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
 # also into the gh log, so board writes and the release of the worker share
 # ONE ordered stream (the parent-pin stamp must precede this line)
 [ -z "${MOCK_GH_LOG:-}" ] || printf '["spawn", "%s"]\n' "$name" >> "$MOCK_GH_LOG"
 if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
-  echo "stub daemon-spawn: simulated failure for $name" >&2
+  echo "stub agora spawn: simulated failure for $name" >&2
   exit 1
 fi
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
 n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
 uuid="$(printf 'aaaa%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"],
+json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
            "status": "working", "updated": "2026-07-18T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
+echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working"
 STUB
-cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "retire:$*" >> "$SPAWN_LOG"
-STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh"
+chmod +x "$AGORA_CLI"
 
 # ---- board seed ---------------------------------------------------------------
 # 1 ELIGIBLE P1 impl · 2 blocked-by-1 · 3 ELIGIBLE P0 spike · 4 in-progress ·
@@ -141,8 +159,8 @@ echo "execute-dispatch: triggered mode"
 
 out="$(run 1)"
 assert_contains "$out" "dispatched #1" "triggered dispatch reports the ticket"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 1-fix-the-report-builder-pipeline" \
-  "spawn is --no-wait with the <n>-<slug> name"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 1-fix-the-report-builder-pipeline" \
+  "spawn registers the <n>-<slug> name (default no-wait)"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | head -1)" "settings=;effort=" \
   "default engine claude passes no gateway env"
 # bracketed so the fixed-string match is exact — the model arg is last on the
@@ -171,7 +189,7 @@ assert_contains "$role_meta_1" "IMPLEMENT" "dispatch persists the IMPLEMENT role
 
 out="$(run 2)"
 assert_contains "$out" "skip #2" "blocked ticket is refused"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 2-" "blocked ticket spawns nothing"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 2-" "blocked ticket spawns nothing"
 
 out="$(run 4)"
 assert_contains "$out" "skip #4" "non-ready ticket is refused"
@@ -193,12 +211,12 @@ print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
 assert_contains "$role_meta_3" "SPIKE" "dispatch persists the SPIKE role into the registry meta"
 
 out="$(run 5)"
-assert_contains "$(grep 'spawn:--no-wait 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
+assert_contains "$(grep 'spawn: 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
 last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
 assert_contains "$last_env" "settings=;effort=" "engine:claude label (redundant since the default flipped) still suppresses the gateway env"
 
 out="$(run 7)"
-assert_contains "$(grep 'spawn:--no-wait 7-' "$SPAWN_LOG")" "7-port-the-legacy-adapter" "codex-engine ticket dispatches"
+assert_contains "$(grep 'spawn: 7-' "$SPAWN_LOG")" "7-port-the-legacy-adapter" "codex-engine ticket dispatches"
 last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
 assert_contains "$last_env" "settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
   "engine:codex label opts back into the gateway route"
@@ -237,11 +255,11 @@ echo "execute-dispatch: sweep mode order + cap"
 
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(run --sweep)"
-order="$(grep -o 'spawn:--no-wait [0-9]*-' "$SPAWN_LOG" | tr -d ' ' | paste -sd, -)"
-assert_contains "$order" "spawn:--no-wait3-,spawn:--no-wait8-,spawn:--no-wait1-,spawn:--no-wait5-" \
+order="$(grep -o 'spawn: [0-9]*-' "$SPAWN_LOG" | tr -d ' ' | paste -sd, -)"
+assert_contains "$order" "spawn:3-,spawn:8-,spawn:1-,spawn:5-" \
   "sweep dispatches in priority order (P0, P1, P2) across both lanes (#8 is the P0 architect ticket, tid-tiebreaks after #3)"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 2-" "sweep skips blocked tickets"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 4-" "sweep skips non-ready tickets"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 2-" "sweep skips blocked tickets"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 4-" "sweep skips non-ready tickets"
 n_gateway="$(grep -c "settings=$HOME/.claude/clodex-settings.json" "$SPAWN_LOG" || true)"
 assert_contains "$n_gateway" "1" \
   "sweep sends only the engine:codex ticket through the gateway — every other worker rides the claude default"
@@ -299,7 +317,7 @@ echo "execute-dispatch: failure isolation + strict render"
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(FAIL_SPAWN_FOR="3-probe-the-cache-layer" run --sweep)" || true
 assert_contains "$out" "#3: " "spawn failure is reported per ticket"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 1-" "sweep continues past a failed spawn"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 1-" "sweep continues past a failed spawn"
 
 BAD_TEMPLATE="$TEST_ROOT/bad-bootstrap.md"
 printf 'hello {{NOT_A_REAL_BINDING}}\n' > "$BAD_TEMPLATE"
@@ -343,7 +361,7 @@ out="$(ARCHITECT_MAX_CONCURRENT=1 run --sweep)"
 n_arch="$(grep -c 'role=ARCHITECT' <<<"$out" || true)"
 assert_contains "$n_arch" "1" "architect cap 1 admits exactly one design dispatch"
 assert_contains "$out" "architect cap reached" "sweep names the architect cap"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 3-" "executor lane still dispatches under its own cap (the P0 spike rides it)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 3-" "executor lane still dispatches under its own cap (the P0 spike rides it)"
 
 # an in-design bound meta occupies an ARCHITECT slot (binding release = slot accounting)
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
@@ -750,9 +768,9 @@ assert_contains "$out" "surface recommend-rpc occupied by #22 — #20 queued" \
   "surface occupant blocks an implement dispatch with a named reason"
 assert_contains "$out" "surface recommend-rpc occupied by #22 — #21 queued" \
   "every queued implement ticket on the surface reports, none spawns"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "blocked ticket #20 did not spawn"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 23-" "architect lane is never surface-blocked"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 24-" "spike lane is never surface-blocked"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 20-" "blocked ticket #20 did not spawn"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 23-" "architect lane is never surface-blocked"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 24-" "spike lane is never surface-blocked"
 
 # T11: the registry arm — an occupant whose board state still lags (fresh
 # spawn: ready-for-implementer + live working meta) must still occupy.
@@ -783,10 +801,10 @@ del s["issues"]["23"], s["issues"]["24"]
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
 out="$(run --sweep)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "first same-surface ticket dispatches (priority order)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 20-" "first same-surface ticket dispatches (priority order)"
 assert_contains "$out" "surface recommend-rpc occupied by #20 — #21 queued" \
   "second same-surface ticket waits in the same tick (registry arm names the fresh spawn; the in-tick claim set is its belt)"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "in-tick claim held: #21 did not spawn"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 21-" "in-tick claim held: #21 did not spawn"
 
 # T13: occupancy clears → the queued ticket dispatches on the next sweep.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
@@ -798,7 +816,7 @@ del s["issues"]["20"], s["issues"]["23"], s["issues"]["24"]   # nothing occupies
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
 out="$(run --sweep)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 21-" "queued ticket dispatches once the surface is free"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 21-" "queued ticket dispatches once the surface is free"
 
 # T14: an architect mid-design (in-design) occupies against executors —
 # patch work waits while the consolidation redesign runs.
@@ -836,7 +854,7 @@ seed_surface_board in-progress
 out="$(SURFACE_OVERRIDE=1 run 20)"
 assert_contains "$out" "SURFACE_OVERRIDE=1: dispatching #20 onto occupied surface recommend-rpc (occupant #22)" \
   "override dispatches with a loud line (triggered mode shares the guard)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait 20-" "override actually spawned"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn: 20-" "override actually spawned"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

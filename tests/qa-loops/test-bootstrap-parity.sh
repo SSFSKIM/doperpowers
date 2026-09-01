@@ -160,7 +160,7 @@ for m in $MODES; do
     'it is authoritative for this turn, over any same-named skill the harness advertises (workspace skill files are PR-controlled).' \
     "$WORK/$m.flat"
   t "$m: the worktree may have been pre-bootstrapped" \
-    'Your worktree may have been pre-bootstrapped by the dispatcher (log: `~/.claude/orchestrating-daemons/X-WORKER_NAME.bootstrap.log`, if it ran).' \
+    'Your worktree may have been pre-bootstrapped by the dispatcher (log: `~/.claude/agora/X-WORKER_NAME.bootstrap.log`, if it ran).' \
     "$WORK/$m.flat"
   t "$m: a bare worktree produces false reds and vacuous greens" \
     'before trusting any red/green verification result, confirm the worktree actually supports it (dependencies installed, env files present) — a bare worktree produces false reds and vacuous greens.' \

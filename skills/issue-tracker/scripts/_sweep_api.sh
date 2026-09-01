@@ -89,6 +89,10 @@ _sentinel() {
 }
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SCRIPT_DIR/../../agora/scripts" && pwd)/agora}"
+# The registry root moved to ~/.claude/agora and this script scans it
+# directly, so it must never be the first process to look at an empty new
+# root: let agora fold the old root in first. Idempotent and best-effort.
+"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
 mkdir -p "$DAEMON_HOME"
 
 # One tick at a time (Codex review F1): overlapping ticks would race the
@@ -384,7 +388,7 @@ PY
 #           about an ALREADY-TERMINAL meta, and a parked worker is exactly that
 #           shape, so `noop` is disambiguated from the meta rather than trusted.
 #   forked  a resume LAUNCHED a turn whose session uuid never resolved:
-#           `agora wake` stamps status=error + pending_short and deliberately
+#           `agora resume` stamps status=error + pending_short and deliberately
 #           leaves `current` on the superseded turn. The fork may be running and
 #           holding the run, so the lease is still RENEWED — but nothing may be
 #           delivered into this session and no delivery can be proven, because
@@ -678,11 +682,11 @@ phase_relay() {
       # resume acks nothing — the answer stays on the feed for the next tick.
       if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
-      # DAEMON_TIMEOUT is bounded here on purpose. `agora wake`'s default is
+      # DAEMON_TIMEOUT is bounded here on purpose. `agora resume`'s default is
       # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
       # the whole-tick lock throughout: one long turn would starve lease
       # renewal past the 15-minute lease and A1 would reclaim runs that are
-      # very much alive. Bounding it is safe because `agora wake` advances
+      # very much alive. Bounding it is safe because `agora resume` advances
       # the meta's `current` to the new turn and injects this prompt BEFORE it
       # blocks: a timed-out resume exits nonzero, so nothing is acked this
       # tick, and the next tick's sentinel grep finds the marker in the new
@@ -691,10 +695,10 @@ phase_relay() {
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-        "$AGORA_CLI" wake --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
+        "$AGORA_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        # NOT NECESSARILY A FAILURE. `agora wake` also exits nonzero when its
+        # NOT NECESSARILY A FAILURE. `agora resume` also exits nonzero when its
         # bounded watcher expires on a turn it already injected the prompt into
         # — the ORDINARY outcome for a long worker turn, since the bound exists
         # to keep this tick from starving lease renewal. Either way nothing is
@@ -1157,7 +1161,7 @@ _resume_one() {
   local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
   # the claim so this tick never mints a successor run it cannot deliver.
-  # `agora wake` stamps status=error + pending_short when a fork LAUNCHED
+  # `agora resume` stamps status=error + pending_short when a fork LAUNCHED
   # whose session uuid never resolved, and deliberately leaves `current` on the
   # superseded turn. Resuming there forks AGAIN — a fresh zombie turn every
   # tick, each one possibly live on the same run — and no delivery can ever be
@@ -1290,19 +1294,19 @@ PY
   # behind — a leftover pending_short must not wedge the ticket forever.
   [ -z "$C_SESS" ] || pre_pending="$(_meta_field "$DAEMON_HOME/$C_SESS.json" pending_short)"
 
-  # `agora wake` forks a fresh process from OUR env, so the successor
+  # `agora resume` forks a fresh process from OUR env, so the successor
   # credentials ride the invocation or the worker can write nothing. The wait
   # is bounded for the same reason phase 2 bounds it: this tick holds the
-  # whole-tick lock throughout, and `agora wake` defaults to hours.
+  # whole-tick lock throughout, and `agora resume` defaults to hours.
   if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-       "$AGORA_CLI" wake --wait "$C_SESS" "$prompt"; then
+       "$AGORA_CLI" resume --wait "$C_SESS" "$prompt"; then
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
        && _delivered "$transcript" "$(_successor_marker "$C_RUN")"; then
-    # A BOUNDED WAIT IS NOT A FAILED DELIVERY. `agora wake` forks the turn,
+    # A BOUNDED WAIT IS NOT A FAILED DELIVERY. `agora resume` forks the turn,
     # advances the meta and injects this prompt BEFORE it blocks, then exits 1
     # when its watcher expires — and a successor turn routinely runs longer
     # than the bound this tick needs in order not to starve lease renewal, so
@@ -1312,7 +1316,7 @@ PY
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
   else
-    # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `agora wake` has a third
+    # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `agora resume` has a third
     # outcome beside delivered and failed: the fork LAUNCHED, but its session
     # uuid never resolved, so it stamps status=error + pending_short and
     # deliberately leaves `current` on the old turn. The marker check above

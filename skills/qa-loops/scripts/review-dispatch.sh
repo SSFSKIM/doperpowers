@@ -155,6 +155,10 @@ git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is n
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
+# The registry root moved to ~/.claude/agora and this script scans it
+# directly, so it must never be the first process to look at an empty new
+# root: let agora fold the old root in first. Idempotent and best-effort.
+"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
 # execute-dispatch resolves it there: an api-bound repo never invokes gh at

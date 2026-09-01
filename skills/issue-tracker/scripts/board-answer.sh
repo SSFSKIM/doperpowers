@@ -30,8 +30,8 @@
 # → comment the answers, then `board-transition.sh <n> ready-for-implementer
 # (or ready-for-architect per the park discriminant)`.
 #
-# NEVER RUN IN THE FOREGROUND — the wake blocks for the worker's whole turn
-# (same rule as `agora wake --wait`): Monitor or background shell.
+# NEVER RUN IN THE FOREGROUND — the resume blocks for the worker's whole turn
+# (same rule as `agora resume --wait`): Monitor or background shell.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -118,6 +118,10 @@ fi
 
 AGORA_CLI="${AGORA_CLI:-$SCRIPT_DIR/../../agora/scripts/agora}"
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
+# The registry root moved to ~/.claude/agora and this script scans it
+# directly, so it must never be the first process to look at an empty new
+# root: let agora fold the old root in first. Idempotent and best-effort.
+"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
 
 # Normalize a lingering finished Claude owner before the status gate. A real
 # mid-turn remains working (`agora sync` returns live); a finished
@@ -140,6 +144,12 @@ if [ -n "$bound_uuid" ]; then
   if [ "$finalize_state" = "absent" ]; then
     "$AGORA_CLI" retire "$bound_uuid" >/dev/null 2>&1 || true
     die "#$tid's bound session ${bound_uuid:0:8} is gone — left needs-human; use the documented fresh-dispatch path"
+  fi
+  # A legacy codex-CLI worker has no resumable Claude session: the relay would
+  # transition the ticket and then exec against a session that cannot be
+  # continued. Refuse BEFORE any board write.
+  if [ "$("$AGORA_CLI" meta get "$bound_uuid" engine 2>/dev/null || true)" = "codex" ]; then
+    die "#$tid is bound to a legacy codex worker ${bound_uuid:0:8} — retire it (agora retire <id>) and use the fresh-dispatch path"
   fi
 fi
 
@@ -290,4 +300,4 @@ answer that changed the work's shape.
 ---- answers (verbatim from the ticket) ----
 $block"
 
-exec "$AGORA_CLI" wake --wait "$uuid" "$relay"
+exec "$AGORA_CLI" resume --wait "$uuid" "$relay"

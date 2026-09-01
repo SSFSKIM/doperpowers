@@ -79,6 +79,10 @@ SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$SCRIPT_DIR}"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+# The registry root moved to ~/.claude/agora and this script scans it
+# directly, so it must never be the first process to look at an empty new
+# root: let agora fold the old root in first. Idempotent and best-effort.
+"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
 export DAEMON_HOME BOARD_SCRIPTS
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 export LOCAL_REPO
@@ -236,7 +240,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
     # stated override. Recovery-exhaustion is that stated case.
     BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound worker $uuid ($why)" \
       "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
-      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; wake it by hand (agora wake/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
+      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; wake it by hand (agora resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"
     return
@@ -244,7 +248,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
   _meta_put "$uuid" sweep_recoveries "$((recov + 1))" \
     || { log "[sweep] RECOVER: #$tk meta update failed — skipping resume"; return; }
   log "[sweep] RECOVER: #$tk worker $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
-  nohup "$AGORA_CLI" wake --wait "$uuid" \
+  nohup "$AGORA_CLI" resume --wait "$uuid" \
     "SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead." \
     >>"$SWEEP_LOG" 2>&1 &
 }
