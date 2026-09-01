@@ -81,6 +81,10 @@ set -euo pipefail
 verb="${1:-}"; shift || true
 case "$verb" in
 migrate)
+  if [ -n "${STUB_MIGRATE_FAIL:-}" ]; then
+    echo "stub agora migrate: simulated failure" >&2
+    exit 1
+  fi
   exit 0 ;;
 retire)
   echo "retire:$*" >> "$SPAWN_LOG"
@@ -318,6 +322,19 @@ rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(FAIL_SPAWN_FOR="3-probe-the-cache-layer" run --sweep)" || true
 assert_contains "$out" "#3: " "spawn failure is reported per ticket"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn: 1-" "sweep continues past a failed spawn"
+
+# A FAILED MIGRATION FAILS THE DISPATCH CLOSED. A half-migrated registry reads
+# as an empty fleet: every dedupe and cap check passes, and the tick spawns a
+# second worker on top of every live one. Swallowing the migrate's status made
+# that indistinguishable from a genuinely idle fleet.
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+if out="$(STUB_MIGRATE_FAIL=1 run 1)"; then
+    fail "a failed agora migrate aborts the dispatch"
+else
+    pass "a failed agora migrate aborts the dispatch"
+fi
+assert_contains "$out" "agora migrate failed" "...naming the migration as the cause"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "...before any worker is spawned"
 
 BAD_TEMPLATE="$TEST_ROOT/bad-bootstrap.md"
 printf 'hello {{NOT_A_REAL_BINDING}}\n' > "$BAD_TEMPLATE"

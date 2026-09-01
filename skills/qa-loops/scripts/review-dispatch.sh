@@ -134,7 +134,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
+# Pinned to the SAME value before the source: lib.sh resolves this root too,
+# but gives AGORA_HOME precedence and then re-assigns DAEMON_HOME from it.
+# Pinning first makes both assignments no-ops, so an operator who exports
+# both names cannot have the review lane reading one registry while the
+# other four pipeline entrypoints read another.
+AGORA_HOME="$DAEMON_HOME"
 # shellcheck source=../../agora/scripts/lib.sh
 . "$SKILL_DIR/../agora/scripts/lib.sh"
 export DAEMON_HOME
@@ -157,8 +163,10 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent and best-effort.
-"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
+# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# — a half-migrated registry reads as an empty fleet, which passes every
+# dedupe and cap check and dispatches over live workers.
+"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
 # execute-dispatch resolves it there: an api-bound repo never invokes gh at

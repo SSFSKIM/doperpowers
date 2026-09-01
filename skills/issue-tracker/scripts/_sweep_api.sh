@@ -87,12 +87,14 @@ _sentinel() {
   # shellcheck disable=SC2059  # SENTINEL_FMT is the module's printf template
   printf "$SENTINEL_FMT" "$1"
 }
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SCRIPT_DIR/../../agora/scripts" && pwd)/agora}"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent and best-effort.
-"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
+# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# — a half-migrated registry reads as an empty fleet, which passes every
+# dedupe and cap check and dispatches over live workers.
+"$AGORA_CLI" migrate --quiet || { echo "error: agora migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
 mkdir -p "$DAEMON_HOME"
 
 # One tick at a time (Codex review F1): overlapping ticks would race the

@@ -47,7 +47,7 @@ fi
 export BOARD_REPO
 
 # Seat registry — same default (and same test override) as the agora CLI.
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
 
 # Render-cache dir: created on demand, always gitignored — BOARD.html/BOARD.md
 # are views of GitHub state and must never be committed (a committed render is

@@ -51,7 +51,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
@@ -81,8 +81,10 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent and best-effort.
-"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
+# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# — a half-migrated registry reads as an empty fleet, which passes every
+# dedupe and cap check and dispatches over live workers.
+"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE. An api-bound repo never invokes
 # gh at all, so requiring the CLI before knowing the binding would make the

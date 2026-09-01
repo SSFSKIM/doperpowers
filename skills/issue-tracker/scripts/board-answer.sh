@@ -120,8 +120,10 @@ AGORA_CLI="${AGORA_CLI:-$SCRIPT_DIR/../../agora/scripts/agora}"
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent and best-effort.
-"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true
+# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# — a half-migrated registry reads as an empty fleet, which passes every
+# dedupe and cap check and dispatches over live workers.
+"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to relay against a possibly half-migrated registry"
 
 # Normalize a lingering finished Claude owner before the status gate. A real
 # mid-turn remains working (`agora sync` returns live); a finished

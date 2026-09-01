@@ -717,9 +717,8 @@ def surfaces_registry():
             # N times per tick (N x 30s worst case offline). One fetch per
             # SURFACES_FETCH_TTL seconds (default 300) across processes.
             stamp = os.path.join(
-                os.environ.get("DAEMON_HOME",
-                               os.path.expanduser(
-                                   "~/.claude/agora")),
+                os.environ.get("DAEMON_HOME") or os.environ.get("AGORA_HOME")
+                or os.path.expanduser("~/.claude/agora"),
                 ".surfaces-fetch-stamp")
             ttl = int(os.environ.get("SURFACES_FETCH_TTL") or 300)
             try:
@@ -818,8 +817,8 @@ def live_bound_tickets(include_reviewers=True):
     include_reviewers=False (their ticket's in-review STATE already covers
     them there)."""
     import glob
-    home = os.environ.get("DAEMON_HOME",
-                          os.path.expanduser("~/.claude/agora"))
+    home = (os.environ.get("DAEMON_HOME") or os.environ.get("AGORA_HOME")
+            or os.path.expanduser("~/.claude/agora"))
     live = set()
     for p in glob.glob(os.path.join(home, "*.json")):
         if p.endswith(".reply.json"):

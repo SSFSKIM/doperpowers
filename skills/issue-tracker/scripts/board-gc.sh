@@ -48,7 +48,7 @@
 #   GC_MIN_AGE_MINUTES  skip worktrees younger than this (default 90; 0 disables)
 set -uo pipefail
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
 GC_PR_CHECKS="${GC_PR_CHECKS:-20}"
 GC_MIN_AGE="${GC_MIN_AGE_MINUTES:-90}"
 
