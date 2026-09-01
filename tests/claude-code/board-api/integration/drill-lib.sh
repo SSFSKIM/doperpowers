@@ -16,13 +16,14 @@
 #                 service's own reconciler reclaims on its own authority).
 #                 Nothing is ever ASSERTED through it: an assertion that reads
 #                 the database proves the database, not the toolkit.
-#   daemon_stubs  scripted stand-ins for daemon-spawn / daemon-resume /
-#                 daemon-finalize / daemon-retire. Workers are daemon-spawned
-#                 Claude sessions in production; a drill spawns none. The stubs
-#                 emit the GENUINE banner shape (the dispatcher parses the uuid
-#                 out of it), write the prompt into a transcript file (delivery
-#                 IS the transcript write, which is what the relay's sentinel
-#                 gate later reads), and record their argv + BOARD_* env.
+#   agora_stub    one scripted stand-in for the agora CLI, covering the verbs
+#                 the pipeline calls: spawn / resume / sync / retire / migrate.
+#                 Workers are agora-spawned Claude sessions in production; a
+#                 drill spawns none. The stub emits the GENUINE banner shape
+#                 (the dispatcher parses the uuid out of it), writes the prompt
+#                 into a transcript file (delivery IS the transcript write,
+#                 which is what the relay's sentinel gate later reads), and
+#                 records its argv + BOARD_* env.
 #
 # ISOLATION: one harness instance per drill (harness.sh pins a container name
 # and a port, so there is one at a time per checkout anyway). Each drill boots

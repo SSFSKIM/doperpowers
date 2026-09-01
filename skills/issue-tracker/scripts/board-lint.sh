@@ -86,7 +86,7 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
         continue
     st = board_state(int(tid))
     if st is None or st in ("done", "wontfix"):
-        print("FAIL daemon %s bound to closed/absent ticket #%s FIX: daemon-retire"
+        print("FAIL daemon %s bound to closed/absent ticket #%s FIX: agora retire"
               % (m.get("uuid", "?")[:8], tid))
         fails += 1
 # The count is the WALK's: it is a report line about the board, and a row the

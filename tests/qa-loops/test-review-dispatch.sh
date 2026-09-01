@@ -786,8 +786,8 @@ out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
 # The retire that follows overwrites status with `retired` (as the real
-# daemon-retire does), so finalize's own durable evidence is its reply file.
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch finalized the meta through daemon-finalize (reply recorded)"
+# `agora retire` does), so sync's own durable evidence is its reply file.
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch reconciled the record through agora sync (reply recorded)"
 
 # The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
 # so the sweep's outage retry works on the one-harness lifecycle.
@@ -1307,7 +1307,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep finalized the errored session through daemon-finalize (reply recorded)"
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep reconciled the errored session through agora sync (reply recorded)"
 assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"retired_from": "failure"' "and its retirement is stamped as a FAILURE one, so the streak can still see it"
 assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
 
@@ -2280,7 +2280,7 @@ assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a f
 
 # ---- dead-worker cycles must reach the scale cap ------------------------------
 # A reviewer that dies pre-reply finalizes `error`; the respawn retires it, and
-# daemon-retire overwrites that status with `retired` — erasing the only
+# `agora retire` overwrites that status with `retired` — erasing the only
 # evidence _outage_streak had. The streak reset every tick, the cap was
 # unreachable, and the sweep respawned a doomed reviewer forever, so F4's
 # escalation could never fire for exactly the failure class it exists for.

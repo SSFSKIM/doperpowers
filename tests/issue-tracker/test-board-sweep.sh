@@ -546,7 +546,7 @@ run_sweep() { SWEEP_STALL_MINUTES=60 "$SWEEP" 2>&1; }
 # The IMPACT cursor lives in a SUBDIRECTORY of DAEMON_HOME. The top level is
 # the daemon metadata namespace — every *.json there is read as a worker meta
 # — so a cursor beside them was a phantom fleet row, a resolvable
-# `daemon-retire` target, and deletable by tooling that owned the namespace.
+# `agora retire` target, and deletable by tooling that owned the namespace.
 SCAN_STATE="$DAEMON_HOME/sweep/impact-scan.json"
 mkdir -p "$DAEMON_HOME/sweep"
 
@@ -884,7 +884,7 @@ assert_equals "$(issue_labels 54)" "status:in-progress" "an orphan carrying no p
 echo "board-sweep: IMPACT scan bound"
 # The cursor must not live in the daemon metadata namespace. This is
 # daemon-list/_resolve_uuid's own predicate — every top-level *.json is a
-# worker meta — so a file there is a phantom daemon, and daemon-retire can
+# worker record — so a file there is a phantom seat, and `agora retire` can
 # resolve and delete it by prefix.
 assert_contains "$(ls "$DAEMON_HOME/sweep/" 2>/dev/null || true)" "impact-scan.json" \
     "the IMPACT cursor lives under DAEMON_HOME/sweep/"

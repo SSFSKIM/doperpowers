@@ -132,7 +132,7 @@ if tid:
             break      # the binding owner moves its own ticket
         if env["T_DSELF"] and env["T_DSELF"] == owner:
             break      # a legacy codex-CLI turn: no harness session id, so
-                       # codex-resume hands it its daemon uuid explicitly
+                       # its caller hands it the seat id explicitly
         if env["T_OVR"]:
             print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
                   % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))

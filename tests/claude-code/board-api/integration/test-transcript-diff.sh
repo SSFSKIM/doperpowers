@@ -200,7 +200,7 @@ REPO="$(api_repo)"
 # answer contract. So the hook here is the real dispatcher: it claims the
 # ticket the walk just registered, spawns the scripted worker and binds it.
 # `status: idle` afterwards only to match the gh meta; the API relay asks
-# daemon-finalize, never the meta's status.
+# `agora sync`, never the record's status.
 api_bind() {
   in_repo "$DISPATCH" --sweep >"$DRILL_TMP/dispatch.out" 2>&1 || true
   local uuid run fence bearer
