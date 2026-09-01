@@ -344,7 +344,7 @@ PY
   # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the same reason as the gh path's
   # claude route: this dispatcher can itself run inside a gateway-routed seat,
   # and `agora spawn` persists what it inherits into the registry record, so
-  # every later wake would ride the gateway while the log said claude.
+  # every later resume would ride the gateway while the log said claude.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
@@ -852,7 +852,7 @@ PY
     # Cleared, not merely unset by us: this dispatcher can itself run inside a
     # gateway-routed seat whose environment exports these, and `agora spawn`
     # would inherit them, apply the flags AND persist them into the registry
-    # record — so every later wake would keep riding the gateway while the log
+    # record — so every later resume would keep riding the gateway while the log
     # said engine=claude.
     local model="${IMPLEMENT_MODEL:-opus}"
     [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"

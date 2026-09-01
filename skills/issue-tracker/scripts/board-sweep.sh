@@ -240,7 +240,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
     # stated override. Recovery-exhaustion is that stated case.
     BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound worker $uuid ($why)" \
       "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
-      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; wake it by hand (agora resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
+      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (agora resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"
     return

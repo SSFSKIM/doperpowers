@@ -152,8 +152,8 @@ if tid:
         sys.stderr.write(
             "error: #%s is mid-turn under live worker %s (%s, status=%s) — a "
             "transition by anyone but the binding owner completes work that "
-            "worker already owns (dp#63). Let it finish or wake it "
-            "(agora list / agora wake), retire the binding first "
+            "worker already owns (dp#63). Let it finish or resume it "
+            "(agora list / agora resume), retire the binding first "
             "(agora retire %s), or overrule with a stated reason: "
             "BOARD_OWNER_OVERRIDE=\"<why>\" board-transition.sh ...\n"
             % (tid, meta.get("name") or owner, owner, meta.get("status"), owner))

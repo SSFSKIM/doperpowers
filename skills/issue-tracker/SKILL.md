@@ -251,8 +251,8 @@ pick by repo visibility:
    the gateway's model alias:
    `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" agora spawn … --model fable`
    (`agora spawn` persists settings/effort into the seat record;
-   `agora wake` restores them on every resume — without that a gateway
-   worker silently reverts to plain models on its first wake).
+   `agora resume` restores them on every resume — without that a gateway
+   worker silently reverts to plain models on its first resume).
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
    Executor, `in-design` (+ a `[gate]` comment) for an Architect, or

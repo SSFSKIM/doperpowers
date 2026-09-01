@@ -1377,7 +1377,7 @@ $(cat "$dir/body.md")"
     _journal "$CLAIMS_DIR/$nonce.json" "$C_RUN" 0 "$tid" "$name" "$C_SESS"
     # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the dispatchers, reason: this
     # tick can itself run inside a gateway-routed seat, and `agora spawn`
-    # persists what it inherits into the record, so every later wake would
+    # persists what it inherits into the record, so every later resume would
     # ride the gateway while the log said claude.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \

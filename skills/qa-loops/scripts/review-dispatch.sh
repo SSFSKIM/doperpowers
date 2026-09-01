@@ -934,11 +934,11 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
     # operator's own session model never silently sets the review lane's
-    # price. `agora spawn` persists effort into the record; wakes keep it.
+    # price. `agora spawn` persists effort into the record; resumes keep it.
     # The gateway settings are CLEARED, not merely unset by us: this
     # dispatcher can itself run inside a gateway-routed seat whose
     # environment exports them, `agora spawn` would inherit and persist them,
-    # and every later wake would ride the gateway while the log said claude.
+    # and every later resume would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
       "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
       --model "${REVIEW_MODEL:-opus}")" \
