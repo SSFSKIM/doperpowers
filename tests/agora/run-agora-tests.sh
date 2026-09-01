@@ -153,10 +153,28 @@ if [ $has_bg -eq 1 ]; then
   n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
-  # `--bg --resume <id>` continues the SAME session id (a new background job,
-  # hence a new short). STUB_RESUME_COPY=1 emulates the harness starting a
-  # copy because the session was already running.
-  if [ -n "$resume_uuid" ] && [ "${STUB_RESUME_COPY:-0}" != "1" ]; then uuid="$resume_uuid"; fi
+  # `--bg --resume <id>` with NO other flag wakes the session itself (same
+  # id, same short, its saved options). Any additional flag makes the real
+  # harness start a COPY under a new id and say so (observed live, v2.1.257);
+  # STUB_RESUME_COPY=1 forces that copy-with-note path, =2 a silent copy.
+  if [ -n "$resume_uuid" ]; then
+    extra=0; k=0
+    while [ $k -lt $((${#args[@]} - 1)) ]; do
+      case "${args[$k]}" in --bg|--resume) ;; "$resume_uuid") ;; *) extra=1 ;; esac
+      k=$((k + 1))
+    done
+    oldfile="$(grep -l "^uuid=$resume_uuid$" "$STUB_STATE/agents"/* 2>/dev/null | head -1 || true)"
+    oldshort="${oldfile##*/}"
+    if [ $extra -eq 1 ] || [ "${STUB_RESUME_COPY:-0}" = "1" ]; then
+      echo "note: background session ${oldshort:-????????} keeps its own saved options, so the flags you passed started a copy as $short. Without flags, the same command continues ${oldshort:-????????} itself."
+    elif [ "${STUB_RESUME_COPY:-0}" = "2" ]; then
+      :
+    else
+      uuid="$resume_uuid"
+      if [ -n "$oldfile" ]; then short="$oldshort"; name="$(sed -n 's/^name=//p' "$oldfile")"; fi
+      echo "note: woke session $short with its saved options (--permission-mode, -n, --model)."
+    fi
+  fi
   [ "${STUB_NO_UUID:-0}" = "1" ] && uuid=""
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
   { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"
@@ -561,30 +579,44 @@ assert_contains "$(cat "$TEST_ROOT/ack.out")" "ACKED $ACK_ID" "acknowledged wake
 run "$AGORA" wake researcher "again please"
 assert_rc 0 "$RC" "wake of a stopped seat exits 0"
 assert_contains "$OUT" "via --bg --resume" "stopped wake resumes the session"
-assert_contains "$(grep -- '--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--resume $R_UUID --permission-mode auto -n researcher" "resume argv continues the recorded session under the alias"
+RESUME_LINE="$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)"
+assert_contains "$RESUME_LINE" "--bg --resume $R_UUID [agora wake from human id=" "resume argv is exactly --bg --resume <id> <msg>"
+assert_not_contains "$RESUME_LINE" "--permission-mode" "no permission-mode flag rides a resume (it would start a copy)"
+assert_not_contains "$RESUME_LINE" "-n " "no name flag rides a resume"
 assert_equals "$(field "$R_UUID" current)" "$R_UUID" "same-id resume keeps current"
 assert_equals "$(field "$R_UUID" turns)" "2" "resume increments turns"
-if [ "$(field "$R_UUID" short)" != "$R_SHORT" ]; then pass "resume records the new background short"; else fail "resume records the new background short"; fi
+assert_equals "$(field "$R_UUID" short)" "$R_SHORT" "a same-id resume keeps the session's short"
 assert_equals "$(field "$R_UUID" status)" "idle" "a resume whose turn already ended records idle"
 run "$AGORA" wake researcher "with reply" --wait
 assert_contains "$OUT" "--- reply ---" "wake --wait prints the reply block"
 assert_contains "$OUT" "RESUMED:$R_UUID" "wake --wait prints the resumed turn's reply"
 STUB_RESUME_COPY=1 run "$AGORA" wake researcher "copy?"
-assert_rc 1 "$RC" "a resume that started a copy fails loudly"
+assert_rc 1 "$RC" "a resume whose banner says a copy started fails loudly"
 assert_contains "$OUT" "started a COPY" "copy detection is explained"
 assert_equals "$(field "$R_UUID" current)" "$R_UUID" "the record is left untouched after a copy"
 assert_equals "$(field "$R_UUID" status)" "idle" "status is restored after a copy"
 COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
-assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the copy is stopped"
+assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the announced copy is stopped"
+STUB_RESUME_COPY=2 run "$AGORA" wake researcher "silent copy?"
+assert_rc 1 "$RC" "a silent copy (different session id after polling) also fails loudly"
+COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
+assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the silent copy is stopped"
+assert_equals "$(field "$R_UUID" current)" "$R_UUID" "the record is left untouched after a silent copy"
 
 # ---- 6b) resume: process-level continuation ---------------------------------
 echo "resume:"
 run "$AGORA" resume plainworker "RES-1"
 assert_rc 0 "$RC" "resume exits 0"
 assert_contains "$OUT" "resumed work/plainworker" "resume reports the seat"
-assert_contains "$(grep -- '--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--resume $P_UUID --permission-mode auto -n plainworker" "resume continues the recorded session"
+assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID RES-1" "resume argv is exactly --bg --resume <id> <msg>"
 assert_equals "$(field "$P_UUID" turns)" "2" "resume increments turns"
 assert_equals "$(field "$P_UUID" current)" "$P_UUID" "same-id resume keeps current"
+run "$AGORA" resume plainworker "RES-1b" --model opus --effort high
+assert_rc 0 "$RC" "resume accepts route flags for argv compatibility"
+assert_contains "$OUT" "keeps its saved options; --model/--settings/--effort ignored" "resume warns that route flags are ignored"
+assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID RES-1b" "route flags never reach a resume argv"
+assert_equals "$(field "$P_UUID" model)" "" "resume leaves the recorded model untouched"
+assert_equals "$(field "$P_UUID" effort)" "" "resume leaves the recorded effort untouched"
 P_SHORT="$(field "$P_UUID" short)"
 sed -i.bak 's/^state=.*/state=working/; s/^status=.*/status=busy/' "$STUB_STATE/agents/$P_SHORT" && rm -f "$STUB_STATE/agents/$P_SHORT.bak"
 run "$AGORA" resume plainworker "RES-2"
@@ -629,7 +661,8 @@ assert_contains "$(field "$R_UUID" task)" "FRESH-START" "fresh fill carries the 
 assert_equals "$(field "$R_UUID" turns)" "1" "fresh fill resets turns"
 run "$AGORA" fill researcher "CONTINUE" --resume
 assert_rc 0 "$RC" "fill --resume exits 0"
-assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--resume $NEWCUR" "fill --resume continues the current session"
+assert_equals "$(grep -- '^--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $NEWCUR CONTINUE" "fill --resume continues the current session with the bare resume argv"
+assert_equals "$(field "$R_UUID" current)" "$NEWCUR" "fill --resume keeps the session id"
 printf '{"pid":%s,"sessionId":"%s","name":"researcher","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$(field "$R_UUID" current)" "$SOCK" > "$HOME/.claude/sessions/live-researcher.json"
 run "$AGORA" fill researcher "x"

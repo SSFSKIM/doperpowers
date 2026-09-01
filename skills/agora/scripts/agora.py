@@ -15,8 +15,11 @@ one group's organisation chart with live state on every node.
     agora seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]
     agora fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
     agora wake     <seat> <msg> [--wait] [--from F]     # live: inbox socket; stopped: resume
-    agora resume   <seat> <msg> [--wait] [--model M] [--settings S] [--effort E]
-                                                         # process-level continuation (stops a live turn first)
+    agora resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
+                   A resumed background session keeps its SAVED options (name, permission
+                   mode, model, settings, effort): --model/--settings/--effort are accepted
+                   on resume for argv compatibility but ignored — use fill without --resume
+                   to change them.
     agora send     <seat|addr> <msg> [--from F]         # live sessions only
     agora reply    <seat>                                # latest reply text
     agora sync     [<seat>] [--all]                      # reconcile status from the harness
@@ -892,11 +895,13 @@ def compose_task(task, brief, preamble):
     return "\n\n".join(parts)
 
 
-def claude_args(alias, model, settings, effort, worktree="", resume=""):
-    args = ["--bg"]
-    if resume:
-        args += ["--resume", resume]
-    args += ["--permission-mode", "auto", "-n", alias]
+def claude_args(alias, model, settings, effort, worktree=""):
+    """argv for a FRESH background launch. Never used for a resume: a resumed
+    background session keeps its saved options, and any flag on
+    `claude --bg --resume` makes the harness start a COPY instead (observed
+    live, v2.1.257: "keeps its own saved options, so the flags you passed
+    started a copy")."""
+    args = ["--bg", "--permission-mode", "auto", "-n", alias]
     if worktree:
         args += ["--worktree", re.sub(r"[^a-zA-Z0-9._-]", "-", worktree)]
     if model:
@@ -1080,7 +1085,8 @@ def cmd_fill(a):
     if a.resume:
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
-        resume_session(s, a.task, model, settings, effort, a.wait, lock, verb="filled")
+        warn_resume_flags(a)
+        resume_session(s, a.task, a.wait, lock, verb="filled")
         return
     preamble = render_preamble(s["group"], s["alias"], s["parent"]) if s["preamble"] else ""
     task_text = compose_task(a.task, s["brief"], preamble)
@@ -1118,18 +1124,27 @@ def cmd_fill(a):
 # ------------------------------------------------------- resume / wake / send
 
 
-def resume_session(s, msg, model, settings, effort, wait, lock=None, verb="resumed"):
+def warn_resume_flags(a):
+    if any(getattr(a, k, None) is not None for k in ("model", "settings", "effort")):
+        sys.stderr.write("agora: a resumed background session keeps its saved options; "
+                         "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
+
+
+def resume_session(s, msg, wait, lock=None, verb="resumed"):
     """Process-level continuation of a seat's session.
 
-    A live current turn is stopped first (`claude stop`), then `claude --bg
-    --resume <current>` runs the session in the background under the same id,
-    in the seat's cwd, with THIS process's environment (gateway scrub applied):
-    the board pipeline prefixes the call with its run credentials and needs a
-    fresh process to carry them — a socket frame cannot. ONE resume per seat at
-    a time (flock, released when this process dies): two concurrent resumes
-    would start a copy. If the harness reports a different session id, a copy
-    WAS started (the session was still running): the copy is stopped, the
-    record is left untouched, and the command fails loudly.
+    A live current turn is stopped first (`claude stop`), then exactly
+    `claude --bg --resume <current> <msg>` runs the session in the background
+    under the same id, in the seat's cwd, with THIS process's environment
+    (gateway scrub applied per the seat's recorded route): the board pipeline
+    prefixes the call with its run credentials and needs a fresh process to
+    carry them — a socket frame cannot. NO other flag rides the resume: a
+    background session keeps its saved options (-n, --permission-mode, --model,
+    --settings, --effort), and any flag makes the harness start a COPY (observed
+    live, v2.1.257). ONE resume per seat at a time (flock, released when this
+    process dies): two concurrent resumes would start a copy. If the banner
+    says a copy started, or the harness reports a different session id, the
+    copy is stopped, the record is left untouched, and the command fails loudly.
     """
     refuse_codex(s)
     if not s["current"]:
@@ -1162,12 +1177,22 @@ def resume_session(s, msg, model, settings, effort, wait, lock=None, verb="resum
     elif not row and peer_for_session(cur) and s["short"] and identity_local(s["host"], s["boot_id"]):
         claude_stop(s["short"])
     prev_status = s["status"]
-    short, banner = run_claude_bg(claude_args(s["alias"], model, settings, effort, resume=cur) + [msg],
-                                  s["cwd"] or home_dir(), settings)
+    short, banner = run_claude_bg(["--bg", "--resume", cur, msg], s["cwd"] or home_dir(), s["settings"])
     if not short:
         meta_set(s["seat_id"], {"status": "error", "updated": now()})
         sys.stderr.write("agora: resume failed — did not launch or produced no background id:\n%s\n" % banner)
         sys.exit(1)
+
+    def copy_started(copy_id):
+        claude_stop(short)
+        meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
+        die("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
+            "to continue it; the copy was stopped and the record left untouched. Use agora wake/send for a "
+            "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
+
+    m = re.search(r"started a copy as ([0-9a-f]+)", banner)
+    if m:
+        copy_started(m.group(1))
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
@@ -1176,15 +1201,12 @@ def resume_session(s, msg, model, settings, effort, wait, lock=None, verb="resum
         sys.exit(1)
     uuid, state, _cwd = polled
     if uuid != cur:
-        claude_stop(short)
-        meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
-        die("resume of %s/%s started a COPY (%s) — the session %s was still running; the copy was stopped "
-            "and the record left untouched. Use agora wake/send for a live seat." % (
-                s["group"], s["alias"], uuid[:8], cur[:8]), 1)
+        copy_started(uuid)
     turns = int(s["turns"] or "0") + 1
+    # model/settings/effort stay as recorded at spawn/fill: the resumed session
+    # runs on its saved options, whatever this call was passed.
     meta_set(s["seat_id"], {"current": cur, "short": short, "host": host_name(), "boot_id": boot_id(),
-                            "status": "working", "updated": now(), "turns": str(turns), "model": model,
-                            "settings": settings, "effort": effort}, remove=("pending_short",))
+                            "status": "working", "updated": now(), "turns": str(turns)}, remove=("pending_short",))
     lock.close()
     status = "working"
     if state in TERMINAL:
@@ -1201,10 +1223,8 @@ def resume_session(s, msg, model, settings, effort, wait, lock=None, verb="resum
 
 def cmd_resume(a):
     s = resolve_seat(a.seat)
-    settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
-    effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
-    model = a.model if a.model is not None else s["model"]
-    resume_session(s, a.msg, model, settings, effort, a.wait)
+    warn_resume_flags(a)
+    resume_session(s, a.msg, a.wait)
 
 
 def wait_socket_turn(s, marker):
@@ -1259,9 +1279,7 @@ def cmd_wake(a):
         if a.wait:
             print_reply_block(s["seat_id"])
         return
-    settings = s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", "")
-    effort = s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", "")
-    resume_session(s, text, s["model"], settings, effort, a.wait, verb="woke")
+    resume_session(s, text, a.wait, verb="woke")
 
 
 def cmd_send(a):
