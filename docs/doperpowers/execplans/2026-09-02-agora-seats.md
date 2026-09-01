@@ -77,6 +77,9 @@ skill directory is deleted.
   Evidence: stub-driven suite section "resume" (copy detection) plus the M1 worker's observation on the real harness listing.
 - Observation: (M1) `argparse` cannot parse `agora post <group> --from x "free text"` once a zero-or-more positional has matched; `post` is hand-parsed in `main()` while every other verb uses argparse. The suite's prompt-keyed launch log (`bg-env:` lines keyed by the task text) caught a first-cut bug where the launch argv omitted the task text entirely — a case the old bash suite never pinned.
 
+- Observation: (M4, 2026-09-02) `claude --bg --resume <id>` continues a stopped background session under the same id only when it is passed NO other flags: "background session 4d6ccff7 keeps its own saved options, so the flags you passed started a copy as 74fb1903. Without flags, the same command continues 4d6ccff7 itself." (harness note, v2.1.257). With no flags: "note: woke session 4d6ccff7 with its saved options (--permission-mode, -n, --model)." and the row keeps its short and session id. The first agora `fill --resume` runs therefore always produced a copy (stopped by the M1 copy guard, record untouched, exit 1) because the resume argv carried `-n`/`--permission-mode`/model flags — exactly what `spawn` needs and `resume` must not pass. The old daemon-resume forked on purpose, so it never met this rule.
+  Evidence: two copies (3124bd4e, 092d5aa6) reported and stopped by `agora fill --resume`; raw no-flag resume woke 4d6ccff7 in place (`claude agents --json`: id 4d6ccff7, state working, pid 71138).
+
 ## Decision Log
 
 - Decision: The unit of the registry is the seat — a named position in a group with a role, filled by zero or one Claude Code session at a time, persisting across sessions. Rejected: node = live session only (the v2 model; a session dying would erase the organisation it belonged to, and "re-fill" would be impossible to express). Deferred: group templates (define an organisation once, instantiate it with fresh sessions) — a natural follow-on once seats exist, not this initiative.
@@ -119,6 +122,8 @@ skill directory is deleted.
   Date/Author: 2026-09-01, Claude, adopting F6.
 - Decision: (M1) Migration's one-time pass marker is `$AGORA_HOME/.migrated-v3` and covers both group stamping and codex retirement in one pass; `topology` emits both `seats` and `nodes` (one release of v2-preamble compatibility) and accepts `--json` as a no-op; the wake frame carries its message id even without `--wait`, so a receiver's transcript always shows which shell send produced a turn.
   Date/Author: 2026-09-01, M1 worker; accepted by the orchestrator.
+- Decision: (M4) The resume launch is exactly `claude --bg --resume <current> <msg>` — no name, permission-mode, model, settings, effort, or worktree flags — because a background session keeps its saved options and any flag makes the harness start a copy. `resume` and `fill --resume` accept `--model/--settings/--effort` for argv compatibility, ignore them with a one-line stderr note, and leave the recorded fields untouched; changing those options means `fill` without `--resume` (a fresh session). The gateway env scrub still applies on the plain route. The banner text "started a copy as" is treated as a copy signal in addition to the uuid comparison.
+  Date/Author: 2026-09-02, Claude (M4 live proof).
 - Decision: The six board-pipeline scripts that write registry fields directly (with their own flock-and-rewrite) are left as they are; `agora meta get|set` exists for new code and tests, and consolidating the existing writers behind it is logged as follow-on debt. Rationale: their invariants (flock `.metalock`; recreate at the existing mode, 0600 when `run_bearer` is present; unlink `.tmp` before create) are preserved by agora's own writer, so coexistence is safe, and rewriting them is a board-pipeline change with its own risk.
   Date/Author: 2026-09-01, Claude.
 
@@ -636,6 +641,34 @@ Spike transcript (2026-09-01, shell → probe session inbox socket):
     # ~20s later, witness.txt written by the probe's own Bash call:
     PROBE-1 shell-socket-user-frame 21:09:21Z CROSS-SESSION (sender name not specified in message)
     # claude logs showed the framing: "Another Claude session sent a message: PROBE-1 … This came from another Claude session — not typed by your user …"
+
+M4 live proof (2026-09-01/02, real harness, this session as `orchestrator`):
+
+    $ skills/agora/scripts/agora migrate
+    agora: migrated: renamed /Users/new/.claude/orchestrating-daemons -> /Users/new/.claude/agora (old path is now a symlink); converted 3 v2 node(s) into seats; stamped group on 36 record(s), retired 2 legacy codex record(s)
+    $ ls -ld ~/.claude/orchestrating-daemons
+    lrwx------  … /Users/new/.claude/orchestrating-daemons -> /Users/new/.claude/agora
+    $ agora list | grep -ci null        → 0   (40 rows; groups derived: fleet 25, ida-solution 9, demo 2, …)
+
+    $ agora seat add seats-dogfood orchestrator --session 30e0568a-… --addr agora-native-aa --role orchestrator --brief "…"
+    $ agora spawn scout "<task: find parent addr; spawn child scribe from your preamble; set status; SendMessage SCOUT-READY <short>>" \
+        --group seats-dogfood --parent orchestrator --role scout --model sonnet --cwd <scratch>
+    seat spawned: scout  [03e00b92 / 03e00b92-1d9c-45b9-93ef-d484f1046fb0]  group=seats-dogfood  status=working
+    # ~90s later, with no further operator action:
+    $ agora view seats-dogfood
+    agora group: seats-dogfood
+    orchestrator [orchestrator] · busy
+    └── scout [scout] · busy
+        └── scribe [scribe] · busy          ← spawned by scout through its preamble's spawn command
+    $ agora board seats-dogfood
+    <agora-post id="1" from="scribe" ts="2026-09-01T22:08:00Z" …>  ## hello  scribe seat is online and reporting in.
+    # arrived in this session as a native event:
+    <cross-session-message from-name="scout">SCOUT-READY 4d6ccff7</cross-session-message>
+    $ agora list seats-dogfood      → scout: STATUS working LIVE idle NOW "spawned scribe"; scribe: NOW "posted hello"
+    $ agora sync scout              → idle      (mirror reconciled from the harness row)
+    $ agora send scribe "… SendMessage the orchestrator PONG-FROM-SCRIBE …" --from human
+    sent to seats-dogfood/scribe (scribe)
+    $ agora list seats-dogfood      → scribe LIVE busy   (was idle one second earlier: the shell frame woke it)
 
 ## Interfaces and Dependencies
 
