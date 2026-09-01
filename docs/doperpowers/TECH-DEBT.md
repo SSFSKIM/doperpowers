@@ -66,7 +66,7 @@ fold into the first real claude-engine work item that arises.
 The protocol-content test carried two stale assertions for a full
 commit-cycle because suites are run by hand — found only when the shakedown
 happened to run it. A pre-push hook (or minimal CI) running the three
-skill-infrastructure suites (`tests/orchestrating-daemons/`,
+skill-infrastructure suites (`tests/agora/`,
 `tests/executing/`, `tests/qa-loops/`) closes the class.
 
 ### 5. Self-hosted runner registration (external dependency)

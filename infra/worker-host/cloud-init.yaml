@@ -14,7 +14,7 @@
 
 # hostname is set in runcmd, NOT here — it must be UNIQUE PER BODY. The daemon
 # registry stamps metas with $(hostname) (host-aware pid liveness in
-# orchestrating-daemons/_lib.sh); a rebuilt body reusing the old name would
+# agora/scripts/lib.sh); a rebuilt body reusing the old name would
 # make the previous body's metas read as local, so a recycled pid could alias
 # an unrelated process into resume/dedupe/retire. preserve_hostname stops
 # cloud-init's per-boot update module from reverting to the metadata name.
