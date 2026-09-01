@@ -211,9 +211,9 @@ assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-h
 assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + lane queues)"
 assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
 assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
-daemons="$(cat "$REPO_ROOT/skills/orchestrating-daemons/SKILL.md")"
-assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "daemons: discriminant pointer targets the schema owner"
-assert_not_contains "$daemons" "discriminant in doperpowers:executing" "daemons: no stale pointer at the old vendored copy"
+daemons="$(cat "$REPO_ROOT/skills/agora/SKILL.md")"
+assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "agora (seats): discriminant pointer targets the schema owner"
+assert_not_contains "$daemons" "discriminant in doperpowers:executing" "agora (seats): no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 

@@ -148,6 +148,7 @@ Pipeline workers are seats like any other, spawned by `execute-dispatch.sh`
 and `review-dispatch.sh` through the `AGORA_CLI` seam; their tickets and run
 credentials live on the same records (`ticket`, `role`, `run_id`, …) under the
 shared lock. Do not hand-drive a pipeline worker: it escalates by parking its
-ticket, the human answers on the ticket, and issue-tracker's `board-answer.sh`
-relays that answer with `agora wake` — resuming one with your own answers
-reintroduces the judge the pipeline removed.
+ticket (per the who-unparks discriminant in doperpowers:issue-tracker, the
+board schema's single home), the human answers on the ticket, and
+issue-tracker's `board-answer.sh` relays that answer with `agora resume` —
+resuming one with your own answers reintroduces the judge the pipeline removed.
