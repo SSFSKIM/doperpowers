@@ -719,7 +719,7 @@ def surfaces_registry():
             stamp = os.path.join(
                 os.environ.get("DAEMON_HOME",
                                os.path.expanduser(
-                                   "~/.claude/orchestrating-daemons")),
+                                   "~/.claude/agora")),
                 ".surfaces-fetch-stamp")
             ttl = int(os.environ.get("SURFACES_FETCH_TTL") or 300)
             try:
@@ -819,7 +819,7 @@ def live_bound_tickets(include_reviewers=True):
     them there)."""
     import glob
     home = os.environ.get("DAEMON_HOME",
-                          os.path.expanduser("~/.claude/orchestrating-daemons"))
+                          os.path.expanduser("~/.claude/agora"))
     live = set()
     for p in glob.glob(os.path.join(home, "*.json")):
         if p.endswith(".reply.json"):

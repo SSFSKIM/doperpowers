@@ -46,8 +46,8 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
 fi
 export BOARD_REPO
 
-# Daemon registry — same default (and same test override) as orchestrating-daemons.
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+# Seat registry — same default (and same test override) as the agora CLI.
+DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
 
 # Render-cache dir: created on demand, always gitignored — BOARD.html/BOARD.md
 # are views of GitHub state and must never be committed (a committed render is

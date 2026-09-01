@@ -4,7 +4,7 @@
 # The trigger half of doperpowers:qa-loops — mechanical only, no model
 # judgment. Gathers PR + linked-ticket context, creates a DETACHED worktree
 # at the PR head SHA, renders the skill-invocation bootstrap, and spawns a
-# `review-pr-<n>` daemon via daemon-spawn.sh --no-wait.
+# `review-pr-<n>` seat via `agora spawn`.
 #
 # Usage:
 #   review-dispatch.sh <pr-number>    triggered mode (GH workflow / manual)
@@ -67,8 +67,8 @@
 #                       a later tick (a deep open-PR backlog would otherwise
 #                       spawn one daemon per PR in a single tick). Triggered
 #                       dispatches are an explicit event and are never gated.
-#   DAEMON_SCRIPTS      orchestrating-daemons scripts dir override (tests)
-#   DAEMON_HOME         daemon registry dir (default ~/.claude/orchestrating-daemons)
+#   AGORA_CLI           agora CLI launcher override (tests)
+#   DAEMON_HOME         agora seat registry dir (default ~/.claude/agora)
 #   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
 #   REVIEW_BIND_ATTEMPTS / REVIEW_BIND_DELAY
 #                       ticket-bind retries (defaults 3 attempts, 2s delay)
@@ -133,10 +133,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
-# shellcheck source=../../orchestrating-daemons/scripts/_lib.sh
-. "$SKILL_DIR/../orchestrating-daemons/scripts/_lib.sh"
+AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
+DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/agora}"
+# shellcheck source=../../agora/scripts/lib.sh
+. "$SKILL_DIR/../agora/scripts/lib.sh"
 export DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
@@ -154,7 +154,7 @@ git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is n
 # Every path above is already absolute, so this is safe to do here.
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
-[ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
+[ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
 # execute-dispatch resolves it there: an api-bound repo never invokes gh at
@@ -320,10 +320,10 @@ except Exception:
 sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 }
 
-_retire() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
+_retire() { "$AGORA_CLI" retire "$1" >/dev/null 2>&1 || true; }
 
 # Retire a meta that is being replaced BECAUSE IT FAILED, stamping why before
-# the retire lands. daemon-retire.sh is daemon-owned and writes status=retired
+# the retire lands. `agora retire` is agora-owned and writes status=retired
 # over whatever terminal status the failure left, which is the only evidence
 # _outage_streak had — so a dead-worker cycle (finalize error → respawn →
 # retire) erased its own failure and the streak reset every tick, leaving the
@@ -836,7 +836,7 @@ _finalize_ticket_owners() {  # <ticket>
   local owner
   while IFS= read -r owner; do
     [ -n "$owner" ] || continue
-    "$DAEMON_SCRIPTS/daemon-finalize.sh" "$owner" >/dev/null 2>&1 || true
+    "$AGORA_CLI" sync "$owner" >/dev/null 2>&1 || true
   done <<EOF2
 $(DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" python3 - <<'PY'
 import glob, json, os
@@ -906,9 +906,9 @@ PY
 # stamp their own bookkeeping onto the fresh meta.
 _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir> [worktree-name]
   local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
-  # gh mode hands daemon-spawn a cwd it prepared itself (the detached PR/epic
-  # worktree) and no worktree NAME, so the daemon runs right there. The API
-  # path has no PR to detach at — it hands over the repo and lets daemon-spawn
+  # gh mode hands `agora spawn` a cwd it prepared itself (the detached PR/epic
+  # worktree) and no worktree NAME, so the seat runs right there. The API
+  # path has no PR to detach at — it hands over the repo and lets `agora spawn`
   # cut the isolated worktree, which is the same shape execute-dispatch uses.
   local wt_name="${7:-}"
   local bind_ready="$control_dir/bind-ready.json"
@@ -924,20 +924,20 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "$wt_name" \
-      "${REVIEW_MODEL:-fable}")" \
+      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
+      --model "${REVIEW_MODEL:-fable}")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
     # operator's own session model never silently sets the review lane's
-    # price. daemon-spawn persists effort into the meta; resumes keep it.
+    # price. `agora spawn` persists effort into the record; wakes keep it.
     # The gateway settings are CLEARED, not merely unset by us: this
-    # dispatcher can itself run inside a gateway-routed daemon whose
-    # environment exports them, daemon-spawn would inherit and persist them,
-    # and every later resume would ride the gateway while the log said claude.
+    # dispatcher can itself run inside a gateway-routed seat whose
+    # environment exports them, `agora spawn` would inherit and persist them,
+    # and every later wake would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$wt" "$wt_name" \
-      "${REVIEW_MODEL:-opus}")" \
+      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
+      --model "${REVIEW_MODEL:-opus}")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
@@ -1044,7 +1044,7 @@ PY
 # ENGINE-UNAVAILABLE marker (engine outage), a turn finalized status=error
 # (dead worker — e.g. the gateway refused its first turn, so no reply exists
 # to carry any marker), or a retirement STAMPED as a failure one
-# (_retire_failed — daemon-retire overwrites the terminal status, and without
+# (_retire_failed — `agora retire` overwrites the terminal status, and without
 # the stamp a dead-worker cycle erased the very evidence of itself and the
 # streak never reached the cap). One shared streak, so interleaved failure
 # kinds don't reset the count; the sweep's cap reads it so neither a dead
@@ -1128,14 +1128,14 @@ _decide() {
       else
         # A --no-wait worker's meta stays status=working after its turn ends,
         # and finished --bg sessions stay LISTED in `claude agents` — presence
-        # is not liveness. Finalize first (records reply + terminal status),
+        # is not liveness. Sync first (records reply + terminal status),
         # then judge: live → skip; finished → the finished-reviewer verdict;
         # session gone → dead worker → respawn.
-        fin="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$uuid" 2>/dev/null || echo "")"
+        fin="$("$AGORA_CLI" sync "$uuid" 2>/dev/null || echo "")"
         case "$fin" in
           live)       echo "skip active reviewer" ;;
           idle|error) _finished_verdict "$name" "$uuid" "$mode" "$fin" ;;
-          noop)       echo "skip finished reviewer (raced finalize)" ;;
+          noop)       echo "skip finished reviewer (raced sync)" ;;
           *)          echo "respawn $uuid" ;;
         esac
       fi ;;
@@ -1608,7 +1608,7 @@ PY
                         rm -rf "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
                         _api_drop_journal "$nonce"; return 1; }
 
-  # The run credentials are exported ONLY across this call: daemon-spawn puts
+  # The run credentials are exported ONLY across this call: `agora spawn` puts
   # them in the worker's environment (its only way to speak for its run), and
   # board-bind — which _spawn_reviewer calls — needs the same three to post the
   # session locator and to store the bearer at rest for every later resume.
@@ -1616,7 +1616,7 @@ PY
   # CLAIM_* is the journal hook — _spawn_reviewer marks spawn_completed between
   # the spawn and the bind — and it is set as a plain SHELL variable, never on
   # that export prefix: _spawn_reviewer runs in this shell and reads it either
-  # way, while anything on the prefix would be inherited by daemon-spawn and
+  # way, while anything on the prefix would be inherited by `agora spawn` and
   # land in the worker's own environment. A reviewer has no business holding
   # the dispatcher's journal path.
   local spawn_rc=0

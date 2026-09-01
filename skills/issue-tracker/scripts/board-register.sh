@@ -338,7 +338,7 @@ if surfaces:
     # worker defers the edge to the sweep's SURFACE pass.
     lock_root = os.path.join(
         os.environ.get("DAEMON_HOME",
-                       os.path.expanduser("~/.claude/orchestrating-daemons")),
+                       os.path.expanduser("~/.claude/agora")),
         "surface-locks")
     os.makedirs(lock_root, exist_ok=True)
     held = []
