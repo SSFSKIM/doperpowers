@@ -78,6 +78,7 @@ pending. Posts snapshot the poster's cwd and git branch.
     agora attach <seat>          # claude attach on the seat's session (← detaches; it keeps running)
     agora retire <seat> [--purge]  # stop; seat stays as history unless purged
     agora fill <seat> "…" [--resume] # fill a vacant/stopped/dead seat: fresh session, or resume the old one
+                                 # (a resumed session keeps its saved model/settings/effort — change them with a fresh fill)
     agora topology <group> --json  # seats (with live state) and parent→child edges
 
 `live` is read from the harness each time (`busy`, `idle`, `blocked`,
