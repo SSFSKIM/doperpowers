@@ -154,16 +154,42 @@ def err_path(seat_id):
     return os.path.join(root(), seat_id + ".err")
 
 
-def meta_set(seat_id, fields, remove=()):
+def _write_record(path, data):
+    """Atomic replace at the mode the record already has, never at the umask: a
+    bookkeeping write on a record carrying the board run bearer would otherwise
+    republish that secret world-readable; a record carrying `run_bearer` is
+    forced to 0600 either way. A record that does not exist yet gets 0600."""
+    tmp = path + ".tmp"
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o600
+    if data.get("run_bearer") or mode & 0o077:
+        mode = 0o600
+    try:
+        os.unlink(tmp)  # a tmp left by an earlier crash
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, mode)  # umask narrowing
+    os.replace(tmp, path)
+
+
+def meta_set(seat_id, fields, remove=(), bump=True):
     """Merge fields into a seat record (creating it if absent).
 
     The read-modify-write is serialized across processes with an advisory flock
     on the shared lock file: the board pipeline's own writers take the same
-    lock, so concurrent stamps never clobber each other's fields. The record is
-    recreated at the mode it already has, never at the umask: a bookkeeping
-    write on a record carrying the board run bearer would otherwise republish
-    that secret world-readable; a record carrying `run_bearer` is forced to
-    0600 either way. A record that does not exist yet gets the umask default.
+    lock, so concurrent stamps never clobber each other's fields.
+
+    `gen` is the record's lifecycle generation: every lifecycle write (spawn,
+    fill, resume, wake, retire, mark, seat add, sync's own finalize) bumps it,
+    so a finalizer or sync that took its snapshot before, say, a retire can see
+    the record moved on and stand down. The agent's own `now` line and raw
+    `meta set` are NOT lifecycle writes (bump=False): an agent updating its
+    status mid-turn must not make the turn's watcher refuse to record the reply.
     """
     path = meta_path(seat_id)
     os.makedirs(root(), exist_ok=True)
@@ -179,39 +205,24 @@ def meta_set(seat_id, fields, remove=()):
                 data[k] = v
             for k in remove:
                 data.pop(k, None)
-            tmp = path + ".tmp"
-            try:
-                mode = os.stat(path).st_mode & 0o777
-            except FileNotFoundError:
-                mode = None
-            if data.get("run_bearer"):
-                mode = 0o600
-            if mode is None:
-                with open(tmp, "w") as f:
-                    json.dump(data, f, indent=2)
-            else:
-                try:
-                    os.unlink(tmp)  # a tmp left by an earlier crash
-                except FileNotFoundError:
-                    pass
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-                with os.fdopen(fd, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.chmod(tmp, mode)  # umask narrowing
-            os.replace(tmp, path)
+            if bump:
+                data["gen"] = int(data.get("gen") or 0) + 1
+            _write_record(path, data)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def meta_set_if(seat_id, fields, guard, remove=()):
+def meta_set_if(seat_id, fields, guard, remove=(), reply=None):
     """meta_set, but under the SAME flock re-read the record and apply the
     write only if `guard(data)` holds. Never creates a missing record.
 
     A `--wait` watcher (or `sync`) took a snapshot minutes ago; while it waited,
-    the seat could have been purged, or resumed/re-filled into a different
+    the seat could have been purged, retired, or re-filled into a different
     session. Writing the stale turn's reply/status then would resurrect a purged
-    record or clobber the live one. The guard checks `current`/`short` are
-    unchanged and the file still exists. Returns True if it wrote.
+    record, undo a retire, or clobber the live occupant. When `reply` is given
+    as (turn_id, state, seat_ref) the reply file is written INSIDE the same
+    critical section, so a reply can never land next to a record that moved on.
+    A successful write bumps `gen`. Returns True if it wrote.
     """
     path = meta_path(seat_id)
     os.makedirs(root(), exist_ok=True)
@@ -229,33 +240,27 @@ def meta_set_if(seat_id, fields, guard, remove=()):
                 data[k] = v
             for k in remove:
                 data.pop(k, None)
-            tmp = path + ".tmp"
-            mode = os.stat(path).st_mode & 0o777
-            if data.get("run_bearer"):
-                mode = 0o600
-            try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            os.chmod(tmp, mode)
-            os.replace(tmp, path)
+            data["gen"] = int(data.get("gen") or 0) + 1
+            _write_record(path, data)
+            if reply is not None:
+                record_reply(reply[0], seat_id, reply[1], reply[2])
             return True
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def same_turn(cur, short):
-    """A guard for meta_set_if: the record is still the same session and launch."""
-    return lambda data: str(data.get("current") or "") == cur and str(data.get("short") or "") == short
+def current_gen(seat_id):
+    try:
+        return int(meta_get(seat_id, "gen") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
-def same_session(cur):
-    """A looser guard: only the session id is unchanged. For a socket-woken seat
-    whose short agora never recorded (it was registered, not spawned)."""
-    return lambda data: str(data.get("current") or "") == cur
+def same_gen(gen):
+    """The guard for a deferred finalize: the record's lifecycle generation is
+    the one we snapshotted, and nobody has retired the seat meanwhile (a retire
+    is an operator verdict no watcher may overturn)."""
+    return lambda data: int(data.get("gen") or 0) == gen and str(data.get("status") or "") != "retired"
 
 
 def meta_get(seat_id, field):
@@ -304,6 +309,15 @@ def load_seat(path):
         m[k] = "" if v is None else str(v)
     m["status"] = str(m.get("status") or "?")
     m["turns"] = str(m.get("turns") or "0")
+    try:
+        m["gen"] = int(m.get("gen") or 0)
+    except (TypeError, ValueError):
+        m["gen"] = 0
+    try:
+        m["attempts"] = int(m.get("attempts") or 1)
+    except (TypeError, ValueError):
+        m["attempts"] = 1
+    m["history"] = m.get("history") if isinstance(m.get("history"), list) else []
     return m
 
 
@@ -399,22 +413,50 @@ def group_for_record(m):
     return str(m.get("agora_group") or "") or derive_group(str(m.get("cwd") or ""))
 
 
-def lifecycle_lock(alias, group="?"):
-    """One lifecycle change per NAME at a time: spawn / fill / seat add / resume
-    / retire / remove hold this flock from their availability check through the
-    record commit (through process start, for resume). The key is the alias
-    alone, never group__alias: a seat's alias is its machine-wide harness name,
-    so a same-alias spawn in another group must serialize against this one or
-    two live sessions would answer to one SendMessage address. The kernel
-    releases the lock the moment the holder exits."""
+def lock_names(names, label, blocking=False):
+    """One lifecycle change per harness NAME at a time: spawn / fill / seat add /
+    resume / wake / retire / remove / sync hold these flocks from their
+    availability check through the record commit (through process start, for
+    resume). The key is the harness address (addr, default alias) — never
+    group__alias: an addr is the machine-wide SendMessage name, so two seats
+    that share an explicit --addr, or a same-alias spawn in another group, must
+    serialize or two live sessions would answer to one address. Names are
+    locked in the given order (alias first, then addr) so no two callers can
+    deadlock. The kernel releases every lock the moment the holder exits."""
     d = os.path.join(root(), "locks")
     os.makedirs(d, exist_ok=True)
-    lf = open(os.path.join(d, "name__%s.lock" % alias), "a+")
+    locks = []
+    for nm in dict.fromkeys(n for n in names if n):
+        lf = open(os.path.join(d, "name__%s.lock" % re.sub(r"[^A-Za-z0-9._-]", "_", nm)), "a+")
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except OSError:
+            for held in locks:
+                held.close()
+            lf.close()
+            die("'%s' (%s) is being changed by another agora process — retry shortly" % (nm, label), EXIT_UNKNOWN)
+        locks.append(lf)
+    return locks
+
+
+def lock_seat(s, blocking=False):
+    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking)
+
+
+def unlock(locks):
+    for lf in locks:
+        try:
+            lf.close()
+        except OSError:
+            pass
+
+
+def reload_seat(seat_id):
+    """Re-read one record after taking its lock; None if it vanished."""
     try:
-        fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        die("seat '%s' (%s) is being changed by another agora process — retry shortly" % (alias, group), EXIT_UNKNOWN)
-    return lf
+        return load_seat(meta_path(seat_id))
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------- harness
@@ -473,13 +515,12 @@ def pid_alive(pid):
 
 
 def peer_live(rec):
-    """A peer record is live only if its pid is alive AND its inbox socket file
-    still exists. A recycled pid can revive a dead session's record; without the
-    socket check that stale record would block a fill or a name reuse forever."""
-    if not pid_alive(rec.get("pid")):
-        return False
-    sp = socket_path_of(rec)
-    return bool(sp) and os.path.exists(sp)
+    """A peer record is live only if its pid is alive AND its inbox socket
+    accepts a connection. A recycled pid can revive a dead session's record, and
+    a dead session can leave its socket FILE behind; only a successful connect
+    proves a listener. Without this, a stale record would block a fill or a name
+    reuse forever."""
+    return pid_alive(rec.get("pid")) and socket_ok(socket_path_of(rec))
 
 
 def peer_for_session(session_id):
@@ -529,22 +570,40 @@ def socket_ok(path):
         s.close()
 
 
+class SendFailed(OSError):
+    """A socket delivery failed. `phase` is "before" when nothing reached the
+    peer (connect/sendall failed — safe to try another path), or "after" when
+    the frame had been fully written and only the close-out failed — delivery
+    is then UNCERTAIN and the same message must not be sent again by any path."""
+
+    def __init__(self, phase, err):
+        super().__init__(str(err))
+        self.phase = phase
+
+
 def send_frame(path, text):
     """Write one message frame to a session's inbox socket.
 
     The frame the harness documents for scripts is a plain user message; it is
     delivered as a peer message ("another Claude session sent…"). The frame
     carries no sender name, so callers put identity in the text's first line.
+    Raises SendFailed(phase) — see the class.
     """
     frame = {"type": "user", "message": {"role": "user", "content": text}}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
-        s.connect(path)
-        s.sendall((json.dumps(frame) + "\n").encode())
-        s.shutdown(socket.SHUT_WR)
         try:
-            s.recv(4096)
+            s.connect(path)
+            s.sendall((json.dumps(frame) + "\n").encode())
+        except OSError as e:
+            raise SendFailed("before", e)
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError as e:
+            raise SendFailed("after", e)
+        try:
+            s.recv(4096)  # an optional ack; nothing rides on it
         except OSError:
             pass
     finally:
@@ -696,9 +755,11 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def run_claude_bg(args, cwd, settings):
-    """Run `claude --bg …` in cwd; return (short, banner). short is "" on failure."""
+    """Run `claude --bg …` in cwd; return (short, banner). short is "" on failure.
+    cwd must be a real directory — callers validate with cwd_or_die; an
+    unattended worker is never silently launched somewhere else."""
     if not (cwd and os.path.isdir(cwd)):
-        cwd = home_dir()
+        die("launch cwd does not exist or is not a directory: %s" % cwd, EXIT_USAGE)
     try:
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -713,8 +774,34 @@ def run_claude_bg(args, cwd, settings):
 
 
 def claude_stop(short):
-    if short:
-        subprocess.run(["claude", "stop", short], capture_output=True, text=True, timeout=60)
+    """`claude stop <short>`; True iff the supervisor accepted it."""
+    if not short:
+        return True
+    try:
+        p = subprocess.run(["claude", "stop", short], capture_output=True, text=True, timeout=60)
+    except Exception:
+        return False
+    return p.returncode == 0
+
+
+def wait_stopped(s, short, cur):
+    """After `claude stop`, wait (bounded by AGORA_STOP_TIMEOUT, default 30s)
+    until the old turn's harness row is gone or no longer running AND no live
+    peer socket answers for the session. Resuming while the old process still
+    runs makes the harness start a copy; a stop that did not take is refused
+    loudly rather than papered over. True iff the turn is confirmed down."""
+    deadline = time.time() + float(os.environ.get("AGORA_STOP_TIMEOUT", "30"))
+    while True:
+        agents_refresh()
+        row = agent_row(short=short) if short else harness_row(s)
+        running = bool(row) and normalize_state(row) in ("working", "blocked")
+        global _PEERS
+        _PEERS = None
+        if not running and peer_for_session(cur) is None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(poll_interval())
 
 
 def poll_uuid(short, max_iter=None):
@@ -891,8 +978,24 @@ def convert_v2_nodes(r):
             # A sessionless node gets a DETERMINISTIC id, so a run interrupted
             # mid-convert re-derives the same seat instead of a fresh uuid4 each
             # time (which would multiply the seat on every retry).
-            seat_id = sess if UUID_RE.match(sess) else str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
+            det_id = str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
+            seat_id = sess if UUID_RE.match(sess) else det_id
+            existing = None
             if os.path.exists(meta_path(seat_id)):
+                try:
+                    with open(meta_path(seat_id)) as f:
+                        existing = json.load(f)
+                except Exception:
+                    existing = {}
+                same_seat = (str(existing.get("group") or "") == g
+                             and str(existing.get("alias") or existing.get("name") or "") == alias)
+                if not same_seat:
+                    # The same session id already backs a seat in ANOTHER group
+                    # (v2 let one session join two groups). Never overwrite it —
+                    # this node gets its deterministic id instead.
+                    seat_id = det_id
+                    existing = None if not os.path.exists(meta_path(det_id)) else {}
+            if existing is not None:
                 meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
                                    "addr": str(n.get("addr") or alias), "brief": str(n.get("desc") or "")})
             else:
@@ -958,10 +1061,18 @@ def migrate(quiet=False):
        on every later call — so a crash mid-cutover self-heals.
     2. v2 layout: groups/<g>/nodes/*.json become seat records (retired).
     3. Every run, per record (the scan is cheap): a record lacking `group` is
-       stamped (its own agora_group if it had one, else derived from cwd), and a
+       stamped (its own agora_group if it had one, else derived from cwd); a
        legacy codex-CLI worker record (engine: codex) is retired — its resume
-       path no longer exists; a still-live one is killed first, the way the old
-       retire path did.
+       path no longer exists (its pid is NOT signalled: a recorded pid on a
+       record with no host/boot identity is undetectable pid reuse); and when
+       several records share (group, alias) — the old substrate respawned
+       workers under the same name — the newest `updated` keeps the alias and
+       each older one becomes `<alias>@<short>` and retired (`name`, a pipeline
+       field, is untouched).
+    4. Every run: the root is 0700 and no record/reply/err file is wider than
+       0600 (the old substrate left 0755/0644); and the legacy path is a symlink
+       to the root whenever it is missing (a crash after the rename must not
+       leave legacy consumers without a path).
     """
     r = root()
     did = []
@@ -975,14 +1086,29 @@ def migrate(quiet=False):
                 if os.path.lexists(r):
                     os.rename(r, r + ".v2-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
                 os.rename(old, r)
+                did.append("renamed %s -> %s" % (old, r))
+            if r == default_root() and os.path.isdir(r) and not os.path.lexists(old):
                 os.symlink(r, old)
-                did.append("renamed %s -> %s (old path is now a symlink)" % (old, r))
+                did.append("linked %s -> %s" % (old, r))
             if merge_asides(r):
                 did.append("merged an interrupted v2 aside back into the root")
             n = convert_v2_nodes(r)
             if n:
                 did.append("converted %d v2 node(s) into seats" % n)
-            stamped = retired = killed = 0
+            if os.path.isdir(r):
+                if os.stat(r).st_mode & 0o077:
+                    os.chmod(r, 0o700)
+                    did.append("tightened the root to 0700")
+                tight = 0
+                for p in glob.glob(os.path.join(r, "*")):
+                    if os.path.isfile(p) and (p.endswith(".json") or p.endswith(".reply.txt") or p.endswith(".err")):
+                        if os.stat(p).st_mode & 0o077:
+                            os.chmod(p, 0o600)
+                            tight += 1
+                if tight:
+                    did.append("tightened %d file(s) to 0600" % tight)
+            stamped = retired = 0
+            by_key = {}
             for p in record_files():
                 try:
                     with open(p) as f:
@@ -994,20 +1120,30 @@ def migrate(quiet=False):
                     fields["group"] = group_for_record(m)
                     stamped += 1
                 if m.get("engine") == "codex" and m.get("status") != "retired":
-                    if m.get("status") in ("working", "blocked") and identity_local(
-                            str(m.get("host") or ""), str(m.get("boot_id") or "")) and pid_alive(m.get("pid")):
-                        try:
-                            os.kill(int(m["pid"]), signal.SIGTERM)
-                            killed += 1
-                        except (ProcessLookupError, ValueError, TypeError, PermissionError):
-                            pass
                     fields.update({"status": "retired", "updated": now()})
                     retired += 1
                 if fields:
-                    meta_set(os.path.basename(p)[:-5], fields)
-            if stamped or retired:
-                did.append("stamped group on %d record(s), retired %d legacy codex record(s)%s" % (
-                    stamped, retired, (" (killed %d live)" % killed) if killed else ""))
+                    meta_set(os.path.basename(p)[:-5], fields, bump=False)
+                    m.update(fields)
+                alias = str(m.get("alias") or m.get("name") or "")
+                if alias:
+                    by_key.setdefault((str(m.get("group") or ""), alias), []).append(
+                        (str(m.get("updated") or ""), os.path.basename(p)[:-5], m))
+            deduped = 0
+            for (g, alias), recs in by_key.items():
+                if len(recs) < 2:
+                    continue
+                recs.sort(key=lambda t: t[0], reverse=True)  # newest updated keeps the alias
+                for _upd, sid, m in recs[1:]:
+                    tag = str(m.get("short") or "") or sid[:8]
+                    fields = {"alias": "%s@%s" % (alias, tag)}
+                    if m.get("status") != "retired":
+                        fields.update({"status": "retired", "updated": now()})
+                    meta_set(sid, fields, bump=False)
+                    deduped += 1
+            if stamped or retired or deduped:
+                did.append("stamped group on %d record(s), retired %d legacy codex record(s), renamed %d duplicate alias(es)" % (
+                    stamped, retired, deduped))
         finally:
             fcntl.flock(mlf, fcntl.LOCK_UN)
     if did and not quiet:
@@ -1098,16 +1234,21 @@ def cwd_or_die(cwd, verb):
 
 
 def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, worktree,
-                model, settings, effort, preamble_flag, wait, lock, verb):
+                model, settings, effort, preamble_flag, wait, locks, verb):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
     first turn (so the agent can post / be looked up), then is promoted to the
     first session's uuid as the seat id. seat_id set → an in-place re-fill: the
-    record keeps its id, `now`/`note`/`created`, and every pipeline-owned field;
-    only the launch + definition fields are overwritten. The session launches
-    under -n <addr> so the seat's advertised address is its live SendMessage
-    name. Returns nothing (prints; may exit)."""
+    record keeps its id, `note`/`created`, and every pipeline-owned field; the
+    launch + definition fields are overwritten, `attempts` is bumped and the
+    previous occupant is appended to `history` (last 10) for the pipeline's
+    outage-streak logic. The session launches under -n <addr> so the seat's
+    advertised address is its live SendMessage name. The banner's bracket is
+    always `[<short> / <RECORD FILENAME>]` — the pipeline parses that value and
+    board-bind matches it against filenames, so on a re-fill it is the seat id,
+    never the new session's uuid. Returns nothing (prints; may exit)."""
+    prev = reload_seat(seat_id) if seat_id else None
     preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
     task_text = compose_task(task, brief or "", preamble)
     short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
@@ -1123,13 +1264,21 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     }
     if seat_id is None:
         rec_id = str(uuidlib.uuid4())
-        meta_set(rec_id, {"uuid": rec_id, "now": "", "note": "", "created": now(), **launch})
+        meta_set(rec_id, {"uuid": rec_id, "now": "", "note": "", "created": now(), "attempts": 1,
+                          "history": [], **launch})
     else:
         # A re-fill is a genuinely new session: clear the previous occupant's
         # `now` line (the orchestrator's `note` is kept), keep the seat id, its
-        # `created`, and every pipeline-owned field the launch dict omits.
+        # `created`, and every pipeline-owned field the launch dict omits. The
+        # legacy codex fields go too — the new occupant is a claude session.
         rec_id = seat_id
-        meta_set(rec_id, {**launch, "now": ""}, remove=("pending_short",))
+        history = list(prev["history"]) if prev else []
+        if prev and (prev["current"] or prev["short"]):
+            history.append({"current": prev["current"], "short": prev["short"],
+                            "status": prev["status"], "ended": now()})
+        meta_set(rec_id, {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1,
+                          "history": history[-10:]},
+                 remove=("pending_short", "engine", "pid", "event_log"))
     polled = poll_uuid(short)
     if not polled or not UUID_RE.match(polled[0]):
         meta_set(rec_id, {"status": "error", "pending_short": short, "updated": now()})
@@ -1161,16 +1310,16 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
         status = status_for_state(state)
-        if meta_set_if(rec_id, {"status": status, "updated": now()}, same_turn(uuid, short)):
-            record_reply(uuid, rec_id, state, alias)
-    lock.close()
+        meta_set_if(rec_id, {"status": status, "updated": now()}, same_gen(current_gen(rec_id)),
+                    reply=(uuid, state, alias))
+    unlock(locks)
     if wait:
-        status = finish_turn(rec_id, short, alias, uuid, same_turn(uuid, short))
+        status = finish_turn(rec_id, short, alias, uuid, same_gen(current_gen(rec_id)))
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
     print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: agora reply %s)" % (
-        verb, group, alias, short, uuid, status, wt, short))
+        verb, group, alias, short, rec_id, status, wt, short))
     if wait:
         print_reply_block(rec_id)
 
@@ -1188,9 +1337,10 @@ def cmd_spawn(a):
     group = a.group if explicit_group else derive_group(cwd)
     if not valid_name(group):
         die("bad group name: %s" % group)
-    lock = lifecycle_lock(alias, group)
-    # Re-read under the lock: whether the seat is filled/refillable is only true
-    # as of now, not as of the caller's earlier read.
+    label = "%s/%s" % (group, alias)
+    locks = lock_names([alias, a.addr or ""], label)
+    # Read under the lock: whether the seat is filled/refillable is only true as
+    # of now, not as of any earlier read.
     addr = a.addr or alias
     existing = None
     for s in seats(group):
@@ -1198,19 +1348,35 @@ def cmd_spawn(a):
             live = live_state(s)
             if live in FILLED:
                 die("seat %s/%s is filled (live: %s) — message it with agora send/wake" % (group, alias, live), EXIT_UNKNOWN)
+            if s["engine"] == "codex" and s["status"] in ("working", "blocked"):
+                die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
+                    group, alias, s["status"]), EXIT_UNKNOWN)
             # vacant / stopped / gone / retired → re-fill this very seat, keeping
             # its id and pipeline-owned fields. The board pipeline's
             # retire-then-respawn of a deterministic alias (review-pr-<n>) lands
             # here instead of erroring.
             existing = s
             addr = a.addr or s["addr"]
+            if addr not in (alias, a.addr):
+                locks += lock_names([addr], label)
             break
     refuse_live_name(alias, addr, allow_session=(existing["current"] if existing else ""))
     settings = env_default(a.settings, "DAEMON_CLAUDE_SETTINGS")
     effort = env_default(a.effort, "DAEMON_CLAUDE_EFFORT")
-    spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, a.parent or "", a.role or "",
-                a.brief or "", a.task, cwd, a.worktree or "", a.model or "", settings, effort,
-                explicit_group, a.wait, lock, "spawned")
+    if existing:
+        # Definition fields change only when EXPLICITLY given (argparse default
+        # None keeps the seat's own); task/model/settings/effort/cwd/worktree are
+        # per-fill and always come from this call.
+        parent = a.parent if a.parent is not None else existing["parent"]
+        role = a.role if a.role is not None else existing["role"]
+        brief = a.brief if a.brief is not None else existing["brief"]
+        preamble_flag = explicit_group or bool(existing["preamble"])
+        if existing["engine"] == "codex":
+            purge_codex_runs(existing["seat_id"])
+    else:
+        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group
+    spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, parent, role, brief,
+                a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned")
 
 
 def cmd_seat_add(a):
@@ -1225,10 +1391,18 @@ def cmd_seat_add(a):
     session = a.session or ""
     if session and not UUID_RE.match(session):
         die("--session must be a session uuid (8-4-4-4-12 hex): %s" % session)
-    lock = lifecycle_lock(a.alias, a.group)
+    label = "%s/%s" % (a.group, a.alias)
+    locks = lock_names([a.alias, a.addr or ""], label)
     existing = [s for s in seats(a.group) if s["alias"] == a.alias]
     addr = a.addr or (existing[0]["addr"] if existing else a.alias)
+    if addr not in (a.alias, a.addr):
+        locks += lock_names([addr], label)
     refuse_live_name(a.alias, addr, allow_session=session or (existing[0]["current"] if existing else ""))
+    # A registered session's short is whatever the harness shows for it right
+    # now (a `seat add --session` seat was never spawned by agora, so nothing
+    # else records it); absent a row it is cleared, never left stale.
+    row = agent_row(session_id=session) if session else None
+    short = str((row or {}).get("id") or "")
     if existing:
         s = existing[0]
         seat_id = s["seat_id"]
@@ -1236,7 +1410,8 @@ def cmd_seat_add(a):
                   "addr": addr, "role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
-            fields.update({"current": session, "status": "idle", "host": host_name(), "boot_id": boot_id()})
+            fields.update({"current": session, "short": short, "status": "idle",
+                           "host": host_name(), "boot_id": boot_id()})
         meta_set(seat_id, fields)
     else:
         seat_id = session if session else str(uuidlib.uuid4())
@@ -1244,14 +1419,14 @@ def cmd_seat_add(a):
             die("a seat record for session %s already exists (%s/%s)" % (
                 session, meta_get(seat_id, "group"), meta_get(seat_id, "alias") or meta_get(seat_id, "name")), EXIT_UNKNOWN)
         meta_set(seat_id, {
-            "uuid": seat_id, "current": session, "short": "", "name": a.alias, "alias": a.alias,
+            "uuid": seat_id, "current": session, "short": short, "name": a.alias, "alias": a.alias,
             "group": a.group, "parent": a.parent or "", "addr": addr, "role": a.role or "",
             "brief": a.brief or "", "task": "", "now": "", "note": "", "cwd": os.getcwd(), "worktree": "",
             "model": "", "settings": "", "effort": "", "status": "idle" if session else "vacant",
             "host": host_name() if session else "", "boot_id": boot_id() if session else "",
-            "created": now(), "updated": now(), "turns": "0", "preamble": "1"})
+            "created": now(), "updated": now(), "turns": "0", "preamble": "1", "attempts": 1, "history": []})
     os.makedirs(os.path.join(group_dir(a.group), "locks"), exist_ok=True)
-    lock.close()
+    unlock(locks)
     print("seat %s/%s %s (parent: %s, addr: %s%s)" % (
         a.group, a.alias, "updated" if existing else "added", a.parent or "none", addr,
         (", session: " + session) if session else ", vacant"))
@@ -1272,13 +1447,14 @@ def refuse_codex(s):
 def cmd_fill(a):
     s0 = resolve_seat(a.seat)
     refuse_codex(s0)
-    lock = lifecycle_lock(s0["alias"], s0["group"])
+    locks = lock_seat(s0)
     # Re-load under the lock and act on the fresh values: between resolve and
     # lock the seat could have been re-filled or retired.
-    s = next((x for x in seats(s0["group"]) if x["seat_id"] == s0["seat_id"]), None)
+    s = reload_seat(s0["seat_id"])
     if s is None:
-        lock.close()
+        unlock(locks)
         die("seat %s/%s vanished before the fill could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
+    refuse_codex(s)
     live = live_state(s)
     if live in FILLED:
         die("seat %s/%s is filled (live: %s) — use agora wake or agora send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
@@ -1287,7 +1463,7 @@ def cmd_fill(a):
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         warn_resume_flags(a)
-        resume_session(s, a.task, a.wait, lock, verb="filled")
+        resume_session(s, a.task, a.wait, locks, verb="filled")
         return
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
     effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
@@ -1296,7 +1472,7 @@ def cmd_fill(a):
     # --worktree on a re-fill: the fresh session runs where the seat lives.
     cwd = cwd_or_die(s["cwd"], "fill")
     spawn_fresh(s["seat_id"], s["alias"], s["addr"], s["group"], s["parent"], s["role"], s["brief"],
-                a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, lock, "filled")
+                a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, locks, "filled")
 
 
 # ------------------------------------------------------- resume / wake / send
@@ -1308,38 +1484,40 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, lock=None, verb="resumed"):
+def resume_session(s, msg, wait, locks=None, verb="resumed"):
     """Process-level continuation of a seat's session.
 
-    A live current turn is stopped first (`claude stop`), then exactly
+    A live current turn is stopped first (`claude stop`, then a bounded wait
+    until the harness row is no longer running and no peer socket answers —
+    resuming while the old process still runs makes the harness start a copy,
+    so a stop that did not take is refused loudly). Then exactly
     `claude --bg --resume <current> <msg>` runs the session in the background
-    under the same id, in the seat's cwd, with THIS process's environment
-    (gateway scrub applied per the seat's recorded route): the board pipeline
-    prefixes the call with its run credentials and needs a fresh process to
-    carry them — a socket frame cannot. NO other flag rides the resume: a
-    background session keeps its saved options (-n, --permission-mode, --model,
-    --settings, --effort), and any flag makes the harness start a COPY (observed
-    live, v2.1.257). ONE resume per seat at a time (flock, released when this
-    process dies): two concurrent resumes would start a copy. If the banner
-    says a copy started, or the harness reports a different session id, the
-    copy is stopped, the record is left untouched, and the command fails loudly.
+    under the same id, in the seat's recorded cwd (which must still exist — an
+    unattended worker is never launched somewhere else; `fill` fresh with a
+    valid --cwd is the recourse), with THIS process's environment (gateway
+    scrub applied per the seat's recorded route): the board pipeline prefixes
+    the call with its run credentials and needs a fresh process to carry them —
+    a socket frame cannot. NO other flag rides the resume: a background session
+    keeps its saved options (-n, --permission-mode, --model, --settings,
+    --effort), and any flag makes the harness start a COPY (observed live,
+    v2.1.257). ONE resume per seat at a time (flock, released when this process
+    dies). If the banner says a copy started, or the harness reports a
+    different session id, the copy is stopped, the record is left untouched,
+    and the command fails loudly.
     """
     refuse_codex(s)
-    if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
-            s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    if lock is None:
-        lock = lifecycle_lock(s["alias"], s["group"])
-        # Re-load under the lock and act on fresh values (item: fill/resume).
-        fresh = next((x for x in seats(s["group"]) if x["seat_id"] == s["seat_id"]), None)
+    if locks is None:
+        locks = lock_seat(s)
+        fresh = reload_seat(s["seat_id"])
         if fresh is None:
-            lock.close()
+            unlock(locks)
             die("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         s = fresh
         refuse_codex(s)
-        if not s["current"]:
-            die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
-                s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
+    if not s["current"]:
+        die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
+            s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
+    cwd = cwd_or_die(s["cwd"], "resume of %s/%s" % (s["group"], s["alias"]))  # before any side effect
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
     lf = open(lock_path, "a+")
     try:
@@ -1356,15 +1534,24 @@ def resume_session(s, msg, wait, lock=None, verb="resumed"):
     cur = s["current"]
     agents_refresh()
     row = harness_row(s)
+    stop_short = ""
     if row and normalize_state(row) in ("working", "blocked", "done", "done-blocked") and row.get("id"):
         # Release the live turn (idempotent — harmless if already stopped). A
         # row is host-local by construction; only a RECORDED short is gated on
         # the record's host identity, because shorts are reusable across boots.
-        claude_stop(row["id"])
+        stop_short = row["id"]
     elif not row and peer_for_session(cur) and s["short"] and identity_local(s["host"], s["boot_id"]):
-        claude_stop(s["short"])
+        stop_short = s["short"]
+    if stop_short:
+        if not claude_stop(stop_short):
+            die("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
+                stop_short, s["group"], s["alias"]), 1)
+        if not wait_stopped(s, stop_short, cur):
+            die("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
+                "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
+                                                    os.environ.get("AGORA_STOP_TIMEOUT", "30")), 1)
     prev_status = s["status"]
-    short, banner = run_claude_bg(["--bg", "--resume", cur, msg], s["cwd"] or home_dir(), s["settings"])
+    short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
     if not short:
         meta_set(s["seat_id"], {"status": "error", "updated": now()})
         sys.stderr.write("agora: resume failed — did not launch or produced no background id:\n%s\n" % banner)
@@ -1394,14 +1581,14 @@ def resume_session(s, msg, wait, lock=None, verb="resumed"):
     # runs on its saved options, whatever this call was passed.
     meta_set(s["seat_id"], {"current": cur, "short": short, "host": host_name(), "boot_id": boot_id(),
                             "status": "working", "updated": now(), "turns": str(turns)}, remove=("pending_short",))
-    lock.close()
+    unlock(locks)
     status = "working"
     if state in TERMINAL:
         status = status_for_state(state)
-        if meta_set_if(s["seat_id"], {"status": status, "updated": now()}, same_turn(cur, short)):
-            record_reply(uuid, s["seat_id"], state, s["alias"])
+        meta_set_if(s["seat_id"], {"status": status, "updated": now()}, same_gen(current_gen(s["seat_id"])),
+                    reply=(uuid, state, s["alias"]))
     if wait:
-        status = finish_turn(s["seat_id"], short, s["alias"], uuid, same_turn(cur, short))
+        status = finish_turn(s["seat_id"], short, s["alias"], uuid, same_gen(current_gen(s["seat_id"])))
     print("%s %s/%s  [%s / %s]  via --bg --resume  status=%s  turns=%d" % (
         verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
     if wait:
@@ -1445,11 +1632,19 @@ def wait_socket_turn(s, marker, was_idle):
     short = (row or {}).get("id") or s["short"]
     if not short:
         return "idle"
-    return finish_turn(s["seat_id"], short, s["alias"], cur, same_session(cur))
+    return finish_turn(s["seat_id"], short, s["alias"], cur, same_gen(current_gen(s["seat_id"])))
 
 
 def cmd_wake(a):
-    s = resolve_seat(a.seat)
+    s0 = resolve_seat(a.seat)
+    refuse_codex(s0)
+    # The lifecycle lock covers target selection, the socket delivery, and the
+    # status write, so a concurrent fill/resume/retire cannot slip between them.
+    locks = lock_seat(s0)
+    s = reload_seat(s0["seat_id"])
+    if s is None:
+        unlock(locks)
+        die("seat %s/%s vanished before the wake could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     refuse_codex(s)
     if not s["current"]:
         die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
@@ -1457,20 +1652,28 @@ def cmd_wake(a):
     frm = a.frm or "human"
     msg_id = uuidlib.uuid4().hex[:8]
     text = "[agora wake from %s id=%s]\n%s" % (frm, msg_id, a.msg)
-    peer = peer_for_session(s["current"])
-    sock = socket_path_of(peer) if peer else ""
-    if peer and socket_ok(sock):
+    peer = peer_for_session(s["current"])  # live = pid alive AND socket answers
+    if peer:
+        sock = socket_path_of(peer)
         was_idle = normalize_state(harness_row(s) or {"status": peer.get("status")}) not in ("working", "blocked")
         try:
             send_frame(sock, text)
-        except OSError as e:
-            # The socket vanished between the liveness check and the write (the
-            # session exited). Re-evaluate and fall through to the resume path
-            # rather than raising.
-            warn("inbox socket delivery to %s/%s failed (%s); resuming instead" % (s["group"], s["alias"], e))
-            resume_session(s, text, a.wait, verb="woke")
-            return
-        meta_set(s["seat_id"], {"status": "working", "updated": now()})
+        except SendFailed as e:
+            if e.phase == "before":
+                # Nothing reached the peer (the session exited between the
+                # liveness check and the write): fall through to the resume path.
+                warn("inbox socket delivery to %s/%s failed before the frame was written (%s); resuming instead" % (
+                    s["group"], s["alias"], e))
+                resume_session(s, text, a.wait, locks, verb="woke")
+                return
+            unlock(locks)
+            die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
+                "resuming and not re-sending id=%s; check the seat with agora reply/attach before retrying." % (
+                    s["group"], s["alias"], e, msg_id), 1)
+        wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
+        unlock(locks)
+        if not wrote:
+            warn("record of %s/%s changed during delivery; status left as is" % (s["group"], s["alias"]))
         status = "working"
         if a.wait:
             status = wait_socket_turn(s, msg_id, was_idle)
@@ -1479,7 +1682,7 @@ def cmd_wake(a):
         if a.wait:
             print_reply_block(s["seat_id"])
         return
-    resume_session(s, text, a.wait, verb="woke")
+    resume_session(s, text, a.wait, locks, verb="woke")
 
 
 def cmd_send(a):
@@ -1498,7 +1701,10 @@ def cmd_send(a):
         if peer and socket_ok(sock):
             try:
                 send_frame(sock, text)
-            except OSError as e:
+            except SendFailed as e:
+                if e.phase == "after":
+                    die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s); "
+                        "do not blindly re-send" % (s["group"], s["alias"], e), 1)
                 die("%s/%s went away mid-send (%s) — use: agora wake %s/%s \"<msg>\"" % (
                     s["group"], s["alias"], e, s["group"], s["alias"]), EXIT_UNKNOWN)
             print("sent to %s/%s (%s)" % (s["group"], s["alias"], peer.get("name") or s["addr"]))
@@ -1538,53 +1744,57 @@ def cmd_reply(a):
         print(reply_text(s["seat_id"]) or transcript_reply(cur, ref) or "(no reply yet)")
 
 
-def sync_one(s):
+def sync_one(s0):
     """Reconcile one seat's mirror status from the harness. Returns one word.
 
-    Every status/reply write is CONDITIONAL on the snapshot: sync re-reads under
-    the lock and skips (prints `live`) if `current`/`short` moved since we read
-    the seat — a concurrent re-fill or resume must not be clobbered by a stale
-    finalize. An `idle` record whose harness row shows a running turn was woken
-    natively (native SendMessage, no agora write): promote it to working.
+    Runs under the seat's lifecycle lock (BLOCKING — a sync waits for an
+    in-flight fill/resume rather than reporting `absent` over a legitimate
+    transition) and re-reads the record under it before deciding. Every
+    status/reply write is CONDITIONAL on the record's generation, and the reply
+    file is written in the same critical section, so a stale finalize can never
+    clobber a re-fill, a resume, or a retire. An `idle` record whose harness row
+    shows a running turn was woken natively (SendMessage, no agora write):
+    promote it to working.
     """
-    if s["engine"] == "codex":
+    if s0["engine"] == "codex" or s0["status"] not in ("working", "blocked", "idle"):
         return "noop"
-    if s["status"] not in ("working", "blocked", "idle"):
-        return "noop"
-    cur = s["current"] or s["seat_id"]
-    guard = same_turn(s["current"], s["short"])
-    agents_refresh()
-    row = harness_row(s)
-    if s["status"] == "idle":
-        # Only an idle seat the harness shows as running NOW is interesting — it
-        # was woken natively (SendMessage) with no agora write. Promote it.
-        if row and normalize_state(row) in ("working", "blocked"):
-            meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
+    locks = lock_seat(s0, blocking=True)
+    try:
+        s = reload_seat(s0["seat_id"])
+        if s is None:
+            return "absent"
+        if s["engine"] == "codex" or s["status"] not in ("working", "blocked", "idle"):
+            return "noop"
+        cur = s["current"] or s["seat_id"]
+        guard = same_gen(s["gen"])
+        agents_refresh()
+        row = harness_row(s)
+        if s["status"] == "idle":
+            # Only an idle seat the harness shows as running NOW is interesting —
+            # it was woken natively (SendMessage) with no agora write. Promote it.
+            if row and normalize_state(row) in ("working", "blocked"):
+                meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
+                return "live"
+            return "noop"
+        if row is None:
+            return "absent"
+        state = normalize_state(row)
+        if state in ("working", "blocked"):
             return "live"
-        return "noop"
-    if row is None:
-        return "absent"
-    state = normalize_state(row)
-    if state in ("working", "blocked"):
-        return "live"
-    if state == "done":
-        if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard):
-            record_reply(cur, s["seat_id"], "done", s["alias"])
-            return "idle"
-        return "live"
-    if state == "done-blocked":
-        # An ended blocked-shape turn: the session is over and resumable; the
-        # reply carries the pending question or the harness-prompt marker.
-        if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard):
-            record_reply(cur, s["seat_id"], "blocked", s["alias"])
-            return "idle"
-        return "live"
-    if state in ("failed", "stopped", "error"):
-        if meta_set_if(s["seat_id"], {"status": "error", "updated": now()}, guard):
-            record_reply(cur, s["seat_id"], state, s["alias"])
-            return "error"
-        return "live"
-    return "live"  # unknown/new harness states: claim nothing, finalize nothing
+        if state == "done":
+            return "idle" if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard,
+                                         reply=(cur, "done", s["alias"])) else "live"
+        if state == "done-blocked":
+            # An ended blocked-shape turn: the session is over and resumable; the
+            # reply carries the pending question or the harness-prompt marker.
+            return "idle" if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard,
+                                         reply=(cur, "blocked", s["alias"])) else "live"
+        if state in ("failed", "stopped", "error"):
+            return "error" if meta_set_if(s["seat_id"], {"status": "error", "updated": now()}, guard,
+                                          reply=(cur, state, s["alias"])) else "live"
+        return "live"  # unknown/new harness states: claim nothing, finalize nothing
+    finally:
+        unlock(locks)
 
 
 def cmd_sync(a):
@@ -1610,7 +1820,9 @@ def cmd_mark(a):
 def cmd_status(a):
     s = resolve_seat(a.seat)
     line = " ".join(a.line).strip()
-    meta_set(s["seat_id"], {"now": line, "updated": now()})
+    # The agent's own status line is not a lifecycle write: it must never make
+    # the turn's watcher refuse to record the reply (bump=False).
+    meta_set(s["seat_id"], {"now": line, "updated": now()}, bump=False)
     print("%s/%s now: %s" % (s["group"], s["alias"], line or "(cleared)"))
 
 
@@ -1618,20 +1830,27 @@ def cmd_status(a):
 
 
 def stop_session(s):
-    """Stop the seat's current turn when its identity is local. A claude session
-    is stopped via the supervisor by its short (never a foreign short — shorts
-    are host-local and reusable); a legacy codex worker is a detached process we
-    own, so it is signalled by its recorded pid, the way the old retire did."""
-    if not identity_local(s["host"], s["boot_id"]):
-        return
+    """Stop the seat's current turn. The short to stop is the CURRENT session's
+    harness row when there is one (a `seat add --session` seat recorded none,
+    and a recorded short goes stale after a native resume); a row is host-local
+    by construction. Only the fallback to the RECORDED short is gated on the
+    record's host identity — shorts are host-local and reusable, so a foreign
+    one may name an unrelated local session. A legacy codex worker is a
+    detached process we own: signalled by its recorded pid, as the old retire
+    did, when its identity is local."""
     if s["engine"] == "codex":
         pid = meta_get(s["seat_id"], "pid")
-        if s["status"] in ("working", "blocked") and pid_alive(pid):
+        if s["status"] in ("working", "blocked") and identity_local(s["host"], s["boot_id"]) and pid_alive(pid):
             try:
                 os.kill(int(pid), signal.SIGTERM)
             except (ProcessLookupError, ValueError, TypeError, PermissionError):
                 pass
-    elif s["short"]:
+        return
+    agents_refresh()
+    row = harness_row(s) if s["current"] else None
+    if row and row.get("id"):
+        claude_stop(row["id"])
+    elif s["short"] and identity_local(s["host"], s["boot_id"]):
         claude_stop(s["short"])
 
 
@@ -1664,9 +1883,18 @@ def unlink_seat_files(seat_id):
             pass
 
 
+def locked_fresh(s0, verb):
+    """Take the seat's lifecycle locks and re-load the record; (locks, seat)."""
+    locks = lock_seat(s0)
+    s = reload_seat(s0["seat_id"])
+    if s is None:
+        unlock(locks)
+        die("seat %s/%s vanished before the %s could start" % (s0["group"], s0["alias"], verb), EXIT_UNKNOWN)
+    return locks, s
+
+
 def cmd_retire(a):
-    s = resolve_seat(a.seat)
-    lock = lifecycle_lock(s["alias"], s["group"])
+    locks, s = locked_fresh(resolve_seat(a.seat), "retire")
     try:
         stop_session(s)
         hint = ("agora fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])) if s["current"] \
@@ -1682,12 +1910,11 @@ def cmd_retire(a):
             print("retired %s/%s [%s] (seat kept; re-fill with: %s)%s" % (
                 s["group"], s["alias"], s["seat_id"], hint, worktree_note(s)))
     finally:
-        lock.close()
+        unlock(locks)
 
 
 def cmd_remove(a):
-    s = resolve_seat(a.seat)
-    lock = lifecycle_lock(s["alias"], s["group"])
+    locks, s = locked_fresh(resolve_seat(a.seat), "remove")
     try:
         stop_session(s)
         if s["engine"] == "codex":
@@ -1695,7 +1922,7 @@ def cmd_remove(a):
         unlink_seat_files(s["seat_id"])
         print("removed %s/%s [%s] (board history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
-        lock.close()
+        unlock(locks)
 
 
 def cmd_leave(a):
@@ -1999,6 +2226,10 @@ def cmd_meta(a):
     if a.op == "get":
         if not a.field:
             die("usage: agora meta get <seat> <field>")
+        if SECRET_RE.search(a.field):
+            # The CLI is model-callable; the pipeline reads credentials from the
+            # record file directly, never through here.
+            die("'%s' is a credential field — not readable through the agora CLI" % a.field, EXIT_UNKNOWN)
         v = meta_get(s["seat_id"], a.field)
         print(v if isinstance(v, str) else json.dumps(v))
         return
@@ -2006,7 +2237,7 @@ def cmd_meta(a):
     if not pairs or len(pairs) % 2 != 0:
         die("usage: agora meta set <seat> <field> <value> [<field> <value>...]")
     fields = {pairs[i]: pairs[i + 1] for i in range(0, len(pairs), 2)}
-    meta_set(s["seat_id"], fields)
+    meta_set(s["seat_id"], fields, bump=False)  # raw field edits are not lifecycle writes
     print("set %s on %s/%s" % (", ".join(sorted(fields)), s["group"], s["alias"]))
 
 
@@ -2030,13 +2261,15 @@ def build_parser():
     sp = sub.add_parser("spawn", add_help=False)
     sp.add_argument("alias")
     sp.add_argument("task")
+    # Definition flags default to None so a re-fill can tell "not given" (keep
+    # the seat's value) from "given as empty".
     sp.add_argument("--group", default=None)
-    sp.add_argument("--parent", default="")
-    sp.add_argument("--role", default="")
-    sp.add_argument("--brief", default="")
+    sp.add_argument("--parent", default=None)
+    sp.add_argument("--role", default=None)
+    sp.add_argument("--brief", default=None)
     sp.add_argument("--cwd", default="")
     sp.add_argument("--worktree", default="")
-    sp.add_argument("--addr", default="")
+    sp.add_argument("--addr", default=None)
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)

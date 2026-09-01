@@ -15,7 +15,13 @@ set -euo pipefail
 
 AGORA_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
 DAEMON_HOME="$AGORA_HOME"
-mkdir -p "$AGORA_HOME"
+# The registry is private to the agent fleet (records can carry the board run
+# bearer): create it 0700 and tighten a root the old substrate left wider. The
+# mode is meant for the deepest directory only — its parent is ~/.claude, whose
+# own mode is not ours to change.
+# shellcheck disable=SC2174
+mkdir -p -m 700 "$AGORA_HOME"
+chmod 700 "$AGORA_HOME" 2>/dev/null || true
 
 # Host + boot identity — stamped into records at every registration. A pid
 # (and a `claude agents` short id) is only meaningful in the host's current

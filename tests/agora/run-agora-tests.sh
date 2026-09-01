@@ -110,8 +110,11 @@ print(json.dumps(out))
 PY
     exit 0 ;;
   stop)
+    # STUB_STOP_FAIL=1: the supervisor refuses. STUB_STOP_NOOP=1: it accepts
+    # but the turn keeps running (the row never leaves state=working).
+    [ "${STUB_STOP_FAIL:-0}" = "1" ] && { echo "stub: stop refused" >&2; exit 1; }
     f="$STUB_STATE/agents/${2:-}"
-    if [ -f "$f" ]; then sed -i.bak 's/^state=.*/state=stopped/' "$f" && rm -f "$f.bak"; fi
+    if [ -f "$f" ] && [ "${STUB_STOP_NOOP:-0}" != "1" ]; then sed -i.bak 's/^state=.*/state=stopped/' "$f" && rm -f "$f.bak"; fi
     echo "stopped ${2:-}"; exit 0 ;;
   rm) rm -f "$STUB_STATE/agents/${2:-}"; echo "removed ${2:-}"; exit 0 ;;
   attach) echo "attached ${2:-}"; exit 0 ;;
@@ -260,6 +263,15 @@ printf '{"alias":"scout","parent":"orchestrator","addr":"scout","session":"22222
 CODEX_UUID="12121212-abab-4000-8000-000000000012"
 printf '{"uuid":"%s","name":"codexy","status":"idle","current":"%s","cwd":"%s","engine":"codex","pid":"99999","event_log":"/x.events.jsonl"}\n' \
   "$CODEX_UUID" "$CODEX_UUID" "$WORK" > "$OLD/$CODEX_UUID.json"
+# Duplicate (group, alias): the old substrate respawned workers under one name.
+DUP_OLD="e1e1e1e1-abab-4000-8000-0000000e1e11"; DUP_NEW="e2e2e2e2-abab-4000-8000-0000000e2e22"
+printf '{"uuid":"%s","name":"review-pr-470","group":"fleet","status":"idle","current":"%s","short":"aaaa1111","updated":"2026-07-11T10:00:00Z"}\n' "$DUP_OLD" "$DUP_OLD" > "$OLD/$DUP_OLD.json"
+printf '{"uuid":"%s","name":"review-pr-470","group":"fleet","status":"idle","current":"%s","short":"bbbb2222","updated":"2026-07-11T12:00:00Z"}\n' "$DUP_NEW" "$DUP_NEW" > "$OLD/$DUP_NEW.json"
+# The same session id joined two v2 groups: the second node must not overwrite the first's seat.
+mkdir -p "$NEW/groups/other/nodes"
+printf '{"alias":"scout2","parent":"","addr":"scout2","session":"22222222-bbbb-4000-8000-000000000002","cwd":"/y","branch":"","desc":"other side","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
+  > "$NEW/groups/other/nodes/scout2.json"
+chmod 755 "$OLD"; chmod 644 "$OLD/$OLD_UUID.json"   # the old substrate's wide modes
 run env -u AGORA_HOME HOME="$MH" "$AGORA" list
 assert_rc 0 "$RC" "first command against the default root migrates and lists"
 if [ -L "$OLD" ]; then pass "old daemon root became a symlink"; else fail "old daemon root became a symlink"; fi
@@ -276,6 +288,23 @@ assert_contains "$OUT" "old-worker" "migrated daemon listed as a seat"
 assert_contains "$OUT" "scout" "converted node listed as a seat"
 assert_not_contains "$OUT" "null" "list never prints null for pre-seat records"
 assert_contains "$(cat "$NEW/$CODEX_UUID.json")" '"status": "retired"' "legacy codex records are retired by migration"
+assert_not_contains "$OUT" "killed" "migration does not signal legacy codex pids"
+assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"alias": "review-pr-470@aaaa1111"' "the older duplicate is renamed alias@short"
+assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"status": "retired"' "the older duplicate is retired"
+assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"name": "review-pr-470"' "dedupe leaves the pipeline's name field untouched"
+assert_not_contains "$(cat "$NEW/$DUP_NEW.json")" '"alias": "review-pr-470@' "the newest duplicate keeps the alias"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$DUP_NEW.json")" "idle" "the newest duplicate keeps its status"
+run env -u AGORA_HOME HOME="$MH" "$AGORA" view other
+assert_contains "$OUT" "scout2" "a second group's node sharing a session id still converts"
+run env -u AGORA_HOME HOME="$MH" "$AGORA" view demo
+assert_contains "$OUT" "scout" "the first group's node keeps its seat"
+assert_equals "$(mode_of "$NEW")" "0700" "migration tightens a 0755 root to 0700"
+assert_equals "$(mode_of "$NEW/$OLD_UUID.json")" "0600" "migration tightens a 0644 record to 0600"
+rm "$MH/.claude/orchestrating-daemons"
+run env -u AGORA_HOME HOME="$MH" "$AGORA" list
+if [ -L "$MH/.claude/orchestrating-daemons" ]; then pass "a missing legacy symlink is recreated on the next run"; else fail "a missing legacy symlink is recreated on the next run"; fi
+run env -u AGORA_HOME HOME="$MH" "$AGORA" list
+assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"alias": "review-pr-470@aaaa1111"' "dedupe is idempotent (no alias@short@short)"
 run env -u AGORA_HOME HOME="$MH" "$AGORA" wake codexy "x"
 assert_rc 4 "$RC" "wake refuses a legacy codex record"
 run env -u AGORA_HOME HOME="$MH" "$AGORA" resume codexy "x"
@@ -386,16 +415,25 @@ assert_rc 0 "$RC" "first spawn of refillme exits 0"
 RF="$(seat_id_of refillme)"
 "$AGORA" meta set refillme ticket 42 >/dev/null   # a pipeline-owned field
 "$AGORA" status refillme "did the first pass" >/dev/null
-run "$AGORA" spawn refillme "SECOND" --group grp --role r2 --brief b2
+RF_FIRST="$(field "$RF" current)"
+run "$AGORA" spawn refillme "SECOND" --group grp
 assert_rc 0 "$RC" "re-spawning a stopped seat re-fills it (exit 0)"
 assert_contains "$OUT" "seat re-filled: grp/refillme" "re-fill is reported"
+assert_equals "$(banner_uuid "$OUT")" "$RF" "re-fill banner's bracket uuid is the RECORD filename, not the new session"
 assert_equals "$(seat_id_of refillme)" "$RF" "re-fill keeps the same seat id"
-assert_equals "$(field "$RF" role)" "r2" "re-fill updates the role"
+assert_equals "$(field "$RF" role)" "r1" "re-fill without --role keeps the seat's role"
+assert_equals "$(field "$RF" brief)" "b1" "re-fill without --brief keeps the seat's brief"
 assert_contains "$(field "$RF" task)" "SECOND" "re-fill updates the task"
 assert_equals "$(field "$RF" turns)" "1" "re-fill resets turns"
 assert_equals "$(field "$RF" ticket)" "42" "re-fill leaves pipeline-owned fields untouched"
 if [ "$(field "$RF" current)" != "$RF" ]; then pass "re-fill gives the seat a new session"; else fail "re-fill gives the seat a new session"; fi
 assert_not_contains "$(field "$RF" now)" "did the first pass" "a fresh re-fill clears the stale now line"
+assert_equals "$(field "$RF" attempts)" "2" "re-fill bumps attempts"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0]["current"])' "$AGORA_HOME/$RF.json")" "$RF_FIRST" "history[0] records the previous occupant's session"
+run "$AGORA" spawn refillme "THIRD" --group grp --role r2 --brief b2
+assert_equals "$(field "$RF" role)" "r2" "re-fill with --role updates the role"
+assert_equals "$(field "$RF" brief)" "b2" "re-fill with --brief updates the brief"
+assert_equals "$(field "$RF" attempts)" "3" "attempts keeps counting"
 "$AGORA" remove grp/refillme >/dev/null
 
 run "$AGORA" spawn waiter "WAIT-1" --group grp --wait
@@ -719,10 +757,12 @@ assert_equals "$(field "$P_UUID" lane)" "implement" "meta set writes a field"
 printf '{"uuid":"%s","name":"bearer-one","group":"grp","status":"working","run_bearer":"tok-fake"}' "66666666-ffff-4000-8000-000000000006" > "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 600 "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 640 "$AGORA_HOME/$P_UUID.json"
+chmod 755 "$AGORA_HOME"
 "$AGORA" mark bearer-one blocked >/dev/null
 "$AGORA" mark plainworker blocked >/dev/null
 assert_equals "$(mode_of "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json")" "0600" "a bearer-carrying record stays 0600 across writes"
-assert_equals "$(mode_of "$AGORA_HOME/$P_UUID.json")" "0640" "a plain record keeps its existing mode"
+assert_equals "$(mode_of "$AGORA_HOME/$P_UUID.json")" "0600" "a record left wider than 0600 is tightened on the next run"
+assert_equals "$(mode_of "$AGORA_HOME")" "0700" "a root left wider than 0700 is tightened on the next run"
 "$AGORA" remove bearer-one >/dev/null
 run "$AGORA" attach plainworker
 assert_contains "$OUT" "claude attach $(field "$P_UUID" short)" "attach prints the harness command when not a TTY"
@@ -815,7 +855,10 @@ assert_not_contains "$OUT" "NOPE" "topology never emits a token field"
 run "$AGORA" list grp
 assert_not_contains "$OUT" "SEKRIT" "list never emits run_bearer"
 run "$AGORA" meta get secretary run_bearer
-assert_equals "$OUT" "SEKRIT" "meta get still reads a secret field"
+assert_rc 4 "$RC" "meta get refuses a credential field (the CLI is model-callable)"
+assert_not_contains "$OUT" "SEKRIT" "the refused credential value is not echoed"
+run "$AGORA" meta get secretary status
+assert_equals "$OUT" "idle" "meta get still reads ordinary fields"
 "$AGORA" remove grp/secretary >/dev/null
 
 # send: an ambiguous seat name propagates (exit 4), never silently falling
@@ -890,6 +933,165 @@ assert_equals "$(field "$WC_UUID" group)" "myrepo" "group derives from the ownin
 run "$AGORA" spawn nodir "X" --group grp --cwd "$TEST_ROOT/does-not-exist"
 assert_rc 2 "$RC" "spawn with a nonexistent cwd exits 2"
 assert_contains "$OUT" "cwd does not exist" "the missing cwd is named"
+
+# ---- 11b) exit-gate round 2 --------------------------------------------------
+echo "exit-gate round 2:"
+
+# Integration shape: spawn → retire → spawn (same alias). The second banner's
+# bracket uuid is the record filename; attempts and history track the occupants.
+run "$AGORA" spawn resp "R-1" --group grp --role reviewer
+RESP="$(seat_id_of resp)"
+assert_equals "$(banner_uuid "$OUT")" "$RESP" "a new seat's banner bracket is its record filename"
+RESP_FIRST="$(field "$RESP" current)"
+run "$AGORA" retire resp
+assert_rc 0 "$RC" "retire exits 0"
+run "$AGORA" spawn resp "R-2" --group grp
+assert_rc 0 "$RC" "re-spawning a retired seat exits 0"
+assert_equals "$(banner_uuid "$OUT")" "$RESP" "the re-spawn banner's bracket uuid equals the record filename"
+assert_equals "$(field "$RESP" attempts)" "2" "attempts == 2 after one re-spawn"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0]["current"])' "$AGORA_HOME/$RESP.json")" "$RESP_FIRST" "history[0].current is the first session"
+assert_equals "$(field "$RESP" role)" "reviewer" "re-spawn without --role keeps the role"
+"$AGORA" remove grp/resp >/dev/null
+
+# Re-fill of a legacy codex record clears its engine fields (the new occupant
+# is a claude session) and drops the run scratch.
+CXR_UUID="dddd4444-abab-4000-8000-0000000d4444"
+: > "$TEST_ROOT/codexruns/cxr.events.jsonl"; : > "$TEST_ROOT/codexruns/cxr.rc"
+printf '{"uuid":"%s","name":"cxr","alias":"cxr","group":"grp","status":"idle","current":"","engine":"codex","pid":"99999","event_log":"%s/codexruns/cxr.events.jsonl","cwd":"%s"}' \
+  "$CXR_UUID" "$TEST_ROOT" "$WORK" > "$AGORA_HOME/$CXR_UUID.json"
+run "$AGORA" spawn cxr "CLAUDE-NOW" --group grp
+assert_rc 0 "$RC" "re-spawning a retired codex seat exits 0"
+assert_equals "$(field "$CXR_UUID" engine)" "" "re-fill clears engine"
+assert_equals "$(field "$CXR_UUID" pid)" "" "re-fill clears pid"
+assert_equals "$(field "$CXR_UUID" event_log)" "" "re-fill clears event_log"
+assert_file_absent "$TEST_ROOT/codexruns/cxr.rc" "re-fill drops the codex run scratch"
+"$AGORA" remove grp/cxr >/dev/null
+
+# A vanished cwd refuses a resume (exit 2) without launching anything.
+run "$AGORA" spawn nocwd "N" --group grp
+"$AGORA" meta set nocwd cwd "$TEST_ROOT/vanished" >/dev/null
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
+run "$AGORA" resume nocwd "x"
+assert_rc 2 "$RC" "resume with a vanished cwd exits 2"
+assert_contains "$OUT" "cwd does not exist" "the vanished cwd is named"
+run "$AGORA" wake nocwd "x"
+assert_rc 2 "$RC" "wake-resume with a vanished cwd exits 2"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing is launched for a vanished cwd"
+"$AGORA" meta set nocwd cwd "$WORK" >/dev/null; "$AGORA" remove grp/nocwd >/dev/null
+
+# Generation guard: a retire during a --wait watcher wins; the watcher writes
+# neither status nor a reply over it.
+( STUB_BG_STATE=working AGORA_POLL_INTERVAL=0.1 DAEMON_TIMEOUT=20 "$AGORA" spawn genseat "GEN" --group grp --wait > "$TEST_ROOT/gen.out" 2>&1; echo $? > "$TEST_ROOT/gen.rc" ) &
+GENW=$!
+sleep 0.8
+GEN="$(seat_id_of genseat)"
+run "$AGORA" retire genseat
+assert_rc 0 "$RC" "retire while a watcher waits exits 0"
+wait "$GENW" || true
+assert_equals "$(field "$GEN" status)" "retired" "the watcher's finalize does not overwrite a retire"
+assert_file_absent "$AGORA_HOME/$GEN.reply.txt" "no reply file is written over a retired seat"
+"$AGORA" remove grp/genseat >/dev/null
+
+# resume: a refused or ineffective `claude stop` aborts before any launch.
+STUB_BG_STATE=working run "$AGORA" spawn stopper "S" --group grp
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
+STUB_STOP_FAIL=1 run "$AGORA" resume stopper "x"
+assert_rc 1 "$RC" "a refused claude stop aborts the resume"
+assert_contains "$OUT" "claude stop" "the stop failure is surfaced"
+STUB_STOP_NOOP=1 AGORA_STOP_TIMEOUT=0.3 run "$AGORA" resume stopper "x"
+assert_rc 1 "$RC" "a turn still running after the stop deadline aborts the resume"
+assert_contains "$OUT" "still running" "the still-running turn is reported"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no resume is launched over a running turn"
+"$AGORA" remove grp/stopper >/dev/null
+
+# wake respects the lifecycle lock.
+python3 - "$AGORA_HOME/locks/name__plainworker.lock" <<'PY' &
+import fcntl, os, sys, time
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+f = open(sys.argv[1], "a+")
+fcntl.flock(f, fcntl.LOCK_EX)
+time.sleep(3)
+PY
+HOLDER=$!
+sleep 0.4
+run "$AGORA" wake plainworker "x"
+assert_rc 4 "$RC" "wake while the seat's lifecycle lock is held is refused"
+kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+
+# Peer liveness needs a listener: a socket FILE with nobody behind it is dead.
+DEAD_UUID="ffff5555-abab-4000-8000-0000000f5555"
+"$AGORA" seat add grp deadsock --session "$DEAD_UUID" >/dev/null
+: > "$TEST_ROOT/dead.sock"
+printf '{"pid":%s,"sessionId":"%s","name":"deadsock","kind":"bg","status":"idle","messagingSocketPath":"%s/dead.sock"}\n' \
+  "$$" "$DEAD_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/deadsock.json"
+run "$AGORA" fill grp/deadsock "REFILL" --resume
+assert_rc 0 "$RC" "a peer whose socket file has no listener is not live — resume proceeds"
+rm -f "$HOME/.claude/sessions/deadsock.json"; "$AGORA" remove grp/deadsock >/dev/null
+
+# seat add --session records the harness row's short, and clears it when the row is gone.
+SA_UUID="abcd6666-abab-4000-8000-000000ab6666"
+{ echo "short=sa000001"; echo "uuid=$SA_UUID"; echo "name=sadd"; echo "kind=interactive"; echo "state="; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/sa000001"
+"$AGORA" seat add grp sadd --session "$SA_UUID" >/dev/null
+assert_equals "$(field "$SA_UUID" short)" "sa000001" "seat add --session records the current short from the harness"
+rm -f "$STUB_STATE/agents/sa000001"
+"$AGORA" seat add grp sadd --session "$SA_UUID" >/dev/null
+assert_equals "$(field "$SA_UUID" short)" "" "seat add --session clears a short the harness no longer shows"
+"$AGORA" remove grp/sadd >/dev/null
+
+# Socket delivery that fails BEFORE the frame is written falls through to a
+# resume; a failure AFTER the frame is written is 'uncertain' and never resumes.
+cat > "$TEST_ROOT/oneshot.py" <<'PY'
+import os, socket, sys
+path = sys.argv[1]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path); srv.listen(1)
+c, _ = srv.accept()          # the liveness probe
+os.unlink(path)              # nobody can connect after this
+c.close(); srv.close()
+PY
+OS_UUID="0a0a7777-abab-4000-8000-0000000a7777"
+"$AGORA" seat add grp oneshot --session "$OS_UUID" >/dev/null
+python3 "$TEST_ROOT/oneshot.py" "$TEST_ROOT/oneshot.sock" & OS_PID=$!; disown "$OS_PID"
+for _ in $(seq 1 50); do [ -S "$TEST_ROOT/oneshot.sock" ] && break; sleep 0.05; done
+printf '{"pid":%s,"sessionId":"%s","name":"oneshot","kind":"bg","status":"idle","messagingSocketPath":"%s/oneshot.sock"}\n' \
+  "$OS_PID" "$OS_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/oneshot.json"
+run "$AGORA" wake grp/oneshot "HELLO"
+assert_rc 0 "$RC" "a socket that vanishes before the frame is written falls through to resume (exit 0)"
+assert_contains "$OUT" "failed before the frame was written" "the pre-write failure is explained"
+assert_contains "$OUT" "via --bg --resume" "the wake completed via resume"
+rm -f "$HOME/.claude/sessions/oneshot.json"; "$AGORA" remove grp/oneshot >/dev/null
+AFTER_PHASE="$(python3 - "$REPO_ROOT/skills/agora/scripts" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import agora
+class Fake:
+    def settimeout(self, t): pass
+    def connect(self, p): pass
+    def sendall(self, b): pass
+    def shutdown(self, how): raise OSError("reset after write")
+    def recv(self, n): return b""
+    def close(self): pass
+agora.socket.socket = lambda *a, **k: Fake()
+try:
+    agora.send_frame("/nowhere", "t")
+    print("none")
+except agora.SendFailed as e:
+    print(e.phase)
+PY
+)"
+assert_equals "$AFTER_PHASE" "after" "a close-out failure after the frame was written is the 'after' phase"
+
+# lib.sh creates the root 0700 and tightens a wide one.
+LIBROOT="$TEST_ROOT/libroot"
+( AGORA_HOME="$LIBROOT" bash -c "source '$REPO_ROOT/skills/agora/scripts/lib.sh'" )
+assert_equals "$(mode_of "$LIBROOT")" "0700" "lib.sh creates the registry root 0700"
+chmod 755 "$LIBROOT"
+( AGORA_HOME="$LIBROOT" bash -c "source '$REPO_ROOT/skills/agora/scripts/lib.sh'" )
+assert_equals "$(mode_of "$LIBROOT")" "0700" "lib.sh tightens a wide root to 0700"
 
 # ---- 12) remove --------------------------------------------------------------
 echo "remove:"
