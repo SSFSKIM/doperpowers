@@ -23,6 +23,7 @@
 | 8 | T3 | `SSL_CERT_FILE` fix is macOS-path-specific | First Linux worker host |
 | 9 | T3 | Accepted notes: GH_TOKEN visible in worker env; mini ssh probe noise; resume-only daemons' run scratch un-swept until next spawn | — |
 | 10 | T2 | ~~Answer relay L2~~ **SHIPPED 2026-07-18** (board-sweep RELAY pass); L3 (BOARD.html session affordances) still unbuilt | Board-map touch (L3) |
+| 11 | T2 | Six board-pipeline scripts (`board-bind.sh`, `_sweep_api.sh`, `board-sweep.sh`, `execute-dispatch.sh`, `review-dispatch.sh`, `board-answer.sh`) each reimplement the seat-registry read-modify-write (flock `.metalock`, bearer-mode 0600 rule) instead of calling `agora meta set`; coexistence is safe because agora's writer keeps the same invariants, but the invariants live in seven places (agora v3 seats, 2026-09-02) | Next board-pipeline touch that edits registry writes |
 
 ## T1 — structural: the unattended-dispatch phase must answer these
 
