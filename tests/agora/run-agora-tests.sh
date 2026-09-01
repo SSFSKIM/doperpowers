@@ -330,7 +330,7 @@ echo "spawn:"
 cd "$WORK"
 run "$AGORA" spawn researcher "PING-scope-42" --group grp --parent orchestrator --role researcher
 assert_rc 0 "$RC" "spawn exits 0"
-assert_contains "$OUT" "seat spawned: researcher" "spawn banner names the seat"
+assert_contains "$OUT" "seat spawned: grp/researcher" "spawn banner names the seat"
 R_UUID="$(banner_uuid "$OUT")"; R_SHORT="$(banner_short "$OUT")"
 assert_file_exists "$AGORA_HOME/$R_UUID.json" "record is named after the first session's uuid (banner bracket form)"
 assert_equals "$(field "$R_UUID" alias)" "researcher" "alias recorded"
@@ -358,11 +358,17 @@ assert_equals "$(field "$P_UUID" group)" "work" "group derived from the cwd when
 assert_not_contains "$(field "$P_UUID" task)" "You are seat" "no preamble without an explicit --group"
 assert_equals "$(field "$P_UUID" preamble)" "" "implicit-group seat records no preamble flag"
 
-run "$AGORA" spawn researcher "again" --group grp
-assert_rc 4 "$RC" "spawning an existing seat is refused"
-assert_contains "$OUT" "agora fill" "refusal points at fill for a stopped seat"
+# Launch under the advertised address (--addr): the harness -n name and the
+# record's name are the addr, so a custom addr is the live SendMessage name.
+run "$AGORA" spawn worker-a "ADDR-1" --group grp --addr "custom addr"
+assert_rc 0 "$RC" "spawn with --addr exits 0"
+WA_UUID="$(banner_uuid "$OUT")"
+assert_equals "$(field "$WA_UUID" addr)" "custom addr" "custom addr recorded"
+assert_equals "$(field "$WA_UUID" name)" "custom addr" "harness display name is the addr"
+assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" '-n custom addr' "launch runs under -n <addr>"
+"$AGORA" remove grp/worker-a >/dev/null
 
-STUB_BG_STATE=running run "$AGORA" spawn nowaiter "LONG-TASK-7" --no-wait --group grp
+STUB_BG_STATE=working run "$AGORA" spawn nowaiter "LONG-TASK-7" --no-wait --group grp
 assert_rc 0 "$RC" "--no-wait is accepted"
 NW_UUID="$(banner_uuid "$OUT")"
 assert_equals "$(field "$NW_UUID" status)" "working" "a running first turn records working"
@@ -371,6 +377,27 @@ run "$AGORA" reply nowaiter
 assert_contains "$OUT" "ANSWER:" "reply reads the running turn's transcript"
 assert_contains "$OUT" "--- latest reply ---" "reply prints its header"
 
+# spawn refuses a FILLED seat (nowaiter is busy) but RE-FILLS a stopped one.
+run "$AGORA" spawn nowaiter "x" --group grp
+assert_rc 4 "$RC" "spawning a filled seat is refused"
+assert_contains "$OUT" "message it with agora send/wake" "filled refusal points at send/wake"
+run "$AGORA" spawn refillme "FIRST" --group grp --role r1 --brief b1
+assert_rc 0 "$RC" "first spawn of refillme exits 0"
+RF="$(seat_id_of refillme)"
+"$AGORA" meta set refillme ticket 42 >/dev/null   # a pipeline-owned field
+"$AGORA" status refillme "did the first pass" >/dev/null
+run "$AGORA" spawn refillme "SECOND" --group grp --role r2 --brief b2
+assert_rc 0 "$RC" "re-spawning a stopped seat re-fills it (exit 0)"
+assert_contains "$OUT" "seat re-filled: grp/refillme" "re-fill is reported"
+assert_equals "$(seat_id_of refillme)" "$RF" "re-fill keeps the same seat id"
+assert_equals "$(field "$RF" role)" "r2" "re-fill updates the role"
+assert_contains "$(field "$RF" task)" "SECOND" "re-fill updates the task"
+assert_equals "$(field "$RF" turns)" "1" "re-fill resets turns"
+assert_equals "$(field "$RF" ticket)" "42" "re-fill leaves pipeline-owned fields untouched"
+if [ "$(field "$RF" current)" != "$RF" ]; then pass "re-fill gives the seat a new session"; else fail "re-fill gives the seat a new session"; fi
+assert_not_contains "$(field "$RF" now)" "did the first pass" "a fresh re-fill clears the stale now line"
+"$AGORA" remove grp/refillme >/dev/null
+
 run "$AGORA" spawn waiter "WAIT-1" --group grp --wait
 assert_rc 0 "$RC" "--wait exits 0 on a finished turn"
 assert_contains "$OUT" "--- reply ---" "--wait prints the reply block"
@@ -378,7 +405,7 @@ assert_contains "$OUT" "ANSWER:" "--wait prints the reply text"
 W_UUID="$(banner_uuid "$OUT")"
 assert_equals "$(field "$W_UUID" status)" "idle" "--wait records idle"
 
-STUB_BG_STATE=running run "$AGORA" spawn slow "SLOW-1" --group grp --wait
+STUB_BG_STATE=working run "$AGORA" spawn slow "SLOW-1" --group grp --wait
 assert_rc 1 "$RC" "--wait watcher timeout exits 1"
 assert_contains "$OUT" "watcher expired" "watcher timeout is reported"
 S_UUID="$(seat_id_of slow)"
@@ -425,7 +452,7 @@ assert_contains "$OUT" "worktree=" "banner notes the worktree"
 
 # Live-name refusal: a live harness session already answering to the alias
 # would make every SendMessage to it ambiguous — refuse before any side effect.
-printf '{"pid":%s,"sessionId":"77777777-aaaa-4000-8000-000000000007","name":"taken","kind":"interactive","status":"idle","messagingSocketPath":"/nonexistent.sock"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+printf '{"pid":%s,"sessionId":"77777777-aaaa-4000-8000-000000000007","name":"taken","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' "$$" "$SOCK" > "$HOME/.claude/sessions/$$.json"
 nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
 run "$AGORA" spawn taken "T" --group grp
 assert_rc 4 "$RC" "spawn refuses an alias a live session already answers to"
@@ -442,7 +469,7 @@ assert_rc 0 "$RC" "the same alias in another group is allowed when no live sessi
 
 # Lifecycle lock: a spawn of a seat whose lock another agora process holds is
 # refused, never duplicated.
-python3 - "$AGORA_HOME/locks/grp__locked.lock" <<'PY' &
+python3 - "$AGORA_HOME/locks/name__locked.lock" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
 f = open(sys.argv[1], "a+")
@@ -515,7 +542,7 @@ PY
 run "$AGORA" sync permer; assert_equals "$OUT" "idle" "blocked-without-question also finalizes idle"
 assert_contains "$(cat "$AGORA_HOME/$PERM_UUID.reply.txt")" "blocked on a harness prompt" "blocked-without-question reply carries the harness-prompt marker"
 run "$AGORA" sync --all
-assert_contains "$OUT" "" "sync --all runs"
+assert_rc 0 "$RC" "sync --all runs"
 run "$AGORA" sync
 assert_rc 0 "$RC" "bare sync = --all"
 
@@ -689,7 +716,7 @@ run "$AGORA" meta get plainworker now
 assert_equals "$OUT" "drafting the outline" "meta get reads a field"
 run "$AGORA" meta set plainworker lane implement
 assert_equals "$(field "$P_UUID" lane)" "implement" "meta set writes a field"
-printf '{"uuid":"%s","name":"bearer-one","status":"working","run_bearer":"tok-fake"}' "66666666-ffff-4000-8000-000000000006" > "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json"
+printf '{"uuid":"%s","name":"bearer-one","group":"grp","status":"working","run_bearer":"tok-fake"}' "66666666-ffff-4000-8000-000000000006" > "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 600 "$AGORA_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 640 "$AGORA_HOME/$P_UUID.json"
 "$AGORA" mark bearer-one blocked >/dev/null
@@ -772,7 +799,99 @@ assert_contains "$OUT" "board: 2 post(s)" "view summarizes the board"
 run "$AGORA" groups
 assert_contains "$OUT" "grp" "groups lists grp"
 
-# ---- 11) remove --------------------------------------------------------------
+# ---- 11) exit-gate wave ------------------------------------------------------
+echo "exit-gate wave:"
+
+# Redaction: a secret-shaped field never reaches a model-facing surface.
+SEC_UUID="88888888-abab-4000-8000-000000000088"
+printf '{"uuid":"%s","name":"secretary","alias":"secretary","group":"grp","status":"idle","current":"%s","run_bearer":"SEKRIT","api_token":"NOPE"}' \
+  "$SEC_UUID" "$SEC_UUID" > "$AGORA_HOME/$SEC_UUID.json"
+run "$AGORA" list --json grp
+assert_not_contains "$OUT" "SEKRIT" "list --json never emits run_bearer"
+assert_not_contains "$OUT" "NOPE" "list --json never emits a *_token field"
+run "$AGORA" topology grp
+assert_not_contains "$OUT" "SEKRIT" "topology never emits run_bearer"
+assert_not_contains "$OUT" "NOPE" "topology never emits a token field"
+run "$AGORA" list grp
+assert_not_contains "$OUT" "SEKRIT" "list never emits run_bearer"
+run "$AGORA" meta get secretary run_bearer
+assert_equals "$OUT" "SEKRIT" "meta get still reads a secret field"
+"$AGORA" remove grp/secretary >/dev/null
+
+# send: an ambiguous seat name propagates (exit 4), never silently falling
+# through to a raw harness-name lookup.
+"$AGORA" seat add ga dup >/dev/null
+"$AGORA" seat add gb dup >/dev/null
+run "$AGORA" send dup "hi"
+assert_rc 4 "$RC" "send to an ambiguous seat name exits 4"
+assert_contains "$OUT" "ambiguous seat 'dup'" "the ambiguity is named, not hidden by a name fallback"
+"$AGORA" remove ga/dup >/dev/null; "$AGORA" remove gb/dup >/dev/null
+
+# Recycled-pid peer: a peer record whose pid is alive but whose socket file is
+# gone must NOT count as live (so it can't block a fill or a name reuse).
+STALE_UUID="99999999-abab-4000-8000-000000000099"
+"$AGORA" seat add grp stale --session "$STALE_UUID" >/dev/null
+printf '{"pid":%s,"sessionId":"%s","name":"stale","kind":"bg","status":"idle","messagingSocketPath":"%s/gone.sock"}\n' \
+  "$$" "$STALE_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/stale.json"
+run "$AGORA" fill grp/stale "REFILL" --resume
+assert_rc 0 "$RC" "a peer with a live pid but a missing socket is not live — resume proceeds"
+rm -f "$HOME/.claude/sessions/stale.json"; "$AGORA" remove grp/stale >/dev/null
+
+# sync promotes a natively-woken idle seat (harness shows it running) to working.
+NAT_UUID="aaaa1111-abab-4000-8000-0000000a1111"
+"$AGORA" seat add grp native --session "$NAT_UUID" >/dev/null   # status idle
+{ echo "short=nat00001"; echo "uuid=$NAT_UUID"; echo "name=native"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/nat00001"
+"$AGORA" meta set native short nat00001 >/dev/null
+run "$AGORA" sync grp/native
+assert_equals "$OUT" "live" "sync reports a natively-woken idle seat as live"
+assert_equals "$(field "$NAT_UUID" status)" "working" "sync promotes the idle-but-running seat to working"
+rm -f "$STUB_STATE/agents/nat00001"; "$AGORA" remove grp/native >/dev/null
+
+# wake socket-send failure falls through to the resume path (never raises).
+FAIL_UUID="bbbb2222-abab-4000-8000-0000000b2222"
+"$AGORA" seat add grp flaky --session "$FAIL_UUID" >/dev/null
+printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
+  "$$" "$FAIL_UUID" "$SOCK" > "$HOME/.claude/sessions/flaky.json"
+kill "$SOCK_PID" 2>/dev/null || true; wait "$SOCK_PID" 2>/dev/null || true; rm -f "$SOCK"   # socket_ok now fails
+run "$AGORA" wake grp/flaky "PLEASE"
+assert_rc 0 "$RC" "wake whose live socket vanished still exits 0 via the resume fallback"
+assert_contains "$OUT" "via --bg --resume" "the vanished-socket wake fell through to resume"
+rm -f "$HOME/.claude/sessions/flaky.json"; "$AGORA" remove grp/flaky >/dev/null
+# restart the socket server for any later use / clean teardown
+python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
+for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
+
+# codex purge deletes the run-scratch set alongside the record.
+CX_UUID="cccc3333-abab-4000-8000-0000000c3333"
+mkdir -p "$TEST_ROOT/codexruns"
+EL="$TEST_ROOT/codexruns/run-xyz.events.jsonl"
+: > "$EL"; : > "$TEST_ROOT/codexruns/run-xyz.rc"; : > "$TEST_ROOT/codexruns/run-xyz.meta"
+printf '{"uuid":"%s","name":"cx","alias":"cx","group":"grp","status":"retired","engine":"codex","event_log":"%s"}' \
+  "$CX_UUID" "$EL" > "$AGORA_HOME/$CX_UUID.json"
+run "$AGORA" retire grp/cx --purge
+assert_rc 0 "$RC" "purging a codex seat exits 0"
+assert_file_absent "$EL" "codex purge deletes the event log"
+assert_file_absent "$TEST_ROOT/codexruns/run-xyz.rc" "codex purge deletes the run-scratch siblings"
+assert_file_absent "$AGORA_HOME/$CX_UUID.json" "codex purge removes the record"
+
+# derive_group uses the OWNING repository, not a linked worktree's dir name.
+REPO="$TEST_ROOT/myrepo"
+mkdir -p "$REPO"; git init -q "$REPO"; git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
+git -C "$REPO" commit -q --allow-empty -m init
+WTDIR="$REPO/.claude/worktrees/feat-x"
+git -C "$REPO" worktree add -q "$WTDIR" -b wt-feat-x >/dev/null 2>&1
+run "$AGORA" spawn wtchild "WT-GROUP" --cwd "$WTDIR"
+assert_rc 0 "$RC" "spawn in a linked worktree exits 0"
+WC_UUID="$(banner_uuid "$OUT")"
+assert_equals "$(field "$WC_UUID" group)" "myrepo" "group derives from the owning repo, not the worktree dir"
+"$AGORA" remove "myrepo/wtchild" >/dev/null
+
+# cwd that does not exist is refused (exit 2) — never HOME-substituted.
+run "$AGORA" spawn nodir "X" --group grp --cwd "$TEST_ROOT/does-not-exist"
+assert_rc 2 "$RC" "spawn with a nonexistent cwd exits 2"
+assert_contains "$OUT" "cwd does not exist" "the missing cwd is named"
+
+# ---- 12) remove --------------------------------------------------------------
 echo "remove:"
 run "$AGORA" remove grp/scribe
 assert_rc 0 "$RC" "remove exits 0"

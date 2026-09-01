@@ -66,6 +66,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -85,9 +86,22 @@ EXIT_USAGE = 2
 EXIT_UNKNOWN = 4
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-UUID_RE = re.compile(r"^[0-9a-f-]{36}$")
+# A real session uuid, 8-4-4-4-12 hex — used to decide whether a --session value
+# names a seat's on-disk identity (and transcript filename) or is junk.
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 FILLED = ("busy", "idle", "blocked")
+# A seat whose session can be re-filled fresh: no live turn is attached.
+REFILLABLE = ("vacant", "stopped", "gone")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
+# Model-visible surfaces never carry a credential: the pipeline colonizes the
+# record with run_bearer and friends, and a seat's JSON is read by agents.
+SECRET_RE = re.compile(r"bearer|token|secret", re.I)
+
+
+def public_seat(s):
+    """A seat dict with the task body and any secret-shaped field removed —
+    for every model-facing surface (list, list --json, view, topology)."""
+    return {k: v for k, v in s.items() if k != "task" and not SECRET_RE.search(k)}
 
 
 def home_dir():
@@ -189,6 +203,61 @@ def meta_set(seat_id, fields, remove=()):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+def meta_set_if(seat_id, fields, guard, remove=()):
+    """meta_set, but under the SAME flock re-read the record and apply the
+    write only if `guard(data)` holds. Never creates a missing record.
+
+    A `--wait` watcher (or `sync`) took a snapshot minutes ago; while it waited,
+    the seat could have been purged, or resumed/re-filled into a different
+    session. Writing the stale turn's reply/status then would resurrect a purged
+    record or clobber the live one. The guard checks `current`/`short` are
+    unchanged and the file still exists. Returns True if it wrote.
+    """
+    path = meta_path(seat_id)
+    os.makedirs(root(), exist_ok=True)
+    with open(os.path.join(root(), ".metalock"), "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False  # purged or unreadable — never recreate
+            if not guard(data):
+                return False
+            for k, v in fields.items():
+                data[k] = v
+            for k in remove:
+                data.pop(k, None)
+            tmp = path + ".tmp"
+            mode = os.stat(path).st_mode & 0o777
+            if data.get("run_bearer"):
+                mode = 0o600
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.chmod(tmp, mode)
+            os.replace(tmp, path)
+            return True
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def same_turn(cur, short):
+    """A guard for meta_set_if: the record is still the same session and launch."""
+    return lambda data: str(data.get("current") or "") == cur and str(data.get("short") or "") == short
+
+
+def same_session(cur):
+    """A looser guard: only the session id is unchanged. For a socket-woken seat
+    whose short agora never recorded (it was registered, not spawned)."""
+    return lambda data: str(data.get("current") or "") == cur
+
+
 def meta_get(seat_id, field):
     try:
         with open(meta_path(seat_id)) as f:
@@ -222,6 +291,12 @@ def load_seat(path):
     m["alias"] = str(m.get("alias") or name)
     m["addr"] = str(m.get("addr") or m["alias"])
     m["group"] = str(m.get("group") or "fleet")
+    # A legacy daemon record has NO `current` key: the old resume fallback used
+    # the record's own uuid as the session to continue. A v2 converted node has
+    # `current` present but empty — a genuinely vacant seat. So the fallback is
+    # keyed on the KEY's absence, not on emptiness.
+    if "current" not in m:
+        m["current"] = seat_id
     for k in ("parent", "role", "brief", "now", "note", "current", "short", "cwd",
               "worktree", "model", "settings", "effort", "task", "host", "boot_id",
               "created", "updated", "engine", "preamble"):
@@ -244,21 +319,20 @@ def seats(group=None):
     return out
 
 
-def resolve_seat(q):
-    """Resolve a query to a seat record.
+def find_seat(q):
+    """Resolve a query to a seat WITHOUT printing or exiting.
 
-    Order: `group/alias`, seat id (or prefix), current turn's short id or
-    session id (or prefix), then a bare alias when exactly one seat has it.
+    Returns ("ok", seat) | ("none", None) | ("ambiguous", [seats]). Order:
+    `group/alias`, seat id (or prefix), current turn's short id or session id
+    (or prefix), then a bare alias when exactly one seat has it.
     """
     if not q:
-        die("empty seat reference")
+        return "none", None
     all_seats = seats()
     if "/" in q:
         g, a = q.split("/", 1)
         hits = [s for s in all_seats if s["group"] == g and s["alias"] == a]
-        if len(hits) == 1:
-            return hits[0]
-        die("no seat %s" % q, EXIT_UNKNOWN)
+        return ("ok", hits[0]) if len(hits) == 1 else ("none", None)
     hits = [s for s in all_seats if s["seat_id"] == q or s["seat_id"].startswith(q)]
     if not hits:
         hits = [s for s in all_seats
@@ -267,12 +341,20 @@ def resolve_seat(q):
     if not hits:
         hits = [s for s in all_seats if s["alias"] == q]
     if len(hits) == 1:
-        return hits[0]
+        return "ok", hits[0]
     if not hits:
-        die("no seat matching '%s'" % q, EXIT_UNKNOWN)
-    die("ambiguous seat '%s' matches: %s" % (
-        q, ", ".join("%s/%s [%s]" % (s["group"], s["alias"], s["seat_id"][:8]) for s in hits)),
-        EXIT_UNKNOWN)
+        return "none", None
+    return "ambiguous", hits
+
+
+def resolve_seat(q):
+    kind, res = find_seat(q)
+    if kind == "ok":
+        return res
+    if kind == "ambiguous":
+        die("ambiguous seat '%s' matches: %s" % (
+            q, ", ".join("%s/%s [%s]" % (s["group"], s["alias"], s["seat_id"][:8]) for s in res)), EXIT_UNKNOWN)
+    die("no seat matching '%s'" % q, EXIT_UNKNOWN)
 
 
 def group_dir(g):
@@ -284,38 +366,54 @@ def group_exists(g):
 
 
 def derive_group(cwd):
-    """Default group for a seat spawned without --group: the repository name.
+    """Default group for a seat spawned without --group: the OWNING repository.
 
-    Board-pipeline workers therefore group by repository without their
-    dispatchers learning about groups.
+    Board-pipeline workers spawn in a linked worktree (<repo>/.claude/worktrees/
+    <name>), whose toplevel is the worktree dir — grouping on that would file
+    every worker under its own name. The common git dir points at the main
+    checkout's .git, so its parent is the owning repo; all a repo's workers
+    share one group. Non-git cwd falls back to the directory basename.
     """
     name = ""
     if cwd and os.path.isdir(cwd):
         try:
-            top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            common = subprocess.run(["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+                                    capture_output=True, text=True, timeout=10).stdout.strip()
         except Exception:
-            top = ""
-        name = os.path.basename(top) if top else os.path.basename(os.path.normpath(cwd))
+            common = ""
+        if common:
+            if not os.path.isabs(common):
+                common = os.path.join(cwd, common)
+            name = os.path.basename(os.path.dirname(os.path.abspath(common)))
+        else:
+            name = os.path.basename(os.path.normpath(cwd))
     name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64]
     if not valid_name(name):
         name = "fleet"
     return name
 
 
-def lifecycle_lock(group, alias):
-    """One lifecycle change per seat at a time: spawn / fill / seat add / resume
-    hold this flock from their availability check through the record commit
-    (through process start, for resume), so two concurrent spawns of the same
-    seat cannot both pass the "is it free?" check and double-spawn. The kernel
-    releases it the moment the holder exits."""
+def group_for_record(m):
+    """The group of a legacy record: its own agora_group if present (the daemon
+    dimension already knew it), else derived from cwd."""
+    return str(m.get("agora_group") or "") or derive_group(str(m.get("cwd") or ""))
+
+
+def lifecycle_lock(alias, group="?"):
+    """One lifecycle change per NAME at a time: spawn / fill / seat add / resume
+    / retire / remove hold this flock from their availability check through the
+    record commit (through process start, for resume). The key is the alias
+    alone, never group__alias: a seat's alias is its machine-wide harness name,
+    so a same-alias spawn in another group must serialize against this one or
+    two live sessions would answer to one SendMessage address. The kernel
+    releases the lock the moment the holder exits."""
     d = os.path.join(root(), "locks")
     os.makedirs(d, exist_ok=True)
-    lf = open(os.path.join(d, "%s__%s.lock" % (group, alias)), "a+")
+    lf = open(os.path.join(d, "name__%s.lock" % alias), "a+")
     try:
         fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        die("seat %s/%s is being changed by another agora process — retry shortly" % (group, alias), EXIT_UNKNOWN)
+        die("seat '%s' (%s) is being changed by another agora process — retry shortly" % (alias, group), EXIT_UNKNOWN)
     return lf
 
 
@@ -374,17 +472,27 @@ def pid_alive(pid):
     return True
 
 
+def peer_live(rec):
+    """A peer record is live only if its pid is alive AND its inbox socket file
+    still exists. A recycled pid can revive a dead session's record; without the
+    socket check that stale record would block a fill or a name reuse forever."""
+    if not pid_alive(rec.get("pid")):
+        return False
+    sp = socket_path_of(rec)
+    return bool(sp) and os.path.exists(sp)
+
+
 def peer_for_session(session_id):
     if not session_id:
         return None
     for rec in peer_records():
-        if rec.get("sessionId") == session_id and pid_alive(rec.get("pid")):
+        if rec.get("sessionId") == session_id and peer_live(rec):
             return rec
     return None
 
 
 def live_name_holders(name):
-    return [r for r in peer_records() if r.get("name") == name and pid_alive(r.get("pid"))]
+    return [r for r in peer_records() if r.get("name") == name and peer_live(r)]
 
 
 def refuse_live_name(alias, addr, allow_session=""):
@@ -614,11 +722,8 @@ def poll_uuid(short, max_iter=None):
     id — the row can lag the banner by a beat. Returns (uuid, state, cwd) or None."""
     if max_iter is None:
         max_iter = int(os.environ.get("AGORA_UUID_POLL") or os.environ.get("DAEMON_UUID_POLL") or "30")
-    for i in range(max_iter):
-        if i:
-            agents_refresh()
-        else:
-            agents_refresh()
+    for _ in range(max_iter):
+        agents_refresh()
         row = agent_row(short=short)
         if row and row.get("sessionId"):
             return row["sessionId"], normalize_state(row), row.get("cwd") or ""
@@ -646,11 +751,13 @@ def poll_until_done(short, max_iter):
 
 
 def watcher_iterations():
+    """How many poll iterations a --wait watcher runs: DAEMON_TIMEOUT seconds
+    divided by the poll interval (0 = watch forever). No extra /2 — that halved
+    the real budget and rounded to nothing at sub-second intervals."""
     t = int(os.environ.get("DAEMON_TIMEOUT") or "18000")
     if t == 0:
         return 0
-    iv = poll_interval()
-    return max(1, int(t / 2 / iv)) if iv >= 1 else max(1, t // 2)
+    return max(1, int(t / poll_interval()))
 
 
 def status_for_state(state):
@@ -767,6 +874,9 @@ def reply_text(seat_id):
 
 
 def convert_v2_nodes(r):
+    """Convert v2 groups/<g>/nodes/*.json into seat records. Removes only the
+    node files it actually converts and rmdir's the nodes/ dir only when it is
+    empty (never rmtree — an unreadable node file must survive for a human)."""
     converted = 0
     for nodes_dir in glob.glob(os.path.join(r, "groups", "*", "nodes")):
         g = os.path.basename(os.path.dirname(nodes_dir))
@@ -775,10 +885,13 @@ def convert_v2_nodes(r):
                 with open(nf) as f:
                     n = json.load(f)
             except Exception:
-                continue
+                continue  # leave an unreadable node file in place — never lose it
             sess = str(n.get("session") or "")
-            seat_id = sess if UUID_RE.match(sess) else str(uuidlib.uuid4())
             alias = str(n.get("alias") or os.path.basename(nf)[:-5])
+            # A sessionless node gets a DETERMINISTIC id, so a run interrupted
+            # mid-convert re-derives the same seat instead of a fresh uuid4 each
+            # time (which would multiply the seat on every retry).
+            seat_id = sess if UUID_RE.match(sess) else str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
             if os.path.exists(meta_path(seat_id)):
                 meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
                                    "addr": str(n.get("addr") or alias), "brief": str(n.get("desc") or "")})
@@ -791,82 +904,112 @@ def convert_v2_nodes(r):
                     "model": "", "settings": "", "effort": "", "status": "retired",
                     "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
                     "updated": now(), "turns": "0", "preamble": "1"})
+            os.unlink(nf)
             converted += 1
-        shutil.rmtree(nodes_dir, ignore_errors=True)
+        try:
+            os.rmdir(nodes_dir)  # only if now empty
+        except OSError:
+            pass
     return converted
 
 
-def migrate(explicit=False, quiet=False):
+def merge_asides(r):
+    """Finish an interrupted cutover. An `<root>.v2-*` aside is a former default
+    root that was set aside so the daemon root could take its place; its groups/
+    are merged back and it is removed when empty. Runs on EVERY migrate, so a
+    crash between the rename and the merge self-heals on the next command."""
+    merged = 0
+    for aside in sorted(glob.glob(r + ".v2-*")):
+        if not os.path.isdir(aside) or os.path.islink(aside):
+            continue
+        ag = os.path.join(aside, "groups")
+        if os.path.isdir(ag):
+            os.makedirs(os.path.join(r, "groups"), exist_ok=True)
+            for g in os.listdir(ag):
+                src, dst = os.path.join(ag, g), os.path.join(r, "groups", g)
+                if os.path.isdir(dst):
+                    for sub in os.listdir(src):
+                        if not os.path.exists(os.path.join(dst, sub)):
+                            shutil.move(os.path.join(src, sub), os.path.join(dst, sub))
+                    if not os.listdir(src):
+                        os.rmdir(src)
+                else:
+                    shutil.move(src, dst)
+            if not os.listdir(ag):
+                os.rmdir(ag)
+        if os.path.isdir(aside) and not os.listdir(aside):
+            os.rmdir(aside)
+            merged += 1
+    return merged
+
+
+def migrate(quiet=False):
     """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
+
+    The whole cutover is serialized by an exclusive flock on
+    ~/.claude/.agora-migrate.lock, so two agora processes starting at once can't
+    both try to rename the old root. Steps:
 
     1. Old root: when the default root is in use and ~/.claude/orchestrating-daemons
        is a real directory, the old root is renamed INTO place as one atomic
-       step (any existing ~/.claude/agora is set aside first and its groups/
-       merged back), and a symlink is left at the old path so anything still
-       holding it keeps resolving. Entry-by-entry copying would leave two half
-       roots on a crash; a rename cannot.
+       step (any existing ~/.claude/agora is set aside first), and a symlink is
+       left at the old path so anything still holding it keeps resolving. The
+       set-aside root's groups/ are merged back by merge_asides, which also runs
+       on every later call — so a crash mid-cutover self-heals.
     2. v2 layout: groups/<g>/nodes/*.json become seat records (retired).
-    3. Once: records lacking `group` are stamped from their cwd, and legacy
-       codex-CLI worker records (engine: codex) are marked retired — their
-       resume path no longer exists.
+    3. Every run, per record (the scan is cheap): a record lacking `group` is
+       stamped (its own agora_group if it had one, else derived from cwd), and a
+       legacy codex-CLI worker record (engine: codex) is retired — its resume
+       path no longer exists; a still-live one is killed first, the way the old
+       retire path did.
     """
     r = root()
     did = []
-    old = os.path.join(home_dir(), ".claude", "orchestrating-daemons")
-    if r == default_root() and os.path.isdir(old) and not os.path.islink(old):
-        aside = ""
-        if os.path.lexists(r):
-            aside = r + ".v2-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            os.rename(r, aside)
-        os.rename(old, r)
-        if aside:
-            ag = os.path.join(aside, "groups")
-            if os.path.isdir(ag):
-                os.makedirs(os.path.join(r, "groups"), exist_ok=True)
-                for g in os.listdir(ag):
-                    src, dst = os.path.join(ag, g), os.path.join(r, "groups", g)
-                    if os.path.isdir(dst):
-                        for sub in os.listdir(src):
-                            if not os.path.exists(os.path.join(dst, sub)):
-                                shutil.move(os.path.join(src, sub), os.path.join(dst, sub))
-                        if not os.listdir(src):
-                            os.rmdir(src)
-                    else:
-                        shutil.move(src, dst)
-                if not os.listdir(ag):
-                    os.rmdir(ag)
-            if os.path.isdir(aside) and not os.listdir(aside):
-                os.rmdir(aside)
-            elif os.path.isdir(aside):
-                did.append("left %s aside (unmerged entries)" % aside)
-        os.symlink(r, old)
-        did.append("renamed %s -> %s (old path is now a symlink)" % (old, r))
-    n = convert_v2_nodes(r)
-    if n:
-        did.append("converted %d v2 node(s) into seats" % n)
-    marker = os.path.join(r, ".migrated-v3")
-    if os.path.isdir(r) and not os.path.exists(marker):
-        stamped = retired = 0
-        for p in record_files():
-            try:
-                with open(p) as f:
-                    m = json.load(f)
-            except Exception:
-                continue
-            fields = {}
-            if not m.get("group"):
-                fields["group"] = derive_group(str(m.get("cwd") or ""))
-                stamped += 1
-            if m.get("engine") == "codex" and m.get("status") != "retired":
-                fields["status"] = "retired"
-                fields["updated"] = now()
-                retired += 1
-            if fields:
-                meta_set(os.path.basename(p)[:-5], fields)
-        with open(marker, "w") as f:
-            f.write(now() + "\n")
-        if stamped or retired:
-            did.append("stamped group on %d record(s), retired %d legacy codex record(s)" % (stamped, retired))
+    lockdir = os.path.join(home_dir(), ".claude")
+    os.makedirs(lockdir, exist_ok=True)
+    with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
+        fcntl.flock(mlf, fcntl.LOCK_EX)
+        try:
+            old = os.path.join(home_dir(), ".claude", "orchestrating-daemons")
+            if r == default_root() and os.path.isdir(old) and not os.path.islink(old):
+                if os.path.lexists(r):
+                    os.rename(r, r + ".v2-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+                os.rename(old, r)
+                os.symlink(r, old)
+                did.append("renamed %s -> %s (old path is now a symlink)" % (old, r))
+            if merge_asides(r):
+                did.append("merged an interrupted v2 aside back into the root")
+            n = convert_v2_nodes(r)
+            if n:
+                did.append("converted %d v2 node(s) into seats" % n)
+            stamped = retired = killed = 0
+            for p in record_files():
+                try:
+                    with open(p) as f:
+                        m = json.load(f)
+                except Exception:
+                    continue
+                fields = {}
+                if not m.get("group"):
+                    fields["group"] = group_for_record(m)
+                    stamped += 1
+                if m.get("engine") == "codex" and m.get("status") != "retired":
+                    if m.get("status") in ("working", "blocked") and identity_local(
+                            str(m.get("host") or ""), str(m.get("boot_id") or "")) and pid_alive(m.get("pid")):
+                        try:
+                            os.kill(int(m["pid"]), signal.SIGTERM)
+                            killed += 1
+                        except (ProcessLookupError, ValueError, TypeError, PermissionError):
+                            pass
+                    fields.update({"status": "retired", "updated": now()})
+                    retired += 1
+                if fields:
+                    meta_set(os.path.basename(p)[:-5], fields)
+            if stamped or retired:
+                did.append("stamped group on %d record(s), retired %d legacy codex record(s)%s" % (
+                    stamped, retired, (" (killed %d live)" % killed) if killed else ""))
+        finally:
+            fcntl.flock(mlf, fcntl.LOCK_UN)
     if did and not quiet:
         sys.stderr.write("agora: migrated: %s\n" % "; ".join(did))
     return did
@@ -917,25 +1060,119 @@ def env_default(value, env_name):
     return value if value is not None else os.environ.get(env_name, "")
 
 
-def finish_turn(seat_id, short, alias, uuid_hint=""):
+def finish_turn(seat_id, short, alias, uuid_hint, guard):
     """--wait: watch a turn to its end, record the reply, return the status.
-    A watcher timeout is not a finished turn: status stays working and the
-    reply is readable later with `agora reply`."""
+
+    The final write is CONDITIONAL on `guard`: minutes may pass in the watcher,
+    during which the seat could be purged or re-filled into a different session.
+    meta_set_if re-reads under the lock and writes only if the record still
+    exists and the guard (same session, and same launch when we know its short)
+    still holds — never resurrecting a purged record nor clobbering a newer
+    session. A watcher timeout is not a finished turn: status stays working
+    (also conditionally) and the reply is readable later with `agora reply`."""
     uuid, state, _cwd, finished = poll_until_done(short, watcher_iterations())
     if not finished:
-        meta_set(seat_id, {"status": "working", "updated": now()})
+        meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
         sys.stderr.write("agora: watcher expired; turn %s of %s is still running (status=working). "
                          "Read it later with: agora reply %s\n" % (short, alias, alias))
         sys.exit(1)
     status = status_for_state(state)
-    record_reply(uuid or uuid_hint, seat_id, state, alias)
-    meta_set(seat_id, {"status": status, "updated": now()})
+    if meta_set_if(seat_id, {"status": status, "updated": now()}, guard):
+        record_reply(uuid or uuid_hint, seat_id, state, alias)
     return status
 
 
 def print_reply_block(seat_id):
     print("--- reply ---")
     print(reply_text(seat_id) or "(no reply yet)")
+
+
+def cwd_or_die(cwd, verb):
+    """Resolve a launch cwd, or die: an unattended auto-mode worker must run in a
+    real directory. Never silently substitute HOME — that would drop the worker
+    into the wrong repo with no one watching."""
+    cwd = os.path.abspath(cwd or os.getcwd())
+    if not os.path.isdir(cwd):
+        die("%s: cwd does not exist or is not a directory: %s" % (verb, cwd), EXIT_USAGE)
+    return cwd
+
+
+def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, worktree,
+                model, settings, effort, preamble_flag, wait, lock, verb):
+    """Launch a fresh background session for a seat and register it.
+
+    seat_id None → a brand-new seat: a provisional record exists during the
+    first turn (so the agent can post / be looked up), then is promoted to the
+    first session's uuid as the seat id. seat_id set → an in-place re-fill: the
+    record keeps its id, `now`/`note`/`created`, and every pipeline-owned field;
+    only the launch + definition fields are overwritten. The session launches
+    under -n <addr> so the seat's advertised address is its live SendMessage
+    name. Returns nothing (prints; may exit)."""
+    preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
+    task_text = compose_task(task, brief or "", preamble)
+    short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
+    if not short:
+        sys.stderr.write("agora: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
+        sys.exit(1)
+    launch = {
+        "current": "", "short": short, "name": addr, "alias": alias, "group": group,
+        "parent": parent or "", "addr": addr, "role": role or "", "brief": brief or "",
+        "task": task_text, "cwd": cwd, "worktree": worktree or "", "model": model or "",
+        "settings": settings, "effort": effort, "status": "working", "host": host_name(),
+        "boot_id": boot_id(), "updated": now(), "turns": "1", "preamble": "1" if preamble_flag else "",
+    }
+    if seat_id is None:
+        rec_id = str(uuidlib.uuid4())
+        meta_set(rec_id, {"uuid": rec_id, "now": "", "note": "", "created": now(), **launch})
+    else:
+        # A re-fill is a genuinely new session: clear the previous occupant's
+        # `now` line (the orchestrator's `note` is kept), keep the seat id, its
+        # `created`, and every pipeline-owned field the launch dict omits.
+        rec_id = seat_id
+        meta_set(rec_id, {**launch, "now": ""}, remove=("pending_short",))
+    polled = poll_uuid(short)
+    if not polled or not UUID_RE.match(polled[0]):
+        meta_set(rec_id, {"status": "error", "pending_short": short, "updated": now()})
+        sys.stderr.write("agora: %s: session %s produced no usable session uuid; record %s kept "
+                         "(status=error, pending_short)\n" % (verb, short, rec_id[:8]))
+        sys.exit(1)
+    uuid, state, runcwd = polled
+    if seat_id is None:
+        # Promote the provisional record to the first session's uuid — the
+        # pipeline resolves seats by that filename prefix. The rename is atomic;
+        # do it under .metalock so it can't race a concurrent meta_set on either
+        # path, and merge ONLY the fields we now know — never replay empties over
+        # a `now`/`note` a first-turn `agora status` may have written to prov.
+        with open(os.path.join(root(), ".metalock"), "a") as _lf:
+            fcntl.flock(_lf, fcntl.LOCK_EX)
+            try:
+                if rec_id != uuid and not os.path.exists(meta_path(uuid)):
+                    os.replace(meta_path(rec_id), meta_path(uuid))
+                elif rec_id != uuid:
+                    os.unlink(meta_path(rec_id))
+            finally:
+                fcntl.flock(_lf, fcntl.LOCK_UN)
+        rec_id = uuid
+        meta_set(rec_id, {"uuid": rec_id, "current": uuid, "cwd": runcwd or cwd, "updated": now()})
+    else:
+        meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
+                          "boot_id": boot_id(), "updated": now()})
+    status = "working"
+    if state in TERMINAL:
+        # Don't blindly claim working — a fast first turn may already be over.
+        status = status_for_state(state)
+        if meta_set_if(rec_id, {"status": status, "updated": now()}, same_turn(uuid, short)):
+            record_reply(uuid, rec_id, state, alias)
+    lock.close()
+    if wait:
+        status = finish_turn(rec_id, short, alias, uuid, same_turn(uuid, short))
+    wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
+    if verb == "spawned" and seat_id is not None:
+        verb = "re-filled"
+    print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: agora reply %s)" % (
+        verb, group, alias, short, uuid, status, wt, short))
+    if wait:
+        print_reply_block(rec_id)
 
 
 def cmd_spawn(a):
@@ -946,75 +1183,34 @@ def cmd_spawn(a):
         die("the alias 'human' is reserved for the operator")
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
-    cwd = os.path.abspath(a.cwd or os.getcwd())
+    cwd = cwd_or_die(a.cwd, "spawn")
     explicit_group = a.group is not None
     group = a.group if explicit_group else derive_group(cwd)
     if not valid_name(group):
         die("bad group name: %s" % group)
-    lock = lifecycle_lock(group, alias)
+    lock = lifecycle_lock(alias, group)
+    # Re-read under the lock: whether the seat is filled/refillable is only true
+    # as of now, not as of the caller's earlier read.
+    addr = a.addr or alias
+    existing = None
     for s in seats(group):
         if s["alias"] == alias:
             live = live_state(s)
             if live in FILLED:
                 die("seat %s/%s is filled (live: %s) — message it with agora send/wake" % (group, alias, live), EXIT_UNKNOWN)
-            die("seat %s/%s exists (%s) — fill it with: agora fill %s/%s \"<task>\" [--resume]" % (
-                group, alias, live, group, alias), EXIT_UNKNOWN)
-    addr = a.addr or alias
-    refuse_live_name(alias, addr)
+            # vacant / stopped / gone / retired → re-fill this very seat, keeping
+            # its id and pipeline-owned fields. The board pipeline's
+            # retire-then-respawn of a deterministic alias (review-pr-<n>) lands
+            # here instead of erroring.
+            existing = s
+            addr = a.addr or s["addr"]
+            break
+    refuse_live_name(alias, addr, allow_session=(existing["current"] if existing else ""))
     settings = env_default(a.settings, "DAEMON_CLAUDE_SETTINGS")
     effort = env_default(a.effort, "DAEMON_CLAUDE_EFFORT")
-    preamble = render_preamble(group, alias, a.parent or "") if explicit_group else ""
-    task_text = compose_task(a.task, a.brief or "", preamble)
-
-    short, banner = run_claude_bg(claude_args(alias, a.model or "", settings, effort, a.worktree or "") + [task_text],
-                                  cwd, settings)
-    if not short:
-        sys.stderr.write("agora: spawn failed — could not parse background id from:\n%s\n" % banner)
-        sys.exit(1)
-    # The seat exists as soon as the launch is known to have SUCCEEDED and
-    # before the first turn is polled — the agent may post or be looked up in
-    # the topology during its very first turn, while a failed launch must
-    # leave no phantom seat behind.
-    prov = str(uuidlib.uuid4())
-    fields = {
-        "uuid": prov, "current": "", "short": short, "name": alias, "alias": alias, "group": group,
-        "parent": a.parent or "", "addr": addr, "role": a.role or "", "brief": a.brief or "",
-        "task": task_text, "now": "", "note": "", "cwd": cwd, "worktree": a.worktree or "",
-        "model": a.model or "", "settings": settings, "effort": effort, "status": "working",
-        "host": host_name(), "boot_id": boot_id(), "created": now(), "updated": now(), "turns": "1",
-        "preamble": "1" if explicit_group else "",
-    }
-    meta_set(prov, fields)
-    polled = poll_uuid(short)
-    if not polled or not re.match(r"^[0-9a-f-]+$", polled[0]):
-        meta_set(prov, {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("agora: spawn: session %s produced no usable session uuid; record %s kept "
-                         "(status=error, pending_short)\n" % (short, prov[:8]))
-        sys.exit(1)
-    uuid, state, runcwd = polled
-    seat_id = uuid
-    # The record is named after the first session's uuid — the pipeline
-    # resolves seats by that filename prefix.
-    if seat_id != prov and not os.path.exists(meta_path(seat_id)):
-        os.replace(meta_path(prov), meta_path(seat_id))
-    elif seat_id != prov:
-        os.unlink(meta_path(prov))
-    fields.update({"uuid": seat_id, "current": uuid, "cwd": runcwd or cwd, "updated": now()})
-    meta_set(seat_id, fields)
-    status = "working"
-    if state in TERMINAL:
-        # Don't blindly claim working — a fast first turn may already be over.
-        status = status_for_state(state)
-        record_reply(uuid, seat_id, state, alias)
-        meta_set(seat_id, {"status": status, "updated": now()})
-    lock.close()
-    if a.wait:
-        status = finish_turn(seat_id, short, alias, uuid)
-    wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", a.worktree))) if a.worktree else ""
-    print("seat spawned: %s  [%s / %s]  group=%s  status=%s%s  (reply: agora reply %s)" % (
-        alias, short, uuid, group, status, wt, short))
-    if a.wait:
-        print_reply_block(seat_id)
+    spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, a.parent or "", a.role or "",
+                a.brief or "", a.task, cwd, a.worktree or "", a.model or "", settings, effort,
+                explicit_group, a.wait, lock, "spawned")
 
 
 def cmd_seat_add(a):
@@ -1026,10 +1222,12 @@ def cmd_seat_add(a):
         die("the alias 'human' is reserved for the operator")
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
-    lock = lifecycle_lock(a.group, a.alias)
+    session = a.session or ""
+    if session and not UUID_RE.match(session):
+        die("--session must be a session uuid (8-4-4-4-12 hex): %s" % session)
+    lock = lifecycle_lock(a.alias, a.group)
     existing = [s for s in seats(a.group) if s["alias"] == a.alias]
     addr = a.addr or (existing[0]["addr"] if existing else a.alias)
-    session = a.session or ""
     refuse_live_name(a.alias, addr, allow_session=session or (existing[0]["current"] if existing else ""))
     if existing:
         s = existing[0]
@@ -1041,7 +1239,7 @@ def cmd_seat_add(a):
             fields.update({"current": session, "status": "idle", "host": host_name(), "boot_id": boot_id()})
         meta_set(seat_id, fields)
     else:
-        seat_id = session if UUID_RE.match(session) else str(uuidlib.uuid4())
+        seat_id = session if session else str(uuidlib.uuid4())
         if os.path.exists(meta_path(seat_id)):
             die("a seat record for session %s already exists (%s/%s)" % (
                 session, meta_get(seat_id, "group"), meta_get(seat_id, "alias") or meta_get(seat_id, "name")), EXIT_UNKNOWN)
@@ -1072,53 +1270,33 @@ def refuse_codex(s):
 
 
 def cmd_fill(a):
-    s = resolve_seat(a.seat)
-    refuse_codex(s)
-    lock = lifecycle_lock(s["group"], s["alias"])
+    s0 = resolve_seat(a.seat)
+    refuse_codex(s0)
+    lock = lifecycle_lock(s0["alias"], s0["group"])
+    # Re-load under the lock and act on the fresh values: between resolve and
+    # lock the seat could have been re-filled or retired.
+    s = next((x for x in seats(s0["group"]) if x["seat_id"] == s0["seat_id"]), None)
+    if s is None:
+        lock.close()
+        die("seat %s/%s vanished before the fill could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     live = live_state(s)
     if live in FILLED:
         die("seat %s/%s is filled (live: %s) — use agora wake or agora send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
     refuse_live_name(s["alias"], s["addr"], allow_session=s["current"])
-    settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
-    effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
-    model = a.model if a.model is not None else s["model"]
     if a.resume:
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         warn_resume_flags(a)
         resume_session(s, a.task, a.wait, lock, verb="filled")
         return
-    preamble = render_preamble(s["group"], s["alias"], s["parent"]) if s["preamble"] else ""
-    task_text = compose_task(a.task, s["brief"], preamble)
-    cwd = s["cwd"] or os.getcwd()
+    settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
+    effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
+    model = a.model if a.model is not None else s["model"]
     # The seat's cwd is already the worktree path when it had one, so no
     # --worktree on a re-fill: the fresh session runs where the seat lives.
-    short, banner = run_claude_bg(claude_args(s["alias"], model, settings, effort) + [task_text], cwd, settings)
-    if not short:
-        sys.stderr.write("agora: fill failed — could not parse background id from:\n%s\n" % banner)
-        sys.exit(1)
-    meta_set(s["seat_id"], {"short": short, "status": "working", "task": task_text, "model": model,
-                            "settings": settings, "effort": effort, "updated": now()})
-    polled = poll_uuid(short)
-    if not polled:
-        meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("agora: fill: session %s produced no usable session uuid (status=error, pending_short)\n" % short)
-        sys.exit(1)
-    uuid, state, runcwd = polled
-    meta_set(s["seat_id"], {"current": uuid, "cwd": runcwd or cwd, "host": host_name(), "boot_id": boot_id(),
-                            "turns": "1", "updated": now()}, remove=("pending_short",))
-    status = "working"
-    if state in TERMINAL:
-        status = status_for_state(state)
-        record_reply(uuid, s["seat_id"], state, s["alias"])
-        meta_set(s["seat_id"], {"status": status, "updated": now()})
-    lock.close()
-    if a.wait:
-        status = finish_turn(s["seat_id"], short, s["alias"], uuid)
-    print("seat filled: %s/%s  [%s / %s]  status=%s  (fresh session; seat id %s)" % (
-        s["group"], s["alias"], short, uuid, status, s["seat_id"][:8]))
-    if a.wait:
-        print_reply_block(s["seat_id"])
+    cwd = cwd_or_die(s["cwd"], "fill")
+    spawn_fresh(s["seat_id"], s["alias"], s["addr"], s["group"], s["parent"], s["role"], s["brief"],
+                a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, lock, "filled")
 
 
 # ------------------------------------------------------- resume / wake / send
@@ -1150,9 +1328,18 @@ def resume_session(s, msg, wait, lock=None, verb="resumed"):
     if not s["current"]:
         die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    own_lock = lock is None
-    if own_lock:
-        lock = lifecycle_lock(s["group"], s["alias"])
+    if lock is None:
+        lock = lifecycle_lock(s["alias"], s["group"])
+        # Re-load under the lock and act on fresh values (item: fill/resume).
+        fresh = next((x for x in seats(s["group"]) if x["seat_id"] == s["seat_id"]), None)
+        if fresh is None:
+            lock.close()
+            die("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        s = fresh
+        refuse_codex(s)
+        if not s["current"]:
+            die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
+                s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
     lf = open(lock_path, "a+")
     try:
@@ -1211,10 +1398,10 @@ def resume_session(s, msg, wait, lock=None, verb="resumed"):
     status = "working"
     if state in TERMINAL:
         status = status_for_state(state)
-        record_reply(uuid, s["seat_id"], state, s["alias"])
-        meta_set(s["seat_id"], {"status": status, "updated": now()})
+        if meta_set_if(s["seat_id"], {"status": status, "updated": now()}, same_turn(cur, short)):
+            record_reply(uuid, s["seat_id"], state, s["alias"])
     if wait:
-        status = finish_turn(s["seat_id"], short, s["alias"], uuid)
+        status = finish_turn(s["seat_id"], short, s["alias"], uuid, same_turn(cur, short))
     print("%s %s/%s  [%s / %s]  via --bg --resume  status=%s  turns=%d" % (
         verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
     if wait:
@@ -1227,11 +1414,13 @@ def cmd_resume(a):
     resume_session(s, a.msg, a.wait)
 
 
-def wait_socket_turn(s, marker):
-    """After a socket delivery: wait (bounded) for EVIDENCE the message landed —
-    the marker in the target's transcript, or a busy harness row — then wait
-    for the turn to end. No evidence within the bound is a failed wait, not a
-    silent one: nothing is printed as a reply."""
+def wait_socket_turn(s, marker, was_idle):
+    """After a socket delivery: wait (bounded) for EVIDENCE the message landed,
+    then wait for the turn to end. The evidence is the marker in the target's
+    transcript; a busy harness row counts ONLY if the seat was idle when we sent
+    (a fresh turn started) — if it was already busy, a busy row proves nothing
+    about OUR message, so we require the marker. No evidence within the bound is
+    a failed wait, not a silent one: nothing is printed as a reply."""
     cur = s["current"]
     deadline = time.time() + float(os.environ.get("AGORA_ACK_TIMEOUT", "120"))
     seen = False
@@ -1239,22 +1428,24 @@ def wait_socket_turn(s, marker):
         if transcript_contains(cur, marker):
             seen = True
             break
-        agents_refresh()
-        row = harness_row(s)
-        if row and normalize_state(row) in ("working", "blocked"):
-            seen = True
-            break
+        if was_idle:
+            agents_refresh()
+            row = harness_row(s)
+            if row and normalize_state(row) in ("working", "blocked"):
+                seen = True
+                break
         time.sleep(poll_interval())
     if not seen:
         sys.stderr.write("agora: no evidence that %s/%s received the message within the ack window "
-                         "(no transcript marker, session never busy) — not waiting for a reply\n" % (s["group"], s["alias"]))
+                         "(no transcript marker%s) — not waiting for a reply\n" % (
+                             s["group"], s["alias"], "" if was_idle else ", and it was already busy at send time"))
         sys.exit(1)
     agents_refresh()
     row = harness_row(s)
     short = (row or {}).get("id") or s["short"]
     if not short:
         return "idle"
-    return finish_turn(s["seat_id"], short, s["alias"], cur)
+    return finish_turn(s["seat_id"], short, s["alias"], cur, same_session(cur))
 
 
 def cmd_wake(a):
@@ -1269,11 +1460,20 @@ def cmd_wake(a):
     peer = peer_for_session(s["current"])
     sock = socket_path_of(peer) if peer else ""
     if peer and socket_ok(sock):
-        send_frame(sock, text)
+        was_idle = normalize_state(harness_row(s) or {"status": peer.get("status")}) not in ("working", "blocked")
+        try:
+            send_frame(sock, text)
+        except OSError as e:
+            # The socket vanished between the liveness check and the write (the
+            # session exited). Re-evaluate and fall through to the resume path
+            # rather than raising.
+            warn("inbox socket delivery to %s/%s failed (%s); resuming instead" % (s["group"], s["alias"], e))
+            resume_session(s, text, a.wait, verb="woke")
+            return
         meta_set(s["seat_id"], {"status": "working", "updated": now()})
         status = "working"
         if a.wait:
-            status = wait_socket_turn(s, msg_id)
+            status = wait_socket_turn(s, msg_id, was_idle)
         print("woke %s/%s  [%s / %s]  via inbox socket  status=%s" % (
             s["group"], s["alias"], s["short"] or "-", s["seat_id"], status))
         if a.wait:
@@ -1285,20 +1485,27 @@ def cmd_wake(a):
 def cmd_send(a):
     frm = a.frm or "human"
     text = "[agora message from %s]\n%s" % (frm, a.msg)
-    s = None
-    try:
-        s = resolve_seat(a.target)
-    except SystemExit:
-        s = None
-    if s is not None:
+    kind, res = find_seat(a.target)
+    if kind == "ambiguous":
+        # A genuine seat match that is ambiguous must NOT silently fall through
+        # to a raw name lookup — that would hide the ambiguity.
+        die("ambiguous seat '%s' matches: %s" % (
+            a.target, ", ".join("%s/%s" % (s["group"], s["alias"]) for s in res)), EXIT_UNKNOWN)
+    if kind == "ok":
+        s = res
         peer = peer_for_session(s["current"]) if s["current"] else None
         sock = socket_path_of(peer) if peer else ""
         if peer and socket_ok(sock):
-            send_frame(sock, text)
+            try:
+                send_frame(sock, text)
+            except OSError as e:
+                die("%s/%s went away mid-send (%s) — use: agora wake %s/%s \"<msg>\"" % (
+                    s["group"], s["alias"], e, s["group"], s["alias"]), EXIT_UNKNOWN)
             print("sent to %s/%s (%s)" % (s["group"], s["alias"], peer.get("name") or s["addr"]))
             return
         die("%s/%s is not live (%s) — use: agora wake %s/%s \"<msg>\"" % (
             s["group"], s["alias"], live_state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
+    # Only when NO seat matched: fall back to a raw live harness-session name.
     peers = [p for p in live_name_holders(a.target) if socket_ok(socket_path_of(p))]
     if len(peers) == 1:
         send_frame(socket_path_of(peers[0]), text)
@@ -1332,41 +1539,63 @@ def cmd_reply(a):
 
 
 def sync_one(s):
-    """Reconcile one seat's mirror status from the harness. Returns one word."""
+    """Reconcile one seat's mirror status from the harness. Returns one word.
+
+    Every status/reply write is CONDITIONAL on the snapshot: sync re-reads under
+    the lock and skips (prints `live`) if `current`/`short` moved since we read
+    the seat — a concurrent re-fill or resume must not be clobbered by a stale
+    finalize. An `idle` record whose harness row shows a running turn was woken
+    natively (native SendMessage, no agora write): promote it to working.
+    """
     if s["engine"] == "codex":
         return "noop"
-    if s["status"] not in ("working", "blocked"):
+    if s["status"] not in ("working", "blocked", "idle"):
         return "noop"
     cur = s["current"] or s["seat_id"]
+    guard = same_turn(s["current"], s["short"])
     agents_refresh()
     row = harness_row(s)
+    if s["status"] == "idle":
+        # Only an idle seat the harness shows as running NOW is interesting — it
+        # was woken natively (SendMessage) with no agora write. Promote it.
+        if row and normalize_state(row) in ("working", "blocked"):
+            meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
+            return "live"
+        return "noop"
     if row is None:
         return "absent"
     state = normalize_state(row)
     if state in ("working", "blocked"):
         return "live"
     if state == "done":
-        record_reply(cur, s["seat_id"], "done", s["alias"])
-        meta_set(s["seat_id"], {"status": "idle", "updated": now()})
-        return "idle"
+        if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard):
+            record_reply(cur, s["seat_id"], "done", s["alias"])
+            return "idle"
+        return "live"
     if state == "done-blocked":
         # An ended blocked-shape turn: the session is over and resumable; the
         # reply carries the pending question or the harness-prompt marker.
-        record_reply(cur, s["seat_id"], "blocked", s["alias"])
-        meta_set(s["seat_id"], {"status": "idle", "updated": now()})
-        return "idle"
+        if meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard):
+            record_reply(cur, s["seat_id"], "blocked", s["alias"])
+            return "idle"
+        return "live"
     if state in ("failed", "stopped", "error"):
-        record_reply(cur, s["seat_id"], state, s["alias"])
-        meta_set(s["seat_id"], {"status": "error", "updated": now()})
-        return "error"
+        if meta_set_if(s["seat_id"], {"status": "error", "updated": now()}, guard):
+            record_reply(cur, s["seat_id"], state, s["alias"])
+            return "error"
+        return "live"
     return "live"  # unknown/new harness states: claim nothing, finalize nothing
 
 
 def cmd_sync(a):
     if a.all or not a.seat:
+        # --all includes idle seats too, to catch natively-woken ones; a seat
+        # that needed no reconciliation (noop) is not printed.
         for s in seats():
-            if s["status"] in ("working", "blocked"):
-                print("%s/%s %s" % (s["group"], s["alias"], sync_one(s)))
+            if s["status"] in ("working", "blocked", "idle"):
+                word = sync_one(s)
+                if word != "noop":
+                    print("%s/%s %s" % (s["group"], s["alias"], word))
         return
     print(sync_one(resolve_seat(a.seat)))
 
@@ -1389,10 +1618,34 @@ def cmd_status(a):
 
 
 def stop_session(s):
-    """`claude stop` the seat's current turn when its identity is local.
-    Never through a foreign short: shorts are host-local and reusable."""
-    if s["short"] and s["engine"] != "codex" and identity_local(s["host"], s["boot_id"]):
+    """Stop the seat's current turn when its identity is local. A claude session
+    is stopped via the supervisor by its short (never a foreign short — shorts
+    are host-local and reusable); a legacy codex worker is a detached process we
+    own, so it is signalled by its recorded pid, the way the old retire did."""
+    if not identity_local(s["host"], s["boot_id"]):
+        return
+    if s["engine"] == "codex":
+        pid = meta_get(s["seat_id"], "pid")
+        if s["status"] in ("working", "blocked") and pid_alive(pid):
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ProcessLookupError, ValueError, TypeError, PermissionError):
+                pass
+    elif s["short"]:
         claude_stop(s["short"])
+
+
+def purge_codex_runs(seat_id):
+    """A codex worker's turn scratch (event_log and its siblings) lives outside
+    the record; drop the whole set when purging, since nothing will GC it once
+    the record is gone."""
+    el = meta_get(seat_id, "event_log")
+    if el and el.endswith(".events.jsonl"):
+        for p in glob.glob(el[:-len(".events.jsonl")] + ".*"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def worktree_note(s):
@@ -1413,26 +1666,36 @@ def unlink_seat_files(seat_id):
 
 def cmd_retire(a):
     s = resolve_seat(a.seat)
-    stop_session(s)
-    if s["current"]:
-        hint = "agora fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
-    else:
-        hint = "agora fill %s/%s \"<task>\"" % (s["group"], s["alias"])
-    if a.purge:
-        unlink_seat_files(s["seat_id"])
-        print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
-            s["group"], s["alias"], s["seat_id"], worktree_note(s)))
-    else:
-        meta_set(s["seat_id"], {"status": "retired", "updated": now()})
-        print("retired %s/%s [%s] (seat kept; re-fill with: %s)%s" % (
-            s["group"], s["alias"], s["seat_id"], hint, worktree_note(s)))
+    lock = lifecycle_lock(s["alias"], s["group"])
+    try:
+        stop_session(s)
+        hint = ("agora fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])) if s["current"] \
+            else ("agora fill %s/%s \"<task>\"" % (s["group"], s["alias"]))
+        if a.purge:
+            if s["engine"] == "codex":
+                purge_codex_runs(s["seat_id"])
+            unlink_seat_files(s["seat_id"])
+            print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
+                s["group"], s["alias"], s["seat_id"], worktree_note(s)))
+        else:
+            meta_set(s["seat_id"], {"status": "retired", "updated": now()})
+            print("retired %s/%s [%s] (seat kept; re-fill with: %s)%s" % (
+                s["group"], s["alias"], s["seat_id"], hint, worktree_note(s)))
+    finally:
+        lock.close()
 
 
 def cmd_remove(a):
     s = resolve_seat(a.seat)
-    stop_session(s)
-    unlink_seat_files(s["seat_id"])
-    print("removed %s/%s [%s] (board history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
+    lock = lifecycle_lock(s["alias"], s["group"])
+    try:
+        stop_session(s)
+        if s["engine"] == "codex":
+            purge_codex_runs(s["seat_id"])
+        unlink_seat_files(s["seat_id"])
+        print("removed %s/%s [%s] (board history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
+    finally:
+        lock.close()
 
 
 def cmd_leave(a):
@@ -1457,7 +1720,7 @@ def cmd_list(a):
     if a.json:
         out = []
         for s in rows:
-            d = {k: v for k, v in s.items() if k != "task"}
+            d = public_seat(s)
             d["live"] = live_state(s)
             out.append(d)
         print(json.dumps(out, indent=2))
@@ -1545,7 +1808,7 @@ def cmd_topology(a):
     gs = sorted(seats(g), key=lambda s: s["alias"])
     nodes = []
     for s in gs:
-        d = {k: v for k, v in s.items() if k != "task"}
+        d = public_seat(s)
         d["live"] = live_state(s)
         nodes.append(d)
     edges = [{"from": s["parent"], "to": s["alias"]} for s in gs if s["parent"]]
@@ -1958,7 +2221,7 @@ def main(argv=None):
     except SystemExit:
         sys.exit(EXIT_USAGE)
     if a.cmd == "migrate":
-        did = migrate(explicit=True, quiet=True)
+        did = migrate(quiet=True)
         if did and not a.quiet:
             print("agora: migrated: %s" % "; ".join(did))
         return
