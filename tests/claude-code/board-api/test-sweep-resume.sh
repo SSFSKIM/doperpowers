@@ -207,7 +207,7 @@ chmod +x "$STUB/gh"
 
 # ---- the registry -----------------------------------------------------------
 DH="$TDIR/registry"; mkdir -p "$DH"
-DS="$TDIR/daemon-scripts"; mkdir -p "$DS"
+DS="$TDIR/agora-stub"; mkdir -p "$DS"
 TESTHOME="$TDIR/home"; PROJ="$TESTHOME/.claude/projects/-tmp-consumer"
 mkdir -p "$PROJ"
 TRANSCRIPT="$PROJ/u-old.jsonl"; : > "$TRANSCRIPT"
@@ -220,18 +220,63 @@ chmod 600 "$DH/u-old.json"
 
 RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
 SPAWN_LOG="$TDIR/spawn.log"; : > "$SPAWN_LOG"
-# The resume stub COPIES THE REGISTRY META at the instant it runs. That copy is
-# the only way to observe persist-before-resume: after the fact every ordering
-# looks the same.
-cat > "$DS/daemon-resume.sh" <<EOF
+# ONE stub executable whose first argument selects the verb. Its `resume` arm
+# COPIES THE REGISTRY RECORD at the instant it runs. That copy is the only way
+# to observe persist-before-resume: after the fact every ordering looks the same.
+cat > "$DS/agora" <<EOF
 #!/usr/bin/env bash
+verb="\${1:-}"; shift || true
+case "\$verb" in
+migrate) exit 0 ;;
+retire)  echo "retire \$*"; exit 0 ;;
+sync)
+  # Liveness as \`agora sync\` actually reports it: \`noop\` for an ALREADY-
+  # TERMINAL record (it never re-inspects one), \`live\` for a running turn.
+  # Driven off the record the way the real verb is, so a status the resume path
+  # writes — notably the status=error + pending_short an unresolved fork leaves
+  # — is visible to the sweep's own liveness read.
+  python3 - "$DH/\$1.json" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    print("absent"); raise SystemExit(0)
+print("live" if m.get("status") in ("working", "blocked") else "noop")
+PY
+  exit 0 ;;
+spawn)
+  name="\$1"; task="\$2"; shift 2
+  cwd=""; wt=""; model=""
+  while [ \$# -gt 0 ]; do
+    case "\$1" in
+      --cwd) cwd="\$2"; shift 2 ;;
+      --worktree) wt="\$2"; shift 2 ;;
+      --model) model="\$2"; shift 2 ;;
+      --wait|--no-wait) shift ;;
+      *) shift ;;
+    esac
+  done
+  { echo "SPAWN name=\$name cwd=\$cwd worktree=\$wt model=\$model"
+    env | grep '^BOARD_' | sort || true
+    echo "---- prompt ----"; printf '%s\n' "\$task"; echo "---- end prompt ----"; } >> "$SPAWN_LOG"
+  [ -n "\${SPAWN_MUST_FAIL:-}" ] && exit 1
+  python3 -c 'import json, sys
+json.dump({"uuid": sys.argv[2], "current": sys.argv[2], "status": "working",
+           "name": sys.argv[3]}, open(sys.argv[1], "w"))' \\
+    "$DH/$NEWUUID.json" "$NEWUUID" "\$name"
+  echo "seat spawned: \$name  [abc1234 / $NEWUUID]  group=test  status=working  (reply: agora reply abc1234)"
+  exit 0 ;;
+resume) ;;
+*) echo "stub agora: unexpected verb '\$verb'" >&2; exit 2 ;;
+esac
+if [ "\${1:-}" = "--wait" ]; then shift; fi
 cp "$DH/u-old.json" "$DH/meta-at-resume.json" 2>/dev/null || true
 env | grep '^BOARD_' | sort > "$DH/resume-env.txt" || true
 { echo "RESUME uuid=\$1"
   echo "ARGV: \$*"
   echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"; } >> "$RESUME_LOG"
-# The residual double-spawn shape: the real daemon-resume LAUNCHED a fork but
-# _poll_uuid never yielded a usable session uuid, so it stamps status=error +
+# The residual double-spawn shape: the real resume LAUNCHED a fork but the uuid
+# poll never yielded a usable session uuid, so it stamps status=error +
 # pending_short and exits 1 WITHOUT advancing \`current\`. The fork may well be
 # alive on the run — nothing local can name its session yet.
 if [ -n "\${RESUME_PENDING_SHORT:-}" ]; then
@@ -250,54 +295,17 @@ with open(os.environ["T_P"], "a") as f:
     f.write(json.dumps({"type": "user",
                         "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
 PYX
-# The real daemon-resume forks the turn and INJECTS the prompt before it
-# blocks, then exits 1 when its watcher bound expires. That is what a slow
-# (i.e. ordinary) successor turn looks like from here.
+# The real resume forks the turn and INJECTS the prompt before it blocks, then
+# exits 1 when its watcher bound expires. That is what a slow (i.e. ordinary)
+# successor turn looks like from here.
 [ -n "\${RESUME_WAIT_EXPIRES:-}" ] && exit 1
 exit 0
 EOF
-chmod +x "$DS/daemon-resume.sh"
-cat > "$DS/daemon-spawn.sh" <<EOF
-#!/usr/bin/env bash
-shift                      # --no-wait
-{ echo "SPAWN name=\$1 cwd=\$3 worktree=\$4 model=\$5"
-  echo "ARGV: \$*"
-  env | grep '^BOARD_' | sort || true
-  echo "---- prompt ----"; printf '%s\n' "\$2"; echo "---- end prompt ----"; } >> "$SPAWN_LOG"
-[ -n "\${SPAWN_MUST_FAIL:-}" ] && exit 1
-python3 -c 'import json, sys
-json.dump({"uuid": sys.argv[2], "current": sys.argv[2], "status": "working",
-           "name": sys.argv[3]}, open(sys.argv[1], "w"))' \
-  "$DH/$NEWUUID.json" "$NEWUUID" "\$1"
-echo "daemon spawned (no-wait): \$1  [abc1234 / $NEWUUID]  status=working  (reply: daemon-reply.sh abc1234)"
-EOF
-chmod +x "$DS/daemon-spawn.sh"
-# Liveness as daemon-finalize actually reports it: `noop` for an ALREADY-
-# TERMINAL meta (it never re-inspects one), `live` for a running turn. Driven
-# off the meta the way the real script is, so a status the resume path writes —
-# notably the status=error + pending_short an unresolved fork leaves — is
-# visible to the sweep's own liveness read.
-cat > "$DS/daemon-finalize.sh" <<EOF
-#!/usr/bin/env bash
-python3 - "$DH/\$1.json" <<'PY'
-import json, sys
-try:
-    m = json.load(open(sys.argv[1]))
-except Exception:
-    print("absent"); raise SystemExit(0)
-print("live" if m.get("status") in ("working", "blocked") else "noop")
-PY
-EOF
-chmod +x "$DS/daemon-finalize.sh"
-cat > "$DS/daemon-retire.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "retire $*"
-EOF
-chmod +x "$DS/daemon-retire.sh"
+chmod +x "$DS/agora"
 
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 
@@ -329,7 +337,7 @@ t  "and the successor bearer at rest"      "run_bearer=tok-s" bearer_at_rest "$D
 meta_mode() { python3 -c 'import os, sys; print("mode=%o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
 t  "the bearer meta stays 0600"            "mode=600" meta_mode "$DH/u-old.json"
 
-# daemon-resume forks a fresh process from the CALLER's env, so the successor
+# `agora resume` forks a fresh process from the CALLER's env, so the successor
 # credentials ride the invocation or the worker writes nothing.
 t  "successor creds on resume env"         "BOARD_RUN_TOKEN=tok-s"     cat "$DH/resume-env.txt"
 t  "with the successor run id"             "BOARD_RUN_ID=44"           cat "$DH/resume-env.txt"
@@ -353,7 +361,7 @@ nt "a null pin stamps no meta key"         '"parent_pin"'  cat "$DH/u-old.json"
 nt "and adds no prompt line"               "Parent pin"    cat "$TRANSCRIPT"
 
 # =========================================================================
-# Phase 3, rung 2 — A BOUNDED WAIT IS NOT A FAILED DELIVERY. daemon-resume
+# Phase 3, rung 2 — A BOUNDED WAIT IS NOT A FAILED DELIVERY. `agora resume`
 # forks the turn and injects the prompt BEFORE it blocks, then exits 1 when
 # its watcher bound expires — and a successor turn routinely runs longer than
 # the bound this tick needs in order not to starve lease renewal, so this is
@@ -383,7 +391,7 @@ t  "and the successor prompt carries the pin line" \
 
 # =========================================================================
 # Phase 3, rung 2b — AN AMBIGUOUS FORK IS NOT A FAILED DELIVERY EITHER.
-# daemon-resume can launch the fork and still exit 1 when the new session uuid
+# `agora resume` can launch the fork and still exit 1 when the new session uuid
 # never resolves: it stamps status=error + pending_short and deliberately keeps
 # `current` on the OLD turn. The marker check then reads the predecessor's
 # transcript, finds nothing, and — before this guard — fresh-spawned a SECOND
@@ -427,7 +435,7 @@ nt "and no second worker is spawned"        "SPAWN"                  cat "$SPAWN
 nt "no recovery cycle is charged"           "recovery cycle"         cat "$OUT2C"
 
 # The operator (or the fork resolving itself) clears it: status back off `error`
-# is what "resolved" means to daemon-resume and therefore to the sweep.
+# is what "resolved" means to `agora resume` and therefore to the sweep.
 python3 -c 'import json, sys
 m = json.load(open(sys.argv[1])); m["status"] = "working"; m.pop("pending_short", None)
 json.dump(m, open(sys.argv[1], "w"), indent=2)' "$DH/u-old.json"
@@ -611,7 +619,7 @@ rm -f "$DH/u-arch.json" "$DH/board-claims/n-lane.json"
 
 # =========================================================================
 # A HISTORICAL DAEMON NAME IS NOT SPAWN PROOF, and successor names are
-# deterministic per ticket and lane. daemon-retire keeps the meta unless
+# deterministic per ticket and lane. `agora retire` keeps the meta unless
 # --purge, so a name left by an earlier recovery matched the new journal:
 # reconciliation called the crash `orphaned`, closed the journal as complete,
 # and left the run just claimed owning the ticket with nobody able to speak for
@@ -708,7 +716,7 @@ PY
 }
 SWD() {  # SWD <repo> <registry> <phase>
   ( cd "$1" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$2" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$2" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       LOCAL_REPO="$1" "$SCRIPTS/_sweep_api.sh" "$3" )
 }
 # The dispatcher's environment as the worker it spawns sees it — the only
@@ -756,7 +764,7 @@ printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
 : > "$FIX.log"
 OUTS="$TDIR/suppressdir.out"
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
     BOARD_SUPPRESS_DIR="$SUPD" "$SCRIPTS/_sweep_api.sh" resume ) > "$OUTS" 2>&1 || true
 t  "the configured directory is the one this phase reads" \
    "suppression lifted for #12"                           cat "$OUTS"
@@ -819,7 +827,7 @@ CREPO="$(mkrepo)"; mkdir -p "$CREPO/.doperpowers"
 printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
 CSW() {  # CSW <registry> — one resume tick against the claim-failure board
   ( cd "$CREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$1" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" resume )
 }
 journals() {  # journals <registry> — how many claim journals it is holding
@@ -898,7 +906,7 @@ rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
 }
 RSW() {  # RSW <registry> — one resume tick against the current rboard
   ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$1" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" resume )
 }
 claims() {  # claims <log> — successor-claim POSTs that reached the wire
@@ -1188,7 +1196,7 @@ IDH="$TDIR/dh-ledger-dispatch"; mkdir -p "$IDH"
 mkjournal "$IDH" n-led 12
 OUTI="$TDIR/ledger-dispatch.out"
 ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-    DAEMON_HOME="$IDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    DAEMON_HOME="$IDH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
     "$SCRIPTS/_sweep_api.sh" all ) > "$OUTI" 2>&1 || true
 t  "phase 3 spends the ticket's one attempt on the replay" \
    "replaying it for #12"                                  cat "$OUTI"
@@ -1223,7 +1231,7 @@ rboard "$JFIX"
 JDH="$TDIR/dh-ledger-feed"; mkdir -p "$JDH"
 OUTJL="$TDIR/ledger-feed.out"
 ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-    DAEMON_HOME="$JDH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+    DAEMON_HOME="$JDH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
     "$SCRIPTS/_sweep_api.sh" all ) > "$OUTJL" 2>&1 || true
 t  "the feed spends the ticket's one attempt as surely as a replay" \
    "recovery cycle 1 of 3"                                 cat "$OUTJL"

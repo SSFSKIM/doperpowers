@@ -8,8 +8,8 @@
 # run-ended is routed to the resume path rather than failing the tick; and a
 # meta whose bind the server never confirmed is repaired through board-bind.
 #
-# RELAY pins: the answer reaches the worker through daemon-resume with the run
-# credentials re-injected from the meta (ENV, never argv — daemon-resume forks
+# RELAY pins: the answer reaches the worker through `agora resume` with the run
+# credentials re-injected from the meta (ENV, never argv — `agora resume` forks
 # a fresh process from the caller's environment); the resume's blocking wait is
 # BOUNDED, because the whole tick holds the lock while it runs; the ack fires
 # only on PROVEN delivery — the sentinel already in the transcript, or a resume
@@ -22,7 +22,7 @@
 # without an explicit unset the tick would renew and ack as that worker, and a
 # bind repair would stamp the foreign bearer into a DIFFERENT run's meta.
 #
-# The transcript is resolved the way orchestrating-daemons' own tooling does
+# The transcript is resolved the way the agora CLI's own tooling does
 # (the CURRENT turn's session jsonl under $HOME/.claude/projects) — no meta
 # here carries a fabricated `transcript` field, so the derivation is under
 # test rather than assumed.
@@ -118,7 +118,7 @@ chmod +x "$STUB/gh"
 
 # ---- the registry -----------------------------------------------------------
 DH="$TDIR/registry"; mkdir -p "$DH"
-DS="$TDIR/daemon-scripts"; mkdir -p "$DS"
+DS="$TDIR/agora-stub"; mkdir -p "$DS"
 # HOME is pinned: the transcript derivation reads $HOME/.claude/projects, and
 # a fall-through would search (and match against) the operator's real sessions.
 TESTHOME="$TDIR/home"; PROJ="$TESTHOME/.claude/projects/-tmp-consumer"
@@ -154,8 +154,31 @@ RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
 # The stub records its ENVIRONMENT, not just its argv: both the run
 # credentials and the resume's wait bound are passed that way, and neither is
 # observable any other place.
-cat > "$DS/daemon-resume.sh" <<EOF
+cat > "$DS/agora" <<EOF
 #!/usr/bin/env bash
+verb="\${1:-}"; shift || true
+case "\$verb" in
+migrate) exit 0 ;;
+sync)
+  # Liveness, as `agora sync` actually reports it: \`absent\` when the session
+  # is gone from the harness, \`noop\` for an ALREADY-TERMINAL record (idle or
+  # error — it never re-inspects one), \`live\` for a running turn. Driven off
+  # the record the way the real verb is, so a status the sweep writes is
+  # visible here.
+  [ "\$1" != u-4 ] || { echo absent; exit 0; }
+  python3 - "$DH/\$1.json" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    print("absent"); raise SystemExit(0)
+print("live" if m.get("status") in ("working", "blocked") else "noop")
+PY
+  exit 0 ;;
+resume) ;;
+*) echo "stub agora: unexpected verb '\$verb'" >&2; exit 2 ;;
+esac
+if [ "\${1:-}" = "--wait" ]; then shift; fi
 { echo "RESUME uuid=\$1"
   echo "ARGV: \$*"
   echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
@@ -172,41 +195,24 @@ with open(os.environ["T_P"], "a") as f:
                         "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
 PYX
 EOF
-chmod +x "$DS/daemon-resume.sh"
-# Liveness, as daemon-finalize actually reports it: `absent` when the session is
-# gone from the harness, `noop` for an ALREADY-TERMINAL meta (idle or error —
-# it never re-inspects one), `live` for a running turn. Driven off the meta the
-# way the real script is, so a status the sweep writes is visible here.
-cat > "$DS/daemon-finalize.sh" <<EOF
-#!/usr/bin/env bash
-[ "\$1" != u-4 ] || { echo absent; exit 0; }
-python3 - "$DH/\$1.json" <<'PY'
-import json, sys
-try:
-    m = json.load(open(sys.argv[1]))
-except Exception:
-    print("absent"); raise SystemExit(0)
-print("live" if m.get("status") in ("working", "blocked") else "noop")
-PY
-EOF
-chmod +x "$DS/daemon-finalize.sh"
+chmod +x "$DS/agora"
 
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 SWEVIL() {  # the same, but launched from a WORKER's environment: a run token
             # is already exported, as it would be for a tick started by hand
             # inside a dispatched session's shell.
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       BOARD_RUN_TOKEN=tok-evil "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 SWB() {  # the same, time-bounded (used where a hang is the failure mode)
   ( cd "$r" || exit 1
     export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS"
+      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS"
     bounded "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 
@@ -302,13 +308,13 @@ t "and the answers, verbatim"          "---- answers (verbatim) ----"      cat "
 t "every reply line is carried"        "and squash the fixups"             cat "$TX"
 t "the answer is acked after delivery" '"path": "/answers/118/ack"'        cat "$FIX.log"
 t "the resume names the bound session" "RESUME uuid=u-3"                   cat "$RESUME_LOG"
-# daemon-resume forks a fresh process from the CALLER's env, so the run
+# `agora resume` forks a fresh process from the CALLER's env, so the run
 # credentials have to be re-injected from the meta on every resume.
 t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "$RESUME_LOG"
 t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RESUME_LOG"
 t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RESUME_LOG"
 t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RESUME_LOG"
-# daemon-resume blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
+# `agora resume` blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
 # while THIS tick holds the whole-tick lock, so renewal would starve past the
 # 15-minute lease and A1 would reclaim live runs. The relay bounds it.
 t  "the resume's wait is bounded"      "DAEMON_TIMEOUT=300"                cat "$RESUME_LOG"
@@ -345,7 +351,7 @@ t "the delivered prompt is byte-exact" "prompt=exact" prompt_is_exact
 
 # ---- replay: the same answer served again, sentinel already present --------
 # This is also the degrade path for a resume whose bounded wait expires:
-# daemon-resume injects the sentinel-bearing prompt BEFORE it blocks, so a
+# `agora resume` injects the sentinel-bearing prompt BEFORE it blocks, so a
 # timed-out resume exits nonzero and acks nothing this tick — and the NEXT
 # tick lands exactly here, finding the sentinel and acking without
 # re-delivering. Run hostile: the ack must speak automation too.
@@ -389,7 +395,7 @@ nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
 # Two shapes that read as "live and bound" to a naive selection loop and are
 # not deliverable at all:
 #
-#   u-6  an UNRESOLVED FORK — daemon-resume launched a turn whose session uuid
+#   u-6  an UNRESOLVED FORK — `agora resume` launched a turn whose session uuid
 #        never resolved, so it stamped status=error + pending_short and left
 #        `current` on the superseded turn. The sentinel check then reads the
 #        WRONG transcript, finds nothing, and resumes: a second zombie turn on
@@ -444,7 +450,7 @@ rmdir "$DH/.sweep-api.lock"
 : > "$FIX.log"; : > "$MARKER"
 BS() {
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS" \
       LOCAL_REPO="$r" SWEEP_LOG="$TDIR/sweep.log" "$SCRIPTS/board-sweep.sh" )
 }
 BS > "$TDIR/board-sweep.out" 2>&1 || true

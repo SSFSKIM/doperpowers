@@ -122,7 +122,7 @@ walk() {
     done
     rc=0
     out="$( (cd "$repo" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
-      DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+      AGORA_CLI="$AGORA_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
       BOARD_REPO="$GH_STUB_REPO" GH_STUB_STATE="$GH_STUB_STATE" \
       "$SCRIPTS/${call[0]}" "${call[@]:1}") 2>&1 )" || rc=$?
     # `argv` is FORENSIC — what actually ran, for reading a failure back. The

@@ -232,16 +232,20 @@ print("eligible" if B.eligible(B.snapshot(), sys.argv[1]) else "not-eligible")
 PY
 }
 
-# daemon-verb stubs
-STUB_DAEMONS="$TEST_ROOT/stub-daemons"; mkdir -p "$STUB_DAEMONS"
-export DAEMON_SCRIPTS="$STUB_DAEMONS"
-cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
+# agora-verb stub: ONE executable whose first argument selects the verb
+STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
+export AGORA_CLI="$STUB_AGORA/agora"
+cat > "$AGORA_CLI" <<'STUB'
 #!/usr/bin/env bash
-# Mimics REAL daemon-finalize semantics: a meta not in working/blocked is
-# already terminal → noop, regardless of what the test map says. The map
-# only supplies verdicts finalize could actually produce.
-echo "finalize:$1" >> "$ACTION_LOG"
-python3 -c "
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate) exit 0 ;;
+sync)
+  # Mimics REAL `agora sync` semantics: a record not in working/blocked is
+  # already terminal → noop, regardless of what the test map says. The map
+  # only supplies verdicts sync could actually produce.
+  echo "sync:$1" >> "$ACTION_LOG"
+  python3 -c "
 import json, os, sys
 uuid = sys.argv[1]
 meta = json.load(open(os.path.join(os.environ['DAEMON_HOME'], uuid + '.json')))
@@ -249,15 +253,14 @@ if meta.get('status') not in ('working', 'blocked'):
     print('noop'); raise SystemExit
 m = json.load(open(os.environ['FINALIZE_MAP']))
 print(m.get(uuid, 'live'))" "$1"
-STUB
-cat > "$STUB_DAEMONS/daemon-resume.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "resume:$1:${2:0:60}" >> "$ACTION_LOG"
-STUB
-cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "retire:$1" >> "$ACTION_LOG"
-python3 - "$1" <<'PY'
+  ;;
+resume)
+  if [ "${1:-}" = "--wait" ]; then shift; fi
+  echo "resume:$1:${2:0:60}" >> "$ACTION_LOG"
+  ;;
+retire)
+  echo "retire:$1" >> "$ACTION_LOG"
+  python3 - "$1" <<'PY'
 import json, os, sys
 p = os.path.join(os.environ["DAEMON_HOME"], sys.argv[1] + ".json")
 try:
@@ -265,8 +268,11 @@ try:
 except Exception:
     pass
 PY
+  ;;
+*) echo "stub agora: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
 STUB
-chmod +x "$STUB_DAEMONS"/*.sh
+chmod +x "$AGORA_CLI"
 
 # lane stubs
 cat > "$TEST_ROOT/impl-dispatch" <<'STUB'
@@ -445,7 +451,7 @@ def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z",
     json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], uuid + ".json"), "w"))
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
 meta(U("aaaa0010"), "10-dead", "10", "working")
-# ALREADY-finalized error meta (real finalize says noop for it) at the cap:
+# ALREADY-synced error meta (real `agora sync` says noop for it) at the cap:
 meta(U("aaaa0011"), "11-hopeless", "11", "error", recov="3")
 meta(U("aaaa0012"), "12-stalled", "12", "working")
 meta(U("aaaa0013"), "13-cancelled", "13", "working")
@@ -454,7 +460,7 @@ meta(U("aaaa0014"), "land-pr-7", "14", "working")
 # still finishing its trail and cleanup. The terminal-ticket rule must not
 # retire it mid-turn.
 meta(U("aaaa0039"), "review-epic-13", "13", "working")
-# Parked workers in the PRODUCTION shape: nothing finalizes a --no-wait
+# Parked workers in the PRODUCTION shape: nothing syncs a no-wait
 # worker's meta when it parks, so status lingers `working`.
 meta(U("aaaa0015"), "15-parked", "15", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0016"), "16-parked", "16", "working", updated="2026-07-18T01:00:00Z",
@@ -465,7 +471,7 @@ meta(U("aaaa0045"), "45-parked", "45", "working", updated="2026-07-18T01:00:00Z"
 meta(U("aaaa0046"), "46-parked", "46", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0072"), "72-parked", "72", "working", updated="2026-07-18T01:00:00Z")
 meta(U("aaaa0018"), "18-healthy", "18", "working")
-# ALREADY-finalized error meta below the cap (a failed resume fork's shape):
+# ALREADY-synced error meta below the cap (a failed resume fork's shape):
 meta(U("aaaa0019"), "19-refork", "19", "error", recov="1")
 meta(U("aaaa0020"), "20-design", "20", "working")
 meta(U("aaaa0021"), "21-preverdict", "21", "working")
@@ -475,8 +481,8 @@ meta(U("aaaa0050"), "50-handed-off", "50", "working")
 meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 PY
 
-# finalize verdicts per uuid (only consulted for working/blocked metas —
-# the parked trio's turns ended, so real finalize would say idle)
+# sync verdicts per uuid (only consulted for working/blocked records —
+# the parked trio's turns ended, so real `agora sync` would say idle)
 python3 - <<'PY'
 import json, os
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
@@ -558,7 +564,7 @@ log="$(cat "$ACTION_LOG")"
 # RECOVER
 assert_contains "$log" "resume:aaaa0010-0000-4000-8000-000000000000" "dead (absent) worker is resumed"
 assert_contains "$log" "resume:aaaa0012-0000-4000-8000-000000000000" "stalled live worker is resumed"
-assert_contains "$log" "resume:aaaa0019-0000-4000-8000-000000000000" "an already-finalized error meta (finalize noop) still recovers"
+assert_contains "$log" "resume:aaaa0019-0000-4000-8000-000000000000" "an already-synced error record (sync noop) still recovers"
 assert_not_contains "$log" "resume:aaaa0018" "healthy live worker is left alone"
 assert_not_contains "$log" "resume:aaaa0011" "recovery cap exhausts — no fourth resume"
 st15="$(python3 -c "
