@@ -78,14 +78,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$SCRIPT_DIR}"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
+# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+# then the default. Both names are exported at the same value below, so the
+# CLI, the board scripts and every child resolve one root — a pipeline that
+# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# halves of one tick reading different registries.
+DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
+AGORA_HOME="$DAEMON_HOME"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new
 # root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
 # — a half-migrated registry reads as an empty fleet, which passes every
 # dedupe and cap check and dispatches over live workers.
 "$AGORA_CLI" migrate --quiet || { echo "error: agora migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
-export DAEMON_HOME BOARD_SCRIPTS
+export AGORA_HOME DAEMON_HOME BOARD_SCRIPTS
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 export LOCAL_REPO
 # The board scripts this tick invokes bare (board-reconcile, board-answer,
@@ -804,8 +810,8 @@ for tid in sorted(tickets, key=int):
 # register moment deferred (live workers) or never saw (diff-derived
 # labels). Bounded per tick: body writes are the expensive, racy resource.
 writes = 0
-lock_root = os.path.join(os.environ.get("DAEMON_HOME")
-    or os.environ.get("AGORA_HOME")
+lock_root = os.path.join(os.environ.get("AGORA_HOME")
+    or os.environ.get("DAEMON_HOME")
     or os.path.expanduser("~/.claude/agora"), "surface-locks")
 os.makedirs(lock_root, exist_ok=True)
 # Registered names only, here and in the queue-depth watch below: an

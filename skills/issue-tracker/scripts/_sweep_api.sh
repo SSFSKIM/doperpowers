@@ -87,7 +87,14 @@ _sentinel() {
   # shellcheck disable=SC2059  # SENTINEL_FMT is the module's printf template
   printf "$SENTINEL_FMT" "$1"
 }
-DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
+# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+# then the default. Both names are exported at the same value below, so the
+# CLI, the board scripts and every child resolve one root — a pipeline that
+# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# halves of one tick reading different registries.
+DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
+AGORA_HOME="$DAEMON_HOME"
+export AGORA_HOME DAEMON_HOME
 AGORA_CLI="${AGORA_CLI:-$(cd "$SCRIPT_DIR/../../agora/scripts" && pwd)/agora}"
 # The registry root moved to ~/.claude/agora and this script scans it
 # directly, so it must never be the first process to look at an empty new

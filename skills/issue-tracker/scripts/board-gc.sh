@@ -48,7 +48,26 @@
 #   GC_MIN_AGE_MINUTES  skip worktrees younger than this (default 90; 0 disables)
 set -uo pipefail
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
+# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+# then the default. Both names are exported at the same value below, so the
+# CLI, the board scripts and every child resolve one root — a pipeline that
+# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# halves of one tick reading different registries.
+DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
+AGORA_HOME="$DAEMON_HOME"
+# The busy-path guard globs the registry directly, so the cutover has to
+# precede it: a pre-cutover root reads as "no live worker" and gc would
+# remove a worktree still under a running seat. This script does not source
+# _lib.sh, so it carries its own preflight — same stat-cheap gate, for the
+# same reason: the migration takes the registry lock, and paying that on
+# every run would serialise gc against every writer.
+AGORA_CLI="${AGORA_CLI:-$(cd "$(dirname "$0")/../../agora/scripts" && pwd)/agora}"
+if [ -z "${AGORA_MIGRATED:-}" ] && [ -d "$HOME/.claude/orchestrating-daemons" ] \
+   && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
+  "$AGORA_CLI" migrate --quiet \
+    || { echo "error: agora migrate failed — refusing to gc against a possibly half-migrated registry" >&2; exit 1; }
+fi
+AGORA_MIGRATED=1; export AGORA_MIGRATED
 GC_PR_CHECKS="${GC_PR_CHECKS:-20}"
 GC_MIN_AGE="${GC_MIN_AGE_MINUTES:-90}"
 

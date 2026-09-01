@@ -134,16 +134,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-DAEMON_HOME="${DAEMON_HOME:-${AGORA_HOME:-$HOME/.claude/agora}}"
-# Pinned to the SAME value before the source: lib.sh resolves this root too,
-# but gives AGORA_HOME precedence and then re-assigns DAEMON_HOME from it.
-# Pinning first makes both assignments no-ops, so an operator who exports
-# both names cannot have the review lane reading one registry while the
-# other four pipeline entrypoints read another.
-AGORA_HOME="$DAEMON_HOME"
+# lib.sh applies the one registry-root rule ($AGORA_HOME, then $DAEMON_HOME,
+# then ~/.claude/agora) and leaves both names holding it, so the root is
+# already settled here. Exported at the same value as the other entrypoints:
+# the CLI, the board scripts and every spawned child read one registry.
 # shellcheck source=../../agora/scripts/lib.sh
 . "$SKILL_DIR/../agora/scripts/lib.sh"
-export DAEMON_HOME
+export AGORA_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
@@ -432,7 +429,14 @@ for a in d:
         continue
     m = metas.get(str(a.get("sessionId") or ""))
     if m is None:
-        sys.exit(0)   # unmanaged row: no identity evidence — conservatively occupied
+        if a.get("state") in ("stopped", "done", "failed"):
+            continue  # A PREVIOUS OCCUPANT of a re-filled seat. A seat keeps
+                      # ONE record across fills and moves `current` to the new
+                      # session, so the old session is no longer keyed here and
+                      # would fall into the conservative branch below — pinning
+                      # the worktree forever after the first re-fill. A row
+                      # whose turn already ended holds nothing.
+        sys.exit(0)   # unmanaged RUNNING row: no identity evidence, so occupied
     if not local(m):
         continue      # foreign identity: only the registry migrated
     if m.get("status") == "retired":
@@ -1063,6 +1067,13 @@ PY
 # engine nor a dead gateway can make the cron respawn forever. Any cleanly
 # finished reviewer breaks the streak — as does an UNSTAMPED retirement (a
 # superseded reviewer, a stale-ticket cleanup), which is not a failure.
+#
+# COUNTING RECORDS ALONE UNDERCOUNTS. A seat keeps ONE record per alias across
+# re-fills and carries `attempts` (bumped on every fresh fill) instead of
+# leaving a record behind per turn, so three failed reviewers on one PR are one
+# row with attempts=3 and the 3-consecutive cap would never be reached. Take
+# the larger of the two readings: rows for the pre-seat registry, summed
+# attempts for a re-filled seat.
 _outage_streak() {
   DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
@@ -1076,22 +1087,28 @@ for p in glob.glob(os.path.join(home, "*.json")):
     except Exception:
         continue
     if m.get("name") == name:
+        try:
+            attempts = int(m.get("attempts") or 1)
+        except (TypeError, ValueError):
+            attempts = 1
         rows.append((str(m.get("updated") or m.get("created") or ""),
                      m.get("uuid") or "", str(m.get("status") or ""),
-                     str(m.get("retired_from") or "")))
+                     str(m.get("retired_from") or ""), max(1, attempts)))
 rows.sort(reverse=True)
-streak = 0
-for _, uuid, status, retired_from in rows:
+records = 0
+attempted = 0
+for _, uuid, status, retired_from, attempts in rows:
     try:
         lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
     except Exception:
         lines = None
     if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error" \
             or (status == "retired" and retired_from):
-        streak += 1
+        records += 1
+        attempted += attempts
     else:
         break
-print(streak)
+print(max(records, attempted))
 PY
 }
 

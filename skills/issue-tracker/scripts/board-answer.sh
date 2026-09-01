@@ -116,14 +116,9 @@ PY
 fi
 [ -z "$to" ] || die "--to is api-binding-only: in gh mode the return state comes from the ticket's pre-park meta (or the bound worker's lane)"
 
-AGORA_CLI="${AGORA_CLI:-$SCRIPT_DIR/../../agora/scripts/agora}"
+# AGORA_CLI is resolved and the registry migrated by _lib.sh, sourced above:
+# it fails closed there, once per process, before any script reads the root.
 [ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
-# The registry root moved to ~/.claude/agora and this script scans it
-# directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
-# — a half-migrated registry reads as an empty fleet, which passes every
-# dedupe and cap check and dispatches over live workers.
-"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to relay against a possibly half-migrated registry"
 
 # Normalize a lingering finished Claude owner before the status gate. A real
 # mid-turn remains working (`agora sync` returns live); a finished

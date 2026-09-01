@@ -1353,6 +1353,23 @@ printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as one 3-streak"
 
+# A RE-FILLED SEAT KEEPS ONE RECORD. Three failed reviewers on this PR are no
+# longer three rows — they are one row with attempts=3 — so a streak counted by
+# rows alone would read 1 and the cap would be unreachable exactly where it
+# matters most (a gateway that refuses every turn).
+reset_state
+U="feed0009-0000-4000-8000-000000000000" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "status": "error",
+           "attempts": 3, "updated": "2026-07-09T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+printf '\n' > "$DAEMON_HOME/feed0009-0000-4000-8000-000000000000.reply.txt"
+OUT_SEAT="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "one seat record with attempts=3 reaches the same failure cap"
+assert_contains "$OUT_SEAT" "3 consecutive" "...and names the cap as the skip reason"
+
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
 reset_state
@@ -1457,6 +1474,17 @@ echo "[{\"id\": \"parked01\", \"sessionId\": \"parked01-0000-4000-8000-000000000
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_contains "$out" "live daemon occupies" "a parked (non-retired) stopped session still occupies the worktree"
 assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn over a parked session's worktree"
+reset_state
+
+# ...and the re-fill shape: a seat keeps ONE record and moves `current` to the
+# new session, so an EARLIER occupant of the same worktree is no longer keyed
+# in the registry at all. Its stopped row would otherwise hit the conservative
+# unmanaged branch and pin the worktree forever after the first re-fill.
+echo "[{\"id\": \"gone0001\", \"sessionId\": \"gone0001-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"stopped\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "an unregistered previous occupant's stopped row frees the worktree"
+assert_not_contains "$out" "live daemon occupies" "a terminated unmanaged row does not block worktree removal"
 reset_state
 
 # ...while a managed local session that is genuinely mid-turn (status=busy)

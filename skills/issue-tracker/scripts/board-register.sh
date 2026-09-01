@@ -337,7 +337,7 @@ if surfaces:
     # window and re-check liveness UNDER them; contention or a live
     # worker defers the edge to the sweep's SURFACE pass.
     lock_root = os.path.join(
-        os.environ.get("DAEMON_HOME") or os.environ.get("AGORA_HOME")
+        os.environ.get("AGORA_HOME") or os.environ.get("DAEMON_HOME")
         or os.path.expanduser("~/.claude/agora"),
         "surface-locks")
     os.makedirs(lock_root, exist_ok=True)
