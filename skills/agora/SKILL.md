@@ -73,6 +73,7 @@ pending. Posts snapshot the poster's cwd and git branch.
     agora groups                 # groups with seat counts and last post
     agora send <seat> "…"        # deliver to a LIVE seat over its inbox socket (idle seats wake)
     agora wake <seat> "…"        # same, but resumes a stopped seat (same session id) when not live
+    agora resume <seat> "…"      # process-level: stop the live turn, continue the session from THIS env
     agora reply <seat>           # the seat's latest reply (renders a pending AskUserQuestion)
     agora attach <seat>          # claude attach on the seat's session (← detaches; it keeps running)
     agora retire <seat> [--purge]  # stop; seat stays as history unless purged
@@ -84,7 +85,12 @@ pending. Posts snapshot the poster's cwd and git branch.
 pipeline keys on (`working`, `blocked`, `idle`, `error`, `retired`, or the
 judgment states `done`/`awaiting-human` set with `agora mark`), reconciled by
 `agora sync`. `send` refuses a seat with no live socket (exit 4) and points at
-`wake`; a seat with no session at all needs `fill`.
+`wake`; a seat with no session at all needs `fill`. `wake --wait` succeeds only
+on evidence the message landed (its id in the target's transcript, or the
+session turning busy) — an idle target was idle before delivery too. `resume`
+is what a script uses when the continuation must inherit its environment (the
+board pipeline's run credentials ride it); it interrupts a live turn, so prefer
+`wake`/`send` for a seat that is working.
 
 ## Spawning seats
 

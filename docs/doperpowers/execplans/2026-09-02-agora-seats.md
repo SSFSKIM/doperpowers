@@ -56,7 +56,7 @@ skill directory is deleted.
 - [x] (2026-09-01 20:30Z) Brainstorming grill with the human partner completed; four rounds of decisions recorded in the Decision Log below (seat model, single registry on the daemon-meta layout, Python core, `seat` as the canonical term, full retirement of the daemons skill, text-view panel this phase, autonomous track).
 - [x] (2026-09-01 21:10Z) Feasibility spike: a message frame written from a plain shell to a background session's inbox socket woke the idle session and was delivered as a peer message (see Surprises). Probe session retired.
 - [x] (2026-09-01 21:20Z) M0 — plan authored and committed (da08c828) on branch `worktree-agora-seats`; `skills/agora/scripts/lib.sh` written first so both parallel workers can source it; design-level adversarial review dispatched (codex `adversarial-review`, gpt-5.6-sol, xhigh). M1 and M2 run in parallel as two workers with disjoint file ownership; review findings are folded in as they land (remaining: fold findings).
-- [ ] M1 — `skills/agora/scripts/agora.py` (Python core) + bash launcher + `lib.sh`; registry model with read-time fallbacks; migration; verbs spawn / seat add (join) / fill / wake / send / reply / sync / mark / status / retire / remove (leave) / list / view / topology / groups / post / board / attach / migrate / meta; hermetic test suite `tests/agora/run-agora-tests.sh` rebuilt around a stub `claude` and a real unix socket; shell lint clean.
+- [ ] M1 — `skills/agora/scripts/agora.py` (Python core) + bash launcher + `lib.sh`; registry model with read-time fallbacks; migration; verbs spawn / seat add (join) / fill / resume / wake / send / reply / sync / mark / status / retire / remove (leave) / list / view / topology / groups / post / board / attach / migrate / meta; hermetic test suite `tests/agora/run-agora-tests.sh` rebuilt around a stub `claude` and a real unix socket; shell lint clean.
 - [ ] M2 — board pipeline repointed: five dispatch/sweep scripts call `agora` verbs (spawn/wake/sync/retire) through the `AGORA_CLI` seam, `review-dispatch.sh` sources `skills/agora/scripts/lib.sh` instead of the daemon `_lib.sh`, registry default path is `~/.claude/agora` everywhere, the codex-CLI engine branch in `board-answer.sh` is removed; the eleven pipeline test files stub one `agora` executable instead of four daemon scripts; all pipeline suites green.
 - [ ] M3 — skill surface: `skills/agora/SKILL.md` and `references/spawn-preamble.md` rewritten for seats (daemon doctrine absorbed), `skills/orchestrating-daemons/` and `tests/orchestrating-daemons/` deleted, every cross-reference in other skills/docs/manifests updated, `tests/skill-links` green.
 - [ ] M4 — live fleet proof on real `claude`: a three-seat group spawned through `agora spawn` (child spawned by an agent from its preamble), `agora send` from the shell woke an idle seat, `agora retire` + `agora fill --resume` continued the same session id, `agora view`/`list` showed roles and live state; migration of the real registry verified (`~/.claude/orchestrating-daemons` became a symlink); probe seats retired.
@@ -69,6 +69,9 @@ skill directory is deleted.
 - Observation: (research, 2026-09-01) `claude --bg --resume <session-id>` now continues the session "in the background under the same ID, or starts a copy and says so when the session is already running" (`claude --help`, v2.1.257). The daemon substrate's fork-and-purge resume (`claude stop` old turn → `--bg --resume` forks a new id → chain it in `current` → `claude rm` the old one) was built when a resume forked a new session; that whole mechanism, its resume lock, and its "one visible session per daemon" bookkeeping are no longer needed.
 - Observation: (research, 2026-09-01) The harness keeps a peer registry at `~/.claude/sessions/<pid>.json` with `name`, `sessionId`, `cwd`, `kind`, `status`, `messagingSocketPath`, `procStart`, and (per the binary's parser) optional `state`, `detail`, `tempo`, `needs`, and `tmux` fields. Records of dead sessions linger, so liveness is pid-alive plus a connectable socket, never record presence alone. Background sessions started with `-n <name>` are not renamed on a name collision (only interactive sessions get the two-word-suffix variant), so a seat's alias is a reliable SendMessage address as long as no other live session on the machine uses the same name.
 - Observation: (research, 2026-09-01) Native agent teams (experimental) are one team per session, no nesting, lead fixed for life, in-process teammates not restorable on resume, team directories removed when the lead exits. Those are exactly the properties an institution must not have, so they do not displace agora; their split-pane tmux mode is prior art for the next-phase interactive view.
+
+- Observation: (design review, 2026-09-01) The codex adversarial review of this plan returned six findings (2 critical, 3 high, 1 medium), all real and all adopted (Decision Log entries dated 2026-09-01 "design review"). The critical one reframed the wake design: the board pipeline's successor path and answer relay carry the run's identity (`BOARD_RUN_TOKEN`/`BOARD_RUN_ID`/`BOARD_RUN_FENCE`) as an environment prefix on the resume invocation, so "continue this seat" has two genuinely different meanings — deliver text to the running process, or start a fresh process from my environment — and one verb cannot serve both. Note for a later initiative, not this one: the pipeline's worker bootstrap tells workers to use "the credentials already in your environment", while agora v1's live finding was that the harness Bash tool does not inherit the claude process's environment; whether `BOARD_RUN_*` actually reaches a worker's tools has only ever been asserted by stubs. Recorded, not resolved here.
+  Evidence: `_sweep_api.sh` comment "`agora wake` forks a fresh process from OUR env, so the successor credentials ride the invocation or the worker can write nothing"; `review-worker-bootstrap.md:22`.
 
 ## Decision Log
 
@@ -98,6 +101,18 @@ skill directory is deleted.
   Date/Author: 2026-09-01, Claude.
 - Decision: Two self-description fields on a seat: `now` (one line, written by the agent itself with `agora status <seat> "…"`) and `note` (written by the orchestrator with `agora mark`). The earlier idea of a Stop hook that updates status is shelved: hooks fire inside the turn and cannot summarise it, while the harness already tracks liveness; if the harness's session record exposes an activity `detail` for background sessions, views show it opportunistically.
   Date/Author: 2026-09-01, Claude.
+- Decision: (design review, 2026-09-01) Two continuation verbs, not one. `agora resume <seat> <msg> [--wait]` is process-level: it stops a live turn (`claude stop <short>`, exactly as the old `daemon-resume.sh` did) and runs `claude --bg --resume <current>` so the continuation is a fresh process that inherits the invoking environment — the board pipeline's answer relay and successor path prefix that invocation with `BOARD_RUN_TOKEN`/`BOARD_RUN_ID`/`BOARD_RUN_FENCE`, and a socket frame cannot change a running process's environment. `agora wake` stays the interactive verb (socket when live, resume when stopped). Pipeline call sites use `resume --wait`. Rejected: one `wake` verb serving both (codex adversarial review finding 1: the live-socket branch silently drops the successor run identity).
+  Date/Author: 2026-09-01, Claude, adopting codex adversarial-review F1.
+- Decision: (design review) Migration is an atomic directory rename, not an entry-by-entry move: when the old root is a real directory, agora renames any existing `~/.claude/agora` aside, renames `~/.claude/orchestrating-daemons` to `~/.claude/agora`, moves the v2 `groups/` back in, and only then creates the symlink at the old path; a legacy writer sees either the whole old tree or the whole new one. Every pipeline entrypoint runs `"$AGORA_CLI" migrate` right after its preflight so a board sweep, answer relay, or dispatch is never the first process to look at an empty new root. Rejected: migration only on agora verbs (F2: the pipeline scans the registry directly and could dedupe against an empty fleet).
+  Date/Author: 2026-09-01, Claude, adopting F2.
+- Decision: (design review) `wake --wait` requires evidence of delivery before it accepts an idle state: the frame's first line carries a message id, and the watcher first waits (bounded, `AGORA_ACK_TIMEOUT`, default 120s) for that id to appear in the target's transcript or for the session to report busy, then waits for idle. No evidence → exit 1, nothing printed as a reply. Rejected: polling straight to idle (F3: the target is idle before delivery, so the wait would return the previous reply immediately).
+  Date/Author: 2026-09-01, Claude, adopting F3.
+- Decision: (design review) A per-seat lifecycle lock (`$AGORA_HOME/locks/<group>__<alias>.lock`, flock) is held from the availability check through record commit in `spawn`, `fill`, `seat add`, and through the process start in `resume`; a resume whose harness row reports a different session id than `current` (a copy — the session was running after all) stops that copy and exits 1 instead of adopting it. Rejected: adopting the copy (F4: two live processes answering to one address).
+  Date/Author: 2026-09-01, Claude, adopting F4.
+- Decision: (design review) `spawn`, `fill`, and `seat add` refuse (exit 4) when a live harness session already answers to the alias — checked against the harness peer registry, so non-agora sessions count too — unless `--session` registers that very session. The v2 warning is replaced by a refusal because the registry can now see the machine-wide namespace. Rejected: group-qualified harness names (F5's alternative; it would make every SendMessage address longer and break the alias-is-the-address rule agents rely on).
+  Date/Author: 2026-09-01, Claude, adopting F5.
+- Decision: (design review) Legacy `engine: codex` records are marked `retired` by migration, and `wake`, `resume`, and `fill` refuse them (exit 4) before any side effect; `board-answer.sh` checks the bound record's engine before it transitions the ticket. Rejected: leaving them wakeable (F6: two such records still carry a ticket, and a relay would unpark the ticket and then fail to resume a codex thread through claude).
+  Date/Author: 2026-09-01, Claude, adopting F6.
 - Decision: The six board-pipeline scripts that write registry fields directly (with their own flock-and-rewrite) are left as they are; `agora meta get|set` exists for new code and tests, and consolidating the existing writers behind it is logged as follow-on debt. Rationale: their invariants (flock `.metalock`; recreate at the existing mode, 0600 when `run_bearer` is present; unlink `.tmp` before create) are preserved by agora's own writer, so coexistence is safe, and rewriting them is a board-pipeline change with its own risk.
   Date/Author: 2026-09-01, Claude.
 
@@ -265,11 +280,16 @@ migration, spawn/fill/wake/send, sync/mark/status/retire/remove, views, board,
 and the argparse dispatcher.
 
 The registry root is `$AGORA_HOME` (fallback `$DAEMON_HOME`, then
-`~/.claude/agora`). Every command first runs the migration check: if the
-default root is in use and `~/.claude/orchestrating-daemons` exists as a real
-directory, move each of its entries into `~/.claude/agora/` (creating it 0700),
-then replace the old directory with a symlink to the new root and print one
-line to stderr. Then, if `groups/<g>/nodes/*.json` exist (v2 layout), convert
+`~/.claude/agora`). Every command first runs the migration check (also
+exposed as the verb `agora migrate [--quiet]`, which the pipeline entrypoints
+call after their preflight): if the default root is in use and
+`~/.claude/orchestrating-daemons` exists as a real directory, rename any
+existing `~/.claude/agora` aside (`~/.claude/agora.v2-<timestamp>`), rename the
+old root to `~/.claude/agora` (one atomic `rename`, so a concurrent legacy
+writer sees either the whole old tree or the whole new one), move the aside
+directory's `groups/` back in, then create the symlink at the old path and
+print one line to stderr. Mark every `engine: codex` record `status: retired`
+(they are unwakeable through claude). Then, if `groups/<g>/nodes/*.json` exist (v2 layout), convert
 each into a seat record (seat id = the node's `session` if it looks like a
 uuid, else `uuid.uuid4()`; `alias`, `parent`, `addr`, `brief` from `desc`,
 `cwd`, `group` = the directory name, `status` = `retired`, `current` = the
@@ -291,9 +311,14 @@ seat. `addr` is a harness session name and is not name-validated.
 
 `agora spawn <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
 [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E] [--addr A]
-[--wait] [--no-wait]`: validates; refuses if `<group>/<alias>` already holds a
-seat that is not vacant, retired, or dead (`agora fill` is for those); warns on
-stderr if another seat in a different group has the same effective addr;
+[--wait] [--no-wait]`: validates; takes the seat lifecycle lock (flock on
+`$AGORA_HOME/locks/<group>__<alias>.lock`, held through record commit) so two
+concurrent spawns cannot both pass the checks; refuses if `<group>/<alias>`
+already holds a seat that is not vacant, retired, or dead (`agora fill` is for
+those); refuses (exit 4) if a live harness session — any peer record under
+`~/.claude/sessions/` whose pid is alive — already answers to the alias,
+because that name is the SendMessage address and the harness does not rename
+background sessions on collision;
 renders the preamble (placeholders `{{GROUP}}`, `{{ALIAS}}`, `{{PARENT}}`,
 `{{AGORA_CLI}}` = absolute path of the launcher) only when `--group` was given
 and prepends it plus `brief` to the task; takes `--settings`/`--effort` from
@@ -332,18 +357,31 @@ to 1); with `--resume`, instead continues the recorded `current` session
 exactly as `wake` does for a stopped session. Refuses on a `busy`/`idle`/`blocked`
 seat (it is filled — use `wake` or `send`).
 
-`agora wake <seat> <msg> [--wait] [--from F]`: resolves the seat's `current`
-session; if its peer record's pid is alive and its socket accepts a
-connection, writes the frame with content `[agora wake from <F|human>]\n<msg>`
-and returns (status becomes `working`, `updated` stamped); otherwise takes the
-per-seat resume lock, runs `claude --bg --resume <current> --permission-mode
-auto -n <alias> [--model] [--settings] [--effort] <msg>` in the seat's cwd
-(same env scrub as spawn), parses the banner, polls for the uuid, and if the
-harness reports a session id other than `current` (a copy was started),
-stores it as the new `current` and prints a warning. `--wait` polls to the
-turn's end as `spawn --wait` does and prints `--- reply ---`; in the socket
-branch it polls the harness until the session is idle again. A seat with no
-`current` exits 4 pointing at `agora fill`.
+`agora resume <seat> <msg> [--wait] [--model M] [--settings S] [--effort E]`
+is the process-level continuation the board pipeline uses (its answer relay
+and successor path prefix the call with `BOARD_RUN_TOKEN`/`BOARD_RUN_ID`/
+`BOARD_RUN_FENCE`, which only a fresh process can inherit): it refuses
+`engine: codex` records and seats with no `current` (exit 4), takes the
+per-seat lifecycle lock, runs `claude stop <short>` if the session is live
+(what the old `daemon-resume.sh` did), then `claude --bg --resume <current>
+--permission-mode auto -n <alias> [--model] [--settings] [--effort] <msg>` in
+the seat's cwd (same env scrub as spawn), parses the banner, and polls for the
+uuid. If the harness reports a session id other than `current`, a copy was
+started because the session was still running: the copy is stopped, the record
+is left untouched, and the command exits 1. Status becomes `working`; `--wait`
+polls that turn to its end as `spawn --wait` does and prints `--- reply ---`.
+
+`agora wake <seat> <msg> [--wait] [--from F]` is the interactive verb: it
+resolves the seat's `current` session; if its peer record's pid is alive and
+its socket accepts a connection, it writes the frame with content
+`[agora wake from <F|human> id=<8 hex>]\n<msg>` and returns (status `working`,
+`updated` stamped); otherwise it behaves exactly like `resume`. With `--wait`
+in the socket branch it first waits — bounded by `AGORA_ACK_TIMEOUT`, default
+120s — until the message id appears in the target's transcript or the harness
+row shows the session busy, then waits for idle and prints `--- reply ---`;
+without that evidence it exits 1 and prints no reply (the target was idle
+before delivery too, so "idle" alone proves nothing). A seat with no `current`
+exits 4 pointing at `agora fill`.
 
 `agora send <seat-or-addr> <msg> [--from F]`: socket branch only; resolves a
 seat (as above) or, failing that, a live peer record whose `name` equals the
@@ -431,12 +469,18 @@ literal to `$HOME/.claude/agora` (keep the variable name); replace calls:
 (gateway env variables stay on the command prefix as today; empty `<wt>` or
 `<model>` values are simply omitted); `daemon-retire.sh <id>` → `"$AGORA_CLI"
 retire <id>`; `daemon-finalize.sh <id>` → `"$AGORA_CLI" sync <id>`;
-`daemon-resume.sh <id> <msg>` → `"$AGORA_CLI" wake --wait <id> <msg>`
-(preserving the callers' blocking expectation and the `DAEMON_TIMEOUT`
-override). In `review-dispatch.sh`, source `skills/agora/scripts/lib.sh`
-instead of the daemon `_lib.sh` (update the shellcheck source directive). In
-`board-answer.sh`, delete the `engine` branch and always `exec "$AGORA_CLI"
-wake --wait`. Update the human-facing error prose in `board-transition.sh`
+`daemon-resume.sh <id> <msg>` → `"$AGORA_CLI" resume --wait <id> <msg>`
+(the process-level verb: the callers' `BOARD_RUN_*` prefixes must reach a
+fresh process; this also preserves their blocking expectation and the
+`DAEMON_TIMEOUT` override — pipeline scripts never call `wake`). Right after
+each script's `[ -x "$AGORA_CLI" ]` preflight, add
+`"$AGORA_CLI" migrate --quiet >/dev/null 2>&1 || true` so no pipeline process
+is ever the first to look at an empty new root. In `review-dispatch.sh`, source
+`skills/agora/scripts/lib.sh` instead of the daemon `_lib.sh` (update the
+shellcheck source directive). In `board-answer.sh`, delete the `engine` branch,
+always `exec "$AGORA_CLI" resume --wait`, and before any board write refuse a
+bound record whose `engine` is `codex` (`"$AGORA_CLI" meta get <uuid> engine`),
+pointing the human at `agora retire` and the fresh-dispatch path. Update the human-facing error prose in `board-transition.sh`
 and `board-answer.sh` to name `agora list`, `agora wake`, `agora retire`. In
 `_sweep_api.sh:1707`, pass `AGORA_CLI` where it re-exported `DAEMON_SCRIPTS`.
 
