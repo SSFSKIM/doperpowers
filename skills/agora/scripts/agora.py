@@ -30,6 +30,7 @@ one group's organisation chart with live state on every node.
     agora list     [group] [--status S] [--json]
     agora view     <group>                               # tree with role · live · now
     agora topology <group>                               # JSON: seats + edges
+    agora chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     agora groups
     agora post     <group> [--from F] [--title T] [text...]   # stdin if no text
     agora board    <group> [-n N|--id I] [--json]
@@ -505,6 +506,17 @@ def agents_json():
 def agents_refresh():
     global _AGENTS_LOADED
     _AGENTS_LOADED = False
+    return agents_json()
+
+
+def refresh_caches():
+    """Forget everything cached from the harness — the agents rows, the peer
+    registry, and process start times — so a long-lived reader (the chart TUI)
+    sees the fleet as it is now rather than as it was at launch."""
+    global _AGENTS_LOADED, _PEERS
+    _AGENTS_LOADED = False
+    _PEERS = None
+    _PSTART.clear()
     return agents_json()
 
 
@@ -2358,6 +2370,54 @@ def cmd_attach(a):
     print("claude attach %s" % short)
 
 
+def chart_module():
+    """Import agora_chart bound to THIS module instance (when agora.py runs as
+    __main__ a plain `import agora` would execute the file a second time and
+    give the chart its own, separate harness caches)."""
+    sys.modules.setdefault("agora", sys.modules[__name__])
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    import agora_chart
+    return agora_chart
+
+
+def chart_group_or_die(g):
+    if g is not None:
+        if not valid_name(g):
+            die("bad group name: %s" % g)
+        if not group_exists(g):
+            die("no such group: %s" % g, EXIT_UNKNOWN)
+
+
+def cmd_chart(a):
+    """The organisation chart as text: boxes left-to-right, dead seats folded
+    into '+N retired' unless --all, then one summary line."""
+    g = a.group
+    chart_group_or_die(g)
+    chart = chart_module()
+    roots, meta = chart.snapshot(g, a.all)
+    lay = chart.layout(roots)
+    width = a.width or (shutil.get_terminal_size((120, 40)).columns if sys.stdout.isatty() else 120)
+    if lay["boxes"]:
+        scr = chart.GridScreen(width, lay["height"])
+        chart.paint_chart(scr, lay)
+        print(scr.text())
+    else:
+        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are retired; agora chart --all" % meta["hidden"]))
+    bits = []
+    if g is None:
+        bits.append("%d groups" % meta["groups"])
+    bits += ["%d seats" % meta["seats"], "%d live" % meta["live"]]
+    if meta["hidden"]:
+        hid = "%d hidden" % meta["hidden"]
+        if meta["hidden_groups"]:
+            hid += " in %d group(s) folded away" % meta["hidden_groups"]
+        bits.append(hid + ("" if a.all else " (agora chart%s --all)" % ((" " + g) if g else "")))
+    if lay["width"] > width:
+        bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
+    print(" · ".join(bits))
+
+
 # --------------------------------------------------------------------- board
 
 # The board is the group's communal surface: durable long-form posts, JSONL
@@ -2664,6 +2724,12 @@ def build_parser():
     t.add_argument("group")
     t.add_argument("--json", action="store_true")
     t.set_defaults(fn=cmd_topology)
+
+    ch = sub.add_parser("chart", add_help=False)
+    ch.add_argument("group", nargs="?", default=None)
+    ch.add_argument("--all", action="store_true")
+    ch.add_argument("--width", type=int, default=0)
+    ch.set_defaults(fn=cmd_chart)
 
     g = sub.add_parser("groups", add_help=False)
     g.set_defaults(fn=cmd_groups)

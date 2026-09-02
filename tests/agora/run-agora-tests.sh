@@ -1343,6 +1343,95 @@ assert_rc 0 "$RC" "remove exits 0"
 run "$AGORA" list grp
 assert_not_contains "$OUT" "scribe" "removed seat is gone"
 
+# ---- 13) chart: the box organisation chart ----------------------------------
+# The `org` fixture below is shared with the tui tests that follow it: a lead
+# (busy) with three children — scout (idle, live peer), scribe (busy) with a
+# vacant intern under it, qa (blocked) — and a retired old-worker folded away.
+echo "chart:"
+LEAD_UUID=cccc0001-0000-4000-8000-00000000c001
+SCOUT_UUID=cccc0002-0000-4000-8000-00000000c002
+SCRIBE_UUID=cccc0003-0000-4000-8000-00000000c003
+QA_UUID=cccc0004-0000-4000-8000-00000000c004
+{ echo "short=cc000001"; echo "uuid=$LEAD_UUID"; echo "name=lead"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000001"
+{ echo "short=cc000002"; echo "uuid=$SCOUT_UUID"; echo "name=scout"; echo "state=done"; echo "status="; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000002"
+{ echo "short=cc000003"; echo "uuid=$SCRIBE_UUID"; echo "name=scribe"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000003"
+{ echo "short=cc000004"; echo "uuid=$QA_UUID"; echo "name=qa"; echo "state=blocked"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000004"
+# scout is idle: a finished row plus a live peer record whose socket answers.
+printf '{"pid":%s,"sessionId":"%s","name":"scout","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$SCOUT_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-scout.json"
+"$AGORA" seat add org lead --role LEAD --session "$LEAD_UUID" >/dev/null
+"$AGORA" seat add org scout --role RES --parent lead --session "$SCOUT_UUID" >/dev/null
+"$AGORA" seat add org scribe --role DOC --parent lead --session "$SCRIBE_UUID" >/dev/null
+"$AGORA" seat add org intern --parent scribe >/dev/null
+"$AGORA" seat add org qa --role QA --parent lead --session "$QA_UUID" >/dev/null
+"$AGORA" seat add org old-worker --parent lead >/dev/null
+"$AGORA" mark org/old-worker retired >/dev/null
+"$AGORA" status org/scribe "notes → board" >/dev/null
+"$AGORA" status org/scout "스펙 읽는 중 어쩌구저쩌구 매우 긴 문장입니다" >/dev/null
+
+# boxcheck: every row of the box holding <marker> has its left and right
+# borders in the same display columns (Korean counts two cells).
+cat > "$TEST_ROOT/boxcheck.py" <<'PY'
+import sys, unicodedata
+marker = sys.argv[1]
+rows = sys.stdin.read().split("\n")
+def cw(ch): return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+def col(row, idx): return sum(cw(c) for c in row[:idx])
+def at_col(row, c):
+    x = 0
+    for ch in row:
+        if x == c: return ch
+        x += cw(ch)
+    return ""
+r = next(i for i, row in enumerate(rows) if marker in row)
+i = rows[r].index(marker)
+li = rows[r].rindex("│", 0, i); ri = rows[r].index("│", i)
+L, R = col(rows[r], li), col(rows[r], ri)
+ok = all(at_col(rows[r + k], L) == "│" and at_col(rows[r + k], R) == "│" for k in (1, 2))
+ok = ok and at_col(rows[r - 1], L) in "┌┏╭" and at_col(rows[r - 1], R) in "┐┓╮"
+ok = ok and at_col(rows[r + 3], L) in "└┗╰" and at_col(rows[r + 3], R) in "┘┛╯"
+print("aligned" if ok else "misaligned:\n" + "\n".join(rows[r - 1:r + 4]))
+PY
+
+run "$AGORA" chart org --width 120
+assert_rc 0 "$RC" "chart of a group exits 0"
+CHART="$OUT"
+assert_contains "$(printf '%s\n' "$CHART" | grep -c 'lead .*LEAD')" "1" "alias left and ROLE right share the first box line"
+assert_contains "$CHART" "● busy" "busy seat shows the filled glyph"
+assert_contains "$CHART" "○ idle" "idle seat (live peer) shows the hollow glyph"
+assert_contains "$CHART" "◐ blocked" "blocked seat shows the half glyph"
+assert_contains "$CHART" "◌ vacant" "vacant seat shows the dotted glyph"
+assert_not_contains "$CHART" "old-worker" "a retired seat is folded away by default"
+assert_contains "$CHART" "+1 retired" "the parent notes its folded children"
+assert_equals "$(( $(printf '%s\n' "$CHART" | grep -n '+1 retired' | cut -d: -f1) - $(printf '%s\n' "$CHART" | grep -n 'lead .*LEAD' | cut -d: -f1) ))" "2" "the retired note sits on the lead box's third line"
+assert_contains "$CHART" "notes → board" "a seat's now line is drawn on its third line"
+assert_contains "$CHART" "│─┼──│" "a parent centred on three children meets the bus at the middle child"
+assert_contains "$CHART" "┌──│" "the first child opens the bus"
+assert_contains "$CHART" "└──│" "the last child closes the bus"
+assert_contains "$CHART" "6 seats · 4 live · 1 hidden (agora chart org --all)" "summary counts seats, live, hidden and points at --all"
+assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" scout)" "aligned" "a Korean now line keeps the box borders aligned"
+assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" lead)" "aligned" "an ASCII box is aligned too"
+assert_contains "$CHART" "…" "an over-long now line is truncated with an ellipsis"
+# intern sits one column to the right of scribe; scribe one to the right of lead.
+assert_equals "$(printf '%s\n' "$CHART" | python3 -c '
+import sys
+rows = sys.stdin.read().split("\n")
+def x(m): return next(r.index(m) for r in rows if m in r)
+print(x("lead ") < x("scribe ") < x("intern "))')" "True" "children are laid out to the right of their parent"
+run "$AGORA" chart org --all --width 120
+assert_contains "$OUT" "old-worker" "--all shows the retired seat"
+assert_not_contains "$OUT" "hidden" "--all summary has nothing hidden"
+run "$AGORA" chart --width 200
+assert_rc 0 "$RC" "fleet chart exits 0"
+assert_contains "$OUT" "╭" "fleet chart draws groups as rounded boxes"
+assert_contains "$(printf '%s\n' "$OUT" | grep -c '│ org ')" "1" "the org group is a root box"
+assert_contains "$OUT" "6 seats · 4 live" "the group box counts its seats and live seats"
+assert_contains "$OUT" "groups ·" "fleet summary counts groups"
+run "$AGORA" chart nope
+assert_rc 4 "$RC" "chart of an unknown group exits 4"
+run "$AGORA" chart bad/name
+assert_rc 2 "$RC" "chart of a bad group name exits 2"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES assertions passed"
