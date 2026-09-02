@@ -652,6 +652,39 @@ assert_rc 4 "$RC" "send to an unknown target exits 4"
 run "$AGORA" list grp
 assert_contains "$OUT" "idle" "a seat with a live peer record shows idle"
 
+# procStart is a wall-clock string with no zone in it: the harness writes it in
+# UTC while `ps -o lstart=` prints local time, so comparing the two as text
+# read every live seat as `stopped` and made send refuse everything on any
+# machine that is not on UTC. The pid below is really running, so its start
+# time is real; these cases pin that the same instant written either way still
+# reads as the same process, and that an unrelated time still reads as a
+# recycled pid.
+lstart_as() { # utc|local → the socket server's real start time in that zone
+  # LC_ALL=C, exactly as agora reads it: a localized ps prints "수  9/ 2 23:08:14 2026".
+  LSTART="$(LC_ALL=C LANG=C ps -o lstart= -p "$SOCK_PID")" python3 -c '
+import os, sys, time
+t = time.strptime(" ".join(os.environ["LSTART"].split()), "%a %b %d %H:%M:%S %Y")
+epoch = time.mktime(t)
+print(time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(epoch) if sys.argv[1] == "utc" else time.localtime(epoch)))' "$1"
+}
+peer_with_procstart() { # procStart-string → rewrite the orchestrator's peer record
+  printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","procStart":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$ORCH_UUID" "$WORK" "$1" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
+}
+peer_with_procstart "$(lstart_as local)"
+run "$AGORA" send orchestrator "procstart local"
+assert_rc 0 "$RC" "a procStart written in local time identifies the process"
+peer_with_procstart "$(lstart_as utc)"
+run "$AGORA" send orchestrator "procstart utc"
+assert_rc 0 "$RC" "a procStart written in UTC identifies the same process (the harness writes UTC; ps prints local)"
+run "$AGORA" list grp
+assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped"
+peer_with_procstart "Mon Jan  1 00:00:00 2001"
+run "$AGORA" send orchestrator "procstart bogus"
+assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
+printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
+
 run "$AGORA" wake orchestrator "wake up" --from boss
 assert_rc 0 "$RC" "wake of a live seat exits 0"
 assert_contains "$OUT" "via inbox socket" "live wake goes through the socket"

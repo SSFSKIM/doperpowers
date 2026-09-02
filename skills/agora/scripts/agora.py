@@ -61,6 +61,7 @@ live, or a seat/name that is already taken.
 """
 
 import argparse
+import calendar
 import datetime
 import fcntl
 import glob
@@ -581,17 +582,38 @@ def _parse_lstart(s):
         return None
 
 
+def same_process(rec):
+    """Is the record's pid still the process the record described?
+
+    Both sides are wall-clock strings with no zone in them: `ps -o lstart=`
+    prints the LOCAL zone, while the harness writes `procStart` in UTC (every
+    record on this machine, harness 2.1.251 through 2.1.259, is offset by
+    exactly the local UTC offset). Comparing them as text therefore fails on
+    any machine that is not on UTC, which read every live seat as `stopped`
+    and made `agora send` refuse everything. So compare INSTANTS, and accept
+    the recorded string under either reading — a recycled pid would have to
+    have started at the very same wall-clock second (or exactly a whole zone
+    offset away) to slip through, and a wrong guess only costs a failed socket
+    connect. When either side cannot be parsed the check is skipped and the
+    pid + socket rule decides.
+    """
+    live = _parse_lstart(proc_start(rec.get("pid")))
+    recorded = _parse_lstart(rec.get("procStart"))
+    if not live or not recorded:
+        return True
+    live_epoch = time.mktime(live)
+    return any(abs(reading - live_epoch) <= 2
+               for reading in (time.mktime(recorded), calendar.timegm(recorded)))
+
+
 def peer_live(rec):
     """A peer record is live only if its pid is alive, the pid is the SAME
-    process the record described (its start time matches the record's
-    `procStart` — a recycled pid fails this), AND its inbox socket accepts a
-    connection (a dead session can leave its socket FILE behind; only a
-    successful connect proves a listener). When either start time cannot be
-    parsed, the start-time check is skipped and the pid+socket rule decides."""
+    process the record described (see same_process — a recycled pid fails
+    this), AND its inbox socket accepts a connection (a dead session can leave
+    its socket FILE behind; only a successful connect proves a listener)."""
     if not pid_alive(rec.get("pid")):
         return False
-    recorded, live = _parse_lstart(rec.get("procStart")), _parse_lstart(proc_start(rec.get("pid")))
-    if recorded and live and recorded != live:
+    if not same_process(rec):
         return False
     return socket_ok(socket_path_of(rec))
 
