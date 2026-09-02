@@ -72,6 +72,10 @@ banner_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ [0-9a-f-]*\].
 # runner's shell must never reach it.
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
 unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT AGORA_ALIAS RUNNER_TRACKING_ID DAEMON_HOME
+# The harness exports CLAUDE_CODE_SESSION_ID to Bash tools; agora derives the
+# sender identity from it. The suite is "a real terminal" unless a case sets it.
+unset CLAUDE_CODE_SESSION_ID
+lock_file() { printf '%s/locks/name__%s.lock' "$AGORA_HOME" "$(printf '%s' "$1" | python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.read().encode()).hexdigest())')"; }
 export HOME="$TEST_ROOT/home"
 export AGORA_HOME="$TEST_ROOT/registry"
 export STUB_STATE="$TEST_ROOT/stub"
@@ -95,6 +99,8 @@ echo "$*" >> "$STUB_STATE/log/calls.log"
 
 case "${1:-}" in
   agents)
+    # STUB_AGENTS_FAIL=1: the harness itself fails (distinct from an empty fleet).
+    [ "${STUB_AGENTS_FAIL:-0}" = "1" ] && { echo "stub: agents unavailable" >&2; exit 1; }
     python3 - "$STUB_STATE/agents" <<'PY'
 import glob, json, os, sys
 out = []
@@ -261,12 +267,18 @@ printf '{}' > "$OLD/board-claims/7.json"
 printf '{"alias":"scout","parent":"orchestrator","addr":"scout","session":"22222222-bbbb-4000-8000-000000000002","cwd":"/x","branch":"","desc":"scouts ahead","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
   > "$NEW/groups/demo/nodes/scout.json"
 CODEX_UUID="12121212-abab-4000-8000-000000000012"
-printf '{"uuid":"%s","name":"codexy","status":"idle","current":"%s","cwd":"%s","engine":"codex","pid":"99999","event_log":"/x.events.jsonl"}\n' \
+printf '{"uuid":"%s","name":"codexy","status":"idle","current":"%s","cwd":"%s","engine":"codex","pid":"99999","event_log":"/x.events.jsonl","updated":"2026-07-09T09:09:09Z"}\n' \
   "$CODEX_UUID" "$CODEX_UUID" "$WORK" > "$OLD/$CODEX_UUID.json"
 # Duplicate (group, alias): the old substrate respawned workers under one name.
 DUP_OLD="e1e1e1e1-abab-4000-8000-0000000e1e11"; DUP_NEW="e2e2e2e2-abab-4000-8000-0000000e2e22"
 printf '{"uuid":"%s","name":"review-pr-470","group":"fleet","status":"idle","current":"%s","short":"aaaa1111","updated":"2026-07-11T10:00:00Z"}\n' "$DUP_OLD" "$DUP_OLD" > "$OLD/$DUP_OLD.json"
 printf '{"uuid":"%s","name":"review-pr-470","group":"fleet","status":"idle","current":"%s","short":"bbbb2222","updated":"2026-07-11T12:00:00Z"}\n' "$DUP_NEW" "$DUP_NEW" > "$OLD/$DUP_NEW.json"
+# A codex record with a NEWER updated must not win the alias over a claude record.
+DUP_CX="e3e3e3e3-abab-4000-8000-0000000e3e33"
+printf '{"uuid":"%s","name":"review-pr-470","group":"fleet","status":"idle","current":"%s","short":"cccc3333","engine":"codex","pid":"99999","updated":"2026-07-12T00:00:00Z"}\n' "$DUP_CX" "$DUP_CX" > "$OLD/$DUP_CX.json"
+# A working codex record whose pid is alive is left alone by migration.
+CX_LIVE="e4e4e4e4-abab-4000-8000-0000000e4e44"
+printf '{"uuid":"%s","name":"cx-live","group":"fleet","status":"working","current":"%s","engine":"codex","pid":"%s","updated":"2026-07-10T00:00:00Z"}\n' "$CX_LIVE" "$CX_LIVE" "$$" > "$OLD/$CX_LIVE.json"
 # The same session id joined two v2 groups: the second node must not overwrite the first's seat.
 mkdir -p "$NEW/groups/other/nodes"
 printf '{"alias":"scout2","parent":"","addr":"scout2","session":"22222222-bbbb-4000-8000-000000000002","cwd":"/y","branch":"","desc":"other side","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
@@ -293,6 +305,10 @@ assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"alias": "review-pr-470@aaaa1111"
 assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"status": "retired"' "the older duplicate is retired"
 assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"name": "review-pr-470"' "dedupe leaves the pipeline's name field untouched"
 assert_not_contains "$(cat "$NEW/$DUP_NEW.json")" '"alias": "review-pr-470@' "the newest duplicate keeps the alias"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["updated"])' "$NEW/$DUP_OLD.json")" "2026-07-11T10:00:00Z" "a demoted duplicate keeps its original updated"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("updated",""))' "$NEW/$CODEX_UUID.json")" "2026-07-09T09:09:09Z" "a retired codex record keeps its original updated"
+assert_contains "$(cat "$NEW/$DUP_CX.json")" '"alias": "review-pr-470@cccc3333"' "a codex record never wins an alias over a claude record"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$CX_LIVE.json")" "working" "a working codex record with a live pid is left as is"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$DUP_NEW.json")" "idle" "the newest duplicate keeps its status"
 run env -u AGORA_HOME HOME="$MH" "$AGORA" view other
 assert_contains "$OUT" "scout2" "a second group's node sharing a session id still converts"
@@ -413,7 +429,7 @@ assert_contains "$OUT" "message it with agora send/wake" "filled refusal points 
 run "$AGORA" spawn refillme "FIRST" --group grp --role r1 --brief b1
 assert_rc 0 "$RC" "first spawn of refillme exits 0"
 RF="$(seat_id_of refillme)"
-"$AGORA" meta set refillme ticket 42 >/dev/null   # a pipeline-owned field
+"$AGORA" meta set refillme ticket 42 lane implement >/dev/null   # pipeline-owned: ticket is per-run, lane describes the seat
 "$AGORA" status refillme "did the first pass" >/dev/null
 RF_FIRST="$(field "$RF" current)"
 run "$AGORA" spawn refillme "SECOND" --group grp
@@ -425,7 +441,9 @@ assert_equals "$(field "$RF" role)" "r1" "re-fill without --role keeps the seat'
 assert_equals "$(field "$RF" brief)" "b1" "re-fill without --brief keeps the seat's brief"
 assert_contains "$(field "$RF" task)" "SECOND" "re-fill updates the task"
 assert_equals "$(field "$RF" turns)" "1" "re-fill resets turns"
-assert_equals "$(field "$RF" ticket)" "42" "re-fill leaves pipeline-owned fields untouched"
+assert_equals "$(field "$RF" lane)" "implement" "re-fill keeps the seat-describing pipeline field (lane)"
+assert_equals "$(field "$RF" ticket)" "" "re-fill clears the predecessor's run binding (ticket)"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0]["ticket"])' "$AGORA_HOME/$RF.json")" "42" "history[0].ticket records the predecessor's ticket"
 if [ "$(field "$RF" current)" != "$RF" ]; then pass "re-fill gives the seat a new session"; else fail "re-fill gives the seat a new session"; fi
 assert_not_contains "$(field "$RF" now)" "did the first pass" "a fresh re-fill clears the stale now line"
 assert_equals "$(field "$RF" attempts)" "2" "re-fill bumps attempts"
@@ -507,7 +525,7 @@ assert_rc 0 "$RC" "the same alias in another group is allowed when no live sessi
 
 # Lifecycle lock: a spawn of a seat whose lock another agora process holds is
 # refused, never duplicated.
-python3 - "$AGORA_HOME/locks/name__locked.lock" <<'PY' &
+python3 - "$(lock_file locked)" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
 f = open(sys.argv[1], "a+")
@@ -1005,7 +1023,7 @@ assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no resum
 "$AGORA" remove grp/stopper >/dev/null
 
 # wake respects the lifecycle lock.
-python3 - "$AGORA_HOME/locks/name__plainworker.lock" <<'PY' &
+python3 - "$(lock_file plainworker)" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
 f = open(sys.argv[1], "a+")
@@ -1084,6 +1102,140 @@ except agora.SendFailed as e:
 PY
 )"
 assert_equals "$AFTER_PHASE" "after" "a close-out failure after the frame was written is the 'after' phase"
+
+# Round 3: sender identity derives from CLAUDE_CODE_SESSION_ID when present.
+# (The socket server was restarted above; re-point the orchestrator's peer
+# record at its current pid so the seat is live again.)
+rm -f "$HOME/.claude/sessions/"*.json
+printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
+run "$AGORA" send orchestrator "from a terminal"
+assert_rc 0 "$RC" "send without a session id in the environment exits 0"
+sleep 0.2
+assert_contains "$(tail -c 400 "$RECEIVED")" '[agora message from human]' "no session id in the environment → human"
+ID_UUID="0b0b8888-abab-4000-8000-0000000b8888"
+"$AGORA" seat add grp me-agent --session "$ID_UUID" >/dev/null
+CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$AGORA" send orchestrator "from an agent"
+assert_rc 0 "$RC" "send from a registered agent session exits 0"
+sleep 0.2
+assert_contains "$(tail -c 400 "$RECEIVED")" '[agora message from me-agent]' "an agent's default --from is its seat alias"
+CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$AGORA" send orchestrator "impostor" --from human
+assert_rc 4 "$RC" "--from human inside a Claude session is refused"
+CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$AGORA" post grp "agent note"
+assert_rc 0 "$RC" "post from an agent session defaults --from to its alias"
+run "$AGORA" board grp -n 1
+assert_contains "$OUT" 'from="me-agent"' "the post is stamped with the agent's alias"
+CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$AGORA" post grp "impostor" --from human
+assert_rc 4 "$RC" "post --from human inside a Claude session is refused"
+"$AGORA" remove grp/me-agent >/dev/null
+
+# A harness failure is 'unknown', never an empty fleet.
+STUB_AGENTS_FAIL=1 run "$AGORA" list grp
+assert_rc 0 "$RC" "list still runs when the harness fails"
+assert_contains "$OUT" "unknown" "list shows unknown liveness when claude agents fails"
+STUB_BG_STATE=working run "$AGORA" spawn unk "U" --group grp
+STUB_AGENTS_FAIL=1 run "$AGORA" sync unk
+assert_equals "$OUT" "live" "sync claims nothing (live) when the harness fails"
+assert_equals "$(field "$(seat_id_of unk)" status)" "working" "a harness failure never finalizes a seat"
+"$AGORA" remove grp/unk >/dev/null
+
+# A previous occupant that still answers blocks a fresh re-fill.
+PO_UUID="0c0c9999-abab-4000-8000-0000000c9999"
+"$AGORA" seat add grp prevocc --session "$PO_UUID" >/dev/null
+"$AGORA" mark prevocc retired >/dev/null
+printf '{"pid":%s,"sessionId":"%s","name":"prevocc","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$PO_UUID" "$SOCK" > "$HOME/.claude/sessions/prevocc.json"
+run "$AGORA" spawn prevocc "again" --group grp
+assert_rc 4 "$RC" "re-spawn is refused while the previous occupant still answers"
+assert_contains "$OUT" "previous occupant" "the live previous occupant is named"
+run "$AGORA" fill grp/prevocc "again"
+assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answers"
+rm -f "$HOME/.claude/sessions/prevocc.json"; "$AGORA" remove grp/prevocc >/dev/null
+
+# harness_row prefers a RUNNING row for the session over the recorded short.
+HR_UUID="0d0daaaa-abab-4000-8000-0000000daaaa"
+"$AGORA" seat add grp revived --session "$HR_UUID" >/dev/null
+"$AGORA" meta set revived short hr000001 >/dev/null
+{ echo "short=hr000001"; echo "uuid=$HR_UUID"; echo "name=revived"; echo "state=stopped"; echo "status="; echo "cwd=$WORK"; } > "$STUB_STATE/agents/hr000001"
+{ echo "short=hr000002"; echo "uuid=$HR_UUID"; echo "name=revived"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/hr000002"
+run "$AGORA" list grp
+assert_contains "$(printf '%s' "$OUT" | grep '^revived')" "busy" "an out-of-band revival's running row wins over the stale recorded short"
+rm -f "$STUB_STATE/agents/hr000001" "$STUB_STATE/agents/hr000002"; "$AGORA" remove grp/revived >/dev/null
+
+# peer liveness: a recycled pid (procStart differs from the live process) is dead.
+RP_UUID="0e0ebbbb-abab-4000-8000-0000000ebbbb"
+printf '{"pid":%s,"sessionId":"%s","name":"recycled","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 1990","messagingSocketPath":"%s"}\n' \
+  "$$" "$RP_UUID" "$SOCK" > "$HOME/.claude/sessions/recycled.json"
+run "$AGORA" spawn recycled "R" --group grp
+assert_rc 0 "$RC" "a peer record whose procStart does not match the live pid does not block the name"
+"$AGORA" remove grp/recycled >/dev/null
+LSTART="$(LC_ALL=C ps -o lstart= -p $$ | sed 's/  */ /g;s/^ //;s/ $//')"
+printf '{"pid":%s,"sessionId":"%s","name":"recycled","kind":"bg","status":"idle","procStart":"%s","messagingSocketPath":"%s"}\n' \
+  "$$" "$RP_UUID" "$LSTART" "$SOCK" > "$HOME/.claude/sessions/recycled.json"
+run "$AGORA" spawn recycled "R" --group grp
+assert_rc 4 "$RC" "a peer record whose procStart matches the live pid is live and blocks the name"
+rm -f "$HOME/.claude/sessions/recycled.json"
+
+# status / mark / meta set never resurrect a removed seat (unit level).
+RES_OUT="$(python3 - "$REPO_ROOT/skills/agora/scripts" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import agora
+sid = "0f0fcccc-abab-4000-8000-0000000fcccc"
+w = agora.meta_set(sid, {"now": "x"}, bump=False, create=False)
+print("wrote" if w else "refused", "exists" if os.path.exists(agora.meta_path(sid)) else "absent")
+PY
+)"
+assert_equals "$RES_OUT" "refused absent" "a create=False write on a missing record writes nothing and creates nothing"
+
+# send to a raw harness name: a SendFailed before the write is 'not live' (exit
+# 4); after the write it is 'uncertain' (exit 1). Driven at unit level — the
+# failure is injected into send_frame, so no timing race decides the outcome.
+printf '{"pid":%s,"sessionId":"1a1adddd-abab-4000-8000-0000001adddd","name":"rawname","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$SOCK" > "$HOME/.claude/sessions/rawname.json"
+RAW_CODES="$(python3 - "$REPO_ROOT/skills/agora/scripts" <<'PY'
+import argparse, sys
+sys.path.insert(0, sys.argv[1])
+import agora
+codes = []
+for phase in ("before", "after"):
+    def boom(path, text, phase=phase):
+        raise agora.SendFailed(phase, OSError("injected"))
+    agora.send_frame = boom
+    try:
+        agora.cmd_send(argparse.Namespace(target="rawname", msg="x", frm=""))
+        codes.append("0")
+    except SystemExit as e:
+        codes.append(str(e.code))
+print(" ".join(codes))
+PY
+)"
+assert_equals "$RAW_CODES" "4 1" "raw-name send: failure before the write exits 4, after the write exits 1"
+rm -f "$HOME/.claude/sessions/rawname.json"
+
+# retire hint for a legacy codex record.
+CXH_UUID="1b1beeee-abab-4000-8000-0000001beeee"
+printf '{"uuid":"%s","name":"cxh","alias":"cxh","group":"grp","status":"idle","current":"%s","engine":"codex","pid":"99999"}' "$CXH_UUID" "$CXH_UUID" > "$AGORA_HOME/$CXH_UUID.json"
+run "$AGORA" retire grp/cxh
+assert_contains "$OUT" "no resume path; remove with: agora remove grp/cxh" "retire of a codex record hints at remove, not fill --resume"
+"$AGORA" remove grp/cxh >/dev/null
+
+# Aside merge: a colliding board is appended with renumbered ids; any other
+# collision is left in place and warned about on every run.
+AM="$TEST_ROOT/asidehome"
+mkdir -p "$AM/.claude/agora/groups/g1" "$AM/.claude/agora.v2-20260101T000000Z/groups/g1" "$AM/.claude/agora.v2-20260101T000000Z/groups/g1/nodes"
+printf '{"id":1,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"root one"}\n' > "$AM/.claude/agora/groups/g1/board.jsonl"
+printf '{"id":1,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"aside one"}\n{"id":2,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"aside two"}\n' > "$AM/.claude/agora.v2-20260101T000000Z/groups/g1/board.jsonl"
+printf 'root notes\n' > "$AM/.claude/agora/groups/g1/notes.txt"   # a colliding non-board entry
+printf 'aside notes\n' > "$AM/.claude/agora.v2-20260101T000000Z/groups/g1/notes.txt"
+rmdir "$AM/.claude/agora.v2-20260101T000000Z/groups/g1/nodes"
+run env -u AGORA_HOME HOME="$AM" "$AGORA" board g1 --json
+assert_equals "$(printf '%s' "$OUT" | grep -c '"id"')" "3" "aside board posts are appended to the root board"
+assert_contains "$OUT" '"id": 3' "appended posts are renumbered after the root's last id"
+assert_contains "$OUT" "aside two" "the aside's posts survive the merge"
+assert_contains "$OUT" "unmerged aside entry left in place" "a non-board collision is warned about"
+run env -u AGORA_HOME HOME="$AM" "$AGORA" groups
+assert_contains "$OUT" "unmerged aside entry left in place" "the warning repeats on every run until resolved"
 
 # lib.sh creates the root 0700 and tightens a wide one.
 LIBROOT="$TEST_ROOT/libroot"
