@@ -57,8 +57,11 @@ into its task (`references/spawn-preamble.md`), already registered.
 Each group has a communal board for long-form markdown (designs, findings,
 status). The body lives on the board; delivery is a nudge you send yourself:
 `post` prints the other seats' addrs, and you follow up with a one-line
-SendMessage naming the post id to whoever should read it now. Always pass
-`--from`: an omitted `--from` is stamped as the operator `human`.
+SendMessage naming the post id to whoever should read it now. Sender identity on
+`post`, `send`, and `wake` comes from the harness when it can: inside a Claude
+session (`CLAUDE_CODE_SESSION_ID` is in the Bash environment) an omitted
+`--from` resolves to your seat's alias, and `--from human` is refused — an agent
+is never the operator. Only a real terminal defaults to `human`.
 
     agora post <group> --from <you> [--title "…"] "…"   # body via stdin for real documents
     agora board <group> [-n N|--id I] [--json]          # markdown in <agora-post> envelopes
