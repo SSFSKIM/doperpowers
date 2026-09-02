@@ -597,6 +597,32 @@ PY
 { echo "short=aaaa0002"; echo "uuid=$PERM_UUID"; echo "name=permer"; echo "state=blocked"; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/aaaa0002"
 run "$AGORA" sync permer; assert_equals "$OUT" "idle" "blocked-without-question also finalizes idle"
 assert_contains "$(cat "$AGORA_HOME/$PERM_UUID.reply.txt")" "blocked on a harness prompt" "blocked-without-question reply carries the harness-prompt marker"
+
+# A natively-woken turn: the harness's own SendMessage started it and it ended
+# between two syncs, so the record never left `idle` and the reply file still
+# describes the PREVIOUS turn. The transcript's mtime is the only witness.
+NAT_UUID="3d3d2222-abab-4000-8000-00000003d3d2"
+"$AGORA" seat add grp nativewoke --session "$NAT_UUID" >/dev/null
+printf 'PREVIOUS TURN TEXT\n' > "$AGORA_HOME/$NAT_UUID.reply.txt"
+python3 - "$HOME/.claude/projects/fake-proj/$NAT_UUID.jsonl" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps(
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "NATIVELY WOKEN ANSWER"}]}}) + "\n")
+PY
+python3 -c 'import os, sys, time; t = time.time()
+os.utime(sys.argv[1], (t - 10, t - 10)); os.utime(sys.argv[2], (t, t))' \
+  "$AGORA_HOME/$NAT_UUID.reply.txt" "$HOME/.claude/projects/fake-proj/$NAT_UUID.jsonl"
+run "$AGORA" reply nativewoke
+assert_contains "$OUT" "NATIVELY WOKEN ANSWER" "reply prefers a transcript newer than the recorded reply"
+assert_not_contains "$OUT" "PREVIOUS TURN TEXT" "the previous turn's recorded reply is not what reply shows"
+{ echo "short=nat00099"; echo "uuid=$NAT_UUID"; echo "name=nativewoke"; echo "state=working"; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/nat00099"
+run "$AGORA" sync nativewoke
+assert_equals "$OUT" "idle" "sync reconciles an idle seat whose transcript moved on"
+assert_contains "$(cat "$AGORA_HOME/$NAT_UUID.reply.txt")" "NATIVELY WOKEN ANSWER" "sync re-recorded the natively-woken turn's reply"
+run "$AGORA" sync nativewoke
+assert_equals "$OUT" "noop" "a second sync, with the reply now current, is noop"
+"$AGORA" remove grp/nativewoke >/dev/null; rm -f "$STUB_STATE/agents/nat00099"
+
 run "$AGORA" sync --all
 assert_rc 0 "$RC" "sync --all runs"
 run "$AGORA" sync
@@ -856,6 +882,19 @@ run "$AGORA" view grp
 assert_contains "$OUT" "board: 2 post(s)" "view summarizes the board"
 run "$AGORA" groups
 assert_contains "$OUT" "grp" "groups lists grp"
+# A corrupt line in the MIDDLE of the board makes the readable count smaller
+# than the highest stored id: allocating from the count would hand the next
+# post an id a live post already holds. Allocation is max(id) + 1.
+"$AGORA" post grp --from researcher "third post" >/dev/null
+python3 -c 'import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines()
+lines[1] = "{ truncated write"
+open(p, "w").write("\n".join(lines) + "\n")' "$AGORA_HOME/groups/grp/board.jsonl"
+run "$AGORA" post grp --from researcher "after the corrupt line"
+assert_contains "$OUT" "posted #4 to grp board" "a post id is one past the HIGHEST stored id, not the readable count"
+run "$AGORA" board grp --id 3
+assert_contains "$OUT" "third post" "the surviving post keeps its id"
 
 # ---- 11) exit-gate wave ------------------------------------------------------
 echo "exit-gate wave:"
@@ -935,6 +974,25 @@ assert_file_absent "$EL" "codex purge deletes the event log"
 assert_file_absent "$TEST_ROOT/codexruns/run-xyz.rc" "codex purge deletes the run-scratch siblings"
 assert_file_absent "$AGORA_HOME/$CX_UUID.json" "codex purge removes the record"
 
+# Stopping a LIVE legacy codex worker blocks on the wrapper's `.rc` barrier:
+# until that file lands the finalizer can still rewrite the run scratch a
+# retire or remove is about to purge. Here the barrier lands after ~1s.
+CXB_UUID="2c2c1111-abab-4000-8000-00000002c2c1"
+CXB_EL="$TEST_ROOT/codexruns/barrier.events.jsonl"
+: > "$CXB_EL"; rm -f "$TEST_ROOT/codexruns/barrier.rc"
+sleep 30 & CXB_PID=$!; disown "$CXB_PID"
+( sleep 1; : > "$TEST_ROOT/codexruns/barrier.rc" ) & disown $!
+printf '{"uuid":"%s","name":"cxb","alias":"cxb","group":"grp","status":"working","current":"%s","engine":"codex","pid":"%s","event_log":"%s","host":"testhost","boot_id":"boot-current"}' \
+  "$CXB_UUID" "$CXB_UUID" "$CXB_PID" "$CXB_EL" > "$AGORA_HOME/$CXB_UUID.json"
+CXB_T0="$(python3 -c 'import time; print(time.time())')"
+run "$AGORA" retire grp/cxb
+CXB_T1="$(python3 -c 'import time; print(time.time())')"
+assert_rc 0 "$RC" "retiring a live legacy codex seat exits 0"
+assert_file_exists "$TEST_ROOT/codexruns/barrier.rc" "the wrapper's .rc barrier is what released the retire"
+assert_equals "$(python3 -c 'import sys; print("waited" if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else "returned early")' "$CXB_T0" "$CXB_T1")" "waited" "the retire blocked until the .rc barrier appeared"
+kill "$CXB_PID" 2>/dev/null || true
+"$AGORA" remove grp/cxb >/dev/null
+
 # derive_group uses the OWNING repository, not a linked worktree's dir name.
 REPO="$TEST_ROOT/myrepo"
 mkdir -p "$REPO"; git init -q "$REPO"; git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
@@ -961,6 +1019,12 @@ run "$AGORA" spawn resp "R-1" --group grp --role reviewer
 RESP="$(seat_id_of resp)"
 assert_equals "$(banner_uuid "$OUT")" "$RESP" "a new seat's banner bracket is its record filename"
 RESP_FIRST="$(field "$RESP" current)"
+# The pipeline stamps a failed occupant (retired_from + a note) before retiring
+# it, and retire then writes status=retired over the failure — so the stamp and
+# its note are the only surviving evidence that this occupant failed. History
+# must carry both, or the outage streak forgets every retired failure.
+"$AGORA" mark resp error "worker died mid-run" >/dev/null
+"$AGORA" meta set resp retired_from failure >/dev/null
 run "$AGORA" retire resp
 assert_rc 0 "$RC" "retire exits 0"
 run "$AGORA" spawn resp "R-2" --group grp
@@ -968,6 +1032,9 @@ assert_rc 0 "$RC" "re-spawning a retired seat exits 0"
 assert_equals "$(banner_uuid "$OUT")" "$RESP" "the re-spawn banner's bracket uuid equals the record filename"
 assert_equals "$(field "$RESP" attempts)" "2" "attempts == 2 after one re-spawn"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0]["current"])' "$AGORA_HOME/$RESP.json")" "$RESP_FIRST" "history[0].current is the first session"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0].get("retired_from",""))' "$AGORA_HOME/$RESP.json")" "failure" "history[0] carries the predecessor's retired_from stamp"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0].get("note",""))' "$AGORA_HOME/$RESP.json")" "worker died mid-run" "history[0] carries the note explaining the failure"
+assert_equals "$(field "$RESP" retired_from)" "" "the re-filled record itself drops the predecessor's stamp"
 assert_equals "$(field "$RESP" role)" "reviewer" "re-spawn without --role keeps the role"
 "$AGORA" remove grp/resp >/dev/null
 
@@ -1151,6 +1218,30 @@ assert_contains "$OUT" "previous occupant" "the live previous occupant is named"
 run "$AGORA" fill grp/prevocc "again"
 assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answers"
 rm -f "$HOME/.claude/sessions/prevocc.json"; "$AGORA" remove grp/prevocc >/dev/null
+
+# Repointing a seat whose occupant is STILL LIVE would leave that process
+# running with nothing in the fleet naming it: refused for a new --addr and for
+# a new --session alike, and the record is left exactly as it was.
+RPT_UUID="0e0ebbbb-abab-4000-8000-0000000ebbbb"
+"$AGORA" seat add grp pinned --session "$RPT_UUID" >/dev/null
+# The live session answers to the harness name it already had (a `seat add
+# --session` seat was never named by agora), so the machine-wide name check
+# cannot see it — only the record ties the process to the fleet.
+printf '{"pid":%s,"sessionId":"%s","name":"a name agora never chose","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$RPT_UUID" "$SOCK" > "$HOME/.claude/sessions/pinned.json"
+run "$AGORA" seat add grp pinned --addr "pinned elsewhere"
+assert_rc 4 "$RC" "re-addressing a seat whose session is still live is refused"
+assert_contains "$OUT" "still holds a live session" "the refusal names the live session"
+assert_equals "$(printf '%s' "$OUT" | grep -c .)" "1" "the refusal is one stderr line"
+assert_equals "$(field "$RPT_UUID" addr)" "pinned" "the refused re-address left the addr untouched"
+run "$AGORA" seat add grp pinned --session "0e0ecccc-abab-4000-8000-0000000ecccc"
+assert_rc 4 "$RC" "re-pointing a live seat at another session is refused too"
+assert_equals "$(field "$RPT_UUID" current)" "$RPT_UUID" "the refused re-point left the session untouched"
+rm -f "$HOME/.claude/sessions/pinned.json"
+run "$AGORA" seat add grp pinned --addr "pinned elsewhere"
+assert_rc 0 "$RC" "once the occupant is gone the same re-address succeeds"
+assert_equals "$(field "$RPT_UUID" addr)" "pinned elsewhere" "and the new addr is recorded"
+"$AGORA" remove grp/pinned >/dev/null
 
 # harness_row prefers a RUNNING row for the session over the recorded short.
 HR_UUID="0d0daaaa-abab-4000-8000-0000000daaaa"

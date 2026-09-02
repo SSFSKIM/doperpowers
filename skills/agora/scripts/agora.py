@@ -1022,6 +1022,27 @@ def reply_text(seat_id):
         return ""
 
 
+def _mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+def reply_stale(seat_id, turn_id):
+    """True when the session's transcript has moved on since the seat's reply
+    file was last written (or there is no reply file yet).
+
+    A seat can be woken by the harness's own SendMessage and run a whole turn
+    without any agora verb in it: nothing marks the record working, nothing
+    finalizes it, and the recorded reply keeps describing the PREVIOUS turn.
+    The transcript's mtime is the evidence that a turn happened anyway."""
+    tx = transcript_path(turn_id)
+    if not tx:
+        return False
+    return _mtime(tx) > _mtime(reply_path(seat_id))
+
+
 # ----------------------------------------------------------------- migration
 
 
@@ -1398,8 +1419,18 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
         rec_id = seat_id
         history = list(prev["history"]) if prev else []
         if prev and (prev["current"] or prev["short"]):
-            history.append({"current": prev["current"], "short": prev["short"], "status": prev["status"],
-                            "ticket": str(prev.get("ticket") or ""), "ended": now()})
+            entry = {"current": prev["current"], "short": prev["short"], "status": prev["status"],
+                     "ticket": str(prev.get("ticket") or ""), "ended": now()}
+            # A retirement erases the status it replaced (`retire` writes
+            # `retired` over the terminal one), so the pipeline's `retired_from`
+            # stamp — and the note explaining it — are the only durable evidence
+            # that this occupant failed. The outage streak reads them off history
+            # entries exactly as off records; drop them and the failure cap can
+            # never be reached for the retire-then-respawn cycle it exists for.
+            for k in ("retired_from", "note"):
+                if prev.get(k):
+                    entry[k] = str(prev[k])
+            history.append(entry)
         # The predecessor's run and board binding belonged to ITS run: board-bind
         # re-stamps the new occupant (`lane` and `role` describe the seat and stay).
         meta_set(rec_id, {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1,
@@ -1544,6 +1575,19 @@ def cmd_seat_add(a):
         unlock(locks)  # re-take the whole sorted set including the recorded addr
         names = [a.alias, a.addr or "", addr]
         locks = lock_names(names, label)
+    if existing and ((a.addr and a.addr != existing[0]["addr"])
+                     or (session and session != existing[0]["current"])):
+        # Repointing a seat is how a record forgets which process it describes.
+        # If the current occupant is still live under the OLD address, that
+        # process would keep running with nothing in the fleet naming it —
+        # unstoppable by retire/remove and invisible to every view.
+        peer = peer_for_session(existing[0]["current"])
+        if peer:
+            unlock(locks)
+            die("seat %s/%s still holds a live session (%s, pid %s) at addr '%s' — repointing it would strand "
+                "that process outside the fleet; retire or remove the seat first"
+                % (a.group, a.alias, existing[0]["current"][:8], peer.get("pid"), existing[0]["addr"]),
+                EXIT_UNKNOWN)
     refuse_live_name(a.alias, addr, allow_session=session or (existing[0]["current"] if existing else ""))
     # A registered session's short is whatever the harness shows for it right
     # now (a `seat add --session` seat was never spawned by agora, so nothing
@@ -1931,9 +1975,12 @@ def cmd_reply(a):
         # file belongs to a PREVIOUS turn — the live truth is the transcript.
         print(transcript_reply(cur, ref) or reply_text(s["seat_id"]) or "(no reply yet)")
     else:
-        # The recorded reply can still be stale/empty when the spawn watcher
-        # gave up before the first turn finished — fall back to the transcript.
-        print(reply_text(s["seat_id"]) or transcript_reply(cur, ref) or "(no reply yet)")
+        # The recorded reply can still be stale/empty — the spawn watcher gave
+        # up before the first turn finished, or the seat was woken natively and
+        # finished a turn no agora verb ever recorded. A transcript newer than
+        # the reply file is that turn, and it wins.
+        fresh = transcript_reply(cur, ref) if reply_stale(s["seat_id"], cur) else ""
+        print(fresh or reply_text(s["seat_id"]) or transcript_reply(cur, ref) or "(no reply yet)")
 
 
 def sync_one(s0):
@@ -1946,7 +1993,9 @@ def sync_one(s0):
     file is written in the same critical section, so a stale finalize can never
     clobber a re-fill, a resume, or a retire. An `idle` record whose harness row
     shows a running turn was woken natively (SendMessage, no agora write):
-    promote it to working.
+    promote it to working. One whose row is terminal but whose transcript is
+    newer than its reply file ran a whole natively-woken turn since the last
+    sync: re-record the reply so the seat's answer is not the previous turn's.
     """
     if s0["engine"] == "codex" or s0["status"] not in ("working", "blocked", "idle"):
         return "noop"
@@ -1964,11 +2013,19 @@ def sync_one(s0):
             return "live"  # the harness could not be asked: claim nothing
         row = harness_row(s)
         if s["status"] == "idle":
-            # Only an idle seat the harness shows as running NOW is interesting —
-            # it was woken natively (SendMessage) with no agora write. Promote it.
+            # An idle seat the harness shows as running NOW was woken natively
+            # (SendMessage) with no agora write. Promote it.
             if row and normalize_state(row) in ("working", "blocked"):
                 meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
                 return "live"
+            # A natively-woken turn can also have STARTED AND ENDED between two
+            # syncs: the record never left idle and the reply file still
+            # describes the previous turn. The transcript is the only witness.
+            if row and normalize_state(row) in ("done", "done-blocked", "failed", "stopped") \
+                    and reply_stale(s["seat_id"], cur):
+                if meta_set_if(s["seat_id"], {"updated": now()}, guard,
+                               reply=(cur, normalize_state(row), s["alias"])):
+                    return "idle"
             return "noop"
         if row is None:
             return "absent"
@@ -2026,6 +2083,24 @@ def cmd_status(a):
 # ------------------------------------------------------------ retire / remove
 
 
+def wait_codex_rc(event_log, timeout=10.0):
+    """Block until a signalled legacy codex worker has actually finished.
+
+    The wrapper's finalizer writes `<run>.rc` as the last thing it does, so
+    between the SIGTERM and that file it can still create or rewrite the run's
+    scratch — and a retire or remove that returned earlier would find its purge
+    undone. Absent an event log, or if the rc never lands, the wait expires and
+    the caller proceeds. Returns True iff the barrier was observed."""
+    el = str(event_log or "")
+    if not el.endswith(".events.jsonl"):
+        return False
+    rc = el[: -len(".events.jsonl")] + ".rc"
+    deadline = time.time() + timeout
+    while not os.path.exists(rc) and time.time() < deadline:
+        time.sleep(0.5)
+    return os.path.exists(rc)
+
+
 def stop_session(s):
     """Stop the seat's current turn. The short to stop is the CURRENT session's
     harness row when there is one (a `seat add --session` seat recorded none,
@@ -2034,7 +2109,8 @@ def stop_session(s):
     record's host identity — shorts are host-local and reusable, so a foreign
     one may name an unrelated local session. A legacy codex worker is a
     detached process we own: signalled by its recorded pid, as the old retire
-    did, when its identity is local."""
+    did, when its identity is local, then waited out to its finalizer's `.rc`
+    barrier so nothing it writes lands after a caller's purge."""
     if s["engine"] == "codex":
         pid = meta_get(s["seat_id"], "pid")
         if s["status"] in ("working", "blocked") and identity_local(s["host"], s["boot_id"]) and pid_alive(pid):
@@ -2042,6 +2118,8 @@ def stop_session(s):
                 os.kill(int(pid), signal.SIGTERM)
             except (ProcessLookupError, ValueError, TypeError, PermissionError):
                 pass
+            else:
+                wait_codex_rc(meta_get(s["seat_id"], "event_log"))
         return
     agents_refresh()
     row = harness_row(s) if s["current"] else None
@@ -2365,7 +2443,12 @@ def cmd_post(a):
     lk = board_lock(g)
     try:
         bf = os.path.join(group_dir(g), "board.jsonl")
-        rec = {"id": len(read_board(g)) + 1, **body}
+        # One past the HIGHEST id ever stored, not one past the count:
+        # `read_board` skips lines it cannot parse, so a single corrupt line
+        # would otherwise hand the new post an id a live post already holds,
+        # and every `board --id N` after it would be ambiguous.
+        ids = [p["id"] for p in read_board(g) if isinstance(p, dict) and isinstance(p.get("id"), int)]
+        rec = {"id": (max(ids) + 1) if ids else 1, **body}
         with open(bf, "a") as f:
             f.write(json.dumps(rec) + "\n")
     finally:
