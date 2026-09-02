@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.67.0",
+  "version": "7.68.0",
   "description": "Doperpowers skills and runtime bootstrap for coding agents",
   "type": "module",
   "keywords": [

@@ -16,13 +16,14 @@
 #                 service's own reconciler reclaims on its own authority).
 #                 Nothing is ever ASSERTED through it: an assertion that reads
 #                 the database proves the database, not the toolkit.
-#   daemon_stubs  scripted stand-ins for daemon-spawn / daemon-resume /
-#                 daemon-finalize / daemon-retire. Workers are daemon-spawned
-#                 Claude sessions in production; a drill spawns none. The stubs
-#                 emit the GENUINE banner shape (the dispatcher parses the uuid
-#                 out of it), write the prompt into a transcript file (delivery
-#                 IS the transcript write, which is what the relay's sentinel
-#                 gate later reads), and record their argv + BOARD_* env.
+#   agora_stub    one scripted stand-in for the agora CLI, covering the verbs
+#                 the pipeline calls: spawn / resume / sync / retire / migrate.
+#                 Workers are agora-spawned Claude sessions in production; a
+#                 drill spawns none. The stub emits the GENUINE banner shape
+#                 (the dispatcher parses the uuid out of it), writes the prompt
+#                 into a transcript file (delivery IS the transcript write,
+#                 which is what the relay's sentinel gate later reads), and
+#                 records its argv + BOARD_* env.
 #
 # ISOLATION: one harness instance per drill (harness.sh pins a container name
 # and a port, so there is one at a time per checkout anyway). Each drill boots
@@ -70,20 +71,21 @@ drill_start() {
   # The scratch world every drill runs inside. HOME is pinned because the relay
   # and successor paths resolve a session transcript under $HOME/.claude/
   # projects, and DAEMON_HOME because a fall-through would read (and write) the
-  # operator's own daemon registry.
+  # operator's own seat registry.
   DRILL_HOME="$DRILL_TMP/home"
   DAEMON_HOME="$DRILL_TMP/registry"
-  DAEMON_SCRIPTS="$DRILL_TMP/daemon-scripts"
+  AGORA_STUB="$DRILL_TMP/agora-stub"
+  AGORA_CLI="$AGORA_STUB/agora"
   PROJECTS="$DRILL_HOME/.claude/projects/-drill"
   GH_LOG="$DRILL_TMP/gh-invoked.log"
   SPAWN_LOG="$DRILL_TMP/spawn.log"
   RESUME_LOG="$DRILL_TMP/resume.log"
   SEQ_LOG="$DRILL_TMP/sequence.log"
   DEAD_FILE="$DRILL_TMP/dead-uuids"
-  mkdir -p "$DRILL_HOME" "$DAEMON_HOME" "$DAEMON_SCRIPTS" "$PROJECTS"
+  mkdir -p "$DRILL_HOME" "$DAEMON_HOME" "$AGORA_STUB" "$PROJECTS"
   : >"$GH_LOG"; : >"$SPAWN_LOG"; : >"$RESUME_LOG"; : >"$SEQ_LOG"; : >"$DEAD_FILE"
   _stub_gh
-  daemon_stubs
+  agora_stub
   _seed_session_store
 }
 
@@ -218,17 +220,78 @@ eol() { sed 's/$/;/' "$@"; }
 owner_line() { echo "owner=[$(ticket_owner "$1")]"; }
 
 # ---- the scripted worker sessions -----------------------------------------
-# No model call anywhere in this tier. The stubs stand in for the daemon layer
+# No model call anywhere in this tier. The stub stands in for the agora layer
 # itself, so a drill whose claim IS about that layer would have to say so; none
-# of the six is.
-daemon_stubs() {
-  cat >"$DAEMON_SCRIPTS/daemon-spawn.sh" <<EOF
+# of the six is. ONE executable whose first argument selects the verb, exactly
+# as the real launcher is called.
+agora_stub() {
+  cat >"$AGORA_CLI" <<EOF
 #!/usr/bin/env bash
-# Records the handover, registers a meta the way a real --no-wait spawn does,
-# and echoes the GENUINE banner line — the dispatcher parses the uuid out of it.
 set -euo pipefail
-[ "\${1:-}" = "--no-wait" ] && shift
-name="\$1"; task="\$2"; cwd="\${3:-}"; wt="\${4:-}"; model="\${5:-}"
+verb="\${1:-}"; shift || true
+case "\$verb" in
+migrate) exit 0 ;;
+retire)
+  echo "retire \$*" >> "$SPAWN_LOG"
+  exit 0 ;;
+sync)
+  # \`absent\` is the only dead answer the sweep accepts (a parked worker is
+  # \`noop\`, which is very much alive).
+  if grep -qxF "\$1" "$DEAD_FILE" 2>/dev/null; then echo absent; exit 0; fi
+  echo live
+  exit 0 ;;
+spawn) ;;
+resume)
+  # The real \`agora resume\` forks the turn and INJECTS the prompt before it
+  # blocks; the transcript write below is that injection, and it is what the
+  # relay's sentinel gate reads on a later tick.
+  if [ "\${1:-}" = "--wait" ]; then shift; fi
+  uuid="\$1"; prompt="\$2"
+  { echo "RESUME uuid=\$uuid"
+    echo "ARGV: \$*"
+    echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
+    # The run bearer is a SECRET at rest and in flight. The drills assert that it
+    # reached the child's environment, which the masked form proves exactly as well as the
+    # value does — and a log file carrying it is a credential on disk that outlives
+    # the run it belongs to.
+    env | grep '^BOARD_' | sed 's/^BOARD_RUN_TOKEN=.*/BOARD_RUN_TOKEN=<set>/' | sort || true
+  } >> "$RESUME_LOG"
+  echo "resume \$uuid" >> "$SEQ_LOG"
+  # Two ways to fail with NOTHING delivered — killed mid-flight, or a resume that
+  # returns failure without ever forking a turn. Both must leave the transcript
+  # untouched: an injected prompt is a DELIVERY, and the sweep reads it as one.
+  [ -z "\${RESUME_DIE_BEFORE:-}" ] || exit 137
+  [ -z "\${RESUME_MUST_FAIL:-}" ] || exit 1
+  cur="\$(T_P="$DAEMON_HOME/\$uuid.json" python3 -c 'import json,os
+try: print(json.load(open(os.environ["T_P"])).get("current") or "")
+except Exception: print("")')"
+  [ -n "\$cur" ] || cur="\$uuid"
+  T_P="$PROJECTS/\$cur.jsonl" T_C="\$prompt" python3 - <<'PYX'
+import json, os
+with open(os.environ["T_P"], "a") as f:
+    f.write(json.dumps({"type": "user",
+                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
+PYX
+  # Death AFTER the injection but before the caller could ack.
+  [ -z "\${RESUME_DIE_AFTER:-}" ] || exit 137
+  exit 0 ;;
+*) echo "stub agora: unexpected verb '\$verb'" >&2; exit 2 ;;
+esac
+
+# ---- spawn: records the handover, registers a record the way a real no-wait
+# spawn does, and echoes the GENUINE banner line — the dispatcher parses the
+# uuid out of it.
+name="\$1"; task="\$2"; shift 2
+cwd=""; wt=""; model=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --cwd) cwd="\$2"; shift 2 ;;
+    --worktree) wt="\$2"; shift 2 ;;
+    --model) model="\$2"; shift 2 ;;
+    --wait|--no-wait) shift ;;
+    *) shift ;;
+  esac
+done
 { echo "SPAWN name=\$name cwd=\$cwd worktree=\$wt model=\$model"
   # The run bearer is a SECRET at rest and in flight. The drills assert that it
   # reached the child's environment, which the masked form proves exactly as well as the
@@ -244,11 +307,11 @@ printf '%s' "\$task" > "$DRILL_TMP/prompt-\$name.md"
 n=\$(cat "$DRILL_TMP/.spawncount" 2>/dev/null || echo 0); n=\$((n + 1))
 echo "\$n" > "$DRILL_TMP/.spawncount"
 uuid="\$(printf 'aaaa%04d' "\$n")-0000-4000-8000-000000000000"
-U="\$uuid" N="\$name" T_DH="$DAEMON_HOME" python3 - <<'PY'
+U="\$uuid" N="\$name" C="\$cwd" T_DH="$DAEMON_HOME" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"], "status": "working",
-           "updated": "2026-08-10T00:00:00Z"},
+json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
+           "status": "working", "updated": "2026-08-10T00:00:00Z"},
           open(os.path.join(os.environ["T_DH"], u + ".json"), "w"))
 PY
 : > "$PROJECTS/\$uuid.jsonl"
@@ -265,56 +328,9 @@ PYX
 # The spawn is detached and already surviving by the time the banner prints —
 # so a crash HERE is a crash between the spawn and the bind.
 [ -z "\${SPAWN_KILL_PARENT:-}" ] || kill -9 "\$PPID" 2>/dev/null || true
-echo "daemon spawned (no-wait): \$name  [\${uuid%%-*} / \$uuid]  status=working  (reply: daemon-reply.sh \${uuid%%-*})"
+echo "seat spawned: \$name  [\${uuid%%-*} / \$uuid]  group=drill  status=working  (reply: agora reply \${uuid%%-*})"
 EOF
-  cat >"$DAEMON_SCRIPTS/daemon-resume.sh" <<EOF
-#!/usr/bin/env bash
-# The real daemon-resume forks the turn and INJECTS the prompt before it blocks;
-# the transcript write below is that injection, and it is what the relay's
-# sentinel gate reads on a later tick.
-set -euo pipefail
-uuid="\$1"; prompt="\$2"
-{ echo "RESUME uuid=\$uuid"
-  echo "ARGV: \$*"
-  echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
-  # The run bearer is a SECRET at rest and in flight. The drills assert that it
-  # reached the child's environment, which the masked form proves exactly as well as the
-  # value does — and a log file carrying it is a credential on disk that outlives
-  # the run it belongs to.
-  env | grep '^BOARD_' | sed 's/^BOARD_RUN_TOKEN=.*/BOARD_RUN_TOKEN=<set>/' | sort || true
-} >> "$RESUME_LOG"
-echo "resume \$uuid" >> "$SEQ_LOG"
-# Two ways to fail with NOTHING delivered — killed mid-flight, or a resume that
-# returns failure without ever forking a turn. Both must leave the transcript
-# untouched: an injected prompt is a DELIVERY, and the sweep reads it as one.
-[ -z "\${RESUME_DIE_BEFORE:-}" ] || exit 137
-[ -z "\${RESUME_MUST_FAIL:-}" ] || exit 1
-cur="\$(T_P="$DAEMON_HOME/\$uuid.json" python3 -c 'import json,os
-try: print(json.load(open(os.environ["T_P"])).get("current") or "")
-except Exception: print("")')"
-[ -n "\$cur" ] || cur="\$uuid"
-T_P="$PROJECTS/\$cur.jsonl" T_C="\$prompt" python3 - <<'PYX'
-import json, os
-with open(os.environ["T_P"], "a") as f:
-    f.write(json.dumps({"type": "user",
-                        "message": {"role": "user", "content": os.environ["T_C"]}}) + "\n")
-PYX
-# Death AFTER the injection but before the caller could ack.
-[ -z "\${RESUME_DIE_AFTER:-}" ] || exit 137
-exit 0
-EOF
-  cat >"$DAEMON_SCRIPTS/daemon-finalize.sh" <<EOF
-#!/usr/bin/env bash
-# \`absent\` is the only dead answer the sweep accepts (a parked worker is
-# \`noop\`, which is very much alive).
-grep -qxF "\$1" "$DEAD_FILE" 2>/dev/null && { echo absent; exit 0; }
-echo live
-EOF
-  cat >"$DAEMON_SCRIPTS/daemon-retire.sh" <<EOF
-#!/usr/bin/env bash
-echo "retire \$*" >> "$SPAWN_LOG"
-EOF
-  chmod +x "$DAEMON_SCRIPTS"/daemon-*.sh
+  chmod +x "$AGORA_CLI"
 }
 
 # Register a session meta for a run that was claimed OUT of band (a drill that
@@ -385,7 +401,7 @@ api_repo() {
 # Run a toolkit verb from inside the bound repo, in the drill's scratch world.
 # Extra env (a run bearer, a stub switch) rides in as leading VAR=VALUE words.
 in_repo() { (cd "$REPO" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
-  DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  AGORA_CLI="$AGORA_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
   LOCAL_REPO="$REPO" "$@"); }
 
 # The sweep, one phase at a time, in that same world.

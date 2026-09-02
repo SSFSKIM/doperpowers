@@ -45,14 +45,20 @@
 #                   ARCHITECT_MODEL; pinned rather than inherited so the
 #                   operator's own session model never silently re-fuses the
 #                   two lanes onto one price
-#   BOARD_SCRIPTS / DAEMON_SCRIPTS / DAEMON_HOME / IMPLEMENT_BOOTSTRAP_TEMPLATE
+#   BOARD_SCRIPTS / AGORA_CLI / DAEMON_HOME / IMPLEMENT_BOOTSTRAP_TEMPLATE
 #                   overrides (tests)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$(cd "$SKILL_DIR/../orchestrating-daemons/scripts" && pwd)}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
-export DAEMON_HOME
+AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
+# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+# then the default. Both names are exported at the same value below, so the
+# CLI, the board scripts and every child resolve one root — a pipeline that
+# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# halves of one tick reading different registries.
+DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
+AGORA_HOME="$DAEMON_HOME"
+export AGORA_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="${IMPLEMENT_BOOTSTRAP_TEMPLATE:-$SKILL_DIR/references/worker-bootstrap.md}"
@@ -78,7 +84,13 @@ git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is n
 # whatever checkout the operator happened to invoke us from.
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
-[ -x "$DAEMON_SCRIPTS/daemon-spawn.sh" ] || die "daemon-spawn.sh not found under $DAEMON_SCRIPTS"
+[ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
+# The registry root moved to ~/.claude/agora and this script scans it
+# directly, so it must never be the first process to look at an empty new
+# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# — a half-migrated registry reads as an empty fleet, which passes every
+# dedupe and cap check and dispatches over live workers.
+"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE. An api-bound repo never invokes
 # gh at all, so requiring the CLI before knowing the binding would make the
@@ -87,8 +99,8 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 # shellcheck source=../../issue-tracker/scripts/_binding.sh
 . "$BOARD_SCRIPTS/_binding.sh"
 
-# The uuid daemon-spawn --no-wait prints, from its banner line:
-#   daemon spawned (no-wait): <name>  [<short> / <uuid>]  status=working
+# The uuid `agora spawn` prints, from its banner line:
+#   seat spawned: <name>  [<short> / <uuid>]  group=<g>  status=working
 # Both dispatch paths hand that uuid to board-bind, so both parse it here.
 extract_spawn_uuid() { sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1; }
 
@@ -132,7 +144,7 @@ _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
 _claim_drop_journal() {  # <nonce>
   rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
 }
-_claim_retire_worker() { "$DAEMON_SCRIPTS/daemon-retire.sh" "$1" >/dev/null 2>&1 || true; }
+_claim_retire_worker() { "$AGORA_CLI" retire "$1" >/dev/null 2>&1 || true; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 
@@ -338,14 +350,14 @@ PY
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
 
   # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the same reason as the gh path's
-  # claude route: this dispatcher can itself run inside a gateway-routed
-  # daemon, and daemon-spawn persists what it inherits into the registry meta,
-  # so every later resume would ride the gateway while the log said claude.
+  # claude route: this dispatcher can itself run inside a gateway-routed seat,
+  # and `agora spawn` persists what it inherits into the registry record, so
+  # every later resume would ride the gateway while the log said claude.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
-    "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
-    "$model")" \
+    "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
+    --model "$model")" \
     || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
@@ -360,7 +372,7 @@ PY
   BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
     "$BOARD_SCRIPTS/board-bind.sh" "$uuid" "$C_TICKET" \
     || { echo "#$C_TICKET: bind failed — retiring the worker and releasing run $C_RUN_ID" >&2
-         "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
+         "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
   # THE HANDOFF IS DONE ONLY NOW: the journal may no longer be replayed, only
@@ -841,20 +853,20 @@ PY
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
-      "${IMPLEMENT_MODEL:-fable}")" \
+      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
+      --model "${IMPLEMENT_MODEL:-fable}")" \
       || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   else
     # Cleared, not merely unset by us: this dispatcher can itself run inside a
-    # gateway-routed daemon whose environment exports these, and daemon-spawn.sh
+    # gateway-routed seat whose environment exports these, and `agora spawn`
     # would inherit them, apply the flags AND persist them into the registry
-    # meta — so every later resume would keep riding the gateway while the log
+    # record — so every later resume would keep riding the gateway while the log
     # said engine=claude.
     local model="${IMPLEMENT_MODEL:-opus}"
     [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
-      "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
-      "$model")" \
+      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
+      --model "$model")" \
       || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
@@ -868,7 +880,7 @@ PY
     try=$((try + 1))
   done
   if [ -z "$bound" ]; then
-    "$DAEMON_SCRIPTS/daemon-retire.sh" "$uuid" >/dev/null 2>&1 || true
+    "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
     echo "#$n: bind failed — worker retired (an unbindable worker cannot be answer-relayed)" >&2
     _surf_unlock "$surf_locked"
     return 1

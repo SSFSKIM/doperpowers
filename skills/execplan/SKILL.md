@@ -34,7 +34,7 @@ In an isolated workspace (doperpowers:using-git-worktrees). Follow PLANS.md's im
 
 Run it milestone by milestone through `fork` subagents, one milestone per fork. You stay the orchestrator: the fork inherits your full context — the grill, the reasoning behind the plan, the state of the branch — so it starts oriented instead of re-deriving, and the implementation churn stays out of your context, which is what makes a long plan survivable in a single session. Dispatch in plan order and wait for each fork before the next; milestones build on each other and the next one needs the previous result in the tree. Brief each fork with its milestone's scope and acceptance, and let it own that milestone's bookkeeping and commits. When it reports back, verify the acceptance yourself — holding the whole arc is the orchestrator's job. A milestone too small to be worth a dispatch is fine to do inline; this is the default shape, not a gate.
 
-This profile fits durable background daemons (doperpowers:orchestrating-daemons): the ExecPlan is exactly what a spawn prompt can carry, and it survives the daemon's context death — the document is the memory.
+This profile fits durable background sessions — seats spawned through doperpowers:agora: the ExecPlan is exactly what a spawn prompt can carry, and it survives the seat's context death — the document is the memory.
 
 ## Exit gate
 

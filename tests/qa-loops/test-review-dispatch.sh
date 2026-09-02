@@ -3,8 +3,9 @@
 # Hermetic tests for review-dispatch.sh (the qa-loops trigger half).
 #
 # Side channels stubbed: `gh` (canned per-PR JSON + a call log), `claude`
-# (agents view from a file), and the orchestrating-daemons scripts (a stub
-# dir that logs spawn/retire and writes registry meta like the real ones).
+# (agents view from a file), and the agora CLI (one stub executable whose
+# first argument selects the verb: it logs spawn/retire/sync and writes
+# registry records like the real ones).
 # git is real: a bare origin + clone, so worktree/fetch behavior is genuine.
 set -euo pipefail
 
@@ -43,8 +44,7 @@ assert_file_exists() {
 # field as a whole token instead, so neither a path nor a longer sibling name
 # (`review-pr-3` vs `review-pr-35`) can satisfy it.
 spawn_names() {
-    sed -n -e 's/^spawn:\(--no-wait \)\{0,1\}\([^ ]*\).*/\2/p' \
-           -e 's/^codex-spawn:\(--no-wait \)\{0,1\}\([^ ]*\).*/\2/p' "$SPAWN_LOG"
+    sed -n -e 's/^spawn:\([^ ]*\).*/\1/p' "$SPAWN_LOG"
 }
 assert_no_spawn() {  # assert_no_spawn <worker-name> <label>
     if spawn_names | grep -qx -- "$1"; then
@@ -87,23 +87,61 @@ HEAD_SHA="$(git -C "$CLONE" rev-parse HEAD)"
 git -C "$CLONE" checkout -q main
 export LOCAL_REPO="$CLONE" BOARD_REPO="test/repo"
 
-# stub daemon scripts: log + register meta like the real --no-wait spawn
-STUB_DAEMONS="$TEST_ROOT/stub-daemons"; mkdir -p "$STUB_DAEMONS"
-cat > "$STUB_DAEMONS/daemon-spawn.sh" <<'STUB'
+# stub agora CLI: ONE executable whose first argument selects the verb, logging
+# argv and writing seat records the way the real verbs do.
+STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
+cat > "$STUB_AGORA/agora" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "spawn:$*" >> "$SPAWN_LOG"
-echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
-[ "${1:-}" = "--no-wait" ] && shift
-name="$1"; task="$2"; cwd="${3:-}"
-if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
-  echo "stub daemon-spawn: simulated failure for $name" >&2
-  exit 1
-fi
-printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
-n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
-uuid="$(printf 'aaaa%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" C="$cwd" SPAWN_N="$n" python3 - <<'PY'
+verb="${1:-}"; shift || true
+
+case "$verb" in
+migrate)
+  # the pipeline entrypoints fold the old registry root in before scanning it;
+  # the suite already runs against a temp DAEMON_HOME, so this is a no-op.
+  exit 0 ;;
+
+meta)
+  # `agora meta get <seat> <field>` — read one field out of the seat record.
+  [ "${1:-}" = get ] || { echo "stub agora: unsupported meta subcommand '${1:-}'" >&2; exit 2; }
+  Q="$2" F="$3" python3 - <<'PY'
+import glob, json, os
+q, f = os.environ["Q"], os.environ["F"]
+for path in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if path.endswith(".reply.json"):
+        continue
+    base = os.path.basename(path)[:-5]
+    if base != q and not base.startswith(q):
+        continue
+    try:
+        print(json.load(open(path)).get(f) or "")
+    except Exception:
+        print("")
+    break
+PY
+  ;;
+
+spawn)
+  echo "spawn:$*" >> "$SPAWN_LOG"
+  echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFORT:-}" >> "$SPAWN_LOG"
+  name="$1"; task="$2"; shift 2
+  cwd=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd) cwd="$2"; shift 2 ;;
+      --worktree|--model|--settings|--effort|--group|--role|--parent|--brief) shift 2 ;;
+      --wait|--no-wait) shift ;;
+      *) shift ;;
+    esac
+  done
+  if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
+    echo "stub agora spawn: simulated failure for $name" >&2
+    exit 1
+  fi
+  printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
+  n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
+  uuid="$(printf 'aaaa%04d' "$n")-0000-4000-8000-000000000000"
+  U="$uuid" N="$name" C="$cwd" SPAWN_N="$n" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
 json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
@@ -113,22 +151,22 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "updated": "2026-07-08T00:%02d:00Z" % int(os.environ.get("SPAWN_N") or 0)},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-# Simulate the worker's first protocol action: wait for the dispatcher-owned
-# ready file, validate it, then acknowledge before ORIENT. Tests can suppress
-# this to prove dispatch does not report success for a worker that never starts.
-bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-# The real barrier also verifies the worker's OWN registry identity against
-# the name the protocol gives it. A stub that acked without checking hid a
-# barrier no scale worker could ever satisfy (it named review-pr-<n> while a
-# scale worker is review-epic-<n>), so check it here: a mismatch leaves the
-# barrier unacked and dispatch fails exactly as it would in production.
-wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
-if [ "$wname" != "$name" ]; then
-  echo "stub worker: barrier identity mismatch (prompt names '$wname', registry name is '$name')" >&2
-  bind_ready=""
-fi
-if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
-  READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
+  # Simulate the worker's first protocol action: wait for the dispatcher-owned
+  # ready file, validate it, then acknowledge before ORIENT. Tests can suppress
+  # this to prove dispatch does not report success for a worker that never starts.
+  bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
+  # The real barrier also verifies the worker's OWN registry identity against
+  # the name the protocol gives it. A stub that acked without checking hid a
+  # barrier no scale worker could ever satisfy (it named review-pr-<n> while a
+  # scale worker is review-epic-<n>), so check it here: a mismatch leaves the
+  # barrier unacked and dispatch fails exactly as it would in production.
+  wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
+  if [ "$wname" != "$name" ]; then
+    echo "stub worker: barrier identity mismatch (prompt names '$wname', registry name is '$name')" >&2
+    bind_ready=""
+  fi
+  if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
+    READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
 import json, os, time
 ready=os.environ["READY"]
 for _ in range(500):
@@ -139,43 +177,20 @@ for _ in range(500):
         break
     time.sleep(0.01)
 PY
-fi
-if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
-  echo "daemon spawned without parseable identity"
-else
-  echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
-fi
-STUB
-cat > "$STUB_DAEMONS/codex-spawn.sh" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "codex-spawn:$*" >> "$SPAWN_LOG"
-[ "${1:-}" = "--no-wait" ] && shift
-name="$1"; task="$2"; cwd="${3:-}"
-if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
-  echo "stub codex-spawn: simulated failure for $name" >&2
-  exit 1
-fi
-printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
-n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT"
-uuid="$(printf 'cdec%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
-import json, os
-u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
-           "engine": "codex", "pid": "99999",
-           "status": "working", "updated": "2026-07-08T00:00:00Z"},
-          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
-PY
-echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working"
-STUB
-cat > "$STUB_DAEMONS/daemon-retire.sh" <<'STUB'
-#!/usr/bin/env bash
-# Faithful to the real daemon-retire.sh: mark the meta retired and bump
-# `updated`. A log-only stub let a "retired" failure keep its status=error,
-# which is precisely the evidence the real one destroys.
-echo "retire:$1" >> "$SPAWN_LOG"
-python3 - "$1" <<'PY'
+  fi
+  if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
+    echo "seat spawned without parseable identity"
+  else
+    echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working"
+  fi
+  ;;
+
+retire)
+  # Faithful to the real `agora retire`: mark the record retired and bump
+  # `updated`. A log-only stub let a "retired" failure keep its status=error,
+  # which is precisely the evidence the real one destroys.
+  echo "retire:$1" >> "$SPAWN_LOG"
+  python3 - "$1" <<'PY'
 import glob, json, os, sys
 q = sys.argv[1]
 for path in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
@@ -195,21 +210,20 @@ for path in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     m["updated"] = u[:-2] + "%02dZ" % min(59, int(u[-3:-1]) + 1)
     json.dump(m, open(path, "w"), indent=2)
 PY
-STUB
-# Faithful stand-in for daemon-finalize.sh: same contract (noop/live/absent/
-# idle/error on stdout), driven by the registry meta + the mock agents view;
-# reply content comes from an optional $MOCK_DIR/reply-<uuid>.txt fixture.
-cat > "$STUB_DAEMONS/daemon-finalize.sh" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-meta=""
-for f in "$DAEMON_HOME"/*.json; do
-  case "$f" in *.reply.json) continue ;; esac
-  case "$(basename "$f" .json)" in "$1"*) meta="$f"; break ;; esac
-done
-[ -n "$meta" ] || { echo "noop"; exit 0; }
-uuid="$(basename "$meta" .json)"
-out="$(M="$meta" A="$MOCK_DIR/agents.json" python3 <<'PY'
+  ;;
+
+sync)
+  # Faithful stand-in for `agora sync`: same contract (noop/live/absent/idle/
+  # error on stdout), driven by the seat record + the mock agents view; reply
+  # content comes from an optional $MOCK_DIR/reply-<uuid>.txt fixture.
+  meta=""
+  for f in "$DAEMON_HOME"/*.json; do
+    case "$f" in *.reply.json) continue ;; esac
+    case "$(basename "$f" .json)" in "$1"*) meta="$f"; break ;; esac
+  done
+  [ -n "$meta" ] || { echo "noop"; exit 0; }
+  uuid="$(basename "$meta" .json)"
+  out="$(M="$meta" A="$MOCK_DIR/agents.json" python3 <<'PY'
 import json, os
 m = json.load(open(os.environ["M"]))
 if m.get("engine") == "codex" or m.get("status") not in ("working", "blocked"):
@@ -221,7 +235,7 @@ except Exception:
     rows = []
 row = next((r for r in rows if r.get("sessionId") == cur), None)
 state = (row or {}).get("state") or ""
-# mirror the real script: a lingering finished session stays state=working;
+# mirror the real verb: a lingering finished session stays state=working;
 # status (busy -> idle) is the turn signal
 if row is not None and state == "working" and row.get("status") == "idle":
     state = "done"
@@ -235,24 +249,30 @@ else:
     print("error")
 PY
 )"
-case "$out" in
-  idle|error)
-    if [ -f "$MOCK_DIR/reply-$uuid.txt" ]; then
-      cp "$MOCK_DIR/reply-$uuid.txt" "$DAEMON_HOME/$uuid.reply.txt"
-    else
-      echo "review finished." > "$DAEMON_HOME/$uuid.reply.txt"
-    fi
-    M="$meta" S="$out" python3 -c '
+  case "$out" in
+    idle|error)
+      if [ -f "$MOCK_DIR/reply-$uuid.txt" ]; then
+        cp "$MOCK_DIR/reply-$uuid.txt" "$DAEMON_HOME/$uuid.reply.txt"
+      else
+        echo "review finished." > "$DAEMON_HOME/$uuid.reply.txt"
+      fi
+      M="$meta" S="$out" python3 -c '
 import json, os
 m = json.load(open(os.environ["M"]))
 m["status"] = os.environ["S"]
 json.dump(m, open(os.environ["M"], "w"))
 ' ;;
+  esac
+  echo "$out"
+  ;;
+
+*)
+  echo "stub agora: unexpected verb '$verb'" >&2
+  exit 2 ;;
 esac
-echo "$out"
 STUB
-chmod +x "$STUB_DAEMONS/daemon-spawn.sh" "$STUB_DAEMONS/codex-spawn.sh" "$STUB_DAEMONS/daemon-retire.sh" "$STUB_DAEMONS/daemon-finalize.sh"
-export DAEMON_SCRIPTS="$STUB_DAEMONS"
+chmod +x "$STUB_AGORA/agora"
+export AGORA_CLI="$STUB_AGORA/agora"
 
 # Minimal board-bind stand-in: this suite tests dispatch ownership mechanics,
 # while the issue-tracker suite tests board-bind's GitHub validation itself.
@@ -464,7 +484,7 @@ reset_state() { rm -f "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; rm -rf "
 # ---- triggered dispatch (happy path) ------------------------------------------
 echo "triggered dispatch:"
 out="$("$DISPATCH" 5)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "spawns --no-wait with the registry name"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "spawns (default no-wait) with the registry name"
 assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"ticket": "7"' "ticketed Reviewer worker is bound for board-answer resume"
 assert_contains "$(cat "$DAEMON_HOME/aaaa0001-0000-4000-8000-000000000000.json")" '"role": "QAGENT"' "reviewer meta records its lane so an answered park returns to in-review, not in-progress"
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
@@ -517,7 +537,7 @@ if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
 # lever); the sibling skills the dispatcher sources are symlinked back.
 echo "unrendered placeholder fails closed:"
 ALT_SKILLS="$TEST_ROOT/alt-skills"; mkdir -p "$ALT_SKILLS"
-ln -s "$REPO_ROOT/skills/orchestrating-daemons" "$ALT_SKILLS/orchestrating-daemons"
+ln -s "$REPO_ROOT/skills/agora" "$ALT_SKILLS/agora"
 cp -R "$REPO_ROOT/skills/qa-loops" "$ALT_SKILLS/qa-loops"
 printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
     >> "$ALT_SKILLS/qa-loops/references/review-worker-bootstrap.md"
@@ -637,7 +657,7 @@ out="$(WORKTREE_BOOTSTRAP_CMD='touch .bootstrapped && echo deps-ready' "$DISPATC
 WT="$LOCAL_REPO/.claude/worktrees/review-pr-5"
 assert_file_exists "$WT/.bootstrapped" "bootstrap command ran inside the fresh worktree"
 assert_contains "$(cat "$DAEMON_HOME/review-pr-5.bootstrap.log" 2>/dev/null || true)" "deps-ready" "bootstrap output lands in the registry log"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "bootstrapped dispatch still spawns"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "bootstrapped dispatch still spawns"
 assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "bootstrapped worktree still ends at the PR head SHA"
 
 # Trust invariant: f.txt exists only on the PR head (feat/x), not on main —
@@ -655,7 +675,7 @@ assert_file_exists "$WT/f.txt" "worktree carries the PR head after the bootstrap
 reset_state
 out="$(WORKTREE_BOOTSTRAP_CMD='echo boom >&2; exit 7' "$DISPATCH" 5 2>&1)"
 assert_contains "$out" "bootstrap failed rc=7" "failed bootstrap is reported with its exit code"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "failed bootstrap never blocks dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "failed bootstrap never blocks dispatch"
 
 # Budget overrun: TERM (then KILL) fires and the dispatch still completes —
 # never hangs for the sleep's full 300s.
@@ -664,7 +684,7 @@ t0=$SECONDS
 out="$(WORKTREE_BOOTSTRAP_CMD='sleep 300' WORKTREE_BOOTSTRAP_TIMEOUT=1 "$DISPATCH" 5 2>&1)"
 elapsed=$((SECONDS - t0))
 assert_contains "$out" "bootstrap failed" "overrunning bootstrap is killed and reported"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "killed bootstrap never blocks dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "killed bootstrap never blocks dispatch"
 if [ "$elapsed" -lt 60 ]; then
     pass "budget enforcement is prompt (${elapsed}s)"
 else
@@ -698,7 +718,7 @@ t = time.time() - 3600
 os.utime(sys.argv[1], (t, t))
 PY
 out="$("$DISPATCH" 5)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "stale lock is stolen and dispatch proceeds"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "stale lock is stolen and dispatch proceeds"
 if [ -d "$DAEMON_HOME/review-pr-5.dispatch.lock" ]; then
     fail "lock is released after dispatch"
 else
@@ -734,7 +754,7 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "live ACTIVE reviewer spawns nothing"
 reset_state; seed_reviewer working    # agents.json now [] → session gone
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "dead reviewer retired"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "dead reviewer respawned"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "dead reviewer respawned"
 
 reset_state
 H="old-host" B="boot-old" python3 - <<'PY'
@@ -748,26 +768,26 @@ PY
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "foreign-host Claude reviewer is retired despite a visible migrated session"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude reviewer is respawned"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "foreign-host Claude reviewer is respawned"
 
 reset_state; seed_reviewer idle
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "triggered mode retires a finished reviewer"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered mode re-dispatches after an explicit event"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "triggered mode re-dispatches after an explicit event"
 
 # ---- finished-but-unfinalized reviewer (the one-harness lifecycle) ---------------
 # A --no-wait worker's meta stays status=working after its turn ends; only
 # `claude agents` knows the truth, and finished --bg sessions stay LISTED
 # indefinitely — presence alone is NOT liveness. Dispatch must finalize
-# through daemon-finalize.sh before deciding.
+# through `agora sync` before deciding.
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
 # The retire that follows overwrites status with `retired` (as the real
-# daemon-retire does), so finalize's own durable evidence is its reply file.
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch finalized the meta through daemon-finalize (reply recorded)"
+# `agora retire` does), so sync's own durable evidence is its reply file.
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch reconciled the record through agora sync (reply recorded)"
 
 # The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
 # so the sweep's outage retry works on the one-harness lifecycle.
@@ -795,7 +815,7 @@ reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "working", "status": "idle"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "lingering finished reviewer (state=working, status=idle) is finalized + retired"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "lingering finished reviewer re-dispatches on an explicit event"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "lingering finished reviewer re-dispatches on an explicit event"
 assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "lingering finished reviewer was finalized (reply recorded)"
 
 # ...and a genuinely mid-turn reviewer (status=busy) still skips as active.
@@ -811,7 +831,7 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 # meta lingers status=working after its turn ends, and board-bind protects a
 # working owner as ACTIVE. Left alone that refuses the reviewer's bind on every
 # tick — which retired three reviewers in the 2026-07-18 live shakedown. The
-# dispatcher therefore runs daemon-finalize.sh over every meta bound to the
+# dispatcher therefore runs `agora sync` over every meta bound to the
 # ticket first, so the registry states the truth before ownership is adjudicated.
 # The scale-review half of this is covered further down (the epic's Architect);
 # these two cases pin the PR half, and pin BOTH directions of what finalize
@@ -849,7 +869,7 @@ out="$("$DISPATCH" 5 2>&1)" || true
 assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a finished owner"
 assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering finished ticket owner is finalized before the bind"
 assert_file_exists "$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.reply.txt" "finalize recorded the owner's closing reply"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "reviewer is dispatched over the normalized owner"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "reviewer is dispatched over the normalized owner"
 assert_equals "$(ticket_owner 7)" "review-pr-5" "the reviewer's bind succeeded — it now owns #7"
 
 # (b) counter-case: the owner is genuinely mid-turn. finalize keeps it live,
@@ -874,12 +894,12 @@ fi
 # own `DAEMON_HOME="${DAEMON_HOME:-...}"` default assignment computes it fine
 # either way, but _reviewer_meta's python subprocess only sees it if the
 # shell var was exported (or passed inline). Seed the registry at the
-# DEFAULT location ($HOME/.claude/orchestrating-daemons, not the test's
+# DEFAULT location ($HOME/.claude/agora, not the test's
 # $DAEMON_HOME override) and invoke the dispatcher with DAEMON_HOME entirely
 # absent from the child environment.
 echo "dedupe without exported DAEMON_HOME:"
 reset_state
-DEFAULT_DAEMON_HOME="$HOME/.claude/orchestrating-daemons"; mkdir -p "$DEFAULT_DAEMON_HOME"
+DEFAULT_DAEMON_HOME="$HOME/.claude/agora"; mkdir -p "$DEFAULT_DAEMON_HOME"
 NOEXPORT_UUID="cafe1234-0000-4000-8000-000000000000"
 D="$DEFAULT_DAEMON_HOME" U="$NOEXPORT_UUID" python3 - <<'PY'
 import json, os
@@ -890,7 +910,7 @@ json.dump({"uuid": os.environ["U"], "current": os.environ["U"],
 PY
 echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\", \"state\": \"working\"}]" > "$MOCK_DIR/agents.json"
 out="$(env -u DAEMON_HOME HOME="$HOME" PATH="$PATH" LOCAL_REPO="$LOCAL_REPO" BOARD_REPO="$BOARD_REPO" \
-    DAEMON_SCRIPTS="$DAEMON_SCRIPTS" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
+    AGORA_CLI="$AGORA_CLI" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
     PROMPT_DIR="$PROMPT_DIR" STUB_COUNT="$STUB_COUNT" "$DISPATCH" 5)"
 assert_contains "$out" "active reviewer" "ACTIVE+live reviewer skipped even with DAEMON_HOME absent from the child env"
 assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn logged — DAEMON_HOME reached _reviewer_meta via explicit passthrough, not inheritance"
@@ -903,7 +923,7 @@ out="$("$DISPATCH" --sweep)"
 assert_equals "$(cat "$SPAWN_LOG")" "" "sweep skips finished(5)/draft(6)"
 reset_state
 out="$("$DISPATCH" --sweep)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep dispatches the unbound open PR"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "sweep dispatches the unbound open PR"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-6" "sweep never dispatches a draft"
 
 # ---- sweep honors REVIEW_MAX_CONCURRENT (gh-mode spawn throttle) ----------------
@@ -928,7 +948,7 @@ json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: somethin
 PY
 reset_state
 out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "cap=1: the first unbound PR is dispatched"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-4" "cap=1: the first unbound PR is dispatched"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "cap=1: the second PR is not spawned this tick"
 assert_contains "$out" "#5: review cap reached (1 live) — queued for a later tick" "the queued PR is reported by name"
 # a live reviewer seeded at cap: NOTHING new spawns, and the queue message names both
@@ -953,7 +973,7 @@ json.dump({"uuid": "dead0000-0000-4000-8000-000000000000",
                             "dead0000-0000-4000-8000-000000000000.json"), "w"))
 PY
 out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "a stale-boot working meta does not hold a cap slot"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-4" "a stale-boot working meta does not hold a cap slot"
 : > "$SPAWN_LOG"
 # premature-idle metas hold a slot; genuinely finished idle metas do not.
 # The no-wait spawn can record idle at BIRTH (fast poll) with an empty
@@ -985,11 +1005,11 @@ json.dump({"uuid": "beb20000-0000-4000-8000-000000000000", "current": "beb20000-
 open(os.path.join(home, "beb20000-0000-4000-8000-000000000000.reply.txt"), "w").write("x" * 400)
 PY
 out="$(REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "a finished idle meta (substantive reply) frees its slot"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-4" "a finished idle meta (substantive reply) frees its slot"
 : > "$SPAWN_LOG"
 # triggered dispatch bypasses the cap (explicit event)
 out="$(REVIEW_MAX_CONCURRENT=0 "$DISPATCH" 4 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "triggered dispatch is never gated by the cap"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-4" "triggered dispatch is never gated by the cap"
 # ---- sweep priority pre-pass (dp#64) --------------------------------------------
 # The listing rides gh's newest-first server order, so under sustained inflow
 # a full cap starves the old cohort — its turn never comes (observed: 11 PRs
@@ -1009,7 +1029,7 @@ json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: somethin
           open(os.path.join(d, "pr-list.json"), "w"))
 PY
 out="$(REVIEW_PRIORITY_LABEL=review-priority REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "the labeled cohort jumps the newest-first order"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the labeled cohort jumps the newest-first order"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-pr-4" "cap=1: the unlabeled PR queues behind it"
 assert_contains "$out" "#4: review cap reached (1 live) — queued for a later tick" "the deferred PR is still reported by name"
 # The starved cohort can sit BEYOND the 100-newest window the main listing
@@ -1028,7 +1048,7 @@ json.dump([{"number": 5, "isDraft": False, "labels": [{"name": "review-priority"
           open(os.path.join(d, "pr-list-prio.json"), "w"))
 PY
 out="$(REVIEW_PRIORITY_LABEL=review-priority REVIEW_MAX_CONCURRENT=1 "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a labeled PR beyond the listing window still enumerates first"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "a labeled PR beyond the listing window still enumerates first"
 rm -f "$MOCK_DIR/pr-list-prio.json"
 
 # restore the canonical pr list for later sections
@@ -1062,7 +1082,7 @@ assert_contains "$out" "the park's wake target" "the sweep says why it leaves th
 assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "a parked ticket's resumable reviewer is not retired"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "sweep spawns no reviewer over a parked ticket"
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "triggered dispatch still proceeds over the park"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "triggered dispatch still proceeds over the park"
 N=7 python3 -c 'import json,os
 p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d.pop("labels", None)
@@ -1090,7 +1110,7 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d["labels"] = [{"name": "status:in-review"}]
 json.dump(d, open(p, "w"))'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a single status:in-review label still dispatches"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "a single status:in-review label still dispatches"
 # zero labels keeps the deliberate fail-open
 reset_state
 N=7 python3 -c 'import json,os
@@ -1098,7 +1118,7 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d.pop("labels", None)
 json.dump(d, open(p, "w"))'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "an untracked ticket still fails open, as before"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "an untracked ticket still fails open, as before"
 # ...but a CLOSED linked ticket is not untracked, it is FINISHED. A done or
 # wontfix write closes the issue AND strips its status label, so a
 # labels-only lookup said nothing and run_for read that silence as
@@ -1121,7 +1141,7 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d["labels"] = "not-a-list"
 json.dump(d, open(p, "w"))'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a malformed status lookup still fails open"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "a malformed status lookup still fails open"
 # leave the fixture as the blocks below expect it: OPEN, no labels
 N=7 python3 -c 'import json,os
 p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
@@ -1158,7 +1178,7 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns no reviewer over an in-prog
 
 # ---- Finding 1: the DISPATCHER (not the dying worker) retires a stale reviewer --
 # The independent review caught a real defect in the original self-retire fix:
-# daemon-retire.sh calls `claude stop` BEFORE writing status=retired, so a
+# `agora retire` calls `claude stop` BEFORE writing status=retired, so a
 # worker asking to stop itself most likely never reaches that write — the
 # meta would finalize idle instead, which is EXACTLY the state that strands
 # it forever. The corrected mechanism retires from the sweep instead: once
@@ -1193,7 +1213,7 @@ assert_contains "$out" "still-active reviewer owns its own exit" "sweep names wh
 
 # ---- the ticket's return to in-review dispatches a fresh reviewer, unattended --
 # Simulates the state the retire above actually produces (unlike self-retire,
-# daemon-retire.sh here runs from the dispatcher against an ALREADY-finished
+# `agora retire` here runs from the dispatcher against an ALREADY-finished
 # session, so `claude stop` is a harmless no-op and the status=retired write
 # always lands). The moment the ticket returns to in-review, that SAME
 # registry entry must hit the pre-existing "none / retired -> dispatch" row
@@ -1204,7 +1224,7 @@ p = os.environ["MOCK_DIR"] + "/issue-" + os.environ["N"] + ".json"
 d = json.load(open(p)); d.pop("labels", None)
 json.dump(d, open(p, "w"))'
 out="$("$DISPATCH" --sweep)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "the ticket's return to in-review dispatches a fresh reviewer, unattended"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the ticket's return to in-review dispatches a fresh reviewer, unattended"
 
 # ---- sweep retries an engine-unavailable reviewer -------------------------------
 reset_state
@@ -1287,7 +1307,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep finalized the errored session through daemon-finalize (reply recorded)"
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep reconciled the errored session through agora sync (reply recorded)"
 assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"retired_from": "failure"' "and its retirement is stamped as a FAILURE one, so the streak can still see it"
 assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
 
@@ -1333,6 +1353,54 @@ printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as one 3-streak"
 
+# A RE-FILLED SEAT KEEPS ONE RECORD. Three failed reviewers on this PR are no
+# longer three rows — they are one row whose two previous occupants sit in
+# `history` — so a streak counted by rows alone would read 1 and the cap would
+# be unreachable exactly where it matters most (a gateway refusing every turn).
+seed_seat_record() {  # $1 = JSON array of history occupants (status string
+                      #      or a {"status":...,"retired_from":...} object)
+    reset_state
+    U="feed0009-0000-4000-8000-000000000000" H="$1" python3 - <<'PY'
+import json, os
+u = os.environ["U"]
+hist = []
+for i, occ in enumerate(json.loads(os.environ["H"])):
+    if not isinstance(occ, dict):
+        occ = {"status": occ}
+    entry = {"current": "old-%d" % i, "short": "old%d" % i, "ticket": "5",
+             "ended": "2026-07-0%dT00:00:00Z" % (i + 1)}
+    entry.update(occ)
+    hist.append(entry)
+json.dump({"uuid": u, "current": u, "name": "review-pr-5", "status": "error",
+           "history": hist, "updated": "2026-07-09T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+    printf '\n' > "$DAEMON_HOME/feed0009-0000-4000-8000-000000000000.reply.txt"
+}
+seed_seat_record '["error", "error"]'
+OUT_SEAT="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "one seat whose two previous occupants also failed reaches the cap"
+assert_contains "$OUT_SEAT" "3 consecutive" "...and names the cap as the skip reason"
+
+# ...but LIFETIME FILLS ARE NOT FAILURES. A seat re-filled twice cleanly and
+# failing once has failed ONCE: counting fills would retire a healthy PR after
+# two ordinary re-reviews plus a single outage. Only the trailing run of failed
+# occupants counts, so the first clean one ends it.
+seed_seat_record '["idle", "idle"]'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "two clean re-fills then one failure is a streak of 1, not 3"
+
+# A RETIREMENT ERASES THE STATUS IT REPLACED: `agora retire` writes
+# status=retired over the failure, so a failed occupant reads `retired` once it
+# has been retired into history. The `retired_from: failure` stamp
+# _retire_failed writes first is the durable evidence — read it on history
+# entries too, or the streak forgets every failure the moment its occupant is
+# retired and the cap is unreachable for the dead-worker cycle it exists for.
+seed_seat_record '[{"status": "retired", "retired_from": "failure"}, {"status": "retired", "retired_from": "failure"}]'
+OUT_STAMP="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "retired-with-a-failure-stamp occupants still count toward the cap"
+assert_contains "$OUT_STAMP" "3 consecutive" "...and the cap is named as the skip reason"
+
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"
 reset_state
@@ -1357,7 +1425,7 @@ assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "stale worktree dir r
 echo "live worktree guard:"
 reset_state
 out="$("$DISPATCH" 5)"                                     # real dispatch: (re)creates $WT
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "setup: worktree created via a real dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "setup: worktree created via a real dispatch"
 reset_state                                                  # clears registry → dedupe alone would say "dispatch"
 echo "[{\"id\": \"live0001\", \"sessionId\": \"live0001-0000-4000-8000-000000000000\", \"cwd\": \"$WT\"}]" \
     > "$MOCK_DIR/agents.json"
@@ -1381,7 +1449,7 @@ PY
 echo "[{\"id\": \"foreign1\", \"sessionId\": \"foreign1-0000-4000-8000-000000000000\", \"cwd\": \"$WT\"}]" \
     > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host Claude session does not occupy the worktree"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "foreign-host Claude session does not occupy the worktree"
 assert_not_contains "$out" "live daemon occupies" "foreign-host Claude session does not block removal"
 reset_state
 
@@ -1399,7 +1467,7 @@ PY
 echo "[{\"id\": \"linger01\", \"sessionId\": \"linger01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"working\", \"status\": \"idle\"}]" \
     > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a finished lingering session frees the worktree for re-dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "a finished lingering session frees the worktree for re-dispatch"
 assert_not_contains "$out" "live daemon occupies" "finished lingering session does not block worktree removal"
 reset_state
 
@@ -1418,7 +1486,7 @@ PY
 echo "[{\"id\": \"retire01\", \"sessionId\": \"retire01-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"stopped\"}]" \
     > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "a retired reviewer's statusless stopped row frees the worktree"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "a retired reviewer's statusless stopped row frees the worktree"
 assert_not_contains "$out" "live daemon occupies" "retired meta overrides the statusless stopped row"
 reset_state
 
@@ -1437,6 +1505,17 @@ echo "[{\"id\": \"parked01\", \"sessionId\": \"parked01-0000-4000-8000-000000000
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_contains "$out" "live daemon occupies" "a parked (non-retired) stopped session still occupies the worktree"
 assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn over a parked session's worktree"
+reset_state
+
+# ...and the re-fill shape: a seat keeps ONE record and moves `current` to the
+# new session, so an EARLIER occupant of the same worktree is no longer keyed
+# in the registry at all. Its stopped row would otherwise hit the conservative
+# unmanaged branch and pin the worktree forever after the first re-fill.
+echo "[{\"id\": \"gone0001\", \"sessionId\": \"gone0001-0000-4000-8000-000000000000\", \"cwd\": \"$WT\", \"state\": \"stopped\"}]" \
+    > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "an unregistered previous occupant's stopped row frees the worktree"
+assert_not_contains "$out" "live daemon occupies" "a terminated unmanaged row does not block worktree removal"
 reset_state
 
 # ...while a managed local session that is genuinely mid-turn (status=busy)
@@ -1473,7 +1552,7 @@ echo "sweep failure isolation:"
 # that (`#3: gh pr view failed`, reaching the sweep's reporter). This section
 # instead simulates a SPAWN-time failure (e.g. a daemon registry write
 # conflict) for review-pr-4 specifically, via the stub's FAIL_SPAWN_FOR hook:
-# `daemon-spawn.sh` is dispatch_one's actual *last* command, so its failure
+# `agora spawn` is dispatch_one's actual *last* command, so its failure
 # is the one that exercises the sweep's own `|| echo "dispatch error"`
 # loop-isolation reporter directly, distinct from the per-step gh/git guards
 # already covered elsewhere in this file.
@@ -1500,7 +1579,7 @@ json.dump([{"number": 4, "isDraft": False, "labels": [], "title": "fix: somethin
 PY
 reset_state
 out="$(FAIL_SPAWN_FOR="review-pr-4" "$DISPATCH" --sweep 2>&1)" || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "sweep still dispatches PR 5 after PR 4 (earlier) fails mid-dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "sweep still dispatches PR 5 after PR 4 (earlier) fails mid-dispatch"
 assert_contains "$out" "#4: dispatch error (continuing sweep)" "sweep surfaces PR 4's dispatch failure instead of swallowing it"
 
 # ---- dispatch_one step guards (nounset loop kill / stale-state contamination) ----
@@ -1530,7 +1609,7 @@ reset_state
 out="$("$DISPATCH" --sweep 2>&1)" || true
 assert_contains "$out" "#3: gh pr view failed" "first-PR gh failure surfaced as a per-step error"
 assert_contains "$out" "#3: dispatch error (continuing sweep)" "first-PR gh failure reaches the sweep reporter"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "loop survives a first-PR gh failure (no nounset kill)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "loop survives a first-PR gh failure (no nounset kill)"
 assert_no_spawn "review-pr-3" "failing first PR is not spawned"
 
 # (b) contamination: [good-A(5), bad(3), good-B(4)] — good-B on its OWN
@@ -1564,7 +1643,7 @@ out="$("$DISPATCH" --sweep 2>&1)" || true
 assert_no_spawn "review-pr-3" "bad PR after a good one is never spawned (no stale-state dispatch)"
 if [ -f "$PROMPT_DIR/review-pr-3.prompt" ]; then
     fail "no prompt rendered for the bad PR"; else pass "no prompt rendered for the bad PR"; fi
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-4" "good-B after the bad PR still dispatched"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-4" "good-B after the bad PR still dispatched"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-pr-4" rev-parse HEAD)" "$HEAD_SHA2" "good-B worktree at its OWN head SHA, not the previous PR's"
 
 # ---- risk-surface manifest (read from BASE, not HEAD) + rollout flags ----------
@@ -1632,7 +1711,7 @@ echo "engine switch (one harness, two model routes):"
 reset_state
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
 WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
@@ -1646,7 +1725,7 @@ assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prom
 reset_state
 gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-42" "engine:claude label overrides env"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-42" "engine:claude label overrides env"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "claude route spawns without the gateway settings, at effort high"
 if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
     pass "claude route pins the QAgent model to opus"
@@ -1659,9 +1738,9 @@ assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the s
 reset_state
 gh_pr 43 OPEN 0 "engine:claude"
 # The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
-# itself be running inside a gateway-routed daemon whose environment exports
-# these, daemon-spawn would inherit them AND persist them into the registry
-# meta, and every later resume of this reviewer would ride the gateway while
+# itself be running inside a gateway-routed seat whose environment exports
+# these, `agora spawn` would inherit them AND persist them into the registry
+# record, and every later wake of this reviewer would ride the gateway while
 # the log said claude.
 DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
     run_dispatch 43
@@ -1673,7 +1752,7 @@ assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient ga
 reset_state
 gh_pr 44 OPEN 0 ""
 env -u WORKER_ENGINE "$DISPATCH" 44
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "built-in default route is plain Claude (no gateway settings) at effort high"
 if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
     pass "built-in default pins the QAgent model to opus"
@@ -1697,7 +1776,7 @@ assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 : > "$SPAWN_LOG"
 out="$(WORKER_ENGINE=codex run_dispatch 43)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
 
 # ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
 # The "live worktree guard" section above pins _wt_occupied's FIRST branch (a
@@ -1714,7 +1793,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-43" "dead codex
 echo "live worktree guard (codex registry scan):"
 reset_state
 out="$("$DISPATCH" 5)"                                     # setup: (re)creates $WT via a real dispatch
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "setup: worktree created via a real dispatch"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "setup: worktree created via a real dispatch"
 reset_state                                                  # clears registry + agents.json ([] by reset_state)
 
 # (a) live codex-engine meta, same cwd, status working → OCCUPIED, blocked
@@ -1747,7 +1826,7 @@ json.dump({"uuid": "cdec8001-0000-4000-8000-000000000000",
 PY
 : > "$SPAWN_LOG"
 out="$("$DISPATCH" 5)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "dead codex pid in the registry does not block removal — dispatch proceeds"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "dead codex pid in the registry does not block removal — dispatch proceeds"
 
 # (c) guard: a STALE claude-engine "working" meta in this SAME cwd must NOT
 # block removal either. This pins the fail-open behavior the task required
@@ -1764,7 +1843,7 @@ json.dump({"uuid": "aaaa9001-0000-4000-8000-000000000000",
           open(os.path.join(os.environ["DAEMON_HOME"], "aaaa9001-0000-4000-8000-000000000000.json"), "w"))
 PY
 out="$("$DISPATCH" 5)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "stale claude-engine meta in the same cwd does not block removal (fail-open preserved)"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "stale claude-engine meta in the same cwd does not block removal (fail-open preserved)"
 reset_state
 
 # (d) host-aware: a codex meta whose pid is live HERE but was recorded on
@@ -1782,7 +1861,7 @@ json.dump({"uuid": "cdec8002-0000-4000-8000-000000000000",
 PY
 : > "$SPAWN_LOG"
 out="$("$DISPATCH" 5)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host codex pid does not block removal — dispatch proceeds"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "foreign-host codex pid does not block removal — dispatch proceeds"
 kill "$WTPID" 2>/dev/null; wait "$WTPID" 2>/dev/null || true
 reset_state
 
@@ -1802,7 +1881,7 @@ json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
 PY
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:cdec8003" "foreign-host live pid → reviewer treated as dead and retired"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "foreign-host live pid → respawned"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "foreign-host live pid → respawned"
 reset_state
 # A rebuilt host can keep its hostname while getting a fresh pid namespace.
 PID="$DEDUPID" H="$(hostname)" python3 - <<'PY'
@@ -1816,7 +1895,7 @@ json.dump({"uuid": "cdec8003-0000-4000-8000-000000000000",
 PY
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:cdec8003" "prior-boot live pid → reviewer treated as dead and retired"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "prior-boot live pid → respawned"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "prior-boot live pid → respawned"
 reset_state
 # control: same live pid, HOST MATCHING this machine → still a live occupant
 PID="$DEDUPID" H="$(hostname)" B="$DAEMON_BOOT_ID" python3 - <<'PY'
@@ -1890,7 +1969,7 @@ out="$("$DISPATCH" --sweep 2>&1)"
 assert_contains "$(cat "$DAEMON_HOME/arch0001-0000-4000-8000-000000000000.json")" '"status": "idle"' \
     "the epic's lingering Architect owner is finalized before the scale reviewer binds"
 assert_contains "$out" "review-epic-20" "sweep dispatches a scale reviewer onto the in-review epic"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "scale reviewer spawns under the review-epic-<n> registry name"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "scale reviewer spawns under the review-epic-<n> registry name"
 assert_not_contains "$(cat "$SPAWN_LOG")" "review-epic-21" "an in-review LEAF is never scale-reviewed (PRs drive leaves)"
 EPIC_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$EPIC_PROMPT" '`REVIEW_MODE`: scale' "reviewer prompt carries the scale-review mode"
@@ -1930,7 +2009,7 @@ assert_contains "$(cat "$GIT_CALL_LOG")" "fetch -q origin refs/pull/41/head" \
 # the fetch above genuinely failed — and the reviewer still went out.
 assert_contains "$out" "refs/pull/41/head is unfetchable" \
     "an unfetchable pull head is logged"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" \
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" \
     "...and the scale review is dispatched anyway"
 
 # A live scale reviewer dedupes the next sweep — same registry machinery the
@@ -1988,7 +2067,7 @@ PY
 out5="$("$DISPATCH" --sweep 2>&1)"
 assert_contains "$out5" "new closure package, new recomposition cycle" "sweep names the superseded reviewer it retired"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:" "the superseded reviewer's terminal meta is retired"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the second recomposition cycle dispatches a fresh scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "the second recomposition cycle dispatches a fresh scale reviewer"
 assert_contains "$(cat "$PROMPT_DIR/review-epic-20.prompt")" "$PKG2" "the second reviewer is bound to the NEW closure package"
 
 # An epic that has LEFT in-review for good (its verdict closed it) is no
@@ -2037,7 +2116,7 @@ json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
 PY
 out7="$("$DISPATCH" --sweep 2>&1)"
 assert_contains "$out7" "review-epic-20" "the sweep reports the scale dispatch it made"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an epic with an integration branch dispatches its scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "an epic with an integration branch dispatches its scale reviewer"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$INT_SHA" \
     "the scale worktree sits at the epic's integration-branch head"
 INT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
@@ -2063,7 +2142,7 @@ for it in issues:
 json.dump(issues, open(p, "w"))
 PY
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the next cycle still dispatches its scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "the next cycle still dispatches its scale reviewer"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" \
     "$(git -C "$LOCAL_REPO" rev-parse origin/main)" \
     "with no branch: of its own it falls back to the default branch, not the previous cycle's integration ref"
@@ -2094,7 +2173,7 @@ json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
 PY
 : > "$SPAWN_LOG"
 out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-30" "the labelled epic gets its scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-30" "the labelled epic gets its scale reviewer"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "engine:claude on the EPIC routes its scale review through the claude harness at effort high"
 # ...and an unlabelled epic still takes the environment default (the gateway
 # route), which is what the block above already exercised on #20.
@@ -2196,7 +2275,7 @@ json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json")
 PY
 out9="$("$DISPATCH" --sweep 2>&1)"
 assert_contains "$out9" "integration branch 'epic/already-deleted' is gone" "the deleted integration branch is reported, not fatal"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the fallback still dispatches a scale reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "the fallback still dispatches a scale reviewer"
 assert_equals "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "$FRESH_MAIN" \
     "the fallback fetches the default branch instead of trusting a stale local ref"
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$FRESH_MAIN" \
@@ -2246,7 +2325,7 @@ assert_contains "$CAP_LOG" "board-transition:20 needs-human" "the capped scale r
 # design, so "answer it" alone points at a path that dies.
 assert_contains "$CAP_LOG" "no session to resume" "the park note says why answering alone will not work"
 assert_contains "$CAP_LOG" "board-transition.sh 20 in-review" "the park note names the exact command that returns the epic"
-assert_not_contains "$CAP_LOG" "spawn:--no-wait review-epic-20" "the capped epic spawns no fourth reviewer"
+assert_not_contains "$CAP_LOG" "spawn:review-epic-20" "the capped epic spawns no fourth reviewer"
 assert_contains "$OUT_CAPEPIC" "parked needs-human" "the sweep reports the escalation it performed"
 
 # the human answers: the epic returns to in-review (its pre-park target) and
@@ -2255,12 +2334,12 @@ assert_contains "$OUT_CAPEPIC" "parked needs-human" "the sweep reports the escal
 reset_state
 rm -f "$DAEMON_HOME"/*.reply.txt
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "the answered epic gets a fresh scale reviewer on the next sweep"
 assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a fresh dispatch does not re-park the epic"
 
 # ---- dead-worker cycles must reach the scale cap ------------------------------
 # A reviewer that dies pre-reply finalizes `error`; the respawn retires it, and
-# daemon-retire overwrites that status with `retired` — erasing the only
+# `agora retire` overwrites that status with `retired` — erasing the only
 # evidence _outage_streak had. The streak reset every tick, the cap was
 # unreachable, and the sweep respawned a doomed reviewer forever, so F4's
 # escalation could never fire for exactly the failure class it exists for.
@@ -2301,7 +2380,7 @@ for _cycle in 1 2 3; do
     fail_all_epic_reviewers
     : > "$SPAWN_LOG"
     OUT_CYCLE="$("$DISPATCH" --sweep 2>&1 || true)"
-    grep -q 'spawn:--no-wait review-epic-20' "$SPAWN_LOG" && CAP_SPAWNS=$((CAP_SPAWNS + 1))
+    grep -q 'spawn:review-epic-20' "$SPAWN_LOG" && CAP_SPAWNS=$((CAP_SPAWNS + 1))
 done
 assert_equals "$CAP_SPAWNS" "2" "the third dead-worker cycle stops respawning (2 retries, then the cap)"
 assert_contains "$OUT_CYCLE" "parked needs-human" "and the capped epic escalates to the human instead of looping forever"
@@ -2326,7 +2405,7 @@ meta("aaa10003-0000-4000-8000-000000000000", "retired", "2026-07-03T00:00:00Z", 
 meta("aaa10004-0000-4000-8000-000000000000", "error",   "2026-07-04T00:00:00Z")
 PY
 OUT_SUPER="$("$DISPATCH" --sweep 2>&1 || true)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an unstamped (superseded) retirement breaks the streak — no false cap"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "an unstamped (superseded) retirement breaks the streak — no false cap"
 assert_not_contains "$OUT_SUPER" "parked needs-human" "so the epic is not escalated on a streak it never had"
 
 # ---- a triggered re-review is not a failure ------------------------------------
@@ -2347,7 +2426,7 @@ printf 'review complete; merged.\n' \
   > "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt"
 "$DISPATCH" 5 >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "the clean reviewer is still replaced on an explicit event"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-pr-5" "and the fresh one dispatches"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "and the fresh one dispatches"
 assert_not_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" "retired_from" \
     "but its retirement carries NO failure stamp — a re-review must not advance the streak"
 
@@ -2483,7 +2562,7 @@ assert_not_contains "$(cat "$DAEMON_HOME/dead0001-0000-4000-8000-000000000000.js
     "a stale-ticket retirement is NOT a failure — it must break the streak, not extend it"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:dead0001" "and retired, releasing the ticket it still owned"
 assert_contains "$OUT_STALE" "the epic has left in-review" "the sweep names why it retired the reviewer"
-assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "an out-of-review epic is never re-dispatched by this pass"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "an out-of-review epic is never re-dispatched by this pass"
 
 # a LIVE reviewer owns its own exit — the same rule everywhere else
 reset_state
@@ -2522,7 +2601,7 @@ issues = [
 json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
 PY
 OUT_UNEXP="$(env -u BOARD_REPO "$DISPATCH" --sweep 2>&1 || true)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:--no-wait review-epic-20" "the scale listing still finds its epic when the script resolved BOARD_REPO itself"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-20" "the scale listing still finds its epic when the script resolved BOARD_REPO itself"
 assert_not_contains "$OUT_UNEXP" "BOARD_REPO is unset" "no scale subprocess dies for want of BOARD_REPO in its environment"
 
 rm -f "$MOCK_DIR/board-issues.json"

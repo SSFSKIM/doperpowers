@@ -46,8 +46,43 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
 fi
 export BOARD_REPO
 
-# Daemon registry — same default (and same test override) as orchestrating-daemons.
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+# Seat registry — ONE registry-root rule, the agora CLI's own: $AGORA_HOME,
+# then $DAEMON_HOME, then the default. Both names are exported at the same
+# value so the CLI, the board scripts and every child read one root.
+DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
+AGORA_HOME="$DAEMON_HOME"
+export AGORA_HOME DAEMON_HOME
+
+# THE MIGRATION PRECEDES THE FIRST READ. Several scripts sourcing this file
+# glob $DAEMON_HOME/*.json directly and never touch the CLI, so without this
+# they would read a pre-cutover root as an empty fleet: no bound owner, no
+# live worker, every guard open. Gated on the cutover actually being pending
+# — the legacy root still a real directory — because that check is a stat
+# while the migration itself takes $DAEMON_HOME/.metalock, and a lock taken
+# at SOURCE TIME by every board script would serialise scripts that only ever
+# needed it to write (and deadlocks against a caller already holding it).
+# Once per process, and fail closed: "the migration broke" and "the fleet is
+# idle" are indistinguishable downstream.
+AGORA_CLI="${AGORA_CLI:-$BOARD_SCRIPTS/../../agora/scripts/agora}"
+_agora_cutover_pending() {
+  [ -z "${AGORA_MIGRATED:-}" ] || return 1
+  if [ -d "$HOME/.claude/orchestrating-daemons" ] \
+     && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
+    return 0
+  fi
+  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
+  # of the old groups/ did not finish: the registry is mid-cutover, which is
+  # precisely the half-migrated state a direct reader must never mistake for
+  # an idle fleet. One glob, no lock.
+  set -- "$HOME"/.claude/agora.v2-*
+  [ -e "$1" ]
+}
+if _agora_cutover_pending; then
+  "$AGORA_CLI" migrate --quiet \
+    || die "agora migrate failed — refusing to read a possibly half-migrated registry"
+fi
+AGORA_MIGRATED=1
+export AGORA_CLI AGORA_MIGRATED
 
 # Render-cache dir: created on demand, always gitignored — BOARD.html/BOARD.md
 # are views of GitHub state and must never be committed (a committed render is
