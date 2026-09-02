@@ -14,9 +14,11 @@ A seat outlives the process filling it — when the session ends, stops, or dies
 the seat keeps its role, brief, spawn parent, and history, and can be filled
 again by resuming the old session (`agora fill --resume`) or spawning a fresh
 one (`agora fill`). Every background session spawned through agora is a seat,
-the board pipeline's workers included, so `agora list` is the whole fleet and
+the board pipeline's workers included, so `agora list` is the whole fleet,
 `agora view <group>` is one group's organisation chart with live state on every
-node. `human` is the reserved operator identity; it never holds a seat.
+node, and `agora tui` is that chart as an interactive screen — arrow keys move
+between seats, Enter opens the seat's conversation. `human` is the reserved
+operator identity; it never holds a seat.
 
 Messaging between agents is the harness's native cross-session `SendMessage`
 tool: it wakes an idle session into a new turn, queues to a busy one for its
@@ -79,10 +81,20 @@ pending. Posts snapshot the poster's cwd and git branch.
     agora resume <seat> "…"      # process-level: stop the live turn, continue the session from THIS env
     agora reply <seat>           # the seat's latest reply (renders a pending AskUserQuestion)
     agora attach <seat>          # claude attach on the seat's session (← detaches; it keeps running)
+    agora chart [group] [--all]  # the fleet (or one group) as a box organisation chart, as text
+    agora tui [group]            # the chart as a screen, inside tmux: ↑↓←→ move · enter attaches in a new
+                                 # tmux window · s sends · b board · a shows retired seats · ? keys
     agora retire <seat> [--purge]  # stop; seat stays as history unless purged
     agora fill <seat> "…" [--resume] # fill a vacant/stopped/dead seat: fresh session, or resume the old one
                                  # (a resumed session keeps its saved model/settings/effort — change them with a fresh fill)
     agora topology <group> --json  # seats (with live state) and parent→child edges
+
+`chart` and `tui` draw the living organisation: seats that are retired, failed,
+or gone from the harness fold into a `+N retired` note on their parent until
+`--all` (or `a`). `tui` re-executes itself inside a tmux session named `agora`
+when started outside tmux, so Enter can open `claude attach` in its own window
+and the chart stays up; `agora tui --headless --keys "right,down,enter"` runs
+the same screen without a terminal and prints the grid plus the actions taken.
 
 `live` is read from the harness each time (`busy`, `idle`, `blocked`,
 `stopped`, `gone`, `vacant`); `status` is the recorded turn state the board
