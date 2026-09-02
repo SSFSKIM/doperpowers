@@ -652,6 +652,39 @@ assert_rc 4 "$RC" "send to an unknown target exits 4"
 run "$AGORA" list grp
 assert_contains "$OUT" "idle" "a seat with a live peer record shows idle"
 
+# procStart is a wall-clock string with no zone in it: the harness writes it in
+# UTC while `ps -o lstart=` prints local time, so comparing the two as text
+# read every live seat as `stopped` and made send refuse everything on any
+# machine that is not on UTC. The pid below is really running, so its start
+# time is real; these cases pin that the same instant written either way still
+# reads as the same process, and that an unrelated time still reads as a
+# recycled pid.
+lstart_as() { # utc|local → the socket server's real start time in that zone
+  # LC_ALL=C, exactly as agora reads it: a localized ps prints "수  9/ 2 23:08:14 2026".
+  LSTART="$(LC_ALL=C LANG=C ps -o lstart= -p "$SOCK_PID")" python3 -c '
+import os, sys, time
+t = time.strptime(" ".join(os.environ["LSTART"].split()), "%a %b %d %H:%M:%S %Y")
+epoch = time.mktime(t)
+print(time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(epoch) if sys.argv[1] == "utc" else time.localtime(epoch)))' "$1"
+}
+peer_with_procstart() { # procStart-string → rewrite the orchestrator's peer record
+  printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","procStart":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$ORCH_UUID" "$WORK" "$1" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
+}
+peer_with_procstart "$(lstart_as local)"
+run "$AGORA" send orchestrator "procstart local"
+assert_rc 0 "$RC" "a procStart written in local time identifies the process"
+peer_with_procstart "$(lstart_as utc)"
+run "$AGORA" send orchestrator "procstart utc"
+assert_rc 0 "$RC" "a procStart written in UTC identifies the same process (the harness writes UTC; ps prints local)"
+run "$AGORA" list grp
+assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped"
+peer_with_procstart "Mon Jan  1 00:00:00 2001"
+run "$AGORA" send orchestrator "procstart bogus"
+assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
+printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
+
 run "$AGORA" wake orchestrator "wake up" --from boss
 assert_rc 0 "$RC" "wake of a live seat exits 0"
 assert_contains "$OUT" "via inbox socket" "live wake goes through the socket"
@@ -1342,6 +1375,222 @@ run "$AGORA" remove grp/scribe
 assert_rc 0 "$RC" "remove exits 0"
 run "$AGORA" list grp
 assert_not_contains "$OUT" "scribe" "removed seat is gone"
+
+# ---- 13) chart: the box organisation chart ----------------------------------
+# The `org` fixture below is shared with the tui tests that follow it: a lead
+# (busy) with three children — scout (idle, live peer), scribe (busy) with a
+# vacant intern under it, qa (blocked) — and a retired old-worker folded away.
+echo "chart:"
+LEAD_UUID=cccc0001-0000-4000-8000-00000000c001
+SCOUT_UUID=cccc0002-0000-4000-8000-00000000c002
+SCRIBE_UUID=cccc0003-0000-4000-8000-00000000c003
+QA_UUID=cccc0004-0000-4000-8000-00000000c004
+{ echo "short=cc000001"; echo "uuid=$LEAD_UUID"; echo "name=lead"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000001"
+{ echo "short=cc000002"; echo "uuid=$SCOUT_UUID"; echo "name=scout"; echo "state=done"; echo "status="; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000002"
+{ echo "short=cc000003"; echo "uuid=$SCRIBE_UUID"; echo "name=scribe"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000003"
+{ echo "short=cc000004"; echo "uuid=$QA_UUID"; echo "name=qa"; echo "state=blocked"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000004"
+# scout is idle: a finished row plus a live peer record whose socket answers.
+printf '{"pid":%s,"sessionId":"%s","name":"scout","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$SCOUT_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-scout.json"
+"$AGORA" seat add org lead --role LEAD --session "$LEAD_UUID" >/dev/null
+"$AGORA" seat add org scout --role RES --parent lead --session "$SCOUT_UUID" >/dev/null
+"$AGORA" seat add org scribe --role DOC --parent lead --session "$SCRIBE_UUID" >/dev/null
+"$AGORA" seat add org intern --parent scribe >/dev/null
+"$AGORA" seat add org qa --role QA --parent lead --session "$QA_UUID" >/dev/null
+"$AGORA" seat add org old-worker --parent lead >/dev/null
+"$AGORA" mark org/old-worker retired >/dev/null
+"$AGORA" status org/scribe "notes → board" >/dev/null
+"$AGORA" status org/scout "스펙 읽는 중 어쩌구저쩌구 매우 긴 문장입니다" >/dev/null
+
+# boxcheck: every row of the box holding <marker> has its left and right
+# borders in the same display columns (Korean counts two cells).
+cat > "$TEST_ROOT/boxcheck.py" <<'PY'
+import sys, unicodedata
+marker = sys.argv[1]
+rows = sys.stdin.read().split("\n")
+def cw(ch): return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+def col(row, idx): return sum(cw(c) for c in row[:idx])
+def at_col(row, c):
+    x = 0
+    for ch in row:
+        if x == c: return ch
+        x += cw(ch)
+    return ""
+r = next(i for i, row in enumerate(rows) if marker in row)
+i = rows[r].index(marker)
+li = rows[r].rindex("│", 0, i); ri = rows[r].index("│", i)
+L, R = col(rows[r], li), col(rows[r], ri)
+ok = all(at_col(rows[r + k], L) == "│" and at_col(rows[r + k], R) == "│" for k in (1, 2))
+ok = ok and at_col(rows[r - 1], L) in "┌┏╭" and at_col(rows[r - 1], R) in "┐┓╮"
+ok = ok and at_col(rows[r + 3], L) in "└┗╰" and at_col(rows[r + 3], R) in "┘┛╯"
+print("aligned" if ok else "misaligned:\n" + "\n".join(rows[r - 1:r + 4]))
+PY
+
+run "$AGORA" chart org --width 120
+assert_rc 0 "$RC" "chart of a group exits 0"
+CHART="$OUT"
+assert_contains "$(printf '%s\n' "$CHART" | grep -c 'lead .*LEAD')" "1" "alias left and ROLE right share the first box line"
+assert_contains "$CHART" "● busy" "busy seat shows the filled glyph"
+assert_contains "$CHART" "○ idle" "idle seat (live peer) shows the hollow glyph"
+assert_contains "$CHART" "◐ blocked" "blocked seat shows the half glyph"
+assert_contains "$CHART" "◌ vacant" "vacant seat shows the dotted glyph"
+assert_not_contains "$CHART" "old-worker" "a retired seat is folded away by default"
+assert_contains "$CHART" "+1 retired" "the parent notes its folded children"
+assert_equals "$(( $(printf '%s\n' "$CHART" | grep -n '+1 retired' | cut -d: -f1) - $(printf '%s\n' "$CHART" | grep -n 'lead .*LEAD' | cut -d: -f1) ))" "2" "the retired note sits on the lead box's third line"
+assert_contains "$CHART" "notes → board" "a seat's now line is drawn on its third line"
+assert_contains "$CHART" "│─┼──│" "a parent centred on three children meets the bus at the middle child"
+assert_contains "$CHART" "┌──│" "the first child opens the bus"
+assert_contains "$CHART" "└──│" "the last child closes the bus"
+assert_contains "$CHART" "6 seats · 4 live · 1 hidden (agora chart org --all)" "summary counts seats, live, hidden and points at --all"
+assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" scout)" "aligned" "a Korean now line keeps the box borders aligned"
+assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" lead)" "aligned" "an ASCII box is aligned too"
+assert_contains "$CHART" "…" "an over-long now line is truncated with an ellipsis"
+# intern sits one column to the right of scribe; scribe one to the right of lead.
+assert_equals "$(printf '%s\n' "$CHART" | python3 -c '
+import sys
+rows = sys.stdin.read().split("\n")
+def x(m): return next(r.index(m) for r in rows if m in r)
+print(x("lead ") < x("scribe ") < x("intern "))')" "True" "children are laid out to the right of their parent"
+run "$AGORA" chart org --all --width 120
+assert_contains "$OUT" "old-worker" "--all shows the retired seat"
+assert_not_contains "$OUT" "hidden" "--all summary has nothing hidden"
+run "$AGORA" chart --width 200
+assert_rc 0 "$RC" "fleet chart exits 0"
+assert_contains "$OUT" "╭" "fleet chart draws groups as rounded boxes"
+assert_contains "$(printf '%s\n' "$OUT" | grep -c '│ org ')" "1" "the org group is a root box"
+assert_contains "$OUT" "6 seats · 4 live" "the group box counts its seats and live seats"
+assert_contains "$OUT" "groups ·" "fleet summary counts groups"
+run "$AGORA" chart nope
+assert_rc 4 "$RC" "chart of an unknown group exits 4"
+run "$AGORA" chart bad/name
+assert_rc 2 "$RC" "chart of a bad group name exits 2"
+
+# ---- 14) tui: the interactive chart, driven headlessly -----------------------
+# `agora tui --headless --keys …` runs the same state machine the curses screen
+# runs, then prints the final grid, `--- focus: <id>`, and the actions it would
+# have taken (attach) or did take (send, over the real launcher). Reuses the
+# org fixture from section 13: lead's visible children in alias order are qa,
+# scout, scribe; intern hangs under scribe; old-worker is folded away.
+echo "tui:"
+TUI="$AGORA tui org --headless --width 110 --height 34"
+run $TUI
+assert_rc 0 "$RC" "headless tui exits 0"
+assert_contains "$OUT" "--- focus: org/lead" "the first root is focused by default"
+assert_contains "$OUT" "┏━━" "the focused box has heavy borders"
+assert_contains "$OUT" "agora · org · 6 seats · 4 live · 1 hidden · a" "the header carries the counts and the hidden hint"
+assert_contains "$OUT" "── detail ──" "the detail panel is shown by default"
+assert_contains "$OUT" "org/lead · LEAD · seat cccc0001 · session cccc0001" "the detail panel names the focused seat, role, seat and session"
+assert_contains "$OUT" "● busy · status idle · short cc000001" "the detail panel shows live state, recorded status and the short id"
+assert_contains "$OUT" "enter attach · s send · b board" "the footer lists the keys"
+run $TUI --keys right
+assert_contains "$OUT" "--- focus: org/qa" "right enters the first (topmost) child"
+run $TUI --keys "right,down"
+assert_contains "$OUT" "--- focus: org/scout" "down moves to the next box in the same column"
+run $TUI --keys "right,down,down,down"
+assert_contains "$OUT" "--- focus: org/scribe" "down past the last box stays put"
+run $TUI --keys "right,down,down,right"
+assert_contains "$OUT" "--- focus: org/intern" "right from scribe reaches intern"
+run $TUI --keys "right,down,down,right,left"
+assert_contains "$OUT" "--- focus: org/scribe" "left returns to the parent"
+run $TUI --keys "right,down,down,right,home"
+assert_contains "$OUT" "--- focus: org/lead" "home returns to the first root"
+run $TUI --keys "right,down,enter"
+assert_contains "$OUT" "attach org/scout cc000002 → claude attach cc000002" "enter on a live seat records the attach against the qualified seat and the harness short id"
+assert_contains "$OUT" "would run: claude attach cc000002" "the footer flashes the attach command"
+run $TUI --keys "right,down,down,right,enter"
+assert_not_contains "$OUT" "attach intern" "enter on a vacant seat attaches nothing"
+assert_contains "$OUT" "intern is vacant — no session to attach; agora fill org/intern" "the footer explains the vacant seat and names the fill command"
+run $TUI --keys "right,down,enter" --no-tmux
+assert_contains "$OUT" "→ claude attach cc000002" "--no-tmux still records the plain attach command"
+run $TUI --keys a
+assert_contains "$OUT" "old-worker" "a shows the folded retired seat"
+assert_contains "$OUT" "all shown · a" "the header notes that hidden seats are shown"
+run $TUI --keys "a,a"
+assert_not_contains "$OUT" "old-worker" "a again hides it"
+run $TUI --keys s
+assert_contains "$OUT" "send → org/lead ▏" "s on a live seat opens the send line naming the target"
+run $TUI --keys "s,text:abc,backspace,text:d"
+assert_contains "$OUT" "send → org/lead ▏abd" "typing and backspace edit the send line"
+run $TUI --keys "s,text:abc,esc"
+assert_not_contains "$OUT" "send → org/lead" "esc cancels the send line"
+assert_contains "$OUT" "enter attach · s send" "and the footer shows the keys again"
+run $TUI --keys "right,down,down,right,s"
+assert_contains "$OUT" "intern is vacant — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs agora fill" "s on a vacant seat refuses with the reason"
+assert_not_contains "$OUT" "send →" "and opens no send line"
+run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
+assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout (scout)" "enter on the send line delivers through the real launcher and records the result"
+assert_contains "$(cat "$RECEIVED")" "[agora message from human]\nping-from-tui here" "the frame reached the seat's inbox socket with the human sender line"
+run $TUI --keys b
+assert_contains "$OUT" "── board · org · 0 posts · tab to browse ──" "b switches the panel to the group board"
+assert_contains "$OUT" "(no posts)" "an empty board says so"
+"$AGORA" post org --title "Kickoff" "hello board from the tui test" >/dev/null
+run $TUI --keys b
+assert_contains "$OUT" "board · org · 1 post ·" "the board panel counts posts"
+assert_contains "$OUT" "#1    " "the board panel lists the post id"
+assert_contains "$OUT" "Kickoff" "and its title"
+run $TUI --keys "b,tab"
+assert_contains "$OUT" "↑↓ enter opens · tab back" "tab moves the keys into the board list"
+run $TUI --keys "b,tab,enter"
+assert_contains "$OUT" "#1 · human · " "enter on a board row opens the post overlay with its header"
+assert_contains "$OUT" "hello board from the tui test" "the overlay shows the post body"
+assert_contains "$OUT" "esc closes" "the overlay says how to close"
+run $TUI --keys "b,tab,enter,esc"
+assert_not_contains "$OUT" "esc closes" "esc closes the overlay"
+run $TUI --keys "b,tab,tab,right"
+assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
+run $TUI --keys "?"
+assert_contains "$OUT" "┃ keys" "? opens the help overlay"
+assert_contains "$OUT" "a — show / hide retired, failed and gone seats" "the help lists the keys"
+run $TUI --keys "?,q,right"
+assert_contains "$OUT" "--- focus: org/qa" "q inside the overlay only closes it"
+run $TUI --keys q
+assert_contains "$OUT" "--- quit" "q quits"
+run $TUI --keys r
+assert_rc 0 "$RC" "r refreshes without error"
+assert_contains "$OUT" "--- focus: org/lead" "and keeps the focus"
+run "$AGORA" tui org --headless --width 60 --height 14 --keys "right,down,down,right"
+assert_rc 0 "$RC" "a 60x14 terminal renders"
+assert_contains "$OUT" "┃ intern       ┃" "the viewport scrolls so the focused box is on screen"
+assert_not_contains "$OUT" "── detail ──" "the panel collapses below 16 rows"
+run "$AGORA" tui --headless --width 120 --height 40
+assert_rc 0 "$RC" "fleet tui exits 0"
+assert_contains "$OUT" "agora · fleet · " "the fleet header names the fleet"
+assert_contains "$OUT" "seats · " "the focused group box is on screen even when its children fill the top of the viewport"
+run "$AGORA" tui --headless --width 120 --height 160
+assert_contains "$OUT" "╭" "unfocused groups are rounded boxes"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^--- focus: //p' | grep -c '/')" "0" "the default fleet focus is a group box"
+run "$AGORA" tui --headless --width 120 --height 40 --keys enter
+assert_contains "$OUT" "▸ " "enter on a group collapses it"
+# A `!` token in --keys is a DRIVER instruction, not a keystroke: it does what
+# only the refresh thread does in a live screen. !focus moves the focus (a
+# rebuild does that when the focused seat disappears); !drop removes a box from
+# the layout (a snapshot does that when a seat is retired mid-turn).
+run $TUI --keys "right,down,s,text:bound,!focus:org/qa,enter"
+assert_contains "$OUT" "send scout bound → rc=0 sent to org/scout" "a composed message goes to the seat that was focused when the editor opened, not to wherever the focus moved"
+assert_contains "$OUT" "--- focus: org/qa" "even though the focus did move"
+run $TUI --keys "right,down,s,text:gone,!drop:org/scout,enter"
+assert_contains "$OUT" "org/scout is no longer on the chart — nothing was sent" "a message is dropped, with a reason, when its target leaves the chart while it is being typed"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n '/^--- actions:/,$p' | tail -n +2 | wc -l | tr -d ' ')" "0" "and nothing is sent"
+run $TUI --keys "s,text:x"
+assert_contains "$OUT" "send → org/lead ▏x" "the send line names the captured target"
+
+# A dead seat under a dead seat: the parent's note must count the whole folded
+# subtree, not just its direct child, or the box and the summary disagree.
+"$AGORA" seat add org old-helper --parent old-worker >/dev/null
+"$AGORA" mark org/old-helper retired >/dev/null
+run "$AGORA" chart org --width 120
+assert_contains "$OUT" "+2 retired" "a folded subtree counts every seat in it"
+assert_contains "$OUT" "7 seats · 4 live · 2 hidden" "and the summary agrees with the box"
+"$AGORA" remove org/old-helper >/dev/null
+
+run "$AGORA" tui nope --headless
+assert_rc 4 "$RC" "tui of an unknown group exits 4"
+run "$AGORA" tui bad/name --headless
+assert_rc 2 "$RC" "tui of a bad group name exits 2"
+run "$AGORA" tui org
+assert_rc 2 "$RC" "tui without a terminal exits 2"
+assert_contains "$OUT" "agora tui needs a terminal — for text use: agora chart org" "and points at chart"
+
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

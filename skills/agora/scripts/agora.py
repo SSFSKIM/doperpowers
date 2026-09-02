@@ -30,6 +30,8 @@ one group's organisation chart with live state on every node.
     agora list     [group] [--status S] [--json]
     agora view     <group>                               # tree with role · live · now
     agora topology <group>                               # JSON: seats + edges
+    agora chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
+    agora tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
     agora groups
     agora post     <group> [--from F] [--title T] [text...]   # stdin if no text
     agora board    <group> [-n N|--id I] [--json]
@@ -59,10 +61,12 @@ live, or a seat/name that is already taken.
 """
 
 import argparse
+import calendar
 import datetime
 import fcntl
 import glob
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -508,6 +512,17 @@ def agents_refresh():
     return agents_json()
 
 
+def refresh_caches():
+    """Forget everything cached from the harness — the agents rows, the peer
+    registry, and process start times — so a long-lived reader (the chart TUI)
+    sees the fleet as it is now rather than as it was at launch."""
+    global _AGENTS_LOADED, _PEERS
+    _AGENTS_LOADED = False
+    _PEERS = None
+    _PSTART.clear()
+    return agents_json()
+
+
 def harness_ok():
     return agents_json() is not None
 
@@ -567,17 +582,38 @@ def _parse_lstart(s):
         return None
 
 
+def same_process(rec):
+    """Is the record's pid still the process the record described?
+
+    Both sides are wall-clock strings with no zone in them: `ps -o lstart=`
+    prints the LOCAL zone, while the harness writes `procStart` in UTC (every
+    record on this machine, harness 2.1.251 through 2.1.259, is offset by
+    exactly the local UTC offset). Comparing them as text therefore fails on
+    any machine that is not on UTC, which read every live seat as `stopped`
+    and made `agora send` refuse everything. So compare INSTANTS, and accept
+    the recorded string under either reading — a recycled pid would have to
+    have started at the very same wall-clock second (or exactly a whole zone
+    offset away) to slip through, and a wrong guess only costs a failed socket
+    connect. When either side cannot be parsed the check is skipped and the
+    pid + socket rule decides.
+    """
+    live = _parse_lstart(proc_start(rec.get("pid")))
+    recorded = _parse_lstart(rec.get("procStart"))
+    if not live or not recorded:
+        return True
+    live_epoch = time.mktime(live)
+    return any(abs(reading - live_epoch) <= 2
+               for reading in (time.mktime(recorded), calendar.timegm(recorded)))
+
+
 def peer_live(rec):
     """A peer record is live only if its pid is alive, the pid is the SAME
-    process the record described (its start time matches the record's
-    `procStart` — a recycled pid fails this), AND its inbox socket accepts a
-    connection (a dead session can leave its socket FILE behind; only a
-    successful connect proves a listener). When either start time cannot be
-    parsed, the start-time check is skipped and the pid+socket rule decides."""
+    process the record described (see same_process — a recycled pid fails
+    this), AND its inbox socket accepts a connection (a dead session can leave
+    its socket FILE behind; only a successful connect proves a listener)."""
     if not pid_alive(rec.get("pid")):
         return False
-    recorded, live = _parse_lstart(rec.get("procStart")), _parse_lstart(proc_start(rec.get("pid")))
-    if recorded and live and recorded != live:
+    if not same_process(rec):
         return False
     return socket_ok(socket_path_of(rec))
 
@@ -2358,6 +2394,65 @@ def cmd_attach(a):
     print("claude attach %s" % short)
 
 
+def sibling_module(name):
+    """Import a sibling module (agora_chart, agora_tui) bound to THIS module
+    instance: when agora.py runs as __main__ a plain `import agora` inside the
+    sibling would execute the file a second time and give it its own, separate
+    harness caches."""
+    sys.modules.setdefault("agora", sys.modules[__name__])
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    return importlib.import_module(name)
+
+
+def chart_module():
+    return sibling_module("agora_chart")
+
+
+def chart_group_or_die(g):
+    if g is not None:
+        if not valid_name(g):
+            die("bad group name: %s" % g)
+        if not group_exists(g):
+            die("no such group: %s" % g, EXIT_UNKNOWN)
+
+
+def cmd_chart(a):
+    """The organisation chart as text: boxes left-to-right, dead seats folded
+    into '+N retired' unless --all, then one summary line."""
+    g = a.group
+    chart_group_or_die(g)
+    chart = chart_module()
+    roots, meta = chart.snapshot(g, a.all)
+    lay = chart.layout(roots)
+    width = a.width or (shutil.get_terminal_size((120, 40)).columns if sys.stdout.isatty() else 120)
+    if lay["boxes"]:
+        scr = chart.GridScreen(width, lay["height"])
+        chart.paint_chart(scr, lay)
+        print(scr.text())
+    else:
+        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are retired; agora chart --all" % meta["hidden"]))
+    bits = []
+    if g is None:
+        bits.append("%d groups" % meta["groups"])
+    bits += ["%d seats" % meta["seats"], "%d live" % meta["live"]]
+    if meta["hidden"]:
+        hid = "%d hidden" % meta["hidden"]
+        if meta["hidden_groups"]:
+            hid += " in %d group(s) folded away" % meta["hidden_groups"]
+        bits.append(hid + ("" if a.all else " (agora chart%s --all)" % ((" " + g) if g else "")))
+    if lay["width"] > width:
+        bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
+    print(" · ".join(bits))
+
+
+def cmd_tui(a):
+    """The chart as an interactive screen (agora_tui): headless when asked,
+    otherwise a real terminal inside tmux."""
+    chart_group_or_die(a.group)
+    sibling_module("agora_tui").cmd_tui(a)
+
+
 # --------------------------------------------------------------------- board
 
 # The board is the group's communal surface: durable long-form posts, JSONL
@@ -2664,6 +2759,22 @@ def build_parser():
     t.add_argument("group")
     t.add_argument("--json", action="store_true")
     t.set_defaults(fn=cmd_topology)
+
+    ch = sub.add_parser("chart", add_help=False)
+    ch.add_argument("group", nargs="?", default=None)
+    ch.add_argument("--all", action="store_true")
+    ch.add_argument("--width", type=int, default=0)
+    ch.set_defaults(fn=cmd_chart)
+
+    tu = sub.add_parser("tui", add_help=False)
+    tu.add_argument("group", nargs="?", default=None)
+    tu.add_argument("--all", action="store_true")
+    tu.add_argument("--headless", action="store_true")
+    tu.add_argument("--keys", default="")
+    tu.add_argument("--width", type=int, default=0)
+    tu.add_argument("--height", type=int, default=0)
+    tu.add_argument("--no-tmux", dest="no_tmux", action="store_true")
+    tu.set_defaults(fn=cmd_tui)
 
     g = sub.add_parser("groups", add_help=False)
     g.set_defaults(fn=cmd_groups)
