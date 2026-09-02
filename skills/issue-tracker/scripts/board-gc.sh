@@ -62,8 +62,20 @@ AGORA_HOME="$DAEMON_HOME"
 # same reason: the migration takes the registry lock, and paying that on
 # every run would serialise gc against every writer.
 AGORA_CLI="${AGORA_CLI:-$(cd "$(dirname "$0")/../../agora/scripts" && pwd)/agora}"
-if [ -z "${AGORA_MIGRATED:-}" ] && [ -d "$HOME/.claude/orchestrating-daemons" ] \
-   && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
+_agora_cutover_pending() {
+  [ -z "${AGORA_MIGRATED:-}" ] || return 1
+  if [ -d "$HOME/.claude/orchestrating-daemons" ] \
+     && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
+    return 0
+  fi
+  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
+  # of the old groups/ did not finish: the registry is mid-cutover, which is
+  # precisely the half-migrated state a direct reader must never mistake for
+  # an idle fleet. One glob, no lock.
+  set -- "$HOME"/.claude/agora.v2-*
+  [ -e "$1" ]
+}
+if _agora_cutover_pending; then
   "$AGORA_CLI" migrate --quiet \
     || { echo "error: agora migrate failed — refusing to gc against a possibly half-migrated registry" >&2; exit 1; }
 fi

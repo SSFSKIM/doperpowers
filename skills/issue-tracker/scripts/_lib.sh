@@ -66,7 +66,16 @@ export AGORA_HOME DAEMON_HOME
 AGORA_CLI="${AGORA_CLI:-$BOARD_SCRIPTS/../../agora/scripts/agora}"
 _agora_cutover_pending() {
   [ -z "${AGORA_MIGRATED:-}" ] || return 1
-  [ -d "$HOME/.claude/orchestrating-daemons" ] && [ ! -L "$HOME/.claude/orchestrating-daemons" ]
+  if [ -d "$HOME/.claude/orchestrating-daemons" ] \
+     && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
+    return 0
+  fi
+  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
+  # of the old groups/ did not finish: the registry is mid-cutover, which is
+  # precisely the half-migrated state a direct reader must never mistake for
+  # an idle fleet. One glob, no lock.
+  set -- "$HOME"/.claude/agora.v2-*
+  [ -e "$1" ]
 }
 if _agora_cutover_pending; then
   "$AGORA_CLI" migrate --quiet \

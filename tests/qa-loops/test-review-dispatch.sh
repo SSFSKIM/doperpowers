@@ -1354,21 +1354,35 @@ printf 'trail posted; engine down.\nENGINE-UNAVAILABLE\n' \
 assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as one 3-streak"
 
 # A RE-FILLED SEAT KEEPS ONE RECORD. Three failed reviewers on this PR are no
-# longer three rows — they are one row with attempts=3 — so a streak counted by
-# rows alone would read 1 and the cap would be unreachable exactly where it
-# matters most (a gateway that refuses every turn).
-reset_state
-U="feed0009-0000-4000-8000-000000000000" python3 - <<'PY'
+# longer three rows — they are one row whose two previous occupants sit in
+# `history` — so a streak counted by rows alone would read 1 and the cap would
+# be unreachable exactly where it matters most (a gateway refusing every turn).
+seed_seat_record() {  # $1 = JSON array of history occupant statuses
+    reset_state
+    U="feed0009-0000-4000-8000-000000000000" H="$1" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
+hist = [{"current": "old-%d" % i, "short": "old%d" % i, "status": st,
+         "ended": "2026-07-0%dT00:00:00Z" % (i + 1), "ticket": "5"}
+        for i, st in enumerate(json.loads(os.environ["H"]))]
 json.dump({"uuid": u, "current": u, "name": "review-pr-5", "status": "error",
-           "attempts": 3, "updated": "2026-07-09T00:00:00Z"},
+           "history": hist, "updated": "2026-07-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-printf '\n' > "$DAEMON_HOME/feed0009-0000-4000-8000-000000000000.reply.txt"
+    printf '\n' > "$DAEMON_HOME/feed0009-0000-4000-8000-000000000000.reply.txt"
+}
+seed_seat_record '["error", "error"]'
 OUT_SEAT="$("$DISPATCH" --sweep 2>&1 || true)"
-assert_equals "$(cat "$SPAWN_LOG")" "" "one seat record with attempts=3 reaches the same failure cap"
+assert_equals "$(cat "$SPAWN_LOG")" "" "one seat whose two previous occupants also failed reaches the cap"
 assert_contains "$OUT_SEAT" "3 consecutive" "...and names the cap as the skip reason"
+
+# ...but LIFETIME FILLS ARE NOT FAILURES. A seat re-filled twice cleanly and
+# failing once has failed ONCE: counting fills would retire a healthy PR after
+# two ordinary re-reviews plus a single outage. Only the trailing run of failed
+# occupants counts, so the first clean one ends it.
+seed_seat_record '["idle", "idle"]'
+"$DISPATCH" --sweep >/dev/null 2>&1 || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "two clean re-fills then one failure is a streak of 1, not 3"
 
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"

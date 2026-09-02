@@ -436,6 +436,11 @@ for a in d:
                       # would fall into the conservative branch below — pinning
                       # the worktree forever after the first re-fill. A row
                       # whose turn already ended holds nothing.
+        if a.get("state") in ("working", "blocked") and a.get("status") == "idle":
+            continue  # the SAME lingering shape the mapped branch normalises:
+                      # a finished turn keeps its state and goes status=idle.
+                      # An unmapped row gets the same reading — there is no
+                      # record to consult, and a turn that ended holds nothing.
         sys.exit(0)   # unmanaged RUNNING row: no identity evidence, so occupied
     if not local(m):
         continue      # foreign identity: only the registry migrated
@@ -1069,11 +1074,15 @@ PY
 # superseded reviewer, a stale-ticket cleanup), which is not a failure.
 #
 # COUNTING RECORDS ALONE UNDERCOUNTS. A seat keeps ONE record per alias across
-# re-fills and carries `attempts` (bumped on every fresh fill) instead of
-# leaving a record behind per turn, so three failed reviewers on one PR are one
-# row with attempts=3 and the 3-consecutive cap would never be reached. Take
-# the larger of the two readings: rows for the pre-seat registry, summed
-# attempts for a re-filled seat.
+# re-fills, retiring each previous occupant into `history[]` rather than
+# leaving a record behind, so three failed reviewers on one PR are one row and
+# the 3-consecutive cap would never be reached. A seat therefore contributes
+# its own trailing failure run: itself, plus the history entries behind it,
+# stopping at the first occupant that did NOT fail. Lifetime fill count is the
+# wrong number — a seat re-filled twice cleanly and failing once has failed
+# ONCE, and capping it at three would retire a healthy PR. Rows and seat runs
+# are then combined with max(), so a pre-seat registry (a record per turn)
+# reads exactly as it did before.
 _outage_streak() {
   DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
@@ -1087,17 +1096,24 @@ for p in glob.glob(os.path.join(home, "*.json")):
     except Exception:
         continue
     if m.get("name") == name:
-        try:
-            attempts = int(m.get("attempts") or 1)
-        except (TypeError, ValueError):
-            attempts = 1
+        hist = m.get("history")
         rows.append((str(m.get("updated") or m.get("created") or ""),
                      m.get("uuid") or "", str(m.get("status") or ""),
-                     str(m.get("retired_from") or ""), max(1, attempts)))
+                     str(m.get("retired_from") or ""),
+                     hist if isinstance(hist, list) else []))
 rows.sort(reverse=True)
+FAILED = ("error", "failed")
+def past_failures(hist):
+    """Trailing failed occupants of a re-filled seat, newest first."""
+    n = 0
+    for h in reversed(hist):
+        if not isinstance(h, dict) or str(h.get("status") or "") not in FAILED:
+            break
+        n += 1
+    return n
 records = 0
-attempted = 0
-for _, uuid, status, retired_from, attempts in rows:
+occupants = 0
+for _, uuid, status, retired_from, hist in rows:
     try:
         lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
     except Exception:
@@ -1105,10 +1121,10 @@ for _, uuid, status, retired_from, attempts in rows:
     if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error" \
             or (status == "retired" and retired_from):
         records += 1
-        attempted += attempts
+        occupants += 1 + past_failures(hist)
     else:
         break
-print(max(records, attempted))
+print(max(records, occupants))
 PY
 }
 
