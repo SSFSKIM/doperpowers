@@ -1495,7 +1495,7 @@ assert_contains "$OUT" "--- focus: org/scribe" "left returns to the parent"
 run $TUI --keys "right,down,down,right,home"
 assert_contains "$OUT" "--- focus: org/lead" "home returns to the first root"
 run $TUI --keys "right,down,enter"
-assert_contains "$OUT" "attach scout cc000002 → claude attach cc000002" "enter on a live seat records the attach with the harness short id"
+assert_contains "$OUT" "attach org/scout cc000002 → claude attach cc000002" "enter on a live seat records the attach against the qualified seat and the harness short id"
 assert_contains "$OUT" "would run: claude attach cc000002" "the footer flashes the attach command"
 run $TUI --keys "right,down,down,right,enter"
 assert_not_contains "$OUT" "attach intern" "enter on a vacant seat attaches nothing"
@@ -1561,6 +1561,28 @@ assert_contains "$OUT" "╭" "unfocused groups are rounded boxes"
 assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^--- focus: //p' | grep -c '/')" "0" "the default fleet focus is a group box"
 run "$AGORA" tui --headless --width 120 --height 40 --keys enter
 assert_contains "$OUT" "▸ " "enter on a group collapses it"
+# A `!` token in --keys is a DRIVER instruction, not a keystroke: it does what
+# only the refresh thread does in a live screen. !focus moves the focus (a
+# rebuild does that when the focused seat disappears); !drop removes a box from
+# the layout (a snapshot does that when a seat is retired mid-turn).
+run $TUI --keys "right,down,s,text:bound,!focus:org/qa,enter"
+assert_contains "$OUT" "send scout bound → rc=0 sent to org/scout" "a composed message goes to the seat that was focused when the editor opened, not to wherever the focus moved"
+assert_contains "$OUT" "--- focus: org/qa" "even though the focus did move"
+run $TUI --keys "right,down,s,text:gone,!drop:org/scout,enter"
+assert_contains "$OUT" "org/scout is no longer on the chart — nothing was sent" "a message is dropped, with a reason, when its target leaves the chart while it is being typed"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n '/^--- actions:/,$p' | tail -n +2 | wc -l | tr -d ' ')" "0" "and nothing is sent"
+run $TUI --keys "s,text:x"
+assert_contains "$OUT" "send → org/lead ▏x" "the send line names the captured target"
+
+# A dead seat under a dead seat: the parent's note must count the whole folded
+# subtree, not just its direct child, or the box and the summary disagree.
+"$AGORA" seat add org old-helper --parent old-worker >/dev/null
+"$AGORA" mark org/old-helper retired >/dev/null
+run "$AGORA" chart org --width 120
+assert_contains "$OUT" "+2 retired" "a folded subtree counts every seat in it"
+assert_contains "$OUT" "7 seats · 4 live · 2 hidden" "and the summary agrees with the box"
+"$AGORA" remove org/old-helper >/dev/null
+
 run "$AGORA" tui nope --headless
 assert_rc 4 "$RC" "tui of an unknown group exits 4"
 run "$AGORA" tui bad/name --headless

@@ -128,7 +128,11 @@ def group_tree(group, show_all=False):
             if prune(c):
                 kept.append(c)
             else:
-                node["hidden"] += 1 + count_nodes(c["children"])
+                # c is folded away: it, whatever is still hanging off it, and
+                # everything prune() already folded away beneath it — else a
+                # parent says "+1 retired" over a whole dead subtree while the
+                # summary counts every seat in it.
+                node["hidden"] += 1 + count_nodes(c["children"]) + c["hidden"]
         node["children"] = kept
         return show_all or not node["dead"] or bool(kept)
 

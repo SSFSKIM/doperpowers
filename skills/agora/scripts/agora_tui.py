@@ -61,7 +61,7 @@ def new_state(group=None, show_all=False, width=120, height=40, no_tmux=False):
         "lay": {"boxes": [], "by_id": {}, "edges": [], "width": 0, "height": 0}, "parent": {},
         "collapsed": set(), "focus": None, "ox": 0, "oy": 0,
         "panel": "detail", "panel_focus": False, "board_cursor": 0,
-        "overlay": None, "overlay_scroll": 0, "input": None,
+        "overlay": None, "overlay_scroll": 0, "input": None, "input_target": None,
         "flash": None, "clock": time.time, "refreshed_at": 0.0, "refreshing": False, "loaded": False,
         "attached": {}, "actions": [], "quit": False, "styles": {}, "events": None, "refresher": None,
     }
@@ -222,11 +222,21 @@ def handle_key(state, key, actions):
         return
     if state["input"] is not None:
         if key == "esc":
-            state["input"] = None
+            state["input"], state["input_target"] = None, None
         elif key == "enter":
-            text, state["input"] = state["input"].strip(), None
-            node = focused_node(state)
-            if text and node is not None:
+            # The message goes to the seat that was focused when the editor
+            # opened, never to whatever is focused now: a refresh that lands
+            # while the operator is typing rebuilds the layout, and a target
+            # that retired or went away moves the focus elsewhere.
+            text, target = state["input"].strip(), state["input_target"]
+            state["input"], state["input_target"] = None, None
+            box = state["lay"]["by_id"].get(target)
+            node = box["node"] if box else None
+            if not text:
+                pass
+            elif node is None or node["kind"] != "seat":
+                flash(state, "%s is no longer on the chart — nothing was sent" % (target or "the seat"))
+            else:
                 actions.send(node, text)
         elif key == "backspace":
             state["input"] = state["input"][:-1]
@@ -276,7 +286,7 @@ def handle_key(state, key, actions):
         if node is None or node["kind"] == "group":
             flash(state, "move to a seat to send it a message")
         elif node["live"] in agora.FILLED:
-            state["input"] = ""
+            state["input"], state["input_target"] = "", node["id"]
         else:
             flash(state, "%s is %s — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs agora fill"
                   % (node["label"], node["live"]))
@@ -333,7 +343,9 @@ class HeadlessActions:
         cmd = "claude attach %s" % short
         if not self.state["no_tmux"] and os.environ.get("TMUX"):
             cmd = "tmux new-window -n %s %s" % (node["label"], cmd)
-        self.state["actions"].append("attach %s %s → %s" % (node["label"], short, cmd))
+        # The qualified id, not the bare alias: two groups may hold the same
+        # one, and it is what RealActions keys its open windows by.
+        self.state["actions"].append("attach %s %s → %s" % (node["id"], short, cmd))
         flash(self.state, "would run: " + cmd)
 
     def send(self, node, text):
@@ -366,19 +378,23 @@ class RealActions:
             flash(st, "run in another terminal: claude attach %s" % short)
             return
         alias = node["label"]
+        # Keyed by the seat's qualified id: two groups may hold the same alias,
+        # and a bare-alias key would send one group's Enter to the other's
+        # conversation window.
+        key = node["id"]
         try:
             wins = self._tmux("list-windows", "-F", "#{window_id}").stdout.split()
-            wid = st["attached"].get(alias)
+            wid = st["attached"].get(key)
             if wid and wid in wins:
                 p = self._tmux("select-window", "-t", wid)
-                flash(st, "switched to %s (tmux window %s)" % (alias, wid) if p.returncode == 0 else first_line(p))
+                flash(st, "switched to %s (tmux window %s)" % (key, wid) if p.returncode == 0 else first_line(p))
                 return
             p = self._tmux("new-window", "-P", "-F", "#{window_id}", "-n", alias, "claude", "attach", short)
             if p.returncode != 0:
                 flash(st, "tmux: " + first_line(p))
                 return
             wid = p.stdout.strip()
-            st["attached"][alias] = wid
+            st["attached"][key] = wid
             flash(st, "opened %s in tmux window %s (claude attach %s)" % (alias, wid, short))
         except (OSError, subprocess.SubprocessError) as e:
             flash(st, "tmux: %s" % e)
@@ -516,7 +532,7 @@ def detail_lines(state, node, w):
 
 def paint(state, screen):
     """Draw the whole screen: header, chart, panel, footer, then any overlay."""
-    w, h = screen.w, screen.h
+    w = screen.w
     r = regions(state)
     st = state["styles"]
     m = state["meta"]
@@ -575,9 +591,9 @@ def paint(state, screen):
                 screen.put(r["panel_y"] + 1 + i, 1, line, st.get("title", 0) if i == 0 else 0)
 
     if state["input"] is not None:
-        node = focused_node(state)
-        target = ("%s/%s" % (node["seat"]["group"], node["label"])) if node and node["kind"] == "seat" else "?"
-        prompt = "send → %s ▏" % target
+        # The captured target, not the current focus — they differ when a
+        # refresh moves the focus while the operator is typing.
+        prompt = "send → %s ▏" % (state["input_target"] or "?")
         footer = prompt + state["input"]
         if chart.dwidth(footer) > w - 1:  # keep the tail visible while typing
             footer = prompt + state["input"][-(max(1, w - 1 - chart.dwidth(prompt)) // 2):]
@@ -648,11 +664,33 @@ def parse_keys(spec):
     return out
 
 
+def drive(state, tok):
+    """A `!`-prefixed token in --keys is an instruction to the DRIVER, not a
+    keystroke: it reaches past the keymap to do what only the refresh thread
+    does in a live screen. `!focus:<id>` moves the focus (what a rebuild does
+    when the focused seat disappears) and `!drop:<id>` removes a box from the
+    layout (what a snapshot does when a seat is retired mid-turn). Returns
+    True when the token was a driver instruction."""
+    if not tok.startswith("!"):
+        return False
+    verb, _, arg = tok[1:].partition(":")
+    if verb == "focus":
+        state["focus"] = arg
+    elif verb == "drop":
+        state["lay"]["by_id"].pop(arg, None)
+        state["lay"]["boxes"] = [b for b in state["lay"]["boxes"] if b["node"]["id"] != arg]
+    elif verb == "refresh":
+        resnapshot(state)
+    return True
+
+
 def run_headless(a):
     state = new_state(a.group, a.all, a.width or 120, a.height or 40, no_tmux=a.no_tmux)
     refresh(state)
     actions = HeadlessActions(state)
     for tok in parse_keys(a.keys):
+        if drive(state, tok):
+            continue
         handle_key(state, tok, actions)
         if state["quit"]:
             break
@@ -695,6 +733,7 @@ class CursesScreen(chart.Screen):
                 pass  # the bottom-right cell always raises after writing
 
     def cell(self, y, x, ch, cw, attr):
+        del cw  # curses advances by the character's own width
         if 0 <= y < self.h and 0 <= x < self.w:
             try:
                 self.scr.addstr(y, x, ch, attr)
@@ -785,6 +824,27 @@ def run_curses(state):
     curses.wrapper(lambda scr: main_loop(scr, state, curses))
 
 
+TMUX_SESSION = "agora"
+
+
+def enter_tmux(argv):
+    """Re-run this command inside the `agora` tmux session, then hand the
+    terminal to that session — this call does not return.
+
+    The session usually outlives the chart: quitting leaves the conversation
+    windows Enter opened. `new-session -A` would then merely ATTACH and drop
+    the command, landing the operator in an old conversation with no chart, so
+    an existing session gets a fresh window instead.
+    """
+    cmd = [sys.executable, os.path.realpath(agora.__file__), *argv]
+    exists = subprocess.run(["tmux", "has-session", "-t", TMUX_SESSION],
+                            capture_output=True).returncode == 0
+    if exists:
+        subprocess.run(["tmux", "new-window", "-t", TMUX_SESSION, "-n", "chart", *cmd], check=False)
+        os.execvp("tmux", ["tmux", "attach-session", "-t", TMUX_SESSION])
+    os.execvp("tmux", ["tmux", "new-session", "-s", TMUX_SESSION, "-n", "chart", *cmd])
+
+
 def cmd_tui(a):
     if a.headless:
         run_headless(a)
@@ -797,7 +857,6 @@ def cmd_tui(a):
             agora.die("agora tui runs inside tmux so that enter can open a seat's conversation in its own window; "
                       "install tmux, or pass --no-tmux to run here (enter then prints the attach command)",
                       agora.EXIT_UNKNOWN)
-        os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "agora", sys.executable,
-                           os.path.realpath(agora.__file__), *sys.argv[1:]])
+        enter_tmux(sys.argv[1:])
     state = new_state(a.group, a.all, no_tmux=a.no_tmux)
     run_curses(state)
