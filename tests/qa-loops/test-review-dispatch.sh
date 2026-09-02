@@ -1357,14 +1357,20 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "marker outages and dead workers count as
 # longer three rows — they are one row whose two previous occupants sit in
 # `history` — so a streak counted by rows alone would read 1 and the cap would
 # be unreachable exactly where it matters most (a gateway refusing every turn).
-seed_seat_record() {  # $1 = JSON array of history occupant statuses
+seed_seat_record() {  # $1 = JSON array of history occupants (status string
+                      #      or a {"status":...,"retired_from":...} object)
     reset_state
     U="feed0009-0000-4000-8000-000000000000" H="$1" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-hist = [{"current": "old-%d" % i, "short": "old%d" % i, "status": st,
-         "ended": "2026-07-0%dT00:00:00Z" % (i + 1), "ticket": "5"}
-        for i, st in enumerate(json.loads(os.environ["H"]))]
+hist = []
+for i, occ in enumerate(json.loads(os.environ["H"])):
+    if not isinstance(occ, dict):
+        occ = {"status": occ}
+    entry = {"current": "old-%d" % i, "short": "old%d" % i, "ticket": "5",
+             "ended": "2026-07-0%dT00:00:00Z" % (i + 1)}
+    entry.update(occ)
+    hist.append(entry)
 json.dump({"uuid": u, "current": u, "name": "review-pr-5", "status": "error",
            "history": hist, "updated": "2026-07-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
@@ -1383,6 +1389,17 @@ assert_contains "$OUT_SEAT" "3 consecutive" "...and names the cap as the skip re
 seed_seat_record '["idle", "idle"]'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "two clean re-fills then one failure is a streak of 1, not 3"
+
+# A RETIREMENT ERASES THE STATUS IT REPLACED: `agora retire` writes
+# status=retired over the failure, so a failed occupant reads `retired` once it
+# has been retired into history. The `retired_from: failure` stamp
+# _retire_failed writes first is the durable evidence — read it on history
+# entries too, or the streak forgets every failure the moment its occupant is
+# retired and the cap is unreachable for the dead-worker cycle it exists for.
+seed_seat_record '[{"status": "retired", "retired_from": "failure"}, {"status": "retired", "retired_from": "failure"}]'
+OUT_STAMP="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_equals "$(cat "$SPAWN_LOG")" "" "retired-with-a-failure-stamp occupants still count toward the cap"
+assert_contains "$OUT_STAMP" "3 consecutive" "...and the cap is named as the skip reason"
 
 # ---- no linked issue ------------------------------------------------------------
 echo "no linked issue:"

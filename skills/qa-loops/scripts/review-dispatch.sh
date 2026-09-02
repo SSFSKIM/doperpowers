@@ -1083,6 +1083,14 @@ PY
 # ONCE, and capping it at three would retire a healthy PR. Rows and seat runs
 # are then combined with max(), so a pre-seat registry (a record per turn)
 # reads exactly as it did before.
+#
+# A RETIREMENT ERASES THE STATUS IT REPLACED. `agora retire` writes
+# status=retired over whatever terminal status the failure left, so a failed
+# occupant reads `retired` once it has been retired into history — which is
+# why _retire_failed stamps `retired_from: failure` first. The stamp is the
+# durable evidence, on history entries exactly as on records: read it too, or
+# the streak forgets every failure the moment its occupant is retired, and the
+# cap becomes unreachable for the dead-worker cycle it exists for.
 _outage_streak() {
   DAEMON_HOME="$DAEMON_HOME" WNAME="$1" python3 - <<'PY'
 import glob, json, os
@@ -1103,11 +1111,14 @@ for p in glob.glob(os.path.join(home, "*.json")):
                      hist if isinstance(hist, list) else []))
 rows.sort(reverse=True)
 FAILED = ("error", "failed")
+def failed(status, retired_from):
+    return str(status or "") in FAILED or str(retired_from or "") == "failure"
 def past_failures(hist):
     """Trailing failed occupants of a re-filled seat, newest first."""
     n = 0
     for h in reversed(hist):
-        if not isinstance(h, dict) or str(h.get("status") or "") not in FAILED:
+        if not isinstance(h, dict) \
+                or not failed(h.get("status"), h.get("retired_from")):
             break
         n += 1
     return n
@@ -1118,7 +1129,8 @@ for _, uuid, status, retired_from, hist in rows:
         lines = open(os.path.join(home, uuid + ".reply.txt")).read().splitlines()
     except Exception:
         lines = None
-    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) or status == "error" \
+    if (lines is not None and "ENGINE-UNAVAILABLE" in lines) \
+            or failed(status, retired_from) \
             or (status == "retired" and retired_from):
         records += 1
         occupants += 1 + past_failures(hist)
