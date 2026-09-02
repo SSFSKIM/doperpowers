@@ -60,7 +60,7 @@ skill directory is deleted.
 - [x] (2026-09-01 22:50Z) M2 — board pipeline repointed (commits 4921f5ee, 27b18aa9, 65897e99, de096f6c; M2 worker): five dispatch/sweep scripts call `agora` verbs (spawn / resume --wait / sync / retire) through the `AGORA_CLI` seam and run `agora migrate --quiet` after their preflight; `review-dispatch.sh` sources `skills/agora/scripts/lib.sh`; the registry default is `~/.claude/agora` in every script (`_lib.sh`, `board-gc.sh`, `board-register.sh`, `board-bind.sh`, `board-lint.sh`, `_board.py` included); `board-answer.sh` lost the codex engine branch and gained the codex-binding refusal before any board write (+2 assertions); twelve pipeline test files stub one `agora` executable (verbs spawn / retire / sync / resume / migrate / meta get); all 23 hermetic suites green with assertion counts identical to the pre-M2 baseline (+2), shellcheck unchanged. The eight `board-api/integration` drills skip (exit 77, no board service) before and after — the rewritten stub was exercised by hand instead.
 - [ ] M3 — skill surface: `skills/agora/SKILL.md` and `references/spawn-preamble.md` rewritten for seats (daemon doctrine absorbed), `skills/orchestrating-daemons/` and `tests/orchestrating-daemons/` deleted, every cross-reference in other skills/docs/manifests updated, `tests/skill-links` green.
 - [x] (2026-09-02 07:40Z local / 2026-09-01 22:40Z) M4 — live fleet proof on real `claude` (transcript in Artifacts): the real registry migrated by rename+symlink (36 records stamped, 3 v2 nodes converted, 2 codex records retired, `agora list` prints no `null`); this session registered as `orchestrator`; `agora spawn scout` (sonnet) → scout spawned `scribe` from its preamble → three-level `agora view` tree with roles and live state; scribe's board post and scout's native `SCOUT-READY` arrived unprompted; `agora send scribe` from the shell woke the idle seat (`PONG-FROM-SCRIBE` arrived natively); `agora retire scribe` then `agora fill scribe --resume` continued the same session id and short (`RESUMED-VIA-AGORA` arrived). The first `fill --resume` attempts exposed the saved-options rule (flags on `--bg --resume` start a copy) — fixed in 66dec83f, 262 assertions. Dogfood seats purged, harness rows removed, group board deleted.
-- [ ] M5 — exit gate. Done: codex code-review PANEL round 1 (`workflows/code-review.mjs --args {"base":"main"}`, run `wf-mtj88koo-ldukt9`, 18 min; 59 files / +4510 −4413 was past the single-reviewer threshold) → verdict incorrect, 29 confirmed findings (13 P1), all verified and adopted (see Decision Log, "exit gate"); fix wave landed: agora.py + tests in b440aa67 (all 26 items; suite 262 → 297 assertions, with new cases for re-fill vs live refusal, secret redaction, send ambiguity, recycled-pid liveness, native-wake sync, socket-failure fallback, codex purge, owning-repo grouping, missing-cwd refusal), pipeline in 9fc1d5b4 (fail-closed migrate with 3 new assertions; AGORA_HOME precedence in 10 defaults). Real registry re-checked after the wave: `agora list` prints no `null`, `agora migrate` is a silent no-op; all 27 suites green. Panel round 2 (`wf-mtj9n3b3-omv07r`) → 25 findings (14 P1), 24 adopted (see Decision Log "round 2"), second fix wave: agora.py + tests landed in d9ad851c (suite 297 → 353 assertions; the real registry re-migrated idempotently: root 0700, 69 files 0600, 4 duplicate historical aliases renamed `<alias>@<short>`), pipeline part in 47685259 (one root rule with both names exported by every entrypoint; migrate gated before direct reads; attempts-aware outage streak; review-dispatch 322 → 326 assertions). All 27 suites green after round 2. Panel round 3 (`wf-mtjbkc7w-ar5zkm`) → 26 findings, 22 adopted, 2 not acted on (see Decision Log "round 3"), final wave: pipeline part in 9422f756 (failed-only outage streak from `history`, idle-row normalisation in `_wt_occupied`, aside-aware cutover gate; review-dispatch 322 → 327), agora.py part in 3a304d24 (suite 353 → 385 assertions: demotions keep `updated`, gen snapshots under the lock, in-lock reply writes, locked unlink, predecessor-socket refusal, running-row preference, run/binding fields cleared on re-fill, harness-derived sender identity with `--from human` refused in a session, harness failure → `unknown`, stamping before conversion, codex retire only when dead, aside board merge with renumbering, sha1 sorted lock names, no create-on-missing writes, procStart verification). Loop converged; version bumped to 7.68.0 (0dfb62f4); origin/main merged in (one conflict in `skills/execplan/SKILL.md`, both changes kept); PR #92 opened. Closure `review --base main` → 5 findings, all adopted (Decision Log "closure"): pipeline part in c3729907 (failure stamps counted from `history`; review-dispatch 322 → 329), agora.py part in flight with a fresh worker after the original M1 worker stalled twice on context. Remaining: closure wave lands → suites → one plain codex `review --base main` as closure → version bump via `scripts/bump-version.sh` → PR opened and merged → retrospective.
+- [ ] M5 — exit gate. Done: codex code-review PANEL round 1 (`workflows/code-review.mjs --args {"base":"main"}`, run `wf-mtj88koo-ldukt9`, 18 min; 59 files / +4510 −4413 was past the single-reviewer threshold) → verdict incorrect, 29 confirmed findings (13 P1), all verified and adopted (see Decision Log, "exit gate"); fix wave landed: agora.py + tests in b440aa67 (all 26 items; suite 262 → 297 assertions, with new cases for re-fill vs live refusal, secret redaction, send ambiguity, recycled-pid liveness, native-wake sync, socket-failure fallback, codex purge, owning-repo grouping, missing-cwd refusal), pipeline in 9fc1d5b4 (fail-closed migrate with 3 new assertions; AGORA_HOME precedence in 10 defaults). Real registry re-checked after the wave: `agora list` prints no `null`, `agora migrate` is a silent no-op; all 27 suites green. Panel round 2 (`wf-mtj9n3b3-omv07r`) → 25 findings (14 P1), 24 adopted (see Decision Log "round 2"), second fix wave: agora.py + tests landed in d9ad851c (suite 297 → 353 assertions; the real registry re-migrated idempotently: root 0700, 69 files 0600, 4 duplicate historical aliases renamed `<alias>@<short>`), pipeline part in 47685259 (one root rule with both names exported by every entrypoint; migrate gated before direct reads; attempts-aware outage streak; review-dispatch 322 → 326 assertions). All 27 suites green after round 2. Panel round 3 (`wf-mtjbkc7w-ar5zkm`) → 26 findings, 22 adopted, 2 not acted on (see Decision Log "round 3"), final wave: pipeline part in 9422f756 (failed-only outage streak from `history`, idle-row normalisation in `_wt_occupied`, aside-aware cutover gate; review-dispatch 322 → 327), agora.py part in 3a304d24 (suite 353 → 385 assertions: demotions keep `updated`, gen snapshots under the lock, in-lock reply writes, locked unlink, predecessor-socket refusal, running-row preference, run/binding fields cleared on re-fill, harness-derived sender identity with `--from human` refused in a session, harness failure → `unknown`, stamping before conversion, codex retire only when dead, aside board merge with renumbering, sha1 sorted lock names, no create-on-missing writes, procStart verification). Loop converged; version bumped to 7.68.0 (0dfb62f4); origin/main merged in (one conflict in `skills/execplan/SKILL.md`, both changes kept); PR #92 opened. Closure `review --base main` → 5 findings, all adopted (Decision Log "closure"): pipeline part in c3729907 (failure stamps counted from `history`; review-dispatch 322 → 329), agora.py part in 04dbc6d9 (suite 385 → 406 assertions) by a fresh worker after the original M1 worker stalled twice on context. Retrospective written. Remaining: final full suite run → push → PR #92 merged.
 
 ## Surprises & Discoveries
 
@@ -143,7 +143,50 @@ skill directory is deleted.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+(2026-09-02, at finish.) The purpose was one tool and one registry for a fleet
+of durable Claude Code sessions, organised as seats in groups, with the board
+pipeline riding the same verbs. All of it shipped and all of it was seen
+working live: the real registry migrated in place (rename plus symlink; 36
+records stamped, 3 v2 nodes converted, historical same-alias duplicates
+renamed, root and records tightened to 0700/0600), a three-level group
+assembled itself when a spawned scout spawned its own child from the preamble,
+the board post and the native `SCOUT-READY` arrived unprompted, a shell-side
+`agora send` woke an idle seat, and a retired seat was re-filled by resuming
+the same session id. The final surface is one Python module (~2,400 lines)
+behind a six-line launcher, one sourced shell helper, one preamble, one skill
+document, a 406-assertion hermetic suite, twelve repointed pipeline scripts
+with their fifteen test files, and no `orchestrating-daemons` directory.
+Version 7.68.0; PR #92.
+
+What the work taught. Three harness facts anchor the design and are recorded
+in Surprises: a shell can post into a session's inbox socket and the harness
+frames it as a peer message (the whole `send`/`wake` design rests on this); a
+background session keeps its saved options, so `--bg --resume` continues the
+same id only when passed no other flag (the first live re-fill produced a copy
+and taught this); and after a same-id resume the harness lists two rows for
+one session id. None of the three was knowable from the repository. The
+review layers earned their cost several times over: the adversarial review of
+the plan split `wake` from `resume` before a line was written (the board
+pipeline's run-identity boundary needs a fresh process), and three code-review
+panel rounds plus a closure review found 85 confirmed defects in code whose
+hermetic suites were green throughout — one of which, the re-fill banner
+printing the new session uuid instead of the record filename, would have
+broken every deterministic respawn in the pipeline. The species is now named
+and pinned: a contract between two components that are each tested against a
+stub of the other needs at least one assertion that runs the real thing on
+one side. Two round-1 adoptions were reversed in round 2 (warn-and-run-from-HOME
+on a vanished cwd; signalling legacy codex pids), which is the loop working,
+not churn; the loop was stopped when a round's findings fell to bookkeeping.
+
+Gaps, deliberate: the six board-pipeline writers still reimplement the
+registry read-modify-write (tech-debt #11); the interactive topology view with
+attach-on-Enter is the next phase (the harness records a `tmux` pane per
+session, and `agora attach` already exists); cross-machine seats are a later
+un-localisation; and whether `BOARD_RUN_*` actually reaches a worker's tools
+through the process environment remains an unverified pipeline assumption this
+plan only recorded. Operationally: the registry `status` is a reconciled
+mirror, not the truth — `agora sync`/`reply`/`list` are the readers, never the
+files.
 
 ## Context and Orientation
 
