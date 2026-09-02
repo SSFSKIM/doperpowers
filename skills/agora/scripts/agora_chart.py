@@ -42,13 +42,14 @@ def dwidth(s):
     return sum(cwidth(ch) for ch in s)
 
 
-def fit(s, n):
+def fit(s, n, collapse=True):
     """`s` on one line, truncated to `n` display cells (ending in … when cut),
     then padded with spaces to exactly `n` cells — so a Korean status line and
-    an ASCII one fill a box to the same border column."""
+    an ASCII one fill a box to the same border column. Runs of whitespace are
+    collapsed unless `collapse` is False (columnar text)."""
     if n <= 0:
         return ""
-    s = " ".join(str(s).split())
+    s = " ".join(str(s).split()) if collapse else str(s).replace("\n", " ")
     w = dwidth(s)
     if w <= n:
         return s + " " * (n - w)

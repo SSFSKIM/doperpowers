@@ -31,6 +31,7 @@ one group's organisation chart with live state on every node.
     agora view     <group>                               # tree with role · live · now
     agora topology <group>                               # JSON: seats + edges
     agora chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
+    agora tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
     agora groups
     agora post     <group> [--from F] [--title T] [text...]   # stdin if no text
     agora board    <group> [-n N|--id I] [--json]
@@ -64,6 +65,7 @@ import datetime
 import fcntl
 import glob
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -2370,15 +2372,19 @@ def cmd_attach(a):
     print("claude attach %s" % short)
 
 
-def chart_module():
-    """Import agora_chart bound to THIS module instance (when agora.py runs as
-    __main__ a plain `import agora` would execute the file a second time and
-    give the chart its own, separate harness caches)."""
+def sibling_module(name):
+    """Import a sibling module (agora_chart, agora_tui) bound to THIS module
+    instance: when agora.py runs as __main__ a plain `import agora` inside the
+    sibling would execute the file a second time and give it its own, separate
+    harness caches."""
     sys.modules.setdefault("agora", sys.modules[__name__])
     if SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SCRIPT_DIR)
-    import agora_chart
-    return agora_chart
+    return importlib.import_module(name)
+
+
+def chart_module():
+    return sibling_module("agora_chart")
 
 
 def chart_group_or_die(g):
@@ -2416,6 +2422,13 @@ def cmd_chart(a):
     if lay["width"] > width:
         bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
     print(" · ".join(bits))
+
+
+def cmd_tui(a):
+    """The chart as an interactive screen (agora_tui): headless when asked,
+    otherwise a real terminal inside tmux."""
+    chart_group_or_die(a.group)
+    sibling_module("agora_tui").cmd_tui(a)
 
 
 # --------------------------------------------------------------------- board
@@ -2730,6 +2743,16 @@ def build_parser():
     ch.add_argument("--all", action="store_true")
     ch.add_argument("--width", type=int, default=0)
     ch.set_defaults(fn=cmd_chart)
+
+    tu = sub.add_parser("tui", add_help=False)
+    tu.add_argument("group", nargs="?", default=None)
+    tu.add_argument("--all", action="store_true")
+    tu.add_argument("--headless", action="store_true")
+    tu.add_argument("--keys", default="")
+    tu.add_argument("--width", type=int, default=0)
+    tu.add_argument("--height", type=int, default=0)
+    tu.add_argument("--no-tmux", dest="no_tmux", action="store_true")
+    tu.set_defaults(fn=cmd_tui)
 
     g = sub.add_parser("groups", add_help=False)
     g.set_defaults(fn=cmd_groups)

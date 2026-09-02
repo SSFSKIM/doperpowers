@@ -1432,6 +1432,111 @@ assert_rc 4 "$RC" "chart of an unknown group exits 4"
 run "$AGORA" chart bad/name
 assert_rc 2 "$RC" "chart of a bad group name exits 2"
 
+# ---- 14) tui: the interactive chart, driven headlessly -----------------------
+# `agora tui --headless --keys …` runs the same state machine the curses screen
+# runs, then prints the final grid, `--- focus: <id>`, and the actions it would
+# have taken (attach) or did take (send, over the real launcher). Reuses the
+# org fixture from section 13: lead's visible children in alias order are qa,
+# scout, scribe; intern hangs under scribe; old-worker is folded away.
+echo "tui:"
+TUI="$AGORA tui org --headless --width 110 --height 34"
+run $TUI
+assert_rc 0 "$RC" "headless tui exits 0"
+assert_contains "$OUT" "--- focus: org/lead" "the first root is focused by default"
+assert_contains "$OUT" "┏━━" "the focused box has heavy borders"
+assert_contains "$OUT" "agora · org · 6 seats · 4 live · 1 hidden · a" "the header carries the counts and the hidden hint"
+assert_contains "$OUT" "── detail ──" "the detail panel is shown by default"
+assert_contains "$OUT" "org/lead · LEAD · seat cccc0001 · session cccc0001" "the detail panel names the focused seat, role, seat and session"
+assert_contains "$OUT" "● busy · status idle · short cc000001" "the detail panel shows live state, recorded status and the short id"
+assert_contains "$OUT" "enter attach · s send · b board" "the footer lists the keys"
+run $TUI --keys right
+assert_contains "$OUT" "--- focus: org/qa" "right enters the first (topmost) child"
+run $TUI --keys "right,down"
+assert_contains "$OUT" "--- focus: org/scout" "down moves to the next box in the same column"
+run $TUI --keys "right,down,down,down"
+assert_contains "$OUT" "--- focus: org/scribe" "down past the last box stays put"
+run $TUI --keys "right,down,down,right"
+assert_contains "$OUT" "--- focus: org/intern" "right from scribe reaches intern"
+run $TUI --keys "right,down,down,right,left"
+assert_contains "$OUT" "--- focus: org/scribe" "left returns to the parent"
+run $TUI --keys "right,down,down,right,home"
+assert_contains "$OUT" "--- focus: org/lead" "home returns to the first root"
+run $TUI --keys "right,down,enter"
+assert_contains "$OUT" "attach scout cc000002 → claude attach cc000002" "enter on a live seat records the attach with the harness short id"
+assert_contains "$OUT" "would run: claude attach cc000002" "the footer flashes the attach command"
+run $TUI --keys "right,down,down,right,enter"
+assert_not_contains "$OUT" "attach intern" "enter on a vacant seat attaches nothing"
+assert_contains "$OUT" "intern is vacant — no session to attach; agora fill org/intern" "the footer explains the vacant seat and names the fill command"
+run $TUI --keys "right,down,enter" --no-tmux
+assert_contains "$OUT" "→ claude attach cc000002" "--no-tmux still records the plain attach command"
+run $TUI --keys a
+assert_contains "$OUT" "old-worker" "a shows the folded retired seat"
+assert_contains "$OUT" "all shown · a" "the header notes that hidden seats are shown"
+run $TUI --keys "a,a"
+assert_not_contains "$OUT" "old-worker" "a again hides it"
+run $TUI --keys s
+assert_contains "$OUT" "send → org/lead ▏" "s on a live seat opens the send line naming the target"
+run $TUI --keys "s,text:abc,backspace,text:d"
+assert_contains "$OUT" "send → org/lead ▏abd" "typing and backspace edit the send line"
+run $TUI --keys "s,text:abc,esc"
+assert_not_contains "$OUT" "send → org/lead" "esc cancels the send line"
+assert_contains "$OUT" "enter attach · s send" "and the footer shows the keys again"
+run $TUI --keys "right,down,down,right,s"
+assert_contains "$OUT" "intern is vacant — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs agora fill" "s on a vacant seat refuses with the reason"
+assert_not_contains "$OUT" "send →" "and opens no send line"
+run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
+assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout (scout)" "enter on the send line delivers through the real launcher and records the result"
+assert_contains "$(cat "$RECEIVED")" "[agora message from human]\nping-from-tui here" "the frame reached the seat's inbox socket with the human sender line"
+run $TUI --keys b
+assert_contains "$OUT" "── board · org · 0 posts · tab to browse ──" "b switches the panel to the group board"
+assert_contains "$OUT" "(no posts)" "an empty board says so"
+"$AGORA" post org --title "Kickoff" "hello board from the tui test" >/dev/null
+run $TUI --keys b
+assert_contains "$OUT" "board · org · 1 post ·" "the board panel counts posts"
+assert_contains "$OUT" "#1    " "the board panel lists the post id"
+assert_contains "$OUT" "Kickoff" "and its title"
+run $TUI --keys "b,tab"
+assert_contains "$OUT" "↑↓ enter opens · tab back" "tab moves the keys into the board list"
+run $TUI --keys "b,tab,enter"
+assert_contains "$OUT" "#1 · human · " "enter on a board row opens the post overlay with its header"
+assert_contains "$OUT" "hello board from the tui test" "the overlay shows the post body"
+assert_contains "$OUT" "esc closes" "the overlay says how to close"
+run $TUI --keys "b,tab,enter,esc"
+assert_not_contains "$OUT" "esc closes" "esc closes the overlay"
+run $TUI --keys "b,tab,tab,right"
+assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
+run $TUI --keys "?"
+assert_contains "$OUT" "┃ keys" "? opens the help overlay"
+assert_contains "$OUT" "a — show / hide retired, failed and gone seats" "the help lists the keys"
+run $TUI --keys "?,q,right"
+assert_contains "$OUT" "--- focus: org/qa" "q inside the overlay only closes it"
+run $TUI --keys q
+assert_contains "$OUT" "--- quit" "q quits"
+run $TUI --keys r
+assert_rc 0 "$RC" "r refreshes without error"
+assert_contains "$OUT" "--- focus: org/lead" "and keeps the focus"
+run "$AGORA" tui org --headless --width 60 --height 14 --keys "right,down,down,right"
+assert_rc 0 "$RC" "a 60x14 terminal renders"
+assert_contains "$OUT" "┃ intern       ┃" "the viewport scrolls so the focused box is on screen"
+assert_not_contains "$OUT" "── detail ──" "the panel collapses below 16 rows"
+run "$AGORA" tui --headless --width 120 --height 40
+assert_rc 0 "$RC" "fleet tui exits 0"
+assert_contains "$OUT" "agora · fleet · " "the fleet header names the fleet"
+assert_contains "$OUT" "seats · " "the focused group box is on screen even when its children fill the top of the viewport"
+run "$AGORA" tui --headless --width 120 --height 160
+assert_contains "$OUT" "╭" "unfocused groups are rounded boxes"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^--- focus: //p' | grep -c '/')" "0" "the default fleet focus is a group box"
+run "$AGORA" tui --headless --width 120 --height 40 --keys enter
+assert_contains "$OUT" "▸ " "enter on a group collapses it"
+run "$AGORA" tui nope --headless
+assert_rc 4 "$RC" "tui of an unknown group exits 4"
+run "$AGORA" tui bad/name --headless
+assert_rc 2 "$RC" "tui of a bad group name exits 2"
+run "$AGORA" tui org
+assert_rc 2 "$RC" "tui without a terminal exits 2"
+assert_contains "$OUT" "agora tui needs a terminal — for text use: agora chart org" "and points at chart"
+
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES assertions passed"
