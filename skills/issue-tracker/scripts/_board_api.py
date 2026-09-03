@@ -68,6 +68,43 @@ def api_url():
     return url
 
 
+def repo():
+    """The repo key this checkout speaks for — `.doperpowers/board.json`'s
+    `repo`, handed over by _binding.sh (which refuses an api binding without
+    one).
+
+    One board service serves several repositories out of ONE ticket namespace,
+    so a request that names no repo is not repo-neutral: the server picks. On an
+    ordinary write it picks its founding repo, on a list read it picks EVERY
+    repo — which is how a register run from a neighbouring checkout filed its
+    ticket here, and how a sweep read another repo's board. There is therefore
+    no default to fall back to: an unset BOARD_REPO is a broken hand-over, not a
+    request for the server's choice.
+    """
+    key = os.environ.get("BOARD_REPO", "")
+    if not key:
+        die("BOARD_REPO is unset — an api binding declares its repo in "
+            ".doperpowers/board.json (\"repo\": \"<name>\") and _binding.sh "
+            "passes it through; sending none would let the server choose one")
+    return key
+
+
+def _scoped(path, all_repos=False):
+    """`path` with `repo=` appended — for the routes whose repo dimension is a
+    QUERY parameter (the list-shaped reads, whose server-side default is every
+    repo). Appended after whatever the caller already assembled, so a walk's
+    `&cursor=` still lands last and a prefix-matching fixture still matches.
+
+    `all_repos` is the browse verbs' deliberate widening (board-list.sh /
+    board-search.sh `--all-repos`): the read then carries no repo at all and the
+    server answers across the namespace.
+    """
+    if all_repos:
+        return path
+    return "%s%srepo=%s" % (path, "&" if "?" in path else "?",
+                            urllib.parse.quote(repo(), safe=""))
+
+
 def _creds():
     path = os.environ.get("BOARD_CREDENTIALS_FILE", "")
     if not path or not os.path.isfile(path):
@@ -167,6 +204,12 @@ def claim(lane, nonce, lease_minutes=None, lane_cap=None):
         body["leaseMinutes"] = lease_minutes
     if lane_cap is not None:
         body["laneCap"] = lane_cap
+    # A DISPATCH NAMES ITS REPO. This route is dispatch-shaped, so the server
+    # refuses an unscoped credential that names none (`repo-required`) rather
+    # than picking — and a name a scoped credential contradicts is
+    # `repo-mismatch`, which is a checkout being told it is dispatching for
+    # someone else's board instead of quietly doing it.
+    body["repo"] = repo()
     return request("POST", "/runs/claim", body, "automation", retry=True)
 
 
@@ -178,12 +221,18 @@ def claim_successor(ticket_id, nonce, lease_minutes=None):
                    obsolete_codes=("nonce-consumed", "stale-resume"))
 
 
+# Both feeds are list-shaped and repo-dimensioned: unnarrowed they answer for
+# EVERY repo the service holds, so a tick in this checkout would try to resume
+# and relay another repo's runs. (An unscoped credential is refused
+# `repo-required` on them outright; a scoped one gets the cross-check.)
 def needing_resume():
-    return request("GET", "/runs/needing-resume", principal="automation")
+    return request("GET", _scoped("/runs/needing-resume"),
+                   principal="automation")
 
 
 def unrelayed():
-    return request("GET", "/answers/unrelayed", principal="automation")
+    return request("GET", _scoped("/answers/unrelayed"),
+                   principal="automation")
 
 
 def ack(answer_event_id):
@@ -213,7 +262,12 @@ def end_run(run_id, reason="completed"):
 
 
 def register(payload, principal="human"):
-    return request("POST", "/tickets", payload, principal)
+    # A BIRTH NAMES ITS REPO. Unnamed, an unscoped credential lands the ticket
+    # in the service's founding repo; named, a credential that contradicts it is
+    # refused `repo-mismatch` rather than filing somewhere quietly. Sent for a
+    # scoped token too, where it is redundant with what the server derives —
+    # that redundancy IS the cross-check.
+    return request("POST", "/tickets", dict(payload, repo=repo()), principal)
 
 
 def transition(tid, to, note=None, pr=None, plan=None, branch=None,
@@ -350,8 +404,8 @@ def ticket(tid, principal="human", include_body=False):
         # thing that proves the surface, because proving it is what turns this
         # 404 into an authoritative absence — and board-lint retires live
         # daemons on that answer. _envelope marks the surface proven itself.
-        _envelope(request("GET", "/tickets?limit=1", principal=principal),
-                  "/tickets?limit=1",
+        probe = _scoped("/tickets?limit=1")
+        _envelope(request("GET", probe, principal=principal), probe,
                   " — so the not-found on GET %s is a route-level "
                   "404 from a pre-read-surface server, not a missing ticket"
                   % path)
@@ -370,7 +424,8 @@ def ticket(tid, principal="human", include_body=False):
     return out
 
 
-def tickets_by_ids(ids, principal="human", include_body=False):
+def tickets_by_ids(ids, principal="human", include_body=False,
+                   all_repos=False):
     """ids= batch read, chunked at the documented cap. Returns {int_id: row}.
     An id absent from the completed result is authoritatively absent — a
     targeted read, not a walk. (The board has no delete path today, so an
@@ -392,12 +447,13 @@ def tickets_by_ids(ids, principal="human", include_body=False):
             _PAGE_LIMIT, ",".join(str(c) for c in chunk))
         if include_body:
             base += "&include=body"
+        base = _scoped(base, all_repos)
         for row in _walk(base, principal):
             out[int(row["id"])] = row
     return out
 
 
-def tickets_all(states=None, principal="human"):
+def tickets_all(states=None, principal="human", all_repos=False):
     """Complete cursor walk of /tickets. REPORT-grade completeness: contains
     every row whose sort position was stable while the walk ran; a row
     reprioritized behind an already-passed cursor mid-walk is missing from
@@ -407,13 +463,17 @@ def tickets_all(states=None, principal="human"):
     base = "/tickets?limit=%d" % _PAGE_LIMIT
     if states:
         base += "&states=%s" % states
+    # Narrowed to this checkout's repo BEFORE the walk, so every page carries
+    # it: _walk appends only `&cursor=`, and a page that dropped the filter
+    # would splice another repo's rows into the middle of the result.
+    base = _scoped(base, all_repos)
     seen = {}
     for row in _walk(base, principal):
         seen[int(row["id"])] = row
     return list(seen.values())
 
 
-def tickets_search(q, states=None, principal="automation"):
+def tickets_search(q, states=None, principal="automation", all_repos=False):
     """Complete cursor walk of /tickets?q= — the server's websearch filter
     over title+body (arkho#12: unquoted terms AND, `or`, `-` negation,
     quoted phrases; the grammar is the server's to judge). Report-grade
@@ -425,6 +485,7 @@ def tickets_search(q, states=None, principal="automation"):
         _PAGE_LIMIT, urllib.parse.quote(q, safe=""))
     if states:
         base += "&states=%s" % states
+    base = _scoped(base, all_repos)
     seen = {}
     for row in _walk(base, principal):
         seen[int(row["id"])] = row
@@ -438,7 +499,8 @@ def queue_decisions_all():
     report-grade here too: a park COMMITTING during the walk can land behind
     the cursor — action-grade absence is a second walk started after the
     first finished (board-answer's retry)."""
-    return list(_walk("/queue/decisions?limit=%d" % _PAGE_LIMIT, "human"))
+    return list(_walk(_scoped("/queue/decisions?limit=%d" % _PAGE_LIMIT),
+                      "human"))
 
 
 # The five routes below are human-only server-side: a run's bearer is refused
