@@ -1,55 +1,55 @@
 #!/usr/bin/env python3
-"""agora — one fleet registry for Claude Code sessions.
+"""sminos — one fleet registry for Claude Code sessions.
 
 The unit is the SEAT: a named position in a GROUP, with a role, that a Claude
 Code session fills. A seat outlives the process that fills it: when the session
 stops or dies the seat stays, with its role, brief, and history, and can be
 filled again (`fill --resume` continues the same session id; `fill` spawns a
-fresh one). Every background session spawned through agora is a seat, board
+fresh one). Every background session spawned through sminos is a seat, board
 pipeline workers included, so `list` is the whole fleet and `view <group>` is
 one group's organisation chart with live state on every node.
 
-    agora spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
+    sminos spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
                    [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E]
                    [--addr A] [--wait]
-    agora seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]
-    agora fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
-    agora wake     <seat> <msg> [--wait] [--from F]     # live: inbox socket; stopped: resume
-    agora resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
+    sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]
+    sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
+    sminos wake     <seat> <msg> [--wait] [--from F]     # live: inbox socket; stopped: resume
+    sminos resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
                    A resumed background session keeps its SAVED options (name, permission
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
-    agora send     <seat|addr> <msg> [--from F]         # live sessions only
-    agora reply    <seat>                                # latest reply text
-    agora sync     [<seat>] [--all]                      # reconcile status from the harness
-    agora mark     <seat> <status> [note]                # orchestrator judgment state
-    agora status   <seat> <one line>                     # the agent's own "now" line
-    agora retire   <seat> [--purge]                      # stop; keep (or purge) the record
-    agora remove   <seat>                                # stop and delete the record
-    agora list     [group] [--status S] [--json]
-    agora view     <group>                               # tree with role · live · now
-    agora topology <group>                               # JSON: seats + edges
-    agora chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
-    agora tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
-    agora groups
-    agora post     <group> [--from F] [--title T] [text...]   # stdin if no text
-    agora board    <group> [-n N|--id I] [--json]
-    agora attach   <seat>                                # claude attach <short>
-    agora migrate  [--quiet]                             # (also runs implicitly)
-    agora meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
+    sminos send     <seat|addr> <msg> [--from F]         # live sessions only
+    sminos reply    <seat>                                # latest reply text
+    sminos sync     [<seat>] [--all]                      # reconcile status from the harness
+    sminos mark     <seat> <status> [note]                # orchestrator judgment state
+    sminos status   <seat> <one line>                     # the agent's own "now" line
+    sminos retire   <seat> [--purge]                      # stop; keep (or purge) the record
+    sminos remove   <seat>                                # stop and delete the record
+    sminos list     [group] [--status S] [--json]
+    sminos view     <group>                               # tree with role · live · now
+    sminos topology <group>                               # JSON: seats + edges
+    sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
+    sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
+    sminos groups
+    sminos post     <group> [--from F] [--title T] [text...]   # stdin if no text
+    sminos board    <group> [-n N|--id I] [--json]
+    sminos attach   <seat>                                # claude attach <short>
+    sminos migrate  [--quiet]                             # (also runs implicitly)
+    sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
 
 A seat is addressed by `group/alias`, by a bare alias when it is unique, by its
 seat id (or a prefix), or by the current session's short or full id.
 
 Messaging between agents is the harness's native cross-session SendMessage
-tool (a seat's addr is the target). agora's own `send`/`wake` exist for the
+tool (a seat's addr is the target). sminos's own `send`/`wake` exist for the
 shell: they write a frame to the target session's inbox socket, which the
 harness delivers as a peer message (an idle session starts a new turn).
 `resume` is the process-level continuation the board pipeline relays through:
 a fresh `claude --bg --resume` carrying the invoking environment.
 
-State lives under $AGORA_HOME (default ~/.claude/agora; $DAEMON_HOME is the
+State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
 writes them directly under the shared flock file .metalock. Group boards live
@@ -84,7 +84,7 @@ from typing import NoReturn
 os.umask(0o077)
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-LAUNCHER = os.path.join(SCRIPT_DIR, "agora")
+LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
 EXIT_USAGE = 2
@@ -114,11 +114,15 @@ def home_dir():
 
 
 def default_root():
-    return os.path.join(home_dir(), ".claude", "agora")
+    return os.path.join(home_dir(), ".claude", "sminos")
 
 
 def root():
-    return os.environ.get("AGORA_HOME") or os.environ.get("DAEMON_HOME") or default_root()
+    # The tool was `agora`: a leftover $AGORA_HOME would point every consumer at
+    # a fresh, empty registry, and dispatchers would launch over live seats.
+    if os.environ.get("AGORA_HOME") is not None:
+        die("AGORA_HOME is set, but the tool is now sminos — export SMINOS_HOME instead (and unset AGORA_HOME)")
+    return os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME") or default_root()
 
 
 def now():
@@ -126,12 +130,12 @@ def now():
 
 
 def die(msg, code=EXIT_USAGE) -> NoReturn:
-    sys.stderr.write("agora: %s\n" % msg)
+    sys.stderr.write("sminos: %s\n" % msg)
     sys.exit(code)
 
 
 def warn(msg):
-    sys.stderr.write("agora: warning: %s\n" % msg)
+    sys.stderr.write("sminos: warning: %s\n" % msg)
 
 
 def valid_name(n):
@@ -141,7 +145,7 @@ def valid_name(n):
 
 
 def poll_interval():
-    return float(os.environ.get("AGORA_POLL_INTERVAL", "2"))
+    return float(os.environ.get("SMINOS_POLL_INTERVAL", "2"))
 
 
 # ------------------------------------------------------------------ registry
@@ -451,7 +455,7 @@ def lock_names(names, label, blocking=False):
             for held in locks:
                 held.close()
             lf.close()
-            die("'%s' (%s) is being changed by another agora process — retry shortly" % (nm, label), EXIT_UNKNOWN)
+            die("'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label), EXIT_UNKNOWN)
         locks.append(lf)
     return locks
 
@@ -590,7 +594,7 @@ def same_process(rec):
     record on this machine, harness 2.1.251 through 2.1.259, is offset by
     exactly the local UTC offset). Comparing them as text therefore fails on
     any machine that is not on UTC, which read every live seat as `stopped`
-    and made `agora send` refuse everything. So compare INSTANTS, and accept
+    and made `sminos send` refuse everything. So compare INSTANTS, and accept
     the recorded string under either reading — a recycled pid would have to
     have started at the very same wall-clock second (or exactly a whole zone
     offset away) to slip through, and a wrong guess only costs a failed socket
@@ -719,7 +723,7 @@ def harness_row(seat):
     (stopped) job and the new one share a session id. A RUNNING row for the
     session wins outright — an out-of-band same-id revival leaves the old,
     stopped row under the recorded short, and that must not shadow the live
-    turn. Then the recorded short (the latest launch agora knows), then any
+    turn. Then the recorded short (the latest launch sminos knows), then any
     row for the session."""
     rows = agents_json() or []
     cands = [r for r in rows if seat["current"] and r.get("sessionId") == seat["current"]]
@@ -886,12 +890,12 @@ def claude_stop(short):
 
 
 def wait_stopped(s, short, cur):
-    """After `claude stop`, wait (bounded by AGORA_STOP_TIMEOUT, default 30s)
+    """After `claude stop`, wait (bounded by SMINOS_STOP_TIMEOUT, default 30s)
     until the old turn's harness row is gone or no longer running AND no live
     peer socket answers for the session. Resuming while the old process still
     runs makes the harness start a copy; a stop that did not take is refused
     loudly rather than papered over. True iff the turn is confirmed down."""
-    deadline = time.time() + float(os.environ.get("AGORA_STOP_TIMEOUT", "30"))
+    deadline = time.time() + float(os.environ.get("SMINOS_STOP_TIMEOUT", "30"))
     while True:
         agents_refresh()
         row = agent_row(short=short) if short else harness_row(s)
@@ -909,7 +913,7 @@ def poll_uuid(short, max_iter=None):
     """Wait for the harness row of a just-launched short id to carry a session
     id — the row can lag the banner by a beat. Returns (uuid, state, cwd) or None."""
     if max_iter is None:
-        max_iter = int(os.environ.get("AGORA_UUID_POLL") or os.environ.get("DAEMON_UUID_POLL") or "30")
+        max_iter = int(os.environ.get("SMINOS_UUID_POLL") or os.environ.get("DAEMON_UUID_POLL") or "30")
     for _ in range(max_iter):
         agents_refresh()
         row = agent_row(short=short)
@@ -1029,7 +1033,7 @@ def transcript_reply(session_id, seat_ref="<seat>"):
     out = text
     if pending:
         out += ('\n[pending AskUserQuestion — the seat is blocked on it; answer with '
-                'agora wake %s "<answer>"]\n' % seat_ref) + "\n".join(pending)
+                'sminos wake %s "<answer>"]\n' % seat_ref) + "\n".join(pending)
     return out.strip()
 
 
@@ -1043,7 +1047,7 @@ def record_reply(turn_id, seat_id, state, seat_ref="<seat>"):
     if state in ("blocked", "done-blocked") and "[pending AskUserQuestion" not in out:
         out += ("\n[blocked on a harness prompt — no pending AskUserQuestion in the transcript, "
                 "most likely a permission prompt holding a tool call. Resume with an answer/"
-                "instruction via agora wake (the pending call is interrupted), or 'claude attach' "
+                "instruction via sminos wake (the pending call is interrupted), or 'claude attach' "
                 "the session to approve it interactively.]")
     os.makedirs(root(), exist_ok=True)
     with open(reply_path(seat_id), "w") as f:
@@ -1070,7 +1074,7 @@ def reply_stale(seat_id, turn_id):
     file was last written (or there is no reply file yet).
 
     A seat can be woken by the harness's own SendMessage and run a whole turn
-    without any agora verb in it: nothing marks the record working, nothing
+    without any sminos verb in it: nothing marks the record working, nothing
     finalizes it, and the recorded reply keeps describing the PREVIOUS turn.
     The transcript's mtime is the evidence that a turn happened anyway."""
     tx = transcript_path(turn_id)
@@ -1099,7 +1103,9 @@ def convert_v2_nodes(r):
             alias = str(n.get("alias") or os.path.basename(nf)[:-5])
             # A sessionless node gets a DETERMINISTIC id, so a run interrupted
             # mid-convert re-derives the same seat instead of a fresh uuid4 each
-            # time (which would multiply the seat on every retry).
+            # time (which would multiply the seat on every retry). The namespace
+            # keeps the tool's former name: this id must equal the one an
+            # interrupted conversion already wrote for the same node.
             det_id = str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
             seat_id = sess if UUID_RE.match(sess) else det_id
             existing = None
@@ -1170,9 +1176,13 @@ def merge_asides(r):
     root that was set aside so the daemon root could take its place; its groups/
     are merged back and it is removed when empty. Runs on EVERY migrate, so a
     crash between the rename and the merge self-heals on the next command. A
-    colliding board.jsonl is appended into the root's (ids renumbered); any
-    other collision is left in place and named on stderr on every run until a
-    human resolves it. Returns (asides_removed, warnings)."""
+    colliding board.jsonl is appended into the root's (ids renumbered). Entries
+    at the aside's top level — seat records, reply files, pipeline dirs that an
+    older plugin wrote into a recreated former root — move into the root when
+    it has nothing of that name; lock dirs and colliding dot-files (locks,
+    stamps, markers: no fleet state) are dropped. Any other collision is left
+    in place and named on stderr on every run until a human resolves it.
+    Returns (asides_removed, warnings)."""
     merged, warnings = 0, []
     for aside in sorted(glob.glob(r + ".v2-*")):
         if not os.path.isdir(aside) or os.path.islink(aside):
@@ -1200,29 +1210,67 @@ def merge_asides(r):
                     shutil.move(src, dst)
             if not os.listdir(ag):
                 os.rmdir(ag)
+        if os.path.isdir(aside):
+            for entry in os.listdir(aside):
+                if entry == "groups":
+                    continue
+                sp, dp = os.path.join(aside, entry), os.path.join(r, entry)
+                if entry in ("locks", "surface-locks") and os.path.isdir(sp):
+                    shutil.rmtree(sp, ignore_errors=True)  # a lock dir carries no state
+                elif not os.path.lexists(dp):
+                    os.makedirs(r, exist_ok=True)
+                    shutil.move(sp, dp)  # a seat record, its reply, a pipeline dir: never strand it
+                elif entry.startswith(".") and os.path.isfile(sp):
+                    os.unlink(sp)  # .metalock, a stamp, a marker: the root already has its own
+                else:
+                    warnings.append(sp)
         if os.path.isdir(aside) and not os.listdir(aside):
             os.rmdir(aside)
             merged += 1
-        elif os.path.isdir(aside):
-            for entry in os.listdir(aside):
-                if entry != "groups":
-                    warnings.append(os.path.join(aside, entry))
     return merged, warnings
+
+
+LEGACY_ROOT_NAMES = ("orchestrating-daemons", "agora")  # oldest first
+
+
+def legacy_roots():
+    """Former default roots, oldest first: the daemon substrate's, then
+    sminos's under its former name."""
+    return [os.path.join(home_dir(), ".claude", n) for n in LEGACY_ROOT_NAMES]
+
+
+def set_aside(path, r):
+    """Move `path` out of the way as a `<root>.v2-<ts>` aside for merge_asides
+    to fold back in. Returns the aside path — unique even within one second, so
+    two former roots set aside by one run cannot collide."""
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside, n = r + ".v2-" + stamp, 0
+    while os.path.lexists(aside):
+        n += 1
+        aside = "%s.v2-%s-%d" % (r, stamp, n)
+    os.rename(path, aside)
+    return aside
 
 
 def migrate(quiet=False):
     """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
 
     The whole cutover is serialized by an exclusive flock on
-    ~/.claude/.agora-migrate.lock, so two agora processes starting at once can't
-    both try to rename the old root. Steps:
+    ~/.claude/.agora-migrate.lock — under the tool's former name on purpose, so
+    a still-cached older `agora` binary and this one never run a migration
+    pass concurrently during the upgrade. Steps:
 
-    1. Old root: when the default root is in use and ~/.claude/orchestrating-daemons
-       is a real directory, the old root is renamed INTO place as one atomic
-       step (any existing ~/.claude/agora is set aside first), and a symlink is
-       left at the old path so anything still holding it keeps resolving. The
-       set-aside root's groups/ are merged back by merge_asides, which also runs
-       on every later call — so a crash mid-cutover self-heals.
+    1. Former roots, when the default root is in use. The registry has lived at
+       ~/.claude/orchestrating-daemons (the daemon substrate) and then at
+       ~/.claude/agora (sminos's former name). A former root that is still a
+       real directory is renamed INTO place as one atomic step while the new
+       root holds no records (a bare new root — a consumer's mkdir — is set
+       aside first); once the root holds records, a real directory at a former
+       path is set aside beside it instead, so the registry is never displaced
+       by a directory recreated at an old path. A symlink is left at every
+       former path so anything still holding one keeps resolving. Set-aside
+       groups/ are merged back by merge_asides, which also runs on every later
+       call — so a crash mid-cutover self-heals.
     2. Every run, per record (the scan is cheap), BEFORE any v2 node conversion:
        a record lacking `group` is stamped (its own agora_group if it had one,
        else derived from cwd); a legacy codex-CLI worker record (engine: codex)
@@ -1239,9 +1287,9 @@ def migrate(quiet=False):
        then the newest `updated` wins; each loser becomes `<alias>@<short>` and
        retired, `updated` and `name` (pipeline fields) untouched.
     5. Every run: the root is 0700 and no record/reply/err file is wider than
-       0600 (the old substrate left 0755/0644); the legacy path is a symlink to
+       0600 (the old substrate left 0755/0644); each former path is a symlink to
        the root whenever it is missing (a crash after the rename must not leave
-       legacy consumers without a path); an aside left over from an interrupted
+       older consumers without a path); an aside left over from an interrupted
        cutover is merged (colliding boards appended with renumbered ids) and
        anything it still holds is named on stderr on every run.
     """
@@ -1249,23 +1297,33 @@ def migrate(quiet=False):
     did = []
     lockdir = os.path.join(home_dir(), ".claude")
     os.makedirs(lockdir, exist_ok=True)
+    # The former name, shared with cached older `agora` binaries (see docstring).
     with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
         fcntl.flock(mlf, fcntl.LOCK_EX)
         try:
-            old = os.path.join(home_dir(), ".claude", "orchestrating-daemons")
-            if r == default_root() and os.path.isdir(old) and not os.path.islink(old):
-                if os.path.lexists(r):
-                    os.rename(r, r + ".v2-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
-                os.rename(old, r)
-                did.append("renamed %s -> %s" % (old, r))
-            if r == default_root() and os.path.isdir(r) and not os.path.lexists(old):
-                os.symlink(r, old)
-                did.append("linked %s -> %s" % (old, r))
+            if r == default_root():
+                for old in legacy_roots():
+                    if not os.path.isdir(old) or os.path.islink(old):
+                        continue
+                    if os.path.isdir(r) and any(True for _ in record_files()):
+                        did.append("set aside %s as %s" % (old, set_aside(old, r)))
+                    else:
+                        if os.path.lexists(r):
+                            set_aside(r, r)
+                        os.rename(old, r)
+                        did.append("renamed %s -> %s" % (old, r))
+                for old in legacy_roots():
+                    if os.path.isdir(r) and not os.path.lexists(old):
+                        try:
+                            os.symlink(r, old)
+                        except FileExistsError:
+                            continue  # an older consumer recreated the path in the gap; the next run folds it in
+                        did.append("linked %s -> %s" % (old, r))
             merged, leftovers = merge_asides(r)
             if merged:
                 did.append("merged an interrupted v2 aside back into the root")
             for lp in leftovers:
-                sys.stderr.write("agora: warning: unmerged aside entry left in place: %s\n" % lp)
+                sys.stderr.write("sminos: warning: unmerged aside entry left in place: %s\n" % lp)
             if os.path.isdir(r):
                 if os.stat(r).st_mode & 0o077:
                     os.chmod(r, 0o700)
@@ -1326,7 +1384,7 @@ def migrate(quiet=False):
         finally:
             fcntl.flock(mlf, fcntl.LOCK_UN)
     if did and not quiet:
-        sys.stderr.write("agora: migrated: %s\n" % "; ".join(did))
+        sys.stderr.write("sminos: migrated: %s\n" % "; ".join(did))
     return did
 
 
@@ -1340,7 +1398,7 @@ def render_preamble(group, alias, parent):
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
     return (t.replace("{{GROUP}}", group).replace("{{ALIAS}}", alias)
-             .replace("{{PARENT}}", parent or "none").replace("{{AGORA_CLI}}", LAUNCHER))
+             .replace("{{PARENT}}", parent or "none").replace("{{SMINOS_CLI}}", LAUNCHER))
 
 
 def compose_task(task, brief, preamble):
@@ -1384,12 +1442,12 @@ def finish_turn(seat_id, short, alias, uuid_hint, guard):
     exists and the guard (same session, and same launch when we know its short)
     still holds — never resurrecting a purged record nor clobbering a newer
     session. A watcher timeout is not a finished turn: status stays working
-    (also conditionally) and the reply is readable later with `agora reply`."""
+    (also conditionally) and the reply is readable later with `sminos reply`."""
     uuid, state, _cwd, finished = poll_until_done(short, watcher_iterations())
     if not finished:
         meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
-        sys.stderr.write("agora: watcher expired; turn %s of %s is still running (status=working). "
-                         "Read it later with: agora reply %s\n" % (short, alias, alias))
+        sys.stderr.write("sminos: watcher expired; turn %s of %s is still running (status=working). "
+                         "Read it later with: sminos reply %s\n" % (short, alias, alias))
         sys.exit(1)
     status = status_for_state(state)
     # The reply rides the same guarded, in-lock write: never a reply file next
@@ -1434,7 +1492,7 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     task_text = compose_task(task, brief or "", preamble)
     short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
     if not short:
-        sys.stderr.write("agora: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
+        sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     launch = {
         "current": "", "short": short, "name": addr, "alias": alias, "group": group,
@@ -1477,7 +1535,7 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     polled = poll_uuid(short)
     if not polled or not UUID_RE.match(polled[0]):
         meta_set(rec_id, {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("agora: %s: session %s produced no usable session uuid; record %s kept "
+        sys.stderr.write("sminos: %s: session %s produced no usable session uuid; record %s kept "
                          "(status=error, pending_short)\n" % (verb, short, rec_id[:8]))
         sys.exit(1)
     uuid, state, runcwd = polled
@@ -1486,7 +1544,7 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
         # pipeline resolves seats by that filename prefix. The rename is atomic;
         # do it under .metalock so it can't race a concurrent meta_set on either
         # path, and merge ONLY the fields we now know — never replay empties over
-        # a `now`/`note` a first-turn `agora status` may have written to prov.
+        # a `now`/`note` a first-turn `sminos status` may have written to prov.
         with open(os.path.join(root(), ".metalock"), "a") as _lf:
             fcntl.flock(_lf, fcntl.LOCK_EX)
             try:
@@ -1520,7 +1578,7 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
-    print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: agora reply %s)" % (
+    print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
         verb, group, alias, short, rec_id, status, wt, short))
     if wait:
         print_reply_block(rec_id)
@@ -1557,11 +1615,11 @@ def cmd_spawn(a):
         locks = lock_names(names, label)
     if existing:
         if peer_for_session(existing["current"]):
-            die("seat %s/%s: the previous occupant (session %s) still answers — use agora wake/resume, or "
+            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
         live = live_state(existing)
         if live in FILLED or live == "unknown":
-            die("seat %s/%s is filled (live: %s) — message it with agora send/wake" % (group, alias, live), EXIT_UNKNOWN)
+            die("seat %s/%s is filled (live: %s) — message it with sminos send/wake" % (group, alias, live), EXIT_UNKNOWN)
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
                 group, alias, existing["status"]), EXIT_UNKNOWN)
@@ -1626,7 +1684,7 @@ def cmd_seat_add(a):
                 EXIT_UNKNOWN)
     refuse_live_name(a.alias, addr, allow_session=session or (existing[0]["current"] if existing else ""))
     # A registered session's short is whatever the harness shows for it right
-    # now (a `seat add --session` seat was never spawned by agora, so nothing
+    # now (a `seat add --session` seat was never spawned by sminos, so nothing
     # else records it); absent a row it is cleared, never left stale.
     row = agent_row(session_id=session) if session else None
     short = str((row or {}).get("id") or "")
@@ -1684,7 +1742,7 @@ def cmd_fill(a):
     refuse_codex(s)
     live = live_state(s)
     if live in FILLED or live == "unknown":
-        die("seat %s/%s is filled (live: %s) — use agora wake or agora send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
+        die("seat %s/%s is filled (live: %s) — use sminos wake or sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
     if a.resume:
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -1693,7 +1751,7 @@ def cmd_fill(a):
         resume_session(s, a.task, a.wait, locks, verb="filled")
         return
     if peer_for_session(s["current"]):
-        die("seat %s/%s: the previous occupant (session %s) still answers — use agora wake/resume, or stop it "
+        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
             "first" % (s["group"], s["alias"], s["current"][:8]), EXIT_UNKNOWN)
     refuse_live_name(s["alias"], s["addr"])  # a fresh fill: the previous occupant is NOT an allowed holder
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
@@ -1711,7 +1769,7 @@ def cmd_fill(a):
 
 def warn_resume_flags(a):
     if any(getattr(a, k, None) is not None for k in ("model", "settings", "effort")):
-        sys.stderr.write("agora: a resumed background session keeps its saved options; "
+        sys.stderr.write("sminos: a resumed background session keeps its saved options; "
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
@@ -1746,7 +1804,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
         s = fresh
         refuse_codex(s)
     if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
+        die("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
     cwd = cwd_or_die(s["cwd"], "resume of %s/%s" % (s["group"], s["alias"]))  # before any side effect
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
@@ -1780,19 +1838,19 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
         if not wait_stopped(s, stop_short, cur):
             die("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
                 "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
-                                                    os.environ.get("AGORA_STOP_TIMEOUT", "30")), 1)
+                                                    os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
     prev_status = s["status"]
     short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
     if not short:
         meta_set(s["seat_id"], {"status": "error", "updated": now()})
-        sys.stderr.write("agora: resume failed — did not launch or produced no background id:\n%s\n" % banner)
+        sys.stderr.write("sminos: resume failed — did not launch or produced no background id:\n%s\n" % banner)
         sys.exit(1)
 
     def copy_started(copy_id):
         claude_stop(short)
         meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
         die("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
-            "to continue it; the copy was stopped and the record left untouched. Use agora wake/send for a "
+            "to continue it; the copy was stopped and the record left untouched. Use sminos wake/send for a "
             "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
 
     m = re.search(r"started a copy as ([0-9a-f]+)", banner)
@@ -1801,7 +1859,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("agora: resume: session %s produced no usable session uuid; kept previous "
+        sys.stderr.write("sminos: resume: session %s produced no usable session uuid; kept previous "
                          "current (recover via pending_short)\n" % short)
         sys.exit(1)
     uuid, state, _cwd = polled
@@ -1869,7 +1927,7 @@ def wait_socket_turn(s, marker, was_idle, guard):
     about OUR message, so we require the marker. No evidence within the bound is
     a failed wait, not a silent one: nothing is printed as a reply."""
     cur = s["current"]
-    deadline = time.time() + float(os.environ.get("AGORA_ACK_TIMEOUT", "120"))
+    deadline = time.time() + float(os.environ.get("SMINOS_ACK_TIMEOUT", "120"))
     seen = False
     while time.time() < deadline:
         if transcript_contains(cur, marker):
@@ -1883,7 +1941,7 @@ def wait_socket_turn(s, marker, was_idle, guard):
                 break
         time.sleep(poll_interval())
     if not seen:
-        sys.stderr.write("agora: no evidence that %s/%s received the message within the ack window "
+        sys.stderr.write("sminos: no evidence that %s/%s received the message within the ack window "
                          "(no transcript marker%s) — not waiting for a reply\n" % (
                              s["group"], s["alias"], "" if was_idle else ", and it was already busy at send time"))
         sys.exit(1)
@@ -1907,11 +1965,11 @@ def cmd_wake(a):
         die("seat %s/%s vanished before the wake could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     refuse_codex(s)
     if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: agora fill %s/%s \"<task>\"" % (
+        die("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
     frm = default_from(a.frm)
     msg_id = uuidlib.uuid4().hex[:8]
-    text = "[agora wake from %s id=%s]\n%s" % (frm, msg_id, a.msg)
+    text = "[sminos wake from %s id=%s]\n%s" % (frm, msg_id, a.msg)
     peer = peer_for_session(s["current"])  # live = pid alive AND socket answers
     if peer:
         sock = socket_path_of(peer)
@@ -1931,7 +1989,7 @@ def cmd_wake(a):
                 return
             unlock(locks)
             die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
-                "resuming and not re-sending id=%s; check the seat with agora reply/attach before retrying." % (
+                "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
                     s["group"], s["alias"], e, msg_id), 1)
         wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
         # The watcher's guard: the generation right after our write, read while
@@ -1953,7 +2011,7 @@ def cmd_wake(a):
 
 def cmd_send(a):
     frm = default_from(a.frm)
-    text = "[agora message from %s]\n%s" % (frm, a.msg)
+    text = "[sminos message from %s]\n%s" % (frm, a.msg)
     kind, res = find_seat(a.target)
     if kind == "ambiguous":
         # A genuine seat match that is ambiguous must NOT silently fall through
@@ -1971,11 +2029,11 @@ def cmd_send(a):
                 if e.phase == "after":
                     die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s); "
                         "do not blindly re-send" % (s["group"], s["alias"], e), 1)
-                die("%s/%s went away mid-send (%s) — use: agora wake %s/%s \"<msg>\"" % (
+                die("%s/%s went away mid-send (%s) — use: sminos wake %s/%s \"<msg>\"" % (
                     s["group"], s["alias"], e, s["group"], s["alias"]), EXIT_UNKNOWN)
             print("sent to %s/%s (%s)" % (s["group"], s["alias"], peer.get("name") or s["addr"]))
             return
-        die("%s/%s is not live (%s) — use: agora wake %s/%s \"<msg>\"" % (
+        die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
             s["group"], s["alias"], live_state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
     # Only when NO seat matched: fall back to a raw live harness-session name.
     peers = live_name_holders(a.target)  # live already means the socket answers
@@ -2013,7 +2071,7 @@ def cmd_reply(a):
     else:
         # The recorded reply can still be stale/empty — the spawn watcher gave
         # up before the first turn finished, or the seat was woken natively and
-        # finished a turn no agora verb ever recorded. A transcript newer than
+        # finished a turn no sminos verb ever recorded. A transcript newer than
         # the reply file is that turn, and it wins.
         fresh = transcript_reply(cur, ref) if reply_stale(s["seat_id"], cur) else ""
         print(fresh or reply_text(s["seat_id"]) or transcript_reply(cur, ref) or "(no reply yet)")
@@ -2028,7 +2086,7 @@ def sync_one(s0):
     status/reply write is CONDITIONAL on the record's generation, and the reply
     file is written in the same critical section, so a stale finalize can never
     clobber a re-fill, a resume, or a retire. An `idle` record whose harness row
-    shows a running turn was woken natively (SendMessage, no agora write):
+    shows a running turn was woken natively (SendMessage, no sminos write):
     promote it to working. One whose row is terminal but whose transcript is
     newer than its reply file ran a whole natively-woken turn since the last
     sync: re-record the reply so the seat's answer is not the previous turn's.
@@ -2050,7 +2108,7 @@ def sync_one(s0):
         row = harness_row(s)
         if s["status"] == "idle":
             # An idle seat the harness shows as running NOW was woken natively
-            # (SendMessage) with no agora write. Promote it.
+            # (SendMessage) with no sminos write. Promote it.
             if row and normalize_state(row) in ("working", "blocked"):
                 meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
                 return "live"
@@ -2217,11 +2275,11 @@ def cmd_retire(a):
     try:
         stop_session(s)
         if s["engine"] == "codex":
-            hint = "legacy codex-CLI worker — no resume path; remove with: agora remove %s/%s" % (s["group"], s["alias"])
+            hint = "legacy codex-CLI worker — no resume path; remove with: sminos remove %s/%s" % (s["group"], s["alias"])
         elif s["current"]:
-            hint = "agora fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
+            hint = "sminos fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
         else:
-            hint = "agora fill %s/%s \"<task>\"" % (s["group"], s["alias"])
+            hint = "sminos fill %s/%s \"<task>\"" % (s["group"], s["alias"])
         if a.purge:
             if s["engine"] == "codex":
                 purge_codex_runs(meta_get(s["seat_id"], "event_log"))
@@ -2331,7 +2389,7 @@ def cmd_view(a):
         die("no such group: %s" % g, EXIT_UNKNOWN)
     gs = sorted(seats(g), key=lambda s: s["alias"])
     aliases = {s["alias"] for s in gs}
-    print("agora group: %s" % g)
+    print("sminos group: %s" % g)
     out = []
     for s in gs:
         if not s["parent"]:
@@ -2389,24 +2447,24 @@ def cmd_attach(a):
     short = (row or {}).get("id") or s["short"]
     if not short:
         die("%s/%s has no session to attach to (%s)" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
-    if live in FILLED and sys.stdout.isatty() and not os.environ.get("AGORA_NO_EXEC"):
+    if live in FILLED and sys.stdout.isatty() and not os.environ.get("SMINOS_NO_EXEC"):
         os.execvp("claude", ["claude", "attach", short])
     print("claude attach %s" % short)
 
 
 def sibling_module(name):
-    """Import a sibling module (agora_chart, agora_tui) bound to THIS module
-    instance: when agora.py runs as __main__ a plain `import agora` inside the
+    """Import a sibling module (sminos_chart, sminos_tui) bound to THIS module
+    instance: when sminos.py runs as __main__ a plain `import sminos` inside the
     sibling would execute the file a second time and give it its own, separate
     harness caches."""
-    sys.modules.setdefault("agora", sys.modules[__name__])
+    sys.modules.setdefault("sminos", sys.modules[__name__])
     if SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SCRIPT_DIR)
     return importlib.import_module(name)
 
 
 def chart_module():
-    return sibling_module("agora_chart")
+    return sibling_module("sminos_chart")
 
 
 def chart_group_or_die(g):
@@ -2431,7 +2489,7 @@ def cmd_chart(a):
         chart.paint_chart(scr, lay)
         print(scr.text())
     else:
-        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are retired; agora chart --all" % meta["hidden"]))
+        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are retired; sminos chart --all" % meta["hidden"]))
     bits = []
     if g is None:
         bits.append("%d groups" % meta["groups"])
@@ -2440,17 +2498,17 @@ def cmd_chart(a):
         hid = "%d hidden" % meta["hidden"]
         if meta["hidden_groups"]:
             hid += " in %d group(s) folded away" % meta["hidden_groups"]
-        bits.append(hid + ("" if a.all else " (agora chart%s --all)" % ((" " + g) if g else "")))
+        bits.append(hid + ("" if a.all else " (sminos chart%s --all)" % ((" " + g) if g else "")))
     if lay["width"] > width:
         bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
     print(" · ".join(bits))
 
 
 def cmd_tui(a):
-    """The chart as an interactive screen (agora_tui): headless when asked,
+    """The chart as an interactive screen (sminos_tui): headless when asked,
     otherwise a real terminal inside tmux."""
     chart_group_or_die(a.group)
-    sibling_module("agora_tui").cmd_tui(a)
+    sibling_module("sminos_tui").cmd_tui(a)
 
 
 # --------------------------------------------------------------------- board
@@ -2522,7 +2580,7 @@ def cmd_post(a):
         die("bad group name: %s" % g)
     if not group_exists(g):
         die("no such group: %s (a group is created by its first seat)" % g, EXIT_UNKNOWN)
-    frm = default_from(a.frm or os.environ.get("AGORA_ALIAS") or "")
+    frm = default_from(a.frm or os.environ.get("SMINOS_ALIAS") or "")
     text = " ".join(a.text).strip() if a.text else sys.stdin.read()
     if not text.strip():
         die("post: empty body")
@@ -2530,7 +2588,7 @@ def cmd_post(a):
         die("bad --from alias: %s" % frm)
     gs = seats(g)
     if frm != "human" and not any(s["alias"] == frm for s in gs):
-        die("poster %s is not a seat in %s (run: agora seat add %s %s)" % (frm, g, g, frm), EXIT_UNKNOWN)
+        die("poster %s is not a seat in %s (run: sminos seat add %s %s)" % (frm, g, g, frm), EXIT_UNKNOWN)
     cwd = os.getcwd()
     # cwd/branch are snapshotted at post time — the seat's registry values
     # describe where it started, not where this post was written.
@@ -2552,7 +2610,7 @@ def cmd_post(a):
     print("posted #%d to %s board" % (rec["id"], g))
     if others:
         print("  nudge readers via SendMessage — addrs: %s" % ", ".join(others))
-        print("  e.g.: agora board post #%d by %s%s · read with: agora board %s --id %d" % (
+        print("  e.g.: sminos board post #%d by %s%s · read with: sminos board %s --id %d" % (
             rec["id"], frm, (' — "%s"' % a.title) if a.title else "", g, rec["id"]))
 
 
@@ -2562,10 +2620,10 @@ def html_attr(v):
 
 def esc_body(v):
     # Only the envelope's own grammar is neutralized: a body carrying
-    # '</agora-post>' would otherwise close the frame early and forge an
+    # '</sminos-post>' would otherwise close the frame early and forge an
     # apparent next post with fake provenance. Everything else stays raw;
     # readable markdown is the whole point of the board.
-    return str(v).replace("<agora-post", "&lt;agora-post").replace("</agora-post", "&lt;/agora-post")
+    return str(v).replace("<sminos-post", "&lt;sminos-post").replace("</sminos-post", "&lt;/sminos-post")
 
 
 def cmd_board(a):
@@ -2594,14 +2652,14 @@ def cmd_board(a):
             print(json.dumps(p))
         return
     for p in sel:
-        head = '<agora-post id="%s" from="%s" ts="%s"' % (p.get("id"), html_attr(p.get("from", "")), html_attr(p.get("ts", "")))
+        head = '<sminos-post id="%s" from="%s" ts="%s"' % (p.get("id"), html_attr(p.get("from", "")), html_attr(p.get("ts", "")))
         if p.get("branch"):
             head += ' branch="%s"' % html_attr(p["branch"])
         head += ' cwd="%s">' % html_attr(p.get("cwd", ""))
         body = ""
         if p.get("title"):
             body += "\n## " + esc_body(p["title"])
-        body += "\n" + esc_body(p.get("text", "")) + "\n</agora-post>\n"
+        body += "\n" + esc_body(p.get("text", "")) + "\n</sminos-post>\n"
         print(head + body)
 
 
@@ -2612,17 +2670,17 @@ def cmd_meta(a):
     s = resolve_seat(a.seat)
     if a.op == "get":
         if not a.field:
-            die("usage: agora meta get <seat> <field>")
+            die("usage: sminos meta get <seat> <field>")
         if SECRET_RE.search(a.field):
             # The CLI is model-callable; the pipeline reads credentials from the
             # record file directly, never through here.
-            die("'%s' is a credential field — not readable through the agora CLI" % a.field, EXIT_UNKNOWN)
+            die("'%s' is a credential field — not readable through the sminos CLI" % a.field, EXIT_UNKNOWN)
         v = meta_get(s["seat_id"], a.field)
         print(v if isinstance(v, str) else json.dumps(v))
         return
     pairs = ([a.field] if a.field else []) + list(a.values)
     if not pairs or len(pairs) % 2 != 0:
-        die("usage: agora meta set <seat> <field> <value> [<field> <value>...]")
+        die("usage: sminos meta set <seat> <field> <value> [<field> <value>...]")
     fields = {pairs[i]: pairs[i + 1] for i in range(0, len(pairs), 2)}
     # Raw field edits are not lifecycle writes, and never recreate a removed seat.
     if not meta_set(s["seat_id"], fields, bump=False, create=False):
@@ -2638,7 +2696,7 @@ def usage():
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="agora", add_help=False)
+    p = argparse.ArgumentParser(prog="sminos", add_help=False)
     sub = p.add_subparsers(dest="cmd")
 
     def route_flags(sp):
@@ -2836,7 +2894,7 @@ def parse_post(argv):
             ns.text.append(a)
         i += 1
     if ns.group is None:
-        die("usage: agora post <group> [--from F] [--title T] [text...]")
+        die("usage: sminos post <group> [--from F] [--title T] [text...]")
     return ns
 
 
@@ -2846,8 +2904,8 @@ def main(argv=None):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)
     if argv[0] in ("listen", "log"):
-        die("'%s' is gone — messaging rides the harness SendMessage tool (a seat's addr in 'agora topology' "
-            "is the target); from a terminal use 'agora send'; the board (agora post/board) is the durable record" % argv[0])
+        die("'%s' is gone — messaging rides the harness SendMessage tool (a seat's addr in 'sminos topology' "
+            "is the target); from a terminal use 'sminos send'; the board (sminos post/board) is the durable record" % argv[0])
     if argv[0] == "post":
         a = parse_post(argv[1:])
         migrate()
@@ -2861,12 +2919,12 @@ def main(argv=None):
     if a.cmd == "migrate":
         did = migrate(quiet=True)
         if did and not a.quiet:
-            print("agora: migrated: %s" % "; ".join(did))
+            print("sminos: migrated: %s" % "; ".join(did))
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":
-            die("usage: agora seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]")
-        die("unknown command: %s (try: agora help)" % argv[0])
+            die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]")
+        die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
     a.fn(a)
 

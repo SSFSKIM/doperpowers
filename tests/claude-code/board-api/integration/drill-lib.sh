@@ -16,9 +16,9 @@
 #                 service's own reconciler reclaims on its own authority).
 #                 Nothing is ever ASSERTED through it: an assertion that reads
 #                 the database proves the database, not the toolkit.
-#   agora_stub    one scripted stand-in for the agora CLI, covering the verbs
+#   sminos_stub    one scripted stand-in for the sminos CLI, covering the verbs
 #                 the pipeline calls: spawn / resume / sync / retire / migrate.
-#                 Workers are agora-spawned Claude sessions in production; a
+#                 Workers are sminos-spawned Claude sessions in production; a
 #                 drill spawns none. The stub emits the GENUINE banner shape
 #                 (the dispatcher parses the uuid out of it), writes the prompt
 #                 into a transcript file (delivery IS the transcript write,
@@ -74,18 +74,18 @@ drill_start() {
   # operator's own seat registry.
   DRILL_HOME="$DRILL_TMP/home"
   DAEMON_HOME="$DRILL_TMP/registry"
-  AGORA_STUB="$DRILL_TMP/agora-stub"
-  AGORA_CLI="$AGORA_STUB/agora"
+  SMINOS_STUB="$DRILL_TMP/sminos-stub"
+  SMINOS_CLI="$SMINOS_STUB/sminos"
   PROJECTS="$DRILL_HOME/.claude/projects/-drill"
   GH_LOG="$DRILL_TMP/gh-invoked.log"
   SPAWN_LOG="$DRILL_TMP/spawn.log"
   RESUME_LOG="$DRILL_TMP/resume.log"
   SEQ_LOG="$DRILL_TMP/sequence.log"
   DEAD_FILE="$DRILL_TMP/dead-uuids"
-  mkdir -p "$DRILL_HOME" "$DAEMON_HOME" "$AGORA_STUB" "$PROJECTS"
+  mkdir -p "$DRILL_HOME" "$DAEMON_HOME" "$SMINOS_STUB" "$PROJECTS"
   : >"$GH_LOG"; : >"$SPAWN_LOG"; : >"$RESUME_LOG"; : >"$SEQ_LOG"; : >"$DEAD_FILE"
   _stub_gh
-  agora_stub
+  sminos_stub
   _seed_session_store
 }
 
@@ -220,12 +220,12 @@ eol() { sed 's/$/;/' "$@"; }
 owner_line() { echo "owner=[$(ticket_owner "$1")]"; }
 
 # ---- the scripted worker sessions -----------------------------------------
-# No model call anywhere in this tier. The stub stands in for the agora layer
+# No model call anywhere in this tier. The stub stands in for the sminos layer
 # itself, so a drill whose claim IS about that layer would have to say so; none
 # of the six is. ONE executable whose first argument selects the verb, exactly
 # as the real launcher is called.
-agora_stub() {
-  cat >"$AGORA_CLI" <<EOF
+sminos_stub() {
+  cat >"$SMINOS_CLI" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 verb="\${1:-}"; shift || true
@@ -242,7 +242,7 @@ sync)
   exit 0 ;;
 spawn) ;;
 resume)
-  # The real \`agora resume\` forks the turn and INJECTS the prompt before it
+  # The real \`sminos resume\` forks the turn and INJECTS the prompt before it
   # blocks; the transcript write below is that injection, and it is what the
   # relay's sentinel gate reads on a later tick.
   if [ "\${1:-}" = "--wait" ]; then shift; fi
@@ -275,7 +275,7 @@ PYX
   # Death AFTER the injection but before the caller could ack.
   [ -z "\${RESUME_DIE_AFTER:-}" ] || exit 137
   exit 0 ;;
-*) echo "stub agora: unexpected verb '\$verb'" >&2; exit 2 ;;
+*) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
 
 # ---- spawn: records the handover, registers a record the way a real no-wait
@@ -328,9 +328,9 @@ PYX
 # The spawn is detached and already surviving by the time the banner prints —
 # so a crash HERE is a crash between the spawn and the bind.
 [ -z "\${SPAWN_KILL_PARENT:-}" ] || kill -9 "\$PPID" 2>/dev/null || true
-echo "seat spawned: \$name  [\${uuid%%-*} / \$uuid]  group=drill  status=working  (reply: agora reply \${uuid%%-*})"
+echo "seat spawned: \$name  [\${uuid%%-*} / \$uuid]  group=drill  status=working  (reply: sminos reply \${uuid%%-*})"
 EOF
-  chmod +x "$AGORA_CLI"
+  chmod +x "$SMINOS_CLI"
 }
 
 # Register a session meta for a run that was claimed OUT of band (a drill that
@@ -401,7 +401,7 @@ api_repo() {
 # Run a toolkit verb from inside the bound repo, in the drill's scratch world.
 # Extra env (a run bearer, a stub switch) rides in as leading VAR=VALUE words.
 in_repo() { (cd "$REPO" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
-  AGORA_CLI="$AGORA_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  SMINOS_CLI="$SMINOS_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
   LOCAL_REPO="$REPO" "$@"); }
 
 # The sweep, one phase at a time, in that same world.

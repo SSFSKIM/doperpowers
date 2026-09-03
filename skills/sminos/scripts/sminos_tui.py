@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""agora_tui — the organisation chart as an interactive terminal screen.
+"""sminos_tui — the organisation chart as an interactive terminal screen.
 
-The chart (agora_chart) is drawn in the middle of the screen; a header carries
+The chart (sminos_chart) is drawn in the middle of the screen; a header carries
 the fleet counts and refresh time, a panel under the chart describes the
 focused seat (or lists the group's board), and a footer shows the keys, the
 send line being typed, or a short flash message.
@@ -9,8 +9,8 @@ send line being typed, or a short flash message.
 Everything that decides is a pure function over one `state` dict:
 handle_key() is the whole keymap, paint() draws a state onto any Screen.
 Effects live behind an Actions object — RealActions opens tmux windows and
-runs `agora send`; HeadlessActions records what it would have done — so the
-same code runs under curses and under `agora tui --headless --keys …` (the
+runs `sminos send`; HeadlessActions records what it would have done — so the
+same code runs under curses and under `sminos tui --headless --keys …` (the
 test surface). Nothing here writes to the registry.
 """
 
@@ -23,8 +23,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import agora  # noqa: E402
-import agora_chart as chart  # noqa: E402
+import sminos  # noqa: E402
+import sminos_chart as chart  # noqa: E402
 
 PANEL_H = 7  # one separator row + six content rows
 MIN_ROWS_FOR_PANEL = 16
@@ -38,7 +38,7 @@ HELP_LINES = [
     "home / end — first / last root box",
     "enter — on a seat: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
     "enter — on a group: collapse / expand its seats",
-    "s — type a message for the focused seat; enter sends it over the seat's inbox socket (agora send), esc cancels",
+    "s — type a message for the focused seat; enter sends it over the seat's inbox socket (sminos send), esc cancels",
     "b — toggle the bottom panel: seat detail ↔ group board",
     "tab — move the keys into the board list (enter opens a post, tab back)",
     "a — show / hide retired, failed and gone seats",
@@ -82,12 +82,12 @@ def flash(state, msg):
 def attach_short(seat):
     """The id `claude attach` takes for a seat's current session: the harness
     row's id when the harness knows the session, else the recorded short."""
-    row = agora.harness_row(seat) if seat.get("current") else None
+    row = sminos.harness_row(seat) if seat.get("current") else None
     return str((row or {}).get("id") or seat.get("short") or "")
 
 
 def take_snapshot(group, show_all):
-    """agora_chart.snapshot plus, on every seat node, the short id Enter would
+    """sminos_chart.snapshot plus, on every seat node, the short id Enter would
     attach to — resolved here so it comes from the same harness read as the
     live state."""
     roots, meta = chart.snapshot(group, show_all)
@@ -120,7 +120,7 @@ def rebuild(state):
 
 def refresh(state):
     """Synchronous: forget the harness caches, re-read the fleet, re-lay."""
-    agora.refresh_caches()
+    sminos.refresh_caches()
     resnapshot(state)
 
 
@@ -170,7 +170,7 @@ def board_group(state):
 
 def board_posts(state):
     g = board_group(state)
-    return list(reversed(agora.read_board(g))) if g else []
+    return list(reversed(sminos.read_board(g))) if g else []
 
 
 # ------------------------------------------------------------------- keymap
@@ -285,10 +285,10 @@ def handle_key(state, key, actions):
     elif key == "s":
         if node is None or node["kind"] == "group":
             flash(state, "move to a seat to send it a message")
-        elif node["live"] in agora.FILLED:
+        elif node["live"] in sminos.FILLED:
             state["input"], state["input_target"] = "", node["id"]
         else:
-            flash(state, "%s is %s — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs agora fill"
+            flash(state, "%s is %s — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs sminos fill"
                   % (node["label"], node["live"]))
     elif key == "a":
         state["show_all"] = not state["show_all"]
@@ -313,14 +313,14 @@ def attach_target(node):
     seat = node["seat"]
     ref = "%s/%s" % (seat["group"], seat["alias"])
     if node["live"] == "gone":
-        return "", "%s is gone from the harness — agora fill --resume %s \"<msg>\" may revive its session" % (node["label"], ref)
+        return "", "%s is gone from the harness — sminos fill --resume %s \"<msg>\" may revive its session" % (node["label"], ref)
     if node["live"] == "vacant" or not node.get("short"):
-        return "", "%s is vacant — no session to attach; agora fill %s \"<task>\"" % (node["label"], ref)
+        return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], ref)
     return node["short"], ""
 
 
 def send_argv(node, text):
-    return [agora.LAUNCHER, "send", "%s/%s" % (node["seat"]["group"], node["seat"]["alias"]), text]
+    return [sminos.LAUNCHER, "send", "%s/%s" % (node["seat"]["group"], node["seat"]["alias"]), text]
 
 
 def first_line(p):
@@ -330,7 +330,7 @@ def first_line(p):
 
 class HeadlessActions:
     """Records decisions instead of touching tmux; `send` still runs the real
-    `agora send` so a socket stand-in can assert delivery."""
+    `sminos send` so a socket stand-in can assert delivery."""
 
     def __init__(self, state):
         self.state = state
@@ -419,7 +419,7 @@ class RealActions:
 
 
 class Refresher(threading.Thread):
-    """Re-reads the fleet every AGORA_TUI_REFRESH seconds (default 3) — or
+    """Re-reads the fleet every SMINOS_TUI_REFRESH seconds (default 3) — or
     at once when woken — and hands the snapshot to the main loop over the
     events queue. The harness read (`claude agents --json`) takes a second or
     more, which is why it never runs on the drawing thread."""
@@ -430,13 +430,13 @@ class Refresher(threading.Thread):
 
     def run(self):
         try:
-            interval = float(os.environ.get("AGORA_TUI_REFRESH", "3"))
+            interval = float(os.environ.get("SMINOS_TUI_REFRESH", "3"))
         except ValueError:
             interval = 3.0
         while not self.state["quit"]:
             self.events.put(("refreshing",))
             try:
-                agora.refresh_caches()
+                sminos.refresh_caches()
                 roots, meta = take_snapshot(self.state["group"], self.state["show_all"])
                 self.events.put(("snapshot", roots, meta))
             except Exception as e:  # a failed read must not kill the screen
@@ -492,14 +492,14 @@ def detail_lines(state, node, w):
             return ["loading the fleet from the harness…"]
         if m["hidden"] and not state["show_all"]:
             return ["nothing to show — %d seat(s) are retired, failed or gone" % m["hidden"], "press a to show them"]
-        return ["no seats yet — agora spawn <alias> \"<task>\" --group <group> creates the first"]
+        return ["no seats yet — sminos spawn <alias> \"<task>\" --group <group> creates the first"]
     if node["kind"] == "group":
         g = node["label"]
         lines = ["group %s · %d seats · %d live%s" % (g, node["seats"], node["alive"],
                  (" · %d retired" % node["hidden"]) if node["hidden"] else "")]
         roots = ", ".join(c["label"] for c in node["children"])
         lines.append("roots: " + (roots or "(none visible)"))
-        posts = agora.read_board(g)
+        posts = sminos.read_board(g)
         if posts:
             last = posts[-1]
             lines.append("board: %d post(s) — latest #%s%s by %s @ %s" % (
@@ -525,7 +525,7 @@ def detail_lines(state, node, w):
         state_line += " · updated %s" % s["updated"]
     lines = [head, state_line, "now: " + (s.get("now") or "-"), "brief: " + (s.get("brief") or "-"),
              "cwd: " + (s.get("cwd") or "-") + ((" (worktree %s)" % s["worktree"]) if s.get("worktree") else "")]
-    reply = agora.reply_text(s["seat_id"]).strip()
+    reply = sminos.reply_text(s["seat_id"]).strip()
     lines.append("reply: " + (" ".join(reply.split()) if reply else "-"))
     return [chart.fit(x, w).rstrip() for x in lines]
 
@@ -536,7 +536,7 @@ def paint(state, screen):
     r = regions(state)
     st = state["styles"]
     m = state["meta"]
-    title = "agora · " + (state["group"] or "fleet")
+    title = "sminos · " + (state["group"] or "fleet")
     bits = [title]
     if state["group"] is None:
         bits.append("%d groups" % m["groups"])
@@ -824,11 +824,11 @@ def run_curses(state):
     curses.wrapper(lambda scr: main_loop(scr, state, curses))
 
 
-TMUX_SESSION = "agora"
+TMUX_SESSION = "sminos"
 
 
 def enter_tmux(argv):
-    """Re-run this command inside the `agora` tmux session, then hand the
+    """Re-run this command inside the `sminos` tmux session, then hand the
     terminal to that session — this call does not return.
 
     The session usually outlives the chart: quitting leaves the conversation
@@ -836,7 +836,7 @@ def enter_tmux(argv):
     the command, landing the operator in an old conversation with no chart, so
     an existing session gets a fresh window instead.
     """
-    cmd = [sys.executable, os.path.realpath(agora.__file__), *argv]
+    cmd = [sys.executable, os.path.realpath(sminos.__file__), *argv]
     exists = subprocess.run(["tmux", "has-session", "-t", TMUX_SESSION],
                             capture_output=True).returncode == 0
     if exists:
@@ -850,13 +850,13 @@ def cmd_tui(a):
         run_headless(a)
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        agora.die("agora tui needs a terminal — for text use: agora chart%s" % ((" " + a.group) if a.group else ""),
-                  agora.EXIT_USAGE)
+        sminos.die("sminos tui needs a terminal — for text use: sminos chart%s" % ((" " + a.group) if a.group else ""),
+                  sminos.EXIT_USAGE)
     if not a.no_tmux and not os.environ.get("TMUX"):
         if not shutil.which("tmux"):
-            agora.die("agora tui runs inside tmux so that enter can open a seat's conversation in its own window; "
+            sminos.die("sminos tui runs inside tmux so that enter can open a seat's conversation in its own window; "
                       "install tmux, or pass --no-tmux to run here (enter then prints the attach command)",
-                      agora.EXIT_UNKNOWN)
+                      sminos.EXIT_UNKNOWN)
         enter_tmux(sys.argv[1:])
     state = new_state(a.group, a.all, no_tmux=a.no_tmux)
     run_curses(state)

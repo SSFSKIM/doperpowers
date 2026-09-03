@@ -46,12 +46,12 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
 fi
 export BOARD_REPO
 
-# Seat registry — ONE registry-root rule, the agora CLI's own: $AGORA_HOME,
+# Seat registry — ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME,
 # then $DAEMON_HOME, then the default. Both names are exported at the same
 # value so the CLI, the board scripts and every child read one root.
-DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
-AGORA_HOME="$DAEMON_HOME"
-export AGORA_HOME DAEMON_HOME
+DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+SMINOS_HOME="$DAEMON_HOME"
+export SMINOS_HOME DAEMON_HOME
 
 # THE MIGRATION PRECEDES THE FIRST READ. Several scripts sourcing this file
 # glob $DAEMON_HOME/*.json directly and never touch the CLI, so without this
@@ -63,26 +63,30 @@ export AGORA_HOME DAEMON_HOME
 # needed it to write (and deadlocks against a caller already holding it).
 # Once per process, and fail closed: "the migration broke" and "the fleet is
 # idle" are indistinguishable downstream.
-AGORA_CLI="${AGORA_CLI:-$BOARD_SCRIPTS/../../agora/scripts/agora}"
-_agora_cutover_pending() {
-  [ -z "${AGORA_MIGRATED:-}" ] || return 1
-  if [ -d "$HOME/.claude/orchestrating-daemons" ] \
-     && [ ! -L "$HOME/.claude/orchestrating-daemons" ]; then
-    return 0
-  fi
+SMINOS_CLI="${SMINOS_CLI:-$BOARD_SCRIPTS/../../sminos/scripts/sminos}"
+_sminos_cutover_pending() {
+  [ -z "${SMINOS_MIGRATED:-}" ] || return 1
+  # A former root still a real directory: the daemon substrate's, or sminos's
+  # under its former name.
+  local legacy
+  for legacy in orchestrating-daemons agora; do
+    if [ -d "$HOME/.claude/$legacy" ] && [ ! -L "$HOME/.claude/$legacy" ]; then
+      return 0
+    fi
+  done
   # A `.v2-<ts>` aside beside the root means the rename landed but the merge
   # of the old groups/ did not finish: the registry is mid-cutover, which is
   # precisely the half-migrated state a direct reader must never mistake for
   # an idle fleet. One glob, no lock.
-  set -- "$HOME"/.claude/agora.v2-*
+  set -- "$HOME"/.claude/sminos.v2-*
   [ -e "$1" ]
 }
-if _agora_cutover_pending; then
-  "$AGORA_CLI" migrate --quiet \
-    || die "agora migrate failed — refusing to read a possibly half-migrated registry"
+if _sminos_cutover_pending; then
+  "$SMINOS_CLI" migrate --quiet \
+    || die "sminos migrate failed — refusing to read a possibly half-migrated registry"
 fi
-AGORA_MIGRATED=1
-export AGORA_CLI AGORA_MIGRATED
+SMINOS_MIGRATED=1
+export SMINOS_CLI SMINOS_MIGRATED
 
 # Render-cache dir: created on demand, always gitignored — BOARD.html/BOARD.md
 # are views of GitHub state and must never be committed (a committed render is

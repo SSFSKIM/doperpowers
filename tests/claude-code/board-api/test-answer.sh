@@ -119,7 +119,7 @@ chmod +x "$STUB/gh"
 
 # ---- the registry: #12 is bound to a live, parked worker --------------------
 DH="$TDIR/registry"; mkdir -p "$DH"
-DS="$TDIR/agora-stub"; mkdir -p "$DS"
+DS="$TDIR/sminos-stub"; mkdir -p "$DS"
 # HOME is pinned: the relay's transcript derivation reads $HOME/.claude/projects,
 # and a fall-through would search the operator's real sessions.
 TESTHOME="$TDIR/home"; PROJ="$TESTHOME/.claude/projects/-tmp-consumer"
@@ -132,9 +132,9 @@ META
 chmod 600 "$DH/u-9.json"
 
 # ONE stub executable whose first argument selects the verb. `noop` is what
-# `agora sync` answers for an already-terminal (idle) record — it means the
+# `sminos sync` answers for an already-terminal (idle) record — it means the
 # session is still there.
-cat > "$DS/agora" <<EOF
+cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
 verb="\${1:-}"; shift || true
 case "\$verb" in
@@ -145,15 +145,15 @@ resume)
   if [ "\${1:-}" = "--wait" ]; then shift; fi
   printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
   ;;
-*) echo "stub agora: unexpected verb '\$verb'" >&2; exit 2 ;;
+*) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
 EOF
-chmod +x "$DS/agora"
+chmod +x "$DS/sminos"
 
 ANS() {  # ANS <args...> — one board-answer.sh run against this fixture world
   ( cd "$r" || exit 1
     export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS"
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS"
     bounded "$SCRIPTS/board-answer.sh" "$@" )
 }
 
@@ -312,7 +312,7 @@ printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT2" > "$r2/.doperpow
 ANS2() {  # ANS2 <args...> — one board-answer.sh run against the hidden world
   ( cd "$r2" || exit 1
     export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
-      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" BOARD_CREDENTIALS_FILE="$CREDS"
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS"
     bounded "$SCRIPTS/board-answer.sh" "$@" )
 }
 OUTHID="$TDIR/answer-hidden.out"

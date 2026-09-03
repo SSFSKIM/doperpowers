@@ -232,16 +232,16 @@ print("eligible" if B.eligible(B.snapshot(), sys.argv[1]) else "not-eligible")
 PY
 }
 
-# agora-verb stub: ONE executable whose first argument selects the verb
-STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
-export AGORA_CLI="$STUB_AGORA/agora"
-cat > "$AGORA_CLI" <<'STUB'
+# sminos-verb stub: ONE executable whose first argument selects the verb
+STUB_SMINOS="$TEST_ROOT/stub-sminos"; mkdir -p "$STUB_SMINOS"
+export SMINOS_CLI="$STUB_SMINOS/sminos"
+cat > "$SMINOS_CLI" <<'STUB'
 #!/usr/bin/env bash
 verb="${1:-}"; shift || true
 case "$verb" in
 migrate) exit 0 ;;
 sync)
-  # Mimics REAL `agora sync` semantics: a record not in working/blocked is
+  # Mimics REAL `sminos sync` semantics: a record not in working/blocked is
   # already terminal → noop, regardless of what the test map says. The map
   # only supplies verdicts sync could actually produce.
   echo "sync:$1" >> "$ACTION_LOG"
@@ -269,10 +269,10 @@ except Exception:
     pass
 PY
   ;;
-*) echo "stub agora: unexpected verb '$verb'" >&2; exit 2 ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
 STUB
-chmod +x "$AGORA_CLI"
+chmod +x "$SMINOS_CLI"
 
 # lane stubs
 cat > "$TEST_ROOT/impl-dispatch" <<'STUB'
@@ -451,7 +451,7 @@ def meta(uuid, name, ticket, status, recov=None, updated="2026-07-18T00:00:00Z",
     json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], uuid + ".json"), "w"))
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
 meta(U("aaaa0010"), "10-dead", "10", "working")
-# ALREADY-synced error meta (real `agora sync` says noop for it) at the cap:
+# ALREADY-synced error meta (real `sminos sync` says noop for it) at the cap:
 meta(U("aaaa0011"), "11-hopeless", "11", "error", recov="3")
 meta(U("aaaa0012"), "12-stalled", "12", "working")
 meta(U("aaaa0013"), "13-cancelled", "13", "working")
@@ -482,7 +482,7 @@ meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 PY
 
 # sync verdicts per uuid (only consulted for working/blocked records —
-# the parked trio's turns ended, so real `agora sync` would say idle)
+# the parked trio's turns ended, so real `sminos sync` would say idle)
 python3 - <<'PY'
 import json, os
 U = lambda n: "%s-0000-4000-8000-000000000000" % n
@@ -546,7 +546,7 @@ run_sweep() { SWEEP_STALL_MINUTES=60 "$SWEEP" 2>&1; }
 # The IMPACT cursor lives in a SUBDIRECTORY of DAEMON_HOME. The top level is
 # the daemon metadata namespace — every *.json there is read as a worker meta
 # — so a cursor beside them was a phantom fleet row, a resolvable
-# `agora retire` target, and deletable by tooling that owned the namespace.
+# `sminos retire` target, and deletable by tooling that owned the namespace.
 SCAN_STATE="$DAEMON_HOME/sweep/impact-scan.json"
 mkdir -p "$DAEMON_HOME/sweep"
 
@@ -884,7 +884,7 @@ assert_equals "$(issue_labels 54)" "status:in-progress" "an orphan carrying no p
 echo "board-sweep: IMPACT scan bound"
 # The cursor must not live in the daemon metadata namespace. This is
 # daemon-list/_resolve_uuid's own predicate — every top-level *.json is a
-# worker record — so a file there is a phantom seat, and `agora retire` can
+# worker record — so a file there is a phantom seat, and `sminos retire` can
 # resolve and delete it by prefix.
 assert_contains "$(ls "$DAEMON_HOME/sweep/" 2>/dev/null || true)" "impact-scan.json" \
     "the IMPACT cursor lives under DAEMON_HOME/sweep/"

@@ -4,7 +4,7 @@
 # The trigger half of doperpowers:qa-loops — mechanical only, no model
 # judgment. Gathers PR + linked-ticket context, creates a DETACHED worktree
 # at the PR head SHA, renders the skill-invocation bootstrap, and spawns a
-# `review-pr-<n>` seat via `agora spawn`.
+# `review-pr-<n>` seat via `sminos spawn`.
 #
 # Usage:
 #   review-dispatch.sh <pr-number>    triggered mode (GH workflow / manual)
@@ -67,8 +67,8 @@
 #                       a later tick (a deep open-PR backlog would otherwise
 #                       spawn one daemon per PR in a single tick). Triggered
 #                       dispatches are an explicit event and are never gated.
-#   AGORA_CLI           agora CLI launcher override (tests)
-#   DAEMON_HOME         agora seat registry dir (default ~/.claude/agora)
+#   SMINOS_CLI           sminos CLI launcher override (tests)
+#   DAEMON_HOME         sminos seat registry dir (default ~/.claude/sminos)
 #   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
 #   REVIEW_BIND_ATTEMPTS / REVIEW_BIND_DELAY
 #                       ticket-bind retries (defaults 3 attempts, 2s delay)
@@ -133,14 +133,14 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-# lib.sh applies the one registry-root rule ($AGORA_HOME, then $DAEMON_HOME,
-# then ~/.claude/agora) and leaves both names holding it, so the root is
+SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
+# lib.sh applies the one registry-root rule ($SMINOS_HOME, then $DAEMON_HOME,
+# then ~/.claude/sminos) and leaves both names holding it, so the root is
 # already settled here. Exported at the same value as the other entrypoints:
 # the CLI, the board scripts and every spawned child read one registry.
-# shellcheck source=../../agora/scripts/lib.sh
-. "$SKILL_DIR/../agora/scripts/lib.sh"
-export AGORA_HOME DAEMON_HOME
+# shellcheck source=../../sminos/scripts/lib.sh
+. "$SKILL_DIR/../sminos/scripts/lib.sh"
+export SMINOS_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
@@ -157,13 +157,13 @@ git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is n
 # Every path above is already absolute, so this is safe to do here.
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
-[ -x "$AGORA_CLI" ] || die "the agora CLI is not executable at $AGORA_CLI (set AGORA_CLI)"
-# The registry root moved to ~/.claude/agora and this script scans it
+[ -x "$SMINOS_CLI" ] || die "the sminos CLI is not executable at $SMINOS_CLI (set SMINOS_CLI)"
+# The registry root moved to ~/.claude/sminos and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# root: let sminos fold the old root in first. Idempotent, and FAIL CLOSED
 # — a half-migrated registry reads as an empty fleet, which passes every
 # dedupe and cap check and dispatches over live workers.
-"$AGORA_CLI" migrate --quiet || die "agora migrate failed — refusing to dispatch against a possibly half-migrated registry"
+"$SMINOS_CLI" migrate --quiet || die "sminos migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
 # execute-dispatch resolves it there: an api-bound repo never invokes gh at
@@ -329,10 +329,10 @@ except Exception:
 sys.exit(0 if any(a.get("sessionId") == os.environ["CUR"] for a in d) else 1)'
 }
 
-_retire() { "$AGORA_CLI" retire "$1" >/dev/null 2>&1 || true; }
+_retire() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1 || true; }
 
 # Retire a meta that is being replaced BECAUSE IT FAILED, stamping why before
-# the retire lands. `agora retire` is agora-owned and writes status=retired
+# the retire lands. `sminos retire` is sminos-owned and writes status=retired
 # over whatever terminal status the failure left, which is the only evidence
 # _outage_streak had — so a dead-worker cycle (finalize error → respawn →
 # retire) erased its own failure and the streak reset every tick, leaving the
@@ -857,7 +857,7 @@ _finalize_ticket_owners() {  # <ticket>
   local owner
   while IFS= read -r owner; do
     [ -n "$owner" ] || continue
-    "$AGORA_CLI" sync "$owner" >/dev/null 2>&1 || true
+    "$SMINOS_CLI" sync "$owner" >/dev/null 2>&1 || true
   done <<EOF2
 $(DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" python3 - <<'PY'
 import glob, json, os
@@ -927,9 +927,9 @@ PY
 # stamp their own bookkeeping onto the fresh meta.
 _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir> [worktree-name]
   local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
-  # gh mode hands `agora spawn` a cwd it prepared itself (the detached PR/epic
+  # gh mode hands `sminos spawn` a cwd it prepared itself (the detached PR/epic
   # worktree) and no worktree NAME, so the seat runs right there. The API
-  # path has no PR to detach at — it hands over the repo and lets `agora spawn`
+  # path has no PR to detach at — it hands over the repo and lets `sminos spawn`
   # cut the isolated worktree, which is the same shape execute-dispatch uses.
   local wt_name="${7:-}"
   local bind_ready="$control_dir/bind-ready.json"
@@ -945,19 +945,19 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
+      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
       --model "${REVIEW_MODEL:-fable}")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
     # operator's own session model never silently sets the review lane's
-    # price. `agora spawn` persists effort into the record; resumes keep it.
+    # price. `sminos spawn` persists effort into the record; resumes keep it.
     # The gateway settings are CLEARED, not merely unset by us: this
     # dispatcher can itself run inside a gateway-routed seat whose
-    # environment exports them, `agora spawn` would inherit and persist them,
+    # environment exports them, `sminos spawn` would inherit and persist them,
     # and every later resume would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
-      "$AGORA_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
+      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
       --model "${REVIEW_MODEL:-opus}")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
@@ -1065,7 +1065,7 @@ PY
 # ENGINE-UNAVAILABLE marker (engine outage), a turn finalized status=error
 # (dead worker — e.g. the gateway refused its first turn, so no reply exists
 # to carry any marker), or a retirement STAMPED as a failure one
-# (_retire_failed — `agora retire` overwrites the terminal status, and without
+# (_retire_failed — `sminos retire` overwrites the terminal status, and without
 # the stamp a dead-worker cycle erased the very evidence of itself and the
 # streak never reached the cap). One shared streak, so interleaved failure
 # kinds don't reset the count; the sweep's cap reads it so neither a dead
@@ -1084,7 +1084,7 @@ PY
 # are then combined with max(), so a pre-seat registry (a record per turn)
 # reads exactly as it did before.
 #
-# A RETIREMENT ERASES THE STATUS IT REPLACED. `agora retire` writes
+# A RETIREMENT ERASES THE STATUS IT REPLACED. `sminos retire` writes
 # status=retired over whatever terminal status the failure left, so a failed
 # occupant reads `retired` once it has been retired into history — which is
 # why _retire_failed stamps `retired_from: failure` first. The stamp is the
@@ -1188,7 +1188,7 @@ _decide() {
         # is not liveness. Sync first (records reply + terminal status),
         # then judge: live → skip; finished → the finished-reviewer verdict;
         # session gone → dead worker → respawn.
-        fin="$("$AGORA_CLI" sync "$uuid" 2>/dev/null || echo "")"
+        fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null || echo "")"
         case "$fin" in
           live)       echo "skip active reviewer" ;;
           idle|error) _finished_verdict "$name" "$uuid" "$mode" "$fin" ;;
@@ -1665,7 +1665,7 @@ PY
                         rm -rf "$control_dir"; _api_end_run "$C_RUN_ID" abandoned
                         _api_drop_journal "$nonce"; return 1; }
 
-  # The run credentials are exported ONLY across this call: `agora spawn` puts
+  # The run credentials are exported ONLY across this call: `sminos spawn` puts
   # them in the worker's environment (its only way to speak for its run), and
   # board-bind — which _spawn_reviewer calls — needs the same three to post the
   # session locator and to store the bearer at rest for every later resume.
@@ -1673,7 +1673,7 @@ PY
   # CLAIM_* is the journal hook — _spawn_reviewer marks spawn_completed between
   # the spawn and the bind — and it is set as a plain SHELL variable, never on
   # that export prefix: _spawn_reviewer runs in this shell and reads it either
-  # way, while anything on the prefix would be inherited by `agora spawn` and
+  # way, while anything on the prefix would be inherited by `sminos spawn` and
   # land in the worker's own environment. A reviewer has no business holding
   # the dispatcher's journal path.
   local spawn_rc=0

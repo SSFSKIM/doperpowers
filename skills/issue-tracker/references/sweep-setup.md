@@ -76,7 +76,7 @@ Arm / un-arm / observe:
 
     launchctl load  ~/Library/LaunchAgents/com.user.doperpowers-board-sweep.plist
     launchctl unload ~/Library/LaunchAgents/com.user.doperpowers-board-sweep.plist
-    tail -f ~/.claude/agora/sweep.log
+    tail -f ~/.claude/sminos/sweep.log
 
 The sweep's own log (per-pass actions and skips, self-truncating at 1 MB)
 is `$DAEMON_HOME/sweep.log`; the launchd file above only catches

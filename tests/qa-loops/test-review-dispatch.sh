@@ -3,7 +3,7 @@
 # Hermetic tests for review-dispatch.sh (the qa-loops trigger half).
 #
 # Side channels stubbed: `gh` (canned per-PR JSON + a call log), `claude`
-# (agents view from a file), and the agora CLI (one stub executable whose
+# (agents view from a file), and the sminos CLI (one stub executable whose
 # first argument selects the verb: it logs spawn/retire/sync and writes
 # registry records like the real ones).
 # git is real: a bare origin + clone, so worktree/fetch behavior is genuine.
@@ -87,10 +87,10 @@ HEAD_SHA="$(git -C "$CLONE" rev-parse HEAD)"
 git -C "$CLONE" checkout -q main
 export LOCAL_REPO="$CLONE" BOARD_REPO="test/repo"
 
-# stub agora CLI: ONE executable whose first argument selects the verb, logging
+# stub sminos CLI: ONE executable whose first argument selects the verb, logging
 # argv and writing seat records the way the real verbs do.
-STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
-cat > "$STUB_AGORA/agora" <<'STUB'
+STUB_SMINOS="$TEST_ROOT/stub-sminos"; mkdir -p "$STUB_SMINOS"
+cat > "$STUB_SMINOS/sminos" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 verb="${1:-}"; shift || true
@@ -102,8 +102,8 @@ migrate)
   exit 0 ;;
 
 meta)
-  # `agora meta get <seat> <field>` — read one field out of the seat record.
-  [ "${1:-}" = get ] || { echo "stub agora: unsupported meta subcommand '${1:-}'" >&2; exit 2; }
+  # `sminos meta get <seat> <field>` — read one field out of the seat record.
+  [ "${1:-}" = get ] || { echo "stub sminos: unsupported meta subcommand '${1:-}'" >&2; exit 2; }
   Q="$2" F="$3" python3 - <<'PY'
 import glob, json, os
 q, f = os.environ["Q"], os.environ["F"]
@@ -135,7 +135,7 @@ spawn)
     esac
   done
   if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
-    echo "stub agora spawn: simulated failure for $name" >&2
+    echo "stub sminos spawn: simulated failure for $name" >&2
     exit 1
   fi
   printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
@@ -186,7 +186,7 @@ PY
   ;;
 
 retire)
-  # Faithful to the real `agora retire`: mark the record retired and bump
+  # Faithful to the real `sminos retire`: mark the record retired and bump
   # `updated`. A log-only stub let a "retired" failure keep its status=error,
   # which is precisely the evidence the real one destroys.
   echo "retire:$1" >> "$SPAWN_LOG"
@@ -213,7 +213,7 @@ PY
   ;;
 
 sync)
-  # Faithful stand-in for `agora sync`: same contract (noop/live/absent/idle/
+  # Faithful stand-in for `sminos sync`: same contract (noop/live/absent/idle/
   # error on stdout), driven by the seat record + the mock agents view; reply
   # content comes from an optional $MOCK_DIR/reply-<uuid>.txt fixture.
   meta=""
@@ -267,12 +267,12 @@ json.dump(m, open(os.environ["M"], "w"))
   ;;
 
 *)
-  echo "stub agora: unexpected verb '$verb'" >&2
+  echo "stub sminos: unexpected verb '$verb'" >&2
   exit 2 ;;
 esac
 STUB
-chmod +x "$STUB_AGORA/agora"
-export AGORA_CLI="$STUB_AGORA/agora"
+chmod +x "$STUB_SMINOS/sminos"
+export SMINOS_CLI="$STUB_SMINOS/sminos"
 
 # Minimal board-bind stand-in: this suite tests dispatch ownership mechanics,
 # while the issue-tracker suite tests board-bind's GitHub validation itself.
@@ -537,7 +537,7 @@ if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
 # lever); the sibling skills the dispatcher sources are symlinked back.
 echo "unrendered placeholder fails closed:"
 ALT_SKILLS="$TEST_ROOT/alt-skills"; mkdir -p "$ALT_SKILLS"
-ln -s "$REPO_ROOT/skills/agora" "$ALT_SKILLS/agora"
+ln -s "$REPO_ROOT/skills/sminos" "$ALT_SKILLS/sminos"
 cp -R "$REPO_ROOT/skills/qa-loops" "$ALT_SKILLS/qa-loops"
 printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
     >> "$ALT_SKILLS/qa-loops/references/review-worker-bootstrap.md"
@@ -779,15 +779,15 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "triggered mode re-dis
 # A --no-wait worker's meta stays status=working after its turn ends; only
 # `claude agents` knows the truth, and finished --bg sessions stay LISTED
 # indefinitely — presence alone is NOT liveness. Dispatch must finalize
-# through `agora sync` before deciding.
+# through `sminos sync` before deciding.
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
 out="$("$DISPATCH" 5)"
 assert_contains "$(cat "$SPAWN_LOG")" "retire:feed0000" "finished-but-unfinalized reviewer is finalized + retired, not skipped as active"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "finished-but-unfinalized reviewer re-dispatches on an explicit event"
 # The retire that follows overwrites status with `retired` (as the real
-# `agora retire` does), so sync's own durable evidence is its reply file.
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch reconciled the record through agora sync (reply recorded)"
+# `sminos retire` does), so sync's own durable evidence is its reply file.
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "dispatch reconciled the record through sminos sync (reply recorded)"
 
 # The ENGINE-UNAVAILABLE marker reaches the reply file THROUGH finalization,
 # so the sweep's outage retry works on the one-harness lifecycle.
@@ -831,7 +831,7 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 # meta lingers status=working after its turn ends, and board-bind protects a
 # working owner as ACTIVE. Left alone that refuses the reviewer's bind on every
 # tick — which retired three reviewers in the 2026-07-18 live shakedown. The
-# dispatcher therefore runs `agora sync` over every meta bound to the
+# dispatcher therefore runs `sminos sync` over every meta bound to the
 # ticket first, so the registry states the truth before ownership is adjudicated.
 # The scale-review half of this is covered further down (the epic's Architect);
 # these two cases pin the PR half, and pin BOTH directions of what finalize
@@ -894,12 +894,12 @@ fi
 # own `DAEMON_HOME="${DAEMON_HOME:-...}"` default assignment computes it fine
 # either way, but _reviewer_meta's python subprocess only sees it if the
 # shell var was exported (or passed inline). Seed the registry at the
-# DEFAULT location ($HOME/.claude/agora, not the test's
+# DEFAULT location ($HOME/.claude/sminos, not the test's
 # $DAEMON_HOME override) and invoke the dispatcher with DAEMON_HOME entirely
 # absent from the child environment.
 echo "dedupe without exported DAEMON_HOME:"
 reset_state
-DEFAULT_DAEMON_HOME="$HOME/.claude/agora"; mkdir -p "$DEFAULT_DAEMON_HOME"
+DEFAULT_DAEMON_HOME="$HOME/.claude/sminos"; mkdir -p "$DEFAULT_DAEMON_HOME"
 NOEXPORT_UUID="cafe1234-0000-4000-8000-000000000000"
 D="$DEFAULT_DAEMON_HOME" U="$NOEXPORT_UUID" python3 - <<'PY'
 import json, os
@@ -910,7 +910,7 @@ json.dump({"uuid": os.environ["U"], "current": os.environ["U"],
 PY
 echo "[{\"id\": \"cafe1234\", \"sessionId\": \"$NOEXPORT_UUID\", \"state\": \"working\"}]" > "$MOCK_DIR/agents.json"
 out="$(env -u DAEMON_HOME HOME="$HOME" PATH="$PATH" LOCAL_REPO="$LOCAL_REPO" BOARD_REPO="$BOARD_REPO" \
-    AGORA_CLI="$AGORA_CLI" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
+    SMINOS_CLI="$SMINOS_CLI" MOCK_DIR="$MOCK_DIR" MOCK_LOG="$MOCK_LOG" SPAWN_LOG="$SPAWN_LOG" \
     PROMPT_DIR="$PROMPT_DIR" STUB_COUNT="$STUB_COUNT" "$DISPATCH" 5)"
 assert_contains "$out" "active reviewer" "ACTIVE+live reviewer skipped even with DAEMON_HOME absent from the child env"
 assert_equals "$(cat "$SPAWN_LOG")" "" "no spawn logged — DAEMON_HOME reached _reviewer_meta via explicit passthrough, not inheritance"
@@ -1178,7 +1178,7 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns no reviewer over an in-prog
 
 # ---- Finding 1: the DISPATCHER (not the dying worker) retires a stale reviewer --
 # The independent review caught a real defect in the original self-retire fix:
-# `agora retire` calls `claude stop` BEFORE writing status=retired, so a
+# `sminos retire` calls `claude stop` BEFORE writing status=retired, so a
 # worker asking to stop itself most likely never reaches that write — the
 # meta would finalize idle instead, which is EXACTLY the state that strands
 # it forever. The corrected mechanism retires from the sweep instead: once
@@ -1213,7 +1213,7 @@ assert_contains "$out" "still-active reviewer owns its own exit" "sweep names wh
 
 # ---- the ticket's return to in-review dispatches a fresh reviewer, unattended --
 # Simulates the state the retire above actually produces (unlike self-retire,
-# `agora retire` here runs from the dispatcher against an ALREADY-finished
+# `sminos retire` here runs from the dispatcher against an ALREADY-finished
 # session, so `claude stop` is a harmless no-op and the status=retired write
 # always lands). The moment the ticket returns to in-review, that SAME
 # registry entry must hit the pre-existing "none / retired -> dispatch" row
@@ -1307,7 +1307,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep re-dispatches after a
 reset_state; seed_reviewer working
 echo '[{"id": "feedcafe", "sessionId": "feed0000-0000-4000-8000-000000000000", "state": "error"}]' > "$MOCK_DIR/agents.json"
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
-assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep reconciled the errored session through agora sync (reply recorded)"
+assert_file_exists "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.reply.txt" "sweep reconciled the errored session through sminos sync (reply recorded)"
 assert_contains "$(cat "$DAEMON_HOME/feed0000-0000-4000-8000-000000000000.json")" '"retired_from": "failure"' "and its retirement is stamped as a FAILURE one, so the streak can still see it"
 assert_contains "$(cat "$SPAWN_LOG")" "review-pr-5" "sweep finalizes an errored session and re-dispatches in the same pass"
 
@@ -1390,7 +1390,7 @@ seed_seat_record '["idle", "idle"]'
 "$DISPATCH" --sweep >/dev/null 2>&1 || true
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "two clean re-fills then one failure is a streak of 1, not 3"
 
-# A RETIREMENT ERASES THE STATUS IT REPLACED: `agora retire` writes
+# A RETIREMENT ERASES THE STATUS IT REPLACED: `sminos retire` writes
 # status=retired over the failure, so a failed occupant reads `retired` once it
 # has been retired into history. The `retired_from: failure` stamp
 # _retire_failed writes first is the durable evidence — read it on history
@@ -1552,7 +1552,7 @@ echo "sweep failure isolation:"
 # that (`#3: gh pr view failed`, reaching the sweep's reporter). This section
 # instead simulates a SPAWN-time failure (e.g. a daemon registry write
 # conflict) for review-pr-4 specifically, via the stub's FAIL_SPAWN_FOR hook:
-# `agora spawn` is dispatch_one's actual *last* command, so its failure
+# `sminos spawn` is dispatch_one's actual *last* command, so its failure
 # is the one that exercises the sweep's own `|| echo "dispatch error"`
 # loop-isolation reporter directly, distinct from the per-step gh/git guards
 # already covered elsewhere in this file.
@@ -1739,7 +1739,7 @@ reset_state
 gh_pr 43 OPEN 0 "engine:claude"
 # The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
 # itself be running inside a gateway-routed seat whose environment exports
-# these, `agora spawn` would inherit them AND persist them into the registry
+# these, `sminos spawn` would inherit them AND persist them into the registry
 # record, and every later wake of this reviewer would ride the gateway while
 # the log said claude.
 DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
@@ -2339,7 +2339,7 @@ assert_not_contains "$(cat "$SPAWN_LOG")" "board-transition:20 needs-human" "a f
 
 # ---- dead-worker cycles must reach the scale cap ------------------------------
 # A reviewer that dies pre-reply finalizes `error`; the respawn retires it, and
-# `agora retire` overwrites that status with `retired` — erasing the only
+# `sminos retire` overwrites that status with `retired` — erasing the only
 # evidence _outage_streak had. The streak reset every tick, the cap was
 # unreachable, and the sweep respawned a doomed reviewer forever, so F4's
 # escalation could never fire for exactly the failure class it exists for.

@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# lib.sh — the sourced half of agora, for shell consumers that need the
+# lib.sh — the sourced half of sminos, for shell consumers that need the
 # registry root and host identity inline (the board pipeline's dispatchers).
-# Everything else is a verb of the `agora` CLI next to this file. Not meant to
+# Everything else is a verb of the `sminos` CLI next to this file. Not meant to
 # be run directly.
 #
 # The registry is one directory of seat records: a "seat" is a named position
 # in a group that a Claude Code session fills; its record is
-# $AGORA_HOME/<seat-id>.json (seat id = the first session's uuid), and the
+# $SMINOS_HOME/<seat-id>.json (seat id = the first session's uuid), and the
 # board pipeline reads and writes those records directly under the shared
-# flock file $AGORA_HOME/.metalock. `DAEMON_HOME` is the older name of the
+# flock file $SMINOS_HOME/.metalock. `DAEMON_HOME` is the older name of the
 # same root and is honored so existing consumers and tests keep working.
 
 set -euo pipefail
 
-AGORA_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
-DAEMON_HOME="$AGORA_HOME"
+SMINOS_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+DAEMON_HOME="$SMINOS_HOME"
 # The registry is private to the agent fleet (records can carry the board run
 # bearer): create it 0700 and tighten a root the old substrate left wider. The
 # mode is meant for the deepest directory only — its parent is ~/.claude, whose
 # own mode is not ours to change.
 # shellcheck disable=SC2174
-mkdir -p -m 700 "$AGORA_HOME"
-chmod 700 "$AGORA_HOME" 2>/dev/null || true
+mkdir -p -m 700 "$SMINOS_HOME"
+chmod 700 "$SMINOS_HOME" 2>/dev/null || true
 
 # Host + boot identity — stamped into records at every registration. A pid
 # (and a `claude agents` short id) is only meaningful in the host's current
