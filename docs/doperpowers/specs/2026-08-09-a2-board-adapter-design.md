@@ -846,7 +846,8 @@ A1-side work, tracked in the drift follow-up.
 - v1.3 (2026-09-04): **the api binding declares its repo** (ticket
   doperpowers#33). The binding shape gains a required `repo` key, and every
   call with a repo dimension carries it — `repo` in the body of `POST /tickets`
-  and `POST /runs/claim`, `repo=` on the list-shaped reads (`/tickets`,
+  and of the two dispatch-shaped claims (`POST /runs/claim`,
+  `POST /runs/claim-successor`), `repo=` on the list-shaped reads (`/tickets`,
   `/queue/decisions`, `/runs/needing-resume`, `/answers/unrelayed`); id-targeted
   routes send nothing, since a ticket already has its repo. This spec said
   board.json was repo-agnostic — the binding named a service, not a board — and
@@ -857,4 +858,8 @@ A1-side work, tracked in the drift follow-up.
   An api binding with no repo is a configuration error rather than a fallback to
   the server's own default, because that default IS the failure. The two browse
   verbs (`board-list.sh`, `board-search.sh`) take `--all-repos` to widen back on
-  demand; nothing else does.
+  demand; nothing else does. `BOARD_REPO` is repo-scoped like `BOARD_API_URL`
+  and is therefore NOT exported in api mode: an inherited value is honoured as a
+  user's override, so exporting a value derived from one checkout's binding
+  would make it the silent default for every other checkout a descendant
+  reaches.
