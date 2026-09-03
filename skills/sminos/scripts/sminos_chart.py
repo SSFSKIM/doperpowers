@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""agora_chart — the seat fleet drawn as a box organisation chart.
+"""sminos_chart — the seat fleet drawn as a box organisation chart.
 
-Three pure layers over the registry that `agora.py` exposes:
+Three pure layers over the registry that `sminos.py` exposes:
 
   snapshot()     reads seats + live state into a tree of NODES and applies the
                  hide rule (dead seats fold into a "+N retired" note);
@@ -11,7 +11,7 @@ Three pure layers over the registry that `agora.py` exposes:
                  the connector cells between them;
   paint_chart()  draws boxes and connectors onto a Screen.
 
-GridScreen renders to text (backs `agora chart` and the tests); the curses TUI
+GridScreen renders to text (backs `sminos chart` and the tests); the curses TUI
 supplies its own Screen subclass. Nothing here writes to the registry.
 """
 
@@ -21,7 +21,7 @@ import sys
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import agora  # noqa: E402
+import sminos  # noqa: E402
 
 GLYPH = {"busy": "●", "idle": "○", "blocked": "◐", "stopped": "■", "vacant": "◌", "gone": "✕", "unknown": "?"}
 DEAD_STATUSES = ("retired", "failed", "error")
@@ -77,8 +77,8 @@ def is_dead(seat, live):
 
 def seat_node(s, live, node_id):
     return {"kind": "seat", "id": node_id, "label": s["alias"], "role": s["role"], "live": live,
-            "status": s["status"], "now": agora.now_or_reply(s), "dead": is_dead(s, live),
-            "children": [], "hidden": 0, "seat": agora.public_seat(s)}
+            "status": s["status"], "now": sminos.now_or_reply(s), "dead": is_dead(s, live),
+            "children": [], "hidden": 0, "seat": sminos.public_seat(s)}
 
 
 def count_nodes(nodes):
@@ -92,7 +92,7 @@ def group_tree(group, show_all=False):
     folded away in total; each kept node's own `hidden` counts the folded seats
     beneath it (whole subtrees, so "+N retired" is the full count).
     """
-    gs = sorted(agora.seats(group), key=lambda s: (s["alias"], s["seat_id"]))
+    gs = sorted(sminos.seats(group), key=lambda s: (s["alias"], s["seat_id"]))
     aliases = {s["alias"] for s in gs}
     nodes, ids = {}, set()
     for s in gs:
@@ -100,8 +100,8 @@ def group_tree(group, show_all=False):
         if nid in ids:  # a duplicate alias in one group still gets its own box
             nid += "#" + s["seat_id"][:8]
         ids.add(nid)
-        nodes[s["seat_id"]] = seat_node(s, agora.live_state(s), nid)
-    n_live = sum(1 for n in nodes.values() if n["live"] in agora.FILLED)
+        nodes[s["seat_id"]] = seat_node(s, sminos.live_state(s), nid)
+    n_live = sum(1 for n in nodes.values() if n["live"] in sminos.FILLED)
     visited = set()
 
     def walk(s):
@@ -141,8 +141,8 @@ def group_tree(group, show_all=False):
 
 
 def group_names():
-    names = {s["group"] for s in agora.seats()}
-    for gp in glob.glob(os.path.join(agora.root(), "groups", "*")):
+    names = {s["group"] for s in sminos.seats()}
+    for gp in glob.glob(os.path.join(sminos.root(), "groups", "*")):
         if os.path.isdir(gp):
             names.add(os.path.basename(gp))
     return sorted(names)

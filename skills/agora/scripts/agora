@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# agora — one fleet registry for Claude Code sessions: seats, groups, the
-# spawn tree, and the board. The CLI lives in agora.py next to this file; this
-# launcher only resolves its own real path, because the board pipeline reaches
-# it through relative seams (`$AGORA_CLI`) and symlinks.
-exec python3 "$(dirname "$(readlink -f "$0")")/agora.py" "$@"

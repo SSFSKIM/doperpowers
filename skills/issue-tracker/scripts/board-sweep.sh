@@ -7,7 +7,7 @@
 #
 # Passes, each independently guarded so one failure never stops the rest:
 #   RECOVER  in-flight tickets (in-progress, in-design) with a bound
-#            implement/architect/spike worker that is dead (agora sync:
+#            implement/architect/spike worker that is dead (sminos sync:
 #            absent/error), silent past the stall timeout, or finished
 #            without a board transition → bounded resume (a nudge on the SAME
 #            session — context intact), 3 lifetime attempts per daemon, then
@@ -72,26 +72,26 @@
 #                                   exported through to the lanes
 #   SWEEP_LOG                       log file (default $DAEMON_HOME/sweep.log)
 #   IMPLEMENT_DISPATCH_CMD REVIEW_DISPATCH_CMD
-#   BOARD_ANSWER_CMD RECONCILE_CMD AGORA_CLI DAEMON_HOME  (test seams)
+#   BOARD_ANSWER_CMD RECONCILE_CMD SMINOS_CLI DAEMON_HOME  (test seams)
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$SCRIPT_DIR}"
-AGORA_CLI="${AGORA_CLI:-$(cd "$SKILL_DIR/../agora/scripts" && pwd)/agora}"
-# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
+# ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME, then $DAEMON_HOME,
 # then the default. Both names are exported at the same value below, so the
 # CLI, the board scripts and every child resolve one root — a pipeline that
-# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# preferred DAEMON_HOME while sminos preferred SMINOS_HOME would have the two
 # halves of one tick reading different registries.
-DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
-AGORA_HOME="$DAEMON_HOME"
-# The registry root moved to ~/.claude/agora and this script scans it
+DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+SMINOS_HOME="$DAEMON_HOME"
+# The registry root moved to ~/.claude/sminos and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# root: let sminos fold the old root in first. Idempotent, and FAIL CLOSED
 # — a half-migrated registry reads as an empty fleet, which passes every
 # dedupe and cap check and dispatches over live workers.
-"$AGORA_CLI" migrate --quiet || { echo "error: agora migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
-export AGORA_HOME DAEMON_HOME BOARD_SCRIPTS
+"$SMINOS_CLI" migrate --quiet || { echo "error: sminos migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
+export SMINOS_HOME DAEMON_HOME BOARD_SCRIPTS
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 export LOCAL_REPO
 # The board scripts this tick invokes bare (board-reconcile, board-answer,
@@ -248,7 +248,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
     # stated override. Recovery-exhaustion is that stated case.
     BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound worker $uuid ($why)" \
       "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
-      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (agora resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
+      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (sminos resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"
     return
@@ -256,7 +256,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
   _meta_put "$uuid" sweep_recoveries "$((recov + 1))" \
     || { log "[sweep] RECOVER: #$tk meta update failed — skipping resume"; return; }
   log "[sweep] RECOVER: #$tk worker $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
-  nohup "$AGORA_CLI" resume --wait "$uuid" \
+  nohup "$SMINOS_CLI" resume --wait "$uuid" \
     "SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead." \
     >>"$SWEEP_LOG" 2>&1 &
 }
@@ -266,7 +266,7 @@ pass_recover() {
   while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked|error) ;; *) [ "$status" = "idle" ] || continue ;; esac
-    fin="$("$AGORA_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
+    fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
     # sync says noop for an ALREADY-terminal meta (error/idle) — the
     # meta's own status is the verdict then, or the recovery ladder would
     # silently abandon exactly the failed-resume and fast-fail-spawn shapes.
@@ -284,7 +284,7 @@ pass_recover() {
         # Resuming it would restart a worker with nothing left to do.
         if [ "$state" = "in-progress" ] && [ "${is_epic:-0}" = "1" ] && [ "$fin" = "idle" ]; then
           log "[sweep] RECOVER: #$tk is an epic pulled to in-progress and worker $uuid is idle — its handoff is done; retiring the binding instead of resuming it"
-          "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
+          "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1 || true
           acted=$((acted+1))
           continue
         fi
@@ -307,7 +307,7 @@ pass_recover() {
         case "$fin" in
           absent|error)
             log "[sweep] RECOVER: #$tk pre-verdict worker $uuid dead — retired (dispatch pass re-runs the gate fresh)"
-            "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
+            "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1 || true
             acted=$((acted+1)) ;;
           live)
             # Live but silent past the threshold, on a ticket sitting in a
@@ -327,7 +327,7 @@ pass_recover() {
               age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 log "[sweep] RECOVER: #$tk worker $uuid is live but silent for ${age}m (threshold ${STALL_MIN}m) on a handed-off $state ticket — retiring the binding; it owns no further writes here"
-                "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
+                "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1 || true
                 acted=$((acted+1))
               fi
             fi ;;
@@ -344,10 +344,10 @@ pass_cancel() {
   while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked) ;; *) continue ;; esac
-    fin="$("$AGORA_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
+    fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
     [ "$fin" = "live" ] || continue
     log "[sweep] CANCEL: #$tk is $state but worker $uuid still runs — retiring"
-    "$AGORA_CLI" retire "$uuid" >/dev/null 2>&1 || true
+    "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1 || true
     gh issue comment "$tk" -R "$BOARD_REPO" --body \
       "[board] sweep: retired worker $uuid — the ticket reached \`$state\` while it ran. Its worktree and any committed branch are preserved." \
       >/dev/null 2>&1 || log "[sweep] CANCEL: #$tk termination comment failed"
@@ -405,8 +405,8 @@ pass_impact() {
   # SUBDIRECTORY, because the top level of DAEMON_HOME is the seat
   # record namespace: every *.json there is read as a seat record, so a
   # cursor sitting beside them showed up as a bogus fleet row in
-  # `agora list`, answered to `agora retire impact-scan` through the
-  # CLI's prefix match, and could be deleted or rewritten by agora
+  # `sminos list`, answered to `sminos retire impact-scan` through the
+  # CLI's prefix match, and could be deleted or rewritten by sminos
   # tooling that had every right to assume it owned the file).
   # Reading every
   # child every tick cost one `gh issue view --json comments` per child: at
@@ -658,7 +658,7 @@ pass_relay() {
     # ended turn is resumable; sync prints noop for already-terminal
     # metas, so fall back to the meta's own status.
     case "$status" in working|blocked|idle) ;; *) continue ;; esac
-    fin="$("$AGORA_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
+    fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
     [ "$fin" = "noop" ] && fin="$status"
     [ "$fin" = "idle" ] || continue
     # Turn-end ordering signal: the current turn's transcript mtime. It is
@@ -810,9 +810,9 @@ for tid in sorted(tickets, key=int):
 # register moment deferred (live workers) or never saw (diff-derived
 # labels). Bounded per tick: body writes are the expensive, racy resource.
 writes = 0
-lock_root = os.path.join(os.environ.get("AGORA_HOME")
+lock_root = os.path.join(os.environ.get("SMINOS_HOME")
     or os.environ.get("DAEMON_HOME")
-    or os.path.expanduser("~/.claude/agora"), "surface-locks")
+    or os.path.expanduser("~/.claude/sminos"), "surface-locks")
 os.makedirs(lock_root, exist_ok=True)
 # Registered names only, here and in the queue-depth watch below: an
 # orphaned label (entry deleted, or invented — lint FAILs it) must not

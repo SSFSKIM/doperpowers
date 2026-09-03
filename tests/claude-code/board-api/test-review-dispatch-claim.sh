@@ -6,7 +6,7 @@
 # Same two halves as the execution-side suite: what went on the wire (the
 # fixture mock's request log) and what landed on disk (journal, assignment
 # body, registry meta, the environment the worker was spawned with). The
-# `agora spawn` stub prints the REAL no-wait banner (the uuid handed to
+# `sminos spawn` stub prints the REAL no-wait banner (the uuid handed to
 # board-bind is parsed out of it) and plays the worker's half of the startup
 # barrier, which the review protocol makes a hard gate.
 . "$(dirname "$0")/helpers.sh"
@@ -38,12 +38,12 @@ exit 1
 EOF
 chmod +x "$STUB/gh"
 
-# The agora stub: ONE executable whose first argument selects the verb.
+# The sminos stub: ONE executable whose first argument selects the verb.
 # `spawn` registers a record the way the real no-wait spawn does, records the
 # worker environment, and — in the background, as the real worker does —
 # waits for the dispatcher-owned ready file and acknowledges it.
 DS="$(mktemp -d)"
-cat > "$DS/agora" <<'EOF'
+cat > "$DS/sminos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 verb="${1:-}"; shift || true
@@ -54,7 +54,7 @@ retire)
   echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
   exit 0 ;;
 spawn) ;;
-*) echo "stub agora: unexpected verb '$verb'" >&2; exit 2 ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
 name="$1"; task="$2"; shift 2
 cwd=""; wt=""; model=""
@@ -109,9 +109,9 @@ for _ in range(500):
     time.sleep(0.01)
 PY
 fi
-echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: agora reply ${uuid%%-*})"
+echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
-chmod +x "$DS/agora"
+chmod +x "$DS/sminos"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
@@ -165,7 +165,7 @@ mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 # BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
 # and every end below would speak as that one run instead of as automation.
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" LOCAL_REPO="$r" \
+    DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RUN_TOKEN=ambient-worker-bearer \
@@ -182,7 +182,7 @@ t "worker got the run bearer" "BOARD_RUN_TOKEN=tok-q"                cat "$DH/sp
 t "worker got the run id"     "BOARD_RUN_ID=51"                      cat "$DH/spawn-capture.txt"
 t "fence exported"            "BOARD_RUN_FENCE=2"                    cat "$DH/spawn-capture.txt"
 t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
-# An ambient gateway settings file would be inherited by `agora spawn` AND
+# An ambient gateway settings file would be inherited by `sminos spawn` AND
 # persisted into the meta, so every later resume of this reviewer would ride
 # the gateway while the log said claude. The QAgent tier is opus/high.
 t "gateway settings cleared, review effort pinned" "GW settings=[] effort=[high]" \
@@ -305,7 +305,7 @@ t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin "$
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-      DAEMON_HOME="$DH" AGORA_CLI="$DS/agora" LOCAL_REPO="$r" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" 5 )
 }
 t "a targeted dispatch fails loud naming the gap" "arkho#7" triggered
@@ -362,7 +362,7 @@ printf '{"lane": "qagent", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-f.j
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH2" AGORA_CLI="$DS/agora" LOCAL_REPO="$r2" \
+    DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r2" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
@@ -438,7 +438,7 @@ printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-qage' \
 
 OUT3="$(mktemp)"
 ( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH3" AGORA_CLI="$DS/agora" LOCAL_REPO="$r3" \
+    DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r3" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
@@ -528,7 +528,7 @@ mkdir -p "$DH4/board-suppress"; echo 2 > "$DH4/board-suppress/.attempts-43"
 
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH4" AGORA_CLI="$DS/agora" LOCAL_REPO="$r4" \
+    DAEMON_HOME="$DH4" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r4" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
@@ -601,7 +601,7 @@ git -C "$r5" remote add origin "$UP"
 DH5="$(mktemp -d)"
 OUT5="$(mktemp)"
 ( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH5" AGORA_CLI="$DS/agora" LOCAL_REPO="$r5" \
+    DAEMON_HOME="$DH5" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r5" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
@@ -640,7 +640,7 @@ r6="$(apirepo "$PORT6")"
 DH6="$(mktemp -d)"
 OUT6="$(mktemp)"
 ( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH6" AGORA_CLI="$DS/agora" LOCAL_REPO="$r6" \
+    DAEMON_HOME="$DH6" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r6" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT6" 2>&1 || true
@@ -747,7 +747,7 @@ r7="$(apirepo "$PORT7")"
 DH7="$(mktemp -d)"
 OUT7="$(mktemp)"
 ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH7" AGORA_CLI="$DS/agora" LOCAL_REPO="$r7" \
+    DAEMON_HOME="$DH7" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r7" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
@@ -799,7 +799,7 @@ git -C "$r8" remote add origin "$UPSTREAM"
 DH8="$(mktemp -d)"
 OUT8="$(mktemp)"
 ( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH8" AGORA_CLI="$DS/agora" LOCAL_REPO="$r8" \
+    DAEMON_HOME="$DH8" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r8" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
@@ -847,7 +847,7 @@ r9="$(apirepo "$PORT9")"
 DH9="$(mktemp -d)"
 OUT9="$(mktemp)"
 ( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH9" AGORA_CLI="$DS/agora" LOCAL_REPO="$r9" \
+    DAEMON_HOME="$DH9" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r9" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
@@ -899,7 +899,7 @@ DH10="$(mktemp -d)"
 LEDGER10="$(mktemp)"; echo 33 > "$LEDGER10"
 OUT10="$(mktemp)"
 ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH10" AGORA_CLI="$DS/agora" LOCAL_REPO="$r10" \
+    DAEMON_HOME="$DH10" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r10" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RESUMED_LEDGER="$LEDGER10" \

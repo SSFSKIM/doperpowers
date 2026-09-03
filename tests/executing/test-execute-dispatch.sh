@@ -4,7 +4,7 @@
 # dispatcher (the dispatch ritual, automated).
 #
 # Side channels: `gh` is the shared issue-tracker mock (state in
-# $MOCK_GH_STATE); the agora CLI is a stub that logs and writes seat records
+# $MOCK_GH_STATE); the sminos CLI is a stub that logs and writes seat records
 # like the real no-wait spawn; the BOARD scripts
 # (_board.py eligibility, board-bind) are REAL and run against the mock gh.
 # git is real: a bare origin + clone carrying .doperpowers/repo-facts.md.
@@ -52,7 +52,7 @@ export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 # Ambient gateway route, as a gateway-routed seat (or an operator shell that
 # sourced one) exports it. Present for the WHOLE suite on purpose: it makes every
 # "no gateway env" assertion below a regression test — the claude route must hand
-# `agora spawn` nothing, since agora persists what it inherits into the seat
+# `sminos spawn` nothing, since sminos persists what it inherits into the seat
 # record and every later wake would silently ride the gateway.
 export DAEMON_CLAUDE_SETTINGS="$TEST_ROOT/ambient-gateway.json"
 export DAEMON_CLAUDE_EFFORT="high"
@@ -71,18 +71,18 @@ git -C "$CLONE" push -q -u origin main
 git -C "$CLONE" remote set-head origin main
 export LOCAL_REPO="$CLONE"
 
-# stub agora CLI: one executable whose first argument selects the verb — it
-# logs argv and registers a seat record like the real no-wait `agora spawn`.
-STUB_AGORA="$TEST_ROOT/stub-agora"; mkdir -p "$STUB_AGORA"
-export AGORA_CLI="$STUB_AGORA/agora"
-cat > "$AGORA_CLI" <<'STUB'
+# stub sminos CLI: one executable whose first argument selects the verb — it
+# logs argv and registers a seat record like the real no-wait `sminos spawn`.
+STUB_SMINOS="$TEST_ROOT/stub-sminos"; mkdir -p "$STUB_SMINOS"
+export SMINOS_CLI="$STUB_SMINOS/sminos"
+cat > "$SMINOS_CLI" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 verb="${1:-}"; shift || true
 case "$verb" in
 migrate)
   if [ -n "${STUB_MIGRATE_FAIL:-}" ]; then
-    echo "stub agora migrate: simulated failure" >&2
+    echo "stub sminos migrate: simulated failure" >&2
     exit 1
   fi
   exit 0 ;;
@@ -91,7 +91,7 @@ retire)
   exit 0 ;;
 spawn) ;;
 *)
-  echo "stub agora: unexpected verb '$verb'" >&2
+  echo "stub sminos: unexpected verb '$verb'" >&2
   exit 2 ;;
 esac
 name="$1"; task="$2"; shift 2
@@ -111,7 +111,7 @@ echo "spawn-env:settings=${DAEMON_CLAUDE_SETTINGS:-};effort=${DAEMON_CLAUDE_EFFO
 # ONE ordered stream (the parent-pin stamp must precede this line)
 [ -z "${MOCK_GH_LOG:-}" ] || printf '["spawn", "%s"]\n' "$name" >> "$MOCK_GH_LOG"
 if [ -n "${FAIL_SPAWN_FOR:-}" ] && [ "$name" = "$FAIL_SPAWN_FOR" ]; then
-  echo "stub agora spawn: simulated failure for $name" >&2
+  echo "stub sminos spawn: simulated failure for $name" >&2
   exit 1
 fi
 printf '%s' "$task" > "$PROMPT_DIR/$name.prompt"
@@ -126,7 +126,7 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
 PY
 echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working"
 STUB
-chmod +x "$AGORA_CLI"
+chmod +x "$SMINOS_CLI"
 
 # ---- board seed ---------------------------------------------------------------
 # 1 ELIGIBLE P1 impl · 2 blocked-by-1 · 3 ELIGIBLE P0 spike · 4 in-progress ·
@@ -329,11 +329,11 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn: 1-" "sweep continues past a failed
 # that indistinguishable from a genuinely idle fleet.
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 if out="$(STUB_MIGRATE_FAIL=1 run 1)"; then
-    fail "a failed agora migrate aborts the dispatch"
+    fail "a failed sminos migrate aborts the dispatch"
 else
-    pass "a failed agora migrate aborts the dispatch"
+    pass "a failed sminos migrate aborts the dispatch"
 fi
-assert_contains "$out" "agora migrate failed" "...naming the migration as the cause"
+assert_contains "$out" "sminos migrate failed" "...naming the migration as the cause"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "...before any worker is spawned"
 
 BAD_TEMPLATE="$TEST_ROOT/bad-bootstrap.md"

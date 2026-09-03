@@ -5,7 +5,7 @@
 The inverse-symmetric counterpart of the executing daemon: where a worker
 turns a ticket into a PR, a **Reviewer worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
-background seat (spawned through the agora CLI) that runs TWO review tracks at
+background seat (spawned through the sminos CLI) that runs TWO review tracks at
 once: the native Codex engine (the doperpowers:codex-companion runtime via
 review-engine.sh, in the background) reviews pure code correctness, while
 the worker itself audits
@@ -26,7 +26,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 
 | piece | what |
 |---|---|
-| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` seat (`agora spawn`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
+| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` seat (`sminos spawn`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
 | `SKILL.md` | the Review Worker Protocol — invoked by every Reviewer worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |

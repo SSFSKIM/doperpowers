@@ -30,7 +30,7 @@
 #          them the suppression directory the resume phase writes.
 #
 # Env:
-#   DAEMON_HOME AGORA_CLI        seat registry + agora CLI (test seams)
+#   DAEMON_HOME SMINOS_CLI        seat registry + sminos CLI (test seams)
 #   SWEEP_LOCK_STALE             minutes before a DEAD owner's tick lock is
 #                                stolen (30) — a live owner's is never taken
 #   BOARD_RELAY_RESUME_TIMEOUT   DAEMON_TIMEOUT for a relay OR successor resume
@@ -87,21 +87,21 @@ _sentinel() {
   # shellcheck disable=SC2059  # SENTINEL_FMT is the module's printf template
   printf "$SENTINEL_FMT" "$1"
 }
-# ONE registry-root rule, the agora CLI's own: $AGORA_HOME, then $DAEMON_HOME,
+# ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME, then $DAEMON_HOME,
 # then the default. Both names are exported at the same value below, so the
 # CLI, the board scripts and every child resolve one root — a pipeline that
-# preferred DAEMON_HOME while agora preferred AGORA_HOME would have the two
+# preferred DAEMON_HOME while sminos preferred SMINOS_HOME would have the two
 # halves of one tick reading different registries.
-DAEMON_HOME="${AGORA_HOME:-${DAEMON_HOME:-$HOME/.claude/agora}}"
-AGORA_HOME="$DAEMON_HOME"
-export AGORA_HOME DAEMON_HOME
-AGORA_CLI="${AGORA_CLI:-$(cd "$SCRIPT_DIR/../../agora/scripts" && pwd)/agora}"
-# The registry root moved to ~/.claude/agora and this script scans it
+DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+SMINOS_HOME="$DAEMON_HOME"
+export SMINOS_HOME DAEMON_HOME
+SMINOS_CLI="${SMINOS_CLI:-$(cd "$SCRIPT_DIR/../../sminos/scripts" && pwd)/sminos}"
+# The registry root moved to ~/.claude/sminos and this script scans it
 # directly, so it must never be the first process to look at an empty new
-# root: let agora fold the old root in first. Idempotent, and FAIL CLOSED
+# root: let sminos fold the old root in first. Idempotent, and FAIL CLOSED
 # — a half-migrated registry reads as an empty fleet, which passes every
 # dedupe and cap check and dispatches over live workers.
-"$AGORA_CLI" migrate --quiet || { echo "error: agora migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
+"$SMINOS_CLI" migrate --quiet || { echo "error: sminos migrate failed — refusing to sweep against a possibly half-migrated registry" >&2; exit 1; }
 mkdir -p "$DAEMON_HOME"
 
 # One tick at a time (Codex review F1): overlapping ticks would race the
@@ -343,7 +343,7 @@ except Exception:
 PY
 }
 
-# The transcript of a seat's CURRENT turn — the same derivation the agora
+# The transcript of a seat's CURRENT turn — the same derivation the sminos
 # CLI itself uses (transcript_path): a seat's live session is the record's
 # `current`, not its stable seat id, and Claude Code mangles the cwd into
 # the project-dir name, so
@@ -393,11 +393,11 @@ PY
 # a defect this branch already paid for twice:
 #
 #   live    the session exists and can be spoken to — a running turn, or a
-#           worker parked on an answer. `noop` is what `agora sync` says
+#           worker parked on an answer. `noop` is what `sminos sync` says
 #           about an ALREADY-TERMINAL meta, and a parked worker is exactly that
 #           shape, so `noop` is disambiguated from the meta rather than trusted.
 #   forked  a resume LAUNCHED a turn whose session uuid never resolved:
-#           `agora resume` stamps status=error + pending_short and deliberately
+#           `sminos resume` stamps status=error + pending_short and deliberately
 #           leaves `current` on the superseded turn. The fork may be running and
 #           holding the run, so the lease is still RENEWED — but nothing may be
 #           delivered into this session and no delivery can be proven, because
@@ -417,7 +417,7 @@ PY
 # field alone would wedge every session that ever survived a failed fork.
 _liveness() {
   local fin
-  fin="$("$AGORA_CLI" sync "$1" 2>/dev/null || echo absent)"
+  fin="$("$SMINOS_CLI" sync "$1" 2>/dev/null || echo absent)"
   case "$fin" in
     absent | error) echo dead; return 0 ;;
     noop) : ;;
@@ -691,11 +691,11 @@ phase_relay() {
       # resume acks nothing — the answer stays on the feed for the next tick.
       if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
-      # DAEMON_TIMEOUT is bounded here on purpose. `agora resume`'s default is
+      # DAEMON_TIMEOUT is bounded here on purpose. `sminos resume`'s default is
       # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
       # the whole-tick lock throughout: one long turn would starve lease
       # renewal past the 15-minute lease and A1 would reclaim runs that are
-      # very much alive. Bounding it is safe because `agora resume` advances
+      # very much alive. Bounding it is safe because `sminos resume` advances
       # the meta's `current` to the new turn and injects this prompt BEFORE it
       # blocks: a timed-out resume exits nonzero, so nothing is acked this
       # tick, and the next tick's sentinel grep finds the marker in the new
@@ -704,10 +704,10 @@ phase_relay() {
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-        "$AGORA_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
+        "$SMINOS_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        # NOT NECESSARILY A FAILURE. `agora resume` also exits nonzero when its
+        # NOT NECESSARILY A FAILURE. `sminos resume` also exits nonzero when its
         # bounded watcher expires on a turn it already injected the prompt into
         # — the ORDINARY outcome for a long worker turn, since the bound exists
         # to keep this tick from starving lease renewal. Either way nothing is
@@ -1055,7 +1055,7 @@ for p in glob.glob(os.path.join(home, "*.json")):
     # ONLY A RUNNING SESSION IS EVIDENCE OF A SPAWN — the same rule
     # _claim_journal.sh already applies on the dispatchers' side. Successor
     # names are deterministic per ticket and lane (`<ticket>-successor-<lane>`)
-    # and `agora retire` keeps the record unless --purge, so a HISTORICAL entry
+    # and `sminos retire` keeps the record unless --purge, so a HISTORICAL entry
     # from an earlier recovery matched the new journal's name: the crash was
     # misread as `orphaned`, the journal was closed as complete, and the run
     # just claimed owned the ticket with nobody able to speak for it until the
@@ -1170,7 +1170,7 @@ _resume_one() {
   local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
   # the claim so this tick never mints a successor run it cannot deliver.
-  # `agora resume` stamps status=error + pending_short when a fork LAUNCHED
+  # `sminos resume` stamps status=error + pending_short when a fork LAUNCHED
   # whose session uuid never resolved, and deliberately leaves `current` on the
   # superseded turn. Resuming there forks AGAIN — a fresh zombie turn every
   # tick, each one possibly live on the same run — and no delivery can ever be
@@ -1303,19 +1303,19 @@ PY
   # behind — a leftover pending_short must not wedge the ticket forever.
   [ -z "$C_SESS" ] || pre_pending="$(_meta_field "$DAEMON_HOME/$C_SESS.json" pending_short)"
 
-  # `agora resume` forks a fresh process from OUR env, so the successor
+  # `sminos resume` forks a fresh process from OUR env, so the successor
   # credentials ride the invocation or the worker can write nothing. The wait
   # is bounded for the same reason phase 2 bounds it: this tick holds the
-  # whole-tick lock throughout, and `agora resume` defaults to hours.
+  # whole-tick lock throughout, and `sminos resume` defaults to hours.
   if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-       "$AGORA_CLI" resume --wait "$C_SESS" "$prompt"; then
+       "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt"; then
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
        && _delivered "$transcript" "$(_successor_marker "$C_RUN")"; then
-    # A BOUNDED WAIT IS NOT A FAILED DELIVERY. `agora resume` forks the turn,
+    # A BOUNDED WAIT IS NOT A FAILED DELIVERY. `sminos resume` forks the turn,
     # advances the meta and injects this prompt BEFORE it blocks, then exits 1
     # when its watcher expires — and a successor turn routinely runs longer
     # than the bound this tick needs in order not to starve lease renewal, so
@@ -1325,7 +1325,7 @@ PY
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
   else
-    # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `agora resume` has a third
+    # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `sminos resume` has a third
     # outcome beside delivered and failed: the fork LAUNCHED, but its session
     # uuid never resolved, so it stamps status=error + pending_short and
     # deliberately leaves `current` on the old turn. The marker check above
@@ -1385,13 +1385,13 @@ $(cat "$dir/body.md")"
     # unbound" (which is never ended).
     _journal "$CLAIMS_DIR/$nonce.json" "$C_RUN" 0 "$tid" "$name" "$C_SESS"
     # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the dispatchers, reason: this
-    # tick can itself run inside a gateway-routed seat, and `agora spawn`
+    # tick can itself run inside a gateway-routed seat, and `sminos spawn`
     # persists what it inherits into the record, so every later resume would
     # ride the gateway while the log said claude.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
          DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
-         "$AGORA_CLI" spawn "$name" "$prompt" \
+         "$SMINOS_CLI" spawn "$name" "$prompt" \
          --cwd "${LOCAL_REPO:-$BOARD_ROOT}" --worktree "$name" \
          --model "$(_model_for_lane "$lane")")"; then
       printf '%s\n' "$spawn_out"
@@ -1432,7 +1432,7 @@ $(cat "$dir/body.md")"
       # and no repair can even find it — its meta names no run. Retire it and
       # release the run rather than leave an unreachable worker on the lease.
       echo "resume: #$tid — the fresh worker could not be bound; retiring it and releasing run $C_RUN" >&2
-      "$AGORA_CLI" retire "$delivered" >/dev/null 2>&1 || true
+      "$SMINOS_CLI" retire "$delivered" >/dev/null 2>&1 || true
       rm -f "$CLAIMS_DIR/$nonce.json"
       _attempts "$tid" fail "$C_RUN"
       return 1
@@ -1696,7 +1696,7 @@ phase_dispatch() {
   local impl revw
   impl="$SCRIPT_DIR/../../executing/scripts/execute-dispatch.sh"
   revw="$SCRIPT_DIR/../../qa-loops/scripts/review-dispatch.sh"
-  # DAEMON_HOME/AGORA_CLI are resolved here but NOT exported (see above),
+  # DAEMON_HOME/SMINOS_CLI are resolved here but NOT exported (see above),
   # so they are passed explicitly: without them a non-default registry — a
   # test seam, a second fleet on one host — would silently split in two, this
   # tick renewing one registry while the dispatchers filled another.
@@ -1718,7 +1718,7 @@ phase_dispatch() {
   # on it. Empty on a phase asked for by name — that tick made no recovery
   # attempt, so it fences nothing.
   local env_common=(BOARD_SUPPRESS_DIR="$SUPPRESS_DIR" DAEMON_HOME="$DAEMON_HOME"
-                    AGORA_CLI="$AGORA_CLI" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
+                    SMINOS_CLI="$SMINOS_CLI" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
                     BOARD_RESUMED_LEDGER="${RESUMED_LEDGER:-}"
                     BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
   env "${env_common[@]}" "$impl" --sweep \

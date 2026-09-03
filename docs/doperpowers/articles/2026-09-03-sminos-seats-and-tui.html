@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agora — 에이전트 함대를 하나의 조직으로 (PR 92 · 93 · 94)</title>
+<title>sminos — 에이전트 함대를 하나의 조직으로 (PR 92 · 93 · 94)</title>
 <style>
 :root{
   --paper:#faf8f3; --ink:#1b1b1f; --mute:#6b6f7a; --line:#d9d4c7; --card:#ffffff;
@@ -66,21 +66,22 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <main>
 
 <section class="cover">
-  <div class="kicker">doperpowers · skills/agora · 2026-09-02 ~ 09-03</div>
+  <div class="kicker">doperpowers · skills/sminos · 2026-09-02 ~ 09-03</div>
   <h1>흩어진 클로드 세션들을<br>하나의 <em>조직</em>으로 만들기</h1>
   <p>PR 92, 93, 94가 만든 것을 처음부터, 그림으로, 그리고 끝까지 깊게.</p>
   <div class="meta">
-    <span>PR #92 · agora v3 <b>seats</b> · 62 files · +6,157 / −4,410</span>
-    <span>PR #93 · <b>agora tui</b> · 11 files · +2,005 / −15</span>
+    <span>PR #92 · sminos v3 <b>seats</b> · 62 files · +6,157 / −4,410</span>
+    <span>PR #93 · <b>sminos tui</b> · 11 files · +2,005 / −15</span>
     <span>PR #94 · 회고 · 1 file</span>
     <span>v7.67.0 → 7.68.0 → 7.69.0</span>
     <span>테스트 406 → 504 assertions</span>
+    <span>2026-09-04 · agora → sminos 로 이름 변경</span>
   </div>
 
   <ul class="toc">
     <li class="part">1부 · 무엇이 문제였나</li>
     <li><a href="#c1">1. 열 개의 창, 아무 지도도 없음</a></li>
-    <li><a href="#c2">2. agora가 세 번 태어난 이야기</a></li>
+    <li><a href="#c2">2. sminos가 세 번 태어난 이야기</a></li>
     <li class="part">2부 · PR 92 — 좌석(seat)</li>
     <li><a href="#c3">3. 의자는 남고, 사람은 바뀐다</a></li>
     <li><a href="#c4">4. 그룹, 부모, 역할, 한 줄 상태</a></li>
@@ -135,14 +136,14 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">2026년 8월 말의 실제 상태. 세션은 있지만 조직은 없었다.</p>
   <details class="deep"><summary>더 깊이 · 정확히 무엇이 두 조각으로 갈라져 있었나</summary>
-    <p>이 저장소에는 같은 것을 반씩 설명하는 도구가 둘 있었다. <code>skills/orchestrating-daemons/scripts/</code>는 오래 사는 백그라운드 클로드 세션("데몬")을 띄우고, 이어가고, 추적하고, 은퇴시키는 bash 스크립트 묶음이었고, 데몬 하나당 JSON 하나를 <code>~/.claude/orchestrating-daemons/</code>에 두었다. 한편 <code>skills/agora/scripts/agora</code>는 세션들에게 이름 있는 <b>작업 그룹</b>을 주는 bash CLI였다: 누가 누구를 낳았는지, 별칭에서 메시지 주소로의 매핑, 그리고 공동 게시판.</p>
-    <p>데몬 레지스트리는 세션의 태스크·워크트리·모델·생존 여부는 알았지만 어느 그룹에서 일하는지는 몰랐다. agora는 그룹과 스폰 트리는 알았지만 프로세스에 대해서는 아무것도 몰랐다. "내 함대가 지금 뭘 하고 있나"를 물으려면 두 개의 list 명령을 두 가지 어휘로 쳐야 했고, 자기 그룹에 연결된 자식을 스폰하려는 에이전트는 다른 스킬 디렉터리의 스크립트에 환경변수 접두어를 붙여야 했다.</p>
+    <p>이 저장소에는 같은 것을 반씩 설명하는 도구가 둘 있었다. <code>skills/orchestrating-daemons/scripts/</code>는 오래 사는 백그라운드 클로드 세션("데몬")을 띄우고, 이어가고, 추적하고, 은퇴시키는 bash 스크립트 묶음이었고, 데몬 하나당 JSON 하나를 <code>~/.claude/orchestrating-daemons/</code>에 두었다. 한편 <code>skills/sminos/scripts/sminos</code>는 세션들에게 이름 있는 <b>작업 그룹</b>을 주는 bash CLI였다: 누가 누구를 낳았는지, 별칭에서 메시지 주소로의 매핑, 그리고 공동 게시판.</p>
+    <p>데몬 레지스트리는 세션의 태스크·워크트리·모델·생존 여부는 알았지만 어느 그룹에서 일하는지는 몰랐다. sminos는 그룹과 스폰 트리는 알았지만 프로세스에 대해서는 아무것도 몰랐다. "내 함대가 지금 뭘 하고 있나"를 물으려면 두 개의 list 명령을 두 가지 어휘로 쳐야 했고, 자기 그룹에 연결된 자식을 스폰하려는 에이전트는 다른 스킬 디렉터리의 스크립트에 환경변수 접두어를 붙여야 했다.</p>
   </details>
 </section>
 
 <section class="chapter" id="c2">
   <div class="num">02</div>
-  <h2>agora는 일주일 사이에 세 번 태어났다.</h2>
+  <h2>sminos는 일주일 사이에 세 번 태어났다.</h2>
   <p class="lead">v1은 파일 인박스, v2는 하네스의 네이티브 메시지, v3는 <b>좌석</b>. 이 글의 주인공은 v3와 그 위에 올린 화면이다.</p>
   <div class="figure">
     <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif">
@@ -155,9 +156,9 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">각 세대는 그 전 세대가 실물과 부딪혀 배운 것으로 만들어졌다.</p>
   <details class="deep"><summary>더 깊이 · 왜 v1을 버리고 v2로, 그리고 v3로 갔나</summary>
-    <p><b>v1 (8/27)</b>은 자체 배달 장치를 만들었다. 멤버마다 인박스 파일과 커서가 있고, 모든 멤버가 <code>agora listen</code>을 영구 Monitor로 무장해야 했다. 설계 당시에는 네이티브 SendMessage를 전송 수단으로 쓸 수 없다고 판단했기 때문이다(셸에서 접근 불가, 이중 기록 드리프트). 살아보니 비용이 컸다: 모든 에이전트가 listener 무장을 기억해야 했고, 죽은 listener는 소리 없이 귀를 막았고, 무장된 listener는 세션을 영원히 <code>state=working</code>으로 고정시켜 하네스의 상태 표시가 거짓말을 하게 했다(그래서 <code>--no-wait</code> 규칙이 생겼다).</p>
-    <p><b>v2 (8/31)</b>는 라이브 프로브로 뒤집었다. 네이티브 SendMessage는 idle 세션을 새 턴으로 깨우고, busy 세션에는 큐잉하고, 프로세스가 죽은 세션까지 트랜스크립트에서 되살려 배달한다는 것이 확인됐다. 그래서 agora는 네이티브 도구가 못 하는 것만 남겼다 — 이름 있는 그룹, 스폰 토폴로지, alias→addr 레지스트리, 영구 보드. 두 개의 리뷰 발견은 모두 "업그레이드 경계" 결함이었다: 영구적이고 머신 전역인 상태 루트에서는 새 필드마다 옛 레코드에 대한 read-time 답이 필요하고, CLI 네임스페이스를 벗어나는 식별자(alias → 머신 전역 세션 이름)는 넓은 범위에서 유일성을 다시 검사해야 한다.</p>
-    <p><b>v3 (9/02, PR 92)</b>는 남은 반쪽 — 프로세스를 아는 데몬 레지스트리 — 을 agora 안으로 접어 넣었다. 이제부터가 이 글의 본문이다.</p>
+    <p><b>v1 (8/27)</b>은 자체 배달 장치를 만들었다. 멤버마다 인박스 파일과 커서가 있고, 모든 멤버가 <code>sminos listen</code>을 영구 Monitor로 무장해야 했다. 설계 당시에는 네이티브 SendMessage를 전송 수단으로 쓸 수 없다고 판단했기 때문이다(셸에서 접근 불가, 이중 기록 드리프트). 살아보니 비용이 컸다: 모든 에이전트가 listener 무장을 기억해야 했고, 죽은 listener는 소리 없이 귀를 막았고, 무장된 listener는 세션을 영원히 <code>state=working</code>으로 고정시켜 하네스의 상태 표시가 거짓말을 하게 했다(그래서 <code>--no-wait</code> 규칙이 생겼다).</p>
+    <p><b>v2 (8/31)</b>는 라이브 프로브로 뒤집었다. 네이티브 SendMessage는 idle 세션을 새 턴으로 깨우고, busy 세션에는 큐잉하고, 프로세스가 죽은 세션까지 트랜스크립트에서 되살려 배달한다는 것이 확인됐다. 그래서 sminos는 네이티브 도구가 못 하는 것만 남겼다 — 이름 있는 그룹, 스폰 토폴로지, alias→addr 레지스트리, 영구 보드. 두 개의 리뷰 발견은 모두 "업그레이드 경계" 결함이었다: 영구적이고 머신 전역인 상태 루트에서는 새 필드마다 옛 레코드에 대한 read-time 답이 필요하고, CLI 네임스페이스를 벗어나는 식별자(alias → 머신 전역 세션 이름)는 넓은 범위에서 유일성을 다시 검사해야 한다.</p>
+    <p><b>v3 (9/02, PR 92)</b>는 남은 반쪽 — 프로세스를 아는 데몬 레지스트리 — 을 sminos 안으로 접어 넣었다. 이제부터가 이 글의 본문이다.</p>
   </details>
 </section>
 
@@ -194,7 +195,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       </g>
     </svg>
   </div>
-  <p class="caption">agora의 단위는 세션이 아니라 좌석이다. 이 한 가지 결정이 나머지 전부를 결정했다.</p>
+  <p class="caption">sminos의 단위는 세션이 아니라 좌석이다. 이 한 가지 결정이 나머지 전부를 결정했다.</p>
   <details class="deep"><summary>더 깊이 · 왜 "세션"이 아니라 "좌석"인가, 왜 그 이름인가</summary>
     <p>v2의 모델은 노드 = 살아 있는 세션이었다. 세션이 죽으면 그것이 속한 조직도 함께 지워지고, "다시 채우기"를 표현할 방법이 없다. 좌석은 조직을 프로세스 수명에서 분리한다. 좌석 하나는 동시에 0개 또는 1개의 세션에 채워지고, 세션을 가로질러 지속된다. 그룹 템플릿(조직을 한 번 정의하고 새 세션들로 인스턴스화)은 자연스러운 후속 과제로 미뤄졌다.</p>
     <p>이름 후보와 낙선 이유: <code>node</code>(그래프 어휘, 지속성을 말하지 않음), <code>post</code>(보드의 post와 충돌), <code>member</code>(사람 단어). 좌석에 앉은 세션은 "에이전트"라 부른다. 예약된 정체성 <code>human</code>은 운영자다 — 좌석을 갖지 않지만 어느 보드에든 글을 쓸 수 있다.</p>
@@ -205,7 +206,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <section class="chapter" id="c4">
   <div class="num">04</div>
   <h2>좌석은 그룹 안에서 부모를 가리키고, 역할과 한 줄 상태를 지닌다.</h2>
-  <p class="lead">그래서 <code>agora view login</code> 한 번이면 조직도가 나온다 — 노드마다 살아 있음이 붙어서.</p>
+  <p class="lead">그래서 <code>sminos view login</code> 한 번이면 조직도가 나온다 — 노드마다 살아 있음이 붙어서.</p>
   <div class="figure">
     <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="14">
       <rect x="20" y="20" width="860" height="260" rx="16" fill="none" stroke="#0e7c7b" stroke-width="2" stroke-dasharray="8 6"/>
@@ -223,8 +224,8 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   <p class="caption">부모–자식 간선은 정보이지 규칙이 아니다. "부모와 자식을 우선하되, 필요하면 누구에게든" 이 프로토콜이다.</p>
   <details class="deep"><summary>더 깊이 · 좌석에 붙는 두 종류의 자기 설명, 그리고 "그룹 없는 스폰"</summary>
     <ul>
-      <li><code>now</code> — 에이전트 자신이 <code>agora status &lt;seat&gt; "…"</code>로 쓰는 한 줄. list/view/chart의 세 번째 줄에 보인다.</li>
-      <li><code>note</code> — 오케스트레이터가 <code>agora mark</code>로 쓰는 판단(<code>done</code>, <code>awaiting-human</code> 같은 상태와 함께).</li>
+      <li><code>now</code> — 에이전트 자신이 <code>sminos status &lt;seat&gt; "…"</code>로 쓰는 한 줄. list/view/chart의 세 번째 줄에 보인다.</li>
+      <li><code>note</code> — 오케스트레이터가 <code>sminos mark</code>로 쓰는 판단(<code>done</code>, <code>awaiting-human</code> 같은 상태와 함께).</li>
       <li>턴이 끝날 때 상태를 갱신하는 Stop 훅 아이디어는 접었다: 훅은 턴 <em>안에서</em> 발화하므로 턴을 요약할 수 없고, 살아 있음은 하네스가 이미 추적한다.</li>
     </ul>
     <p><code>--group</code> 없이 스폰된 좌석은 작업 디렉터리에서 그룹을 유도한다: git 저장소 안이면 <code>git rev-parse --show-toplevel</code>의 basename, 아니면 디렉터리 basename, 그것도 없으면 <code>fleet</code>. 보드 파이프라인 워커들이 디스패처가 그룹을 배우지 않고도 저장소별로 묶이는 이유다. 프리앰블(에이전트 프로토콜 텍스트)은 <code>--group</code>이 명시적일 때만 태스크 앞에 붙는다.</p>
@@ -234,8 +235,8 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <section class="chapter" id="c5">
   <div class="num">05</div>
   <h2>레지스트리는 폴더 하나다. 좌석 하나 = JSON 파일 하나.</h2>
-  <p class="lead"><code>~/.claude/agora/</code>. 좌석 id는 첫 세션의 uuid. 옆에 마지막 답장, 그룹 폴더 아래에 게시판.</p>
-  <pre class="light">~/.claude/agora/                          ($AGORA_HOME 으로 바꿀 수 있음; $DAEMON_HOME 은 옛 이름)
+  <p class="lead"><code>~/.claude/sminos/</code>. 좌석 id는 첫 세션의 uuid. 옆에 마지막 답장, 그룹 폴더 아래에 게시판.</p>
+  <pre class="light">~/.claude/sminos/                          ($SMINOS_HOME 으로 바꿀 수 있음; $DAEMON_HOME 은 옛 이름)
 ├── .metalock                             ← 모든 레코드 쓰기가 잡는 공유 flock
 ├── 47db7f50-ffd9-4002-….json             ← 좌석 하나 (seat id = 첫 세션의 uuid)
 ├── 47db7f50-ffd9-4002-….reply.txt        ← 그 좌석의 마지막 답장 텍스트
@@ -254,7 +255,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
         <text x="60" y="95"><tspan fill="#ffd98e">"alias"</tspan>: "demo-impl",  <tspan fill="#ffd98e">"group"</tspan>: "demo",  <tspan fill="#ffd98e">"parent"</tspan>: "demo-architect",  <tspan fill="#ffd98e">"addr"</tspan>: "demo-impl",</text>
         <text x="60" y="120"><tspan fill="#ffd98e">"role"</tspan>: "IMPL",  <tspan fill="#ffd98e">"brief"</tspan>: "…",  <tspan fill="#ffd98e">"now"</tspan>: "M1 구현 중",  <tspan fill="#c3e88d">"note"</tspan>: "",</text>
         <text x="60" y="145"><tspan fill="#c3e88d">"status"</tspan>: "working",  <tspan fill="#c3e88d">"turns"</tspan>: "3",  <tspan fill="#c3e88d">"gen"</tspan>: 7,  <tspan fill="#c3e88d">"attempts"</tspan>: 1,  <tspan fill="#c3e88d">"history"</tspan>: [ … ],</text>
-        <text x="60" y="170"><tspan fill="#b0b8c4">"cwd"</tspan>: "/Users/…/worktrees/agora",  <tspan fill="#b0b8c4">"worktree"</tspan>: "",  <tspan fill="#b0b8c4">"model"</tspan>: "",  <tspan fill="#b0b8c4">"settings"</tspan>: "",  <tspan fill="#b0b8c4">"effort"</tspan>: "",</text>
+        <text x="60" y="170"><tspan fill="#b0b8c4">"cwd"</tspan>: "/Users/…/worktrees/sminos",  <tspan fill="#b0b8c4">"worktree"</tspan>: "",  <tspan fill="#b0b8c4">"model"</tspan>: "",  <tspan fill="#b0b8c4">"settings"</tspan>: "",  <tspan fill="#b0b8c4">"effort"</tspan>: "",</text>
         <text x="60" y="195"><tspan fill="#b0b8c4">"created"</tspan>: "2026-08-26T18:13:57Z",  <tspan fill="#b0b8c4">"updated"</tspan>: "2026-09-01T22:06:50Z",  <tspan fill="#b0b8c4">"preamble"</tspan>: "1",</text>
         <text x="60" y="220"><tspan fill="#ff9e9e">"ticket"</tspan>: …, <tspan fill="#ff9e9e">"run_id"</tspan>: …, <tspan fill="#ff9e9e">"run_bearer"</tspan>: ██████   <tspan fill="#8a92a0">← 보드 파이프라인이 쓰는 필드; 비밀은 어떤 출력에도 안 나감</tspan></text>
       </g>
@@ -266,7 +267,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">v3의 결정: 레코드는 <em>기존 데몬 meta 파일 그대로</em>에 조직 필드 7개(alias, group, parent, addr, role, brief, now)를 더한 것이다.</p>
   <details class="deep"><summary>더 깊이 · 왜 데몬 레이아웃을 정본으로 삼았나, 그리고 read-time 폴백</summary>
-    <p>데몬 meta는 이미 좌석의 모양이었다 — 원래 uuid에 의한 안정된 정체성, <code>current</code> 체이닝, <code>role</code>, <code>ticket</code>, <code>note</code>. 그리고 보드 파이프라인 스크립트 여섯 개가 이 레이아웃을 직접 읽고 쓴다. 이걸 정본으로 삼으면 그 여섯 스크립트는 기본 경로 하나만 바꾸고 계속 동작한다. 반대안(agora v2의 <code>groups/&lt;g&gt;/nodes/&lt;alias&gt;.json</code>을 정본으로, 파이프라인을 다시 쓰기)은 여섯 writer, 열두 reader, 스무 개 테스트 파일을 다시 쓰는 일이어서 이 계획이 보드 파이프라인 재작성이 되어 버린다.</p>
+    <p>데몬 meta는 이미 좌석의 모양이었다 — 원래 uuid에 의한 안정된 정체성, <code>current</code> 체이닝, <code>role</code>, <code>ticket</code>, <code>note</code>. 그리고 보드 파이프라인 스크립트 여섯 개가 이 레이아웃을 직접 읽고 쓴다. 이걸 정본으로 삼으면 그 여섯 스크립트는 기본 경로 하나만 바꾸고 계속 동작한다. 반대안(sminos v2의 <code>groups/&lt;g&gt;/nodes/&lt;alias&gt;.json</code>을 정본으로, 파이프라인을 다시 쓰기)은 여섯 writer, 열두 reader, 스무 개 테스트 파일을 다시 쓰는 일이어서 이 계획이 보드 파이프라인 재작성이 되어 버린다.</p>
     <p>상태 루트는 영구적이고 머신 전역이다. 어떤 필드가 생기기 전에 쓰인 레코드(pre-seat 데몬 meta, v2 노드)는 alias/group/addr/role 중 아무것도 없다. 그래서 모든 읽기는 <code>load_seat()</code>를 거치고, 거기서 폴백이 적용된다: <code>alias ← name</code>, <code>addr ← alias</code>, <code>group ← "fleet"</code>. 미묘한 것 하나: 옛 데몬 레코드에는 <code>current</code> 키 자체가 없고(옛 resume 폴백이 레코드 자신의 uuid를 이어갈 세션으로 썼다), v2에서 변환된 노드는 <code>current</code>가 있지만 비어 있다(진짜 빈 좌석). 그래서 폴백은 값이 비었는지가 아니라 <em>키의 부재</em>에 걸린다.</p>
     <p>파일 권한: 이 CLI가 만드는 모든 것은 0700/0600이다(<code>os.umask(0o077)</code>). 모든 에이전트가 같은 OS 사용자로 돌기 때문에 group/other 권한은 필요 없다.</p>
   </details>
@@ -282,22 +283,22 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <text x="450" y="62" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#0e7c7b" font-weight="700">os.rename (원자적)</text>
       <line x1="370" y1="80" x2="530" y2="80" stroke="#0e7c7b" stroke-width="3" marker-end="url(#a)"/>
       <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0e7c7b"/></marker></defs>
-      <g transform="translate(540,40)"><rect width="330" height="70" rx="10" fill="#fff" stroke="#0e7c7b" stroke-width="2.5"/><text x="16" y="30" font-weight="700">~/.claude/agora/</text><text x="16" y="54" fill="#6b6f7a">같은 inode들 · 0700 / 0600</text></g>
-      <g transform="translate(30,160)"><rect width="330" height="60" rx="10" fill="#f3f1ea" stroke="#c9c4b8" stroke-width="2" stroke-dasharray="6 4"/><text x="16" y="26" fill="#6b6f7a">~/.claude/orchestrating-daemons</text><text x="16" y="48" fill="#6b6f7a">→ symlink → ~/.claude/agora</text></g>
+      <g transform="translate(540,40)"><rect width="330" height="70" rx="10" fill="#fff" stroke="#0e7c7b" stroke-width="2.5"/><text x="16" y="30" font-weight="700">~/.claude/sminos/</text><text x="16" y="54" fill="#6b6f7a">같은 inode들 · 0700 / 0600</text></g>
+      <g transform="translate(30,160)"><rect width="330" height="60" rx="10" fill="#f3f1ea" stroke="#c9c4b8" stroke-width="2" stroke-dasharray="6 4"/><text x="16" y="26" fill="#6b6f7a">~/.claude/orchestrating-daemons</text><text x="16" y="48" fill="#6b6f7a">→ symlink → ~/.claude/sminos</text></g>
       <text x="400" y="195" font-family="sans-serif" font-size="14" fill="#6b6f7a">옛 경로를 쥔 워커의 로그 경로, 오래된 문서 참조가 계속 동작</text>
-      <text x="30" y="250" font-family="sans-serif" font-size="13" fill="#6b6f7a">전체 컷오버는 ~/.claude/.agora-migrate.lock 의 배타 flock 아래에서 · 모든 동사 전에, 그리고 파이프라인 진입점마다 실행 · 멱등</text>
+      <text x="30" y="250" font-family="sans-serif" font-size="13" fill="#6b6f7a">전체 컷오버는 ~/.claude/.sminos-migrate.lock 의 배타 flock 아래에서 · 모든 동사 전에, 그리고 파이프라인 진입점마다 실행 · 멱등</text>
     </svg>
   </div>
   <p class="caption">복사가 아니라 이동인 이유: 두 루트가 있으면 반드시 서로 어긋난다.</p>
   <details class="deep"><summary>더 깊이 · migrate()의 다섯 단계</summary>
     <ol>
-      <li><b>옛 루트.</b> 기본 루트를 쓰고 있고 옛 경로가 진짜 디렉터리이면, 기존 <code>~/.claude/agora</code>를 옆으로 치우고(<code>.v2-&lt;timestamp&gt;</code>), 옛 루트를 제자리로 rename, 옛 경로에 심볼릭 링크. 치워둔 루트의 <code>groups/</code>는 <code>merge_asides</code>가 다시 합치며 이후 호출마다 실행되므로 컷오버 중 크래시가 스스로 치유된다.</li>
-      <li><b>레코드별 스탬핑.</b> <code>group</code>이 없는 레코드는 자신의 <code>agora_group</code> 또는 cwd에서 유도한 값으로 스탬프. 레거시 codex-CLI 워커 레코드(<code>engine: codex</code>)는 상태가 이미 종결이거나 pid가 죽었을 때만 은퇴 — 살아 있는 pid를 가진 working/blocked는 건드리지 않는다. 강등은 <code>updated</code>를 절대 건드리지 않는다(파이프라인은 <code>updated</code>가 가장 큰 레코드를 고르므로, 패자를 bump 하면 정본 좌석을 밀어낸다).</li>
+      <li><b>옛 루트.</b> 기본 루트를 쓰고 있고 옛 경로가 진짜 디렉터리이면, 기존 <code>~/.claude/sminos</code>를 옆으로 치우고(<code>.v2-&lt;timestamp&gt;</code>), 옛 루트를 제자리로 rename, 옛 경로에 심볼릭 링크. 치워둔 루트의 <code>groups/</code>는 <code>merge_asides</code>가 다시 합치며 이후 호출마다 실행되므로 컷오버 중 크래시가 스스로 치유된다.</li>
+      <li><b>레코드별 스탬핑.</b> <code>group</code>이 없는 레코드는 자신의 <code>sminos_group</code> 또는 cwd에서 유도한 값으로 스탬프. 레거시 codex-CLI 워커 레코드(<code>engine: codex</code>)는 상태가 이미 종결이거나 pid가 죽었을 때만 은퇴 — 살아 있는 pid를 가진 working/blocked는 건드리지 않는다. 강등은 <code>updated</code>를 절대 건드리지 않는다(파이프라인은 <code>updated</code>가 가장 큰 레코드를 고르므로, 패자를 bump 하면 정본 좌석을 밀어낸다).</li>
       <li><b>v2 레이아웃.</b> <code>groups/&lt;g&gt;/nodes/*.json</code>은 은퇴한 좌석 레코드가 된다.</li>
       <li><b>alias 중복 제거.</b> 같은 (group, alias)를 공유하는 레코드가 여럿이면(옛 기질이 한 이름으로 워커를 재스폰했다), claude 레코드가 codex를 이기고, 그다음 최신 <code>updated</code>가 이긴다. 패자는 <code>&lt;alias&gt;@&lt;short&gt;</code>로 개명되어 은퇴한다. 실제 레지스트리에서는 4개의 역사적 중복이 개명됐다.</li>
       <li><b>매번.</b> 루트 0700, 레코드/답장/에러 파일 0600 이하, 레거시 경로가 없으면 심볼릭 링크 복구, 중단된 컷오버가 남긴 aside 병합(충돌하는 보드는 id를 다시 매겨 이어 붙임).</li>
     </ol>
-    <p>설계 리뷰가 바꾼 것: 원래 계획은 agora 동사에서만 마이그레이션이었다. 리뷰 발견 F2 — 파이프라인은 레지스트리를 직접 스캔하므로 빈 새 루트를 상대로 dedupe 할 수 있다. 그래서 모든 파이프라인 진입점이 preflight 직후 <code>"$AGORA_CLI" migrate</code>를 실행하고, 직접 레지스트리 읽기 앞에서도 fail-closed로 실행된다.</p>
+    <p>설계 리뷰가 바꾼 것: 원래 계획은 sminos 동사에서만 마이그레이션이었다. 리뷰 발견 F2 — 파이프라인은 레지스트리를 직접 스캔하므로 빈 새 루트를 상대로 dedupe 할 수 있다. 그래서 모든 파이프라인 진입점이 preflight 직후 <code>"$SMINOS_CLI" migrate</code>를 실행하고, 직접 레지스트리 읽기 앞에서도 fail-closed로 실행된다.</p>
   </details>
 </section>
 
@@ -316,14 +317,14 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">채워진 상태(<code>FILLED</code>) = busy · idle · blocked. 다시 채울 수 있는 상태(<code>REFILLABLE</code>) = vacant · stopped · gone.</p>
   <details class="deep"><summary>더 깊이 · live 와 status 는 다른 것이다</summary>
-    <p><code>live</code>는 읽을 때마다 하네스에서 계산되는 값이고, <code>status</code>는 레코드에 <em>기록된</em> 턴 상태다(<code>working</code>, <code>blocked</code>, <code>idle</code>, <code>error</code>, <code>retired</code>, 그리고 <code>agora mark</code>로 놓는 판단 상태 <code>done</code>/<code>awaiting-human</code>). 보드 파이프라인이 lane 슬롯을 세고 dedupe 하는 기준이 <code>status</code>라서 미러 의미를 유지했고, <code>agora sync</code>가 그 미러를 하네스와 맞추는 조정 동사다(옛 <code>daemon-finalize.sh</code>). sync가 찍는 다섯 단어 어휘 — <code>noop</code>, <code>live</code>, <code>absent</code>, <code>idle</code>, <code>error</code> — 는 파이프라인이 switch 하는 값이라 동결됐다.</p>
-    <p>네이티브 wake가 들어오면서 미러는 더 자주 뒤처진다: SendMessage(또는 <code>agora send</code>)로 깨어난 좌석은 agora 동사가 한 번도 끼지 않은 채 턴을 통째로 돌리고 끝내므로, 레코드는 여전히 <code>idle</code>이고 <code>.reply.txt</code>는 이전 턴을 말한다. 그래서 <code>sync</code>와 <code>reply</code>는 기록된 status를 믿지 않고 트랜스크립트를 답장 파일과 비교한다. "이 좌석이 마지막으로 뭐라고 했나"가 필요한 모든 소비자는 그 두 동사를 거쳐야 하고, 파일을 직접 읽으면 안 된다.</p>
+    <p><code>live</code>는 읽을 때마다 하네스에서 계산되는 값이고, <code>status</code>는 레코드에 <em>기록된</em> 턴 상태다(<code>working</code>, <code>blocked</code>, <code>idle</code>, <code>error</code>, <code>retired</code>, 그리고 <code>sminos mark</code>로 놓는 판단 상태 <code>done</code>/<code>awaiting-human</code>). 보드 파이프라인이 lane 슬롯을 세고 dedupe 하는 기준이 <code>status</code>라서 미러 의미를 유지했고, <code>sminos sync</code>가 그 미러를 하네스와 맞추는 조정 동사다(옛 <code>daemon-finalize.sh</code>). sync가 찍는 다섯 단어 어휘 — <code>noop</code>, <code>live</code>, <code>absent</code>, <code>idle</code>, <code>error</code> — 는 파이프라인이 switch 하는 값이라 동결됐다.</p>
+    <p>네이티브 wake가 들어오면서 미러는 더 자주 뒤처진다: SendMessage(또는 <code>sminos send</code>)로 깨어난 좌석은 sminos 동사가 한 번도 끼지 않은 채 턴을 통째로 돌리고 끝내므로, 레코드는 여전히 <code>idle</code>이고 <code>.reply.txt</code>는 이전 턴을 말한다. 그래서 <code>sync</code>와 <code>reply</code>는 기록된 status를 믿지 않고 트랜스크립트를 답장 파일과 비교한다. "이 좌석이 마지막으로 뭐라고 했나"가 필요한 모든 소비자는 그 두 동사를 거쳐야 하고, 파일을 직접 읽으면 안 된다.</p>
   </details>
 </section>
 
 <section class="chapter" id="c8">
   <div class="num">08</div>
-  <h2>하네스는 세 곳에서 신호를 준다. agora는 셋을 겹쳐 읽는다.</h2>
+  <h2>하네스는 세 곳에서 신호를 준다. sminos는 셋을 겹쳐 읽는다.</h2>
   <p class="lead">세션 목록, 피어 레코드, 인박스 소켓. 어느 하나만 믿으면 거짓말에 속는다.</p>
   <div class="figure">
     <svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14">
@@ -359,14 +360,14 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <!-- lane 2 -->
       <g transform="translate(20,140)"><rect width="860" height="110" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="1.5"/>
         <text x="16" y="28" font-weight="700" font-size="15" fill="#0e7c7b">② 터미널/스크립트 → 살아 있는 seat</text>
-        <rect x="16" y="45" width="150" height="40" rx="8" fill="#eef3f3"/><text x="91" y="70" text-anchor="middle" font-family="Menlo,monospace" font-size="13">agora send</text>
+        <rect x="16" y="45" width="150" height="40" rx="8" fill="#eef3f3"/><text x="91" y="70" text-anchor="middle" font-family="Menlo,monospace" font-size="13">sminos send</text>
         <line x1="170" y1="65" x2="480" y2="65" stroke="#1b1b1f" stroke-width="2" marker-end="url(#b)"/><text x="325" y="58" text-anchor="middle" font-family="Menlo,monospace" font-size="12">{"type":"user","message":{…}}</text><text x="325" y="88" text-anchor="middle" font-size="12.5" fill="#6b6f7a">→ /tmp/cc-socks/&lt;pid&gt;.sock</text>
         <rect x="490" y="45" width="150" height="40" rx="8" fill="#e9f6ee"/><text x="565" y="70" text-anchor="middle">seat (idle/busy)</text>
-        <text x="660" y="60" fill="#6b6f7a" font-size="13">첫 줄에 "[agora … from X]"</text><text x="660" y="80" fill="#6b6f7a" font-size="13">— 프레임엔 발신자가 없어서</text><text x="660" y="100" fill="#c8453f" font-size="13">소켓 없으면 exit 4 → wake 안내</text></g>
+        <text x="660" y="60" fill="#6b6f7a" font-size="13">첫 줄에 "[sminos … from X]"</text><text x="660" y="80" fill="#6b6f7a" font-size="13">— 프레임엔 발신자가 없어서</text><text x="660" y="100" fill="#c8453f" font-size="13">소켓 없으면 exit 4 → wake 안내</text></g>
       <!-- lane 3 -->
       <g transform="translate(20,270)"><rect width="860" height="110" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="1.5"/>
         <text x="16" y="28" font-weight="700" font-size="15" fill="#0e7c7b">③ 멈춘 seat 이어가기</text>
-        <rect x="16" y="45" width="150" height="40" rx="8" fill="#eef3f3"/><text x="91" y="70" text-anchor="middle" font-family="Menlo,monospace" font-size="13">agora wake / resume</text>
+        <rect x="16" y="45" width="150" height="40" rx="8" fill="#eef3f3"/><text x="91" y="70" text-anchor="middle" font-family="Menlo,monospace" font-size="13">sminos wake / resume</text>
         <line x1="170" y1="65" x2="480" y2="65" stroke="#1b1b1f" stroke-width="2" marker-end="url(#b)"/><text x="325" y="58" text-anchor="middle" font-family="Menlo,monospace" font-size="12.5">claude --bg --resume &lt;id&gt; "msg"</text><text x="325" y="88" text-anchor="middle" font-size="12.5" fill="#c8453f">플래그 하나라도 붙이면 복사본이 생긴다</text>
         <rect x="490" y="45" width="150" height="40" rx="8" fill="#f3f1ea"/><text x="565" y="70" text-anchor="middle">같은 세션 id, 새 프로세스</text>
         <text x="660" y="60" fill="#6b6f7a" font-size="13">wake: 살았으면 ②, 아니면 ③</text><text x="660" y="80" fill="#6b6f7a" font-size="13">resume: 항상 ③, 살아 있는</text><text x="660" y="100" fill="#6b6f7a" font-size="13">턴은 먼저 stop (환경변수 전달용)</text></g>
@@ -374,10 +375,10 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">②는 이 릴리스의 근거가 된 실험이다: 셸의 Python 한 줄이 idle 세션을 새 턴으로 깨웠다.</p>
   <details class="deep"><summary>더 깊이 · 스파이크 결과, "저장된 옵션" 규칙, 왜 wake 와 resume 이 둘인가</summary>
-    <p><b>스파이크 (9/01).</b> permission mode <code>auto</code>의 <code>claude --bg</code> 프로브가 idle 상태였다. Python 한 줄로 <code>/tmp/cc-socks/&lt;pid&gt;.sock</code>에 연결해 <code>{"type":"user","message":{"role":"user","content":"PROBE-1 …"}}</code>를 썼다. 세션은 몇 초 안에 새 턴을 시작했고, 텍스트를 "Another Claude session sent a message: … not typed by your user"로 프레이밍해 보았다 — 발신자 이름은 없었다(프레임이 싣지 않는다). 그래서 <code>agora send</code>는 첫 줄에 발신자를 넣는다. 발신자 신원은 하네스에서 유도된다: 클로드 세션 안(<code>CLAUDE_CODE_SESSION_ID</code>가 Bash 환경에 있음)에서는 생략된 <code>--from</code>이 내 좌석의 alias로 풀리고 <code>--from human</code>은 거부된다 — 에이전트는 절대 운영자가 아니다. 진짜 터미널만 <code>human</code>이 기본이다.</p>
+    <p><b>스파이크 (9/01).</b> permission mode <code>auto</code>의 <code>claude --bg</code> 프로브가 idle 상태였다. Python 한 줄로 <code>/tmp/cc-socks/&lt;pid&gt;.sock</code>에 연결해 <code>{"type":"user","message":{"role":"user","content":"PROBE-1 …"}}</code>를 썼다. 세션은 몇 초 안에 새 턴을 시작했고, 텍스트를 "Another Claude session sent a message: … not typed by your user"로 프레이밍해 보았다 — 발신자 이름은 없었다(프레임이 싣지 않는다). 그래서 <code>sminos send</code>는 첫 줄에 발신자를 넣는다. 발신자 신원은 하네스에서 유도된다: 클로드 세션 안(<code>CLAUDE_CODE_SESSION_ID</code>가 Bash 환경에 있음)에서는 생략된 <code>--from</code>이 내 좌석의 alias로 풀리고 <code>--from human</code>은 거부된다 — 에이전트는 절대 운영자가 아니다. 진짜 터미널만 <code>human</code>이 기본이다.</p>
     <p><b>저장된 옵션 규칙 (M4 라이브 증명이 가르침).</b> <code>claude --bg --resume &lt;id&gt;</code>는 <em>다른 플래그가 하나도 없을 때만</em> 같은 id로 이어간다. 하네스 메시지 그대로: "background session 4d6ccff7 keeps its own saved options, so the flags you passed started a copy as 74fb1903." 첫 <code>fill --resume</code> 시도들은 <code>-n</code>/<code>--permission-mode</code>/모델 플래그를 실어서 매번 복사본을 만들었다(M1의 복사본 가드가 멈추고 exit 1). 옛 데몬 resume은 일부러 fork 했기에 이 규칙을 만난 적이 없었다. 그래서 resume에서 <code>--model/--settings/--effort</code>는 argv 호환을 위해 받지만 무시하고, 바꾸려면 <code>fill</code>(resume 없이)을 쓴다.</p>
     <p><b>왜 동사가 둘인가.</b> 설계 리뷰의 critical 발견: 보드 파이프라인의 후속 경로와 답변 릴레이는 run의 정체성(<code>BOARD_RUN_TOKEN</code>/<code>BOARD_RUN_ID</code>/<code>BOARD_RUN_FENCE</code>)을 resume 호출의 <em>환경변수 접두어</em>로 전달한다. 소켓 프레임은 돌고 있는 프로세스의 환경을 바꿀 수 없다. 즉 "이 좌석을 이어가라"에는 두 가지 뜻이 있다 — 돌고 있는 프로세스에 텍스트를 배달하라, 또는 내 환경에서 새 프로세스를 시작하라. 하나의 동사로 둘을 섬기면 live-socket 분기가 후속 run 정체성을 조용히 떨어뜨린다. 그래서 <code>wake</code>(대화형: 살았으면 소켓, 아니면 resume)와 <code>resume</code>(프로세스 레벨: 항상 새 프로세스, 살아 있는 턴은 먼저 <code>claude stop</code>)이 갈렸다. 파이프라인 호출 지점은 <code>resume --wait</code>를 쓴다.</p>
-    <p><b>wake --wait 의 증거 규칙.</b> 대상은 배달 전에도 idle이었으므로 idle까지 폴링하면 이전 답장이 즉시 돌아온다. 그래서 프레임 첫 줄에 메시지 id를 싣고, 그 id가 대상 트랜스크립트에 나타나거나 세션이 busy로 바뀌는 것을 먼저 기다린다(<code>AGORA_ACK_TIMEOUT</code>, 기본 120초). 증거가 없으면 exit 1, 답장으로 아무것도 찍지 않는다.</p>
+    <p><b>wake --wait 의 증거 규칙.</b> 대상은 배달 전에도 idle이었으므로 idle까지 폴링하면 이전 답장이 즉시 돌아온다. 그래서 프레임 첫 줄에 메시지 id를 싣고, 그 id가 대상 트랜스크립트에 나타나거나 세션이 busy로 바뀌는 것을 먼저 기다린다(<code>SMINOS_ACK_TIMEOUT</code>, 기본 120초). 증거가 없으면 exit 1, 답장으로 아무것도 찍지 않는다.</p>
   </details>
 </section>
 
@@ -403,13 +404,13 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <tr><td><code>view &lt;group&gt;</code> · <code>topology &lt;group&gt; --json</code></td><td>스폰 트리(사람용) · 좌석+간선 JSON(에이전트용).</td></tr>
       <tr><td><code>chart [group] [--all]</code> · <code>tui [group]</code></td><td>박스 조직도 텍스트 · 그 조직도를 tmux 안의 화면으로. (PR 93)</td></tr>
       <tr><td><code>groups</code></td><td>그룹별 좌석 수, 살아 있는 수, 마지막 게시글 시각.</td></tr>
-      <tr><td rowspan="2">보드·잡동사니</td><td><code>post &lt;group&gt; --from …</code> · <code>board &lt;group&gt; [--id I]</code></td><td>장문 마크다운 게시 · 읽기(<code>&lt;agora-post&gt;</code> 봉투). 글은 poster의 cwd와 git 브랜치를 스냅샷.</td></tr>
+      <tr><td rowspan="2">보드·잡동사니</td><td><code>post &lt;group&gt; --from …</code> · <code>board &lt;group&gt; [--id I]</code></td><td>장문 마크다운 게시 · 읽기(<code>&lt;sminos-post&gt;</code> 봉투). 글은 poster의 cwd와 git 브랜치를 스냅샷.</td></tr>
       <tr><td><code>migrate [--quiet]</code> · <code>meta get|set</code></td><td>레지스트리 업그레이드(암묵적으로도 실행) · 레코드 필드 직접 접근(비밀 필드는 거부).</td></tr>
     </tbody>
   </table>
   <details class="deep"><summary>더 깊이 · 종료 코드, 한 가지 파싱 예외, 그리고 spawn 배너</summary>
     <p>종료 코드: 0 ok, 1 하네스 실패, 2 usage, 4 모르는 좌석/그룹·대상이 live 아님·이미 쓰이는 이름.</p>
-    <p><code>argparse</code>는 <code>agora post &lt;group&gt; --from x "free text"</code>를 zero-or-more positional이 매치된 뒤에는 못 파싱한다. 그래서 <code>post</code>만 <code>main()</code>에서 손으로 파싱하고 나머지 모든 동사는 argparse다.</p>
+    <p><code>argparse</code>는 <code>sminos post &lt;group&gt; --from x "free text"</code>를 zero-or-more positional이 매치된 뒤에는 못 파싱한다. 그래서 <code>post</code>만 <code>main()</code>에서 손으로 파싱하고 나머지 모든 동사는 argparse다.</p>
     <p>spawn 배너는 <code>[&lt;short&gt; / &lt;seat-id&gt;]</code> 부분문자열을 유지한다 — 파이프라인 스크립트 세 개가 sed 패턴 <code>.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*</code>로 파싱하기 때문이다. 리뷰 패널이 잡은 blocking 결함 하나가 정확히 여기 있었다: 다시 채우기(re-fill)에서 배너가 레코드 파일명 대신 <em>새 세션 uuid</em>를 찍었다. 이대로면 파이프라인의 모든 결정론적 재스폰이 깨진다. 지금 스위트에는 "배너 == 레코드 파일명"을 못 박는 통합 모양의 케이스가 있다.</p>
   </details>
 </section>
@@ -435,7 +436,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <section class="chapter" id="c12">
   <div class="num">12</div>
   <h2>보드 파이프라인의 워커들도 그냥 좌석이다.</h2>
-  <p class="lead">executing, qa-loops, issue-tracker의 디스패처가 같은 <code>agora</code> 동사로 워커를 띄우고 이어가고 은퇴시킨다. 그래서 한 목록에 다 보인다.</p>
+  <p class="lead">executing, qa-loops, issue-tracker의 디스패처가 같은 <code>sminos</code> 동사로 워커를 띄우고 이어가고 은퇴시킨다. 그래서 한 목록에 다 보인다.</p>
   <div class="figure">
     <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14">
       <defs><marker id="c" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0e7c7b"/></marker></defs>
@@ -443,22 +444,22 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <g transform="translate(20,110)"><rect width="200" height="60" rx="10" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="26" text-anchor="middle" font-weight="700">qa-loops</text><text x="100" y="48" text-anchor="middle" font-size="12.5" fill="#6b6f7a">review-dispatch.sh</text></g>
       <g transform="translate(20,200)"><rect width="200" height="60" rx="10" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="26" text-anchor="middle" font-weight="700">issue-tracker</text><text x="100" y="48" text-anchor="middle" font-size="12.5" fill="#6b6f7a">board-answer.sh · sweeps</text></g>
       <line x1="220" y1="50" x2="330" y2="140" stroke="#0e7c7b" stroke-width="2" marker-end="url(#c)"/><line x1="220" y1="140" x2="330" y2="140" stroke="#0e7c7b" stroke-width="2" marker-end="url(#c)"/><line x1="220" y1="230" x2="330" y2="140" stroke="#0e7c7b" stroke-width="2" marker-end="url(#c)"/>
-      <g transform="translate(340,95)"><rect width="200" height="90" rx="10" fill="#0e7c7b"/><text x="100" y="30" text-anchor="middle" fill="#fff" font-weight="700">$AGORA_CLI</text><text x="100" y="54" text-anchor="middle" fill="#fff" font-family="Menlo,monospace" font-size="12.5">spawn · resume --wait</text><text x="100" y="74" text-anchor="middle" fill="#fff" font-family="Menlo,monospace" font-size="12.5">sync · retire · migrate</text></g>
+      <g transform="translate(340,95)"><rect width="200" height="90" rx="10" fill="#0e7c7b"/><text x="100" y="30" text-anchor="middle" fill="#fff" font-weight="700">$SMINOS_CLI</text><text x="100" y="54" text-anchor="middle" fill="#fff" font-family="Menlo,monospace" font-size="12.5">spawn · resume --wait</text><text x="100" y="74" text-anchor="middle" fill="#fff" font-family="Menlo,monospace" font-size="12.5">sync · retire · migrate</text></g>
       <line x1="540" y1="140" x2="640" y2="140" stroke="#0e7c7b" stroke-width="2" marker-end="url(#c)"/>
-      <g transform="translate(650,40)"><rect width="230" height="200" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="115" y="28" text-anchor="middle" font-weight="700">~/.claude/agora/</text>
+      <g transform="translate(650,40)"><rect width="230" height="200" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="115" y="28" text-anchor="middle" font-weight="700">~/.claude/sminos/</text>
         <text x="16" y="60" font-family="Menlo,monospace" font-size="12.5">executor-42   fleet  ● busy</text>
         <text x="16" y="82" font-family="Menlo,monospace" font-size="12.5">review-pr-1795 fleet ◐ blocked</text>
         <text x="16" y="104" font-family="Menlo,monospace" font-size="12.5">architect     login  ○ idle</text>
         <text x="16" y="126" font-family="Menlo,monospace" font-size="12.5">impl-a        login  ● busy</text>
         <text x="16" y="148" font-family="Menlo,monospace" font-size="12.5">scout         demo   ■ stopped</text>
         <text x="115" y="185" text-anchor="middle" font-size="12.5" fill="#6b6f7a">한 목록, 한 어휘</text></g>
-      <text x="20" y="290" font-size="13" fill="#6b6f7a">12개 스크립트 repoint · 15개 테스트 파일이 하나의 agora 스텁을 공유 · skills/orchestrating-daemons/ 삭제 · 교리는 agora SKILL.md로 흡수</text>
+      <text x="20" y="290" font-size="13" fill="#6b6f7a">12개 스크립트 repoint · 15개 테스트 파일이 하나의 sminos 스텁을 공유 · skills/orchestrating-daemons/ 삭제 · 교리는 sminos SKILL.md로 흡수</text>
     </svg>
   </div>
   <p class="caption">파이프라인은 그룹을 배우지 않았다. 워커는 저장소 이름의 그룹(<code>fleet</code>, <code>doperpowers</code>…)에 자동으로 묶인다.</p>
   <details class="deep"><summary>더 깊이 · 동결된 와이어 포맷, 그리고 손으로 몰지 말라는 규칙</summary>
-    <p>동결된 것: 배너의 <code>[&lt;short&gt; / &lt;seat-id&gt;]</code>, <code>sync</code>의 다섯 단어 어휘, 레지스트리 루트 우선순위 규칙 하나(<code>AGORA_HOME</code>, 그다음 <code>DAEMON_HOME</code>)를 모든 진입점이 두 이름 모두로 export. 장애 스트릭(outage streak)은 <code>history</code>에서 실패한 점유자만 센다. codex-CLI 엔진 분기는 사라졌고, <code>board-answer.sh</code>는 어떤 보드 쓰기 전에도 codex 바인딩을 거부한다.</p>
-    <p>규칙: 파이프라인 워커를 손으로 몰지 마라. 워커는 티켓을 park 해서 에스컬레이션하고(issue-tracker의 who-unparks 판별식), 사람이 티켓에 답하고, <code>board-answer.sh</code>가 그 답을 <code>agora resume</code>으로 릴레이한다. 내 답으로 직접 resume 하면 파이프라인이 제거한 판정자를 다시 들여오는 것이다.</p>
+    <p>동결된 것: 배너의 <code>[&lt;short&gt; / &lt;seat-id&gt;]</code>, <code>sync</code>의 다섯 단어 어휘, 레지스트리 루트 우선순위 규칙 하나(<code>SMINOS_HOME</code>, 그다음 <code>DAEMON_HOME</code>)를 모든 진입점이 두 이름 모두로 export. 장애 스트릭(outage streak)은 <code>history</code>에서 실패한 점유자만 센다. codex-CLI 엔진 분기는 사라졌고, <code>board-answer.sh</code>는 어떤 보드 쓰기 전에도 codex 바인딩을 거부한다.</p>
+    <p>규칙: 파이프라인 워커를 손으로 몰지 마라. 워커는 티켓을 park 해서 에스컬레이션하고(issue-tracker의 who-unparks 판별식), 사람이 티켓에 답하고, <code>board-answer.sh</code>가 그 답을 <code>sminos resume</code>으로 릴레이한다. 내 답으로 직접 resume 하면 파이프라인이 제거한 판정자를 다시 들여오는 것이다.</p>
     <p>기록만 하고 풀지 않은 가정 하나: 워커 부트스트랩은 "환경에 이미 있는 자격증명"을 쓰라고 하지만, v1의 라이브 발견은 하네스 Bash 도구가 claude 프로세스의 환경을 상속하지 않는다는 것이었다. <code>BOARD_RUN_*</code>가 실제로 워커의 도구까지 닿는지는 스텁으로만 주장된 상태다.</p>
   </details>
 </section>
@@ -477,17 +478,17 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
         <rect x="680" y="0" width="120" height="40" rx="8" fill="#e9f6ee" stroke="#2e9e5b"/><text x="740" y="25" text-anchor="middle" font-size="13">마무리</text><text x="740" y="65" text-anchor="middle" font-weight="700">5, 전부 채택</text><text x="740" y="85" text-anchor="middle" font-size="12" fill="#6b6f7a">385→406</text>
       </g>
       <text x="450" y="185" text-anchor="middle" font-size="16" font-weight="700">그 사이 내내, 27개의 밀폐(hermetic) 테스트 스위트는 전부 초록이었다.</text>
-      <text x="450" y="215" text-anchor="middle" font-size="14" fill="#6b6f7a">파이프라인 테스트는 agora를 스텁하고, agora 테스트는 하네스를 스텁했다. 둘 사이의 계약에는 어느 쪽도 assertion이 없었다.</text>
+      <text x="450" y="215" text-anchor="middle" font-size="14" fill="#6b6f7a">파이프라인 테스트는 sminos를 스텁하고, sminos 테스트는 하네스를 스텁했다. 둘 사이의 계약에는 어느 쪽도 assertion이 없었다.</text>
     </svg>
   </div>
   <p class="caption">이 발견이 22장의 복선이다: 스텁 둘 사이에 앉은 도구는 최소한 한쪽에서 실물을 돌리는 assertion이 필요하다.</p>
   <details class="deep"><summary>더 깊이 · PR 92의 라이브 증명이 실제로 본 것</summary>
     <ul>
-      <li>실제 레지스트리가 rename+symlink로 제자리 마이그레이션 (36 레코드 스탬프, 3 v2 노드 변환, 2 codex 레코드 은퇴, <code>agora list</code>에 <code>null</code> 없음).</li>
-      <li>이 세션이 <code>orchestrator</code>로 등록 → <code>agora spawn scout</code>(sonnet) → scout이 자기 프리앰블에서 <code>scribe</code>를 스폰 → 세 단계 트리가 역할과 live 상태와 함께 <code>agora view</code>에 나타남.</li>
+      <li>실제 레지스트리가 rename+symlink로 제자리 마이그레이션 (36 레코드 스탬프, 3 v2 노드 변환, 2 codex 레코드 은퇴, <code>sminos list</code>에 <code>null</code> 없음).</li>
+      <li>이 세션이 <code>orchestrator</code>로 등록 → <code>sminos spawn scout</code>(sonnet) → scout이 자기 프리앰블에서 <code>scribe</code>를 스폰 → 세 단계 트리가 역할과 live 상태와 함께 <code>sminos view</code>에 나타남.</li>
       <li>scribe의 보드 글과 scout의 네이티브 <code>SCOUT-READY</code>가 시키지 않았는데 도착.</li>
-      <li>셸에서 <code>agora send scribe</code>가 idle 좌석을 깨움 (<code>PONG-FROM-SCRIBE</code> 네이티브 도착).</li>
-      <li><code>agora retire scribe</code> 후 <code>agora fill scribe --resume</code>이 같은 세션 id와 short로 이어짐 (<code>RESUMED-VIA-AGORA</code> 도착). 이 마지막 단계가 "저장된 옵션" 규칙을 가르쳤다.</li>
+      <li>셸에서 <code>sminos send scribe</code>가 idle 좌석을 깨움 (<code>PONG-FROM-SCRIBE</code> 네이티브 도착).</li>
+      <li><code>sminos retire scribe</code> 후 <code>sminos fill scribe --resume</code>이 같은 세션 id와 short로 이어짐 (<code>RESUMED-VIA-SMINOS</code> 도착). 이 마지막 단계가 "저장된 옵션" 규칙을 가르쳤다.</li>
     </ul>
     <p>최종 표면: Python 모듈 하나(당시 ~2,400줄) + 6줄 런처 + 셸 헬퍼 하나 + 프리앰블 하나 + 스킬 문서 하나 + 406-assertion 스위트 + 12개 repoint 된 파이프라인 스크립트와 15개 테스트 파일, 그리고 <code>orchestrating-daemons</code> 디렉터리 없음. 버전 7.68.0. 2026-09-02 04:09Z 머지.</p>
   </details>
@@ -526,8 +527,8 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <li><b>좌→우 트리.</b> 루트가 왼쪽, 자식이 오른쪽, 형제는 세로로 쌓이고, 차트 전체가 세로로 스크롤. 실제 그룹은 형제 fan-out이 넓고 깊이는 얕아서, 세로 쌓기는 터미널이 자연스럽게 하는 세로 스크롤만 필요하다. 위→아래 조직도(고전적이지만 한 레벨 스무 개가 가로로 넘치고 줄바꿈된 레벨엔 깔끔한 커넥터가 없음)와 박스 행 목록(조밀하지만 시각적 계층이 약함)은 기각.</li>
       <li><b>죽은 좌석은 기본 숨김.</b> 부모의 <code>+N retired</code> 메모(루트면 헤더 카운트)로 접히고, <kbd>a</kbd>가 토글. 죽음 = 기록된 status가 <code>retired</code>/<code>failed</code>/<code>error</code>이거나 live가 <code>gone</code>. 살아 있는 자손이 있는 죽은 좌석은 트리 모양 유지를 위해 흐리게 보인다. <code>stopped</code>는 죽은 것이 <em>아니다</em> — Enter가 깨울 수 있으므로.</li>
       <li><b>v1 액션.</b> attach(Enter), send(<kbd>s</kbd>), 포커스 좌석의 detail 패널, 읽기 전용 글 오버레이가 있는 board 패널(<kbd>b</kbd>). 생애주기 동사(wake/retire/fill)와 보드 글쓰기는 v1에 없다 — 함대를 변경하는 일이라 확인과 텍스트 입력이 필요한 두 번째 슬라이스다.</li>
-      <li><b>동사 이름.</b> <code>agora tui</code>(대화형)와 <code>agora chart</code>(정적 텍스트). k9s, lazygit, gh dash의 관례대로 <code>tui</code>는 보자마자 "대화형"이라고 말한다. <code>agora panel</code>(기억하기 좋지만 대화성이 모호), <code>agora view --interactive</code>(동사의 본성을 바꾸는 플래그), 그룹 선택 시작 화면은 기각. 그룹 없이 부르면 함대 전체를 그룹당 둥근 박스 하나를 루트로 보여준다.</li>
-      <li><b>표준 라이브러리 <code>curses</code>.</b> <code>agora.py</code>가 표준 라이브러리 전용이라는 이전 결정 위에, <code>textual</code>이나 Node 스택을 더하면 <code>git clone</code>으로 설치되는 스킬이 패키지 설치를 요구하게 된다. macOS와 Linux의 모든 CPython에 있다(확인: Python 3.12.3, curses 2.2).</li>
+      <li><b>동사 이름.</b> <code>sminos tui</code>(대화형)와 <code>sminos chart</code>(정적 텍스트). k9s, lazygit, gh dash의 관례대로 <code>tui</code>는 보자마자 "대화형"이라고 말한다. <code>sminos panel</code>(기억하기 좋지만 대화성이 모호), <code>sminos view --interactive</code>(동사의 본성을 바꾸는 플래그), 그룹 선택 시작 화면은 기각. 그룹 없이 부르면 함대 전체를 그룹당 둥근 박스 하나를 루트로 보여준다.</li>
+      <li><b>표준 라이브러리 <code>curses</code>.</b> <code>sminos.py</code>가 표준 라이브러리 전용이라는 이전 결정 위에, <code>textual</code>이나 Node 스택을 더하면 <code>git clone</code>으로 설치되는 스킬이 패키지 설치를 요구하게 된다. macOS와 Linux의 모든 CPython에 있다(확인: Python 3.12.3, curses 2.2).</li>
     </ul>
   </details>
 </section>
@@ -535,18 +536,18 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <section class="chapter" id="c15">
   <div class="num">15</div>
   <h2>조직도는 네 단계로 그려진다: 읽기 → 숲 만들기 → 자리 잡기 → 칠하기.</h2>
-  <p class="lead">전부 <code>agora_chart.py</code> 378줄. 마지막 단계만 "화면"을 알고, 그 화면도 추상 클래스다.</p>
+  <p class="lead">전부 <code>sminos_chart.py</code> 378줄. 마지막 단계만 "화면"을 알고, 그 화면도 추상 클래스다.</p>
   <div class="figure">
     <svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14">
       <defs><marker id="d" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0e7c7b"/></marker></defs>
-      <g transform="translate(10,30)"><rect width="200" height="120" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="30" text-anchor="middle" font-weight="700" font-family="Menlo,monospace" font-size="14">snapshot()</text><text x="14" y="58" font-size="13" fill="#6b6f7a">agora.seats(group)</text><text x="14" y="78" font-size="13" fill="#6b6f7a">+ live_state(seat) 각각</text><text x="14" y="98" font-size="13" fill="#6b6f7a">+ now_or_reply(seat)</text></g>
+      <g transform="translate(10,30)"><rect width="200" height="120" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="30" text-anchor="middle" font-weight="700" font-family="Menlo,monospace" font-size="14">snapshot()</text><text x="14" y="58" font-size="13" fill="#6b6f7a">sminos.seats(group)</text><text x="14" y="78" font-size="13" fill="#6b6f7a">+ live_state(seat) 각각</text><text x="14" y="98" font-size="13" fill="#6b6f7a">+ now_or_reply(seat)</text></g>
       <line x1="210" y1="90" x2="235" y2="90" stroke="#0e7c7b" stroke-width="2.5" marker-end="url(#d)"/>
       <g transform="translate(240,30)"><rect width="200" height="120" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="30" text-anchor="middle" font-weight="700" font-family="Menlo,monospace" font-size="14">group_tree()</text><text x="14" y="58" font-size="13" fill="#6b6f7a">parent alias로 숲 구성</text><text x="14" y="78" font-size="13" fill="#6b6f7a">순환·고아 처리</text><text x="14" y="98" font-size="13" fill="#6b6f7a">prune(): 죽은 서브트리 접기</text></g>
       <line x1="440" y1="90" x2="465" y2="90" stroke="#0e7c7b" stroke-width="2.5" marker-end="url(#d)"/>
       <g transform="translate(470,30)"><rect width="200" height="120" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="100" y="30" text-anchor="middle" font-weight="700" font-family="Menlo,monospace" font-size="14">layout()</text><text x="14" y="58" font-size="13" fill="#6b6f7a">깊이별 열 너비 [16, 30]</text><text x="14" y="78" font-size="13" fill="#6b6f7a">후위 순회로 y 배치</text><text x="14" y="98" font-size="13" fill="#6b6f7a">버스 커넥터 셀 생성</text></g>
       <line x1="670" y1="90" x2="695" y2="90" stroke="#0e7c7b" stroke-width="2.5" marker-end="url(#d)"/>
       <g transform="translate(700,30)"><rect width="190" height="120" rx="12" fill="#fff" stroke="#c9c4b8" stroke-width="2"/><text x="95" y="30" text-anchor="middle" font-weight="700" font-family="Menlo,monospace" font-size="14">paint_chart()</text><text x="14" y="58" font-size="13" fill="#6b6f7a">Screen.put(y, x, text)</text><text x="14" y="78" font-size="13" fill="#6b6f7a">PLAIN ┌ · ROUND ╭ · HEAVY ┏</text><text x="14" y="98" font-size="13" fill="#6b6f7a">GridScreen 또는 curses</text></g>
-      <text x="450" y="200" text-anchor="middle" font-size="14" fill="#6b6f7a">같은 네 단계가 `agora chart`(텍스트 그리드로)와 `agora tui`(curses로)를 만든다. 테스트도 같은 코드를 돌린다.</text>
+      <text x="450" y="200" text-anchor="middle" font-size="14" fill="#6b6f7a">같은 네 단계가 `sminos chart`(텍스트 그리드로)와 `sminos tui`(curses로)를 만든다. 테스트도 같은 코드를 돌린다.</text>
     </svg>
   </div>
   <p class="caption">"자리 잡기"의 핵심 규칙 하나: 잎은 다음 빈 행 밴드를 차지하고, 부모는 자식들 범위의 <em>가운데</em>에 놓인다.</p>
@@ -563,7 +564,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   <div class="num">16</div>
   <h2>실제로 그려진 그림.</h2>
   <p class="lead">테스트 픽스처 그룹 <code>org</code>: lead는 busy, scout은 idle에 한글 상태, scribe는 busy에 빈 intern을 거느림, qa는 blocked, old-worker는 은퇴해서 접힘.</p>
-  <pre>$ agora chart org --width 120
+  <pre>$ sminos chart org --width 120
 
                     ┌────────────────────────────┐
                     │ qa                      QA │
@@ -582,9 +583,9 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
                  └──│ ● busy                     │────│ ◌ vacant     │
                     │ notes → board              │    │              │
                     └────────────────────────────┘    └──────────────┘
-6 seats · 4 live · 1 hidden (agora chart org --all)</pre>
+6 seats · 4 live · 1 hidden (sminos chart org --all)</pre>
   <p class="caption">박스 한 줄씩: <b>alias와 역할</b> · <b>기호와 live 상태</b> · <b>now 줄</b>(없으면 <code>+N retired</code>). lead가 세 자식의 가운데 행에서 <code>┼</code>로 버스와 만난다.</p>
-  <pre>$ agora chart --width 140          # 그룹 없이 = 함대 전체, 이 머신의 실제 레지스트리
+  <pre>$ sminos chart --width 140          # 그룹 없이 = 함대 전체, 이 머신의 실제 레지스트리
 
 ╭───────────────────╮    ┌────────────────────────────┐
 │ agora-native      │    │ scout-native               │
@@ -603,7 +604,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
                       └──│ ◐ blocked                  │
                          │                            │
                          └────────────────────────────┘
-6 groups · 39 seats · 2 live · 35 hidden in 3 group(s) folded away (agora chart --all)</pre>
+6 groups · 39 seats · 2 live · 35 hidden in 3 group(s) folded away (sminos chart --all)</pre>
   <p class="caption">둥근 박스가 그룹(가상 루트), 각진 박스가 좌석. 모든 좌석이 gone인 그룹 세 개는 통째로 접혔다.</p>
 </section>
 
@@ -640,7 +641,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
 <section class="chapter" id="c18">
   <div class="num">18</div>
   <h2>화면 프로그램의 뼈대: 상태 하나, 키맵 하나, 칠하기 하나, 효과는 문 뒤에.</h2>
-  <p class="lead"><code>agora_tui.py</code> 862줄. curses는 가장 바깥 루프만 만진다. 그래서 터미널 없이 테스트할 수 있다.</p>
+  <p class="lead"><code>sminos_tui.py</code> 862줄. curses는 가장 바깥 루프만 만진다. 그래서 터미널 없이 테스트할 수 있다.</p>
   <div class="figure">
     <svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="14">
       <defs><marker id="e" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1b1b1f"/></marker></defs>
@@ -658,14 +659,14 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
       <line x1="570" y1="240" x2="620" y2="320" stroke="#1b1b1f" stroke-width="2" marker-end="url(#e)"/>
       <!-- screens -->
       <g transform="translate(650,130)" font-size="12.5" fill="#6b6f7a"><text x="0" y="0">CursesScreen → 터미널</text><text x="0" y="18">GridScreen → 문자 그리드 (테스트)</text></g>
-      <g transform="translate(620,378)" font-size="12.5" fill="#6b6f7a"><text x="0" y="0">Real: tmux new-window · agora send (subprocess)</text><text x="0" y="18">Headless: "--- actions:" 줄로 기록만</text></g>
+      <g transform="translate(620,378)" font-size="12.5" fill="#6b6f7a"><text x="0" y="0">Real: tmux new-window · sminos send (subprocess)</text><text x="0" y="18">Headless: "--- actions:" 줄로 기록만</text></g>
     </svg>
   </div>
   <p class="caption">상태를 바꾸는 것은 키와 스냅샷뿐. 세상을 바꾸는 것은 actions 객체뿐. 그 둘을 갈라놓은 것이 이 PR의 가장 잘한 결정이다.</p>
   <details class="deep"><summary>더 깊이 · 화면 영역, 리프레시 스레드, 그리고 read 는 in-process 인데 send 는 subprocess 인 이유</summary>
-    <p><b>영역.</b> 1행 헤더(<code>agora · org · 6 seats · 4 live · 1 hidden · a … updated 23:08:32</code>), 차트 뷰포트, 7행 패널(구분선 1 + 내용 6; 터미널이 16행 미만이면 패널 없음), 1행 푸터(키 힌트 또는 5초짜리 flash 메시지). 패널은 <code>detail</code>(포커스 좌석의 id·세션·live·status·short·updated·now·brief·cwd·마지막 답장) 또는 <code>board</code>(그룹 글 목록).</p>
-    <p><b>Refresher.</b> <code>AGORA_TUI_REFRESH</code>초(기본 3)마다, 또는 <kbd>r</kbd>로 깨우면 즉시, <code>agora.refresh_caches()</code> 후 <code>take_snapshot()</code>을 돌려 <code>("snapshot", roots, meta)</code>를 events 큐에 넣는다. 하네스 읽기가 1초 이상 걸리기 때문에 그리기 스레드에서는 절대 돌리지 않는다. 읽기 실패는 flash 메시지가 될 뿐 화면을 죽이지 않는다. 스냅샷이 도착하면 <code>rebuild()</code>가 레이아웃을 다시 만들고, 포커스 좌석이 사라졌으면 포커스를 옮긴다 — 이 동작이 25장의 첫 번째 리뷰 발견의 원인이다.</p>
-    <p><b>in-process vs subprocess.</b> 읽기(seats, live state, replies, board)는 <code>agora.py</code> 함수를 그대로 부른다. <code>send</code>는 거부 시 <code>die()</code>로 프로세스를 끝내고 신원 규칙을 지닌 동사라서, 서브프로세스로 돌려 종료 코드와 메시지를 온전히 받고 화면 프로세스를 살려 둔다. 결과의 첫 줄이 flash가 된다.</p>
+    <p><b>영역.</b> 1행 헤더(<code>sminos · org · 6 seats · 4 live · 1 hidden · a … updated 23:08:32</code>), 차트 뷰포트, 7행 패널(구분선 1 + 내용 6; 터미널이 16행 미만이면 패널 없음), 1행 푸터(키 힌트 또는 5초짜리 flash 메시지). 패널은 <code>detail</code>(포커스 좌석의 id·세션·live·status·short·updated·now·brief·cwd·마지막 답장) 또는 <code>board</code>(그룹 글 목록).</p>
+    <p><b>Refresher.</b> <code>SMINOS_TUI_REFRESH</code>초(기본 3)마다, 또는 <kbd>r</kbd>로 깨우면 즉시, <code>sminos.refresh_caches()</code> 후 <code>take_snapshot()</code>을 돌려 <code>("snapshot", roots, meta)</code>를 events 큐에 넣는다. 하네스 읽기가 1초 이상 걸리기 때문에 그리기 스레드에서는 절대 돌리지 않는다. 읽기 실패는 flash 메시지가 될 뿐 화면을 죽이지 않는다. 스냅샷이 도착하면 <code>rebuild()</code>가 레이아웃을 다시 만들고, 포커스 좌석이 사라졌으면 포커스를 옮긴다 — 이 동작이 25장의 첫 번째 리뷰 발견의 원인이다.</p>
+    <p><b>in-process vs subprocess.</b> 읽기(seats, live state, replies, board)는 <code>sminos.py</code> 함수를 그대로 부른다. <code>send</code>는 거부 시 <code>die()</code>로 프로세스를 끝내고 신원 규칙을 지닌 동사라서, 서브프로세스로 돌려 종료 코드와 메시지를 온전히 받고 화면 프로세스를 살려 둔다. 결과의 첫 줄이 flash가 된다.</p>
     <p><b>뷰포트.</b> 새로 놓인 포커스(시작 시, 또는 사라진 좌석에서 옮겨진 뒤)는 세로로 가운데 맞춤. 부모 박스가 자식들 범위 가운데에 놓이므로 키 큰 그룹에서 첫 루트가 차트 위쪽에서 멀리 아래에 있을 수 있고, 최소 스크롤만 하면 시작 시 포커스 박스가 화면 밖에 있게 된다. 방향키 이동은 최소 스크롤만 해서 화면이 차분하다.</p>
   </details>
 </section>
@@ -689,7 +690,7 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   <details class="deep"><summary>더 깊이 · handle_key 의 우선순위, 그리고 s 가 wake 로 승격되지 않는 이유</summary>
     <p>키 처리는 모드 순서로 가로챈다: 오버레이가 떠 있으면 스크롤/닫기만, 입력 중이면 글자 누적/백스페이스/Enter/Esc만, 그다음 <code>resize</code>·<kbd>q</kbd>·<kbd>?</kbd>, 패널 포커스면 보드 커서, 마지막으로 차트 키. 입력 모드가 <em>모든</em> 키를 삼킨다는 사실이 21장의 드라이버 토큰이 필요해진 이유다.</p>
     <p><kbd>s</kbd>는 <code>FILLED</code> 상태의 좌석에만 편집기를 열고, 그 외에는 무엇을 대신 해야 하는지 flash 한다. 절대 <code>wake</code>로 폴백하지 않는다: 멈춘 좌석의 wake는 프로세스를 <em>시작</em>하는 생애주기 행동이고, 그릴에서 v1 범위 밖으로 놓은 것이다. 키 하나를 "메시지 배달"에서 "세션 시작"으로 조용히 승격시키는 것은 운영자 화면의 잘못된 기본값이다.</p>
-    <p>Enter의 대상 결정(<code>attach_target</code>): 그룹 노드면 "좌석으로 이동하라"; live가 <code>gone</code>이면 "<code>agora fill --resume</code>이 되살릴 수 있다"; <code>vacant</code>이거나 short가 없으면 "<code>agora fill</code>이 필요하다"; 그 외(busy/idle/blocked/stopped)는 short id를 돌려주고 attach 한다. stopped를 attach 할 수 있는 것은 20장의 프로브가 확인했다.</p>
+    <p>Enter의 대상 결정(<code>attach_target</code>): 그룹 노드면 "좌석으로 이동하라"; live가 <code>gone</code>이면 "<code>sminos fill --resume</code>이 되살릴 수 있다"; <code>vacant</code>이거나 short가 없으면 "<code>sminos fill</code>이 필요하다"; 그 외(busy/idle/blocked/stopped)는 short id를 돌려주고 attach 한다. stopped를 attach 할 수 있는 것은 20장의 프로브가 확인했다.</p>
   </details>
 </section>
 
@@ -698,14 +699,14 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   <h2>tmux 창이 두 개인 이유: attach 화면에서 <kbd>←</kbd>는 "돌아가기"가 아니다.</h2>
   <p class="lead">attach 클라이언트는 온전한 세션 UI다. <kbd>←</kbd>는 하네스의 네이티브 에이전트 뷰로 가고, <kbd>Esc</kbd>는 종료가 아니며, <kbd>Ctrl+Z</kbd>만 분리한다.</p>
   <div class="figure" style="background:#1d2026;color:#e6e6e6;border-color:#1d2026">
-    <div style="color:#8a92a0;font-size:13px;margin-bottom:10px">tmux session "agora"</div>
+    <div style="color:#8a92a0;font-size:13px;margin-bottom:10px">tmux session "sminos"</div>
     <div style="display:flex;gap:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px;margin-bottom:14px">
       <span style="background:#0e7c7b;color:#fff;padding:3px 12px;border-radius:5px">0: chart</span>
       <span style="background:#3a3f4a;padding:3px 12px;border-radius:5px">1: proof-scout</span>
       <span style="background:#3a3f4a;padding:3px 12px;border-radius:5px">2: scribe</span>
     </div>
     <div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:24px;align-items:start">
-<pre style="margin:0;padding:0;background:none;font-size:13px">agora · demo · 1 seats · 1 live      updated 23:14:02
+<pre style="margin:0;padding:0;background:none;font-size:13px">sminos · demo · 1 seats · 1 live      updated 23:14:02
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ proof-scout            RES ┃
 ┃ <span style="color:#7fb0ff">○</span> idle                     ┃
@@ -724,9 +725,9 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   </div>
   <p class="caption">차트가 살아 있으므로 "지도로 돌아가기"는 그냥 tmux 창 전환이다.</p>
   <details class="deep"><summary>더 깊이 · 재실행(enter_tmux) 과 리뷰가 잡은 new-session -A 함정</summary>
-    <p>tmux 밖에서 <code>agora tui</code>를 실행하면 자기 자신을 tmux 세션 <code>agora</code> 안에서 다시 실행하고 터미널을 그 세션에 넘긴다(<code>os.execvp</code>, 돌아오지 않음). 원래 계획은 <code>tmux new-session -A -s agora</code>였다. 리뷰 발견: 세션은 보통 차트보다 오래 산다 — Enter가 연 대화 창들이 세션을 살려 두기 때문이다. 그러면 <code>new-session -A</code>는 그저 <em>attach</em>만 하고 넘긴 명령을 버려서, 운영자는 차트 없이 옛 대화 창에 떨어진다. 지금은 <code>tmux has-session</code>으로 먼저 확인하고, 있으면 <code>new-window -n chart</code>로 새 창을 만든 뒤 attach 한다. 라이브로 검증: 세션을 잡고 있는 남은 창이 있는 상태에서 <code>agora tui</code>가 창 <code>chart</code>를 열고 거기에 붙었다.</p>
+    <p>tmux 밖에서 <code>sminos tui</code>를 실행하면 자기 자신을 tmux 세션 <code>sminos</code> 안에서 다시 실행하고 터미널을 그 세션에 넘긴다(<code>os.execvp</code>, 돌아오지 않음). 원래 계획은 <code>tmux new-session -A -s sminos</code>였다. 리뷰 발견: 세션은 보통 차트보다 오래 산다 — Enter가 연 대화 창들이 세션을 살려 두기 때문이다. 그러면 <code>new-session -A</code>는 그저 <em>attach</em>만 하고 넘긴 명령을 버려서, 운영자는 차트 없이 옛 대화 창에 떨어진다. 지금은 <code>tmux has-session</code>으로 먼저 확인하고, 있으면 <code>new-window -n chart</code>로 새 창을 만든 뒤 attach 한다. 라이브로 검증: 세션을 잡고 있는 남은 창이 있는 상태에서 <code>sminos tui</code>가 창 <code>chart</code>를 열고 거기에 붙었다.</p>
     <p><code>--no-tmux</code>이거나 <code>$TMUX</code>가 없으면 Enter는 "다른 터미널에서 <code>claude attach &lt;short&gt;</code>를 실행하라"고 flash 한다.</p>
-    <p>attach와 send는 같은 세션 위의 독립된 표면이다: attach 해도 하네스 행, pid, 인박스 소켓은 그대로이고 <code>agora send</code>는 여전히 배달된다. <kbd>Ctrl+Z</kbd>로 분리해도 아무것도 바뀌지 않는다. 그래서 차트는 둘 다 제공할 수 있다.</p>
+    <p>attach와 send는 같은 세션 위의 독립된 표면이다: attach 해도 하네스 행, pid, 인박스 소켓은 그대로이고 <code>sminos send</code>는 여전히 배달된다. <kbd>Ctrl+Z</kbd>로 분리해도 아무것도 바뀌지 않는다. 그래서 차트는 둘 다 제공할 수 있다.</p>
     <p>기각된 대안: 차트 옆 분할 pane(좌→우 레이아웃이 필요로 하는 차트 너비를 반으로 줄임); tmux 없는 in-place exec(의존성은 없지만 위에서 말한 대로 돌아오는 길이 끊김).</p>
   </details>
 </section>
@@ -735,9 +736,9 @@ footer{margin-top:120px;padding-top:30px;border-top:1px solid var(--line);color:
   <div class="num">21</div>
   <h2>터미널 없이 화면을 테스트한다: 키 목록을 넣고, 그리드와 행동을 받는다.</h2>
   <p class="lead">curses는 TTY 없이 돌지 않는다. 그래서 테스트 불가능한 TUI가 기본 결과다. 이 화면은 67개의 assertion이 실제 화면 코드를 돈다.</p>
-  <pre>$ agora tui org --headless --width 110 --height 34 --keys "right,down,enter,s,h,i,enter"
+  <pre>$ sminos tui org --headless --width 110 --height 34 --keys "right,down,enter,s,h,i,enter"
 
-agora · org · 6 seats · 4 live · 1 hidden · a                          updated 23:08:32
+sminos · org · 6 seats · 4 live · 1 hidden · a                          updated 23:08:32
                     ┌────────────────────────────┐
                     │ qa                      QA │
                  ┌──│ ◐ blocked                  │
@@ -782,7 +783,7 @@ send scout hi → rc=0 sent to org/scout</pre>
       <text x="285" y="115" text-anchor="middle" font-size="40" font-weight="800" fill="#c8453f">≠</text>
       <text x="285" y="145" text-anchor="middle" font-size="13" fill="#c8453f">텍스트 비교</text>
       <!-- consequence -->
-      <g transform="translate(600,40)"><rect width="280" height="150" rx="12" fill="#fdecec" stroke="#f0b9b5"/><text x="16" y="28" font-weight="700" fill="#c8453f">같은 순간, 같은 프로세스 (pid 28115)</text><text x="16" y="56" font-size="13.5">peer_live → False</text><text x="16" y="78" font-size="13.5">live_state → stopped</text><text x="16" y="100" font-size="13.5">agora send → exit 4 "not live"</text><text x="16" y="122" font-size="13.5">agora wake → 소켓 대신 resume</text><text x="16" y="144" font-size="13.5">agora sync → idle 을 stopped 로 기록</text></g>
+      <g transform="translate(600,40)"><rect width="280" height="150" rx="12" fill="#fdecec" stroke="#f0b9b5"/><text x="16" y="28" font-weight="700" fill="#c8453f">같은 순간, 같은 프로세스 (pid 28115)</text><text x="16" y="56" font-size="13.5">peer_live → False</text><text x="16" y="78" font-size="13.5">live_state → stopped</text><text x="16" y="100" font-size="13.5">sminos send → exit 4 "not live"</text><text x="16" y="122" font-size="13.5">sminos wake → 소켓 대신 resume</text><text x="16" y="144" font-size="13.5">sminos sync → idle 을 stopped 로 기록</text></g>
       <text x="450" y="310" text-anchor="middle" font-size="15">이 머신의 <tspan font-weight="700">모든</tspan> 피어 레코드가 — 하네스 2.1.251부터 2.1.259까지 — 정확히 32,400초 어긋나 있었다.</text>
       <text x="450" y="340" text-anchor="middle" font-size="14" fill="#6b6f7a">v3 릴리스 전체 기간 동안, UTC가 아닌 모든 머신에서, send · wake · sync 가 조용히 고장 나 있었다.</text>
     </svg>
@@ -828,7 +829,7 @@ send scout hi → rc=0 sent to org/scout</pre>
   <p class="caption">테스트가 실제로 무는지 확인하는 방법은 하나뿐이다: 수정을 되돌리고 빨간불을 본다. 그것을 했다.</p>
   <details class="deep"><summary>더 깊이 · 왜 v3 스위트는 애초에 이걸 잡을 수 없었나</summary>
     <p>v3 스위트의 피어 레코드는 <em>지어낸</em> 것이었고 <code>procStart</code> 필드가 아예 없었다. 어느 한쪽이라도 파싱이 안 되면 검사는 건너뛴다. 그러니 스위트는 하네스가 실제로 쓰는 필드의 모양에 대해 아무 주장도 하지 않았고, 그 모양(존 표기 없는 UTC)이 문제였다. 지금 스위트의 회귀 블록은 자기 자신의 살아 있는 소켓 서버 프로세스 — 시작 시각이 진짜인 — 를 상대로 <code>procStart</code>를 UTC로 써 넣고, 그 좌석이 <code>idle</code>로 읽히고 <code>send</code>가 성공하는지 확인한다.</p>
-    <p><code>agora.proc_start</code>는 처음부터 <code>LC_ALL=C</code>로 <code>ps</code>를 불렀다. 테스트 헬퍼만 안 그랬다. 같은 외부 표면(ps 출력 형식)에 대한 믿음이 두 곳에서 다르게 코드화되어 있었고, 한 곳만 맞았다.</p>
+    <p><code>sminos.proc_start</code>는 처음부터 <code>LC_ALL=C</code>로 <code>ps</code>를 불렀다. 테스트 헬퍼만 안 그랬다. 같은 외부 표면(ps 출력 형식)에 대한 믿음이 두 곳에서 다르게 코드화되어 있었고, 한 곳만 맞았다.</p>
   </details>
 </section>
 
@@ -904,9 +905,9 @@ send scout hi → rc=0 sent to org/scout</pre>
       <tr><td>머지</td><td>2026-09-02 04:09Z · <code>a560e07e</code></td><td>2026-09-02 23:52Z · <code>c8936dae</code></td><td>2026-09-02 23:53Z · <code>3fbe9317</code></td></tr>
       <tr><td>파일 · 줄</td><td>62 · +6,157 / −4,410</td><td>11 · +2,005 / −15</td><td>1 · +10 / −2</td></tr>
       <tr><td>버전</td><td>7.67.0 → 7.68.0</td><td>7.68.0 → 7.69.0</td><td>—</td></tr>
-      <tr><td>새 코드</td><td><code>agora.py</code> (~2,400줄) · <code>lib.sh</code> · 6줄 런처</td><td><code>agora_chart.py</code> 378줄 · <code>agora_tui.py</code> 862줄 · <code>agora.py</code> ~120줄 변경 · 테스트 +249줄</td><td>—</td></tr>
+      <tr><td>새 코드</td><td><code>sminos.py</code> (~2,400줄) · <code>lib.sh</code> · 6줄 런처</td><td><code>sminos_chart.py</code> 378줄 · <code>sminos_tui.py</code> 862줄 · <code>sminos.py</code> ~120줄 변경 · 테스트 +249줄</td><td>—</td></tr>
       <tr><td>지운 것</td><td><code>skills/orchestrating-daemons/</code> 전체 + 그 테스트 + codex-CLI 워커 스크립트</td><td>execplan 스킬의 "fork 서브에이전트로 실행" 문단</td><td>—</td></tr>
-      <tr><td>agora 스위트</td><td>251 → 406 assertions</td><td>406 → 504 (chart 27 · tui ~67 · 프로세스 정체성 4 · 리뷰 7)</td><td>—</td></tr>
+      <tr><td>sminos 스위트</td><td>251 → 406 assertions</td><td>406 → 504 (chart 27 · tui ~67 · 프로세스 정체성 4 · 리뷰 7)</td><td>—</td></tr>
       <tr><td>리뷰</td><td>계획 1 (6) + 패널 3라운드 (29/25/26) + 마무리 1 (5) → 85 확인</td><td>codex 리뷰 1라운드 → 4 확인, 4 수정</td><td>—</td></tr>
       <tr><td>라이브 증명이 가르친 것</td><td>저장된 옵션 규칙 · 세션 id당 두 행 · 셸→소켓 프레임</td><td>procStart 시간대 결함 · attach가 stopped를 깨움 · 하네스에 tmux 정보 없음</td><td>—</td></tr>
     </tbody>
@@ -921,7 +922,7 @@ send scout hi → rc=0 sent to org/scout</pre>
   <div class="grid">
     <div class="tile"><b>화면 안의 생애주기 동사</b><span>wake · retire · fill. 함대를 <em>바꾸는</em> 행동이라 확인 대화와 태스크 텍스트 입력이 필요하다. 자연스러운 다음 슬라이스.</span></div>
     <div class="tile"><b>화면 안의 보드 글쓰기</b><span>지금은 읽기만. 쓰기는 장문 편집기가 필요.</span></div>
-    <div class="tile"><b>가로 스크롤 표시</b><span>깊은 트리가 터미널 너비를 넘으면 <code>agora chart</code>가 찍는 "clipped cells" 메모만 있다.</span></div>
+    <div class="tile"><b>가로 스크롤 표시</b><span>깊은 트리가 터미널 너비를 넘으면 <code>sminos chart</code>가 찍는 "clipped cells" 메모만 있다.</span></div>
     <div class="tile"><b>색상 테스트</b><span>live 상태별 색은 적용되지만, 헤드리스 화면이 속성을 버리므로 검증되지 않았다.</span></div>
     <div class="tile"><b>tech-debt #11</b><span>보드 파이프라인 writer 여섯이 레지스트리 read-modify-write를 각자 재구현한다.</span></div>
     <div class="tile"><b>머신 간 좌석</b><span>지금 레지스트리는 한 머신. 나중의 un-localisation.</span></div>
@@ -934,28 +935,28 @@ send scout hi → rc=0 sent to org/scout</pre>
   <div class="num">29</div>
   <h2>직접 해보기.</h2>
   <pre># 아무 터미널에서
-agora spawn architect "로그인 플로우를 설계하고 보드에 올려라." --group login --role ARCH
-agora spawn impl-a "architect 가 올린 플로우를 구현하라." \
+sminos spawn architect "로그인 플로우를 설계하고 보드에 올려라." --group login --role ARCH
+sminos spawn impl-a "architect 가 올린 플로우를 구현하라." \
       --group login --parent architect --role IMPL --worktree impl-a
 
-agora view login                 # 트리: architect [ARCH] · idle  └── impl-a [IMPL] · busy
-agora chart login                # 같은 것을 박스 조직도로
-agora tui login                  # tmux 안에서 화면으로 — ↑↓←→ 이동, Enter 로 대화 열기, s 로 메시지
+sminos view login                 # 트리: architect [ARCH] · idle  └── impl-a [IMPL] · busy
+sminos chart login                # 같은 것을 박스 조직도로
+sminos tui login                  # tmux 안에서 화면으로 — ↑↓←→ 이동, Enter 로 대화 열기, s 로 메시지
 
-agora send impl-a "상태?"        # 살아 있는 좌석의 인박스 소켓으로; idle 이면 깨어난다
-agora reply impl-a               # 마지막 답장 (대기 중인 질문이 있으면 그것)
+sminos send impl-a "상태?"        # 살아 있는 좌석의 인박스 소켓으로; idle 이면 깨어난다
+sminos reply impl-a               # 마지막 답장 (대기 중인 질문이 있으면 그것)
 
-agora retire impl-a              # 세션은 멈추고 좌석은 남는다
-agora fill impl-a --resume "계속" # 같은 세션 id 로 이어간다
+sminos retire impl-a              # 세션은 멈추고 좌석은 남는다
+sminos fill impl-a --resume "계속" # 같은 세션 id 로 이어간다
 
-agora list                       # 함대 전체 — 보드 파이프라인 워커까지 한 표에</pre>
+sminos list                       # 함대 전체 — 보드 파이프라인 워커까지 한 표에</pre>
   <div class="callout green">
     <b>화면 안에서:</b> <kbd>→</kbd>로 impl-a에 들어가 <kbd>Enter</kbd>. 새 tmux 창에 그 세션의 대화가 뜬다. <kbd>Ctrl+Z</kbd>로 분리하거나 tmux 창 전환으로 지도로 돌아온다. 차트는 3초마다 스스로 갱신된다.
   </div>
 </section>
 
 <footer>
-  <p>이 글은 doperpowers 저장소의 세 개 실행계획을 바탕으로 썼다: <code>docs/doperpowers/execplans/2026-09-02-agora-seats.md</code>, <code>2026-09-02-agora-tui.md</code>, 그리고 그 앞의 <code>2026-08-27-agora.md</code>와 <code>2026-08-31-agora-native-transport.md</code>. 코드는 <code>skills/agora/scripts/</code>, 테스트는 <code>tests/agora/run-agora-tests.sh</code>. 인용된 터미널 출력과 숫자는 모두 그 문서들과 실제 실행에서 가져왔다.</p>
+  <p>이 글은 doperpowers 저장소의 세 개 실행계획을 바탕으로 썼다: <code>docs/doperpowers/execplans/2026-09-02-agora-seats.md</code>, <code>2026-09-02-agora-tui.md</code>, 그리고 그 앞의 <code>2026-08-27-agora.md</code>와 <code>2026-08-31-agora-native-transport.md</code>. 코드는 <code>skills/sminos/scripts/</code>, 테스트는 <code>tests/sminos/run-sminos-tests.sh</code>. 인용된 터미널 출력과 숫자는 모두 그 문서들과 실제 실행에서 가져왔다.</p>
   <p>2026-09-03.</p>
 </footer>
 
