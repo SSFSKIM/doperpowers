@@ -374,7 +374,9 @@ claim_run() {  # claim_run <lane> <nonce> [lease-minutes]
   # dispatcher this stands in for reads it. /runs/claim is dispatch-shaped: the
   # harness principals are unscoped, and an unscoped credential that names no
   # repo is refused `repo-required` rather than served from the founding one.
-  local body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\",\"repo\":\"$(drill_repo_key)\""
+  local repo body
+  repo="$(drill_repo_key)"
+  body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\",\"repo\":\"$repo\""
   [ -z "${3:-}" ] || body="$body,\"leaseMinutes\":$3"
   api automation POST /runs/claim "$body}" | python3 -c '
 import json, sys
