@@ -373,11 +373,17 @@ print("\t".join(str(o[k]) for k in ("runId", "ticketId", "fence", "bearer")))'
 }
 
 # A repo bound to the harness instance — what a consumer adopting A2 looks like.
-api_repo() {
-  local d
+# The repo KEY is the name the board service knows this checkout by; it defaults
+# to the founding repo the schema seeds into `board.repo_state`, which is the one
+# every single-repo drill means. A drill that wants a second board passes its own
+# and seeds the register row the way the harness seeds principals — the service
+# refuses `unknown-repo` on a write into a name it never admitted.
+api_repo() {  # api_repo [repo-key]
+  local d repo="${1:-doperpowers}"
   d="$(mkrepo)"
   mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"%s"}\n' "$BOARD_API_URL" >"$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"%s","repo":"%s"}\n' "$BOARD_API_URL" "$repo" \
+    >"$d/.doperpowers/board.json"
   DRILL_REPOS+=("$d")
   echo "$d"
 }

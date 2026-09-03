@@ -183,6 +183,13 @@ qreads() { echo "qreads=[$(grep -c 'queue/decisions' "$FIX.log" || true)]"; }
 t  "the answer leg speaks human"      '"auth": "Bearer h"' answer_leg
 nt "and never automation"             '"auth": "Bearer a"' answer_leg
 t  "the queue read speaks human too"  '"auth": "Bearer h"' queue_leg
+# The decisions walk is a LIST read: its server-side default is every repo the
+# service holds, so an unnarrowed one would look for this ticket's park among
+# a neighbouring repo's standing questions. The wake queue narrows always —
+# only the two browse verbs offer the --all-repos widening.
+t  "and narrows to the bound repo"    '"path": "/queue/decisions?limit=200&repo=testrepo"' queue_leg
+# The relay's own feed reads the same way.
+t  "the unrelayed feed narrows too"   '"path": "/answers/unrelayed?repo=testrepo"' cat "$FIX.log"
 t  "the ack leg speaks automation"    '"auth": "Bearer a"' ack_leg
 nt "and never the human token"        '"auth": "Bearer h"' ack_leg
 # The re-walk-once rule's other half: a walk that SERVED the park is never

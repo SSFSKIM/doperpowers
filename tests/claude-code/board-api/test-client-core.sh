@@ -167,6 +167,19 @@ except A.RunEnded: print('RunEnded')"
 t "unrelayed returns list" "118" \
   run_py "$CREDS" "$CORE
 print(A.unrelayed()[0]['answerEventId'])"
+# THE FLAT FEEDS ARE REPO-DIMENSIONED TOO, and they carry the filter as the
+# route's FIRST query parameter (there is nothing else on the path). Unnarrowed
+# they answer for every repo the service holds, so a tick here would relay and
+# resume another repo's runs — and an unscoped credential is refused
+# `repo-required` on them outright.
+t "the unrelayed feed narrows to the bound repo" \
+  '"path": "/answers/unrelayed?repo=testrepo"' last_log answers/unrelayed
+# No fixture answers this route in this world — the 404 is fine, the assertion
+# is about what went ON the wire, and the mock logs every request it refuses.
+run_py "$CREDS" "$CORE
+A.needing_resume()" >/dev/null 2>&1 || true
+t "and so does the needing-resume feed" \
+  '"path": "/runs/needing-resume?repo=testrepo"' last_log needing-resume
 
 # The two principal-resolution paths on one ticket-facing verb (Codex F5): the
 # same default principal="human" must reach the wire as the human token from an
