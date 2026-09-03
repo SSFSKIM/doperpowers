@@ -121,7 +121,7 @@ TRANSCRIPT="$PROJECTS/$UUID.jsonl"
 t "the resumed worker sees the relay sentinel" "[board-relay answer:" cat "$TRANSCRIPT"
 t "with the human's answer verbatim" "sqlite" cat "$TRANSCRIPT"
 t "and is told to re-state its gate verdict" "Re-state your gate verdict" cat "$TRANSCRIPT"
-t "a delivered answer is acked — the feed drains" "[]" api automation GET /answers/unrelayed
+t "a delivered answer is acked — the feed drains" "[]" api automation GET "/answers/unrelayed?repo=$(drill_repo_key)"
 
 # ---- the worker finishes; the human closes ---------------------------------
 t "in-review requires the artifact and takes it" "#$TID: → in-review" \

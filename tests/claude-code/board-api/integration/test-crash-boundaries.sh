@@ -73,7 +73,7 @@ t  "the human's answer is recorded even though the relay dies" \
    "answered #$T1 → in-progress"                       cat "$OUT_A"
 t  "the failed delivery is reported, not swallowed"    "returned no delivery"   cat "$OUT_A"
 t  "an undelivered answer stays on the feed"           "\"ticketId\":$T1," \
-   api automation GET /answers/unrelayed
+   api automation GET "/answers/unrelayed?repo=$(drill_repo_key)"
 t  "and nothing reached the worker"                    "sentinels=0"     sentinels "$TRANSCRIPT"
 
 # ---- (b) dead AFTER the injection, before the ack -------------------------
@@ -83,13 +83,13 @@ t  "a death after the injection still reports a failed resume" \
    "returned no delivery"                                     cat "$OUT_B"
 t  "the prompt landed exactly once"                    "sentinels=1"     sentinels "$TRANSCRIPT"
 t  "and the answer is STILL unacked — never ack-and-drop" "\"ticketId\":$T1," \
-   api automation GET /answers/unrelayed
+   api automation GET "/answers/unrelayed?repo=$(drill_repo_key)"
 
 OUT_B2="$DRILL_TMP/relay-b2.out"
 in_repo "$SCRIPTS/_sweep_api.sh" relay >"$OUT_B2" 2>&1 || true
 t  "the next tick sees the sentinel and acks off it"   "already delivered (sentinel)" cat "$OUT_B2"
 t  "WITHOUT re-delivering — no double resume"          "sentinels=1"     sentinels "$TRANSCRIPT"
-t  "the feed is drained"                               "[]"              api automation GET /answers/unrelayed
+t  "the feed is drained"                               "[]"              api automation GET "/answers/unrelayed?repo=$(drill_repo_key)"
 
 # ---- (c) after the ack -----------------------------------------------------
 OUT_C="$DRILL_TMP/relay-c.out"

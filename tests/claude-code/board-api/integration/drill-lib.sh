@@ -180,9 +180,12 @@ wait_until() {  # wait_until <seconds> <what> <cmd...>
   return 1
 }
 
-# The ticket ids currently on the resume feed, one per line.
+# The ticket ids currently on the resume feed, one per line. Scoped like every
+# other dispatch-shaped call the drills make: the server resolves this feed
+# through `dispatchRepo`, so the harness's UNSCOPED automation principal is
+# refused `repo-required` unless the request names a repo.
 needing_resume_ids() {
-  api automation GET /runs/needing-resume | python3 -c '
+  api automation GET "/runs/needing-resume?repo=$(drill_repo_key)" | python3 -c '
 import json, sys
 for e in json.load(sys.stdin):
     print(e["ticketId"])'
