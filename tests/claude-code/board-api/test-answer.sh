@@ -271,11 +271,13 @@ nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
 # answer IS on the board either way; what changes is what this command claims.
 # =========================================================================
 # The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
-# one has to name the same digest _sweep_api.sh computes.
+# one has to name the same digest _sweep_api.sh computes — url normalized the
+# way the client's api_url() normalizes it.
 lock_key() {  # lock_key <repo-key>
   T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
 import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
                      .encode()).hexdigest()[:16])'
 }
 : > "$FIX.log"

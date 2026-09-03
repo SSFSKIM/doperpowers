@@ -107,10 +107,14 @@ mkdir -p "$DAEMON_HOME"
 # board never heard of. The key is a digest of the binding — url AND repo,
 # because one service serves several repos — hashed rather than sanitized so
 # that no url or repo name can collide with another's after character
-# substitution, and so the path stays a fixed, filesystem-safe length.
+# substitution, and so the path stays a fixed, filesystem-safe length. The url
+# is normalized exactly as the client's api_url() normalizes it, so a binding
+# an override spells with a trailing slash — one service to every request this
+# tick makes — still lands on the one lock rather than a second one.
 _LOCK_KEY="$(T_URL="$BOARD_API_URL" T_REPO="$BOARD_REPO" python3 -c '
 import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
                      .encode()).hexdigest()[:16])')"
 LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone

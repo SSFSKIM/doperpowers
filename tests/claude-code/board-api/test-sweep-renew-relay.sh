@@ -203,11 +203,13 @@ EOF
 chmod +x "$DS/daemon-finalize.sh"
 
 # The sweep's tick lock is keyed by BINDING (url + repo), so a drill that holds
-# or inspects one has to name the same digest _sweep_api.sh computes.
+# or inspects one has to name the same digest _sweep_api.sh computes — url
+# normalized the way the client's api_url() normalizes it.
 lock_key() {  # lock_key <repo-key>
   T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
 import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
                      .encode()).hexdigest()[:16])'
 }
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
@@ -461,6 +463,21 @@ t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 t  "a held lock skips the tick"  "holds the lock"  SW all
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
+
+# ...and the SAME binding spelled with a trailing slash is the same lock. The
+# client normalizes the url (api_url() rstrips it), so a BOARD_API_URL override
+# differing only by that slash addresses one service — key the lock off the raw
+# string and it addresses two, and two ticks run this board at once.
+: > "$FIX.log"
+SWSLASH() {  # bounded: under the bug this really runs a whole tick
+  ( cd "$r" || exit 1
+    export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      BOARD_API_URL="http://127.0.0.1:$PORT/"
+    bounded "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+t  "a trailing-slash url holds the same lock" "holds the lock" SWSLASH all
+nt "and it sends nothing either"             '"method"'       cat "$FIX.log"
 rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================

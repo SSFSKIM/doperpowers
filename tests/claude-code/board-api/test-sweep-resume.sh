@@ -296,11 +296,13 @@ EOF
 chmod +x "$DS/daemon-retire.sh"
 
 # The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
-# or removes one has to name the same digest _sweep_api.sh computes.
+# or removes one has to name the same digest _sweep_api.sh computes — url
+# normalized the way the client's api_url() normalizes it.
 lock_key() {  # lock_key <repo-key>
   T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
 import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
                      .encode()).hexdigest()[:16])'
 }
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
