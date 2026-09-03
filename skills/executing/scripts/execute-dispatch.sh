@@ -152,9 +152,11 @@ _tick_deadline_left() {
 # just-claimed worker's meta exists long before the board could show its first
 # write, which is the same window the gh path's registry-first rule closes.
 _api_registry_count() {  # <lane[,lane...]>
-  T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
+  T_DHOME="$DAEMON_HOME" T_LANES="$1" _api_py - <<'PY'
 import glob, json, os
+import _board_api as A
 lanes = set(os.environ["T_LANES"].split(","))
+MINE = (A.board_key(), A.repo())
 n = 0
 for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -162,6 +164,12 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # A SLOT IS THIS REPO'S TO SPEND. The registry is machine-global, so a
+    # neighbouring api-bound repo's open worker in the same lane read as one of
+    # ours: at cap 1 this checkout saw its lane full and fell through to the
+    # next lane, dispatching its own ticket to the wrong role and model.
+    if not A.meta_is_mine(m, *MINE):
         continue
     # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
     # the server has since ended (the sweep strips run_id from such a meta and

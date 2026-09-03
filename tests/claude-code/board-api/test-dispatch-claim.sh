@@ -75,6 +75,16 @@ apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   echo "$d"
 }
 
+# A NEIGHBOUR REPO'S open architect worker, alive in the shared registry before
+# any tick runs. Same board key (one service, several repos); only the repo
+# stamp separates it from ours.
+plant_foreign() {  # plant_foreign <daemon-home> <port>
+  printf '{"uuid":"f0re1gnA","current":"f0re1gnA","name":"81-other-architect",
+           "status":"working","run_id":81,"lane":"architect","ticket":"81",
+           "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$2" \
+    > "$1/f0re1gnA.json"
+}
+
 # =========================================================================
 # Scenario 1 — a fresh tick: one architect claim granted, then both implement
 # lanes answer empty.
@@ -118,6 +128,7 @@ OUT="$(mktemp)"
 # stale count and a much later, unrelated fault escalated early. A delivered
 # recovery is a recovery, whichever phase delivered it.
 mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-12"
+plant_foreign "$DH" "$PORT"
 # A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
 # instant it runs and then execs the real one. Ordering is only observable from
 # INSIDE that window — after the fact every order looks the same.
@@ -211,6 +222,16 @@ t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
 # than handing this checkout a neighbouring repo's ticket to work.
 t "the claim names the repo it dispatches for" '\"repo\": \"testrepo\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 1'        cat "$FIX.log"
+# ...AND A NEIGHBOUR REPO'S WORKER DOES NOT CONSUME THIS REPO'S SLOT. The local
+# cap is counted off a machine-global registry, so with cap=1 one worker on
+# another api-bound repo made this checkout read its architect lane as full —
+# and the tick then fell through to the NEXT lane and dispatched this repo's
+# architect ticket as an implementer, on the implementer model. Not a
+# starvation with an error, a silent mis-dispatch. plant_foreign put such a
+# worker in the registry before this tick: open, alive, architect lane — every
+# property the counter looks at except the repo it belongs to.
+nt "a neighbour repo's worker does not push our ticket into the next lane" \
+  "lane=implementer" cat "$OUT"
 t "the execution lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
 t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"
 # Three claims, not four and not an unbounded spin: architect (granted, then
