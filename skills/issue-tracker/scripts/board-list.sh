@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # board-list.sh — board view with computed eligibility.
 #
-# Usage: board-list.sh [state]
+# Usage: board-list.sh [--all-repos] [state]
+#
+# --all-repos (API binding only) widens the read past the repo the binding
+# speaks for, to every repo the board service holds — a browse convenience, and
+# the header says when it is on. Everything else in the toolkit always narrows.
 #
 # Eligible = a dispatchable lane state (ready-for-architect /
 # ready-for-implementer) + every blocked_by ticket done — for a LEAF. An
@@ -25,8 +29,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # of ELIGIBLE/waiting/CLOSE? tags, which here would be a second, weaker opinion
 # about a decision the board already made (and blocked-by edges and PR linkage,
 # which those tags read, are not in the v1 payload at all).
+state="" all_repos=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all-repos) all_repos=1; shift ;;
+    -*) usage_from_header "$0" >&2; exit 2 ;;
+    *) [ -n "$state" ] && { usage_from_header "$0" >&2; exit 2; }
+       state="$1"; shift ;;
+  esac
+done
+
 if [ "$BOARD_BINDING" = api ]; then
-  T_STATE="${1:-}" _api_py - <<'PY'
+  T_STATE="$state" T_ALL_REPOS="$all_repos" _api_py - <<'PY'
 import os
 import _board_api as A
 
@@ -34,15 +48,26 @@ import _board_api as A
 # name this verb takes is a one-element list server-side — so the argument goes
 # through verbatim. The walk either completes or raises: a half-read board can
 # never print as the board.
-rows = A.tickets_all(states=os.environ["T_STATE"] or None, principal="automation")
-print("# dispatch order is server-owned in API mode")
+all_repos = os.environ["T_ALL_REPOS"] == "1"
+rows = A.tickets_all(states=os.environ["T_STATE"] or None, principal="automation",
+                     all_repos=all_repos)
+# The header carries the scope beside the order caveat: rows from several repos
+# look exactly like rows from one, and #12 means a different ticket in each.
+print("# dispatch order is server-owned in API mode"
+      + (" — all repos" if all_repos else ""))
 for t in rows:
     print("#%s %s %s %s" % (t["id"], t["state"], t.get("priority") or "-", t["title"]))
 PY
   exit 0
 fi
 
-T_FILTER="${1:-}" _py - <<'PY'
+# gh mode: one repo, so there is nothing to widen to. Refused rather than
+# dropped — a documented invocation that silently loses its argument is worse
+# than one that fails (the --states / --repair-path precedent).
+[ "$all_repos" -eq 0 ] \
+  || { echo "board-list: --all-repos is API-binding only — a gh board is one repo" >&2; exit 2; }
+
+T_FILTER="$state" _py - <<'PY'
 import os
 import _board as B
 
