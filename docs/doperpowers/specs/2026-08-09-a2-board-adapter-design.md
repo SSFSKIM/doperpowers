@@ -52,11 +52,16 @@ One resolution step, run once per script invocation: read
 `.doperpowers/board.json` at the consumer repo root.
 
 ```json
-{ "binding": "api", "url": "https://arkho-board-service.onrender.com" }
+{ "binding": "api", "url": "https://arkho-board-service.onrender.com",
+  "repo": "doperpowers" }
 ```
 
 - Present with `"binding": "api"` → `BOARD_BINDING=api`, `BOARD_API_URL`
   exported (env `BOARD_API_URL` overrides, for tests).
+- `repo` names the board service's key for this repository, and is REQUIRED
+  on the api binding (env `BOARD_REPO` overrides; see Revision Notes v1.3).
+  One service serves several repositories out of one ticket namespace, so a
+  client that names none is not repo-neutral — the server picks.
 - Absent, or `"binding": "gh"` → `BOARD_BINDING=gh`; everything downstream
   behaves exactly as today. Existing consumer repos are untouched by default.
 - Checked in deliberately: every worktree, worker, and dispatcher resolves
@@ -838,3 +843,18 @@ A1-side work, tracked in the drift follow-up.
   for leaf tickets (epic-guard) — API-mode review workers cannot write their
   final edge until A1 rules; joins the legality-drift follow-up as its
   headline item.
+- v1.3 (2026-09-04): **the api binding declares its repo** (ticket
+  doperpowers#33). The binding shape gains a required `repo` key, and every
+  call with a repo dimension carries it — `repo` in the body of `POST /tickets`
+  and `POST /runs/claim`, `repo=` on the list-shaped reads (`/tickets`,
+  `/queue/decisions`, `/runs/needing-resume`, `/answers/unrelayed`); id-targeted
+  routes send nothing, since a ticket already has its repo. This spec said
+  board.json was repo-agnostic — the binding named a service, not a board — and
+  that is now revised: a service is not a board. The arkho live flip
+  (2026-09-03) is the finding: `board-register.sh` run from the arkho checkout
+  registered into `doperpowers`, `board-list.sh` from there printed every repo's
+  tickets, and `_sweep_api.sh`'s walk read every repo's board from any checkout.
+  An api binding with no repo is a configuration error rather than a fallback to
+  the server's own default, because that default IS the failure. The two browse
+  verbs (`board-list.sh`, `board-search.sh`) take `--all-repos` to widen back on
+  demand; nothing else does.

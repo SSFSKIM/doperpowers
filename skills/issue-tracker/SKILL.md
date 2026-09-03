@@ -149,11 +149,53 @@ deliberately never reads. Epics are dispatchable ONLY in
 `ready-for-architect` (awaiting recomposition, or a reconciliation-due
 return), never to implementation.
 
+## API binding
+
+A repo's board lives either in its GitHub issues (**gh binding**, the default)
+or on an Arkho board service (**api binding**). `.doperpowers/board.json` says
+which — it is committed, so every checkout and every linked worktree of the
+repo resolves the same board:
+
+```json
+{ "binding": "api", "url": "https://…", "repo": "doperpowers" }
+```
+
+`repo` is the name the **board service** knows this repository by. One service
+serves several repositories out of one ticket namespace, and a request that
+names none is not repo-neutral — the server picks: its founding repo on a
+write, *every* repo on a list read. So the key is required. An api binding
+without it dies before any verb runs rather than falling back to the server's
+pick or to the checkout's directory name; neither is this repo's identity on
+the board, and a wrong one is silent (a register run from a neighbouring
+checkout filed its ticket here, and a list from there printed this board's
+tickets as its own).
+
+`$BOARD_REPO` overrides the file, and means a different thing per binding: on
+the **api** binding it is the board's repo key (a bare name); on the **gh**
+binding it is `owner/name`, which `_lib.sh` resolves from the checkout when
+unset. It is the value the Toolkit table below calls the target repo.
+
+Credentials never live in the repo. The client reads
+`~/.arkho-board/<main-checkout-dirname>.env` (the *main* checkout's directory
+name, so a worktree reads the same file), with two lines:
+
+```
+BOARD_AUTOMATION_TOKEN=…    # the fleet: dispatch, claims, sweeps
+BOARD_HUMAN_TOKEN=…         # your human partner: register, transition, answer
+```
+
+Every read narrows to the bound repo, and so does every write. The two **browse**
+verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back
+to the whole service, and say so in their header line when they do. Nothing else
+offers it: a checkout has no business sweeping, linting, mapping, reconciling or
+dispatching another repo's tickets.
+
 ## Toolkit
 
 Paths relative to this skill's `scripts/` directory. Ticket ids are issue
-numbers (`42` or `#42`). Target repo = `$BOARD_REPO` (owner/name) or the
-checkout's repo.
+numbers (`42` or `#42`). Target repo = `$BOARD_REPO` — `owner/name` on the gh
+binding (or the checkout's own repo), the board's repo key on the api binding
+(see API binding above).
 
 | script | does |
 |---|---|
@@ -164,8 +206,8 @@ checkout's repo.
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-surface.sh <n> --add NAME \| --remove NAME` | add/remove a `surface:*` label (see Surfaces below). `--add` validates against the registry; `--remove` never does — it is the cleanup for an orphaned label and the escape hatch for a false-positive match |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
-| `board-list.sh [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see the ritual) |
-| `board-search.sh [--states s1,s2] [--bodies] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read); a query that leads with `-` rides behind `--`. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
+| `board-list.sh [--all-repos] [state]` | board view in dispatch order (P0 rows first, unprioritized last); `ELIGIBLE` tag = dispatchable, `CLOSE?` tag = close candidate (see the ritual). API binding: rows in the server's own order (the header says so), and `--all-repos` widens past the bound repo (both flags are api-only) |
+| `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (see The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states in server order; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies (one budgeted read); a query that leads with `-` rides behind `--`; `--all-repos` searches every repo the service holds. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; `--bodies` a stderr note — gh search already matches bodies). Claim-gated: a run context is refused before any request |
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered-DAG: pan/zoom, node detail, state filter, epic collapse — plus a kanban view toggle) and **`BOARD.md`** (table) into the gitignored render dir. `--serve` additionally serves the render dir on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) and opens the board over http — served tabs **hot-reload**: every later render (explicit `--write`, or the automatic one each mutating script fires while the server is up) appears without a manual refresh. `--stop` kills the server. No argument prints the table. Prefer `--serve` when a human will keep the board open |
 | `board-show.sh <n>` | one ticket in full. API binding: header row, the statement of work (body), then the server-side timeline — a run context sees `body: claim-served` (its body arrived in the claim payload). gh binding: node JSON + issue URL + bound daemon |
 | `board-bind.sh <uuid> <n>` | record which daemon owns the ticket (in the daemon registry) |
