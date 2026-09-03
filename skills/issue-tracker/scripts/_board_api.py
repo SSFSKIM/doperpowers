@@ -81,7 +81,10 @@ def repo():
     no default to fall back to: an unset BOARD_REPO is a broken hand-over, not a
     request for the server's choice.
     """
-    key = os.environ.get("BOARD_REPO", "")
+    # Stripped, and a blank spelled as whitespace refused like an absent one:
+    # `%20` on the wire is not a repo, and the server reads a blank `repo=` as
+    # NO filter — the widening this parameter exists to close.
+    key = os.environ.get("BOARD_REPO", "").strip()
     if not key:
         die("BOARD_REPO is unset — an api binding declares its repo in "
             ".doperpowers/board.json (\"repo\": \"<name>\") and _binding.sh "

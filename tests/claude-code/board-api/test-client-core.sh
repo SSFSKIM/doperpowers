@@ -181,6 +181,22 @@ A.needing_resume()" >/dev/null 2>&1 || true
 t "and so does the needing-resume feed" \
   '"path": "/runs/needing-resume?repo=testrepo"' last_log needing-resume
 
+# THE CLIENT REFUSES A BLANK REPO RATHER THAN SENDING ONE. _binding.sh is the
+# gate, but the client is what puts bytes on the wire, and a repo of whitespace
+# would ride it as `repo=%20` — which the server reads as no filter on a read
+# and no name on a write. Refused before any request, so the failure is the
+# configuration and not a widened answer.
+BLANK_OUT="$(BOARD_REPO_OVERRIDE="   " run_py "$CREDS" "$CORE
+A.tickets_all()" 2>&1 || true)"
+t  "a whitespace-only BOARD_REPO is refused, not sent" \
+  "BOARD_REPO is unset" echo "$BLANK_OUT"
+nt "and no encoded blank reached the wire" "repo=%20" cat "$FIX.log"
+# A padded key is a typo, not another repo: it is trimmed, not refused.
+BOARD_REPO_OVERRIDE="  testrepo  " run_py "$CREDS" "$CORE
+A.unrelayed()" >/dev/null 2>&1 || true
+t "a padded BOARD_REPO reaches the wire trimmed" \
+  '"path": "/answers/unrelayed?repo=testrepo"' last_log answers/unrelayed
+
 # The two principal-resolution paths on one ticket-facing verb (Codex F5): the
 # same default principal="human" must reach the wire as the human token from an
 # operator shell and as the run token from a worker shell.

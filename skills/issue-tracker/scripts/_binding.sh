@@ -26,8 +26,11 @@ try:
     cfg = json.load(open(sys.argv[1]))
 except Exception as e:
     print("parse-error: %s" % e); sys.exit(0)
+# The repo is TRIMMED here: `[ -n " " ]` is true in the shell, so a repo of
+# spaces would pass the emptiness check below and then ride the wire as an
+# encoded blank — which the server reads as no filter at all.
 print("%s|%s|%s" % (cfg.get("binding", "gh"), cfg.get("url", ""),
-                    cfg.get("repo", "")))
+                    str(cfg.get("repo") or "").strip()))
 PY
 )"
   case "$_binding_line" in
@@ -48,10 +51,14 @@ PY
          # repo the service was founded with. Declared, never guessed: neither
          # the server's pick nor the checkout's directory name is this repo's
          # identity on the board, and a wrong one is silent. An env override
-         # still wins (a blank one is no declaration at all).
-         [ -n "${BOARD_REPO:-}" ] || BOARD_REPO="${_binding_rest#*|}"
-         [ -n "${BOARD_REPO:-}" ] || { echo "error: .doperpowers/board.json names binding=api but no repo" >&2
-                                       return 1 2>/dev/null || exit 1; } ;;
+         # still wins (a blank one is no declaration at all — and a blank
+         # spelled as whitespace is still a blank, so the override is trimmed
+         # before it is weighed, exactly as the file's value is).
+         BOARD_REPO="$(printf '%s' "${BOARD_REPO:-}" \
+           | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+         [ -n "$BOARD_REPO" ] || BOARD_REPO="${_binding_rest#*|}"
+         [ -n "$BOARD_REPO" ] || { echo "error: .doperpowers/board.json names binding=api but no repo" >&2
+                                   return 1 2>/dev/null || exit 1; } ;;
     gh) : ;;
     # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling
     # through left BOARD_BINDING=gh, so a typo (`"api "`, `"API"`, `"arkho"`)

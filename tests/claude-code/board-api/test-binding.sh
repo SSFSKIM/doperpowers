@@ -65,6 +65,27 @@ printf '{"binding":"api","url":"https://b.example"}' > "$r7/.doperpowers/board.j
 t  "api without repo dies" "board.json names binding=api but no repo" probe "$r7"
 nt "and never guesses one"  "api|https://b.example|"                   probe "$r7"
 
+# A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of
+# spaces passed the emptiness check and then rode the wire as an encoded blank —
+# which the server reads as NO filter, the exact widening the key exists to
+# close, and as no name at all on a write. Trimmed before the check, in the file
+# and in the env override alike, so both land on the same refusal.
+r8="$(mkrepo)"; mkdir -p "$r8/.doperpowers"
+printf '{"binding":"api","url":"https://b.example","repo":"   "}' > "$r8/.doperpowers/board.json"
+t  "a whitespace-only repo in the file dies like an absent one" \
+  "board.json names binding=api but no repo" probe "$r8"
+t  "a whitespace-only env override falls back to the file" \
+  "|alpha" probe "$r2" "BOARD_REPO=   "
+# ...and when there is nothing to fall back to, it dies rather than widening.
+t  "a whitespace-only env override with no file repo dies too" \
+  "board.json names binding=api but no repo" probe "$r7" "BOARD_REPO=   "
+# A declared repo with stray whitespace is a typo, not a different repo: the
+# trimmed value is what the client speaks for, so it cannot reach the wire
+# percent-encoded as `%20alpha`.
+r9="$(mkrepo)"; mkdir -p "$r9/.doperpowers"
+printf '{"binding":"api","url":"https://b.example","repo":"  alpha  "}' > "$r9/.doperpowers/board.json"
+t "a padded repo resolves trimmed" "|alpha" probe "$r9"
+
 t  "env url override wins" "api|https://o.example|" \
   probe "$r2" BOARD_API_URL=https://o.example
 nt "env url override never invokes gh" "GH_INVOKED" \
