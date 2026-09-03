@@ -311,6 +311,14 @@ SW resume > "$OUT1" 2>&1 || true
 t  "successor claimed for the feed entry"  "/runs/claim-successor"     cat "$FIX.log"
 t  "the claim names the ticket"            '\"ticketId\": 12'          cat "$FIX.log"
 t  "the claim speaks automation"           '"auth": "Bearer a"'        cat "$FIX.log"
+# A SUCCESSOR CLAIM IS A DISPATCH. The server resolves this route through the
+# same dispatch rule /runs/claim uses, so an unscoped credential that names no
+# repo is refused `repo-required` — and every reclaimed run would stick in the
+# recovery loop rather than being handed to a successor. Naming the ticket is
+# not naming the repo: the rule reads the credential and the request, not the
+# row the ticket id points at.
+t  "and the successor claim names its repo, as any dispatch must" \
+  '\"repo\": \"testrepo\"' cat "$FIX.log"
 t  "folded answer delivered with sentinel" "[board-relay answer:121]"  cat "$TRANSCRIPT"
 t  "with the reply verbatim"               "go"                        cat "$TRANSCRIPT"
 t  "the successor is told to read its own timeline" "board-show.sh 12" cat "$TRANSCRIPT"

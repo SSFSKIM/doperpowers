@@ -217,6 +217,12 @@ def claim_successor(ticket_id, nonce, lease_minutes=None):
     body = {"ticketId": int(ticket_id), "dispatchNonce": nonce}
     if lease_minutes is not None:
         body["leaseMinutes"] = lease_minutes
+    # A SUCCESSOR CLAIM IS A DISPATCH, and the server resolves it through the
+    # same dispatch rule /runs/claim uses. Naming the ticket is not naming the
+    # repo — that rule reads the credential and the request, never the row the
+    # id points at — so an unscoped credential that sent none would be refused
+    # `repo-required` and every reclaimed run would stick in the recovery loop.
+    body["repo"] = repo()
     return request("POST", "/runs/claim-successor", body, "automation", retry=True,
                    obsolete_codes=("nonce-consumed", "stale-resume"))
 
