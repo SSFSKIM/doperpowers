@@ -342,6 +342,12 @@ t  "the bearer meta stays 0600"            "mode=600" meta_mode "$DH/u-old.json"
 t  "successor creds on resume env"         "BOARD_RUN_TOKEN=tok-s"     cat "$DH/resume-env.txt"
 t  "with the successor run id"             "BOARD_RUN_ID=44"           cat "$DH/resume-env.txt"
 t  "and its fence"                         "BOARD_RUN_FENCE=4"         cat "$DH/resume-env.txt"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo the successor speaks for" "BOARD_REPO=testrepo"       cat "$DH/resume-env.txt"
 argv_only() { grep '^ARGV:' "$RESUME_LOG"; }
 nt "the bearer never rides on argv"        "tok-s"                     argv_only
 # The whole tick holds the lock while this resume blocks — an unbounded wait
@@ -452,6 +458,12 @@ RESUME_MUST_FAIL=1 SW resume > "$OUT2" 2>&1 || true
 t  "a failed resume falls back to a fresh spawn" "SPAWN name=12-successor" cat "$SPAWN_LOG"
 t  "the fresh spawn rides the same successor bearer" "BOARD_RUN_TOKEN=tok-s2" cat "$SPAWN_LOG"
 t  "with the successor run id"             "BOARD_RUN_ID=45"           cat "$SPAWN_LOG"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo it speaks for"            "BOARD_REPO=testrepo"       cat "$SPAWN_LOG"
 t  "the fresh worker is told to read its timeline first" "Read your own ticket timeline" cat "$SPAWN_LOG"
 # The claim body is by contract the only route a run has to its own ticket
 # text; a fresh session has never seen it.

@@ -308,6 +308,12 @@ t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "
 t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RESUME_LOG"
 t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RESUME_LOG"
 t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RESUME_LOG"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo it speaks for"        "BOARD_REPO=testrepo"               cat "$RESUME_LOG"
 # daemon-resume blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
 # while THIS tick holds the whole-tick lock, so renewal would starve past the
 # 15-minute lease and A1 would reclaim live runs. The relay bounds it.

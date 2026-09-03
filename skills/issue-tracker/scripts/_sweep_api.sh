@@ -689,7 +689,7 @@ phase_relay() {
       # transcript and acks WITHOUT re-delivering (the replay case the test
       # pins on u-3/u-3-cur). The delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
-        BOARD_API_URL="$BOARD_API_URL" \
+        BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
         "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
@@ -1296,6 +1296,7 @@ PY
   # whole-tick lock throughout, and daemon-resume defaults to hours.
   if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+       BOARD_REPO="$BOARD_REPO" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
        "$DAEMON_SCRIPTS/daemon-resume.sh" "$C_SESS" "$prompt"; then
     delivered="$C_SESS"
@@ -1377,6 +1378,7 @@ $(cat "$dir/body.md")"
     # ride the gateway while the log said claude.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+         BOARD_REPO="$BOARD_REPO" \
          DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
          "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" \
          "${LOCAL_REPO:-$BOARD_ROOT}" "$name" "$(_model_for_lane "$lane")")"; then
