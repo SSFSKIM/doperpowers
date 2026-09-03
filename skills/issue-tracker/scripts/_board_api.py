@@ -114,25 +114,34 @@ def board_key():
     return "api:" + api_url()
 
 
-def meta_is_mine(meta):
-    """Does this daemon-registry meta belong to the binding this process holds?
+def meta_is_mine(meta, board, repo_key=""):
+    """Does this daemon-registry meta belong to the binding the caller holds?
 
-    $DAEMON_HOME is machine-global while a board is not, so every scan over it
-    has to ask. Two dimensions, because neither settles it alone: `board` names
-    the SERVICE, and two repos served by one service share it; `board_repo`
-    names the repo, and two services could both call a repo `docs`.
+    $DAEMON_HOME is machine-global while a board is not, so EVERY scan over it
+    has to ask — a scan that does not is acting on a neighbour's workers.
+
+    Two dimensions, because neither settles it alone: `board` names the
+    SERVICE (`api:<url>`, or `gh:<owner/name>`), and two repos served by one
+    api service share it; `board_repo` names the repo within that service, and
+    two services could each call a repo `docs`. gh mode passes no repo_key —
+    there the owner/name inside `board` is already the whole identity.
+
+    PURE, and takes the identity rather than reading it: these scans run under
+    both bindings, several of them in scripts that never resolve an api url at
+    all, so a version that read the environment would either die there or
+    quietly compare against nothing.
 
     A meta missing EITHER field is legacy — written before that field existed —
-    and is read as this binding's. That is the safe direction here and only
-    here: on this machine only one repo has ever run api-mode daemons, so the
-    unstamped metas are in fact ours, and skipping them would strand live runs
-    with no renewal. Every meta written from now on carries both.
+    and is read as the caller's. That is the safe direction: skipping an
+    unstamped meta would strand a live run with no renewal, no relay and no
+    answer, while honouring one costs nothing on a machine whose only stamped
+    metas belong to somebody. Every meta written from now on carries both.
     """
-    board = str(meta.get("board") or "").strip()
-    if board and board.rstrip("/") != board_key():
+    mboard = str(meta.get("board") or "").strip()
+    if mboard and board and mboard.rstrip("/") != str(board).rstrip("/"):
         return False
     mrepo = str(meta.get("board_repo") or "").strip()
-    return not mrepo or mrepo == repo()
+    return not (mrepo and repo_key) or mrepo == repo_key
 
 
 def _creds():

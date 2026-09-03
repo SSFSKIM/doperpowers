@@ -273,6 +273,15 @@ printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
 printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-b.json"
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
+# ...and A NEIGHBOUR REPO'S meta carrying THAT SAME run id. The registry is
+# machine-global, so an unfiltered scan let another board's worker vouch for
+# our run 99: the journal read as live, the run was never ended, and its
+# ticket stayed owned by a run nothing here could reach. Run ids, like ticket
+# numbers, are board-local — the collision is ordinary, not exotic.
+printf '{"uuid":"f0re1gn1","current":"f0re1gn1","name":"99-other-implementer",
+         "status":"working","run_id":99,"lane":"implementer","ticket":"99",
+         "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$PORT2" \
+  > "$DH2/f0re1gn1.json"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
 printf '{"lane": "architect", "run_id": 41, "spawn_completed": false, "ticket": "12"}\n' \
@@ -334,6 +343,7 @@ t "a lost response is replayed under its own nonce" '\"dispatchNonce\": \"nonce-
 t "the replay reaches a run and completes"          '"run_id": 55' cat "$DH2/board-claims/nonce-a.json"
 t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$DH2/board-claims/nonce-a.json"
 t "a stranded claim ends its run"                   '"path": "/runs/99/end"' cat "$FIX2.log"
+t "a neighbour repo's meta does not vouch for our run" '"path": "/runs/99/end"' cat "$FIX2.log"
 t "and ends it as abandoned"                        '\"reason\": \"abandoned\"' cat "$FIX2.log"
 gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"      "gone" gone "$DH2/board-claims/nonce-b.json"

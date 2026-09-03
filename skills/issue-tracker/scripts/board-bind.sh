@@ -53,6 +53,29 @@ if API:
     import _board_api as B
 else:
     import _board as B
+# The registry predicate is PURE and lives in the API client only because that
+# is where it was first needed — it takes the identity rather than resolving
+# one, so gh mode imports it just as safely (_py puts BOARD_SCRIPTS on the path
+# in both bindings).
+from _board_api import meta_is_mine as _meta_is_mine
+
+
+def _board_ident():
+    """This binding's identity as the registry spells it. ONE spelling, used
+    both to STAMP a meta below and to recognize our own above — two copies of
+    this expression is how a stamp and its reader drift apart."""
+    if API:
+        # rstrip: _board_api.url() normalizes the same way — one spelling
+        # per board.
+        return ("api:" + env.get("BOARD_API_URL", "").rstrip("/"),
+                env.get("BOARD_REPO", ""))
+    # gh mode needs no repo dimension: the owner/name inside the key IS it.
+    return ("gh:" + B.repo(), "")
+
+
+def MINE(meta):
+    board, repo_key = _board_ident()
+    return _meta_is_mine(meta, board, repo_key)
 
 
 def write_meta(path, meta):
@@ -132,6 +155,12 @@ try:
             meta = json.load(open(path))
         except Exception:
             continue
+        # A BIND STRIPS THE TICKET OFF ITS PRIOR OWNERS, and ticket numbers are
+        # board-local while this registry is machine-global — so an unfiltered
+        # scan would strip a NEIGHBOUR's owner of ITS #9 while binding ours,
+        # silently unbinding a live worker on a board this checkout cannot see.
+        if not MINE(meta):
+            continue
         metas.append((path, meta))
         # The meta FILENAME is the daemon's stable uuid, and the argument may
         # be a prefix of it. The locator posted below must carry the RESOLVED
@@ -201,17 +230,15 @@ try:
     # but this registry is machine-global, so the transition fence (dp#63)
     # needs the pair to adjudicate — a live worker on another board's #9 says
     # nothing about this board's #9. Same shape the fence computes for itself.
-    target_meta["board"] = ("api:" + env.get("BOARD_API_URL", "").rstrip("/")) \
-        if API else ("gh:" + B.repo())   # rstrip: _board_api.url() normalizes
-                                         # the same way — one spelling per board
+    target_meta["board"], _stamp_repo = _board_ident()
     if API:
         # ...AND WHICH REPO ON THAT BOARD. One service serves several repos out
         # of one ticket namespace, so `board` alone does not separate two repos'
         # daemons in this machine-global registry — their url is the same one.
-        # The api sweep's registry scan reads this to leave a neighbour's runs
-        # alone; without it a tick renewed and RE-BOUND them, and a re-bind
-        # overwrites that run's session locator with this repo's projectKey.
-        target_meta["board_repo"] = env.get("BOARD_REPO", "")
+        # Every registry scan reads this to leave a neighbour's workers alone;
+        # without it a sweep renewed and RE-BOUND them, and a re-bind overwrites
+        # that run's session locator with this repo's projectKey.
+        target_meta["board_repo"] = _stamp_repo
     if API:
         # bind_confirmed is a claim about what the SERVER accepted, and a
         # resume rehydrates from it — so it is written only on this side of

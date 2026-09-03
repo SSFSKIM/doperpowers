@@ -323,7 +323,7 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     # bind repair overwrote that run's session locator with this repo's
     # projectKey. An unstamped meta is legacy and reads as ours (see
     # A.meta_is_mine).
-    if not A.meta_is_mine(m):
+    if not A.meta_is_mine(m, A.board_key(), A.repo()):
         continue
     if not m.get("run_id") and not keep_runless:
         continue
@@ -1049,16 +1049,24 @@ PY
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
-  plan="$(T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+  plan="$(T_DHOME="$DAEMON_HOME" _api_py - <<'PY'
 import glob, json, os
+import _board_api as A
 home = os.environ["T_DHOME"]
 live, names = set(), set()
+MINE = (A.board_key(), A.repo())
 for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
         continue
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # A NEIGHBOUR'S DAEMON IS NOT EVIDENCE ABOUT OUR RUNS. This set decides
+    # which successor runs are live and which names are taken; counting another
+    # repo's workers into it made a stranded successor look alive (so it was
+    # never ended) and a free daemon name look used.
+    if not A.meta_is_mine(m, *MINE):
         continue
     if m.get("run_id"):
         live.add(str(m["run_id"]))

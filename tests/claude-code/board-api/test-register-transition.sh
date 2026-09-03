@@ -357,4 +357,34 @@ t "the owner's own session passes the fence" "#9:" \
     BOARD_RUN_TOKEN=rt '$SCRIPTS/board-transition.sh' 9 done 'a note'"
 rm -f "$DAEMON_HOME/fence-live-9.json"
 
+# ...AND THE REPO IS PART OF THAT IDENTITY. One service serves several repos out
+# of one ticket namespace, so two repos' metas carry the SAME board key and only
+# the repo stamp separates them. A neighbour's live worker on ITS #9 was
+# refusing legitimate transitions of OUR #9 — a fence firing for a board this
+# checkout cannot even see, with a FIX line naming a daemon that is not ours.
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" <<'PYF'
+import json, os, sys
+json.dump({"uuid": "fence-foreign-9", "current": "fence-foreign-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2], "board_repo": "otherrepo"},
+          open(os.path.join(sys.argv[1], "fence-foreign-9.json"), "w"))
+PYF
+t "api fence: a neighbour repo's live worker does not fence our ticket" "#9:" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    BOARD_RUN_TOKEN=rt '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+rm -f "$DAEMON_HOME/fence-foreign-9.json"
+
+# The other direction, which is the half a filter can silently break: a meta
+# stamped for THIS repo still fences. Without it the drill above would pass on
+# a fence that had stopped working altogether.
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" <<'PYO'
+import json, os, sys
+json.dump({"uuid": "fence-own-9", "current": "fence-own-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2], "board_repo": "testrepo"},
+          open(os.path.join(sys.argv[1], "fence-own-9.json"), "w"))
+PYO
+rc 1 "api fence: a STAMPED-OWN live worker still fences" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+rm -f "$DAEMON_HOME/fence-own-9.json"
+
 finish

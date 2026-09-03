@@ -83,7 +83,7 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     # this board has never had — and the verdict below is a RETIRE
     # recommendation, i.e. a recommendation to kill a live worker on a board
     # this checkout cannot see. An unstamped meta is legacy and reads as ours.
-    if not A.meta_is_mine(m):
+    if not A.meta_is_mine(m, A.board_key(), A.repo()):
         continue
     tid = str(m.get("ticket", "")).lstrip("#")
     # run_id is the API-era binding (board-bind.sh writes it): a meta without

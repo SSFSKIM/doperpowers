@@ -81,6 +81,37 @@ last_body() {
 }
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=auto-tok\nBOARD_HUMAN_TOKEN=human-tok\n' > "$CREDS"
+# ---- meta_is_mine: the predicate every registry scan shares ---------------
+# $DAEMON_HOME is machine-global and a board is not, so eight scans across five
+# scripts ask this one question. It is PURE — it takes the identity rather than
+# resolving one — because several of those scans run in gh mode, in scripts that
+# never resolve an api url at all. Pinned here as the unit it is: two of its
+# consumers (board-answer gh-mode owner scans) have no end-to-end drill in this
+# tier, and this is the whole of the logic they rely on.
+mine() {  # mine <meta-json> <board> [repo]
+  PYTHONPATH="$SCRIPTS" T_M="$1" T_B="$2" T_R="${3:-}" python3 -c '
+import json, os
+from _board_api import meta_is_mine
+print("mine=%s" % meta_is_mine(json.loads(os.environ["T_M"]),
+                               os.environ["T_B"], os.environ["T_R"]))'
+}
+API_B=api:http://b.example
+# Legacy first: skipping an unstamped meta would strand a live run with no
+# renewal, no relay and no answer, so absence reads as the caller.
+t "an unstamped meta belongs to the caller"  "mine=True"  mine '{}' "$API_B" testrepo
+t "so does one stamped with only the board"  "mine=True"  mine "{\"board\":\"$API_B\"}" "$API_B" testrepo
+t "a matching board AND repo is ours"        "mine=True"  mine "{\"board\":\"$API_B\",\"board_repo\":\"testrepo\"}" "$API_B" testrepo
+# The collision this exists for: one service, several repos, identical board key.
+t "the SAME board with another repo is not"  "mine=False" mine "{\"board\":\"$API_B\",\"board_repo\":\"otherrepo\"}" "$API_B" testrepo
+t "and another service is not, whatever its repo" "mine=False" \
+  mine "{\"board\":\"api:http://other.example\",\"board_repo\":\"testrepo\"}" "$API_B" testrepo
+# A trailing slash must not unfence a live owner (board-transition dp#63).
+t "board keys compare normalized"            "mine=True"  mine "{\"board\":\"$API_B/\"}" "$API_B" testrepo
+# gh mode passes no repo dimension: owner/name inside the key IS the identity.
+t "gh: a matching owner/name is ours"        "mine=True"  mine '{"board":"gh:o/r"}' gh:o/r
+t "gh: another repo is not"                  "mine=False" mine '{"board":"gh:o/other"}' gh:o/r
+t "gh: an unstamped meta is still ours"      "mine=True"  mine '{}' gh:o/r
+
 
 t "claim returns dict + auth header sent" "41" \
   run_py "$CREDS" "$CORE

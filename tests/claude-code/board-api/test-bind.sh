@@ -77,6 +77,14 @@ printf '{"uuid":"u-1234","name":"impl-12","status":"working"}' > "$DH/u-1234.jso
 printf '{"uuid":"u-dead","name":"impl-12-prev","status":"working","ticket":"12","run_bearer":"tok-prev"}' \
   > "$DH/u-dead.json"
 chmod 600 "$DH/u-dead.json"
+# A NEIGHBOUR REPO'S owner of the SAME ticket number. A bind strips the ticket
+# off its prior owners, and ticket numbers are board-local while this registry
+# is machine-global — so an unfiltered strip silently unbound a live worker on
+# a board this checkout cannot see. Its board key is identical to ours (one
+# service, several repos); only the repo stamp separates them.
+printf '{"uuid":"u-foreign","name":"impl-12-other","status":"working","ticket":"12",
+         "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$PORT" \
+  > "$DH/u-foreign.json"
 
 printf '{"uuid":"u-nob","name":"nob","status":"working"}' > "$DH/u-nob.json"
 
@@ -131,6 +139,11 @@ t "the meta holding a bearer is 0600" "600" statmode "$DH/u-1234.json"
 # The successor handover, the other half of the reaped-predecessor case above:
 # the old owner is stripped rather than allowed to veto the rebind.
 nt "a reaped predecessor loses the ticket" '"ticket"' cat "$DH/u-dead.json"
+# The COMPACT spelling, which this fixture was written in and write_meta never
+# produces (it re-renders with indent=2): matching it proves the file was not
+# merely left with its ticket, but never rewritten at all.
+t  "but a neighbour repo's owner of the same number keeps it" '"ticket":"12"' \
+  cat "$DH/u-foreign.json"
 t  "stripping a predecessor never widens its bearer meta" "600" \
   statmode "$DH/u-dead.json"
 

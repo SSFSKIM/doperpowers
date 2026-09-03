@@ -915,8 +915,9 @@ kill $CMOCK 2>/dev/null || true
 # attempt counter and a suppression record all have to start from a known state.
 # =========================================================================
 RMOCKS=""
-rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
+rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO, RLOG, RPORT
   local port; port="$(free_port)"
+  RPORT="$port"   # the drills that plant a registry meta need this board's key
   RLOG="$1.log"; : > "$RLOG"
   python3 "$TESTS_DIR/mock-server.py" "$1" "$port" &
   RMOCKS="$RMOCKS $!"
