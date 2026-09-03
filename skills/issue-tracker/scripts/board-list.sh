@@ -24,11 +24,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
-# API mode: the server owns the queue. It computes eligibility and hands back
-# rows in its own order, so this prints them as given — no local re-derivation
-# of ELIGIBLE/waiting/CLOSE? tags, which here would be a second, weaker opinion
-# about a decision the board already made (and blocked-by edges and PR linkage,
-# which those tags read, are not in the v1 payload at all).
 state="" all_repos=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +34,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# API mode: the server owns the queue. It computes eligibility and hands back
+# rows in its own order, so this prints them as given — no local re-derivation
+# of ELIGIBLE/waiting/CLOSE? tags, which here would be a second, weaker opinion
+# about a decision the board already made (and blocked-by edges and PR linkage,
+# which those tags read, are not in the v1 payload at all).
 if [ "$BOARD_BINDING" = api ]; then
   T_STATE="$state" T_ALL_REPOS="$all_repos" _api_py - <<'PY'
 import os
