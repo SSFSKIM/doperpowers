@@ -61,9 +61,11 @@ print("paths=[%s]" % " ".join(json.loads(ln)["path"]
                               for ln in open(sys.argv[1]) if ln.strip()))' "$FIX.log"; }
 
 row() {  # row <id> <state> <title> [body]  — one contract-shaped ticket row
-  python3 -c 'import json, sys
+         #   $ROW_REPO names the repo it belongs to (default this board's)
+  python3 -c 'import json, os, sys
 r = {"id": int(sys.argv[1]), "title": sys.argv[3], "category": "work",
      "state": sys.argv[2], "priority": "P2", "owner_run": None,
+     "repo": os.environ.get("ROW_REPO", "testrepo"),
      "parent": None, "plan": None, "pr_url": None, "branch": None,
      "blocked_by": [], "relates": []}
 if len(sys.argv) > 4: r["body"] = sys.argv[4]
@@ -200,6 +202,43 @@ nt "API arm never invokes gh" "GH-INVOKED" verb walker
 # Exit codes are contract, and the drills above tolerate any of them: rc pins
 # the status alone. 2 = usage/refusal, 1 = a die, 0 = served (degrades included).
 rc 0 "a served search exits 0" verb walker
+
+# ---- board-search.sh --all-repos: a widened hit says which board it is on ----
+# Ticket numbers are repo-local, so across repos `#9` is not one ticket — and
+# the verbs a reader reaches for next (show, transition, comment) all take a
+# bare number. A widened listing that hid the repo handed back ids it could not
+# tell apart. The column appears only when widened.
+world verb-search-all <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art"),
+                   $(ROW_REPO=otherrepo row 9 "in-progress" "walker live")],
+          "next":null,"as_of":7}}
+]
+JSON
+t  "a widened hit names its repo"           "#4 testrepo done"       verb walker --all-repos
+t  "and a foreign hit is legible as foreign" "#9 otherrepo in-progress" verb walker --all-repos
+t  "the header says the search was widened"  "all repos"             verb walker --all-repos
+# Its own world, so the path log holds ONLY the widened read: the narrowed
+# assertions below would otherwise put a `repo=` in the same log and the
+# negative could never fail.
+world verb-search-all-wire <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art")],"next":null,"as_of":7}}
+]
+JSON
+verb walker --all-repos >/dev/null 2>&1 || true
+nt "--all-repos sends no repo filter"        "repo="                 paths
+# The narrowed default keeps its exact shape — no column, no header change.
+world verb-search-narrowed <<JSON
+[
+ {"method":"GET","path":"/tickets?limit=200&q=walker","status":200,
+  "body":{"items":[$(row 4 "done" "walker prior art")],"next":null,"as_of":7}}
+]
+JSON
+t  "the narrowed hit keeps its original shape" "#4 done"  verb walker
+nt "and names no repo at all"                  "testrepo" verb walker
 
 world verb-search-states <<JSON
 [

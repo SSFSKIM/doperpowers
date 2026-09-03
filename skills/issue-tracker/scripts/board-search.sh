@@ -6,8 +6,11 @@
 #
 # --all-repos (API binding only) widens the search past the repo the binding
 # speaks for, to every repo the board service holds — prior art is prior art
-# wherever it was filed. The header says when it is on. Off by default, and
-# every non-browse verb in the toolkit always narrows.
+# wherever it was filed. The header says when it is on, and widened rows carry
+# the repo as a second column, because a ticket number is repo-local and a bare
+# one from another board names a different ticket here. Off by default (the
+# narrowed output keeps its original shape), and every non-browse verb in the
+# toolkit always narrows.
 #
 # API mode speaks the paged surface's ?q= (arkho#12): websearch grammar —
 # unquoted terms AND, `or` = OR, `-` negation, quoted phrases — judged
@@ -89,8 +92,12 @@ print("# %d hit(s), server order, %s%s" %
       (len(rows), ("states=%s" % states) if states else "all states",
        " — all repos" if all_repos else ""))
 for t in rows:
-    print("#%s %s %s %s" % (t["id"], t["state"],
-                            t.get("priority") or "-", t["title"]))
+    # Same rule as board-list: a widened hit names its board, because `#9` from
+    # another repo is a different ticket than `#9` here and the verbs a reader
+    # reaches for next all take a bare number.
+    scope = ("%s " % (t.get("repo") or "-")) if all_repos else ""
+    print("#%s %s%s %s %s" % (t["id"], scope, t["state"],
+                              t.get("priority") or "-", t["title"]))
     b = bodies.get(int(t["id"]))
     if b is not None:
         for line in (b.get("body") or "").split("\n"):

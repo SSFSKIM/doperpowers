@@ -5,7 +5,11 @@
 #
 # --all-repos (API binding only) widens the read past the repo the binding
 # speaks for, to every repo the board service holds — a browse convenience, and
-# the header says when it is on. Everything else in the toolkit always narrows.
+# the header says when it is on. Widened rows carry the repo as a second column
+# (`#<id> <repo> <state> <priority> <title>`), because a ticket number is
+# repo-local and a bare one from another board names a different ticket here;
+# the narrowed default keeps its original shape. Everything else in the toolkit
+# always narrows.
 #
 # Eligible = a dispatchable lane state (ready-for-architect /
 # ready-for-implementer) + every blocked_by ticket done — for a LEAF. An
@@ -55,8 +59,19 @@ rows = A.tickets_all(states=os.environ["T_STATE"] or None, principal="automation
 # look exactly like rows from one, and #12 means a different ticket in each.
 print("# dispatch order is server-owned in API mode"
       + (" — all repos" if all_repos else ""))
+# A WIDENED ROW SAYS WHICH BOARD IT IS FROM, and only a widened one. Ticket
+# numbers are repo-local, so across repos `#12` is not one ticket — while every
+# id-targeted verb the reader reaches for next (show, transition, comment)
+# takes a bare number. Hiding the repo handed back ids that could not be told
+# apart, which an unscoped human token turns into a mutation of a neighbour's
+# ticket from this checkout. The narrowed default prints exactly what it always
+# did: there the repo is the binding, stated once, not once per row.
+# An absent repo renders "-" like an absent priority — a pre-repo-field server
+# is the one shape these bytes can arrive in without one.
 for t in rows:
-    print("#%s %s %s %s" % (t["id"], t["state"], t.get("priority") or "-", t["title"]))
+    scope = ("%s " % (t.get("repo") or "-")) if all_repos else ""
+    print("#%s %s%s %s %s" % (t["id"], scope, t["state"],
+                              t.get("priority") or "-", t["title"]))
 PY
   exit 0
 fi

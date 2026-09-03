@@ -102,18 +102,23 @@ cat > "$FIX" <<JSON
           "next":"$C1","as_of":118}},
  {"method":"GET","path":"/tickets?limit=200","status":200,
   "body":{"items":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
+                    "repo":"testrepo",
                     "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":4,"title":"T blocker done","category":"work","state":"done",
+                    "repo":"otherrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":5,"title":"T blocker wontfix","category":"work","state":"wontfix",
+                    "repo":"testrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":9,"title":"T sibling","category":"work","state":"in-review",
+                    "repo":"testrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[12]},
                    {"id":12,"title":"T one","category":"work","state":"in-progress",
+                    "repo":"testrepo",
                     "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
                     "branch":"feat/x","blocked_by":[3,4,5],"relates":[9]}],
           "next":"$C1","as_of":118}},
@@ -237,6 +242,25 @@ t "--all-repos says so in the header" "all repos" V board-list.sh --all-repos
 : > "$FIX.log"
 V board-list.sh --all-repos >/dev/null
 nt "--all-repos sends no repo filter at all" "repo=" cat "$FIX.log"
+# A WIDENED ROW SAYS WHICH BOARD IT IS FROM. Ticket numbers are repo-local, so
+# across repos `#4` is not one ticket — and every id-targeted verb (show,
+# transition, comment) takes a bare number. A widened listing that hid the repo
+# handed the reader ids it could not tell apart, and an unscoped human token
+# would then mutate a neighbour's ticket from this checkout without either side
+# saying so. The column appears ONLY when widened; the narrowed default is
+# byte-identical to what it always printed.
+t  "a widened row names its repo"          "#3 testrepo in-progress P1 T blocker" \
+  V board-list.sh --all-repos
+t  "and a foreign row is legible as foreign" "#4 otherrepo done - T blocker done" \
+  V board-list.sh --all-repos
+# The cursor page's rows predate the repo field (a server that never sent one),
+# and an absent repo renders as the same "-" an absent priority does rather than
+# as "None" or an empty column that swallows the title.
+t  "a row with no repo renders the absence"  "#13 - ready-for-implementer P2 T two" \
+  V board-list.sh --all-repos
+# The narrowed default keeps its exact shape: no column, no header change.
+t  "the narrowed row keeps its original shape" "#3 in-progress P1 T blocker" V board-list.sh
+nt "and names no repo at all"                  "testrepo"                     V board-list.sh
 t "and still renders the board" '"path": "/tickets?limit=200"' cat "$FIX.log"
 rc 2 "an unknown flag is still a usage error" V board-list.sh --all-repo
 
