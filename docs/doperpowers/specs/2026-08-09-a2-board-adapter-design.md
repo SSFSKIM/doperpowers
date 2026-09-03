@@ -862,4 +862,8 @@ A1-side work, tracked in the drift follow-up.
   and is therefore NOT exported in api mode: an inherited value is honoured as a
   user's override, so exporting a value derived from one checkout's binding
   would make it the silent default for every other checkout a descendant
-  reaches.
+  reaches. The dispatchers' worker spawns are the one deliberate exception:
+  they state the key on the spawn prefix, because a worker checks out the head
+  it was dispatched for and a head predating this key carries a board.json
+  without one. That is a pin, not a leak — the run bearer on the same prefix
+  binds the worker to a ticket in the dispatcher's own repo.
