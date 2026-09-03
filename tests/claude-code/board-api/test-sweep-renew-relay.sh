@@ -191,6 +191,14 @@ PY
 EOF
 chmod +x "$DS/daemon-finalize.sh"
 
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that holds
+# or inspects one has to name the same digest _sweep_api.sh computes.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -437,10 +445,10 @@ t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 # and its resume must not interleave with another tick's).
 # =========================================================================
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 t  "a held lock skips the tick"  "holds the lock"  SW all
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
-rmdir "$DH/.sweep-api.lock"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # The entry point: board-sweep.sh hands an api-bound repo straight to this
@@ -475,7 +483,7 @@ t "a gh-bound repo is refused loudly" "runs only under an api binding" wrong_bin
 # owner from its number's next tenant.
 # =========================================================================
 : > "$FIX.log"
-LK="$DH/.sweep-api.lock"
+LK="$DH/.sweep-api.$(lock_key testrepo).lock"
 lock_as() {  # lock_as <pid> <recorded start> — plant a lock and age it past stale
   rm -rf "$LK"; mkdir "$LK"
   printf '%s\n' "$1" > "$LK/owner"
@@ -575,5 +583,36 @@ t  "and the session is not resumed on revoked credentials" "delta=0" resumes_8
 nt "nor is the answer acked"               "/answers/120/ack"        cat "$FIX.log"
 nt "and the pass does not hang"            "TIMEOUT"                 cat "$OUTR"
 rm -f "$DH/u-8.json"
+
+# ---- the tick lock is PER BINDING, not per machine -------------------------
+# Two api-bound repos on one machine share $DAEMON_HOME, so a single
+# `.sweep-api.lock` made their timers mutually exclusive: the loser exited
+# without renewing, relaying, resuming or dispatching for a whole tick — longer
+# than a lease, on runs the winner's board knows nothing about. The lock's job
+# is to serialize ticks against ONE board's state, and two boards share none.
+SECOND="$(mkrepo)"; mkdir -p "$SECOND/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"otherrepo"}' "$PORT" \
+  > "$SECOND/.doperpowers/board.json"
+SW2() {  # a tick for the SECOND binding, same registry, same mock
+  ( cd "$SECOND" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+# Hold one binding's lock by hand — the shape a mid-tick neighbour presents —
+# and prove the other binding is unaffected while the SAME binding still backs
+# off. Written as a live owner (this shell) so the staleness rule cannot steal
+# it and turn a real exclusion into a pass.
+hold_lock() {  # hold_lock <repo-key>
+  local d; d="$DH/.sweep-api.$(lock_key "$1").lock"
+  mkdir -p "$d"; echo "$$" > "$d/owner"
+  printf '%s
+' "$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ')" > "$d/owner-start"
+}
+hold_lock testrepo
+nt "a second binding's tick is not blocked by the first's lock" \
+  "another api sweep holds the lock" SW2 renew
+t  "and the same binding still excludes itself" \
+  "another api sweep holds the lock" SW renew
+rm -rf "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 finish

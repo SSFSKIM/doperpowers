@@ -295,6 +295,14 @@ echo "retire $*"
 EOF
 chmod +x "$DS/daemon-retire.sh"
 
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
+# or removes one has to name the same digest _sweep_api.sh computes.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -595,10 +603,10 @@ t  "and the records are gone"              "no suppression records"    lifted
 # must not interleave with another tick's.
 # =========================================================================
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 t  "a held lock skips the tick"  "holds the lock"  SW resume
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
-rmdir "$DH/.sweep-api.lock"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # THE PREDECESSOR'S LANE SURVIVES ITS RUN. By the time a ticket reaches this

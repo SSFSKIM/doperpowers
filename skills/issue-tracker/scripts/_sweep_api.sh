@@ -98,7 +98,21 @@ mkdir -p "$DAEMON_HOME"
 # EVERY tick on the platform the fleet actually runs on. Idempotence is the
 # real safety, so a lock older than SWEEP_LOCK_STALE minutes is stolen rather
 # than obeyed (same rule as board-sweep.sh's).
-LOCK="$DAEMON_HOME/.sweep-api.lock"
+# THE LOCK IS PER BINDING, NOT PER MACHINE. $DAEMON_HOME is machine-global and
+# several api-bound repos share it, but a tick serializes against ONE board's
+# state — its renew, relay, resume and dispatch phases touch only runs that
+# board knows. One lock for all of them made two repos' timers mutually
+# exclusive instead: the loser exited having renewed nothing, for a whole tick
+# (up to BOARD_SWEEP_TICK_BUDGET, longer than a lease) on runs the winner's
+# board never heard of. The key is a digest of the binding — url AND repo,
+# because one service serves several repos — hashed rather than sanitized so
+# that no url or repo name can collide with another's after character
+# substitution, and so the path stays a fixed, filesystem-safe length.
+_LOCK_KEY="$(T_URL="$BOARD_API_URL" T_REPO="$BOARD_REPO" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])')"
+LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone
 # is wrong in both directions: a legitimate tick can run for the better part of
 # half an hour (serial bounded waits, one per item), so a live owner was robbed

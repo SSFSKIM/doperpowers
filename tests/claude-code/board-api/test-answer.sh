@@ -270,14 +270,22 @@ nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
 # their answer had been relayed when the inline wake never ran at all. The
 # answer IS on the board either way; what changes is what this command claims.
 # =========================================================================
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
+# one has to name the same digest _sweep_api.sh computes.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"], os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 OUTLOCK="$TDIR/answer-lockheld.out"
 ANS 16 "under a held lock" > "$OUTLOCK" 2>&1 || true
 t  "a held sweep lock is surfaced, not swallowed" "the inline wake did not run" cat "$OUTLOCK"
 t  "and the answer is still reported as recorded" "recorded on the board"       cat "$OUTLOCK"
 nt "no delivery is claimed"                       "delivered to"                cat "$OUTLOCK"
-rmdir "$DH/.sweep-api.lock"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # The hide-a-row drill (spec § Testing): a park that COMMITTED while the first
