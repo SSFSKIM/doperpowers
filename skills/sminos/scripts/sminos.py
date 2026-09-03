@@ -118,6 +118,10 @@ def default_root():
 
 
 def root():
+    # The tool was `agora`: a leftover $AGORA_HOME would point every consumer at
+    # a fresh, empty registry, and dispatchers would launch over live seats.
+    if os.environ.get("AGORA_HOME") is not None:
+        die("AGORA_HOME is set, but the tool is now sminos — export SMINOS_HOME instead (and unset AGORA_HOME)")
     return os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME") or default_root()
 
 
@@ -1099,8 +1103,10 @@ def convert_v2_nodes(r):
             alias = str(n.get("alias") or os.path.basename(nf)[:-5])
             # A sessionless node gets a DETERMINISTIC id, so a run interrupted
             # mid-convert re-derives the same seat instead of a fresh uuid4 each
-            # time (which would multiply the seat on every retry).
-            det_id = str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "sminos:%s/%s" % (g, alias)))
+            # time (which would multiply the seat on every retry). The namespace
+            # keeps the tool's former name: this id must equal the one an
+            # interrupted conversion already wrote for the same node.
+            det_id = str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
             seat_id = sess if UUID_RE.match(sess) else det_id
             existing = None
             if os.path.exists(meta_path(seat_id)):
@@ -1170,9 +1176,13 @@ def merge_asides(r):
     root that was set aside so the daemon root could take its place; its groups/
     are merged back and it is removed when empty. Runs on EVERY migrate, so a
     crash between the rename and the merge self-heals on the next command. A
-    colliding board.jsonl is appended into the root's (ids renumbered); any
-    other collision is left in place and named on stderr on every run until a
-    human resolves it. Returns (asides_removed, warnings)."""
+    colliding board.jsonl is appended into the root's (ids renumbered). Entries
+    at the aside's top level — seat records, reply files, pipeline dirs that an
+    older plugin wrote into a recreated former root — move into the root when
+    it has nothing of that name; lock dirs and colliding dot-files (locks,
+    stamps, markers: no fleet state) are dropped. Any other collision is left
+    in place and named on stderr on every run until a human resolves it.
+    Returns (asides_removed, warnings)."""
     merged, warnings = 0, []
     for aside in sorted(glob.glob(r + ".v2-*")):
         if not os.path.isdir(aside) or os.path.islink(aside):
@@ -1200,13 +1210,23 @@ def merge_asides(r):
                     shutil.move(src, dst)
             if not os.listdir(ag):
                 os.rmdir(ag)
+        if os.path.isdir(aside):
+            for entry in os.listdir(aside):
+                if entry == "groups":
+                    continue
+                sp, dp = os.path.join(aside, entry), os.path.join(r, entry)
+                if entry in ("locks", "surface-locks") and os.path.isdir(sp):
+                    shutil.rmtree(sp, ignore_errors=True)  # a lock dir carries no state
+                elif not os.path.lexists(dp):
+                    os.makedirs(r, exist_ok=True)
+                    shutil.move(sp, dp)  # a seat record, its reply, a pipeline dir: never strand it
+                elif entry.startswith(".") and os.path.isfile(sp):
+                    os.unlink(sp)  # .metalock, a stamp, a marker: the root already has its own
+                else:
+                    warnings.append(sp)
         if os.path.isdir(aside) and not os.listdir(aside):
             os.rmdir(aside)
             merged += 1
-        elif os.path.isdir(aside):
-            for entry in os.listdir(aside):
-                if entry != "groups":
-                    warnings.append(os.path.join(aside, entry))
     return merged, warnings
 
 
@@ -1236,8 +1256,9 @@ def migrate(quiet=False):
     """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
 
     The whole cutover is serialized by an exclusive flock on
-    ~/.claude/.sminos-migrate.lock, so two sminos processes starting at once can't
-    both try to rename the old root. Steps:
+    ~/.claude/.agora-migrate.lock — under the tool's former name on purpose, so
+    a still-cached older `agora` binary and this one never run a migration
+    pass concurrently during the upgrade. Steps:
 
     1. Former roots, when the default root is in use. The registry has lived at
        ~/.claude/orchestrating-daemons (the daemon substrate) and then at
@@ -1276,7 +1297,8 @@ def migrate(quiet=False):
     did = []
     lockdir = os.path.join(home_dir(), ".claude")
     os.makedirs(lockdir, exist_ok=True)
-    with open(os.path.join(lockdir, ".sminos-migrate.lock"), "a") as mlf:
+    # The former name, shared with cached older `agora` binaries (see docstring).
+    with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
         fcntl.flock(mlf, fcntl.LOCK_EX)
         try:
             if r == default_root():

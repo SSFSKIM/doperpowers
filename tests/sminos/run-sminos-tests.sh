@@ -266,6 +266,9 @@ printf 'legacy reply\n' > "$OLD/$OLD_UUID.reply.txt"
 printf '{}' > "$OLD/board-claims/7.json"
 printf '{"alias":"scout","parent":"orchestrator","addr":"scout","session":"22222222-bbbb-4000-8000-000000000002","cwd":"/x","branch":"","desc":"scouts ahead","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
   > "$NEW/groups/demo/nodes/scout.json"
+# A sessionless v2 node: its seat id is derived, and the derivation is pinned below.
+printf '{"alias":"nosess","parent":"","addr":"nosess","session":"","cwd":"/n","branch":"","desc":"no session","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
+  > "$NEW/groups/demo/nodes/nosess.json"
 CODEX_UUID="12121212-abab-4000-8000-000000000012"
 printf '{"uuid":"%s","name":"codexy","status":"idle","current":"%s","cwd":"%s","engine":"codex","pid":"99999","event_log":"/x.events.jsonl","updated":"2026-07-09T09:09:09Z"}\n' \
   "$CODEX_UUID" "$CODEX_UUID" "$WORK" > "$OLD/$CODEX_UUID.json"
@@ -294,6 +297,10 @@ assert_contains "$(cat "$NEW/$OLD_UUID.json")" '"group": "work"' "record lacking
 assert_contains "$(cat "$NEW/$OLD_UUID.json")" '"ticket": "42"' "pipeline fields survive the stamp"
 assert_file_absent "$NEW/groups/demo/nodes" "v2 nodes dir converted away"
 assert_file_exists "$NEW/22222222-bbbb-4000-8000-000000000002.json" "v2 node became a seat keyed by its session"
+# The derived id keeps the tool's former name in its namespace: a conversion
+# interrupted before the rename already wrote a seat under this very id.
+NOSESS_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "agora:demo/nosess"))')"
+assert_file_exists "$NEW/$NOSESS_ID.json" "a sessionless v2 node keeps its pre-rename deterministic seat id"
 assert_contains "$(cat "$NEW/22222222-bbbb-4000-8000-000000000002.json")" '"brief": "scouts ahead"' "v2 desc became brief"
 assert_contains "$(cat "$NEW/22222222-bbbb-4000-8000-000000000002.json")" '"status": "retired"' "converted seat is retired"
 assert_contains "$OUT" "old-worker" "migrated daemon listed as a seat"
@@ -356,6 +363,30 @@ assert_contains "$OUT" "keeper" "a directory recreated at the former path does n
 assert_file_exists "$AH/.claude/sminos/$V3_UUID.json" "the record-holding root stays where it is"
 if [ -L "$AH/.claude/agora" ]; then pass "the recreated directory is folded away and the symlink restored"; else fail "the recreated directory is folded away and the symlink restored"; fi
 if ls -d "$AH/.claude/sminos.v2-"* >/dev/null 2>&1; then fail "an empty recreated directory leaves no aside behind"; else pass "an empty recreated directory leaves no aside behind"; fi
+# The migration lock keeps the former name so a cached older binary and this one
+# serialise on the same file during the upgrade.
+assert_file_exists "$AH/.claude/.agora-migrate.lock" "the migration lock is the one older agora binaries take"
+# A recreated former root that an older plugin already WROTE INTO — a seat and
+# its flock file — is merged, not stranded: the seat surfaces in the fleet.
+rm "$AH/.claude/agora"; mkdir "$AH/.claude/agora"
+LATE_UUID="44444444-dddd-4000-8000-000000000004"
+printf '{"uuid":"%s","alias":"latecomer","name":"latecomer","group":"g1","status":"idle","current":"%s","cwd":"/l","updated":"2026-09-04T00:00:00Z"}\n' "$LATE_UUID" "$LATE_UUID" > "$AH/.claude/agora/$LATE_UUID.json"
+printf 'late reply\n' > "$AH/.claude/agora/$LATE_UUID.reply.txt"
+: > "$AH/.claude/agora/.metalock"
+run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list
+assert_rc 0 "$RC" "a recreated former root holding a seat migrates cleanly"
+assert_file_exists "$AH/.claude/sminos/$LATE_UUID.json" "a seat written into the recreated former root moves into the root"
+assert_file_exists "$AH/.claude/sminos/$LATE_UUID.reply.txt" "its reply file moves with it"
+assert_contains "$OUT" "latecomer" "the merged seat is listed"
+assert_contains "$OUT" "keeper" "the root's own seats are untouched by the merge"
+assert_not_contains "$OUT" "unmerged aside entry" "a colliding flock file is dropped, not reported"
+if ls -d "$AH/.claude/sminos.v2-"* >/dev/null 2>&1; then fail "the merged aside is removed"; else pass "the merged aside is removed"; fi
+if [ -L "$AH/.claude/agora" ]; then pass "the former path is a symlink again after the merge"; else fail "the former path is a symlink again after the merge"; fi
+# A leftover $AGORA_HOME would aim every consumer at a fresh, empty registry:
+# refuse it outright rather than let dispatchers launch over live seats.
+run env -u SMINOS_HOME AGORA_HOME="$AH/.claude/sminos" HOME="$AH" "$SMINOS" list
+assert_rc 2 "$RC" "a stale AGORA_HOME is refused (exit 2)"
+assert_contains "$OUT" "SMINOS_HOME" "the refusal names the knob that replaced it"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list
 assert_rc 0 "$RC" "migration is idempotent (second run exits 0)"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" view demo
