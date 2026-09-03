@@ -125,7 +125,7 @@ t "the blocked leaf is passed over for the younger one" "[drew #$TID_B]" \
   drew "$TICK_B"
 t "and a blocked ticket is beyond the dispatcher's reach entirely" '"claimed":false' \
   api automation POST /runs/claim \
-    '{"lane":"implementer","dispatchNonce":"human-verbs-blocked-probe"}'
+    "{\"lane\":\"implementer\",\"dispatchNonce\":\"human-verbs-blocked-probe\",\"repo\":\"$(drill_repo_key)\"}"
 
 t "the unblock reports the cut" "#$TID_A: blocked_by -= #$TID_B" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --unblock "$TID_B"

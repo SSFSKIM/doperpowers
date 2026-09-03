@@ -77,7 +77,8 @@ OUT_D2="$DRILL_TMP/dispatch2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D2" 2>&1 || true
 nt "an owned ticket is not claimed a second time" "claimed #$TID run=" cat "$OUT_D2"
 t  "a bare claim on the lane answers empty" '"claimed":false' \
-   api automation POST /runs/claim '{"lane":"implementer","dispatchNonce":"walk-exclusivity-probe"}'
+   api automation POST /runs/claim \
+     "{\"lane\":\"implementer\",\"dispatchNonce\":\"walk-exclusivity-probe\",\"repo\":\"$(drill_repo_key)\"}"
 
 # ---- the worker's own writes, as the RUN -----------------------------------
 worker() { in_repo BOARD_RUN_TOKEN="$BEARER" BOARD_RUN_ID="$RUN" BOARD_RUN_FENCE="$FENCE" "$@"; }

@@ -110,7 +110,7 @@ CLAIMS="$DAEMON_HOME/board-claims"
 T2="$(register 'crash drill — lost claim response')"
 NONCE_D="crash-drill-lost-response"
 RUN_D="$(api automation POST /runs/claim \
-  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_D\"}" | jget runId)"
+  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_D\",\"repo\":\"$(drill_repo_key)\"}" | jget runId)"
 mkdir -p "$CLAIMS"
 printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
   >"$CLAIMS/$NONCE_D.json"
@@ -124,7 +124,7 @@ t  "so the ticket still has exactly one owner"         "owner=[$RUN_D]" owner_li
 T3="$(register 'crash drill — claimed but never spawned')"
 NONCE_E="crash-drill-never-spawned"
 RUN_E="$(api automation POST /runs/claim \
-  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_E\"}" | jget runId)"
+  "{\"lane\":\"implementer\",\"dispatchNonce\":\"$NONCE_E\",\"repo\":\"$(drill_repo_key)\"}" | jget runId)"
 printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
   "$RUN_E" "$T3" >"$CLAIMS/$NONCE_E.json"
 OUT_E="$DRILL_TMP/dispatch-e.out"

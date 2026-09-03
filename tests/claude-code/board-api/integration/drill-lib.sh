@@ -357,12 +357,24 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DH"], "*.json"))):
 PY
 }
 
+# The repo key the drill's bound checkout speaks for, read from the binding file
+# the drill is actually running against — so a raw-route helper below cannot
+# drift from what the toolkit's own verbs send.
+drill_repo_key() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["repo"])' \
+    "$REPO/.doperpowers/board.json"
+}
+
 # One claim through the REAL route, as the dispatchers make it, printing
 # `run<TAB>ticket<TAB>fence<TAB>bearer`. Used where a drill needs a knob the
 # dispatcher does not expose (a one-minute lease): the claim itself is still
 # the product's own route and the server's own pick.
 claim_run() {  # claim_run <lane> <nonce> [lease-minutes]
-  local body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\""
+  # The repo comes off the drill's OWN binding file, because that is where the
+  # dispatcher this stands in for reads it. /runs/claim is dispatch-shaped: the
+  # harness principals are unscoped, and an unscoped credential that names no
+  # repo is refused `repo-required` rather than served from the founding one.
+  local body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\",\"repo\":\"$(drill_repo_key)\""
   [ -z "${3:-}" ] || body="$body,\"leaseMinutes\":$3"
   api automation POST /runs/claim "$body}" | python3 -c '
 import json, sys
