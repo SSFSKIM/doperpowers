@@ -90,6 +90,11 @@ cat > "$FIX" <<JSON
                     "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]}],
           "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200&repo=childrepo","status":200,
+  "body":{"items":[{"id":31,"title":"T child","category":"work","state":"in-progress",
+                    "priority":"P1","owner_run":null,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
  {"method":"GET","path":"/tickets?limit=1","status":200,
   "body":{"items":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
                     "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
@@ -169,6 +174,7 @@ printf '{"uuid":"m0ved1234567","ticket":"#55","run_id":9}' > "$DMOVER/d3.json"
 DOPEN="$(mktemp -d)"
 printf '{"uuid":"a11ve1234567","ticket":"#12","run_id":10}' > "$DOPEN/d4.json"
 
+STUB_CHILD="$(mktemp -d)"
 V() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 VD() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DRIFT" \
@@ -233,6 +239,35 @@ V board-list.sh --all-repos >/dev/null
 nt "--all-repos sends no repo filter at all" "repo=" cat "$FIX.log"
 t "and still renders the board" '"path": "/tickets?limit=200"' cat "$FIX.log"
 rc 2 "an unknown flag is still a usage error" V board-list.sh --all-repo
+
+# ── the repo does not leak into a child in ANOTHER checkout ────────────────
+# BOARD_REPO is repo-scoped, exactly like BOARD_API_URL and the credentials
+# file, and _binding.sh honours an inherited one so a USER can override the
+# binding. A value the parent DERIVED from its own board.json is not that
+# override: exported, it reaches the child's `[ -n "$BOARD_REPO" ]` guard first
+# and the child never reads its own board.json at all — so a verb run from a
+# neighbouring checkout would file into, and read, the PARENT's repo. Which is
+# the whole bug this branch exists to close, one level down.
+r_child="$(mkrepo)"; mkdir -p "$r_child/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"childrepo"}' "$PORT" \
+  > "$r_child/.doperpowers/board.json"
+# The parent is a real board verb's environment: _lib.sh sourced in $r, which is
+# where the export would happen, and only then does the child verb run.
+CHILD_RUN="$STUB_CHILD/child-list.sh"
+mkdir -p "$STUB_CHILD"
+printf '#!/usr/bin/env bash\ncd "$1" || exit 1\nexec "%s/board-list.sh"\n' "$SCRIPTS" > "$CHILD_RUN"
+chmod +x "$CHILD_RUN"
+cross_repo() {
+  ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
+      BOARD_CREDENTIALS_FILE="$CREDS" bash -c \
+      ". '$SCRIPTS/_lib.sh'; exec '$CHILD_RUN' '$r_child'" )
+}
+: > "$FIX.log"
+t  "a child in another checkout reads ITS board, not the parent's" "#31 in-progress P1 T child" \
+  cross_repo
+t  "and its read carries the CHILD's repo" '"path": "/tickets?limit=200&repo=childrepo"' \
+  cat "$FIX.log"
+nt "never the parent's"                    "repo=testrepo" cat "$FIX.log"
 # The state argument is a SERVER-side filter in API mode; a branch that dropped
 # it would still print a plausible board (the mock answers any /tickets query).
 # It rides the PROMOTED PLURAL `states=` — the paged surface has no `state=`,

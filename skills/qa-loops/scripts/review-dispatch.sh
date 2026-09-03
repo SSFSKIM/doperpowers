@@ -204,12 +204,20 @@ else
   #   DEFAULT_BRANCH — the scale lane's integration-ref fallback.
   DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
 fi
-# EXPORTED, not just set: the scale-review passes shell out to python that
-# imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep it
-# arrives exported already and the miss is invisible; run directly — the
+# EXPORTED IN gh MODE, not just set: the scale-review passes shell out to python
+# that imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep
+# it arrives exported already and the miss is invisible; run directly — the
 # documented path — an unexported value made every scale epic die
 # "BOARD_REPO is unset" inside the subprocess and be silently skipped.
-export BOARD_REPO
+#
+# NOT in api mode, where that reader does not exist (_board's state-machine half
+# is never exercised there) and everything that needs the value takes it from
+# this shell: _api_py hands it to python3 explicitly, and P_REPO below is an
+# ordinary expansion. Exported, it would ride into every spawned worker and
+# become the default for any checkout that resolves its own binding — including
+# a worktree whose board.json says a different repo, which _binding.sh would
+# then never read.
+if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
 # Repo-wide config injected into every worker prompt (constant across PRs):
 #   AUTO_MERGE_DISPLAY — the merge kill switch as the worker sees it.

@@ -44,7 +44,16 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
     || die "cannot resolve the GitHub repo (gh auth status? set BOARD_REPO=owner/name)"
 fi
-export BOARD_REPO
+# EXPORTED IN gh MODE ONLY. gh consumers read it out of the environment
+# (_board.py's repo(), board-transition's closed-ticket probe), so there it has
+# to travel. In api mode nothing downstream reads the environment — _api_py
+# hands the value to python3 explicitly — and exporting it would make this
+# process's repo the DEFAULT for any descendant that resolves its own binding:
+# _binding.sh honours an inherited BOARD_REPO so a user can override the file,
+# and a value derived from the parent's board.json is not that override. A verb
+# run from a neighbouring checkout would then read and write the parent's repo,
+# which is the accident this key exists to prevent, one level down.
+if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 
 # Daemon registry — same default (and same test override) as orchestrating-daemons.
 DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
