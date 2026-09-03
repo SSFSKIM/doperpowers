@@ -506,7 +506,7 @@ t  "an escalation whose board state reads empty is refused" \
    "board state came back empty"                                       cat "$OUT4B"
 t  "and it asked for that state by id"  '"path": "/tickets/12"'        cat "$FIX.log"
 t  "probing the paged surface before believing the 404" \
-   '"path": "/tickets?limit=1"'                                        cat "$FIX.log"
+   '"path": "/tickets?limit=1&repo=testrepo"'                                        cat "$FIX.log"
 nt "it registers no env-issue"             '\"category\": \"env-issue\"' cat "$FIX.log"
 suppression_for() { cat "$DH/board-suppress/$1.json" 2>/dev/null || echo "no suppression record"; }
 t  "and writes no suppression record"      "no suppression record"     suppression_for 12
@@ -1135,7 +1135,7 @@ t  "and the tick still succeeds"        "tick exit=0"                 cat "$OUTG
 # `ids=12,90` would also be satisfied by `ids=12,900`.
 asked_ids() { grep -o '"path": "/tickets?[^"]*"' "$1" || echo "no /tickets read"; }
 t  "and it asked for exactly the two ids the record names" \
-   '"path": "/tickets?limit=200&ids=12,90"'   asked_ids "$RLOG"
+   '"path": "/tickets?limit=200&ids=12,90&repo=testrepo"'   asked_ids "$RLOG"
 reads() { echo "ticket-reads=[$(grep -c '"path": "/tickets' "$1" || true)]"; }
 t  "in one targeted read, with no whole-board listing beside it" \
    "ticket-reads=[1]"                   reads "$RLOG"
@@ -1259,7 +1259,7 @@ cat > "$KFIX" <<JSON
   "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
  {"method":"POST","path":"/tickets","status":409,
   "body":{"error":{"code":"duplicate","message":"existing ticket 94"}}},
- {"method":"GET","path":"/tickets?limit=200&cursor=$KC","status":200,
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$KC","status":200,
   "body":{"items":[{"id":94,"state":"needs-human","priority":null,
                     "title":"stuck resume: ticket #12 cannot be revived"}],
           "next":null,"as_of":118}},
@@ -1282,9 +1282,9 @@ nt "not the page-1 row whose title merely CONTAINS the real one" \
    '"env_issue": 88'                cat "$KDH/board-suppress/12.json"
 # The trailing quote is the delimiter: without it the first-page assertion is
 # also satisfied by the cursor request, and both pages would collapse into one.
-t  "the scan read the first page"       '"path": "/tickets?limit=200"'  cat "$RLOG"
+t  "the scan read the first page"       '"path": "/tickets?limit=200&repo=testrepo"'  cat "$RLOG"
 t  "and asked for the second carrying the cursor verbatim" \
-   "\"path\": \"/tickets?limit=200&cursor=$KC\""       cat "$RLOG"
+   "\"path\": \"/tickets?limit=200&repo=testrepo&cursor=$KC\""       cat "$RLOG"
 
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true

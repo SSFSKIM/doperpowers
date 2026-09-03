@@ -372,7 +372,7 @@ OUTACK="$TDIR/relay-ack.out"
 SWB relay > "$OUTACK" 2>&1 || true
 t  "the delivery itself landed"          "[board-relay answer:123]"  cat "$TX"
 t  "a failed ack is reported"            "DELIVERED but the ack FAILED" cat "$OUTACK"
-ack_feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed"' "$FIX.log")"; }
+ack_feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed?repo=testrepo"' "$FIX.log")"; }
 t  "and buys no further feed read"       "reads=1"                   ack_feed_reads
 nt "and does not hang"                   "TIMEOUT"                   cat "$OUTACK"
 
@@ -423,7 +423,7 @@ rm -f "$DH/u-6.json" "$DH/u-7.json"
 OUT4="$TDIR/relay4.out"
 SWB relay > "$OUT4" 2>&1 || true
 nt "a zero-ack pass breaks the drain loop" "TIMEOUT"              cat "$OUT4"
-feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed"' "$FIX.log")"; }
+feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed?repo=testrepo"' "$FIX.log")"; }
 t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 
 # =========================================================================
