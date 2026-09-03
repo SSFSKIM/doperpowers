@@ -67,6 +67,12 @@ fi
 # repo dies on `binding=api but no repo` mid-run. Today that is the two
 # dispatchers' spawns and the sweep's three handovers (relay resume, successor
 # resume, fresh-successor spawn); a new one inherits the rule, not a review.
+# The prefix is the DECLARED channel, not yet a delivered one: `claude --bg`
+# drops every spawn-prefix variable (the run bearer and the fence included, not
+# just these two), so today the pin reaches a worker's own shells only on the
+# foreground route. Board ticket 35 owns that handoff; these pins ride along the
+# moment it is fixed, and the rule above is what makes that true without a
+# second pass over every call site.
 if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 
 # Daemon registry — same default (and same test override) as orchestrating-daemons.
