@@ -67,6 +67,7 @@ cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/runs/41/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/43/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/46/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/40/renew","status":409,
   "body":{"error":{"code":"run-ended","message":"reaped"}}},
  {"method":"POST","path":"/runs/50/renew","status":409,
@@ -149,6 +150,16 @@ meta u-4 '{"uuid":"u-4","current":"u-4","status":"working","run_id":44,"fence":1
            "lane":"implementer","bind_confirmed":true,"ticket":"9"}'
 # no run at all (a gh-era or review-species meta) — nothing to renew, no crash
 meta u-5 '{"uuid":"u-5","current":"u-5","status":"working","name":"review-pr-3"}'
+# ANOTHER BINDING'S DAEMON, alive and renewable, sharing this registry. Two
+# api-bound repos on one machine share $DAEMON_HOME and their `board` values are
+# identical (one service, several repos), so the repo stamp is the only thing
+# separating them. Unfiltered, this tick renewed a neighbour's run and — worse —
+# re-bound it, overwriting that run's session locator with this repo's
+# projectKey. Every meta above is UNSTAMPED on purpose: that is the legacy shape
+# from before the stamp existed, and it must still be acted on.
+meta u-6 '{"uuid":"u-6","current":"u-6","status":"working","run_id":46,"fence":1,
+           "lane":"implementer","bind_confirmed":true,"ticket":"31",
+           "board":"api:http://127.0.0.1:'"$PORT"'","board_repo":"otherrepo"}'
 
 RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
 # The stub records its ENVIRONMENT, not just its argv: both the run
@@ -228,6 +239,8 @@ show_rc() { echo "rc=$rc"; }
 t  "a live run's lease is renewed"          '"path": "/runs/41/renew"' cat "$FIX.log"
 t  "a parked-but-live run is renewed too"   '"path": "/runs/43/renew"' cat "$FIX.log"
 nt "a dead session's lease is left to expire" "/runs/44/renew"         cat "$FIX.log"
+t  "an UNSTAMPED meta is still this binding's" '"path": "/runs/41/renew"' cat "$FIX.log"
+nt "but another binding's daemon is left alone" "/runs/46/renew"          cat "$FIX.log"
 t  "renew speaks as automation"             '"auth": "Bearer a"'       cat "$FIX.log"
 t  "run-ended routes to resume, not error"  "run 40: ended (reaped) — resume path" cat "$OUT1"
 t  "and the phase still exits clean"        "rc=0"                     show_rc

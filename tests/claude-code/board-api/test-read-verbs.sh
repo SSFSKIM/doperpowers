@@ -178,6 +178,15 @@ DMOVER="$(mktemp -d)"
 printf '{"uuid":"m0ved1234567","ticket":"#55","run_id":9}' > "$DMOVER/d3.json"
 DOPEN="$(mktemp -d)"
 printf '{"uuid":"a11ve1234567","ticket":"#12","run_id":10}' > "$DOPEN/d4.json"
+# A NEIGHBOUR'S daemon, on a ticket THIS board has never had. The registry is
+# machine-global and several api-bound repos share it, so lint would report
+# another repo's worker as drifted here — and retiring a live daemon on that
+# verdict is exactly what it recommends. #99 is the absent ticket the drift
+# drill above uses, so an unfiltered scan FAILs on it identically.
+DFOREIGN="$(mktemp -d)"
+printf '{"uuid":"f0re1gn234567","ticket":"#99","run_id":11,
+         "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$PORT" \
+  > "$DFOREIGN/d5.json"
 
 STUB_CHILD="$(mktemp -d)"
 V() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
@@ -189,6 +198,8 @@ VC() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DCLOSED" \
 VM() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DMOVER" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 VO() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DOPEN" \
+         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
+VF() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DFOREIGN" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 map_md() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.md"; }
 map_html() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.html"; }
@@ -405,6 +416,13 @@ nt "and re-reads nothing to say so" '"path": "/tickets/4"' cat "$FIX.log"
 t "a ticket the walk missed but the board still has is no retire candidate" \
   "board-lint: 5 open ticket(s), 0 FAIL" VM board-lint.sh
 nt "and no FAIL is printed for it" "FAIL daemon" VM board-lint.sh
+
+# A daemon stamped for ANOTHER binding is not this board's drift to report —
+# and lint's verdict is a retire recommendation, so reporting it is a
+# recommendation to kill a live worker on a board this checkout cannot see.
+nt "lint does not report another binding's daemon as drifted" "FAIL daemon" \
+  VF board-lint.sh
+t  "and says so with a clean verdict"  "0 FAIL" VF board-lint.sh
 t "the by-id confirm is what said so" '"path": "/tickets/55"' cat "$FIX.log"
 # The fourth shape, and the one every healthy daemon in the fleet is in: the
 # walk SERVED its ticket, open. Three drills above pin what lint must SAY; this

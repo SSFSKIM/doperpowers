@@ -306,8 +306,9 @@ SCAN_RC="$SCRATCH/scan-rc"
 # ticket, and re-resumed a fork it should have refused.
 _registry_metas() {  # [all]
   local rc=0
-  T_DHOME="$DAEMON_HOME" T_ALL="${1:-}" python3 - <<'PY' || rc=$?
+  T_DHOME="$DAEMON_HOME" T_ALL="${1:-}" _api_py - <<'PY' || rc=$?
 import glob, json, os
+import _board_api as A
 keep_runless = os.environ.get("T_ALL") == "all"
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if p.endswith(".reply.json"):
@@ -315,6 +316,14 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # THIS REGISTRY IS MACHINE-GLOBAL; A BOARD IS NOT. Several api-bound repos
+    # share $DAEMON_HOME, and every row this scan emits is acted on — renewed,
+    # resumed, re-bound. Unfiltered, a tick renewed a NEIGHBOUR's run and a
+    # bind repair overwrote that run's session locator with this repo's
+    # projectKey. An unstamped meta is legacy and reads as ours (see
+    # A.meta_is_mine).
+    if not A.meta_is_mine(m):
         continue
     if not m.get("run_id") and not keep_runless:
         continue

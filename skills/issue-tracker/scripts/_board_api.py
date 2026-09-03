@@ -108,6 +108,33 @@ def _scoped(path, all_repos=False):
                             urllib.parse.quote(repo(), safe=""))
 
 
+def board_key():
+    """This binding's identity as the daemon registry spells it — the same
+    `api:<url>` board-bind.sh stamps and board-transition.sh's fence compares."""
+    return "api:" + api_url()
+
+
+def meta_is_mine(meta):
+    """Does this daemon-registry meta belong to the binding this process holds?
+
+    $DAEMON_HOME is machine-global while a board is not, so every scan over it
+    has to ask. Two dimensions, because neither settles it alone: `board` names
+    the SERVICE, and two repos served by one service share it; `board_repo`
+    names the repo, and two services could both call a repo `docs`.
+
+    A meta missing EITHER field is legacy — written before that field existed —
+    and is read as this binding's. That is the safe direction here and only
+    here: on this machine only one repo has ever run api-mode daemons, so the
+    unstamped metas are in fact ours, and skipping them would strand live runs
+    with no renewal. Every meta written from now on carries both.
+    """
+    board = str(meta.get("board") or "").strip()
+    if board and board.rstrip("/") != board_key():
+        return False
+    mrepo = str(meta.get("board_repo") or "").strip()
+    return not mrepo or mrepo == repo()
+
+
 def _creds():
     path = os.environ.get("BOARD_CREDENTIALS_FILE", "")
     if not path or not os.path.isfile(path):

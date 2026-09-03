@@ -205,6 +205,14 @@ try:
         if API else ("gh:" + B.repo())   # rstrip: _board_api.url() normalizes
                                          # the same way — one spelling per board
     if API:
+        # ...AND WHICH REPO ON THAT BOARD. One service serves several repos out
+        # of one ticket namespace, so `board` alone does not separate two repos'
+        # daemons in this machine-global registry — their url is the same one.
+        # The api sweep's registry scan reads this to leave a neighbour's runs
+        # alone; without it a tick renewed and RE-BOUND them, and a re-bind
+        # overwrites that run's session locator with this repo's projectKey.
+        target_meta["board_repo"] = env.get("BOARD_REPO", "")
+    if API:
         # bind_confirmed is a claim about what the SERVER accepted, and a
         # resume rehydrates from it — so it is written only on this side of
         # the POST, in the same locked section that stamped the ownership.

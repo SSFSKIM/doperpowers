@@ -78,6 +78,13 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
             m = json.load(f)
     except (ValueError, OSError):
         continue
+    # THIS REGISTRY IS MACHINE-GLOBAL; A BOARD IS NOT. Several api-bound repos
+    # share $DAEMON_HOME, so a neighbour's daemon sits here on a ticket number
+    # this board has never had — and the verdict below is a RETIRE
+    # recommendation, i.e. a recommendation to kill a live worker on a board
+    # this checkout cannot see. An unstamped meta is legacy and reads as ours.
+    if not A.meta_is_mine(m):
+        continue
     tid = str(m.get("ticket", "")).lstrip("#")
     # run_id is the API-era binding (board-bind.sh writes it): a meta without
     # one predates the binding or names no run, and has no board claim to drift

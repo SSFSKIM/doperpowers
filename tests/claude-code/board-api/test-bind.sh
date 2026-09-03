@@ -118,6 +118,12 @@ t "ticket ownership still recorded"   '"ticket": "12"'       cat "$DH/u-1234.jso
 # Ticket numbers are board-local, the registry is machine-global: the board
 # key is what board-transition's live-binding fence matches on (dp#63).
 t "registry meta names its board"     '"board": "api:'       cat "$DH/u-1234.json"
+# ...AND WHICH REPO ON IT. One service serves several repos out of one ticket
+# namespace, so the board key alone does not separate two repos' daemons on one
+# machine: their `board` values are identical. Without this the api sweep's
+# registry scan renewed and re-bound a NEIGHBOUR's successor — and a re-bind
+# overwrites that run's session locator with this repo's projectKey.
+t "registry meta names its repo"      '"board_repo": "testrepo"' cat "$DH/u-1234.json"
 # The bearer at rest is why the mode matters: the meta sits beside the session
 # transcripts and must be no more readable than they are.
 t "the meta holding a bearer is 0600" "600" statmode "$DH/u-1234.json"
