@@ -168,10 +168,13 @@ REVIEW_CAP="${REVIEW_MAX_CONCURRENT:-3}"
 
 if [ "$BOARD_BINDING" = api ]; then
   # No gh, so neither of gh mode's two repo facts is resolvable the usual way.
-  # BOARD_REPO becomes the project key board-bind posts (the board's own name
-  # for this repo); the default branch comes off the clone's own origin/HEAD,
-  # falling back to main when the clone has no remote-tracking head.
-  BOARD_REPO="${BOARD_REPO:-$(basename "$BOARD_ROOT")}"
+  # BOARD_REPO arrives from _binding.sh (the api binding's declared `repo`,
+  # which it refuses to run without) and is both the repo every claim narrows
+  # to and the project key board-bind posts. It used to fall back to
+  # `basename $BOARD_ROOT` here — a guess that is right only while the checkout
+  # happens to be named after the board's key, and wrong silently otherwise.
+  # The default branch comes off the clone's own origin/HEAD, falling back to
+  # main when the clone has no remote-tracking head.
   if [ -z "${DEFAULT_BRANCH:-}" ]; then
     DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
