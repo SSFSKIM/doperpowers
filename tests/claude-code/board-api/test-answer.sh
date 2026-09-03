@@ -105,7 +105,7 @@ trap 'kill $MOCK ${MOCK2:-} 2>/dev/null' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # A `gh` stub earlier on PATH than any real gh: the API path must never reach
 # it. It records to a FILE — a stub that only echoed would be invisible.
@@ -302,7 +302,7 @@ JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX2" "$PORT2" & MOCK2=$!
 wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; exit 1; }
 r2="$(mkrepo)"; mkdir -p "$r2/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT2" > "$r2/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT2" > "$r2/.doperpowers/board.json"
 ANS2() {  # ANS2 <args...> — one board-answer.sh run against the hidden world
   ( cd "$r2" || exit 1
     export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \

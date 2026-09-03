@@ -193,7 +193,7 @@ trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # A `gh` stub earlier on PATH than any real gh: neither the api tick nor the
 # api dispatchers it hands off to may reach it.
@@ -704,7 +704,7 @@ PY
   # subshell nothing ever tidies.
   DBOARD="$(mkrepo)"
   mkdir -p "$DBOARD/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$DBOARD/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$port" > "$DBOARD/.doperpowers/board.json"
 }
 SWD() {  # SWD <repo> <registry> <phase>
   ( cd "$1" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
@@ -816,7 +816,7 @@ CPORT="$(free_port)"
 python3 "$TESTS_DIR/mock-server.py" "$CFIX" "$CPORT" & CMOCK=$!
 wait_for_port "$CPORT" || { echo "FAIL mock server never listened on $CPORT"; exit 1; }
 CREPO="$(mkrepo)"; mkdir -p "$CREPO/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
 CSW() {  # CSW <registry> — one resume tick against the claim-failure board
   ( cd "$CREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$1" DAEMON_SCRIPTS="$DS" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -894,7 +894,7 @@ rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
   RMOCKS="$RMOCKS $!"
   wait_for_port "$port" || { echo "FAIL mock server never listened on $port"; exit 1; }
   RREPO="$(mkrepo)"; mkdir -p "$RREPO/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$RREPO/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$port" > "$RREPO/.doperpowers/board.json"
 }
 RSW() {  # RSW <registry> — one resume tick against the current rboard
   ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \

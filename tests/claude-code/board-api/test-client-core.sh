@@ -61,7 +61,11 @@ wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit
 
 CORE="import _board_api as A"
 run_py() {  # run_py <credentials-file> <python>  — operator context, no run token
+  # BOARD_REPO stands in for the api binding's declared `repo`: _binding.sh
+  # resolves it from .doperpowers/board.json and _api_py hands it to python3,
+  # and the client refuses the repo-dimensioned routes without one.
   PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
+    BOARD_REPO="${BOARD_REPO_OVERRIDE-testrepo}" \
     BOARD_CREDENTIALS_FILE="$1" python3 -c "$2"
 }
 run_py_run() {  # run_py_run <run-token> <credentials-file> <python> — worker context
@@ -91,7 +95,7 @@ t "automation token on claim" '"auth": "Bearer auto-tok"' last_log runs/claim
 run_py "$CREDS" "$CORE
 A.claim('implementer', 'n-7', lease_minutes=45)" > /dev/null 2>&1 || true
 t "claim body pins dispatchNonce and leaseMinutes" \
-  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
+  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45, "repo": "testrepo"}' \
   last_body runs/claim
 
 # A bind speaks as the RUN, not as automation: it is only ever posted for a run

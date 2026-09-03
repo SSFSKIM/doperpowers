@@ -71,7 +71,7 @@ chmod +x "$DS/daemon-spawn.sh" "$DS/daemon-retire.sh"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$1" > "$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$1" > "$d/.doperpowers/board.json"
   echo "$d"
 }
 
@@ -196,6 +196,11 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
+# A CLAIM NAMES ITS REPO. /runs/claim is dispatch-shaped: an unscoped
+# credential that names none is refused `repo-required` outright, and a scoped
+# one that names a repo the token contradicts is refused `repo-mismatch` rather
+# than handing this checkout a neighbouring repo's ticket to work.
+t "the claim names the repo it dispatches for" '\"repo\": \"testrepo\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 1'        cat "$FIX.log"
 t "the execution lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
 t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"

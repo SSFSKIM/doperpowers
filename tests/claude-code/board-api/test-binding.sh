@@ -23,7 +23,7 @@ chmod +x "$STUB/gh"
 probe() { local d="$1"; shift
   : > "$MARKER"
   ( cd "$d" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" "$@" bash -c \
-      ". '$SCRIPTS/_lib.sh'; echo \"\$BOARD_BINDING|\${BOARD_API_URL:-}|\$(basename \"\$BOARD_CREDENTIALS_FILE\")\"" ) || :
+      ". '$SCRIPTS/_lib.sh'; echo \"\$BOARD_BINDING|\${BOARD_API_URL:-}|\$(basename \"\$BOARD_CREDENTIALS_FILE\")|\${BOARD_REPO:-}\"" ) || :
   cat "$MARKER"
 }
 
@@ -31,9 +31,21 @@ r1="$(mkrepo)"                                   # no binding file -> gh
 t "absent file is gh mode" "gh||" probe "$r1" BOARD_REPO=o/r
 
 r2="$(mkrepo)"; mkdir -p "$r2/.doperpowers"
-printf '{"binding":"api","url":"https://b.example"}' > "$r2/.doperpowers/board.json"
+printf '{"binding":"api","url":"https://b.example","repo":"alpha"}' > "$r2/.doperpowers/board.json"
 t  "api binding resolves" "api|https://b.example|$(basename "$r2").env" probe "$r2"
 nt "api mode never invokes gh" "GH_INVOKED" probe "$r2"
+
+# THE REPO THE BINDING SPEAKS FOR. One board service serves several
+# repositories out of one ticket namespace, and a client that names none lands
+# its writes in the SERVER's founding repo and reads every repo's tickets —
+# which is how a register run from a neighbouring checkout filed into this one.
+# In api mode BOARD_REPO is the board's repo KEY (in gh mode it stays
+# owner/name, resolved by _lib.sh).
+t "api binding carries the repo it speaks for" \
+  "api|https://b.example|$(basename "$r2").env|alpha" probe "$r2"
+t "env BOARD_REPO wins over the file" "|beta" probe "$r2" BOARD_REPO=beta
+t "a blank env BOARD_REPO is no declaration at all" \
+  "|alpha" probe "$r2" BOARD_REPO=
 
 r3="$(mkrepo)"; mkdir -p "$r3/.doperpowers"
 printf '{"binding":"gh"}' > "$r3/.doperpowers/board.json"
@@ -42,6 +54,16 @@ t "explicit gh is gh mode" "gh||" probe "$r3" BOARD_REPO=o/r
 r4="$(mkrepo)"; mkdir -p "$r4/.doperpowers"
 printf '{"binding":"api"}' > "$r4/.doperpowers/board.json"   # api without url
 t "api without url dies" "board.json names binding=api but no url" probe "$r4"
+
+# AN api BINDING WITH NO REPO IS A CONFIGURATION ERROR, NOT A DEFAULT. Sending
+# no repo makes the SERVER choose one (its founding repo on a write, every repo
+# on a read) — the exact silent mis-targeting this key exists to close — so the
+# binding refuses before any verb runs rather than falling back to the server's
+# pick or to the checkout's directory name.
+r7="$(mkrepo)"; mkdir -p "$r7/.doperpowers"
+printf '{"binding":"api","url":"https://b.example"}' > "$r7/.doperpowers/board.json"
+t  "api without repo dies" "board.json names binding=api but no repo" probe "$r7"
+nt "and never guesses one"  "api|https://b.example|"                   probe "$r7"
 
 t  "env url override wins" "api|https://o.example|" \
   probe "$r2" BOARD_API_URL=https://o.example
@@ -74,12 +96,21 @@ nt "BOARD_API_URL does not leak into a child in another repo"         "b.example
 # usually a branch name — so a slug taken from it points at a file that was
 # never written. The stable identity is the main checkout's directory.
 r5="$(mkrepo)"
-git -C "$r5" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+mkdir -p "$r5/.doperpowers"
+printf '{"binding":"api","url":"https://b.example","repo":"wt-repo"}' > "$r5/.doperpowers/board.json"
+git -C "$r5" -c user.email=t@t -c user.name=t add .doperpowers/board.json
+git -C "$r5" -c user.email=t@t -c user.name=t commit -q -m init
 WT="$(mktemp -d)/some-feature-branch"
 git -C "$r5" worktree add -q "$WT" -b some-feature-branch
 t "worktree credentials slug is the main repo, not the worktree dir" \
   "$(basename "$r5").env" \
   bash -c "cd '$WT' && . '$SCRIPTS/_binding.sh' && basename \"\$BOARD_CREDENTIALS_FILE\""
+# The repo key rides the CHECKED-IN binding file, so a worktree resolves the
+# same one the main checkout does — by construction rather than by a second
+# rule. Pinned anyway: it is the property every worker session depends on, and
+# the credentials slug above needed its own rule to get there.
+t "a worktree speaks for the same repo as its main checkout" "repo=wt-repo" \
+  bash -c "cd '$WT' && . '$SCRIPTS/_binding.sh' && echo \"repo=\$BOARD_REPO\""
 
 # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling through
 # left BOARD_BINDING=gh, so a typo silently sent every read and every mutation

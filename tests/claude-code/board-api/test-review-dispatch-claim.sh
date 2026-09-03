@@ -103,7 +103,7 @@ chmod +x "$DS/daemon-spawn.sh" "$DS/daemon-retire.sh" "$DS/daemon-finalize.sh"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$1" > "$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$1" > "$d/.doperpowers/board.json"
   echo "$d"
 }
 
@@ -209,6 +209,10 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names the qagent lane"      '\"lane\": \"qagent\"' cat "$FIX.log"
+# A CLAIM NAMES ITS REPO — /runs/claim is dispatch-shaped, so an unscoped
+# credential naming none is refused `repo-required` rather than served from
+# whichever repo the service was founded with.
+t "the claim names the repo it dispatches for" '\"repo\": \"testrepo\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 2'       cat "$FIX.log"
 nt "no other lane is claimed from here"  '\"lane\": \"implementer\"' cat "$FIX.log"
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }

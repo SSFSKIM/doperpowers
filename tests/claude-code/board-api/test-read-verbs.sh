@@ -74,6 +74,14 @@ cat > "$FIX" <<JSON
                     "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]}],
           "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","status":200,
+  "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
+                    "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":14,"title":"T three","category":"work","state":"ready-for-architect",
+                    "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
  {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,
   "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
                     "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
@@ -104,7 +112,7 @@ cat > "$FIX" <<JSON
                     "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
                     "branch":"feat/x","blocked_by":[3,4,5],"relates":[9]}],
           "next":"$C1","as_of":118}},
- {"method":"GET","path":"/queue/decisions?limit=200&cursor=$Q1","status":200,
+ {"method":"GET","path":"/queue/decisions?limit=200&repo=testrepo&cursor=$Q1","status":200,
   "body":{"items":[{"correlation_id":"evt-21","ticket_id":9,"run_id":44,"species":"board",
                     "question":{"note":"the second question"},
                     "raised_at":"2026-08-18 05:00:00.000000+00","state":"needs-info",
@@ -138,7 +146,7 @@ wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 # A stub gh that announces itself.
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
 # DAEMON_HOME is pinned hermetic — board-lint.sh globs it, and its default is the
@@ -206,9 +214,25 @@ t "list renders an ungraded ticket" "#14 ready-for-architect - T three" V board-
 # page-1 assertion, and a bare-listing read must not satisfy either.
 : > "$FIX.log"
 V board-list.sh >/dev/null
-t "list opts into the paged envelope" '"path": "/tickets?limit=200"' cat "$FIX.log"
+t "list opts into the paged envelope" '"path": "/tickets?limit=200&repo=testrepo"' cat "$FIX.log"
 t "and carries the server's cursor back verbatim" "cursor=$C1" cat "$FIX.log"
 nt "and reads no bare listing beside it" '"path": "/tickets"' cat "$FIX.log"
+# ONE SERVICE, SEVERAL BOARDS. The read's server-side default is EVERY repo, so
+# an unnarrowed list from this checkout printed a neighbouring repo's tickets as
+# if they were its own. Every page carries the filter, the cursor page included:
+# a page that dropped it would splice foreign rows into the middle of the board.
+t "every page of the walk stays inside the repo" \
+  '"path": "/tickets?limit=200&repo=testrepo&cursor='"$C1" cat "$FIX.log"
+
+# --all-repos is the one deliberate widening, and only the two BROWSE verbs
+# offer it (the sweep, lint, map, reconcile and both dispatchers always narrow).
+: > "$FIX.log"
+t "--all-repos says so in the header" "all repos" V board-list.sh --all-repos
+: > "$FIX.log"
+V board-list.sh --all-repos >/dev/null
+nt "--all-repos sends no repo filter at all" "repo=" cat "$FIX.log"
+t "and still renders the board" '"path": "/tickets?limit=200"' cat "$FIX.log"
+rc 2 "an unknown flag is still a usage error" V board-list.sh --all-repo
 # The state argument is a SERVER-side filter in API mode; a branch that dropped
 # it would still print a plausible board (the mock answers any /tickets query).
 # It rides the PROMOTED PLURAL `states=` — the paged surface has no `state=`,
@@ -216,7 +240,7 @@ nt "and reads no bare listing beside it" '"path": "/tickets"' cat "$FIX.log"
 : > "$FIX.log"
 V board-list.sh ready-for-implementer >/dev/null 2>&1 || true
 t "list pushes the state filter onto the wire as the promoted plural" \
-  '"path": "/tickets?limit=200&states=ready-for-implementer"' cat "$FIX.log"
+  '"path": "/tickets?limit=200&states=ready-for-implementer&repo=testrepo"' cat "$FIX.log"
 
 # ── show ───────────────────────────────────────────────────────────────────
 t "show prints the ticket row with run/plan/pr" "#12 in-progress P1 T one  owner_run=41" \
@@ -243,7 +267,7 @@ nt "and reads no whole board to do it" '"path": "/tickets"' cat "$FIX.log"
 : > "$FIX.log"
 t "show dies on an unknown ticket" "error: no ticket #77" V board-show.sh 77
 t "and probed the paged surface before trusting that 404" \
-  '"path": "/tickets?limit=1"' cat "$FIX.log"
+  '"path": "/tickets?limit=1&repo=testrepo"' cat "$FIX.log"
 # The projection carries branch and both edge arrays now (arkho#7); the header
 # line is the only place an operator sees them in API mode.
 t "show prints branch and both edge arrays" "branch=feat/x blocked_by=[3 4 5] relates=[9]" \
@@ -282,11 +306,11 @@ nt "reconcile never calls a ticket in review dispatchable" \
 : > "$FIX.log"
 V board-reconcile.sh >/dev/null 2>&1 || true
 t "reconcile opts the queue into the paged envelope" \
-  '"path": "/queue/decisions?limit=200"' cat "$FIX.log"
+  '"path": "/queue/decisions?limit=200&repo=testrepo"' cat "$FIX.log"
 t "and carries the queue cursor back verbatim" "cursor=$Q1" cat "$FIX.log"
 nt "and reads no bare queue listing beside it" '"path": "/queue/decisions"' cat "$FIX.log"
 t "reconcile pushes the lane filter onto the wire as the promoted plural" \
-  '"path": "/tickets?limit=200&states=ready-for-architect,ready-for-implementer"' \
+  '"path": "/tickets?limit=200&states=ready-for-architect,ready-for-implementer&repo=testrepo"' \
   cat "$FIX.log"
 # The API branch ends by chaining board-lint.sh (parity with the gh branch),
 # which is how the local-registry half of the report gets into an otherwise
@@ -411,7 +435,7 @@ nt "a projecting server draws no degradation note" "projects no dependency or re
 # able to satisfy the negative.
 : > "$FIX.log"
 V board-map.sh --write >/dev/null 2>&1
-t "map walks the paged surface" '"path": "/tickets?limit=200"' cat "$FIX.log"
+t "map walks the paged surface" '"path": "/tickets?limit=200&repo=testrepo"' cat "$FIX.log"
 nt "and reads no whole board to draw the graph" '"path": "/tickets"' cat "$FIX.log"
 
 # ── an OLDER server: no topology columns at all ────────────────────────────
@@ -447,7 +471,7 @@ python3 "$TESTS_DIR/mock-server.py" "$FIX_OLD" "$PORT_OLD" & MOCK_OLD=$!
 trap 'kill $MOCK $MOCK_OLD 2>/dev/null' EXIT
 wait_for_port "$PORT_OLD" || { echo "FAIL mock server never listened on $PORT_OLD"; exit 1; }
 r_old="$(mkrepo)"; mkdir -p "$r_old/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT_OLD" > "$r_old/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT_OLD" > "$r_old/.doperpowers/board.json"
 map_md_old() {
   ( cd "$r_old" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-map.sh" --write >/dev/null )

@@ -61,7 +61,7 @@ statmode() {  # portable "what are this file's permission bits"
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # DAEMON_HOME is pinned to a temp dir in every case below — a test that fell
 # through to the default would read (and rewrite) the operator's real registry.

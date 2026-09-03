@@ -47,10 +47,14 @@ world() {  # world <name> — fixtures on stdin; retires the previous world
   wait_for_port "$PORT" || { echo "FAIL mock server never listened for world $1"; exit 1; }
 }
 
+# BOARD_REPO stands in for the api binding's declared `repo`: _binding.sh
+# resolves it from .doperpowers/board.json and _api_py hands it to python3, and
+# the client refuses the repo-dimensioned routes rather than letting the server
+# pick a repo for it.
 run_py() { PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
-  BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$1"; }
+  BOARD_REPO=testrepo BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$1"; }
 run_py_as_run() { PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
-  BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RUN_TOKEN=run-tok python3 -c "$1"; }
+  BOARD_REPO=testrepo BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RUN_TOKEN=run-tok python3 -c "$1"; }
 reqs() { echo "reqs=[$(grep -c '"method"' "$FIX.log" || true)]"; }
 paths() { python3 -c 'import json, sys
 print("paths=[%s]" % " ".join(json.loads(ln)["path"]
@@ -74,7 +78,7 @@ print(json.dumps(r))' "$@"
 SC="WyJQMSIsIjIwMjYtMDgtMTggMDQ6MTU6MDkuMTIzNDU2KzAwIiwiMyJd"
 world search <<JSON
 [
- {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta&cursor=$SC","status":200,
+ {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta&repo=testrepo&cursor=$SC","status":200,
   "body":{"items":[$(row 7 ready-for-implementer "alpha beta now")],
           "next":null,"as_of":9}},
  {"method":"GET","path":"/tickets?limit=200&q=alpha%20beta","status":200,
@@ -169,7 +173,7 @@ chmod +x "$GHSTUB/gh"
 
 API_REPO="$(mkrepo)"
 mkdir -p "$API_REPO/.doperpowers"
-printf '{"binding":"api","url":"http://example.invalid"}\n' > "$API_REPO/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://example.invalid","repo":"testrepo"}\n' > "$API_REPO/.doperpowers/board.json"
 # BOARD_API_URL (env) overrides board.json's url, so one repo serves every
 # world — the port travels in the environment.
 verb() {  # verb <args…> — board-search.sh in the api-bound repo, gh stubbed
