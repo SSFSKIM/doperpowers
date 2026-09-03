@@ -328,7 +328,7 @@ PY
   # registered by the sweep, not pointed at from here.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
     P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
-    P_REPO="$(basename "$BOARD_ROOT")" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
     P_ENV_TRACKER_ISSUE=none P_ENGINE_NAME=claude \
     P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
     P_TICKET_BODY_FILE="$body_file" P_PARENT_PIN="${C_PARENT_PIN:-none (no parent)}" \

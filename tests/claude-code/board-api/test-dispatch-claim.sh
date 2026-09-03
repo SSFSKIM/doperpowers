@@ -232,6 +232,12 @@ t  "the worker is told its role and ticket" "ARCHITECT worker for ticket #12" pr
 t  "the ticket url points at the board api" "http://127.0.0.1:$PORT/tickets/12" prompt
 t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
 t  "the api block replaces the gh ticket read" "delivered by the claim that dispatched you" prompt
+# The worker is oriented by the BOARD's name for the repo, the way a gh-mode
+# worker is oriented by owner/name — not by whatever the checkout directory
+# happens to be called, which is a fact about this machine and not about the
+# board the ticket lives on.
+t  "and the worker is oriented by the board's repo, not the checkout dir" \
+  "\`REPO\`: testrepo" prompt
 nt "nothing was left unrendered" "{{" prompt
 
 # --- the triggered form: gh-only, and it says so ---------------------------

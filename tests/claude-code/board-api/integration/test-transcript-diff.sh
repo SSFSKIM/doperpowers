@@ -121,9 +121,19 @@ walk() {
       call+=("${a//%T/$tid}")
     done
     rc=0
+    # BOARD_REPO MEANS A DIFFERENT THING PER BINDING, and this one helper drives
+    # both walks. In gh mode it is the target `owner/name` the stub answers for,
+    # and the walk supplies it. In api mode it is the BOARD's repo key, an env
+    # value wins over the binding file, and forcing the gh stub's slug in would
+    # send a repo the service never registered (`unknown-repo`) — so the api
+    # walk gets a blank, which _binding.sh reads as no declaration and resolves
+    # from .doperpowers/board.json. The binding file is the discriminant: the gh
+    # walk's checkout has none.
+    local repo_env=""
+    [ -f "$repo/.doperpowers/board.json" ] || repo_env="$GH_STUB_REPO"
     out="$( (cd "$repo" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
       DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
-      BOARD_REPO="$GH_STUB_REPO" GH_STUB_STATE="$GH_STUB_STATE" \
+      BOARD_REPO="$repo_env" GH_STUB_STATE="$GH_STUB_STATE" \
       "$SCRIPTS/${call[0]}" "${call[@]:1}") 2>&1 )" || rc=$?
     # `argv` is FORENSIC — what actually ran, for reading a failure back. The
     # comparator reads `argv_raw` and nothing reads `argv`; wiring an assertion
