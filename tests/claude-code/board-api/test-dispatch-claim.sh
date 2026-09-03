@@ -151,6 +151,15 @@ t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/
 t "worker got the run id"       "BOARD_RUN_ID=41"                      cat "$DH/spawn-capture.txt"
 t "fence exported"              "BOARD_RUN_FENCE=3"                    cat "$DH/spawn-capture.txt"
 t "api url exported"            "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
+# THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
+# it was dispatched for (`git checkout --detach <headRefOid>` for a reviewer, a
+# feature branch for an executor), and a head that predates the repo key carries
+# a two-key board.json — so every board script the worker ran afterwards died on
+# `binding=api but no repo` and the claimed work could never post its final
+# transition. The dispatcher pins it in the spawn environment, where it wins over
+# whatever board.json the checkout happens to hold, exactly as BOARD_API_URL
+# above does and for the same reason.
+t "repo pinned for the worker's own checkout"            "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
 # Same rule as the gh path's claude route: an ambient gateway settings/effort
 # pair would be inherited by daemon-spawn AND persisted into the meta, so every
 # later resume of this worker would silently ride the gateway.

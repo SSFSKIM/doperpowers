@@ -53,6 +53,13 @@ fi
 # and a value derived from the parent's board.json is not that override. A verb
 # run from a neighbouring checkout would then read and write the parent's repo,
 # which is the accident this key exists to prevent, one level down.
+#
+# The dispatchers' worker spawns are the deliberate exception: they put the key
+# in the child's environment ON PURPOSE, because a worker checks out the head it
+# was dispatched for and a head predating this key carries a board.json without
+# one. That child is bound to the dispatcher's repo by construction — the run
+# bearer beside the key ties it to a ticket in that repo — so it is a pin, not a
+# leak. An ambient export is neither, which is why this one is scoped.
 if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 
 # Daemon registry — same default (and same test override) as orchestrating-daemons.

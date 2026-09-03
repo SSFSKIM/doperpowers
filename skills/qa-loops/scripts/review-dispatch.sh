@@ -213,10 +213,15 @@ fi
 # NOT in api mode, where that reader does not exist (_board's state-machine half
 # is never exercised there) and everything that needs the value takes it from
 # this shell: _api_py hands it to python3 explicitly, and P_REPO below is an
-# ordinary expansion. Exported, it would ride into every spawned worker and
-# become the default for any checkout that resolves its own binding — including
-# a worktree whose board.json says a different repo, which _binding.sh would
-# then never read.
+# ordinary expansion. Exported, it would become the default for any checkout a
+# descendant resolves its own binding in — including one whose board.json says a
+# different repo, which _binding.sh would then never read.
+#
+# The worker spawn below is the one deliberate exception, and it states itself
+# on the prefix rather than riding an ambient export: a reviewer checks out the
+# PR head, and a head predating the repo key carries a board.json without one,
+# so the pin is what lets that worker finish its own review. It cannot leak —
+# the run bearer beside it binds the worker to a ticket in this very repo.
 if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
 # Repo-wide config injected into every worker prompt (constant across PRs):
@@ -1634,7 +1639,7 @@ PY
   CLAIM_JOURNAL="$claims_dir/$nonce.json" CLAIM_LANE="$lane" CLAIM_RUN="$C_RUN_ID"
   CLAIM_TICKET="$C_TICKET" CLAIM_DAEMON="$name" CLAIM_CONTROL="$control_dir"
   BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
-  BOARD_API_URL="$BOARD_API_URL" \
+  BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
     _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
       "$control_dir" "$name" || spawn_rc=1
   unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL

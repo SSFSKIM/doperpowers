@@ -341,8 +341,19 @@ PY
   # claude route: this dispatcher can itself run inside a gateway-routed
   # daemon, and daemon-spawn persists what it inherits into the registry meta,
   # so every later resume would ride the gateway while the log said claude.
+  # BOARD_REPO rides the prefix for the same reason BOARD_API_URL does, and it
+  # is the ONE place an api-mode repo key is deliberately put in a child's
+  # environment (fix wave 1 took it off _lib.sh's export). An executor checks
+  # out the branch it was dispatched for, and a branch that predates the repo
+  # key carries a two-key board.json — unpinned, every board script it ran
+  # after that checkout died on `binding=api but no repo` and the claimed
+  # ticket could never be transitioned. The leak the no-export rule guards
+  # against cannot arise here: this worker is bound to THIS dispatcher's repo
+  # by construction, since the run bearer it also carries ties it to a ticket
+  # in that repo and nothing else.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+    BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$DAEMON_SCRIPTS/daemon-spawn.sh" --no-wait "$name" "$prompt" "$LOCAL_REPO" "$name" \
     "$model")" \
