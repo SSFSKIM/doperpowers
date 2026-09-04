@@ -193,7 +193,12 @@ shells reliably carry. An explicit `BOARD_RUN_TOKEN` in the environment still
 wins where one survives; a record is used only if its bind confirmed and it was
 bound on this checkout's board; otherwise there is no run context and the
 credentials file above is what answers. A verb that resolved a run says so in
-one line on stderr, naming the run and the seat and never the bearer.
+one line on stderr, naming the run and the seat and never the bearer. The
+registry root is the fleet's own (`$SMINOS_HOME`, then `$DAEMON_HOME`, then
+`~/.claude/sminos`), so a non-default root has to be machine-wide — set in a
+shell profile or a launchd environment — exactly as every other `sminos` call a
+worker makes already requires; a root exported only inside a dispatcher's
+process reaches neither.
 
 Every read narrows to the bound repo, and so does every write. The two **browse**
 verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back

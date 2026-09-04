@@ -163,7 +163,16 @@ def _registry_root():
     """The seat registry, by the ONE rule the sminos CLI and _lib.sh apply:
     $SMINOS_HOME, then $DAEMON_HOME, then the default. Resolved here rather
     than taken from a caller because this module is reached from shells that
-    never sourced _lib.sh (a bare `python3 -c` in a worker's own hands)."""
+    never sourced _lib.sh (a bare `python3 -c` in a worker's own hands).
+
+    A root overridden only in a dispatcher's own process never reaches the
+    worker it spawns, so the worker reads the default one — which is sminos's
+    own standing assumption, not a new exposure this adds: the spawn preamble
+    has every worker run `sminos topology`/`post`/`status` from its own shell,
+    and those resolve the root by this same rule. An override has to be
+    machine-wide (a shell profile, a launchd environment) for the fleet to work
+    at all, and where it is, self-location reads exactly what sminos wrote.
+    """
     return (os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
             or os.path.join(os.path.expanduser("~"), ".claude", "sminos"))
 
