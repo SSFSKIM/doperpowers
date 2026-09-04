@@ -95,10 +95,9 @@ shows how to do what the Decisions already say is transcription: written
 blind here, copied there, and stale by the time a later task runs. The
 executor writes it once, with the real codebase in view.
 
-The same contract serves an executor you dispatch and tend and a session
-that will never share your context — a board Executor, a daemon, a resume
-after compaction. The second reads it with nothing left implicit; write
-every task for the second.
+Every executor is a fresh context — a subagent, a daemon, a board
+Executor, a session resumed after compaction — and reads the contract with
+nothing left implicit. Only its escalation route differs.
 
 ## Spike Tasks
 

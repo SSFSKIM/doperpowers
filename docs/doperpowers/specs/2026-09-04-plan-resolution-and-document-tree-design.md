@@ -72,10 +72,9 @@ the skill-bound text verbatim; commentary sits outside the quotes.
 > blind here, copied there, and stale by the time a later task runs. The
 > executor writes it once, with the real codebase in view.
 >
-> The same contract serves an executor you dispatch and tend and a session
-> that will never share your context — a board Executor, a daemon, a resume
-> after compaction. The second reads it with nothing left implicit; write
-> every task for the second.
+> Every executor is a fresh context — a subagent, a daemon, a board
+> Executor, a session resumed after compaction — and reads the contract with
+> nothing left implicit. Only its escalation route differs.
 
 **Spike Tasks** — the body becomes:
 
@@ -219,14 +218,15 @@ review.
 **Overview** — after the sentence ending "recomposition closes it.", insert:
 
 > The document tree is the composite tree: one spec per composite, none per
-> leaf. A child's contract is its section here; its own document is its
-> execution artifact — a plan, an ExecPlan, a spike's findings — or its own
-> composite spec when it is a composite in turn.
+> leaf. A child's contract is its section here; what it adds are execution
+> artifacts — its brief or plan, and the ledger that records its run — a
+> spike's findings, or its own composite spec when it is a composite in
+> turn.
 
 **The Tree** — the NO NEW SUBSTRATE bullet becomes:
 
 > - NO NEW SUBSTRATE: the tree is not a registry file. It IS the citation
->   chain (each child's artifact — plan header, ExecPlan, PR body, ticket,
+>   chain (each child's artifact — brief, plan, ledger, PR body, ticket,
 >   or a composite child's own spec — opens by citing its parent), the
 >   board's typed edges, and the composite specs' tracking maps.
 
@@ -234,16 +234,24 @@ review.
 
 > 7. **Dispatch and tend** — children go to their tracks per their track
 >    hint, each carrying its section as pre-landed design and writing no
->    spec of its own: a controlled leaf grills only its residue
->    (doperpowers:brainstorming) and goes to doperpowers:writing-plans, an
->    autonomous leaf authors its ExecPlan, a direct leaf implements against
->    its section, a spike writes findings, and a composite child runs this
->    skill at its own dispatch. Residue decisions a leaf makes land in this Decision Log
->    under the child's id; a leaf's retrospective is its tracking-map row
->    and its closing artifact. As children land, the tracking map, Decision
->    Log, and Surprises stay current; when the children are all in, close
->    the parent by RECOMPOSITION — verify the parent's own acceptance, then
->    write the retrospective; the Deferred section seeds the next cut.
+>    spec of its own: a brief child implements against its section and a
+>    dispatch brief, a plan child grills only its residue
+>    (doperpowers:brainstorming) and goes to doperpowers:writing-plans, a
+>    spike writes findings, and a composite child runs this skill at its
+>    own dispatch. Every child keeps a LEDGER: a plan child's record is its
+>    committed plan and the doperpowers:subagent-driven-execution ledger; a
+>    brief child opens `docs/doperpowers/ledgers/YYYY-MM-DD-<child-id>.md`
+>    on its branch at dispatch — it cites this document (path + child id +
+>    parent pin), carries the brief verbatim, and then Progress as
+>    deliverables land, in-flight Decisions with their rationale, Surprises,
+>    and the flow-back raised; its outcome section, written at close, is
+>    the child's retrospective and the Tracking Map points at it. On a board
+>    the ticket timeline and the PR body are that ledger. Residue rulings a
+>    leaf makes land in this Decision Log under the child's id. As children
+>    land, the tracking map, Decision Log, and Surprises stay current; when
+>    the children are all in, close the parent by RECOMPOSITION — verify the
+>    parent's own acceptance, then write the retrospective; the Deferred
+>    section seeds the next cut.
 
 **The Derivation Contract** — the last paragraph becomes:
 
@@ -252,10 +260,10 @@ review.
 > landed decisions. Its section IS its spec. Design the child produces for
 > itself expands that section in place; a leaf whose residue design trips
 > the gate's split signals is a composite in disguise and gets its own
-> composite spec instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
-> by citing this composite spec (path + child id + parent pin); that
-> citation is what keeps the flow-back channel alive when there is no
-> board. Children read the parent document's *current* state at dispatch,
+> composite spec instead. The child's artifacts — its brief or plan, its
+> ledger, its PR or ticket — open by citing this composite spec (path +
+> child id + parent pin); that citation is what keeps the flow-back channel
+> alive when there is no board. Children read the parent document's *current* state at dispatch,
 > never a frozen snapshot; when a Revision Note lands that touches an
 > in-flight child's contract, flag that child. When a child's work
 > contradicts the parent, the discovery flows back into the parent's
@@ -265,13 +273,22 @@ review.
 **Common Mistakes** — a row is added after "Child quietly diverging from
 the parent":
 
-> | Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
+> | Writing a spec for a leaf child | Its section is its spec; its documents are its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
+> | Authoring an ExecPlan for a child | An ExecPlan carries a design because it has no spec; a child has one — its section. The brief dispatches, the ledger records. |
 
-**The Derivation Contract**, the Track hint line — `direct` joins the
-vocabulary: "controlled, autonomous, direct, spike (deliverable is
-findings, never a merge), or another decomposing run at dispatch"; the
-template's child heading reads `[track hint: controlled | autonomous |
-direct | spike (findings, never a merge) | decomposing]`.
+**The Derivation Contract**, the Track hint line — the child vocabulary
+is named by artifact, and `autonomous` leaves it:
+
+> - **Track hint** — brief (the section plus a dispatch brief is the
+>   whole contract; the board's DIRECT mode), plan (a
+>   doperpowers:writing-plans plan at task grain; the board's
+>   PLAN-EXECUTION), spike (deliverable is findings, never a merge), or
+>   another decomposing run at dispatch. Every child's executor is a fresh
+>   context — a subagent, a daemon, a board worker — so the hint names the
+>   grain of the brief, never who runs it.
+
+The template's child heading reads `[track hint: brief | plan | spike
+(findings, never a merge) | decomposing]`.
 
 **references/composite-spec-template.md** — in the header note, "Children
 dispatch per their track hint; each child spec opens by citing this
@@ -280,20 +297,20 @@ cannot cite forward, so the citation runs backward (its child section and
 the Tracking Map point at its spec)." becomes:
 
 > Children dispatch per their track hint, each carrying its section as its
-> spec; each child's artifact (plan, ExecPlan, findings, PR, ticket — or a
-> composite child's own composite spec) opens by citing this document
-> (path + child id + parent pin) — except a child that landed before this
+> spec; each child's artifact (brief or plan, ledger, findings, PR, ticket
+> — or a composite child's own composite spec) opens by citing this
+> document (path + child id + parent pin) — except a child that landed before this
 > cut: it cannot cite forward, so the citation runs backward (its child
 > section and the Tracking Map point at its artifact).
 
 and the Tracking Map body becomes:
 
-> [child id → artifact (plan / ExecPlan / findings / composite spec / PR) or
-> ticket # / status. This map plus the children's Status fields IS this
-> unit's progress record — there is no separate Progress section. Keep it
-> current as children land; a landed child's row carries its closing
-> evidence, and that row plus its closing artifact is the child's
-> retrospective.]
+> [child id → ledger (or ticket #), plus its plan / findings / composite
+> spec where one exists, and status. This map plus the children's Status
+> fields IS this unit's progress record — there is no separate Progress
+> section. Keep it current as children land; a landed child's row carries
+> its closing evidence and points at the ledger whose outcome section is
+> the child's retrospective.]
 
 ## §3 The child's path (doperpowers:brainstorming)
 
@@ -310,9 +327,10 @@ bullet:
 >   route it there. The composite's approval covers the section, so present
 >   only the residue; the track hint is your recommendation, confirmed like
 >   any track. The child writes no spec of its own: its section is its spec,
->   the track names its exit (doperpowers:writing-plans,
->   doperpowers:execplan, or direct), and the track's own review covers the
->   residue.
+>   the hint names its exit (a plan child to doperpowers:writing-plans; a
+>   brief child implements against its section and brief, keeping the
+>   ledger doperpowers:decomposing describes), and the track's own review
+>   covers the residue.
 
 **The path**, steps 5 and 7 — each gains a trailing clause:
 
@@ -361,9 +379,9 @@ Self-Review 4:
 **doperpowers:finishing-a-development-branch**, Step 1's retrospective
 sentence — a child must not overwrite the composite's Outcomes:
 
-> For a child of a composite spec the entry is the child's Tracking Map
-> row — closing evidence and artifact — and the composite's Outcomes waits
-> for recomposition.
+> For a child of a composite spec the entry is the outcome section of the
+> child's ledger (a plan child's: its Tracking Map row) — closing evidence
+> and artifact — and the composite's Outcomes waits for recomposition.
 
 **scripts/sde-telemetry** — the role classifier learns the
 initiative-prefixed description forms this session used ("Implement i2 Task
@@ -463,6 +481,7 @@ executor span up modestly, fix rate and final-review defects within the
 ## Acceptance
 
 - `grep -n "questionable taste\|Bite-Sized\|Complete code in every step\|task's steps" skills/writing-plans/SKILL.md` prints nothing; `grep -c "## Contract Resolution\|\*\*Deliverables:\*\*\|\*\*Decisions:\*\*\|A placeholder is a deferred decision" skills/writing-plans/SKILL.md` prints 4.
+- `grep -c "brief | plan | spike" skills/decomposing/references/composite-spec-template.md` prints 1; `grep -c "ledgers/" skills/decomposing/SKILL.md` prints 1; `grep -c "ExecPlan" skills/decomposing/SKILL.md` prints 4 (The Gate's execution-mechanics examples and the Common Mistakes row that forbids one for a child).
 - `grep -rn "child spec" skills/` prints nothing; `grep -n "composite tree" skills/decomposing/SKILL.md` and `grep -n "own composite spec" skills/decomposing/references/composite-spec-template.md` each print one line.
 - `grep -c "child of a composite spec" skills/brainstorming/SKILL.md` prints 4 (the bullet, steps 5 and 7, the Documentation line).
 - `grep -n "at contract resolution" skills/execspec/SKILL.md` prints the table row; `grep -n "Code blocks in the brief are decisions" skills/subagent-driven-execution/executor-prompt.md` prints one line; `grep -c "child of a composite spec" skills/finishing-a-development-branch/SKILL.md skills/subagent-driven-execution/SKILL.md skills/writing-plans/SKILL.md` prints 1, 1, and 3.
@@ -615,6 +634,30 @@ executor span up modestly, fix rate and final-review defects within the
   same-model controls pinned it verbatim. Copy is an exact string.
   Date/Author: 2026-09-04 / fable session (micro-test refinement)
 
+- Decision: a child's artifacts are one triple at two grains — contract
+  (its section), dispatch (a brief, or a writing-plans plan for a
+  big-atomic child), record (a ledger: the SDE ledger for a plan child, a
+  committed `docs/doperpowers/ledgers/` document for a brief child that
+  cites the composite, carries the brief verbatim, and whose outcome
+  section is the child's retrospective). `autonomous` leaves the child
+  hint vocabulary, which is named by artifact: brief | plan | spike |
+  decomposing. Contract Resolution's "tended executor vs. stranger"
+  framing is replaced by one bar: every executor is a fresh context.
+  Rationale: the human's correction — a subagent spawned by the parent's
+  owner and a daemon spawned elsewhere both read one initializing payload
+  and report back; only the escalation route differs, which is not a
+  reason for a different artifact. An ExecPlan earns its place only where
+  there is no spec (it carries the design); a child's section is its spec,
+  so an ExecPlan for a child restates it — Vitrea's "autonomous" children
+  never wrote one. The ledger is what the ExecPlan's living tail provided
+  and the brief lacked, and it closes Vitrea's one recorded cost
+  (child-local reasoning surviving only in transcripts); the board's ticket
+  timeline plus PR body already are that ledger, so the off-board document
+  mirrors the on-board record. The standalone autonomous track keeps its
+  ExecPlan for now — there it IS the spec — and this argument is why the
+  deferred plan-species merge will work.
+  Date/Author: 2026-09-04 / human + fable session
+
 ## Surprises & Discoveries
 
 - Observation: plan writing is fast; the plan's cost is tokens and
@@ -685,6 +728,9 @@ executor span up modestly, fix rate and final-review defects within the
   standalone child design spec at `docs/doperpowers/specs/…c5…-design.md`
   with its own living tail before the plan. Two new-text reps volunteered
   the composite-in-disguise route unprompted.
+  Run against the second revision's text (hints controlled | autonomous |
+  direct); the fourth revision renamed the hints and added the ledger
+  without touching the tested predicate.
   Evidence: ten single-shot reports, this session.
 
 ## Outcomes & Retrospective
@@ -743,3 +789,8 @@ the artifact written, about ten minutes a rep, and a reviewer to read it.
 - 2026-09-04 (third revision): micro-tests A and B run and recorded;
   "piece of copy" added to the code-as-decision list from A's deferred
   class; Outcomes & Retrospective written at finish.
+- 2026-09-04 (fourth revision): the human's correction folded — no
+  tended/unattended division (every executor is a fresh context), no
+  ExecPlan for a child, hints named by artifact (brief | plan | spike |
+  decomposing), and the per-child ledger as the third member of the
+  contract / dispatch / record triple.
