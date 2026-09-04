@@ -53,6 +53,15 @@
 #   BOARD_API_URL BOARD_CREDENTIALS_FILE   resolved by _binding.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# THE TICK IS NOT ITS SESSION, and it has to say so BEFORE the binding is
+# resolved. _binding.sh reads this session's seat record at SOURCE time when the
+# checkout's board.json predates the `repo` key, so a declaration made further
+# down this file arrives after the one read it exists to close — and a tick
+# launched from a bound worker's session would have taken that worker's repo key
+# and claimed, swept and ended runs against the wrong repo. The doctrine block
+# beside `unset BOARD_RUN_TOKEN` below is the same one; only the timing puts the
+# export here.
+export BOARD_NO_SELF_LOCATE=1
 # shellcheck source=_binding.sh
 . "$SCRIPT_DIR/_binding.sh"
 # For _claim_nonce ONLY — the successor claim below is filed under a nonce on
@@ -80,17 +89,17 @@ die() { echo "error: $*" >&2; exit 1; }
 # TWO channels, one doctrine. A tick launched from a worker's own session would
 # otherwise reach that worker's run through the OTHER one — the client resolves
 # a missing bearer from the seat record $CLAUDE_CODE_SESSION_ID names, which is
-# how a `claude --bg` worker gets its credentials at all (dp#35). Declared shut
-# here, beside the unset.
+# how a `claude --bg` worker gets its credentials at all (dp#35). That half is
+# $BOARD_NO_SELF_LOCATE, exported at the head of this file rather than here,
+# because the binding resolution it also governs runs at source time.
 #
-# EXPORTED, unlike everything else this toolkit scopes: it describes the ROLE of
-# this process tree, not a repo, and the verbs the tick shells out to are the
-# tick. It cannot reach a worker as a suppression — a spawned worker either
-# loses the whole env prefix (`claude --bg` drops it, which is the fact this
-# mechanism exists for) or keeps it, and then keeps the explicit bearer beside
-# it, which resolves first.
+# It is EXPORTED, unlike everything else this toolkit scopes: it describes the
+# ROLE of this process tree, not a repo, and the verbs the tick shells out to
+# are the tick. It cannot reach a worker as a suppression — a spawned worker
+# either loses the whole env prefix (`claude --bg` drops it, which is the fact
+# this mechanism exists for) or keeps it, and then keeps the explicit bearer
+# beside it, which resolves first.
 unset BOARD_RUN_TOKEN
-export BOARD_NO_SELF_LOCATE=1
 # The delivery marker, from the client module rather than a second copy of the
 # literal: what the relay WRITES into a transcript and what it later greps for
 # have to be the same string as anyone else keying on it (the resume path, the

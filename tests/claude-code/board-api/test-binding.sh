@@ -103,6 +103,31 @@ t "the file's own repo still wins over the record" "|alpha" \
 t "a process that is not its session borrows no repo either" \
   "board.json names binding=api but no repo" \
   probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS" BOARD_NO_SELF_LOCATE=1
+# ...AND IT MUST DECLARE IT IN TIME. The binding is resolved at SOURCE time, so
+# an export that lands further down the file is a no-op for the one read it was
+# meant to close. A tick launched from a bound worker's session, in a checkout
+# whose board.json predates the `repo` key, would then take the neighbour's key
+# out of that session's record and claim, sweep and end runs against the wrong
+# repo — the accident this key exists to prevent, reached by the other channel.
+cat > "$STUB/sminos" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$STUB/sminos"
+tick() {  # tick <entrypoint> [args...] — run one from the repo-less checkout
+  ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+      CLAUDE_CODE_SESSION_ID="$WSESS" SMINOS_CLI="$STUB/sminos" \
+      LOCAL_REPO="$r7" "$@" ) 2>&1 || :
+}
+t "the sweep refuses a repo it could only have borrowed" \
+  "board.json names binding=api but no repo" \
+  tick "$SCRIPTS/_sweep_api.sh" renew
+t "and so does the executor dispatcher" \
+  "board.json names binding=api but no repo" \
+  tick "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" --sweep
+t "and the review dispatcher" \
+  "board.json names binding=api but no repo" \
+  tick "$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh" --sweep
 rm -f "$DAEMON_HOME"/*.json
 
 # A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of

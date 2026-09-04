@@ -92,6 +92,13 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 # dedupe and cap check and dispatches over live workers.
 "$SMINOS_CLI" migrate --quiet || die "sminos migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
+# THE TICK IS NOT ITS SESSION, and it has to say so BEFORE the binding is
+# resolved: _binding.sh reads this session's seat record at SOURCE time when the
+# checkout's board.json predates the `repo` key, so a declaration made further
+# down would arrive after the one read it exists to close. The doctrine is the
+# block beside `unset BOARD_RUN_TOKEN` in the api branch below; only the timing
+# puts the export up here.
+export BOARD_NO_SELF_LOCATE=1
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE. An api-bound repo never invokes
 # gh at all, so requiring the CLI before knowing the binding would make the
 # whole API path unreachable on a machine that has no gh. Everything above is
@@ -480,12 +487,11 @@ if [ "$BOARD_BINDING" = api ]; then
   # straight out of a worker shell would claim, and end runs, as that worker.
   # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
   # after this, and are unaffected. This is the automation route only: no
-  # human-route verb is touched. The second channel is shut in the same breath:
-  # without it a dispatch run from a worker's own session would reach that
-  # worker's run through the seat record $CLAUDE_CODE_SESSION_ID names, which is
-  # how a `claude --bg` worker gets its credentials at all (dp#35).
+  # human-route verb is touched. The second channel — the seat record
+  # $CLAUDE_CODE_SESSION_ID names, which is how a `claude --bg` worker gets its
+  # credentials at all (dp#35) — is shut by $BOARD_NO_SELF_LOCATE, exported at
+  # the head of this file because it governs the binding resolution too.
   unset BOARD_RUN_TOKEN
-  export BOARD_NO_SELF_LOCATE=1
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;
     ''|--*)  die "usage: execute-dispatch.sh <issue-number> | --sweep" ;;
