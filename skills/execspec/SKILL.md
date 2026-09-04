@@ -29,7 +29,7 @@ The norms come from Codex's ExecPlan doctrine, vendored char-for-char at [refere
 | "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | Human gates: design approval and spec review in doperpowers:brainstorming |
 | Single fenced code block, prose-first, no tables or checklists | Specs are files, not chat payloads; use tables/JSON/diagrams wherever they beat prose for precision |
 | Mandatory `Progress` section with timestamped checkboxes | The SDE ledger + git + plan checkboxes — externally verifiable, not self-report |
-| Milestones narrative, Concrete Steps, Interfaces and Dependencies | doperpowers:writing-plans, with complete code and exact commands |
+| Milestones narrative, Concrete Steps, Interfaces and Dependencies | doperpowers:writing-plans, at contract resolution — decisions, interfaces, acceptance, exact commands; code only where it is a decision |
 | Idempotence and Recovery section | Worktree isolation + git |
 | Self-contained "for a complete novice" | The fresh-session bar in the Overview above |
 
