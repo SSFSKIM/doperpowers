@@ -479,58 +479,6 @@ PY
 }
 _alive() { [ "$(_liveness "$1")" = live ]; }
 
-# A run the SERVER has ended is over locally too. Without this the meta keeps
-# its run id and its lane, and the dispatchers' local cap counts it — so a
-# normally released run occupies a dispatch slot forever while never appearing
-# in needing-resume (nothing reclaimed it; it simply finished).
-#
-# The RUN ASSOCIATION is stripped, and only that: the session is still a real
-# session, it just no longer speaks for a run. The bearer goes with it — a
-# token for an ended run authenticates nothing, and keeping it is only a secret
-# still lying at rest. `lane` and `role` STAY, deliberately: the reclaim path
-# reaches this same branch (a reclaimed run answers renew with 409 run-ended),
-# and the successor claimed for that ticket inherits its lane from exactly this
-# meta. The slot is freed by the run id going away, not the lane — the
-# dispatchers count OPEN RUNS, which is what a cap is about.
-_retire_run_locally() {  # <meta path> <run id>
-  T_PATH="$1" T_RUN="$2" T_DHOME="$DAEMON_HOME" python3 - <<'PY'
-import fcntl, json, os
-env = os.environ
-lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
-fcntl.flock(lock, fcntl.LOCK_EX)
-try:
-    path = env["T_PATH"]
-    with open(path) as f:
-        m = json.load(f)
-    # Only if the meta STILL names the run that ended. A successor persist can
-    # re-point this very meta at a fresh run between the renew and this write,
-    # and clearing that one would strand a live run nothing could speak for.
-    if str(m.get("run_id") or "") != env["T_RUN"]:
-        raise SystemExit(0)
-    for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
-        m.pop(k, None)
-    m["run_ended_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                    __import__("time").gmtime())
-    mode = os.stat(path).st_mode & 0o777
-    tmp = path + ".tmp"
-    # Unlink first: os.open(..., mode) does NOT re-mode an existing inode, so a
-    # leftover 0644 tmp from an earlier crash would be truncated and rewritten
-    # world-readable. (This writer removes the bearer rather than adding one,
-    # but the rule is the writer's, not the payload's.)
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
-        json.dump(m, f, indent=2)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
-finally:
-    fcntl.flock(lock, fcntl.LOCK_UN)
-    lock.close()
-PY
-}
-
 # ---- phase 1: lease renewal + bind repair ----------------------------------
 phase_renew() {
   # Every column gets its own name, including the ones this phase ignores.

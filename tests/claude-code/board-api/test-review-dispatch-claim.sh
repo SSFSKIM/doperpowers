@@ -505,7 +505,7 @@ DH4="$(mktemp -d)"; mkdir -p "$DH4/board-claims"
 # (s) the stranded reviewer: a control dir with no ack in it.
 CTL_S="$DH4/41-api-qagent-control.stranded"; mkdir -p "$CTL_S"
 printf '{"uuid": "ffff0001", "ticket": "41", "ledger": "x"}\n' > "$CTL_S/bind-ready.json"
-printf '{"uuid":"ffff0001","current":"ffff0001","name":"41-api-qagent","status":"working","run_id":70,"lane":"qagent","ticket":"41"}' \
+printf '{"uuid":"ffff0001","current":"ffff0001","name":"41-api-qagent","status":"working","run_id":70,"lane":"qagent","ticket":"41","run_bearer":"tok-stranded","bind_confirmed":true}' \
   > "$DH4/ffff0001.json"
 printf '{"lane": "qagent", "run_id": 70, "spawn_completed": false, "ticket": "41", "daemon": "41-api-qagent", "control": "%s"}\n' \
   "$CTL_S" > "$DH4/board-claims/nonce-s.json"
@@ -553,6 +553,17 @@ t  "and its run ended so the ticket requeues" '"path": "/runs/70/end"' cat "$FIX
 t  "ended as abandoned"                   '\"reason\": \"abandoned\"'  cat "$FIX4.log"
 gone4() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t  "the journal is dropped"               "gone" gone4 "$DH4/board-claims/nonce-s.json"
+# THE RECORD LOSES THE RUN WITH THE RUN. A retire stops a turn; it does not
+# make the seat forget. Left stamped, this record still names a confirmed bind
+# and a bearer for a run that has just been ended — and a session resolves its
+# own run context out of exactly those fields (dp#35), so resuming this seat by
+# hand would turn every board verb into a 401 instead of a clean fall-back to
+# the operator's own credentials.
+nt "the ended run's bearer does not stay at rest on its seat" "tok-stranded" \
+   cat "$DH4/ffff0001.json"
+nt "nor the confirmed bind that would let it speak as that run" "bind_confirmed" \
+   cat "$DH4/ffff0001.json"
+t  "and the seat records when the run ended"  "run_ended_at" cat "$DH4/ffff0001.json"
 # --- (v) a delivery still waiting on its ack is not a delivery -------------
 t  "a bound handover under a live writer is left in flight" \
    "is in flight under a live dispatcher"     cat "$OUT4"
