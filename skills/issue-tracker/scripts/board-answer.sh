@@ -31,8 +31,7 @@
 # (or ready-for-architect per the park discriminant)`.
 #
 # NEVER RUN IN THE FOREGROUND — the resume blocks for the worker's whole turn
-# (same rule as daemon-resume.sh / codex-resume.sh): Monitor or background
-# shell.
+# (same rule as `sminos resume --wait`): Monitor or background shell.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -117,11 +116,12 @@ PY
 fi
 [ -z "$to" ] || die "--to is api-binding-only: in gh mode the return state comes from the ticket's pre-park meta (or the bound worker's lane)"
 
-DAEMON_SCRIPTS="${DAEMON_SCRIPTS:-$SCRIPT_DIR/../../orchestrating-daemons/scripts}"
-[ -d "$DAEMON_SCRIPTS" ] || die "orchestrating-daemons scripts not found at $DAEMON_SCRIPTS (set DAEMON_SCRIPTS)"
+# SMINOS_CLI is resolved and the registry migrated by _lib.sh, sourced above:
+# it fails closed there, once per process, before any script reads the root.
+[ -x "$SMINOS_CLI" ] || die "the sminos CLI is not executable at $SMINOS_CLI (set SMINOS_CLI)"
 
 # Normalize a lingering finished Claude owner before the status gate. A real
-# mid-turn remains working (`daemon-finalize` returns live); a finished
+# mid-turn remains working (`sminos sync` returns live); a finished
 # state=working/status=idle turn becomes registry status=idle and is resumable.
 bound_uuid="$(T_ID="$tid" T_DHOME="$DAEMON_HOME" _py - <<'PY'
 import glob, json, os
@@ -137,10 +137,16 @@ PY
 )"
 finalize_state=""
 if [ -n "$bound_uuid" ]; then
-  finalize_state="$("$DAEMON_SCRIPTS/daemon-finalize.sh" "$bound_uuid" 2>/dev/null || true)"
+  finalize_state="$("$SMINOS_CLI" sync "$bound_uuid" 2>/dev/null || true)"
   if [ "$finalize_state" = "absent" ]; then
-    "$DAEMON_SCRIPTS/daemon-retire.sh" "$bound_uuid" >/dev/null 2>&1 || true
+    "$SMINOS_CLI" retire "$bound_uuid" >/dev/null 2>&1 || true
     die "#$tid's bound session ${bound_uuid:0:8} is gone — left needs-human; use the documented fresh-dispatch path"
+  fi
+  # A legacy codex-CLI worker has no resumable Claude session: the relay would
+  # transition the ticket and then exec against a session that cannot be
+  # continued. Refuse BEFORE any board write.
+  if [ "$("$SMINOS_CLI" meta get "$bound_uuid" engine 2>/dev/null || true)" = "codex" ]; then
+    die "#$tid is bound to a legacy codex worker ${bound_uuid:0:8} — retire it (sminos retire <id>) and use the fresh-dispatch path"
   fi
 fi
 
@@ -188,7 +194,7 @@ if meta is None:
 status = meta.get("status") or ""
 if status in ("working", "blocked"):
     B.die("#%s's bound session %s is mid-turn (status=%s) — nothing is waiting "
-          "for answers; investigate with daemon-list.sh" %
+          "for answers; investigate with `sminos list`" %
           (tid, meta.get("uuid", "?"), status))
 if status not in ("idle", "awaiting-human"):
     B.die("#%s's bound session %s is terminal (%s) — left needs-human; "
@@ -291,7 +297,4 @@ answer that changed the work's shape.
 ---- answers (verbatim from the ticket) ----
 $block"
 
-case "$engine" in
-  codex) exec "$DAEMON_SCRIPTS/codex-resume.sh" "$uuid" "$relay" ;;
-  *)     exec "$DAEMON_SCRIPTS/daemon-resume.sh" "$uuid" "$relay" ;;
-esac
+exec "$SMINOS_CLI" resume --wait "$uuid" "$relay"

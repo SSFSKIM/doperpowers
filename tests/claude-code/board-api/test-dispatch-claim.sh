@@ -5,7 +5,7 @@
 # Two halves, both against a real socket: what went on the wire (the fixture
 # mock's request log) and what landed on disk (the claim journal, the
 # assignment body, the registry meta, the environment the worker was spawned
-# with). The daemon-spawn stub prints the REAL --no-wait banner line, because
+# with). The `sminos spawn` stub prints the REAL no-wait banner line, because
 # the uuid the dispatcher hands to board-bind is parsed out of it.
 . "$(dirname "$0")/helpers.sh"
 
@@ -37,15 +37,34 @@ exit 1
 EOF
 chmod +x "$STUB/gh"
 
-# The daemon-spawn stub, shared by both scenarios. It registers a meta the way
-# the real --no-wait spawn does (board-bind and the lane stamp both resolve
-# the worker through the registry) and echoes the genuine banner format.
+# The sminos stub, shared by both scenarios: ONE executable whose first argument
+# selects the verb. `spawn` registers a record the way the real no-wait spawn
+# does (board-bind and the lane stamp both resolve the worker through the
+# registry) and echoes the genuine banner format.
 DS="$(mktemp -d)"
-cat > "$DS/daemon-spawn.sh" <<'EOF'
+cat > "$DS/sminos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "${1:-}" = "--no-wait" ] && shift
-name="$1"; task="$2"; cwd="${3:-}"; wt="${4:-}"; model="${5:-}"
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate) exit 0 ;;
+retire)
+  echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
+  exit 0 ;;
+spawn) ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
+name="$1"; task="$2"; shift 2
+cwd=""; wt=""; model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cwd) cwd="$2"; shift 2 ;;
+    --worktree) wt="$2"; shift 2 ;;
+    --model) model="$2"; shift 2 ;;
+    --wait|--no-wait) shift ;;
+    *) shift ;;
+  esac
+done
 { echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model"
   env | grep '^BOARD_' | sort || true
   echo "GW settings=[${DAEMON_CLAUDE_SETTINGS-unset}] effort=[${DAEMON_CLAUDE_EFFORT-unset}]"
@@ -54,20 +73,16 @@ printf '%s' "$task" > "$DAEMON_HOME/prompt-$name.md"
 n=$(cat "$DAEMON_HOME/.spawncount" 2>/dev/null || echo 0); n=$((n + 1))
 echo "$n" > "$DAEMON_HOME/.spawncount"
 uuid="$(printf 'bbbb%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"], "status": "working",
-           "updated": "2026-08-09T00:00:00Z"},
+json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
+           "status": "working", "updated": "2026-08-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working  (reply: daemon-reply.sh ${uuid%%-*})"
+echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
-cat > "$DS/daemon-retire.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
-EOF
-chmod +x "$DS/daemon-spawn.sh" "$DS/daemon-retire.sh"
+chmod +x "$DS/sminos"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
@@ -135,7 +150,7 @@ chmod +x "$BSOVL/board-bind.sh"
 # BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
 # and every end below would speak as that one run instead of as automation.
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" BOARD_SCRIPTS="$BSOVL" \
+    DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" BOARD_SCRIPTS="$BSOVL" \
     BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
     BOARD_RUN_TOKEN=ambient-worker-bearer \
     DAEMON_CLAUDE_SETTINGS="$STUB/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=high \
@@ -152,7 +167,7 @@ t "worker got the run id"       "BOARD_RUN_ID=41"                      cat "$DH/
 t "fence exported"              "BOARD_RUN_FENCE=3"                    cat "$DH/spawn-capture.txt"
 t "api url exported"            "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
 # Same rule as the gh path's claude route: an ambient gateway settings/effort
-# pair would be inherited by daemon-spawn AND persisted into the meta, so every
+# pair would be inherited by `sminos spawn` AND persisted into the meta, so every
 # later resume of this worker would silently ride the gateway.
 t "gateway env cleared for the api route" "GW settings=[] effort=[]" cat "$DH/spawn-capture.txt"
 t "architect route pins the architect model" "model=fable"            cat "$DH/spawn-capture.txt"
@@ -232,7 +247,7 @@ nt "nothing was left unrendered" "{{" prompt
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" 12 )
 }
 t "a targeted dispatch fails loud naming the gap" "arkho#7" triggered
@@ -265,7 +280,7 @@ printf '{"lane": "architect", "run_id": 41, "spawn_completed": false, "ticket": 
 mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-12"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","status":"working","run_id":41,"lane":"architect","ticket":"12"}' \
   > "$DH2/cccc0001.json"
-# (d) THE SPAWN LANDED, THE BIND DID NOT — a crash inside daemon-spawn uuid
+# (d) THE SPAWN LANDED, THE BIND DID NOT — a crash inside `sminos spawn` uuid
 #     poll window, which is seconds wide and leaves the session detached and
 #     running. The run id reaches a meta only via board-bind, so this journal
 #     is byte-for-byte the shape of (b) except for the daemon name written
@@ -306,7 +321,7 @@ printf '{"lane": "implementer", "run_id": null, "spawn_completed": false, "pid":
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH2" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r2" \
+    DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r2" \
     BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
 
@@ -392,7 +407,7 @@ printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-imple' \
 
 OUT3="$(mktemp)"
 ( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH3" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r3" \
+    DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r3" \
     BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=5 \
     "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
 
@@ -444,7 +459,7 @@ r4="$(apirepo "$PORT4")"
 DH4="$(mktemp -d)"
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$NOUUID:$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH4" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r4" \
+    DAEMON_HOME="$DH4" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r4" \
     BOARD_CREDENTIALS_FILE="$CREDS" ARCHITECT_MAX_CONCURRENT=0 \
     "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
 
@@ -511,7 +526,7 @@ r5="$(apirepo "$PORT5")"
 DH5="$(mktemp -d)"
 OUT5="$(mktemp)"
 ( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH5" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r5" \
+    DAEMON_HOME="$DH5" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r5" \
     BOARD_CREDENTIALS_FILE="$CREDS" ARCHITECT_MAX_CONCURRENT=0 \
     "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
 
@@ -546,7 +561,7 @@ r6="$(apirepo "$PORT6")"
 DH6="$(mktemp -d)"
 SWEEP6() {  # SWEEP6 [env...] — one dispatch tick against this board
   ( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-      DAEMON_HOME="$DH6" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r6" \
+      DAEMON_HOME="$DH6" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r6" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$@" "$DISPATCH" --sweep )
 }
 OUT6="$(mktemp)"
@@ -595,7 +610,7 @@ DH7="$(mktemp -d)"
 LEDGER7="$(mktemp)"; echo 33 > "$LEDGER7"
 OUT7="$(mktemp)"
 ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    DAEMON_HOME="$DH7" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r7" \
     BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RESUMED_LEDGER="$LEDGER7" \
     "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
 
@@ -640,7 +655,7 @@ chmod 444 "$DH8/board-claims/nonce-i.json"
 echo 2 > "$DH8/board-suppress/.attempts-15"
 OUT8="$(mktemp)"
 ( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH8" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r8" \
+    DAEMON_HOME="$DH8" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r8" \
     BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
 chmod 644 "$DH8/board-claims/nonce-i.json"
 
@@ -678,7 +693,7 @@ echo 2 > "$DH9/board-suppress/.attempts-16"
 chmod 555 "$DH9/board-suppress"      # an unlink needs write on the DIRECTORY
 OUT9="$(mktemp)"
 ( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    DAEMON_HOME="$DH9" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r9" \
     BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
 chmod 755 "$DH9/board-suppress"
 
@@ -727,7 +742,7 @@ mkjrepaired() {  # mkjrepaired <registry> <ticket> <run> — one repaired-shaped
 SWEEP10() {  # SWEEP10 <registry> [env...] — one dispatch tick against this board
   local dh="$1"; shift
   ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-      DAEMON_HOME="$dh" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r10" \
+      DAEMON_HOME="$dh" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r10" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$@" "$DISPATCH" --sweep )
 }
 

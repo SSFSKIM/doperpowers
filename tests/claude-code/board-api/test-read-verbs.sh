@@ -142,7 +142,7 @@ printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpower
 # A stub gh that announces itself.
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
 # DAEMON_HOME is pinned hermetic — board-lint.sh globs it, and its default is the
-# operator's REAL registry ($HOME/.claude/orchestrating-daemons), which would make
+# operator's REAL registry ($HOME/.claude/sminos), which would make
 # this suite's verdict depend on which daemons happen to live on the machine.
 DHOME="$(mktemp -d)"
 # Four registries, one per shape of the absence question lint now asks: a

@@ -212,7 +212,7 @@ try:
         if env["T_FENCE"]:
             target_meta["fence"] = int(env["T_FENCE"])
         if env.get("BOARD_RUN_TOKEN"):
-            # Bearer at rest for resume rehydration: daemon-resume forks a
+            # Bearer at rest for resume rehydration: `sminos resume` forks a
             # fresh process from the CALLER's env, so every later resume
             # (relay, successor, inline) re-injects BOARD_RUN_* from this
             # meta. Local plaintext, 0600 — the same posture as the session

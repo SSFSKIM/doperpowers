@@ -32,7 +32,7 @@ Save to `docs/doperpowers/execplans/YYYY-MM-DD-<topic>.md` (omit the triple-back
 
 In an isolated workspace (doperpowers:using-git-worktrees). Follow PLANS.md's implementing contract as written: do not prompt your human partner for next steps; resolve ambiguities autonomously (the grill already exhausted the ones that needed a human); keep `Progress`, `Surprises & Discoveries`, and the `Decision Log` current at every stopping point; commit frequently.
 
-This profile fits durable background daemons (doperpowers:orchestrating-daemons): the ExecPlan is exactly what a spawn prompt can carry, and it survives the daemon's context death — the document is the memory.
+This profile fits durable background sessions — seats spawned through doperpowers:sminos: the ExecPlan is exactly what a spawn prompt can carry, and it survives the seat's context death — the document is the memory.
 
 ## Exit gate
 
