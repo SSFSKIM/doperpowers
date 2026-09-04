@@ -66,7 +66,8 @@ the skill-bound text verbatim; commentary sits outside the quotes.
 > done. The executor writes the code. Code belongs in a task only where the
 > code is itself a decision — a data shape or schema, a public signature, a
 > state or transition table, an algorithm whose subtlety is the point, an
-> exact string or constant, a test case that pins a contract. Code that only
+> exact string, constant, or piece of copy, a test case that pins a
+> contract. Code that only
 > shows how to do what the Decisions already say is transcription: written
 > blind here, copied there, and stale by the time a later task runs. The
 > executor writes it once, with the real codebase in view.
@@ -150,8 +151,8 @@ approach, error semantics, naming, ordering, what to reuse from the
 codebase (by path), the pitfalls you saw in the code — one line each.]
 
 **Code:** [only where the code is a decision: a schema, a signature, a
-state table, a subtle algorithm, an exact string, a test that pins a
-contract. Omit the slot otherwise.]
+state table, a subtle algorithm, an exact string or piece of copy, a
+test that pins a contract. Omit the slot otherwise.]
 
 ```python
 class KernelRecord(TypedDict):
@@ -606,6 +607,14 @@ executor span up modestly, fix rate and final-review defects within the
   the parent's owner lands flow-back from child reports as Vitrea did.
   Date/Author: 2026-09-04 / fable session (review findings adopted)
 
+- Decision: "piece of copy" joins the code-as-decision list (Contract
+  Resolution and the Code slot).
+  Rationale: micro-test A — three of five new-text reps specified a
+  SKILL.md rewrite by constraints ("replace the sentence with one route …
+  one clause") and left the executor to author behavior-shaping prose; the
+  same-model controls pinned it verbatim. Copy is an exact string.
+  Date/Author: 2026-09-04 / fable session (micro-test refinement)
+
 ## Surprises & Discoveries
 
 - Observation: plan writing is fast; the plan's cost is tokens and
@@ -634,10 +643,91 @@ executor span up modestly, fix rate and final-review defects within the
   lines — and the composite that spawned them already carried ≈ 350 lines
   of the corresponding design.
   Evidence: `afleet-c1` and `afleet-c2` spec line counts; the parent's §6.
+- Observation (micro-test A, 2026-09-04): seven opus reps planned the
+  same spec from a detached tree at its commit (`0f77ba69`, no shipped plan
+  present). Every new-text rep carried the Deliverables / Tests /
+  Decisions slots on every task and no step blocks; every old-text rep
+  carried step blocks and none of the slots. Same-model reviewers found
+  the same decision completeness on both sides.
+
+  | Variant | Rep | Lines | Code | Tasks | Deferred | Placeholders | Gaps | Code blocks | Transcription |
+  |---|---|---|---|---|---|---|---|---|---|
+  | new | 1 | 686 | 5% | 4 | 3 | 0 | 2 | 6 | 0 |
+  | new | 2 | 335 | 21% | 4 | 3 | 0 | 2 | 3 | 1 |
+  | new | 3 | 783 | 9% | 5 | 3 | 0 | 2 | 11 | 0 |
+  | new | 4 | 277 | 19% | 4 | 3 | 0 | 2 | 3 | 0 |
+  | new | 5 | 310 | 13% | 4 | 3 | 0 | 2 | 8 | 2 |
+  | old | 1 | 1380 | 65% | 4 | 2 | 0 | 1 | 37 | 17 |
+  | old | 2 | 1242 | 62% | 5 | 3 | 0 | 2 | 36 | 16 |
+  | shipped (fable) | — | 806 | 67% | 5 | — | — | — | — | — |
+
+  Median lines 335 vs 1,311 (3.9× fewer against the same-model control,
+  2.4× against the fable-authored shipped plan); code share 5–21% vs
+  62–65%; the "under 400 lines" expectation held for three of five — the
+  two long reps spent their lines in Tests (188–191) and Decisions
+  (178–180) enumerations, not code. The deferred decisions the new-text
+  reps left were the exact wording of user-facing prose (three reps), an
+  either/or in test mechanics (one), and an unpinned edge case (two); the
+  first class is now in the code-as-decision list. Old rep 1's two
+  deferrals were the same prose class. One reviewer caught a vacuous
+  anti-regression assertion in new rep 1 (a grep for a line-wrapped
+  sentence) — a defect class the task reviewer's rubric already names.
+  Evidence: `/tmp/micro-a/{new,old}/rep-*.md` (session-local), seven
+  reviewer reports, this session.
+- Observation (micro-test B, 2026-09-04): dispatched as the owner of the
+  Vitrea composite's child C5 at its pin (`9d1ea36`) and asked what they
+  would produce before code, five of five opus reps under the new
+  brainstorming and decomposing text expanded the C5 section in place,
+  wrote only an execution plan citing the composite path, child id, and
+  pin, routed residue decisions to the parent's Decision Log under C5,
+  advisory overturns to Revision Notes, and binding contradictions to
+  `[parent-impact]`; five of five reps under the current text opened a
+  standalone child design spec at `docs/doperpowers/specs/…c5…-design.md`
+  with its own living tail before the plan. Two new-text reps volunteered
+  the composite-in-disguise route unprompted.
+  Evidence: ten single-shot reports, this session.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Written 2026-09-04 at finish, before the monitoring window.
+
+**Against the purpose.** writing-plans now sizes a task's text by the
+decisions it carries: Files, Interfaces, Deliverables, Tests, Decisions,
+and Code only where the code is a decision (a schema, a signature, a
+state table, a subtle algorithm, an exact string or piece of copy, a
+contract-pinning test). decomposing states that the document tree is the
+composite tree; a child's artifact, not a child spec, cites the parent;
+brainstorming knows how a child of a composite enters and exits;
+finishing writes a child's tracking-map row rather than the composite's
+Outcomes; the executor prompt puts test-first first and names brief code
+as decisions; the telemetry classifier reads the initiative-prefixed
+dispatch forms. The wording was checked before adoption: on the same spec
+and the same worker model, five new-text plans and two old-text plans had
+the same decision completeness (three deferred decisions, no placeholders,
+two coverage gaps, against two to three, none, and one to two) at a median
+of 335 lines against 1,311 and 5–21% code against 62–65%; on a real
+composite child, five of five reps under the new text wrote no child spec
+and five of five under the old text did.
+
+**What remains.** The §6 monitoring rows for the next three controlled
+features — the fix-rate and final-review columns are what decide whether
+the change stands. The two deferred directions in §7: rolling
+elaboration, and the merge of the controlled plan and the ExecPlan into
+one plan species. The live skill suite (`run-skill-tests.sh`) reads the
+installed plugin and cannot exercise a branch; a `--plugin-dir` shim is a
+small separate fix.
+
+**Lessons.** Verbatim survival measured that the plan's code was used,
+not that pre-writing it paid; a same-model control plus reviewer scans of
+deferred decisions was the measure that settled it, in under an hour.
+The independent review's high findings were all integration seams —
+finishing, Self-Review 4, the track-hint vocabulary — that reading the
+edited skills alone did not surface: a doctrine change leaks at the
+cross-skill conditionals, so review the skills that consume the changed
+artifact, not only the ones that produce it. And a wording change whose
+predicate is observable (a child of a composite spec) is testable with
+single-shot reps in minutes; one whose product is a full artifact needs
+the artifact written, about ten minutes a rep, and a reviewer to read it.
 
 ## Revision Notes
 
@@ -650,3 +740,6 @@ Pending — written at finish.
   wording, verbatim binding clauses in Global Constraints, executor order,
   Tests slot expected output, commit messages on Deliverables, five-rep
   micro-tests, fix-rate reopen, acceptance corrections.
+- 2026-09-04 (third revision): micro-tests A and B run and recorded;
+  "piece of copy" added to the code-as-decision list from A's deferred
+  class; Outcomes & Retrospective written at finish.

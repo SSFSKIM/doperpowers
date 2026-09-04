@@ -89,7 +89,8 @@ differently, the interfaces it must honor, and the behavior that proves it
 done. The executor writes the code. Code belongs in a task only where the
 code is itself a decision — a data shape or schema, a public signature, a
 state or transition table, an algorithm whose subtlety is the point, an
-exact string or constant, a test case that pins a contract. Code that only
+exact string, constant, or piece of copy, a test case that pins a
+contract. Code that only
 shows how to do what the Decisions already say is transcription: written
 blind here, copied there, and stale by the time a later task runs. The
 executor writes it once, with the real codebase in view.
@@ -177,8 +178,8 @@ approach, error semantics, naming, ordering, what to reuse from the
 codebase (by path), the pitfalls you saw in the code — one line each.]
 
 **Code:** [only where the code is a decision: a schema, a signature, a
-state table, a subtle algorithm, an exact string, a test that pins a
-contract. Omit the slot otherwise.]
+state table, a subtle algorithm, an exact string or piece of copy, a
+test that pins a contract. Omit the slot otherwise.]
 
 ```python
 class KernelRecord(TypedDict):
