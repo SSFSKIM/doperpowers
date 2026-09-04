@@ -184,6 +184,17 @@ BOARD_AUTOMATION_TOKEN=…    # the fleet: dispatch, claims, sweeps
 BOARD_HUMAN_TOKEN=…         # your human partner: register, transition, answer
 ```
 
+Those two are the operator's credentials. A dispatched **worker** speaks as its
+*run* instead, and it is handed nothing to do so: the dispatcher claims the run
+and `board-bind.sh` stamps the bearer, run id and fence onto that session's seat
+record in the sminos registry, and the scripts resolve them back out of it by
+matching `$CLAUDE_CODE_SESSION_ID` — the one thing a backgrounded session's own
+shells reliably carry. An explicit `BOARD_RUN_TOKEN` in the environment still
+wins where one survives; a record is used only if its bind confirmed and it was
+bound on this checkout's board; otherwise there is no run context and the
+credentials file above is what answers. A verb that resolved a run says so in
+one line on stderr, naming the run and the seat and never the bearer.
+
 Every read narrows to the bound repo, and so does every write. The two **browse**
 verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back
 to the whole service. A widened listing says so in its header line and carries

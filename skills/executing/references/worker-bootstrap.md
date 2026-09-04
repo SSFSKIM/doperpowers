@@ -9,8 +9,9 @@ for this turn.
      worker reads its ticket from gh instead -->
 Your assignment (the ticket body, delivered by the claim that dispatched you)
 is pinned at: {{TICKET_BODY_FILE}} — read it first; it is your statement of
-work. Your board credentials are already in this session's environment; the
-board scripts use them automatically. Your board reads reach your own ticket
+work. The board scripts speak for your run automatically — this session is
+bound to that run in the seat registry and they resolve it from there, so there
+is nothing to export, source or pass. Your board reads reach your own ticket
 and its direct children only.
 
 `PARENT_PIN`: {{PARENT_PIN}} — the parent ticket and the position its event

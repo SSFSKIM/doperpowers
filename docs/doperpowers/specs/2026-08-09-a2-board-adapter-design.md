@@ -867,3 +867,50 @@ A1-side work, tracked in the drift follow-up.
   it was dispatched for and a head predating this key carries a board.json
   without one. That is a pin, not a leak — the run bearer on the same prefix
   binds the worker to a ticket in the dispatcher's own repo.
+- v1.4 (2026-09-05): **a worker's run context is its own seat record** (ticket
+  doperpowers#35). This spec assumed the credential handoff was the spawn env
+  prefix — the dispatchers set `BOARD_RUN_TOKEN`, `BOARD_RUN_ID`,
+  `BOARD_RUN_FENCE`, `BOARD_API_URL` and (since v1.3) `BOARD_REPO` on the
+  worker's launch, and both worker bootstraps told the worker its credentials
+  were already in its environment. For the route every api-mode worker actually
+  takes, that was never true: `sminos spawn` launches `claude --bg`, and a
+  backgrounded session's own Bash shells carry `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_PID`, `CLAUDE_JOB_DIR` and the messaging socket — and none of the
+  spawner's variables (measured 2026-09-04 via a daemon spawn and 2026-09-05
+  via a direct `claude --bg`, harness v2.1.261). So a worker's run-context
+  verbs died on `token('auto')`, and its human-defaulted verbs quietly fell
+  back to `BOARD_HUMAN_TOKEN`: no fence, no own-ticket scoping, the wrong
+  principal, silently.
+
+  The revision: the run context is RESOLVED, not handed over. `_board_api.py`
+  resolves (bearer, run id, fence) once per process — an explicit
+  `BOARD_RUN_TOKEN` first, else this session's own seat record, else nothing.
+  The record is found by scanning the seat registry for the one whose `current`
+  equals `$CLAUDE_CODE_SESSION_ID` (or whose `short` prefixes it), and it is
+  used only when its bind confirmed, it still holds a bearer, and its `board`
+  is this checkout's `api:<url>` — a session bound on another service is not
+  this checkout's run, and a stripped or unconfirmed record is not a run at
+  all. Everything the prefix carried is already there: `sminos spawn` writes
+  `short` and `current`, `board-bind.sh` stamps `run_id`, `fence`, `run_bearer`
+  (0600), `bind_confirmed`, `board` and `board_repo`. `_binding.sh` takes the
+  same route for the repo key when a checkout's `board.json` predates v1.3's
+  `repo`, under the same board-equality guard; the URL is never read from a
+  record, since the checkout's `board.json` is what names the board.
+
+  What the env prefix now means: it is the DECLARED channel and stays correct
+  wherever env survives (the sweep's per-command prefixes, a foreground
+  harness, and it is what board-bind stamps the record FROM), and it is
+  resolved first — so v1.3's rule that `BOARD_REPO` is pinned wherever
+  `BOARD_API_URL` is pinned stands unchanged. The seat record is the DELIVERED
+  channel. Neither the prompt nor the transcript mentions the mechanism; a
+  resolution off the record writes one stderr line naming the run and the seat,
+  never the bearer.
+
+  One consequence had to be closed in the same wave: "THE TICK IS AUTOMATION,
+  FULL STOP" was enforced by `unset BOARD_RUN_TOKEN` in both dispatchers and
+  the sweep, and self-location is a second route to the same hazard — a tick
+  launched from a worker's own session would reach that worker's run through
+  its seat record. Those three sites now export `BOARD_NO_SELF_LOCATE=1`
+  beside the unset. It cannot suppress a worker: a spawned worker either loses
+  the whole prefix (which takes this with it) or keeps it, and then keeps the
+  explicit bearer that resolves first.
