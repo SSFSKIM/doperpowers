@@ -195,13 +195,23 @@ def own_seat():
     SKIPPING one there would strand a live run with no renewal; here the safe
     direction is the opposite one, since adopting the wrong record makes every
     verb act as a principal nobody chose.
+
+    $BOARD_NO_SELF_LOCATE is a process saying it is not its session: the two
+    dispatchers and the sweep declare it beside the `unset BOARD_RUN_TOKEN`
+    that already closed the env channel for them (THE TICK IS AUTOMATION, FULL
+    STOP), because a tick launched from a worker's own session would otherwise
+    act as that worker. It shuts the whole record off, the repo key included —
+    a tick has its own binding to read one from, and a neighbour's record is
+    not it. It cannot reach a spawned worker as a suppression: that worker
+    either loses the entire env prefix, which takes this with it, or keeps it
+    and keeps the explicit bearer beside it, which is resolved first.
     """
     if "v" in _OWN_SEAT:
         return _OWN_SEAT["v"]
     _OWN_SEAT["v"] = None
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
     board = "api:" + os.environ.get("BOARD_API_URL", "").rstrip("/")
-    if not session or board == "api:":
+    if not session or board == "api:" or os.environ.get("BOARD_NO_SELF_LOCATE"):
         return None
     prefix_hit = None
     try:
@@ -246,12 +256,7 @@ def run_context():
          holds a bearer. That is the channel `claude --bg` actually delivers.
       3. neither — no run context at all, which is an ordinary operator shell.
 
-    $BOARD_NO_SELF_LOCATE closes rule 2 for the processes that must never act
-    as a worker whatever their session is bound to: the two dispatchers and the
-    sweep declare it beside the `unset BOARD_RUN_TOKEN` that closes rule 1 for
-    them (THE TICK IS AUTOMATION, FULL STOP). It travels no further than they
-    intend — a spawned worker either loses the whole env prefix, which takes
-    this with it, or keeps it and resolves through rule 1 anyway.
+    Rule 2 is own_seat(), so $BOARD_NO_SELF_LOCATE closes it here too.
     """
     if "v" in _RUN_CTX:
         return _RUN_CTX["v"]
@@ -262,8 +267,6 @@ def run_context():
                          "run_id": os.environ.get("BOARD_RUN_ID", "") or None,
                          "fence": os.environ.get("BOARD_RUN_FENCE", "") or None}
         return _RUN_CTX["v"]
-    if os.environ.get("BOARD_NO_SELF_LOCATE"):
-        return None
     found = own_seat()
     if not found:
         return None

@@ -96,6 +96,13 @@ nt "and its repo key is never borrowed" "from-record" \
 seat "api:https://b.example"
 t "the file's own repo still wins over the record" "|alpha" \
   probe "$r2" CLAUDE_CODE_SESSION_ID="$WSESS"
+# A process that declares it is not its session gets nothing from the record —
+# the repo key no less than the bearer. The dispatchers and the sweep say this,
+# and a tick has its own binding to read a repo from; a neighbouring worker's
+# record is not it.
+t "a process that is not its session borrows no repo either" \
+  "board.json names binding=api but no repo" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS" BOARD_NO_SELF_LOCATE=1
 rm -f "$DAEMON_HOME"/*.json
 
 # A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of
