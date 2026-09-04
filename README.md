@@ -95,6 +95,9 @@ Twenty-three skills, grouped by what they're for. Each one auto-triggers from it
 **Extend it**
 - `writing-skills` — create and test new skills that shape agent behavior
 
+**Output style**
+- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent wraps what the human should read in `<to-human>` and a reader shows only that; explanatory insights kept. Select per launch with `"outputStyle": "to-human"`.
+
 ---
 
 ## How the controlled track flows
