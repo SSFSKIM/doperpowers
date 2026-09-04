@@ -34,9 +34,16 @@ No verb. The agent writes, and wraps what the human should read:
     until the review lands.
     </to-human>
 
-The doctrine, carried by the sminos SKILL.md protocol and the spawn preamble,
-is one sentence: *your tool results and messages are not shown to the human;
-wrap what the human should read in `<to-human>…</to-human>`.* No kinds, no
+The doctrine is one sentence: *your tool results and messages are not shown to
+the human; wrap what the human should read in `<to-human>…</to-human>`.* It is
+carried by an output style — `output-styles/to-human.md` in this plugin, which
+the harness injects as persistent context at session start and after every
+compaction, and which also carries the explanatory-insights style so a session
+loses nothing by selecting it. A launcher whose surface is the stream (afleet)
+selects it with `"outputStyle": "to-human"` in the settings file it passes at
+launch; a seat spawned for such a surface gets the same setting; every other
+session on the machine is untouched, and a human in a plain session can turn
+it on or off with the output-style command. No kinds, no
 criteria, no cadence. The judgment of what a human needs to hear is the
 agent's, and it is expected to be good; if observed failures show otherwise,
 the doctrine is refined from those failures, not from anticipation.
@@ -139,8 +146,11 @@ Observable when the build lands:
   session, name, seat, ts, and text.
 - Reading the same files twice returns the same spans; reading after a file
   grows returns only the new spans when the reader kept its offset.
-- The sminos SKILL.md protocol and `references/spawn-preamble.md` each carry
-  the one-sentence doctrine and nothing more about what to send.
+- `output-styles/to-human.md` carries the one-sentence doctrine and the
+  explanatory style, keeps the coding instructions, and nothing more about
+  what to send; a session launched with `"outputStyle": "to-human"` in its
+  settings shows the doctrine in its context, and a session launched without
+  it does not.
 - `tests/sminos/run-sminos-tests.sh` covers each point above against
   fabricated transcript files.
 - afleet, given only §2, renders the per-session and all-sessions views
@@ -186,10 +196,26 @@ Observable when the build lands:
   where they were write-time snapshots: the transcript carries neither, and
   its own `custom-title` / `agent-name` records already hold the name
   history, so a reader has what it needs without sminos writing anything.
-- Decision: one-sentence doctrine, in SKILL.md and the preamble. Rejected: a
-  criteria list ("send decisions, completions, blockers, surprises"). The
-  human's call, and consistent with this repo's rule that a constraint earns
-  its place only against an observed failure.
+- Decision: one-sentence doctrine. Rejected: a criteria list ("send
+  decisions, completions, blockers, surprises"). The human's call, and
+  consistent with this repo's rule that a constraint earns its place only
+  against an observed failure.
+- Decision: the doctrine travels as an output style, selected per launch.
+  Rejected: the root or project CLAUDE.md — its premise ("your messages are
+  not shown to the human") is false in a plain terminal session, and
+  CLAUDE.md is unconditional, so every session would hear a false premise and
+  show raw tags. Rejected: a SessionStart hook keyed on a launcher variable —
+  conditional, but needs a script and settings machinery, and delivers
+  context rather than prompt. Rejected: the sminos SKILL.md and spawn
+  preamble alone — they reach only seats and only sessions that load the
+  skill, while the doctrine is about the surface, not the fleet. An output
+  style is the harness's own slot for shaping how the agent writes to the
+  user, is chosen by one settings key so the launcher that owns the surface
+  turns it on, re-injects after compaction, and ships with the plugin. The
+  style declares `keep-coding-instructions: true` because a custom style
+  otherwise replaces the harness's coding guidance (verified in 2.1.260), and
+  it includes the explanatory-insights text because only one style is active
+  at a time.
 - Decision: earlier still, rejected: registering a `human` peer in the
   harness's peer registry with its own inbox socket so agents could use
   native `SendMessage(to: "human")`. Reading the harness binary (2.1.259)
@@ -238,3 +264,6 @@ Pending — written at finish.
   `<to-human>` tag in the agent's message, read from the transcript; name and
   seat became read-time joins; `sminos inbox` became a transcript reader.
   Decision Log records the reversal and its reasons.
+- 2026-09-05 — The doctrine's carrier became the `to-human` output style,
+  shipped in `output-styles/` and selected per launch; the style file lands
+  with this revision (the reader does not).
