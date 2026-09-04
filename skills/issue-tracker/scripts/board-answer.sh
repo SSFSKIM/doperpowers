@@ -123,13 +123,22 @@ fi
 # Normalize a lingering finished Claude owner before the status gate. A real
 # mid-turn remains working (`sminos sync` returns live); a finished
 # state=working/status=idle turn becomes registry status=idle and is resumable.
-bound_uuid="$(T_ID="$tid" T_DHOME="$DAEMON_HOME" _py - <<'PY'
+# THE REGISTRY IS MACHINE-GLOBAL AND A BOARD IS NOT — the same rule every other
+# scan over it now follows. Ticket numbers are board-local, so a neighbouring
+# checkout's worker parked on ITS #9 was answering for OUR #9: the relay would
+# resume the wrong session and hand it another board's answers. Reached in gh
+# mode only (the api arm exits above), where `gh:<owner/name>` is the whole
+# identity and there is no repo dimension to add. An unstamped meta is legacy
+# and still counts as ours.
+bound_uuid="$(T_ID="$tid" T_DHOME="$DAEMON_HOME" T_BOARD="gh:$BOARD_REPO" _py - <<'PY'
 import glob, json, os
+from _board_api import meta_is_mine
 for path in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if path.endswith(".reply.json"):
         continue
     try: meta=json.load(open(path))
     except Exception: continue
+    if not meta_is_mine(meta, os.environ["T_BOARD"]): continue
     if str(meta.get("ticket", "")).lstrip("#") == os.environ["T_ID"].lstrip("#"):
         print(meta.get("uuid") or "")
         break
@@ -162,11 +171,13 @@ fi
 # on an even count; one more apostrophe of prose broke it. A function body
 # goes through the real parser instead, so the prose here is free again.
 _probe_binding() {
-  T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" _py - <<'PY' | tail -n 1
+  T_ID="$tid" T_ANSWERS="$answers" T_DHOME="$DAEMON_HOME" \
+  T_BOARD="gh:$BOARD_REPO" _py - <<'PY' | tail -n 1
 import glob
 import json
 import os
 import _board as B
+from _board_api import meta_is_mine
 
 env = os.environ
 tickets = B.snapshot()
@@ -183,6 +194,9 @@ for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
         with open(p) as f:
             m = json.load(f)
     except (ValueError, OSError):
+        continue
+    # Same rule as the owner scan above: another board's #N is not this one's.
+    if not meta_is_mine(m, env["T_BOARD"]):
         continue
     if str(m.get("ticket", "")).lstrip("#") == tid:
         meta = m

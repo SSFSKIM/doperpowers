@@ -71,8 +71,9 @@ SQL
   # holding it is visible in `ps` to every process on the box for as long as the
   # poll runs, and this loop runs for up to thirty seconds a cycle.
   wait_until 30 "the service to reclaim run $run (cycle $CYCLE)" \
-    env T_TOK="$AUTOMATION_TOKEN" T_URL="$BOARD_API_URL" T_TID="$TID" bash -c \
-      'curl -s -H "authorization: Bearer $T_TOK" "$T_URL/runs/needing-resume" \
+    env T_TOK="$AUTOMATION_TOKEN" T_URL="$BOARD_API_URL" T_TID="$TID" \
+        T_REPO="$(drill_repo_key)" bash -c \
+      'curl -s -H "authorization: Bearer $T_TOK" "$T_URL/runs/needing-resume?repo=$T_REPO" \
          | grep -q "\"ticketId\":$T_TID[,}]"' || exit 1
 }
 broken_resume() { in_repo RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 "$SCRIPTS/_sweep_api.sh" resume; }

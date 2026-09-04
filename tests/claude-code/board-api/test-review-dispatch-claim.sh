@@ -115,7 +115,7 @@ chmod +x "$DS/sminos"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$1" > "$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$1" > "$d/.doperpowers/board.json"
   echo "$d"
 }
 
@@ -182,6 +182,15 @@ t "worker got the run bearer" "BOARD_RUN_TOKEN=tok-q"                cat "$DH/sp
 t "worker got the run id"     "BOARD_RUN_ID=51"                      cat "$DH/spawn-capture.txt"
 t "fence exported"            "BOARD_RUN_FENCE=2"                    cat "$DH/spawn-capture.txt"
 t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
+# THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
+# it was dispatched for (`git checkout --detach <headRefOid>` for a reviewer, a
+# feature branch for an executor), and a head that predates the repo key carries
+# a two-key board.json — so every board script the worker ran afterwards died on
+# `binding=api but no repo` and the claimed work could never post its final
+# transition. The dispatcher pins it in the spawn environment, where it wins over
+# whatever board.json the checkout happens to hold, exactly as BOARD_API_URL
+# above does and for the same reason.
+t "repo pinned for the worker's own checkout"          "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
 # An ambient gateway settings file would be inherited by `sminos spawn` AND
 # persisted into the meta, so every later resume of this reviewer would ride
 # the gateway while the log said claude. The QAgent tier is opus/high.
@@ -221,6 +230,10 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names the qagent lane"      '\"lane\": \"qagent\"' cat "$FIX.log"
+# A CLAIM NAMES ITS REPO — /runs/claim is dispatch-shaped, so an unscoped
+# credential naming none is refused `repo-required` rather than served from
+# whichever repo the service was founded with.
+t "the claim names the repo it dispatches for" '\"repo\": \"testrepo\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 2'       cat "$FIX.log"
 nt "no other lane is claimed from here"  '\"lane\": \"implementer\"' cat "$FIX.log"
 claim_posts() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX.log")"; }

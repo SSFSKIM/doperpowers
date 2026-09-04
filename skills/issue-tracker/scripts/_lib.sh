@@ -44,7 +44,36 @@ if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
     || die "cannot resolve the GitHub repo (gh auth status? set BOARD_REPO=owner/name)"
 fi
-export BOARD_REPO
+# EXPORTED IN gh MODE ONLY. gh consumers read it out of the environment
+# (_board.py's repo(), board-transition's closed-ticket probe), so there it has
+# to travel. In api mode nothing downstream reads the environment — _api_py
+# hands the value to python3 explicitly — and exporting it would make this
+# process's repo the DEFAULT for any descendant that resolves its own binding:
+# _binding.sh honours an inherited BOARD_REPO so a user can override the file,
+# and a value derived from the parent's board.json is not that override. A verb
+# run from a neighbouring checkout would then read and write the parent's repo,
+# which is the accident this key exists to prevent, one level down.
+#
+# Worker handovers are the deliberate exception: they put the key in the child's
+# environment ON PURPOSE, because a worker checks out the head it was dispatched
+# for and a head predating this key carries a board.json without one. That child
+# is bound to the handing-over process's repo by construction — the run bearer
+# beside the key ties it to a ticket in that repo — so it is a pin, not a leak.
+# An ambient export is neither, which is why these are scoped.
+#
+# THE RULE, one line: wherever BOARD_API_URL is pinned on an env prefix for a
+# worker, BOARD_REPO is pinned beside it. The two facts have the same lifetime
+# and the same blast radius, and a worker that kept the URL while losing the
+# repo dies on `binding=api but no repo` mid-run. Today that is the two
+# dispatchers' spawns and the sweep's three handovers (relay resume, successor
+# resume, fresh-successor spawn); a new one inherits the rule, not a review.
+# The prefix is the DECLARED channel, not yet a delivered one: `claude --bg`
+# drops every spawn-prefix variable (the run bearer and the fence included, not
+# just these two), so today the pin reaches a worker's own shells only on the
+# foreground route. Board ticket 35 owns that handoff; these pins ride along the
+# moment it is fixed, and the rule above is what makes that true without a
+# second pass over every call site.
+if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 
 # Seat registry — ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME,
 # then $DAEMON_HOME, then the default. Both names are exported at the same

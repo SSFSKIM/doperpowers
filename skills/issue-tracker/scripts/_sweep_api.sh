@@ -111,7 +111,25 @@ mkdir -p "$DAEMON_HOME"
 # EVERY tick on the platform the fleet actually runs on. Idempotence is the
 # real safety, so a lock older than SWEEP_LOCK_STALE minutes is stolen rather
 # than obeyed (same rule as board-sweep.sh's).
-LOCK="$DAEMON_HOME/.sweep-api.lock"
+# THE LOCK IS PER BINDING, NOT PER MACHINE. $DAEMON_HOME is machine-global and
+# several api-bound repos share it, but a tick serializes against ONE board's
+# state — its renew, relay, resume and dispatch phases touch only runs that
+# board knows. One lock for all of them made two repos' timers mutually
+# exclusive instead: the loser exited having renewed nothing, for a whole tick
+# (up to BOARD_SWEEP_TICK_BUDGET, longer than a lease) on runs the winner's
+# board never heard of. The key is a digest of the binding — url AND repo,
+# because one service serves several repos — hashed rather than sanitized so
+# that no url or repo name can collide with another's after character
+# substitution, and so the path stays a fixed, filesystem-safe length. The url
+# is normalized exactly as the client's api_url() normalizes it, so a binding
+# an override spells with a trailing slash — one service to every request this
+# tick makes — still lands on the one lock rather than a second one.
+_LOCK_KEY="$(T_URL="$BOARD_API_URL" T_REPO="$BOARD_REPO" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])')"
+LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone
 # is wrong in both directions: a legitimate tick can run for the better part of
 # half an hour (serial bounded waits, one per item), so a live owner was robbed
@@ -305,8 +323,9 @@ SCAN_RC="$SCRATCH/scan-rc"
 # ticket, and re-resumed a fork it should have refused.
 _registry_metas() {  # [all]
   local rc=0
-  T_DHOME="$DAEMON_HOME" T_ALL="${1:-}" python3 - <<'PY' || rc=$?
+  T_DHOME="$DAEMON_HOME" T_ALL="${1:-}" _api_py - <<'PY' || rc=$?
 import glob, json, os
+import _board_api as A
 keep_runless = os.environ.get("T_ALL") == "all"
 for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     if p.endswith(".reply.json"):
@@ -314,6 +333,14 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DHOME"], "*.json"))):
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # THIS REGISTRY IS MACHINE-GLOBAL; A BOARD IS NOT. Several api-bound repos
+    # share $DAEMON_HOME, and every row this scan emits is acted on — renewed,
+    # resumed, re-bound. Unfiltered, a tick renewed a NEIGHBOUR's run and a
+    # bind repair overwrote that run's session locator with this repo's
+    # projectKey. An unstamped meta is legacy and reads as ours (see
+    # A.meta_is_mine).
+    if not A.meta_is_mine(m, A.board_key(), A.repo()):
         continue
     if not m.get("run_id") and not keep_runless:
         continue
@@ -702,7 +729,7 @@ phase_relay() {
       # transcript and acks WITHOUT re-delivering (the replay case the test
       # pins on u-3/u-3-cur). The delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
-        BOARD_API_URL="$BOARD_API_URL" \
+        BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
         "$SMINOS_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
         echo "relay: #$tid answer $aid delivered to $uuid"
@@ -1039,16 +1066,24 @@ PY
 _reconcile_successors() {
   local plan lines line act nonce run tid sess daemon transcript
   [ -d "$CLAIMS_DIR" ] || return 0
-  plan="$(T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+  plan="$(T_DHOME="$DAEMON_HOME" _api_py - <<'PY'
 import glob, json, os
+import _board_api as A
 home = os.environ["T_DHOME"]
 live, names = set(), set()
+MINE = (A.board_key(), A.repo())
 for p in glob.glob(os.path.join(home, "*.json")):
     if p.endswith(".reply.json"):
         continue
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # A NEIGHBOUR'S DAEMON IS NOT EVIDENCE ABOUT OUR RUNS. This set decides
+    # which successor runs are live and which names are taken; counting another
+    # repo's workers into it made a stranded successor look alive (so it was
+    # never ended) and a free daemon name look used.
+    if not A.meta_is_mine(m, *MINE):
         continue
     if m.get("run_id"):
         live.add(str(m["run_id"]))
@@ -1309,6 +1344,7 @@ PY
   # whole-tick lock throughout, and `sminos resume` defaults to hours.
   if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+       BOARD_REPO="$BOARD_REPO" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
        "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt"; then
     delivered="$C_SESS"
@@ -1390,6 +1426,7 @@ $(cat "$dir/body.md")"
     # ride the gateway while the log said claude.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+         BOARD_REPO="$BOARD_REPO" \
          DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
          "$SMINOS_CLI" spawn "$name" "$prompt" \
          --cwd "${LOCAL_REPO:-$BOARD_ROOT}" --worktree "$name" \

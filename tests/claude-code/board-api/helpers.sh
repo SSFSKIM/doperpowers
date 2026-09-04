@@ -11,6 +11,11 @@ SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 # run context sets the bearer on the invocation itself, so nothing here loses
 # reach by starting from none.
 unset BOARD_RUN_TOKEN
+# Same reason, for the repo an api binding speaks for: BOARD_REPO wins over
+# .doperpowers/board.json when it is set, so an operator holding one in their
+# environment would silently retarget every fixture repo in these suites. Each
+# drill that wants an override states it on the invocation.
+unset BOARD_REPO
 # The live-binding guard (board-transition.sh, dp#63) adjudicates on the LOCAL
 # seat registry — an operator's real registry (a live worker bound to a
 # ticket number these fixtures reuse) would inject refusals into suites that

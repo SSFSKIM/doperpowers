@@ -177,10 +177,13 @@ REVIEW_CAP="${REVIEW_MAX_CONCURRENT:-3}"
 
 if [ "$BOARD_BINDING" = api ]; then
   # No gh, so neither of gh mode's two repo facts is resolvable the usual way.
-  # BOARD_REPO becomes the project key board-bind posts (the board's own name
-  # for this repo); the default branch comes off the clone's own origin/HEAD,
-  # falling back to main when the clone has no remote-tracking head.
-  BOARD_REPO="${BOARD_REPO:-$(basename "$BOARD_ROOT")}"
+  # BOARD_REPO arrives from _binding.sh (the api binding's declared `repo`,
+  # which it refuses to run without) and is both the repo every claim narrows
+  # to and the project key board-bind posts. It used to fall back to
+  # `basename $BOARD_ROOT` here — a guess that is right only while the checkout
+  # happens to be named after the board's key, and wrong silently otherwise.
+  # The default branch comes off the clone's own origin/HEAD, falling back to
+  # main when the clone has no remote-tracking head.
   if [ -z "${DEFAULT_BRANCH:-}" ]; then
     DEFAULT_BRANCH="$(git -C "$LOCAL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
@@ -210,12 +213,25 @@ else
   #   DEFAULT_BRANCH — the scale lane's integration-ref fallback.
   DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(gh repo view "$BOARD_REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)}"
 fi
-# EXPORTED, not just set: the scale-review passes shell out to python that
-# imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep it
-# arrives exported already and the miss is invisible; run directly — the
+# EXPORTED IN gh MODE, not just set: the scale-review passes shell out to python
+# that imports _board, whose repo() reads the ENVIRONMENT. Run from board-sweep
+# it arrives exported already and the miss is invisible; run directly — the
 # documented path — an unexported value made every scale epic die
 # "BOARD_REPO is unset" inside the subprocess and be silently skipped.
-export BOARD_REPO
+#
+# NOT in api mode, where that reader does not exist (_board's state-machine half
+# is never exercised there) and everything that needs the value takes it from
+# this shell: _api_py hands it to python3 explicitly, and P_REPO below is an
+# ordinary expansion. Exported, it would become the default for any checkout a
+# descendant resolves its own binding in — including one whose board.json says a
+# different repo, which _binding.sh would then never read.
+#
+# The worker spawn below is the one deliberate exception, and it states itself
+# on the prefix rather than riding an ambient export: a reviewer checks out the
+# PR head, and a head predating the repo key carries a board.json without one,
+# so the pin is what lets that worker finish its own review. It cannot leak —
+# the run bearer beside it binds the worker to a ticket in this very repo.
+if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
 # Repo-wide config injected into every worker prompt (constant across PRs):
 #   AUTO_MERGE_DISPLAY — the merge kill switch as the worker sees it.
@@ -1394,9 +1410,11 @@ _tick_deadline_left() {
 # just-claimed worker's meta exists long before the board could show its first
 # write, which is the same window gh mode's registry-first dedupe closes.
 _api_registry_count() {  # <lane[,lane...]>
-  T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
+  T_DHOME="$DAEMON_HOME" T_LANES="$1" _api_py - <<'PY'
 import glob, json, os
+import _board_api as A
 lanes = set(os.environ["T_LANES"].split(","))
+MINE = (A.board_key(), A.repo())
 n = 0
 for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -1404,6 +1422,12 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # A SLOT IS THIS REPO'S TO SPEND. The registry is machine-global, so a
+    # neighbouring api-bound repo's open worker in the same lane read as one of
+    # ours: at cap 1 this checkout saw its lane full and fell through to the
+    # next lane, dispatching its own ticket to the wrong role and model.
+    if not A.meta_is_mine(m, *MINE):
         continue
     # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
     # the server has since ended (the sweep strips run_id from such a meta and
@@ -1680,7 +1704,7 @@ PY
   CLAIM_JOURNAL="$claims_dir/$nonce.json" CLAIM_LANE="$lane" CLAIM_RUN="$C_RUN_ID"
   CLAIM_TICKET="$C_TICKET" CLAIM_DAEMON="$name" CLAIM_CONTROL="$control_dir"
   BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
-  BOARD_API_URL="$BOARD_API_URL" \
+  BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
     _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
       "$control_dir" "$name" || spawn_rc=1
   unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL

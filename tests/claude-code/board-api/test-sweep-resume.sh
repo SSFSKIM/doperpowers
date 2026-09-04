@@ -193,7 +193,7 @@ trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # A `gh` stub earlier on PATH than any real gh: neither the api tick nor the
 # api dispatchers it hands off to may reach it.
@@ -303,6 +303,16 @@ exit 0
 EOF
 chmod +x "$DS/sminos"
 
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
+# or removes one has to name the same digest _sweep_api.sh computes — url
+# normalized the way the client's api_url() normalizes it.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -319,6 +329,14 @@ SW resume > "$OUT1" 2>&1 || true
 t  "successor claimed for the feed entry"  "/runs/claim-successor"     cat "$FIX.log"
 t  "the claim names the ticket"            '\"ticketId\": 12'          cat "$FIX.log"
 t  "the claim speaks automation"           '"auth": "Bearer a"'        cat "$FIX.log"
+# A SUCCESSOR CLAIM IS A DISPATCH. The server resolves this route through the
+# same dispatch rule /runs/claim uses, so an unscoped credential that names no
+# repo is refused `repo-required` — and every reclaimed run would stick in the
+# recovery loop rather than being handed to a successor. Naming the ticket is
+# not naming the repo: the rule reads the credential and the request, not the
+# row the ticket id points at.
+t  "and the successor claim names its repo, as any dispatch must" \
+  '\"repo\": \"testrepo\"' cat "$FIX.log"
 t  "folded answer delivered with sentinel" "[board-relay answer:121]"  cat "$TRANSCRIPT"
 t  "with the reply verbatim"               "go"                        cat "$TRANSCRIPT"
 t  "the successor is told to read its own timeline" "board-show.sh 12" cat "$TRANSCRIPT"
@@ -342,6 +360,12 @@ t  "the bearer meta stays 0600"            "mode=600" meta_mode "$DH/u-old.json"
 t  "successor creds on resume env"         "BOARD_RUN_TOKEN=tok-s"     cat "$DH/resume-env.txt"
 t  "with the successor run id"             "BOARD_RUN_ID=44"           cat "$DH/resume-env.txt"
 t  "and its fence"                         "BOARD_RUN_FENCE=4"         cat "$DH/resume-env.txt"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo the successor speaks for" "BOARD_REPO=testrepo"       cat "$DH/resume-env.txt"
 argv_only() { grep '^ARGV:' "$RESUME_LOG"; }
 nt "the bearer never rides on argv"        "tok-s"                     argv_only
 # The whole tick holds the lock while this resume blocks — an unbounded wait
@@ -452,6 +476,12 @@ RESUME_MUST_FAIL=1 SW resume > "$OUT2" 2>&1 || true
 t  "a failed resume falls back to a fresh spawn" "SPAWN name=12-successor" cat "$SPAWN_LOG"
 t  "the fresh spawn rides the same successor bearer" "BOARD_RUN_TOKEN=tok-s2" cat "$SPAWN_LOG"
 t  "with the successor run id"             "BOARD_RUN_ID=45"           cat "$SPAWN_LOG"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo it speaks for"            "BOARD_REPO=testrepo"       cat "$SPAWN_LOG"
 t  "the fresh worker is told to read its timeline first" "Read your own ticket timeline" cat "$SPAWN_LOG"
 # The claim body is by contract the only route a run has to its own ticket
 # text; a fresh session has never seen it.
@@ -514,7 +544,7 @@ t  "an escalation whose board state reads empty is refused" \
    "board state came back empty"                                       cat "$OUT4B"
 t  "and it asked for that state by id"  '"path": "/tickets/12"'        cat "$FIX.log"
 t  "probing the paged surface before believing the 404" \
-   '"path": "/tickets?limit=1"'                                        cat "$FIX.log"
+   '"path": "/tickets?limit=1&repo=testrepo"'                                        cat "$FIX.log"
 nt "it registers no env-issue"             '\"category\": \"env-issue\"' cat "$FIX.log"
 suppression_for() { cat "$DH/board-suppress/$1.json" 2>/dev/null || echo "no suppression record"; }
 t  "and writes no suppression record"      "no suppression record"     suppression_for 12
@@ -583,10 +613,10 @@ t  "and the records are gone"              "no suppression records"    lifted
 # must not interleave with another tick's.
 # =========================================================================
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 t  "a held lock skips the tick"  "holds the lock"  SW resume
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
-rmdir "$DH/.sweep-api.lock"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # THE PREDECESSOR'S LANE SURVIVES ITS RUN. By the time a ticket reaches this
@@ -712,7 +742,7 @@ PY
   # subshell nothing ever tidies.
   DBOARD="$(mkrepo)"
   mkdir -p "$DBOARD/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$DBOARD/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$port" > "$DBOARD/.doperpowers/board.json"
 }
 SWD() {  # SWD <repo> <registry> <phase>
   ( cd "$1" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
@@ -824,7 +854,7 @@ CPORT="$(free_port)"
 python3 "$TESTS_DIR/mock-server.py" "$CFIX" "$CPORT" & CMOCK=$!
 wait_for_port "$CPORT" || { echo "FAIL mock server never listened on $CPORT"; exit 1; }
 CREPO="$(mkrepo)"; mkdir -p "$CREPO/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$CPORT" > "$CREPO/.doperpowers/board.json"
 CSW() {  # CSW <registry> — one resume tick against the claim-failure board
   ( cd "$CREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$1" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -902,7 +932,7 @@ rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
   RMOCKS="$RMOCKS $!"
   wait_for_port "$port" || { echo "FAIL mock server never listened on $port"; exit 1; }
   RREPO="$(mkrepo)"; mkdir -p "$RREPO/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$port" > "$RREPO/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$port" > "$RREPO/.doperpowers/board.json"
 }
 RSW() {  # RSW <registry> — one resume tick against the current rboard
   ( cd "$RREPO" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
@@ -1143,7 +1173,7 @@ t  "and the tick still succeeds"        "tick exit=0"                 cat "$OUTG
 # `ids=12,90` would also be satisfied by `ids=12,900`.
 asked_ids() { grep -o '"path": "/tickets?[^"]*"' "$1" || echo "no /tickets read"; }
 t  "and it asked for exactly the two ids the record names" \
-   '"path": "/tickets?limit=200&ids=12,90"'   asked_ids "$RLOG"
+   '"path": "/tickets?limit=200&ids=12,90&repo=testrepo"'   asked_ids "$RLOG"
 reads() { echo "ticket-reads=[$(grep -c '"path": "/tickets' "$1" || true)]"; }
 t  "in one targeted read, with no whole-board listing beside it" \
    "ticket-reads=[1]"                   reads "$RLOG"
@@ -1267,7 +1297,7 @@ cat > "$KFIX" <<JSON
   "body":{"id":12,"state":"in-progress","priority":"P1","title":"the stuck one"}},
  {"method":"POST","path":"/tickets","status":409,
   "body":{"error":{"code":"duplicate","message":"existing ticket 94"}}},
- {"method":"GET","path":"/tickets?limit=200&cursor=$KC","status":200,
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$KC","status":200,
   "body":{"items":[{"id":94,"state":"needs-human","priority":null,
                     "title":"stuck resume: ticket #12 cannot be revived"}],
           "next":null,"as_of":118}},
@@ -1290,9 +1320,9 @@ nt "not the page-1 row whose title merely CONTAINS the real one" \
    '"env_issue": 88'                cat "$KDH/board-suppress/12.json"
 # The trailing quote is the delimiter: without it the first-page assertion is
 # also satisfied by the cursor request, and both pages would collapse into one.
-t  "the scan read the first page"       '"path": "/tickets?limit=200"'  cat "$RLOG"
+t  "the scan read the first page"       '"path": "/tickets?limit=200&repo=testrepo"'  cat "$RLOG"
 t  "and asked for the second carrying the cursor verbatim" \
-   "\"path\": \"/tickets?limit=200&cursor=$KC\""       cat "$RLOG"
+   "\"path\": \"/tickets?limit=200&repo=testrepo&cursor=$KC\""       cat "$RLOG"
 
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true

@@ -79,10 +79,13 @@ done
 # pair a total order anyway. The fence's job is the HOURS-scale divergence
 # (two sessions completing one ticket), not linearization.
 if [ "$BOARD_BINDING" = api ]; then _fence_board="api:$BOARD_API_URL"
-else _fence_board="gh:$BOARD_REPO"; fi
+                                   _fence_repo="$BOARD_REPO"
+# gh mode needs no repo dimension: the owner/name inside the key IS the identity.
+else _fence_board="gh:$BOARD_REPO"; _fence_repo=""; fi
 T_ID="$tid" T_DHOME="$DAEMON_HOME" T_SELF="${CLAUDE_CODE_SESSION_ID:-}" \
 T_DSELF="${DAEMON_SELF_UUID:-}" \
-T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" python3 - <<'PY'
+T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" \
+T_BOARD_REPO="$_fence_repo" _py - <<'PY'
 import glob
 import json
 import os
@@ -104,11 +107,14 @@ if tid:
 
     HOST, BOOT = socket.gethostname(), cur_boot()
 
-    # Board keys compare NORMALIZED: _board_api.url() strips a trailing
-    # slash before use, so "api:http://x/" and "api:http://x" name one
-    # board — a raw compare would let a slash unfence a live owner.
-    def _board_key(b):
-        return "api:" + b[4:].rstrip("/") if b.startswith("api:") else b
+    # Board keys compare NORMALIZED (a trailing slash must not unfence a live
+    # owner), and the comparison now carries the REPO too: one api service
+    # serves several repos out of one ticket namespace, so their board keys are
+    # identical and a neighbour's live worker on ITS #9 was refusing legitimate
+    # transitions of OUR #9. One predicate, shared with every other scan over
+    # this machine-global registry; an unstamped meta still fences, as it did
+    # before the stamp existed.
+    from _board_api import meta_is_mine
 
     for path in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
         if path.endswith(".reply.json"):
@@ -119,7 +125,7 @@ if tid:
             continue
         if str(meta.get("ticket", "")).lstrip("#") != tid:
             continue
-        if meta.get("board") and _board_key(meta["board"]) != _board_key(env["T_BOARD"]):
+        if not meta_is_mine(meta, env["T_BOARD"], env.get("T_BOARD_REPO", "")):
             continue   # another board's #N — the number collision, not an owner
         if meta.get("status") not in ("working", "blocked"):
             continue   # only a MID-TURN owner fences; parked/idle owners are

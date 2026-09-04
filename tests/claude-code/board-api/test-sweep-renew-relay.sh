@@ -67,6 +67,7 @@ cat > "$FIX" <<'JSON'
 [
  {"method":"POST","path":"/runs/41/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/43/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/46/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/40/renew","status":409,
   "body":{"error":{"code":"run-ended","message":"reaped"}}},
  {"method":"POST","path":"/runs/50/renew","status":409,
@@ -104,7 +105,7 @@ trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # A `gh` stub earlier on PATH than any real gh: the api tick must never reach
 # it. It records to a FILE — a stub that only echoed would be invisible.
@@ -149,6 +150,16 @@ meta u-4 '{"uuid":"u-4","current":"u-4","status":"working","run_id":44,"fence":1
            "lane":"implementer","bind_confirmed":true,"ticket":"9"}'
 # no run at all (a gh-era or review-species meta) — nothing to renew, no crash
 meta u-5 '{"uuid":"u-5","current":"u-5","status":"working","name":"review-pr-3"}'
+# ANOTHER BINDING'S DAEMON, alive and renewable, sharing this registry. Two
+# api-bound repos on one machine share $DAEMON_HOME and their `board` values are
+# identical (one service, several repos), so the repo stamp is the only thing
+# separating them. Unfiltered, this tick renewed a neighbour's run and — worse —
+# re-bound it, overwriting that run's session locator with this repo's
+# projectKey. Every meta above is UNSTAMPED on purpose: that is the legacy shape
+# from before the stamp existed, and it must still be acted on.
+meta u-6 '{"uuid":"u-6","current":"u-6","status":"working","run_id":46,"fence":1,
+           "lane":"implementer","bind_confirmed":true,"ticket":"31",
+           "board":"api:http://127.0.0.1:'"$PORT"'","board_repo":"otherrepo"}'
 
 RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
 # The stub records its ENVIRONMENT, not just its argv: both the run
@@ -197,6 +208,16 @@ PYX
 EOF
 chmod +x "$DS/sminos"
 
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that holds
+# or inspects one has to name the same digest _sweep_api.sh computes — url
+# normalized the way the client's api_url() normalizes it.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 SW() {  # SW <phase> — one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
       DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
@@ -226,6 +247,8 @@ show_rc() { echo "rc=$rc"; }
 t  "a live run's lease is renewed"          '"path": "/runs/41/renew"' cat "$FIX.log"
 t  "a parked-but-live run is renewed too"   '"path": "/runs/43/renew"' cat "$FIX.log"
 nt "a dead session's lease is left to expire" "/runs/44/renew"         cat "$FIX.log"
+t  "an UNSTAMPED meta is still this binding's" '"path": "/runs/41/renew"' cat "$FIX.log"
+nt "but another binding's daemon is left alone" "/runs/46/renew"          cat "$FIX.log"
 t  "renew speaks as automation"             '"auth": "Bearer a"'       cat "$FIX.log"
 t  "run-ended routes to resume, not error"  "run 40: ended (reaped) — resume path" cat "$OUT1"
 t  "and the phase still exits clean"        "rc=0"                     show_rc
@@ -314,6 +337,12 @@ t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "
 t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RESUME_LOG"
 t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RESUME_LOG"
 t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RESUME_LOG"
+# WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
+# checks out the head it was dispatched for, and a head predating the repo key
+# carries a two-key board.json — so an unpinned sweep-driven turn dies on
+# `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
+# it here the worker loses the pin on every turn the sweep drives afterwards.
+t  "and the repo it speaks for"        "BOARD_REPO=testrepo"               cat "$RESUME_LOG"
 # `sminos resume` blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
 # while THIS tick holds the whole-tick lock, so renewal would starve past the
 # 15-minute lease and A1 would reclaim live runs. The relay bounds it.
@@ -378,7 +407,7 @@ OUTACK="$TDIR/relay-ack.out"
 SWB relay > "$OUTACK" 2>&1 || true
 t  "the delivery itself landed"          "[board-relay answer:123]"  cat "$TX"
 t  "a failed ack is reported"            "DELIVERED but the ack FAILED" cat "$OUTACK"
-ack_feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed"' "$FIX.log")"; }
+ack_feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed?repo=testrepo"' "$FIX.log")"; }
 t  "and buys no further feed read"       "reads=1"                   ack_feed_reads
 nt "and does not hang"                   "TIMEOUT"                   cat "$OUTACK"
 
@@ -429,7 +458,7 @@ rm -f "$DH/u-6.json" "$DH/u-7.json"
 OUT4="$TDIR/relay4.out"
 SWB relay > "$OUT4" 2>&1 || true
 nt "a zero-ack pass breaks the drain loop" "TIMEOUT"              cat "$OUT4"
-feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed"' "$FIX.log")"; }
+feed_reads() { echo "reads=$(grep -c '"path": "/answers/unrelayed?repo=testrepo"' "$FIX.log")"; }
 t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 
 # =========================================================================
@@ -437,10 +466,25 @@ t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 # and its resume must not interleave with another tick's).
 # =========================================================================
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 t  "a held lock skips the tick"  "holds the lock"  SW all
 nt "and sends nothing"           '"method"'        cat "$FIX.log"
-rmdir "$DH/.sweep-api.lock"
+
+# ...and the SAME binding spelled with a trailing slash is the same lock. The
+# client normalizes the url (api_url() rstrips it), so a BOARD_API_URL override
+# differing only by that slash addresses one service — key the lock off the raw
+# string and it addresses two, and two ticks run this board at once.
+: > "$FIX.log"
+SWSLASH() {  # bounded: under the bug this really runs a whole tick
+  ( cd "$r" || exit 1
+    export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
+      BOARD_API_URL="http://127.0.0.1:$PORT/"
+    bounded "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+t  "a trailing-slash url holds the same lock" "holds the lock" SWSLASH all
+nt "and it sends nothing either"             '"method"'       cat "$FIX.log"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # The entry point: board-sweep.sh hands an api-bound repo straight to this
@@ -475,7 +519,7 @@ t "a gh-bound repo is refused loudly" "runs only under an api binding" wrong_bin
 # owner from its number's next tenant.
 # =========================================================================
 : > "$FIX.log"
-LK="$DH/.sweep-api.lock"
+LK="$DH/.sweep-api.$(lock_key testrepo).lock"
 lock_as() {  # lock_as <pid> <recorded start> — plant a lock and age it past stale
   rm -rf "$LK"; mkdir "$LK"
   printf '%s\n' "$1" > "$LK/owner"
@@ -575,5 +619,36 @@ t  "and the session is not resumed on revoked credentials" "delta=0" resumes_8
 nt "nor is the answer acked"               "/answers/120/ack"        cat "$FIX.log"
 nt "and the pass does not hang"            "TIMEOUT"                 cat "$OUTR"
 rm -f "$DH/u-8.json"
+
+# ---- the tick lock is PER BINDING, not per machine -------------------------
+# Two api-bound repos on one machine share $DAEMON_HOME, so a single
+# `.sweep-api.lock` made their timers mutually exclusive: the loser exited
+# without renewing, relaying, resuming or dispatching for a whole tick — longer
+# than a lease, on runs the winner's board knows nothing about. The lock's job
+# is to serialize ticks against ONE board's state, and two boards share none.
+SECOND="$(mkrepo)"; mkdir -p "$SECOND/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"otherrepo"}' "$PORT" \
+  > "$SECOND/.doperpowers/board.json"
+SW2() {  # a tick for the SECOND binding, same registry, same mock
+  ( cd "$SECOND" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+# Hold one binding's lock by hand — the shape a mid-tick neighbour presents —
+# and prove the other binding is unaffected while the SAME binding still backs
+# off. Written as a live owner (this shell) so the staleness rule cannot steal
+# it and turn a real exclusion into a pass.
+hold_lock() {  # hold_lock <repo-key>
+  local d; d="$DH/.sweep-api.$(lock_key "$1").lock"
+  mkdir -p "$d"; echo "$$" > "$d/owner"
+  printf '%s
+' "$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ')" > "$d/owner-start"
+}
+hold_lock testrepo
+nt "a second binding's tick is not blocked by the first's lock" \
+  "another api sweep holds the lock" SW2 renew
+t  "and the same binding still excludes itself" \
+  "another api sweep holds the lock" SW renew
+rm -rf "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 finish

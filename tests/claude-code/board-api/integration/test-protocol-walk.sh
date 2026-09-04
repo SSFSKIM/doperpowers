@@ -77,7 +77,8 @@ OUT_D2="$DRILL_TMP/dispatch2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_D2" 2>&1 || true
 nt "an owned ticket is not claimed a second time" "claimed #$TID run=" cat "$OUT_D2"
 t  "a bare claim on the lane answers empty" '"claimed":false' \
-   api automation POST /runs/claim '{"lane":"implementer","dispatchNonce":"walk-exclusivity-probe"}'
+   api automation POST /runs/claim \
+     "{\"lane\":\"implementer\",\"dispatchNonce\":\"walk-exclusivity-probe\",\"repo\":\"$(drill_repo_key)\"}"
 
 # ---- the worker's own writes, as the RUN -----------------------------------
 worker() { in_repo BOARD_RUN_TOKEN="$BEARER" BOARD_RUN_ID="$RUN" BOARD_RUN_FENCE="$FENCE" "$@"; }
@@ -120,7 +121,7 @@ TRANSCRIPT="$PROJECTS/$UUID.jsonl"
 t "the resumed worker sees the relay sentinel" "[board-relay answer:" cat "$TRANSCRIPT"
 t "with the human's answer verbatim" "sqlite" cat "$TRANSCRIPT"
 t "and is told to re-state its gate verdict" "Re-state your gate verdict" cat "$TRANSCRIPT"
-t "a delivered answer is acked — the feed drains" "[]" api automation GET /answers/unrelayed
+t "a delivered answer is acked — the feed drains" "[]" api automation GET "/answers/unrelayed?repo=$(drill_repo_key)"
 
 # ---- the worker finishes; the human closes ---------------------------------
 t "in-review requires the artifact and takes it" "#$TID: → in-review" \

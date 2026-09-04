@@ -74,12 +74,25 @@ cat > "$FIX" <<JSON
                     "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]}],
           "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","status":200,
+  "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
+                    "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]},
+                   {"id":14,"title":"T three","category":"work","state":"ready-for-architect",
+                    "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
  {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,
   "body":{"items":[{"id":13,"title":"T two","category":"work","state":"ready-for-implementer",
                     "priority":"P2","owner_run":null,"parent":12,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":14,"title":"T three","category":"work","state":"ready-for-architect",
                     "priority":null,"owner_run":42,"parent":null,"plan":null,"pr_url":null,
+                    "branch":null,"blocked_by":[],"relates":[]}],
+          "next":null,"as_of":118}},
+ {"method":"GET","path":"/tickets?limit=200&repo=childrepo","status":200,
+  "body":{"items":[{"id":31,"title":"T child","category":"work","state":"in-progress",
+                    "priority":"P1","owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]}],
           "next":null,"as_of":118}},
  {"method":"GET","path":"/tickets?limit=1","status":200,
@@ -89,22 +102,27 @@ cat > "$FIX" <<JSON
           "next":"$C1","as_of":118}},
  {"method":"GET","path":"/tickets?limit=200","status":200,
   "body":{"items":[{"id":3,"title":"T blocker","category":"work","state":"in-progress",
+                    "repo":"testrepo",
                     "priority":"P1","owner_run":43,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":4,"title":"T blocker done","category":"work","state":"done",
+                    "repo":"otherrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":5,"title":"T blocker wontfix","category":"work","state":"wontfix",
+                    "repo":"testrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[]},
                    {"id":9,"title":"T sibling","category":"work","state":"in-review",
+                    "repo":"testrepo",
                     "priority":null,"owner_run":null,"parent":null,"plan":null,"pr_url":null,
                     "branch":null,"blocked_by":[],"relates":[12]},
                    {"id":12,"title":"T one","category":"work","state":"in-progress",
+                    "repo":"testrepo",
                     "priority":"P1","owner_run":41,"parent":null,"plan":null,"pr_url":null,
                     "branch":"feat/x","blocked_by":[3,4,5],"relates":[9]}],
           "next":"$C1","as_of":118}},
- {"method":"GET","path":"/queue/decisions?limit=200&cursor=$Q1","status":200,
+ {"method":"GET","path":"/queue/decisions?limit=200&repo=testrepo&cursor=$Q1","status":200,
   "body":{"items":[{"correlation_id":"evt-21","ticket_id":9,"run_id":44,"species":"board",
                     "question":{"note":"the second question"},
                     "raised_at":"2026-08-18 05:00:00.000000+00","state":"needs-info",
@@ -138,7 +156,7 @@ wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 # A stub gh that announces itself.
 gdir="$(mktemp -d)"; printf '#!/bin/sh\necho GH-CALLED "$@"\n' > "$gdir/gh"; chmod +x "$gdir/gh"
 # DAEMON_HOME is pinned hermetic — board-lint.sh globs it, and its default is the
@@ -160,7 +178,17 @@ DMOVER="$(mktemp -d)"
 printf '{"uuid":"m0ved1234567","ticket":"#55","run_id":9}' > "$DMOVER/d3.json"
 DOPEN="$(mktemp -d)"
 printf '{"uuid":"a11ve1234567","ticket":"#12","run_id":10}' > "$DOPEN/d4.json"
+# A NEIGHBOUR'S daemon, on a ticket THIS board has never had. The registry is
+# machine-global and several api-bound repos share it, so lint would report
+# another repo's worker as drifted here — and retiring a live daemon on that
+# verdict is exactly what it recommends. #99 is the absent ticket the drift
+# drill above uses, so an unfiltered scan FAILs on it identically.
+DFOREIGN="$(mktemp -d)"
+printf '{"uuid":"f0re1gn234567","ticket":"#99","run_id":11,
+         "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$PORT" \
+  > "$DFOREIGN/d5.json"
 
+STUB_CHILD="$(mktemp -d)"
 V() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 VD() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DRIFT" \
@@ -170,6 +198,8 @@ VC() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DCLOSED" \
 VM() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DMOVER" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 VO() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DOPEN" \
+         BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
+VF() { ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DFOREIGN" \
          BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/$1" "${@:2}" ); }
 map_md() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.md"; }
 map_html() { V board-map.sh --write >/dev/null; cat "$r/doperpowers/issue-tracker/BOARD.html"; }
@@ -206,9 +236,73 @@ t "list renders an ungraded ticket" "#14 ready-for-architect - T three" V board-
 # page-1 assertion, and a bare-listing read must not satisfy either.
 : > "$FIX.log"
 V board-list.sh >/dev/null
-t "list opts into the paged envelope" '"path": "/tickets?limit=200"' cat "$FIX.log"
+t "list opts into the paged envelope" '"path": "/tickets?limit=200&repo=testrepo"' cat "$FIX.log"
 t "and carries the server's cursor back verbatim" "cursor=$C1" cat "$FIX.log"
 nt "and reads no bare listing beside it" '"path": "/tickets"' cat "$FIX.log"
+# ONE SERVICE, SEVERAL BOARDS. The read's server-side default is EVERY repo, so
+# an unnarrowed list from this checkout printed a neighbouring repo's tickets as
+# if they were its own. Every page carries the filter, the cursor page included:
+# a page that dropped it would splice foreign rows into the middle of the board.
+t "every page of the walk stays inside the repo" \
+  '"path": "/tickets?limit=200&repo=testrepo&cursor='"$C1" cat "$FIX.log"
+
+# --all-repos is the one deliberate widening, and only the two BROWSE verbs
+# offer it (the sweep, lint, map, reconcile and both dispatchers always narrow).
+: > "$FIX.log"
+t "--all-repos says so in the header" "all repos" V board-list.sh --all-repos
+: > "$FIX.log"
+V board-list.sh --all-repos >/dev/null
+nt "--all-repos sends no repo filter at all" "repo=" cat "$FIX.log"
+# A WIDENED ROW SAYS WHICH BOARD IT IS FROM. Ticket numbers are repo-local, so
+# across repos `#4` is not one ticket — and every id-targeted verb (show,
+# transition, comment) takes a bare number. A widened listing that hid the repo
+# handed the reader ids it could not tell apart, and an unscoped human token
+# would then mutate a neighbour's ticket from this checkout without either side
+# saying so. The column appears ONLY when widened; the narrowed default is
+# byte-identical to what it always printed.
+t  "a widened row names its repo"          "#3 testrepo in-progress P1 T blocker" \
+  V board-list.sh --all-repos
+t  "and a foreign row is legible as foreign" "#4 otherrepo done - T blocker done" \
+  V board-list.sh --all-repos
+# The cursor page's rows predate the repo field (a server that never sent one),
+# and an absent repo renders as the same "-" an absent priority does rather than
+# as "None" or an empty column that swallows the title.
+t  "a row with no repo renders the absence"  "#13 - ready-for-implementer P2 T two" \
+  V board-list.sh --all-repos
+# The narrowed default keeps its exact shape: no column, no header change.
+t  "the narrowed row keeps its original shape" "#3 in-progress P1 T blocker" V board-list.sh
+nt "and names no repo at all"                  "testrepo"                     V board-list.sh
+t "and still renders the board" '"path": "/tickets?limit=200"' cat "$FIX.log"
+rc 2 "an unknown flag is still a usage error" V board-list.sh --all-repo
+
+# ── the repo does not leak into a child in ANOTHER checkout ────────────────
+# BOARD_REPO is repo-scoped, exactly like BOARD_API_URL and the credentials
+# file, and _binding.sh honours an inherited one so a USER can override the
+# binding. A value the parent DERIVED from its own board.json is not that
+# override: exported, it reaches the child's `[ -n "$BOARD_REPO" ]` guard first
+# and the child never reads its own board.json at all — so a verb run from a
+# neighbouring checkout would file into, and read, the PARENT's repo. Which is
+# the whole bug this branch exists to close, one level down.
+r_child="$(mkrepo)"; mkdir -p "$r_child/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"childrepo"}' "$PORT" \
+  > "$r_child/.doperpowers/board.json"
+# The parent is a real board verb's environment: _lib.sh sourced in $r, which is
+# where the export would happen, and only then does the child verb run.
+CHILD_RUN="$STUB_CHILD/child-list.sh"
+mkdir -p "$STUB_CHILD"
+printf '#!/usr/bin/env bash\ncd "$1" || exit 1\nexec "%s/board-list.sh"\n' "$SCRIPTS" > "$CHILD_RUN"
+chmod +x "$CHILD_RUN"
+cross_repo() {
+  ( cd "$r" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
+      BOARD_CREDENTIALS_FILE="$CREDS" bash -c \
+      ". '$SCRIPTS/_lib.sh'; exec '$CHILD_RUN' '$r_child'" )
+}
+: > "$FIX.log"
+t  "a child in another checkout reads ITS board, not the parent's" "#31 in-progress P1 T child" \
+  cross_repo
+t  "and its read carries the CHILD's repo" '"path": "/tickets?limit=200&repo=childrepo"' \
+  cat "$FIX.log"
+nt "never the parent's"                    "repo=testrepo" cat "$FIX.log"
 # The state argument is a SERVER-side filter in API mode; a branch that dropped
 # it would still print a plausible board (the mock answers any /tickets query).
 # It rides the PROMOTED PLURAL `states=` — the paged surface has no `state=`,
@@ -216,7 +310,7 @@ nt "and reads no bare listing beside it" '"path": "/tickets"' cat "$FIX.log"
 : > "$FIX.log"
 V board-list.sh ready-for-implementer >/dev/null 2>&1 || true
 t "list pushes the state filter onto the wire as the promoted plural" \
-  '"path": "/tickets?limit=200&states=ready-for-implementer"' cat "$FIX.log"
+  '"path": "/tickets?limit=200&states=ready-for-implementer&repo=testrepo"' cat "$FIX.log"
 
 # ── show ───────────────────────────────────────────────────────────────────
 t "show prints the ticket row with run/plan/pr" "#12 in-progress P1 T one  owner_run=41" \
@@ -243,7 +337,7 @@ nt "and reads no whole board to do it" '"path": "/tickets"' cat "$FIX.log"
 : > "$FIX.log"
 t "show dies on an unknown ticket" "error: no ticket #77" V board-show.sh 77
 t "and probed the paged surface before trusting that 404" \
-  '"path": "/tickets?limit=1"' cat "$FIX.log"
+  '"path": "/tickets?limit=1&repo=testrepo"' cat "$FIX.log"
 # The projection carries branch and both edge arrays now (arkho#7); the header
 # line is the only place an operator sees them in API mode.
 t "show prints branch and both edge arrays" "branch=feat/x blocked_by=[3 4 5] relates=[9]" \
@@ -282,11 +376,11 @@ nt "reconcile never calls a ticket in review dispatchable" \
 : > "$FIX.log"
 V board-reconcile.sh >/dev/null 2>&1 || true
 t "reconcile opts the queue into the paged envelope" \
-  '"path": "/queue/decisions?limit=200"' cat "$FIX.log"
+  '"path": "/queue/decisions?limit=200&repo=testrepo"' cat "$FIX.log"
 t "and carries the queue cursor back verbatim" "cursor=$Q1" cat "$FIX.log"
 nt "and reads no bare queue listing beside it" '"path": "/queue/decisions"' cat "$FIX.log"
 t "reconcile pushes the lane filter onto the wire as the promoted plural" \
-  '"path": "/tickets?limit=200&states=ready-for-architect,ready-for-implementer"' \
+  '"path": "/tickets?limit=200&states=ready-for-architect,ready-for-implementer&repo=testrepo"' \
   cat "$FIX.log"
 # The API branch ends by chaining board-lint.sh (parity with the gh branch),
 # which is how the local-registry half of the report gets into an otherwise
@@ -322,6 +416,13 @@ nt "and re-reads nothing to say so" '"path": "/tickets/4"' cat "$FIX.log"
 t "a ticket the walk missed but the board still has is no retire candidate" \
   "board-lint: 5 open ticket(s), 0 FAIL" VM board-lint.sh
 nt "and no FAIL is printed for it" "FAIL daemon" VM board-lint.sh
+
+# A daemon stamped for ANOTHER binding is not this board's drift to report —
+# and lint's verdict is a retire recommendation, so reporting it is a
+# recommendation to kill a live worker on a board this checkout cannot see.
+nt "lint does not report another binding's daemon as drifted" "FAIL daemon" \
+  VF board-lint.sh
+t  "and says so with a clean verdict"  "0 FAIL" VF board-lint.sh
 t "the by-id confirm is what said so" '"path": "/tickets/55"' cat "$FIX.log"
 # The fourth shape, and the one every healthy daemon in the fleet is in: the
 # walk SERVED its ticket, open. Three drills above pin what lint must SAY; this
@@ -411,7 +512,7 @@ nt "a projecting server draws no degradation note" "projects no dependency or re
 # able to satisfy the negative.
 : > "$FIX.log"
 V board-map.sh --write >/dev/null 2>&1
-t "map walks the paged surface" '"path": "/tickets?limit=200"' cat "$FIX.log"
+t "map walks the paged surface" '"path": "/tickets?limit=200&repo=testrepo"' cat "$FIX.log"
 nt "and reads no whole board to draw the graph" '"path": "/tickets"' cat "$FIX.log"
 
 # ── an OLDER server: no topology columns at all ────────────────────────────
@@ -447,7 +548,7 @@ python3 "$TESTS_DIR/mock-server.py" "$FIX_OLD" "$PORT_OLD" & MOCK_OLD=$!
 trap 'kill $MOCK $MOCK_OLD 2>/dev/null' EXIT
 wait_for_port "$PORT_OLD" || { echo "FAIL mock server never listened on $PORT_OLD"; exit 1; }
 r_old="$(mkrepo)"; mkdir -p "$r_old/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT_OLD" > "$r_old/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT_OLD" > "$r_old/.doperpowers/board.json"
 map_md_old() {
   ( cd "$r_old" && PATH="$gdir:$PATH" DAEMON_HOME="$DHOME" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-map.sh" --write >/dev/null )

@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # _binding.sh — per-repo board-binding resolution (A2). Side-effect-free:
 # sourceable from ANY entry point BEFORE gh-mode initialization. Defines
-# BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py.
-# BOARD_ROOT, BOARD_API_URL and BOARD_CREDENTIALS_FILE are honored if the
-# sourcing shell already set them (that is how _lib.sh hands over its own root,
-# same process, and how a user overrides either value) but none of the three is
-# exported — see the export note below.
+# BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py,
+# and — in api mode only — BOARD_REPO.
+# BOARD_ROOT, BOARD_API_URL, BOARD_CREDENTIALS_FILE and BOARD_REPO are honored
+# if the sourcing shell already set them (that is how _lib.sh hands over its own
+# root, same process, and how a user overrides any of the values) but none of
+# the four is exported here — see the export note below.
 # .doperpowers/board.json selects the substrate: absent or {"binding":"gh"}
-# -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...} -> the
-# toolkit speaks the Arkho board API and gh is neither required nor invoked.
+# -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...,"repo":...}
+# -> the toolkit speaks the Arkho board API, for the named repo, and gh is
+# neither required nor invoked. BOARD_REPO means different things per binding:
+# in api mode it is the BOARD's repo key (a bare name the service registered),
+# in gh mode it is owner/name and _lib.sh resolves it.
 BOARD_BINDING=gh
 BOARD_API_URL="${BOARD_API_URL:-}"
 if [ -z "${BOARD_ROOT:-}" ]; then
@@ -22,17 +26,40 @@ try:
     cfg = json.load(open(sys.argv[1]))
 except Exception as e:
     print("parse-error: %s" % e); sys.exit(0)
-print("%s|%s" % (cfg.get("binding", "gh"), cfg.get("url", "")))
+# The repo is TRIMMED here: `[ -n " " ]` is true in the shell, so a repo of
+# spaces would pass the emptiness check below and then ride the wire as an
+# encoded blank — which the server reads as no filter at all.
+print("%s|%s|%s" % (cfg.get("binding", "gh"), cfg.get("url", ""),
+                    str(cfg.get("repo") or "").strip()))
 PY
 )"
   case "$_binding_line" in
     parse-error*) echo "error: .doperpowers/board.json: ${_binding_line#parse-error: }" >&2
                   return 1 2>/dev/null || exit 1 ;;
-    api\|*) BOARD_BINDING=api
-            [ -n "$BOARD_API_URL" ] || BOARD_API_URL="${_binding_line#api|}"
-            [ -n "$BOARD_API_URL" ] || { echo "error: .doperpowers/board.json names binding=api but no url" >&2
-                                         return 1 2>/dev/null || exit 1; } ;;
-    gh\|*) : ;;
+  esac
+  _binding_rest="${_binding_line#*|}"
+  case "${_binding_line%%|*}" in
+    api) BOARD_BINDING=api
+         [ -n "$BOARD_API_URL" ] || BOARD_API_URL="${_binding_rest%%|*}"
+         [ -n "$BOARD_API_URL" ] || { echo "error: .doperpowers/board.json names binding=api but no url" >&2
+                                      return 1 2>/dev/null || exit 1; }
+         # THE REPO THE BOARD KNOWS THIS CHECKOUT BY. One service serves
+         # several repositories out of one ticket namespace, so a client that
+         # names none is not repo-neutral: the server picks for it — its
+         # founding repo on an ordinary write, EVERY repo on a list read — and
+         # a register run from a neighbouring checkout files into whichever
+         # repo the service was founded with. Declared, never guessed: neither
+         # the server's pick nor the checkout's directory name is this repo's
+         # identity on the board, and a wrong one is silent. An env override
+         # still wins (a blank one is no declaration at all — and a blank
+         # spelled as whitespace is still a blank, so the override is trimmed
+         # before it is weighed, exactly as the file's value is).
+         BOARD_REPO="$(printf '%s' "${BOARD_REPO:-}" \
+           | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+         [ -n "$BOARD_REPO" ] || BOARD_REPO="${_binding_rest#*|}"
+         [ -n "$BOARD_REPO" ] || { echo "error: .doperpowers/board.json names binding=api but no repo" >&2
+                                   return 1 2>/dev/null || exit 1; } ;;
+    gh) : ;;
     # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling
     # through left BOARD_BINDING=gh, so a typo (`"api "`, `"API"`, `"arkho"`)
     # silently sent every read and every mutation to GitHub — against a repo
@@ -50,11 +77,12 @@ if [ -z "${BOARD_CREDENTIALS_FILE:-}" ]; then
   _board_common_dir="$(git -C "$BOARD_ROOT" rev-parse --path-format=absolute --git-common-dir)"
   BOARD_CREDENTIALS_FILE="$HOME/.arkho-board/$(basename "$(dirname "$_board_common_dir")").env"
 fi
-# Only the binding is exported. BOARD_ROOT, BOARD_API_URL and
-# BOARD_CREDENTIALS_FILE are repo-scoped: exporting them would let a descendant
-# that sources this file from a DIFFERENT repo resolve its own board.json while
-# holding the parent's URL and token file. _api_py passes both to python3
-# explicitly, so nothing downstream depends on them being in the environment.
+# Only the binding is exported. BOARD_ROOT, BOARD_API_URL, BOARD_CREDENTIALS_FILE
+# and BOARD_REPO are repo-scoped: exporting them would let a descendant that
+# sources this file from a DIFFERENT repo resolve its own board.json while
+# holding the parent's URL, token file and repo key. _api_py passes all three to
+# python3 explicitly, so nothing downstream depends on them being in the
+# environment.
 export BOARD_BINDING
 
 # Run an inline python3 board operation with the API client importable and the
@@ -63,4 +91,5 @@ export BOARD_BINDING
 _BINDING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _api_py() { PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   BOARD_API_URL="$BOARD_API_URL" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  BOARD_REPO="${BOARD_REPO:-}" \
   python3 "$@"; }

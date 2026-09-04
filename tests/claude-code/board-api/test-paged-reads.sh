@@ -76,7 +76,12 @@ world() {  # world <name>  — fixtures on stdin; retires the previous world
 }
 
 CORE="import _board_api as A"
+# BOARD_REPO stands in for the api binding's declared `repo`: _binding.sh
+# resolves it from .doperpowers/board.json and _api_py hands it to python3, and
+# the client refuses the repo-dimensioned routes rather than letting the server
+# pick a repo for it.
 run_py() { PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
+  BOARD_REPO=testrepo \
   BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$1"; }
 # Delimited, because `t` matches a SUBSTRING: bare `reqs=3` is also satisfied
 # by a count of 30, and every count assertion here exists to catch a request
@@ -137,9 +142,9 @@ t "a by-id 404 reports absence" "absent=True" \
   run_py "$CORE
 print('absent=%s' % (A.ticket(404000) is None))"
 t "and an unproven process probes the paged surface before trusting it" \
-  '"path": "/tickets?limit=1"' log
+  '"path": "/tickets?limit=1&repo=testrepo"' log
 t "then re-asks, so the absence it reports was seen on a proven surface" \
-  "paths=[/tickets/404000 /tickets?limit=1 /tickets/404000]" paths
+  "paths=[/tickets/404000 /tickets?limit=1&repo=testrepo /tickets/404000]" paths
 
 # The other half of that rule, and the reason it is not ceremony: a service
 # mid-version-transition can answer the two requests from DIFFERENT instances —
@@ -172,7 +177,7 @@ print('id=%s state=%s branch=%s' % (r['id'], r['state'], r['branch']))"
 # The positive above is also satisfied by a client that never made the first
 # read at all; the sequence is what says the rescue happened where it had to.
 t "on exactly the three requests that rule implies, in that order" \
-  "paths=[/tickets/13 /tickets?limit=1 /tickets/13]" paths
+  "paths=[/tickets/13 /tickets?limit=1&repo=testrepo /tickets/13]" paths
 
 # The probe answers a question about the SERVER, not about a ticket, so one
 # answer settles it for the process. board-lint confirms every absent daemon
@@ -249,19 +254,19 @@ nt "so that 404 never reports absence either" "ABSENT" echo "$PS_OUT"
 # Without this, the drill also passes for a client that skipped the probe and
 # died some other way — the probe having HAPPENED is half of what is under test.
 t "and the probe it refused to trust was really spent" \
-  '"path": "/tickets?limit=1"' log
+  '"path": "/tickets?limit=1&repo=testrepo"' log
 
 # ---- the cursor walk --------------------------------------------------------
 # Cursor-bearing entries FIRST: the mock matches by path prefix, so a bare
 # `/tickets?limit=200` entry listed first would swallow every cursor request.
 world walk <<JSON
 [
- {"method":"GET","path":"/tickets?limit=200&cursor=$C2","status":200,"once":true,
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C2","status":200,"once":true,
   "body":{"items":[{"id":5,"title":"e","category":"work","state":"done",
                     "priority":"P2","owner_run":null,"parent":null,"plan":null,
                     "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
           "next":null,"as_of":118}},
- {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,"once":true,
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","status":200,"once":true,
   "body":{"items":[{"id":3,"title":"c","category":"work","state":"parked",
                     "priority":"P1","owner_run":null,"parent":null,"plan":null,
                     "pr_url":null,"branch":null,"blocked_by":[],"relates":[]},
@@ -319,9 +324,9 @@ nt "and no partial board escapes it" "PARTIAL" echo "$REF_OUT"
 # three times over — one per attempt of request()'s transport retry.
 world transport <<JSON
 [
- {"method":"GET","path":"/tickets?limit=200&cursor=$C1","disconnect":true,"once":true},
- {"method":"GET","path":"/tickets?limit=200&cursor=$C1","disconnect":true,"once":true},
- {"method":"GET","path":"/tickets?limit=200&cursor=$C1","disconnect":true,"once":true},
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","disconnect":true,"once":true},
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","disconnect":true,"once":true},
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","disconnect":true,"once":true},
  {"method":"GET","path":"/tickets?limit=200","status":200,"once":true,
   "body":{"items":[{"id":1,"title":"a","category":"work","state":"in-progress",
                     "priority":"P0","owner_run":41,"parent":null,"plan":null,
@@ -392,7 +397,7 @@ world emptycursor <<'JSON'
 ]
 JSON
 EC_OUT="$(bounded env PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
-  BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
+  BOARD_REPO=testrepo BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
 rows = A.tickets_all()
 print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
 t "an empty next is malformed, not a cursor the walk carries back" \
@@ -408,7 +413,7 @@ nt "and no rows escape the page that carried it" "PARTIAL" echo "$EC_OUT"
 # the regression comes back as a FAIL rather than a hung suite.
 world loopcursor <<JSON
 [
- {"method":"GET","path":"/tickets?limit=200&cursor=$C1","status":200,
+ {"method":"GET","path":"/tickets?limit=200&repo=testrepo&cursor=$C1","status":200,
   "body":{"items":[{"id":2,"title":"b","category":"work","state":"in-progress",
                     "priority":"P0","owner_run":43,"parent":null,"plan":null,
                     "pr_url":null,"branch":null,"blocked_by":[],"relates":[]}],
@@ -421,7 +426,7 @@ world loopcursor <<JSON
 ]
 JSON
 LC_OUT="$(bounded env PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
-  BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
+  BOARD_REPO=testrepo BOARD_CREDENTIALS_FILE="$CREDS" python3 -c "$CORE
 rows = A.tickets_all()
 print('PARTIAL rows=%d' % len(rows))" 2>&1 || true)"
 t "a cursor served back a second time is a loop the walk refuses to run" \
@@ -520,9 +525,9 @@ run_py "$CORE
 A.tickets_by_ids(range(1, 402))" > /dev/null 2>&1 || true
 t "401 ids chunk into three requests" "reqs=[3]" reqs
 ids_range() { python3 -c "print('ids=' + ','.join(str(i) for i in range($1, $2)))"; }
-t "the first chunk stops at the 200-id cap" "$(ids_range 1 201)\"" log
-t "the second chunk takes the next 200" "$(ids_range 201 401)\"" log
-t "the third carries the remainder" "$(ids_range 401 402)\"" log
+t "the first chunk stops at the 200-id cap" "$(ids_range 1 201)&repo=testrepo\"" log
+t "the second chunk takes the next 200" "$(ids_range 201 401)&repo=testrepo\"" log
+t "the third carries the remainder" "$(ids_range 401 402)&repo=testrepo\"" log
 
 # ---- the decisions queue walk ----------------------------------------------
 # Queue rows carry no `id` at all — identity is correlation_id — and the
@@ -530,7 +535,7 @@ t "the third carries the remainder" "$(ids_range 401 402)\"" log
 # between pages. Hence no dedupe, and order is the order served.
 world queue <<JSON
 [
- {"method":"GET","path":"/queue/decisions?limit=200&cursor=$Q1","status":200,"once":true,
+ {"method":"GET","path":"/queue/decisions?limit=200&repo=testrepo&cursor=$Q1","status":200,"once":true,
   "body":{"items":[{"correlation_id":"evt-204","ticket_id":9,"run_id":44,
                     "species":"board","question":{"note":"the second question"},
                     "raised_at":"2026-08-18T02:00:00Z","state":"needs-human",

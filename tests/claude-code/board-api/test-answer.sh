@@ -105,7 +105,7 @@ trap 'kill $MOCK ${MOCK2:-} 2>/dev/null' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 
 # A `gh` stub earlier on PATH than any real gh: the API path must never reach
 # it. It records to a FILE — a stub that only echoed would be invisible.
@@ -189,6 +189,13 @@ qreads() { echo "qreads=[$(grep -c 'queue/decisions' "$FIX.log" || true)]"; }
 t  "the answer leg speaks human"      '"auth": "Bearer h"' answer_leg
 nt "and never automation"             '"auth": "Bearer a"' answer_leg
 t  "the queue read speaks human too"  '"auth": "Bearer h"' queue_leg
+# The decisions walk is a LIST read: its server-side default is every repo the
+# service holds, so an unnarrowed one would look for this ticket's park among
+# a neighbouring repo's standing questions. The wake queue narrows always —
+# only the two browse verbs offer the --all-repos widening.
+t  "and narrows to the bound repo"    '"path": "/queue/decisions?limit=200&repo=testrepo"' queue_leg
+# The relay's own feed reads the same way.
+t  "the unrelayed feed narrows too"   '"path": "/answers/unrelayed?repo=testrepo"' cat "$FIX.log"
 t  "the ack leg speaks automation"    '"auth": "Bearer a"' ack_leg
 nt "and never the human token"        '"auth": "Bearer h"' ack_leg
 # The re-walk-once rule's other half: a walk that SERVED the park is never
@@ -269,14 +276,24 @@ nt "and nothing is relayed"               "/answers/unrelayed"   cat "$FIX.log"
 # their answer had been relayed when the inline wake never ran at all. The
 # answer IS on the board either way; what changes is what this command claims.
 # =========================================================================
+# The sweep's tick lock is keyed by BINDING (url + repo), so a drill that plants
+# one has to name the same digest _sweep_api.sh computes — url normalized the
+# way the client's api_url() normalizes it.
+lock_key() {  # lock_key <repo-key>
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
 : > "$FIX.log"
-mkdir "$DH/.sweep-api.lock"
+mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 OUTLOCK="$TDIR/answer-lockheld.out"
 ANS 16 "under a held lock" > "$OUTLOCK" 2>&1 || true
 t  "a held sweep lock is surfaced, not swallowed" "the inline wake did not run" cat "$OUTLOCK"
 t  "and the answer is still reported as recorded" "recorded on the board"       cat "$OUTLOCK"
 nt "no delivery is claimed"                       "delivered to"                cat "$OUTLOCK"
-rmdir "$DH/.sweep-api.lock"
+rmdir "$DH/.sweep-api.$(lock_key testrepo).lock"
 
 # =========================================================================
 # The hide-a-row drill (spec § Testing): a park that COMMITTED while the first
@@ -308,7 +325,7 @@ JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX2" "$PORT2" & MOCK2=$!
 wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; exit 1; }
 r2="$(mkrepo)"; mkdir -p "$r2/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT2" > "$r2/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT2" > "$r2/.doperpowers/board.json"
 ANS2() {  # ANS2 <args...> — one board-answer.sh run against the hidden world
   ( cd "$r2" || exit 1
     export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \

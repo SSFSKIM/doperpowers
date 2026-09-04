@@ -75,7 +75,7 @@ wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
-printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$PORT" > "$r/.doperpowers/board.json"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
 V() { ( cd "$r" && BOARD_CREDENTIALS_FILE="$CREDS" BOARD_RUN_TOKEN=rt "$SCRIPTS/$1" "${@:2}" ); }
 # The log-reading asserts run their verb inside `bash -c`, which is a fresh
 # shell: without these the callee would be an undefined command and every such
@@ -90,9 +90,19 @@ last_register_body() {
   grep '"path": "/tickets",' "$FIX.log" | tail -1 |
     python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
 }
+last_transition_body() {
+  grep '/transition"' "$FIX.log" | tail -1 |
+    python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
+}
 
 t "transition prints SERVER to, not requested" "→ needs-human (converged)" \
   V board-transition.sh 9 in-review "note here"
+# A BIRTH NAMES ITS REPO; A MOVE DOES NOT (the register half is asserted below,
+# once one has been posted). An id-targeted route needs no repo name: the ticket
+# already has one, and a second opinion about it could only ever contradict the
+# row.
+nt "a transition names no repo — the ticket already has one" \
+  '"repo"' last_transition_body
 t "fence rides env" '\"fence\": 3' \
   bash -c "cd '$r' && BOARD_CREDENTIALS_FILE='$CREDS' BOARD_RUN_TOKEN=rt BOARD_RUN_FENCE=3 \
     '$SCRIPTS/board-transition.sh' 9 done 2>/dev/null; cat '$FIX.log'"
@@ -107,8 +117,15 @@ t "park birth sends the note as its own field" '\"note\": \"which color?' \
 # one on. This is the park-birth request from the assert above — and the ABSENCE
 # of a "body" key is half the assertion: the note must not be prepended too.
 t "park birth body pins birth + note field, body absent" \
-  '{"title": "pick color", "category": "work", "priority": "P2", "birth": "needs-human", "note": "which color?"}' \
+  '{"title": "pick color", "category": "work", "priority": "P2", "birth": "needs-human", "note": "which color?", "repo": "testrepo"}' \
   last_register_body
+# A BIRTH NAMES ITS REPO. The service serves several repositories from one
+# ticket namespace, and an unscoped credential that names none on POST /tickets
+# lands the ticket in the service's FOUNDING repo — which is how a register run
+# from a neighbouring checkout filed into this one. Stated on its own as well
+# as inside the whole-body pins: this is the key the change exists for.
+t "the register body names the repo the binding speaks for" \
+  '"repo": "testrepo"' last_register_body
 
 EMPTY_BODY="$(mktemp)"   # a regular empty file, not /dev/null: the body-file
                          # guard is `[ -f ]`, which a character device fails
@@ -124,7 +141,7 @@ SPEC="$(mktemp)"; printf 'the spec' > "$SPEC"   # a real statement of work: a
 V board-register.sh "parked with a spec" enhancement P2 --state needs-human \
   --note 'q?' --body-file "$SPEC" >/dev/null
 t "a park birth carries note and body as separate fields" \
-  '{"title": "parked with a spec", "category": "work", "priority": "P2", "birth": "needs-human", "note": "q?", "body": "the spec"}' \
+  '{"title": "parked with a spec", "category": "work", "priority": "P2", "birth": "needs-human", "note": "q?", "body": "the spec", "repo": "testrepo"}' \
   last_register_body
 
 # The arkho#7 pointer is a claim about CANON — "this birth is illegal here" —
@@ -140,7 +157,7 @@ t "a 500 on a spike birth still surfaces the failure" "internal" cat "$OUTAGE_OU
 # ...and the same run pins the spike category pass-through whole: a typo in
 # CATEGORY_MAP or a renamed birth key drops the lane silently otherwise.
 t "spike category + explicit birth ride the payload whole" \
-  '{"title": "probe 500", "category": "spike", "priority": "P2", "birth": "ready-for-architect"}' \
+  '{"title": "probe 500", "category": "spike", "priority": "P2", "birth": "ready-for-architect", "repo": "testrepo"}' \
   last_register_body
 
 # One refused birth, two things to check — and the 409 fixture is consumed on
@@ -164,7 +181,7 @@ t "a refused birth exits nonzero" "rc=1" echo "rc=$SPIKE_RC"
 # and `env-issue` must survive the map.
 V board-register.sh "disk is full" env-issue P1 --note "need ops to grow the volume" >/dev/null
 t "implicit env-issue birth carries the note as the note field" \
-  '{"title": "disk is full", "category": "env-issue", "priority": "P1", "note": "need ops to grow the volume"}' \
+  '{"title": "disk is full", "category": "env-issue", "priority": "P1", "note": "need ops to grow the volume", "repo": "testrepo"}' \
   last_register_body
 
 # A non-park note is not a park question, and the server refuses a `note`
@@ -175,7 +192,7 @@ t "implicit env-issue birth carries the note as the note field" \
 V board-register.sh "wire it up" enhancement P2 --state ready-for-implementer --note "fyi only" \
   --body-file "$SPEC" >/dev/null
 t "explicit non-park birth prepends the note to the body head" \
-  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer", "body": "fyi only\n\nthe spec"}' \
+  '{"title": "wire it up", "category": "work", "priority": "P2", "birth": "ready-for-implementer", "body": "fyi only\n\nthe spec", "repo": "testrepo"}' \
   last_register_body
 
 # Edge keys are wire contract, and a camelCase slip drops an edge in silence —
@@ -184,7 +201,7 @@ t "explicit non-park birth prepends the note to the body head" \
 V board-register.sh "edged one" enhancement P3 --parent 7 --spawned-by '#8' --blocked-by '9,#10' \
   --body-file "$SPEC" >/dev/null
 t "edges ride as parent / spawnedBy / blockedBy integers" \
-  '{"title": "edged one", "category": "work", "priority": "P3", "body": "the spec", "parent": 7, "spawnedBy": 8, "blockedBy": [9, 10]}' \
+  '{"title": "edged one", "category": "work", "priority": "P3", "body": "the spec", "parent": 7, "spawnedBy": 8, "blockedBy": [9, 10], "repo": "testrepo"}' \
   last_register_body
 
 # A junk ref is a caller mistake, not a server matter: it must die with the gh
@@ -207,7 +224,7 @@ t "category maps bug->work" '\"category\": \"work\"' \
 # the log, so the bug birth is pinned whole too — including that an implicit
 # birth state stays server-side (no "birth" key).
 t "bug birth body pins the mapped category and omits birth" \
-  '{"title": "a bug", "category": "work", "priority": "P1", "body": "the spec"}' \
+  '{"title": "a bug", "category": "work", "priority": "P1", "body": "the spec", "repo": "testrepo"}' \
   last_register_body
 
 t "register prints id + url" "30 http://127.0.0.1:$PORT/tickets/30" \
@@ -308,7 +325,7 @@ V board-transition.sh 77 ready-for-implementer "n" --branch nope \
 t "a pin on a ticket the board does not carry is refused" \
   "#77 does not exist on this board" cat "$PIN_OUT"
 t "and the gate probed the paged surface before trusting the 404" \
-  '"path": "/tickets?limit=1"' cat "$FIX.log"
+  '"path": "/tickets?limit=1&repo=testrepo"' cat "$FIX.log"
 nt "and no transition was attempted on it" '"path": "/tickets/77/transition"' cat "$FIX.log"
 # THE GATE READS AS THE HUMAN. Every other board read this client makes speaks
 # as the fleet's automation principal; this one stays with whoever is
@@ -339,5 +356,35 @@ t "the owner's own session passes the fence" "#9:" \
   bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=fence-live-9 BOARD_CREDENTIALS_FILE='$CREDS' \
     BOARD_RUN_TOKEN=rt '$SCRIPTS/board-transition.sh' 9 done 'a note'"
 rm -f "$DAEMON_HOME/fence-live-9.json"
+
+# ...AND THE REPO IS PART OF THAT IDENTITY. One service serves several repos out
+# of one ticket namespace, so two repos' metas carry the SAME board key and only
+# the repo stamp separates them. A neighbour's live worker on ITS #9 was
+# refusing legitimate transitions of OUR #9 — a fence firing for a board this
+# checkout cannot even see, with a FIX line naming a daemon that is not ours.
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" <<'PYF'
+import json, os, sys
+json.dump({"uuid": "fence-foreign-9", "current": "fence-foreign-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2], "board_repo": "otherrepo"},
+          open(os.path.join(sys.argv[1], "fence-foreign-9.json"), "w"))
+PYF
+t "api fence: a neighbour repo's live worker does not fence our ticket" "#9:" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    BOARD_RUN_TOKEN=rt '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+rm -f "$DAEMON_HOME/fence-foreign-9.json"
+
+# The other direction, which is the half a filter can silently break: a meta
+# stamped for THIS repo still fences. Without it the drill above would pass on
+# a fence that had stopped working altogether.
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" <<'PYO'
+import json, os, sys
+json.dump({"uuid": "fence-own-9", "current": "fence-own-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2], "board_repo": "testrepo"},
+          open(os.path.join(sys.argv[1], "fence-own-9.json"), "w"))
+PYO
+rc 1 "api fence: a STAMPED-OWN live worker still fences" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+rm -f "$DAEMON_HOME/fence-own-9.json"
 
 finish

@@ -46,7 +46,12 @@ t "an unminted token is refused" '"code":"unauthenticated"' \
 # actually looks like.
 REPO="$(mkrepo)"
 mkdir -p "$REPO/.doperpowers"
-printf '{"binding": "api", "url": "%s"}\n' "$BOARD_API_URL" >"$REPO/.doperpowers/board.json"
+# All three keys, spelled out here rather than through api_repo: this drill is
+# the one that shows what a binding file looks like. `repo` is the name the
+# board service knows the checkout by — the founding repo the schema seeds — and
+# the binding refuses to run without it.
+printf '{"binding": "api", "url": "%s", "repo": "doperpowers"}\n' "$BOARD_API_URL" \
+  >"$REPO/.doperpowers/board.json"
 
 BODY="$REPO/spec.md"
 cat >"$BODY" <<'MD'

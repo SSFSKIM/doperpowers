@@ -164,9 +164,11 @@ _tick_deadline_left() {
 # just-claimed worker's meta exists long before the board could show its first
 # write, which is the same window the gh path's registry-first rule closes.
 _api_registry_count() {  # <lane[,lane...]>
-  T_DHOME="$DAEMON_HOME" T_LANES="$1" python3 - <<'PY'
+  T_DHOME="$DAEMON_HOME" T_LANES="$1" _api_py - <<'PY'
 import glob, json, os
+import _board_api as A
 lanes = set(os.environ["T_LANES"].split(","))
+MINE = (A.board_key(), A.repo())
 n = 0
 for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     if p.endswith(".reply.json"):
@@ -174,6 +176,12 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     try:
         m = json.load(open(p))
     except Exception:
+        continue
+    # A SLOT IS THIS REPO'S TO SPEND. The registry is machine-global, so a
+    # neighbouring api-bound repo's open worker in the same lane read as one of
+    # ours: at cap 1 this checkout saw its lane full and fell through to the
+    # next lane, dispatching its own ticket to the wrong role and model.
+    if not A.meta_is_mine(m, *MINE):
         continue
     # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
     # the server has since ended (the sweep strips run_id from such a meta and
@@ -340,7 +348,7 @@ PY
   # registered by the sweep, not pointed at from here.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
     P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
-    P_REPO="$(basename "$BOARD_ROOT")" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
     P_ENV_TRACKER_ISSUE=none P_ENGINE_NAME=claude \
     P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
     P_TICKET_BODY_FILE="$body_file" P_PARENT_PIN="${C_PARENT_PIN:-none (no parent)}" \
@@ -353,8 +361,19 @@ PY
   # claude route: this dispatcher can itself run inside a gateway-routed seat,
   # and `sminos spawn` persists what it inherits into the registry record, so
   # every later resume would ride the gateway while the log said claude.
+  # BOARD_REPO rides the prefix for the same reason BOARD_API_URL does, and it
+  # is the ONE place an api-mode repo key is deliberately put in a child's
+  # environment (fix wave 1 took it off _lib.sh's export). An executor checks
+  # out the branch it was dispatched for, and a branch that predates the repo
+  # key carries a two-key board.json — unpinned, every board script it ran
+  # after that checkout died on `binding=api but no repo` and the claimed
+  # ticket could never be transitioned. The leak the no-export rule guards
+  # against cannot arise here: this worker is bound to THIS dispatcher's repo
+  # by construction, since the run bearer it also carries ties it to a ticket
+  # in that repo and nothing else.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
+    BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
     --model "$model")" \

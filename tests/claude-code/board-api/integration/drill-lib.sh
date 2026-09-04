@@ -182,9 +182,12 @@ wait_until() {  # wait_until <seconds> <what> <cmd...>
   return 1
 }
 
-# The ticket ids currently on the resume feed, one per line.
+# The ticket ids currently on the resume feed, one per line. Scoped like every
+# other dispatch-shaped call the drills make: the server resolves this feed
+# through `dispatchRepo`, so the harness's UNSCOPED automation principal is
+# refused `repo-required` unless the request names a repo.
 needing_resume_ids() {
-  api automation GET /runs/needing-resume | python3 -c '
+  api automation GET "/runs/needing-resume?repo=$(drill_repo_key)" | python3 -c '
 import json, sys
 for e in json.load(sys.stdin):
     print(e["ticketId"])'
@@ -373,12 +376,26 @@ for p in sorted(glob.glob(os.path.join(os.environ["T_DH"], "*.json"))):
 PY
 }
 
+# The repo key the drill's bound checkout speaks for, read from the binding file
+# the drill is actually running against — so a raw-route helper below cannot
+# drift from what the toolkit's own verbs send.
+drill_repo_key() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["repo"])' \
+    "$REPO/.doperpowers/board.json"
+}
+
 # One claim through the REAL route, as the dispatchers make it, printing
 # `run<TAB>ticket<TAB>fence<TAB>bearer`. Used where a drill needs a knob the
 # dispatcher does not expose (a one-minute lease): the claim itself is still
 # the product's own route and the server's own pick.
 claim_run() {  # claim_run <lane> <nonce> [lease-minutes]
-  local body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\""
+  # The repo comes off the drill's OWN binding file, because that is where the
+  # dispatcher this stands in for reads it. /runs/claim is dispatch-shaped: the
+  # harness principals are unscoped, and an unscoped credential that names no
+  # repo is refused `repo-required` rather than served from the founding one.
+  local repo body
+  repo="$(drill_repo_key)"
+  body="{\"lane\":\"$1\",\"dispatchNonce\":\"$2\",\"repo\":\"$repo\""
   [ -z "${3:-}" ] || body="$body,\"leaseMinutes\":$3"
   api automation POST /runs/claim "$body}" | python3 -c '
 import json, sys
@@ -389,11 +406,17 @@ print("\t".join(str(o[k]) for k in ("runId", "ticketId", "fence", "bearer")))'
 }
 
 # A repo bound to the harness instance — what a consumer adopting A2 looks like.
-api_repo() {
-  local d
+# The repo KEY is the name the board service knows this checkout by; it defaults
+# to the founding repo the schema seeds into `board.repo_state`, which is the one
+# every single-repo drill means. A drill that wants a second board passes its own
+# and seeds the register row the way the harness seeds principals — the service
+# refuses `unknown-repo` on a write into a name it never admitted.
+api_repo() {  # api_repo [repo-key]
+  local d repo="${1:-doperpowers}"
   d="$(mkrepo)"
   mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"%s"}\n' "$BOARD_API_URL" >"$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"%s","repo":"%s"}\n' "$BOARD_API_URL" "$repo" \
+    >"$d/.doperpowers/board.json"
   DRILL_REPOS+=("$d")
   echo "$d"
 }

@@ -61,7 +61,11 @@ wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit
 
 CORE="import _board_api as A"
 run_py() {  # run_py <credentials-file> <python>  — operator context, no run token
+  # BOARD_REPO stands in for the api binding's declared `repo`: _binding.sh
+  # resolves it from .doperpowers/board.json and _api_py hands it to python3,
+  # and the client refuses the repo-dimensioned routes without one.
   PYTHONPATH="$SCRIPTS" BOARD_API_URL="http://127.0.0.1:$PORT" \
+    BOARD_REPO="${BOARD_REPO_OVERRIDE-testrepo}" \
     BOARD_CREDENTIALS_FILE="$1" python3 -c "$2"
 }
 run_py_run() {  # run_py_run <run-token> <credentials-file> <python> — worker context
@@ -77,6 +81,37 @@ last_body() {
 }
 
 CREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=auto-tok\nBOARD_HUMAN_TOKEN=human-tok\n' > "$CREDS"
+# ---- meta_is_mine: the predicate every registry scan shares ---------------
+# $DAEMON_HOME is machine-global and a board is not, so eight scans across five
+# scripts ask this one question. It is PURE — it takes the identity rather than
+# resolving one — because several of those scans run in gh mode, in scripts that
+# never resolve an api url at all. Pinned here as the unit it is: two of its
+# consumers (board-answer gh-mode owner scans) have no end-to-end drill in this
+# tier, and this is the whole of the logic they rely on.
+mine() {  # mine <meta-json> <board> [repo]
+  PYTHONPATH="$SCRIPTS" T_M="$1" T_B="$2" T_R="${3:-}" python3 -c '
+import json, os
+from _board_api import meta_is_mine
+print("mine=%s" % meta_is_mine(json.loads(os.environ["T_M"]),
+                               os.environ["T_B"], os.environ["T_R"]))'
+}
+API_B=api:http://b.example
+# Legacy first: skipping an unstamped meta would strand a live run with no
+# renewal, no relay and no answer, so absence reads as the caller.
+t "an unstamped meta belongs to the caller"  "mine=True"  mine '{}' "$API_B" testrepo
+t "so does one stamped with only the board"  "mine=True"  mine "{\"board\":\"$API_B\"}" "$API_B" testrepo
+t "a matching board AND repo is ours"        "mine=True"  mine "{\"board\":\"$API_B\",\"board_repo\":\"testrepo\"}" "$API_B" testrepo
+# The collision this exists for: one service, several repos, identical board key.
+t "the SAME board with another repo is not"  "mine=False" mine "{\"board\":\"$API_B\",\"board_repo\":\"otherrepo\"}" "$API_B" testrepo
+t "and another service is not, whatever its repo" "mine=False" \
+  mine "{\"board\":\"api:http://other.example\",\"board_repo\":\"testrepo\"}" "$API_B" testrepo
+# A trailing slash must not unfence a live owner (board-transition dp#63).
+t "board keys compare normalized"            "mine=True"  mine "{\"board\":\"$API_B/\"}" "$API_B" testrepo
+# gh mode passes no repo dimension: owner/name inside the key IS the identity.
+t "gh: a matching owner/name is ours"        "mine=True"  mine '{"board":"gh:o/r"}' gh:o/r
+t "gh: another repo is not"                  "mine=False" mine '{"board":"gh:o/other"}' gh:o/r
+t "gh: an unstamped meta is still ours"      "mine=True"  mine '{}' gh:o/r
+
 
 t "claim returns dict + auth header sent" "41" \
   run_py "$CREDS" "$CORE
@@ -91,7 +126,7 @@ t "automation token on claim" '"auth": "Bearer auto-tok"' last_log runs/claim
 run_py "$CREDS" "$CORE
 A.claim('implementer', 'n-7', lease_minutes=45)" > /dev/null 2>&1 || true
 t "claim body pins dispatchNonce and leaseMinutes" \
-  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45}' \
+  '{"lane": "implementer", "dispatchNonce": "n-7", "leaseMinutes": 45, "repo": "testrepo"}' \
   last_body runs/claim
 
 # A bind speaks as the RUN, not as automation: it is only ever posted for a run
@@ -163,6 +198,35 @@ except A.RunEnded: print('RunEnded')"
 t "unrelayed returns list" "118" \
   run_py "$CREDS" "$CORE
 print(A.unrelayed()[0]['answerEventId'])"
+# THE FLAT FEEDS ARE REPO-DIMENSIONED TOO, and they carry the filter as the
+# route's FIRST query parameter (there is nothing else on the path). Unnarrowed
+# they answer for every repo the service holds, so a tick here would relay and
+# resume another repo's runs — and an unscoped credential is refused
+# `repo-required` on them outright.
+t "the unrelayed feed narrows to the bound repo" \
+  '"path": "/answers/unrelayed?repo=testrepo"' last_log answers/unrelayed
+# No fixture answers this route in this world — the 404 is fine, the assertion
+# is about what went ON the wire, and the mock logs every request it refuses.
+run_py "$CREDS" "$CORE
+A.needing_resume()" >/dev/null 2>&1 || true
+t "and so does the needing-resume feed" \
+  '"path": "/runs/needing-resume?repo=testrepo"' last_log needing-resume
+
+# THE CLIENT REFUSES A BLANK REPO RATHER THAN SENDING ONE. _binding.sh is the
+# gate, but the client is what puts bytes on the wire, and a repo of whitespace
+# would ride it as `repo=%20` — which the server reads as no filter on a read
+# and no name on a write. Refused before any request, so the failure is the
+# configuration and not a widened answer.
+BLANK_OUT="$(BOARD_REPO_OVERRIDE="   " run_py "$CREDS" "$CORE
+A.tickets_all()" 2>&1 || true)"
+t  "a whitespace-only BOARD_REPO is refused, not sent" \
+  "BOARD_REPO is unset" echo "$BLANK_OUT"
+nt "and no encoded blank reached the wire" "repo=%20" cat "$FIX.log"
+# A padded key is a typo, not another repo: it is trimmed, not refused.
+BOARD_REPO_OVERRIDE="  testrepo  " run_py "$CREDS" "$CORE
+A.unrelayed()" >/dev/null 2>&1 || true
+t "a padded BOARD_REPO reaches the wire trimmed" \
+  '"path": "/answers/unrelayed?repo=testrepo"' last_log answers/unrelayed
 
 # The two principal-resolution paths on one ticket-facing verb (Codex F5): the
 # same default principal="human" must reach the wire as the human token from an

@@ -115,10 +115,22 @@ PY
 # BOARD_CLAIM_INFLIGHT_GRACE seconds whose pid is still running is left alone.
 _reconcile_claims() {
   local actions lines line act nonce lane run extra
+  # The registry is machine-global; the lane count and the live-run set below
+  # are not. Another api-bound repo's workers sit in the same $DAEMON_HOME, and
+  # counting them made this dispatcher's lane look full (so it declined to
+  # claim) and a neighbour's run look live (so a stranded one was never ended).
+  # Empty under any binding that has no repo dimension — meta_is_mine then
+  # filters nothing, which is the pre-change behaviour.
+  local _cj_board="" _cj_repo=""
+  if [ "${BOARD_BINDING:-gh}" = api ]; then
+    _cj_board="api:$BOARD_API_URL"; _cj_repo="${BOARD_REPO:-}"
+  fi
   actions="$(T_DHOME="$DAEMON_HOME" T_LANES="$CLAIM_LANES" \
              T_SUPPRESS="$(_claim_suppress_dir)" \
-             T_GRACE="${BOARD_CLAIM_INFLIGHT_GRACE:-120}" python3 - <<'PY'
+             T_BOARD="$_cj_board" T_BOARD_REPO="$_cj_repo" \
+             T_GRACE="${BOARD_CLAIM_INFLIGHT_GRACE:-120}" _api_py - <<'PY'
 import glob, json, os, time
+from _board_api import meta_is_mine
 home = os.environ["T_DHOME"]
 lanes = set(os.environ["T_LANES"].split(","))
 suppress = os.environ.get("T_SUPPRESS") or ""
@@ -137,6 +149,9 @@ for p in glob.glob(os.path.join(home, "*.json")):
         # A meta we cannot read is a session we cannot rule out. Say so, and
         # let every end below downgrade to a hold.
         blind.append(p)
+        continue
+    if not meta_is_mine(m, os.environ.get("T_BOARD", ""),
+                        os.environ.get("T_BOARD_REPO", "")):
         continue
     if m.get("run_id"):
         live[str(m["run_id"])] = str(m.get("uuid") or os.path.basename(p)[:-5])

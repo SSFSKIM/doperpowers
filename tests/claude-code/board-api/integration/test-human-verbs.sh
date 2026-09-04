@@ -125,7 +125,7 @@ t "the blocked leaf is passed over for the younger one" "[drew #$TID_B]" \
   drew "$TICK_B"
 t "and a blocked ticket is beyond the dispatcher's reach entirely" '"claimed":false' \
   api automation POST /runs/claim \
-    '{"lane":"implementer","dispatchNonce":"human-verbs-blocked-probe"}'
+    "{\"lane\":\"implementer\",\"dispatchNonce\":\"human-verbs-blocked-probe\",\"repo\":\"$(drill_repo_key)\"}"
 
 t "the unblock reports the cut" "#$TID_A: blocked_by -= #$TID_B" \
   in_repo "$SCRIPTS/board-edge.sh" "$TID_A" --unblock "$TID_B"
@@ -233,6 +233,50 @@ t "and the run that claimed it closes it" "#$TID_L: → done" \
   in_repo BOARD_RUN_TOKEN="$BEARER_L" BOARD_RUN_ID="$RUN_L" BOARD_RUN_FENCE="$FENCE_L" \
     "$SCRIPTS/board-transition.sh" "$TID_L" "done"
 t "the board shows the leaf closed" "state=[done]" row "$TID_L"
+
+# ---- 10. two repos on one service (dp#33) ---------------------------------
+# The board serves several repositories out of ONE ticket namespace, and until
+# the binding declared which one a checkout speaks for, the SERVER chose: its
+# founding repo on a write, every repo on a list read. Live, that put a register
+# run from a neighbouring checkout into this board and printed this board's
+# tickets from that one. Two bound repos on one service is the smallest world
+# that can tell the difference.
+#
+# The register row first: a write into a name the service never admitted is
+# refused `unknown-repo`, and `board.repo_state` IS that register (the schema
+# seeds only the founding repo). Seeded with SQL for the same reason principals
+# are — the API publishes no route for it.
+sql <<'SQL' >/dev/null
+insert into board.repo_state (repo, state) values ('a2-second-repo', 'live')
+  on conflict (repo) do nothing;
+SQL
+REPO2="$(api_repo a2-second-repo)"
+in_repo2() { (cd "$REPO2" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
+  SMINOS_CLI="$SMINOS_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  LOCAL_REPO="$REPO2" "$@"); }
+
+SPEC10="$(spec second 'A ticket that belongs to the second repo and nowhere else.')"
+OUT2="$(in_repo2 "$SCRIPTS/board-register.sh" "second-repo ticket" enhancement P2 \
+  --body-file "$SPEC10" 2>&1)" || {
+    echo "FAIL $(basename "$0") — second-repo register failed: $OUT2" >&2; exit 1; }
+TID2="$(printf '%s\n' "$OUT2" | awk 'END{print $1}')"
+# The server's own attribution, read straight off the row — the credential here
+# is unscoped, so before dp#33 this landed in the founding repo instead.
+t "a register from the second checkout lands in the SECOND repo" "repo=[a2-second-repo]" \
+  bash -c "curl -s -H 'authorization: Bearer $AUTOMATION_TOKEN' \
+    '$BOARD_API_URL/tickets/$TID2' | python3 -c \"
+import json, sys; print('repo=[%s]' % json.load(sys.stdin)['repo'])\""
+
+# The read side, through the verb a human actually uses. Narrowed, each checkout
+# sees its own board; widened, one service.
+t  "and the second repo's list shows its own ticket" "#$TID2 " in_repo2 "$SCRIPTS/board-list.sh"
+nt "but not the first repo's" "#$TID_L "                in_repo2 "$SCRIPTS/board-list.sh"
+nt "and the first repo's list does not show the second's" "#$TID2 " \
+  in_repo "$SCRIPTS/board-list.sh"
+t  "--all-repos shows the first repo's ticket from the second checkout" "#$TID_L " \
+  in_repo2 "$SCRIPTS/board-list.sh" --all-repos
+t  "and the second's beside it"  "#$TID2 " in_repo2 "$SCRIPTS/board-list.sh" --all-repos
+t  "saying so in the header"     "all repos" in_repo2 "$SCRIPTS/board-list.sh" --all-repos
 
 # Every verb above went over the API. The gh CLI has no business on this path.
 nt "the gh CLI is never invoked across the whole flow" "GH INVOKED" cat "$GH_LOG"

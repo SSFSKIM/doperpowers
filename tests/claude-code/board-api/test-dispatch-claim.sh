@@ -86,8 +86,18 @@ chmod +x "$DS/sminos"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
-  printf '{"binding":"api","url":"http://127.0.0.1:%s"}' "$1" > "$d/.doperpowers/board.json"
+  printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$1" > "$d/.doperpowers/board.json"
   echo "$d"
+}
+
+# A NEIGHBOUR REPO'S open architect worker, alive in the shared registry before
+# any tick runs. Same board key (one service, several repos); only the repo
+# stamp separates it from ours.
+plant_foreign() {  # plant_foreign <daemon-home> <port>
+  printf '{"uuid":"f0re1gnA","current":"f0re1gnA","name":"81-other-architect",
+           "status":"working","run_id":81,"lane":"architect","ticket":"81",
+           "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$2" \
+    > "$1/f0re1gnA.json"
 }
 
 # =========================================================================
@@ -133,6 +143,7 @@ OUT="$(mktemp)"
 # stale count and a much later, unrelated fault escalated early. A delivered
 # recovery is a recovery, whichever phase delivered it.
 mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-12"
+plant_foreign "$DH" "$PORT"
 # A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
 # instant it runs and then execs the real one. Ordering is only observable from
 # INSIDE that window — after the fact every order looks the same.
@@ -166,6 +177,15 @@ t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/
 t "worker got the run id"       "BOARD_RUN_ID=41"                      cat "$DH/spawn-capture.txt"
 t "fence exported"              "BOARD_RUN_FENCE=3"                    cat "$DH/spawn-capture.txt"
 t "api url exported"            "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
+# THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
+# it was dispatched for (`git checkout --detach <headRefOid>` for a reviewer, a
+# feature branch for an executor), and a head that predates the repo key carries
+# a two-key board.json — so every board script the worker ran afterwards died on
+# `binding=api but no repo` and the claimed work could never post its final
+# transition. The dispatcher pins it in the spawn environment, where it wins over
+# whatever board.json the checkout happens to hold, exactly as BOARD_API_URL
+# above does and for the same reason.
+t "repo pinned for the worker's own checkout"            "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
 # Same rule as the gh path's claude route: an ambient gateway settings/effort
 # pair would be inherited by `sminos spawn` AND persisted into the meta, so every
 # later resume of this worker would silently ride the gateway.
@@ -211,7 +231,22 @@ t "the journal is filed under the nonce that went on the wire" "journal=yes" \
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
+# A CLAIM NAMES ITS REPO. /runs/claim is dispatch-shaped: an unscoped
+# credential that names none is refused `repo-required` outright, and a scoped
+# one that names a repo the token contradicts is refused `repo-mismatch` rather
+# than handing this checkout a neighbouring repo's ticket to work.
+t "the claim names the repo it dispatches for" '\"repo\": \"testrepo\"' cat "$FIX.log"
 t "the local cap rides along as laneCap" '\"laneCap\": 1'        cat "$FIX.log"
+# ...AND A NEIGHBOUR REPO'S WORKER DOES NOT CONSUME THIS REPO'S SLOT. The local
+# cap is counted off a machine-global registry, so with cap=1 one worker on
+# another api-bound repo made this checkout read its architect lane as full —
+# and the tick then fell through to the NEXT lane and dispatched this repo's
+# architect ticket as an implementer, on the implementer model. Not a
+# starvation with an error, a silent mis-dispatch. plant_foreign put such a
+# worker in the registry before this tick: open, alive, architect lane — every
+# property the counter looks at except the repo it belongs to.
+nt "a neighbour repo's worker does not push our ticket into the next lane" \
+  "lane=implementer" cat "$OUT"
 t "the execution lane is tried"     '\"lane\": \"implementer\"'  cat "$FIX.log"
 t "the spike lane is tried after it" '\"lane\": \"spike\"'       cat "$FIX.log"
 # Three claims, not four and not an unbounded spin: architect (granted, then
@@ -242,6 +277,12 @@ t  "the worker is told its role and ticket" "ARCHITECT worker for ticket #12" pr
 t  "the ticket url points at the board api" "http://127.0.0.1:$PORT/tickets/12" prompt
 t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
 t  "the api block replaces the gh ticket read" "delivered by the claim that dispatched you" prompt
+# The worker is oriented by the BOARD's name for the repo, the way a gh-mode
+# worker is oriented by owner/name — not by whatever the checkout directory
+# happens to be called, which is a fact about this machine and not about the
+# board the ticket lives on.
+t  "and the worker is oriented by the board's repo, not the checkout dir" \
+  "\`REPO\`: testrepo" prompt
 nt "nothing was left unrendered" "{{" prompt
 
 # --- the triggered form: gh-only, and it says so ---------------------------
@@ -268,6 +309,15 @@ printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
 printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
   > "$DH2/board-claims/nonce-b.json"
 printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
+# ...and A NEIGHBOUR REPO'S meta carrying THAT SAME run id. The registry is
+# machine-global, so an unfiltered scan let another board's worker vouch for
+# our run 99: the journal read as live, the run was never ended, and its
+# ticket stayed owned by a run nothing here could reach. Run ids, like ticket
+# numbers, are board-local — the collision is ordinary, not exotic.
+printf '{"uuid":"f0re1gn1","current":"f0re1gn1","name":"99-other-implementer",
+         "status":"working","run_id":99,"lane":"implementer","ticket":"99",
+         "board":"api:http://127.0.0.1:%s","board_repo":"otherrepo"}' "$PORT2" \
+  > "$DH2/f0re1gn1.json"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
 printf '{"lane": "architect", "run_id": 41, "spawn_completed": false, "ticket": "12"}\n' \
@@ -329,6 +379,7 @@ t "a lost response is replayed under its own nonce" '\"dispatchNonce\": \"nonce-
 t "the replay reaches a run and completes"          '"run_id": 55' cat "$DH2/board-claims/nonce-a.json"
 t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$DH2/board-claims/nonce-a.json"
 t "a stranded claim ends its run"                   '"path": "/runs/99/end"' cat "$FIX2.log"
+t "a neighbour repo's meta does not vouch for our run" '"path": "/runs/99/end"' cat "$FIX2.log"
 t "and ends it as abandoned"                        '\"reason\": \"abandoned\"' cat "$FIX2.log"
 gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
 t "the stranded journal is dropped"      "gone" gone "$DH2/board-claims/nonce-b.json"
