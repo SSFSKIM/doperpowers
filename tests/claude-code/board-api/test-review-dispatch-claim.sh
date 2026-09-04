@@ -6,7 +6,7 @@
 # Same two halves as the execution-side suite: what went on the wire (the
 # fixture mock's request log) and what landed on disk (journal, assignment
 # body, registry meta, the environment the worker was spawned with). The
-# daemon-spawn stub prints the REAL --no-wait banner (the uuid handed to
+# `sminos spawn` stub prints the REAL no-wait banner (the uuid handed to
 # board-bind is parsed out of it) and plays the worker's half of the startup
 # barrier, which the review protocol makes a hard gate.
 . "$(dirname "$0")/helpers.sh"
@@ -38,15 +38,35 @@ exit 1
 EOF
 chmod +x "$STUB/gh"
 
-# The daemon-spawn stub: registers a meta the way the real --no-wait spawn
-# does, records the worker environment, and — in the background, as the real
-# worker does — waits for the dispatcher-owned ready file and acknowledges it.
+# The sminos stub: ONE executable whose first argument selects the verb.
+# `spawn` registers a record the way the real no-wait spawn does, records the
+# worker environment, and — in the background, as the real worker does —
+# waits for the dispatcher-owned ready file and acknowledges it.
 DS="$(mktemp -d)"
-cat > "$DS/daemon-spawn.sh" <<'EOF'
+cat > "$DS/sminos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "${1:-}" = "--no-wait" ] && shift
-name="$1"; task="$2"; cwd="${3:-}"; wt="${4:-}"; model="${5:-}"
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate) exit 0 ;;
+sync)   echo noop; exit 0 ;;
+retire)
+  echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
+  exit 0 ;;
+spawn) ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
+name="$1"; task="$2"; shift 2
+cwd=""; wt=""; model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cwd) cwd="$2"; shift 2 ;;
+    --worktree) wt="$2"; shift 2 ;;
+    --model) model="$2"; shift 2 ;;
+    --wait|--no-wait) shift ;;
+    *) shift ;;
+  esac
+done
 { echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model"
   env | grep '^BOARD_' | sort || true
   echo "GW settings=[${DAEMON_CLAUDE_SETTINGS-unset}] effort=[${DAEMON_CLAUDE_EFFORT-unset}]"
@@ -55,11 +75,11 @@ printf '%s' "$task" > "$DAEMON_HOME/prompt-$name.md"
 n=$(cat "$DAEMON_HOME/.spawncount" 2>/dev/null || echo 0); n=$((n + 1))
 echo "$n" > "$DAEMON_HOME/.spawncount"
 uuid="$(printf 'bbbb%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"], "status": "working",
-           "updated": "2026-08-09T00:00:00Z"},
+json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
+           "status": "working", "updated": "2026-08-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 # The worker's first protocol action is the BINDING BARRIER: wait for the
@@ -89,17 +109,9 @@ for _ in range(500):
     time.sleep(0.01)
 PY
 fi
-echo "daemon spawned (no-wait): $name  [${uuid%%-*} / $uuid]  status=working  (reply: daemon-reply.sh ${uuid%%-*})"
+echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
-cat > "$DS/daemon-retire.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
-EOF
-cat > "$DS/daemon-finalize.sh" <<'EOF'
-#!/usr/bin/env bash
-echo noop
-EOF
-chmod +x "$DS/daemon-spawn.sh" "$DS/daemon-retire.sh" "$DS/daemon-finalize.sh"
+chmod +x "$DS/sminos"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"
@@ -153,7 +165,7 @@ mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 # BOARD_RUN_TOKEN back for ANY principal once it is in env — so every claim
 # and every end below would speak as that one run instead of as automation.
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" \
+    DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RUN_TOKEN=ambient-worker-bearer \
@@ -179,7 +191,7 @@ t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/sp
 # whatever board.json the checkout happens to hold, exactly as BOARD_API_URL
 # above does and for the same reason.
 t "repo pinned for the worker's own checkout"          "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
-# An ambient gateway settings file would be inherited by daemon-spawn AND
+# An ambient gateway settings file would be inherited by `sminos spawn` AND
 # persisted into the meta, so every later resume of this reviewer would ride
 # the gateway while the log said claude. The QAgent tier is opus/high.
 t "gateway settings cleared, review effort pinned" "GW settings=[] effort=[high]" \
@@ -306,7 +318,7 @@ t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin "$
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
   ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-      DAEMON_HOME="$DH" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
       BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" 5 )
 }
 t "a targeted dispatch fails loud naming the gap" "arkho#7" triggered
@@ -363,7 +375,7 @@ printf '{"lane": "qagent", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-f.j
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH2" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r2" \
+    DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r2" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
@@ -439,7 +451,7 @@ printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-qage' \
 
 OUT3="$(mktemp)"
 ( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH3" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r3" \
+    DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r3" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
@@ -529,7 +541,7 @@ mkdir -p "$DH4/board-suppress"; echo 2 > "$DH4/board-suppress/.attempts-43"
 
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH4" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r4" \
+    DAEMON_HOME="$DH4" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r4" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
@@ -602,7 +614,7 @@ git -C "$r5" remote add origin "$UP"
 DH5="$(mktemp -d)"
 OUT5="$(mktemp)"
 ( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH5" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r5" \
+    DAEMON_HOME="$DH5" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r5" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
@@ -641,7 +653,7 @@ r6="$(apirepo "$PORT6")"
 DH6="$(mktemp -d)"
 OUT6="$(mktemp)"
 ( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH6" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r6" \
+    DAEMON_HOME="$DH6" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r6" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT6" 2>&1 || true
@@ -748,7 +760,7 @@ r7="$(apirepo "$PORT7")"
 DH7="$(mktemp -d)"
 OUT7="$(mktemp)"
 ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH7" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r7" \
+    DAEMON_HOME="$DH7" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r7" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
@@ -800,7 +812,7 @@ git -C "$r8" remote add origin "$UPSTREAM"
 DH8="$(mktemp -d)"
 OUT8="$(mktemp)"
 ( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH8" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r8" \
+    DAEMON_HOME="$DH8" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r8" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
@@ -848,7 +860,7 @@ r9="$(apirepo "$PORT9")"
 DH9="$(mktemp -d)"
 OUT9="$(mktemp)"
 ( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH9" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r9" \
+    DAEMON_HOME="$DH9" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r9" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
@@ -900,7 +912,7 @@ DH10="$(mktemp -d)"
 LEDGER10="$(mktemp)"; echo 33 > "$LEDGER10"
 OUT10="$(mktemp)"
 ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH10" DAEMON_SCRIPTS="$DS" LOCAL_REPO="$r10" \
+    DAEMON_HOME="$DH10" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r10" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
     REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RESUMED_LEDGER="$LEDGER10" \

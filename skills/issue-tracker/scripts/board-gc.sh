@@ -48,7 +48,42 @@
 #   GC_MIN_AGE_MINUTES  skip worktrees younger than this (default 90; 0 disables)
 set -uo pipefail
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-DAEMON_HOME="${DAEMON_HOME:-$HOME/.claude/orchestrating-daemons}"
+# ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME, then $DAEMON_HOME,
+# then the default. Both names are exported at the same value below, so the
+# CLI, the board scripts and every child resolve one root — a pipeline that
+# preferred DAEMON_HOME while sminos preferred SMINOS_HOME would have the two
+# halves of one tick reading different registries.
+DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+SMINOS_HOME="$DAEMON_HOME"
+# The busy-path guard globs the registry directly, so the cutover has to
+# precede it: a pre-cutover root reads as "no live worker" and gc would
+# remove a worktree still under a running seat. This script does not source
+# _lib.sh, so it carries its own preflight — same stat-cheap gate, for the
+# same reason: the migration takes the registry lock, and paying that on
+# every run would serialise gc against every writer.
+SMINOS_CLI="${SMINOS_CLI:-$(cd "$(dirname "$0")/../../sminos/scripts" && pwd)/sminos}"
+_sminos_cutover_pending() {
+  [ -z "${SMINOS_MIGRATED:-}" ] || return 1
+  # A former root still a real directory: the daemon substrate's, or sminos's
+  # under its former name.
+  local legacy
+  for legacy in orchestrating-daemons agora; do
+    if [ -d "$HOME/.claude/$legacy" ] && [ ! -L "$HOME/.claude/$legacy" ]; then
+      return 0
+    fi
+  done
+  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
+  # of the old groups/ did not finish: the registry is mid-cutover, which is
+  # precisely the half-migrated state a direct reader must never mistake for
+  # an idle fleet. One glob, no lock.
+  set -- "$HOME"/.claude/sminos.v2-*
+  [ -e "$1" ]
+}
+if _sminos_cutover_pending; then
+  "$SMINOS_CLI" migrate --quiet \
+    || { echo "error: sminos migrate failed — refusing to gc against a possibly half-migrated registry" >&2; exit 1; }
+fi
+SMINOS_MIGRATED=1; export SMINOS_MIGRATED
 GC_PR_CHECKS="${GC_PR_CHECKS:-20}"
 GC_MIN_AGE="${GC_MIN_AGE_MINUTES:-90}"
 

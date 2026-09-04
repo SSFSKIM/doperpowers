@@ -26,7 +26,7 @@ Both tracks enforce the same non-negotiables — design before code, tests befor
 The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks an executor can own from one self-contained brief (`writing-plans`), then executes each one through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`). You approve the design; independent reviews gate the rest.
 
 **Autonomous** — for work that's already well-scoped.
-A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`executing`), a review loop lands the PRs (`qa-loops`), and durable background sessions keep it all running (`orchestrating-daemons`). Product feedback can even feed the board directly (`triaging-feedback`).
+A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`executing`), a review loop lands the PRs (`qa-loops`), and the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 
@@ -68,7 +68,7 @@ Twenty-three skills, grouped by what they're for. Each one auto-triggers from it
 - `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
 - `domain-modeling` — pin down the ubiquitous language, map bounded contexts, record ADRs
 - `decomposing` — carve a large goal into a tree of well-scoped tickets
-- `writing-plans` — break a spec into bite-sized, exactly-specified tasks
+- `writing-plans` — break a spec into tasks an executor can own from one brief: files, interfaces, deliverables, tests, decisions
 - `organizing-sprints` — turn a pile of raw observations into the next sprint
 - `transcribing-meeting-recordings` — diarized, visually grounded transcripts from meeting recordings
 
@@ -88,12 +88,15 @@ Twenty-three skills, grouped by what they're for. Each one auto-triggers from it
 - `executing` — dispatch workers onto tickets, gate before building
 - `architecting` — the design lane: grill the ticket, decide the shape, author the plan
 - `qa-loops` — the autonomous PR-review and self-merge loop
-- `orchestrating-daemons` — durable background sessions that survive the session ending
+- `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
 - `triaging-feedback` — turn product feedback into grounded board tickets
 - `finishing-a-development-branch` — verify, then decide merge / PR / keep / discard
 
 **Extend it**
 - `writing-skills` — create and test new skills that shape agent behavior
+
+**Output style**
+- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent wraps what the human should read in `<to-human>` and a reader shows only that; explanatory insights kept. Select per launch with `"outputStyle": "to-human"`.
 
 ---
 
@@ -101,7 +104,7 @@ Twenty-three skills, grouped by what they're for. Each one auto-triggers from it
 
 1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read.
 2. **using-git-worktrees** — Activates after design approval. Creates an isolated workspace on a new branch and verifies a clean test baseline.
-3. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, complete code, and verification steps.
+3. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
 4. **subagent-driven-execution** — Dispatches a fresh subagent per task, reviews at dependency frontiers, and fixes by resuming the executor.
 5. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
 6. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.

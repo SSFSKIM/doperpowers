@@ -919,24 +919,27 @@ fi
 
 # ---- answer relay (park = pause, not death) ------------------------------------
 echo "board-answer:"
-STUB_DS="$TEST_ROOT/stub-daemon-scripts"; mkdir -p "$STUB_DS"
+STUB_SMINOS="$TEST_ROOT/stub-sminos"; mkdir -p "$STUB_SMINOS"
 export STUB_STATE="$TEST_ROOT/stub-state"; mkdir -p "$STUB_STATE"
-for eng in codex daemon; do
-    cat > "$STUB_DS/$eng-resume.sh" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' "\$1" > "\$STUB_STATE/$eng-resume.uuid"
-printf '%s' "\$2" > "\$STUB_STATE/$eng-resume.msg"
-echo "resumed: [$eng stub]"
-STUB
-    chmod +x "$STUB_DS/$eng-resume.sh"
-done
-cat > "$STUB_DS/daemon-finalize.sh" <<'STUB'
+# ONE stub executable whose first argument selects the verb, exactly as the
+# real sminos launcher is called.
+cat > "$STUB_SMINOS/sminos" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$1" >> "$STUB_STATE/finalize.log"
-M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
-[ -n "$M" ] || { echo absent; exit 0; }
-M="$M" python3 - <<'PY'
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate) exit 0 ;;
+resume)
+  if [ "${1:-}" = "--wait" ]; then shift; fi
+  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
+  printf '%s' "$2" > "$STUB_STATE/resume.msg"
+  echo "resumed: [sminos stub]"
+  ;;
+sync)
+  printf '%s\n' "$1" >> "$STUB_STATE/sync.log"
+  M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+  [ -n "$M" ] || { echo absent; exit 0; }
+  M="$M" python3 - <<'PY'
 import json,os
 p=os.environ['M']; m=json.load(open(p))
 if m.get('status') in ('working','blocked') and m.get('turn_state') == 'idle':
@@ -945,21 +948,29 @@ elif m.get('status') in ('working','blocked') and m.get('turn_state') == 'absent
 elif m.get('status') in ('working','blocked'): print('live')
 else: print('noop')
 PY
-STUB
-chmod +x "$STUB_DS/daemon-finalize.sh"
-cat > "$STUB_DS/daemon-retire.sh" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$1" >> "$STUB_STATE/retire.log"
-M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
-[ -n "$M" ] || exit 0
-M="$M" python3 - <<'PY'
+  ;;
+retire)
+  printf '%s\n' "$1" >> "$STUB_STATE/retire.log"
+  M="$(find "$DAEMON_HOME" -name "$1*.json" -type f | head -1)"
+  [ -n "$M" ] || exit 0
+  M="$M" python3 - <<'PY'
 import json,os
 p=os.environ['M']; m=json.load(open(p)); m['status']='retired'; json.dump(m,open(p,'w'),indent=2)
 PY
+  ;;
+meta)
+  [ "${1:-}" = get ] || { echo "stub sminos: unsupported meta subcommand '${1:-}'" >&2; exit 2; }
+  M="$(find "$DAEMON_HOME" -name "$2*.json" -type f | head -1)"
+  [ -n "$M" ] || exit 0
+  M="$M" F="$3" python3 -c '
+import json, os
+print(json.load(open(os.environ["M"])).get(os.environ["F"]) or "")'
+  ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
 STUB
-chmod +x "$STUB_DS/daemon-retire.sh"
-export DAEMON_SCRIPTS="$STUB_DS"
+chmod +x "$STUB_SMINOS/sminos"
+export SMINOS_CLI="$STUB_SMINOS/sminos"
 
 out="$(run board-register.sh "Parked ticket" enhancement P2 --state needs-human --note "Q1? Q2?")"
 ans_t="${out%% *}"
@@ -968,7 +979,7 @@ unb_t="${out%% *}"
 out="$(run board-register.sh "Open ticket" enhancement P2 --body-file "$SPEC_BODY")"
 open_t="${out%% *}"
 cat > "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json" <<META
-{"uuid": "cccccccc-1111-2222-3333-444444444444", "engine": "codex",
+{"uuid": "cccccccc-1111-2222-3333-444444444444",
  "status": "idle", "ticket": "$ans_t", "cwd": "$WORK",
  "updated": "2026-07-12T00:00:00Z"}
 META
@@ -980,13 +991,13 @@ assert_fails run board-answer.sh "$ans_t"               # missing answers (arity
 out="$(run board-answer.sh "$ans_t" "1: use X. 2: defer Y.")"
 assert_contains "$(state "s['issues']['$ans_t']['comments']")" "[answers] 1: use X. 2: defer Y." "answers posted on the ticket first"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:in-progress" "ticket resumed to in-progress"
-assert_equals "$(cat "$STUB_STATE/codex-resume.uuid")" "cccccccc-1111-2222-3333-444444444444" "codex meta routed to codex-resume"
-msg="$(cat "$STUB_STATE/codex-resume.msg")"
+assert_equals "$(cat "$STUB_STATE/resume.uuid")" "cccccccc-1111-2222-3333-444444444444" "bound meta routed to sminos resume"
+msg="$(cat "$STUB_STATE/resume.msg")"
 assert_contains "$msg" "1: use X. 2: defer Y." "answers relayed verbatim"
 assert_contains "$msg" "[gate] re-pass" "relay carries the re-verdict guard"
 assert_contains "$msg" "the ticket remains the record" "relay names the record"
 
-# engine-less meta → claude resume; --posted relays a pointer, posts nothing
+# a second bound meta → sminos resume; --posted relays a pointer, posts nothing
 run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
 rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
 cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
@@ -994,9 +1005,9 @@ cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
  "ticket": "$ans_t", "cwd": "$WORK", "updated": "2026-07-12T00:00:00Z"}
 META
 out="$(run board-answer.sh "$ans_t" --posted)"
-assert_contains "$(cat "$STUB_STATE/finalize.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay finalizes a lingering finished Claude owner before status check"
-assert_equals "$(cat "$STUB_STATE/daemon-resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to daemon-resume"
-assert_contains "$(cat "$STUB_STATE/daemon-resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
+assert_contains "$(cat "$STUB_STATE/sync.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay syncs a lingering finished Claude owner before status check"
+assert_equals "$(cat "$STUB_STATE/resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to sminos resume"
+assert_contains "$(cat "$STUB_STATE/resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
 assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "2" "--posted posts its own [answers] marker (the mechanical convergence reset)"
 
 # a mid-turn session is refused — nothing is waiting for answers
@@ -1033,13 +1044,27 @@ RETIRED
 assert_fails run board-answer.sh "$ans_t" "after retirement"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:needs-human" "terminal owners never orphan the ticket in-progress"
 
+# A legacy codex-CLI worker has no resumable Claude session: the relay must
+# refuse BEFORE the board write rather than transition the ticket and then
+# exec into a session that cannot be continued.
+out="$(run board-register.sh "Codex-bound park" enhancement P2 --state needs-human --note "Q?")"
+cdx_t="${out%% *}"
+cat > "$DAEMON_HOME/abababab-1111-2222-3333-444444444444.json" <<META
+{"uuid": "abababab-1111-2222-3333-444444444444", "engine": "codex",
+ "status": "idle", "ticket": "$cdx_t", "cwd": "$WORK",
+ "updated": "2026-07-12T00:00:00Z"}
+META
+assert_fails run board-answer.sh "$cdx_t" "answer to a codex worker"
+assert_contains "$(state "s['issues']['$cdx_t']['labels']")" "status:needs-human" "a codex-bound ticket is never transitioned by the relay"
+rm "$DAEMON_HOME/abababab-1111-2222-3333-444444444444.json"
+
 # lane-aware return: an architect park's answer resumes into in-design
 out="$(run board-register.sh "Architect answer probe" enhancement P2 --state ready-for-architect --body-file "$SPEC_BODY")"
 ans_arch_t="${out%% *}"
 run board-transition.sh "$ans_arch_t" in-design >/dev/null
 run board-transition.sh "$ans_arch_t" needs-human "Q: layout A or B?" >/dev/null
 cat > "$DAEMON_HOME/eeeeeeee-1111-2222-3333-444444444444.json" <<META
-{"uuid": "eeeeeeee-1111-2222-3333-444444444444", "engine": "codex",
+{"uuid": "eeeeeeee-1111-2222-3333-444444444444",
  "status": "idle", "ticket": "$ans_arch_t", "cwd": "$WORK",
  "updated": "2026-07-12T00:00:00Z"}
 META
@@ -1167,7 +1192,7 @@ META
 run board-answer.sh "$fb_leg_t" "ship it" >/dev/null
 assert_contains "$(state "s['issues']['$fb_leg_t']['labels']")" "status:in-review" "a pre-stamp reviewer meta is recognized by its review-pr-* registry name"
 
-unset DAEMON_SCRIPTS STUB_STATE
+unset SMINOS_CLI STUB_STATE
 
 # ---- spike lane (category spike) ---------------------------------------------
 echo "spike category:"
@@ -1490,29 +1515,31 @@ assert_contains "$(state "s['issues']['$mer_t']['comments'][-1]")" "[board] in-p
 # comment prefixed [answers] — if --posted never posted one, a resumed
 # worker's human-authorized retry of the SAME escalation edge would be
 # bounced right back to needs-human: exactly the livelock the human's answer
-# was meant to end. Reuses the board-answer daemon stubs.
+# was meant to end. Reuses the board-answer sminos stub.
 echo "convergence reset (--posted relay):"
-STUB_DS2="$TEST_ROOT/stub-daemon-scripts-2"; mkdir -p "$STUB_DS2"
+STUB_SMINOS2="$TEST_ROOT/stub-sminos-2"; mkdir -p "$STUB_SMINOS2"
 STUB_STATE2="$TEST_ROOT/stub-state-2"; mkdir -p "$STUB_STATE2"
 export STUB_STATE="$STUB_STATE2"
-cat > "$STUB_DS2/daemon-resume.sh" <<'STUB'
+cat > "$STUB_SMINOS2/sminos" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$1" > "$STUB_STATE/daemon-resume.uuid"
-printf '%s' "$2" > "$STUB_STATE/daemon-resume.msg"
-echo "resumed: [daemon stub]"
+set -euo pipefail
+verb="${1:-}"; shift || true
+case "$verb" in
+migrate) exit 0 ;;
+sync)   echo noop ;;
+retire) true ;;
+meta)   exit 0 ;;
+resume)
+  if [ "${1:-}" = "--wait" ]; then shift; fi
+  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
+  printf '%s' "$2" > "$STUB_STATE/resume.msg"
+  echo "resumed: [sminos stub]"
+  ;;
+*) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
 STUB
-chmod +x "$STUB_DS2/daemon-resume.sh"
-cat > "$STUB_DS2/daemon-finalize.sh" <<'STUB'
-#!/usr/bin/env bash
-echo noop
-STUB
-chmod +x "$STUB_DS2/daemon-finalize.sh"
-cat > "$STUB_DS2/daemon-retire.sh" <<'STUB'
-#!/usr/bin/env bash
-true
-STUB
-chmod +x "$STUB_DS2/daemon-retire.sh"
-export DAEMON_SCRIPTS="$STUB_DS2"
+chmod +x "$STUB_SMINOS2/sminos"
+export SMINOS_CLI="$STUB_SMINOS2/sminos"
 
 run board-register.sh "Convergence reset probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
 cr_t="$(state "s['next']-1")"
@@ -1531,7 +1558,7 @@ run board-answer.sh "$cr_t" --posted >/dev/null
 assert_contains "$(state "s['issues']['$cr_t']['comments'][-2]")" "[answers]" "--posted relay posts an [answers] marker for the mechanical reset"
 out="$(run board-transition.sh "$cr_t" ready-for-architect "blocked: issue A still")"                # 3rd traversal
 assert_contains "$out" "#$cr_t: in-progress → ready-for-architect" "3rd traversal after a --posted relay does NOT convert (reset fired)"
-unset DAEMON_SCRIPTS STUB_STATE
+unset SMINOS_CLI STUB_STATE
 
 # The counter is comment-CONTROLLED board behavior: on a public consumer repo
 # an outsider could pre-seed an edge marker (forcing the next legitimate

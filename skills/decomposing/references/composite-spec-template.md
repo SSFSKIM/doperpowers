@@ -8,10 +8,12 @@
 > artifacts this unit builds on, if any — delete if none; an artifact
 > that participates in this unit's contracts or edges is a CHILD
 > (possibly already landed), not a Consumes entry]. Children dispatch
-> per their track hint; each child spec opens by citing this document
-> (path + child id) — except a child that landed before this cut: it
+> per their track hint, each carrying its section as its spec; each
+> child's artifact (brief or plan, ledger, findings, PR, ticket — or a
+> composite child's own composite spec) opens by citing this document
+> (path + child id + parent pin) — except a child that landed before this cut: it
 > cannot cite forward, so the citation runs backward (its child section
-> and the Tracking Map point at its spec). For a coupled
+> and the Tracking Map point at its artifact). For a coupled
 > goal this document is doperpowers:brainstorming's approved design
 > spec extended in place — design up top, roadmap below, one document.
 
@@ -52,7 +54,7 @@ assigned to the child or spike that will answer them.]
 
 ## Children
 
-### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing]
+### C1: [Child name] — [track hint: brief | plan | spike (findings, never a merge) | decomposing]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line
@@ -110,11 +112,12 @@ one is also an invariant, cross-reference its contract id.]
 
 ## Tracking Map
 
-[child id → spec path / ticket # / status. This map plus the children's
-Status fields IS this unit's progress record — there is no separate
-Progress section. Keep it current as children land. Children that close
-early keep their retrospectives where they lived (child spec /
-ExecPlan); this map points at them.]
+[child id → ledger (or ticket #), plus its plan / findings / composite
+spec where one exists, and status. This map plus the children's Status
+fields IS this unit's progress record — there is no separate Progress
+section. Keep it current as children land; a landed child's row carries
+its closing evidence and points at the ledger whose outcome section is
+the child's retrospective.]
 
 ## Decision Log
 

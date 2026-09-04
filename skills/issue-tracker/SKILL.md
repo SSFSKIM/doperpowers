@@ -285,19 +285,19 @@ pick by repo visibility:
    runtime-opened procedure: the prompt carries only the pointer; the
    worker opens it when Check-2 says decompose; "(none — spike lane)" for
    a spike).
-3. Spawn via `daemon-spawn.sh "<n>-<slug>" "<prompt>" <repo> <worktree-name>`
-   from `orchestrating-daemons` — always a worktree; workers write code.
+3. Spawn via `sminos spawn "<n>-<slug>" "<prompt>" --cwd <repo> --worktree <n>-<slug>`
+   — always a worktree; workers write code.
    The claude route — the default — passes no gateway env, and pins the
-   lane's model as arg 5: `${ARCHITECT_MODEL:-fable}` on the architect
+   lane's model with `--model`: `${ARCHITECT_MODEL:-fable}` on the architect
    lane, `${IMPLEMENT_MODEL:-opus}` on implement and spike. Both lanes
    pin rather than inherit, so the operator's own session model never
    silently collapses the split's two model economies onto one price.
-   Since daemon-spawn writes no settings/effort into the meta, these
-   resumes stay plain. The codex route prefixes the gateway env and pins
-   the gateway's model alias as arg 5:
-   `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" daemon-spawn.sh … fable`
-   (daemon-spawn persists settings/effort into the registry meta;
-   daemon-resume restores them on every fork — without that a gateway
+   Since `sminos spawn` writes no settings/effort into the seat record, these
+   wakes stay plain. The codex route prefixes the gateway env and pins
+   the gateway's model alias:
+   `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" sminos spawn … --model fable`
+   (`sminos spawn` persists settings/effort into the seat record;
+   `sminos resume` restores them on every resume — without that a gateway
    worker silently reverts to plain models on its first resume).
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
@@ -313,10 +313,10 @@ same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
 invokes it on a timer. Running the ritual by hand stays valid — the sweep's
 dedupe sees a hand-dispatched worker's binding like any other.
 
-**doperpowers:orchestrating-daemons is the spawn substrate this ritual
+**The sminos CLI (doperpowers:sminos) is the spawn substrate this ritual
 calls, not a parallel doctrine.** For your own work: in-session fan-out is
 native subagents; a raw ad-hoc
-daemon is reserved for work that must survive your session with no board to
+seat is reserved for work that must survive your session with no board to
 hold it. Board pipeline workers' doctrine is executing /
 qa-loops, and nobody sits between them and the board.
 

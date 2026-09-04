@@ -132,7 +132,7 @@ walk() {
     local repo_env=""
     [ -f "$repo/.doperpowers/board.json" ] || repo_env="$GH_STUB_REPO"
     out="$( (cd "$repo" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
-      DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+      SMINOS_CLI="$SMINOS_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
       BOARD_REPO="$repo_env" GH_STUB_STATE="$GH_STUB_STATE" \
       "$SCRIPTS/${call[0]}" "${call[@]:1}") 2>&1 )" || rc=$?
     # `argv` is FORENSIC — what actually ran, for reading a failure back. The
@@ -210,7 +210,7 @@ REPO="$(api_repo)"
 # answer contract. So the hook here is the real dispatcher: it claims the
 # ticket the walk just registered, spawns the scripted worker and binds it.
 # `status: idle` afterwards only to match the gh meta; the API relay asks
-# daemon-finalize, never the meta's status.
+# `sminos sync`, never the record's status.
 api_bind() {
   in_repo "$DISPATCH" --sweep >"$DRILL_TMP/dispatch.out" 2>&1 || true
   local uuid run fence bearer

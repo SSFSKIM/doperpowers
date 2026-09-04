@@ -14,6 +14,22 @@ then doperpowers:organizing-sprints.
 Vendored pipeline: [scripts/](scripts/) — workspace conventions and run order in
 [references/pipeline-reference.md](references/pipeline-reference.md).
 
+## Model choice — does the job need this pipeline at all?
+
+This pipeline exists for speaker attribution: `gpt-4o-transcribe-diarize` with
+`diarized_json` is the only model/format that returns `segments[].speaker`.
+When diarization is NOT needed (solo dictation, a memo, already-separated
+per-speaker tracks), skip the pipeline and call **`gpt-transcribe`** — the
+current best file-transcription model. Its contract:
+
+- `response_format="json"` only — text, no timestamps (`whisper-1` remains the
+  model for native SRT/VTT or word timing).
+- Three context inputs worth using: `prompt` (free-form setting), and — via
+  `extra_body`, the SDK doesn't type them yet — `keywords` (proper nouns the
+  ASR would otherwise garble; hints, not forced output) and `languages`
+  (e.g. `["ko", "en"]`; replaces singular `language`, don't send both).
+- The 25MB upload limit still applies — reuse `make_chunks.py` for long files.
+
 ## Ask the human up front
 
 - **Speaker count and names** (the API accepts up to 4 named speakers). Optionally

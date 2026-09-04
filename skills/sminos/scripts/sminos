@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# sminos — one fleet registry for Claude Code sessions: seats, groups, the
+# spawn tree, and the board. The CLI lives in sminos.py next to this file; this
+# launcher only resolves its own real path, because the board pipeline reaches
+# it through relative seams (`$SMINOS_CLI`) and symlinks.
+exec python3 "$(dirname "$(readlink -f "$0")")/sminos.py" "$@"

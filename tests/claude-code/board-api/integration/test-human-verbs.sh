@@ -252,7 +252,7 @@ insert into board.repo_state (repo, state) values ('a2-second-repo', 'live')
 SQL
 REPO2="$(api_repo a2-second-repo)"
 in_repo2() { (cd "$REPO2" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
-  DAEMON_SCRIPTS="$DAEMON_SCRIPTS" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
+  SMINOS_CLI="$SMINOS_CLI" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
   LOCAL_REPO="$REPO2" "$@"); }
 
 SPEC10="$(spec second 'A ticket that belongs to the second repo and nowhere else.')"

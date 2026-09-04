@@ -138,7 +138,7 @@ if tid:
             break      # the binding owner moves its own ticket
         if env["T_DSELF"] and env["T_DSELF"] == owner:
             break      # a legacy codex-CLI turn: no harness session id, so
-                       # codex-resume hands it its daemon uuid explicitly
+                       # its caller hands it the seat id explicitly
         if env["T_OVR"]:
             print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
                   % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))
@@ -159,8 +159,8 @@ if tid:
             "error: #%s is mid-turn under live worker %s (%s, status=%s) — a "
             "transition by anyone but the binding owner completes work that "
             "worker already owns (dp#63). Let it finish or resume it "
-            "(daemon-list.sh / daemon-resume.sh), retire the binding first "
-            "(daemon-retire.sh %s), or overrule with a stated reason: "
+            "(sminos list / sminos resume), retire the binding first "
+            "(sminos retire %s), or overrule with a stated reason: "
             "BOARD_OWNER_OVERRIDE=\"<why>\" board-transition.sh ...\n"
             % (tid, meta.get("name") or owner, owner, meta.get("status"), owner))
         sys.exit(1)

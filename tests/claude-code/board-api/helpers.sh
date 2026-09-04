@@ -17,7 +17,7 @@ unset BOARD_RUN_TOKEN
 # drill that wants an override states it on the invocation.
 unset BOARD_REPO
 # The live-binding guard (board-transition.sh, dp#63) adjudicates on the LOCAL
-# daemon registry — an operator's real registry (a live worker bound to a
+# seat registry — an operator's real registry (a live worker bound to a
 # ticket number these fixtures reuse) would inject refusals into suites that
 # never seeded a binding. Every suite starts from an empty registry of its
 # own; `finish` takes it away again.

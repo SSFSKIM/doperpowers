@@ -28,10 +28,10 @@ IDLE_GAP = datetime.timedelta(minutes=15)
 # Tried in order: the narrow roles before the broad "task N" executor match,
 # so "Task 2: fix pagination" reads as a fixer rather than an executor.
 ROLE_PATTERNS = [
-    (re.compile(r"re-review|review task|^t\d+ reviewer|^task \d+:\s*review",
-                re.I), "task-reviewer"),
+    (re.compile(r"re-review|review (i\d+ )?task|^t\d+ reviewer"
+                r"|^task \d+:\s*review", re.I), "task-reviewer"),
     (re.compile(r"^t\d+ fixer|\bfix", re.I), "fixer"),
-    (re.compile(r"^(implement|execute|run) task|^task \d+:"
+    (re.compile(r"^(implement|execute|run) (i\d+ )?task|^task \d+:"
                 r"|^t\d+ (implementer|executor)", re.I), "executor"),
 ]
 

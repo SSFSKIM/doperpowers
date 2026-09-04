@@ -139,11 +139,15 @@ t "the meta holding a bearer is 0600" "600" statmode "$DH/u-1234.json"
 # The successor handover, the other half of the reaped-predecessor case above:
 # the old owner is stripped rather than allowed to veto the rebind.
 nt "a reaped predecessor loses the ticket" '"ticket"' cat "$DH/u-dead.json"
-# The COMPACT spelling, which this fixture was written in and write_meta never
-# produces (it re-renders with indent=2): matching it proves the file was not
-# merely left with its ticket, but never rewritten at all.
-t  "but a neighbour repo's owner of the same number keeps it" '"ticket":"12"' \
+# Content, not byte shape: `sminos migrate` (the once-per-process preflight in
+# _lib.sh) re-renders every record on the way in, so the compact spelling this
+# fixture was written in cannot prove "never rewritten" any more. What the
+# strip must not do is take the ticket or rebind the seat — so the ticket, the
+# repo and the name are still the neighbour's, and no run of ours landed on it.
+t  "but a neighbour repo's owner of the same number keeps it" '"ticket": "12"' \
   cat "$DH/u-foreign.json"
+t  "and stays the neighbour's"  '"board_repo": "otherrepo"' cat "$DH/u-foreign.json"
+nt "and was not rebound to our run" '"run_id"' cat "$DH/u-foreign.json"
 t  "stripping a predecessor never widens its bearer meta" "600" \
   statmode "$DH/u-dead.json"
 

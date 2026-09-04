@@ -33,8 +33,11 @@ Subagent (general-purpose):
     ## Your Job
 
     Once you're clear on requirements:
-    1. Implement exactly what the task specifies
-    2. Write tests (following TDD if task says to)
+    1. Write the tests first (doperpowers:test-driven-development) for
+       testable logic — the brief names the behaviors they assert.
+    2. Implement what the task's Deliverables and Decisions specify.
+       Code blocks in the brief are decisions — honor them as written;
+       everything else is yours to write.
     3. Verify implementation works
     4. Commit your work
     5. Self-review (see below)
@@ -110,7 +113,7 @@ Subagent (general-purpose):
 
     **Testing:**
     - Do tests actually verify behavior (not just mock behavior)?
-    - Did I follow TDD if required?
+    - Did I write the tests first for testable logic?
     - Are tests comprehensive?
     - Is the test output pristine (no stray warnings or noise)?
 
@@ -127,7 +130,7 @@ Subagent (general-purpose):
     Write your full report to [REPORT_FILE]:
     - What you implemented (or what you attempted, if blocked)
     - What you tested and test results
-    - **TDD Evidence** (if TDD was required for this task):
+    - **TDD Evidence** (for testable logic):
       - RED: command run, relevant failing output before implementation, and why the failure was expected
       - GREEN: command run and relevant passing output after implementation
     - Files changed
