@@ -319,9 +319,9 @@ writing-plans row becomes:
 **doperpowers:subagent-driven-execution › executor-prompt.md** — "Your Job"
 items 1–2 become:
 
-> 1. Implement what the task's Deliverables and Decisions specify. Code
->    blocks in the brief are decisions — honor them as written; everything
->    else is yours to write.
+> 1. Implement what the task's Deliverables and Decisions specify.
+>    Code blocks in the brief are decisions — honor them as written;
+>    everything else is yours to write.
 > 2. Write the tests first (doperpowers:test-driven-development) for
 >    testable logic — the brief names the behaviors they assert.
 
@@ -425,7 +425,7 @@ executor span up modestly, fix rate and final-review defects within the
 - `grep -rn "child spec" skills/` prints nothing; `grep -n "composite tree" skills/decomposing/SKILL.md` and `grep -n "composite child's own composite spec" skills/decomposing/references/composite-spec-template.md` each print one line.
 - `grep -c "child of a composite spec" skills/brainstorming/SKILL.md` prints 4 (the bullet, steps 5 and 7, the Documentation line).
 - `grep -n "at contract resolution" skills/execspec/SKILL.md` prints the table row; `grep -n "Code blocks in the brief are decisions" skills/subagent-driven-execution/executor-prompt.md` prints one line.
-- `python3 scripts/sde-telemetry ~/.claude/projects/-Users-new-Developer-GitHub-ptc-tool/56c9ce21-0c8e-457a-b31f-a03de48651d3.jsonl | grep '^dispatches:'` shows executor ≥ 16 and task-reviewer ≥ 15 (the 09-01 forms classified).
+- `python3 scripts/sde-telemetry ~/.claude/projects/-Users-new-Developer-GitHub-ptc-tool/56c9ce21-0c8e-457a-b31f-a03de48651d3.jsonl | grep '^dispatches:'` shows executor=15 and task-reviewer=12 (the 09-01 forms classified; the two spike runs and the pre-09-01 dispatches stay `other`).
 - Micro-test A: three reps, each with the Deliverables / Tests / Decisions slots present and a placeholder scan finding no deferred decision; lines and code share recorded under Surprises.
 - Micro-test B: zero of three new-text reps open a child design document; results recorded under Surprises.
 - `tests/claude-code/run-skill-tests.sh` and `tests/executing/test-protocol-content.sh` pass.

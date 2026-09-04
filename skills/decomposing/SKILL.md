@@ -21,7 +21,11 @@ design at the center, with the roadmap topology (children, edges,
 ordering) embedded as sections. Composite carries its
 Composite-pattern sense — a composite's child can itself be a
 composite, at every altitude; decomposing yields this spec,
-recomposition closes it. It carries the matured design where one
+recomposition closes it. The document tree is the composite tree: one
+spec per composite, none per leaf. A child's contract is its section
+here; its own document is its execution artifact — a plan, an ExecPlan,
+a spike's findings — or its own composite spec when it is a composite in
+turn. The composite spec carries the matured design where one
 exists; children with purpose, observable acceptance, and dependency
 edges; the contracts that cross them; and a living tail that tracks the
 unit to its retrospective.
@@ -89,8 +93,9 @@ there.
 - No OR-branches: the tree records the chosen division; alternatives live
   in the Decision Log.
 - NO NEW SUBSTRATE: the tree is not a registry file. It IS the citation
-  chain (each child spec opens by citing its parent), the board's typed
-  edges, and the composite specs' tracking maps.
+  chain (each child's artifact — plan header, ExecPlan, PR body, ticket,
+  or a composite child's own spec — opens by citing its parent), the
+  board's typed edges, and the composite specs' tracking maps.
 
 ## The Frontier
 
@@ -213,10 +218,16 @@ share no design surface, so there was nothing to mature jointly; phases
    same division at board altitude — doperpowers:executing's
    decompose procedure is this skill's move in worker clothes.)
 7. **Dispatch and tend** — children go to their tracks per their track
-   hint. As children land, the tracking map, Decision Log, and Surprises
-   stay current; when the children are all in, close the parent by
-   RECOMPOSITION — verify the parent's own acceptance, then write the
-   retrospective; the Deferred section seeds the next cut.
+   hint, each carrying its section as pre-landed design and writing no
+   spec of its own: a controlled leaf grills only its residue and goes to
+   doperpowers:writing-plans, an autonomous leaf authors its ExecPlan, a
+   spike writes findings, and a composite child runs this skill at its
+   own dispatch. Residue decisions a leaf makes land in this Decision Log
+   under the child's id; a leaf's retrospective is its tracking-map row
+   and its closing artifact. As children land, the tracking map, Decision
+   Log, and Surprises stay current; when the children are all in, close
+   the parent by RECOMPOSITION — verify the parent's own acceptance, then
+   write the retrospective; the Deferred section seeds the next cut.
 
 ## The Derivation Contract
 
@@ -262,13 +273,16 @@ to "let the child figure it out" throws away decisions that were only
 makeable with everything on the table.
 
 At dispatch, the child treats its section and its design inheritance as
-pre-landed grill input: it grills only the residue and never
-re-litigates landed decisions. The child's own spec opens by citing
-this composite spec (path + child id) — that citation is what keeps the
-flow-back channel alive when there is no board. Children read the
-parent document's *current* state at dispatch, never a frozen snapshot;
-when a Revision Note lands that touches an in-flight child's contract,
-flag that child. When a child's work contradicts the parent, the
+pre-landed grill input: it grills only the residue and never re-litigates
+landed decisions. Its section IS its spec. Design the child produces for
+itself expands that section in place; a leaf whose design will not fit a
+section is a composite in disguise and gets its own composite spec
+instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
+by citing this composite spec (path + child id + parent pin); that
+citation is what keeps the flow-back channel alive when there is no
+board. Children read the parent document's *current* state at dispatch,
+never a frozen snapshot; when a Revision Note lands that touches an
+in-flight child's contract, flag that child. When a child's work contradicts the parent, the
 discovery flows back into the parent's Revision Notes — never silent
 divergence. This is the doperpowers:execspec discipline one level up.
 
@@ -289,3 +303,4 @@ divergence. This is the doperpowers:execspec discipline one level up.
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
 | Child quietly diverging from the parent | Contradictions flow back into the parent's Revision Notes; flagged, not silent. |
+| Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf that needs a spec of its own is a composite in disguise — cut it. |
