@@ -480,8 +480,12 @@ if [ "$BOARD_BINDING" = api ]; then
   # straight out of a worker shell would claim, and end runs, as that worker.
   # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
   # after this, and are unaffected. This is the automation route only: no
-  # human-route verb is touched.
+  # human-route verb is touched. The second channel is shut in the same breath:
+  # without it a dispatch run from a worker's own session would reach that
+  # worker's run through the seat record $CLAUDE_CODE_SESSION_ID names, which is
+  # how a `claude --bg` worker gets its credentials at all (dp#35).
   unset BOARD_RUN_TOKEN
+  export BOARD_NO_SELF_LOCATE=1
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;
     ''|--*)  die "usage: execute-dispatch.sh <issue-number> | --sweep" ;;

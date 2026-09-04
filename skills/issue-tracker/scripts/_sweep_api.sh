@@ -76,7 +76,21 @@ die() { echo "error: $*" >&2; exit 1; }
 # bearer this tick read out of THAT run's own meta (or was just handed by that
 # run's own claim): the relay's resume, the successor's resume/spawn/bind, and
 # phase 1's bind repair. Never inherited, never ambient.
+#
+# TWO channels, one doctrine. A tick launched from a worker's own session would
+# otherwise reach that worker's run through the OTHER one — the client resolves
+# a missing bearer from the seat record $CLAUDE_CODE_SESSION_ID names, which is
+# how a `claude --bg` worker gets its credentials at all (dp#35). Declared shut
+# here, beside the unset.
+#
+# EXPORTED, unlike everything else this toolkit scopes: it describes the ROLE of
+# this process tree, not a repo, and the verbs the tick shells out to are the
+# tick. It cannot reach a worker as a suppression — a spawned worker either
+# loses the whole env prefix (`claude --bg` drops it, which is the fact this
+# mechanism exists for) or keeps it, and then keeps the explicit bearer beside
+# it, which resolves first.
 unset BOARD_RUN_TOKEN
+export BOARD_NO_SELF_LOCATE=1
 # The delivery marker, from the client module rather than a second copy of the
 # literal: what the relay WRITES into a transcript and what it later greps for
 # have to be the same string as anyone else keying on it (the resume path, the

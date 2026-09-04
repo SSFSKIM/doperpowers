@@ -159,14 +159,141 @@ def _creds():
     return out
 
 
+def _registry_root():
+    """The seat registry, by the ONE rule the sminos CLI and _lib.sh apply:
+    $SMINOS_HOME, then $DAEMON_HOME, then the default. Resolved here rather
+    than taken from a caller because this module is reached from shells that
+    never sourced _lib.sh (a bare `python3 -c` in a worker's own hands)."""
+    return (os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
+            or os.path.join(os.path.expanduser("~"), ".claude", "sminos"))
+
+
+_OWN_SEAT = {}   # per-process memo: this session's record, found once
+
+
+def own_seat():
+    """This session's OWN seat record on THIS board — (seat id, record) — or
+    None.
+
+    A worker's shells are handed nothing: `claude --bg` drops the dispatcher's
+    whole spawn env prefix (measured twice, harness v2.1.261), so the bearer,
+    the run id and the fence never reach the process that needs them. What DOES
+    survive is $CLAUDE_CODE_SESSION_ID — and that is the very key the dispatcher
+    already indexed the run by: `sminos spawn` writes the record's `short` (the
+    launch banner's 8 hex) and then `current` (the full uuid), and board-bind.sh
+    stamps run_id, fence, run_bearer, bind_confirmed, board and board_repo onto
+    it. Everything the prefix was meant to deliver is on disk under a name the
+    worker can read off its own environment.
+
+    `current` is the exact match and wins; `short` is a PREFIX of the session
+    uuid, which is all a worker has in the seconds before the uuid poll returns.
+
+    The BOARD guard is strict here, unlike meta_is_mine's: the registry is
+    machine-global, and a record that names a different service — or names none
+    at all — is not evidence that this checkout's board handed this session a
+    run. meta_is_mine reads an unstamped record as the caller's because
+    SKIPPING one there would strand a live run with no renewal; here the safe
+    direction is the opposite one, since adopting the wrong record makes every
+    verb act as a principal nobody chose.
+    """
+    if "v" in _OWN_SEAT:
+        return _OWN_SEAT["v"]
+    _OWN_SEAT["v"] = None
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    board = "api:" + os.environ.get("BOARD_API_URL", "").rstrip("/")
+    if not session or board == "api:":
+        return None
+    prefix_hit = None
+    try:
+        names = sorted(os.listdir(_registry_root()))
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json") or name.endswith(".reply.json"):
+            continue
+        try:
+            with open(os.path.join(_registry_root(), name)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("board") or "").rstrip("/") != board:
+            continue
+        if str(rec.get("current") or "") == session:
+            _OWN_SEAT["v"] = (name[:-5], rec)
+            return _OWN_SEAT["v"]
+        short = str(rec.get("short") or "")
+        if short and prefix_hit is None and session.startswith(short):
+            prefix_hit = (name[:-5], rec)
+    _OWN_SEAT["v"] = prefix_hit
+    return prefix_hit
+
+
+_RUN_CTX = {}    # per-process memo: resolved once, logged once
+
+
+def run_context():
+    """The run this process speaks as — {bearer, run_id, fence} — or None.
+
+    Resolution order, once per process:
+
+      1. an explicit BOARD_RUN_TOKEN (with BOARD_RUN_ID / BOARD_RUN_FENCE).
+         The dispatchers' and the sweep's per-command prefix, and a foreground
+         harness that keeps env. Consulted FIRST, so a bearer the caller just
+         handed can never be displaced by a record.
+      2. this session's own seat record, if its bind confirmed and it still
+         holds a bearer. That is the channel `claude --bg` actually delivers.
+      3. neither — no run context at all, which is an ordinary operator shell.
+
+    $BOARD_NO_SELF_LOCATE closes rule 2 for the processes that must never act
+    as a worker whatever their session is bound to: the two dispatchers and the
+    sweep declare it beside the `unset BOARD_RUN_TOKEN` that closes rule 1 for
+    them (THE TICK IS AUTOMATION, FULL STOP). It travels no further than they
+    intend — a spawned worker either loses the whole env prefix, which takes
+    this with it, or keeps it and resolves through rule 1 anyway.
+    """
+    if "v" in _RUN_CTX:
+        return _RUN_CTX["v"]
+    _RUN_CTX["v"] = None
+    run_tok = os.environ.get("BOARD_RUN_TOKEN", "")
+    if run_tok:
+        _RUN_CTX["v"] = {"bearer": run_tok,
+                         "run_id": os.environ.get("BOARD_RUN_ID", "") or None,
+                         "fence": os.environ.get("BOARD_RUN_FENCE", "") or None}
+        return _RUN_CTX["v"]
+    if os.environ.get("BOARD_NO_SELF_LOCATE"):
+        return None
+    found = own_seat()
+    if not found:
+        return None
+    seat_id, rec = found
+    bearer = str(rec.get("run_bearer") or "")
+    run_id = str(rec.get("run_id") or "")
+    # A record whose bind never confirmed names a run the server may never have
+    # given this session, and one stripped of its bearer is a run that ENDED —
+    # the sweep's _retire_run_locally pops both the moment it posts /end.
+    # Either way the answer is "no run", never a 401 on every verb after it.
+    if not bearer or not run_id or not rec.get("bind_confirmed"):
+        return None
+    # ONE line, on stderr, once: a transcript should show which principal acted.
+    # The run and the seat say that; the bearer would only put a live credential
+    # into a log nobody meant to write.
+    print("speaking as run %s via seat %s" % (run_id, seat_id), file=sys.stderr)
+    _RUN_CTX["v"] = {"bearer": bearer, "run_id": run_id,
+                     "fence": str(rec.get("fence") or "") or None}
+    return _RUN_CTX["v"]
+
+
 def token(principal):
     """principal: 'auto' (run token or die), 'automation', 'human'."""
-    run_tok = os.environ.get("BOARD_RUN_TOKEN", "")
-    if run_tok:                      # a run context always speaks as the run
-        return run_tok
+    ctx = run_context()
+    if ctx:                          # a run context always speaks as the run
+        return ctx["bearer"]
     if principal == "auto":
-        die("no BOARD_RUN_TOKEN in env and the caller demanded the run "
-            "principal — this verb is worker-context-only here")
+        die("no BOARD_RUN_TOKEN in env, and this session's seat record carries "
+            "no confirmed bind to speak for — and the caller demanded the run "
+            "principal; this verb is worker-context-only here")
     key = {"automation": "BOARD_AUTOMATION_TOKEN",
            "human": "BOARD_HUMAN_TOKEN"}[principal]
     val = _creds().get(key, "")
@@ -417,14 +544,14 @@ def _claim_gated(what):
     """q and include=body are refused to run bearers server-side
     (arkho#12): a run's statement of work arrives in its claim payload,
     and a run's search would be a term-membership oracle over body text
-    it cannot read. token() speaks as the run whenever BOARD_RUN_TOKEN
-    is set, so the refusal is deterministic — die here, before any
+    it cannot read. token() speaks as the run whenever this process HAS
+    a run context, so the refusal is deterministic — die here, before any
     request, with the reason instead of a bare `forbidden`."""
-    if os.environ.get("BOARD_RUN_TOKEN"):
+    if run_context():
         die("%s is claim-gated for runs (arkho#12): this process speaks "
-            "as its run (BOARD_RUN_TOKEN is set) and the server refuses "
-            "q/include=body to run bearers — a run reads its statement "
-            "of work from the claim payload" % what)
+            "as its run and the server refuses q/include=body to run "
+            "bearers — a run reads its statement of work from the claim "
+            "payload" % what)
 
 
 def ticket(tid, principal="human", include_body=False):

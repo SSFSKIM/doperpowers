@@ -232,7 +232,13 @@ import _board_api as A
 env = os.environ
 tid = A.ref(env["T_ID"])   # '#12' → 12, and a junk ref dies as a junk
                            # ref — not as A.transition's int() traceback
-fence = os.environ.get("BOARD_RUN_FENCE") or None
+# The fence comes off the same run context the bearer does, so a worker whose
+# environment carries neither — every `claude --bg` worker's own shells — sends
+# the fence its seat record was stamped with rather than none at all. A write
+# without one is not refused by the server; it is simply unfenced, which is the
+# guard silently absent exactly where it was meant to apply.
+_ctx = A.run_context()
+fence = _ctx["fence"] if _ctx else None
 out = A.transition(tid, env["T_TO"],
                    note=env["T_NOTE"] or None, pr=env["T_PR"] or None,
                    plan=env["T_PLAN"] or None, branch=env["T_BRANCH"] or None,
