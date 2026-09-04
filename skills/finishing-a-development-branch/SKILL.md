@@ -35,7 +35,7 @@ Cannot proceed with merge/PR until tests pass.
 
 Stop. Don't proceed to Step 2.
 
-**If tests pass:** Write the spec's `## Outcomes & Retrospective` entry — what was achieved against the spec's original purpose, gaps, lessons learned (doperpowers:execspec) — replacing its "Pending — written at finish." line, and commit it so the retrospective rides the branch into the merge. Then continue to Step 2.
+**If tests pass:** Write the spec's `## Outcomes & Retrospective` entry — what was achieved against the spec's original purpose, gaps, lessons learned (doperpowers:execspec) — replacing its "Pending — written at finish." line, and commit it so the retrospective rides the branch into the merge. For a child of a composite spec the entry is the child's Tracking Map row — closing evidence and artifact — and the composite's Outcomes waits for recomposition. Then continue to Step 2.
 
 ### Step 2: Detect Environment
 

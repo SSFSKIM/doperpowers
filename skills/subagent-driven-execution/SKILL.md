@@ -91,7 +91,9 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    context and skip review.
 6. Mark the task complete in todos and the ledger; route anything that
    changed design understanding into the spec's living tail
-   (doperpowers:execspec). Implementation noise stays in commit messages.
+   (doperpowers:execspec; for a child of a composite spec, advisory
+   content in place and a binding contradiction as `[parent-impact]` per
+   doperpowers:decomposing). Implementation noise stays in commit messages.
 7. **After all tasks:** dispatch the final whole-branch review (external
    reviewer — codex native review via doperpowers:codex-companion's
    `review` verb with `--base <base>`; a

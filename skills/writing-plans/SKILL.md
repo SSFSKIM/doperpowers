@@ -18,7 +18,7 @@ Write execution plans for an executor who is a skilled engineer, has never seen 
 
 ## Scope Check
 
-If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
+If the spec covers multiple independent subsystems, it should have been divided in doperpowers:decomposing. If it wasn't, suggest one plan per subsystem, each producing working, testable software on its own.
 
 ## Conditional Sub-Slicing
 
@@ -125,17 +125,18 @@ End every plan with a verification task that executes the spec's acceptance sect
 **Spec:** [path to the spec this plan implements — the plan argues from
 the spec, so the spec travels with it; conflicts found during execution
 resolve against it. For a child of a composite spec: the composite's path,
-the child id, and the parent pin (the composite's commit as this child
-received it) — the child's section is its spec.]
+the child id, and the parent pin (the composite's commit — or the board's
+`parent-pin:` hash — as this child received it) — the child's section is
+its spec.]
 
 ## Global Constraints
 
 [The spec's project-wide requirements — version floors, dependency limits,
 naming and copy rules, platform requirements — one line each, with exact
 values copied verbatim from the spec. For a child of a composite spec, also
-its binding design inheritance and the cross-child contracts it
-participates in, by id. Every task's requirements implicitly include this
-section.]
+the clauses of its binding design inheritance and cross-child contracts
+that bind these tasks, verbatim, each citing its id. Every task's
+requirements implicitly include this section.]
 
 ---
 ```
@@ -163,14 +164,13 @@ section.]
 - [ ] [what exists when this deliverable lands, as behavior someone can
   observe — "`ptc kernels` lists a spawned kernel with its pid and prints
   nothing for a session that has none" — one checkbox per deliverable,
-  each with its own commit]
+  each ending with its commit message: `feat: list kernels`]
 
 **Tests:** [the behaviors the tests assert, one line each, with the test
 file and the command that runs them — "`test_spawn_refuses_second_owner`
 in `tests/test_kernel.py`: a second spawn under the same key exits 2
-without touching the run-file; run `pytest tests/test_kernel.py -v`". The
-executor writes them first (doperpowers:test-driven-development) and
-reports RED and GREEN.]
+without touching the run-file; run `pytest tests/test_kernel.py -v`,
+expect `1 passed`".]
 
 **Decisions:** [every call the executor must not make differently —
 approach, error semantics, naming, ordering, what to reuse from the
@@ -187,8 +187,6 @@ class KernelRecord(TypedDict):
     started_at: float
 ```
 
-**Commit:** `feat: add specific feature` — `git add` the files by name;
-one commit per deliverable.
 ````
 
 ## No Placeholders
@@ -224,7 +222,7 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 **3. Interface consistency:** Do the names and signatures later tasks Consume match what earlier tasks Produce? A function produced as `clearLayers()` in Task 3 and consumed as `clearFullLayers()` in Task 7 is a bug.
 
-**4. Spec drift:** Planning is the first hostile read of the spec. If planning revealed a spec statement that is wrong — an argument that is actually an output, an infeasible constraint, a misnamed path — fix the spec now and add a line to its `## Revision Notes` (see doperpowers:execspec). Never let the plan silently diverge from the spec.
+**4. Spec drift:** Planning is the first hostile read of the spec. If planning revealed a spec statement that is wrong — an argument that is actually an output, an infeasible constraint, a misnamed path — fix the spec now and add a line to its `## Revision Notes` (see doperpowers:execspec). Never let the plan silently diverge from the spec. For a child of a composite spec that fix is yours only for advisory content; a wrong binding clause flows back as `[parent-impact]` (doperpowers:decomposing), and the plan carries the clause as it stands.
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 

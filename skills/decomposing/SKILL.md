@@ -219,10 +219,11 @@ share no design surface, so there was nothing to mature jointly; phases
    decompose procedure is this skill's move in worker clothes.)
 7. **Dispatch and tend** — children go to their tracks per their track
    hint, each carrying its section as pre-landed design and writing no
-   spec of its own: a controlled leaf grills only its residue and goes to
-   doperpowers:writing-plans, an autonomous leaf authors its ExecPlan, a
-   spike writes findings, and a composite child runs this skill at its
-   own dispatch. Residue decisions a leaf makes land in this Decision Log
+   spec of its own: a controlled leaf grills only its residue
+   (doperpowers:brainstorming) and goes to doperpowers:writing-plans, an
+   autonomous leaf authors its ExecPlan, a direct leaf implements against
+   its section, a spike writes findings, and a composite child runs this
+   skill at its own dispatch. Residue decisions a leaf makes land in this Decision Log
    under the child's id; a leaf's retrospective is its tracking-map row
    and its closing artifact. As children land, the tracking map, Decision
    Log, and Surprises stay current; when the children are all in, close
@@ -240,9 +241,8 @@ Each child section of the composite spec fixes:
   ordering rules it participates in;
 - **Design inheritance** — the parent design content that bears on this
   child, each piece carrying its authority grade;
-- **Track hint** — controlled, autonomous, spike (deliverable is
-  findings, never a merge), or another decomposing run at
-  dispatch.
+- **Track hint** — controlled, autonomous, direct, spike (deliverable
+  is findings, never a merge), or another decomposing run at dispatch.
 
 Everything the parent hands a child carries one of two authority
 grades:
@@ -275,9 +275,9 @@ makeable with everything on the table.
 At dispatch, the child treats its section and its design inheritance as
 pre-landed grill input: it grills only the residue and never re-litigates
 landed decisions. Its section IS its spec. Design the child produces for
-itself expands that section in place; a leaf whose design will not fit a
-section is a composite in disguise and gets its own composite spec
-instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
+itself expands that section in place; a leaf whose residue design trips
+the gate's split signals is a composite in disguise and gets its own
+composite spec instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
 by citing this composite spec (path + child id + parent pin); that
 citation is what keeps the flow-back channel alive when there is no
 board. Children read the parent document's *current* state at dispatch,
@@ -303,4 +303,4 @@ divergence. This is the doperpowers:execspec discipline one level up.
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
 | Child quietly diverging from the parent | Contradictions flow back into the parent's Revision Notes; flagged, not silent. |
-| Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf that needs a spec of its own is a composite in disguise — cut it. |
+| Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf whose residue trips the split signals is a composite in disguise — cut it. |

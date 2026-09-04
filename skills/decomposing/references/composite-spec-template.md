@@ -54,7 +54,7 @@ assigned to the child or spike that will answer them.]
 
 ## Children
 
-### C1: [Child name] — [track hint: controlled | autonomous | spike (findings, never a merge) | decomposing]
+### C1: [Child name] — [track hint: controlled | autonomous | direct | spike (findings, never a merge) | decomposing]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line

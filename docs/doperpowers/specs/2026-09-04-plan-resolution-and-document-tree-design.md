@@ -101,17 +101,18 @@ Constraints become:
 > **Spec:** [path to the spec this plan implements — the plan argues from
 > the spec, so the spec travels with it; conflicts found during execution
 > resolve against it. For a child of a composite spec: the composite's path,
-> the child id, and the parent pin (the composite's commit as this child
-> received it) — the child's section is its spec.]
+> the child id, and the parent pin (the composite's commit — or the board's
+> `parent-pin:` hash — as this child received it) — the child's section is
+> its spec.]
 >
 > ## Global Constraints
 >
 > [The spec's project-wide requirements — version floors, dependency limits,
 > naming and copy rules, platform requirements — one line each, with exact
 > values copied verbatim from the spec. For a child of a composite spec, also
-> its binding design inheritance and the cross-child contracts it
-> participates in, by id. Every task's requirements implicitly include this
-> section.]
+> the clauses of its binding design inheritance and cross-child contracts
+> that bind these tasks, verbatim, each citing its id. Every task's
+> requirements implicitly include this section.]
 
 **Task Structure** — the template body is replaced by:
 
@@ -136,14 +137,13 @@ Constraints become:
 - [ ] [what exists when this deliverable lands, as behavior someone can
   observe — "`ptc kernels` lists a spawned kernel with its pid and prints
   nothing for a session that has none" — one checkbox per deliverable,
-  each with its own commit]
+  each ending with its commit message: `feat: list kernels`]
 
 **Tests:** [the behaviors the tests assert, one line each, with the test
 file and the command that runs them — "`test_spawn_refuses_second_owner`
 in `tests/test_kernel.py`: a second spawn under the same key exits 2
-without touching the run-file; run `pytest tests/test_kernel.py -v`". The
-executor writes them first (doperpowers:test-driven-development) and
-reports RED and GREEN.]
+without touching the run-file; run `pytest tests/test_kernel.py -v`,
+expect `1 passed`".]
 
 **Decisions:** [every call the executor must not make differently —
 approach, error semantics, naming, ordering, what to reuse from the
@@ -160,8 +160,6 @@ class KernelRecord(TypedDict):
     started_at: float
 ```
 
-**Commit:** `feat: add specific feature` — `git add` the files by name;
-one commit per deliverable.
 `````
 
 **No Placeholders** — the section becomes:
@@ -190,6 +188,12 @@ one commit per deliverable.
 > - Exact commands with expected output
 > - DRY, YAGNI, TDD, frequent commits
 
+**Scope Check** — becomes:
+
+> If the spec covers multiple independent subsystems, it should have been
+> divided in doperpowers:decomposing. If it wasn't, suggest one plan per
+> subsystem, each producing working, testable software on its own.
+
 **Self-Review** item 3 becomes:
 
 > **3. Interface consistency:** Do the names and signatures later tasks
@@ -197,11 +201,17 @@ one commit per deliverable.
 > `clearLayers()` in Task 3 and consumed as `clearFullLayers()` in Task 7 is
 > a bug.
 
-Unchanged, deliberately: the description, Scope Check, Conditional
-Sub-Slicing, File Structure ("this is where decomposition decisions get
-locked in" — a decision, so it stays), Task Right-Sizing's three criteria,
-the save path, Self-Review items 1, 2, and 4, and Execution Handoff
-including the codex plan review.
+and item 4 (Spec drift) gains a closing conditional:
+
+> For a child of a composite spec that fix is yours only for advisory
+> content; a wrong binding clause flows back as `[parent-impact]`
+> (doperpowers:decomposing), and the plan carries the clause as it stands.
+
+Unchanged, deliberately: the description, Conditional Sub-Slicing, File
+Structure ("this is where decomposition decisions get locked in" — a
+decision, so it stays), Task Right-Sizing's three criteria, the save path,
+Self-Review items 1 and 2, and Execution Handoff including the codex plan
+review.
 
 ## §2 The document tree (doperpowers:decomposing and its template)
 
@@ -223,10 +233,11 @@ including the codex plan review.
 
 > 7. **Dispatch and tend** — children go to their tracks per their track
 >    hint, each carrying its section as pre-landed design and writing no
->    spec of its own: a controlled leaf grills only its residue and goes to
->    doperpowers:writing-plans, an autonomous leaf authors its ExecPlan, a
->    spike writes findings, and a composite child runs this skill at its
->    own dispatch. Residue decisions a leaf makes land in this Decision Log
+>    spec of its own: a controlled leaf grills only its residue
+>    (doperpowers:brainstorming) and goes to doperpowers:writing-plans, an
+>    autonomous leaf authors its ExecPlan, a direct leaf implements against
+>    its section, a spike writes findings, and a composite child runs this
+>    skill at its own dispatch. Residue decisions a leaf makes land in this Decision Log
 >    under the child's id; a leaf's retrospective is its tracking-map row
 >    and its closing artifact. As children land, the tracking map, Decision
 >    Log, and Surprises stay current; when the children are all in, close
@@ -238,9 +249,9 @@ including the codex plan review.
 > At dispatch, the child treats its section and its design inheritance as
 > pre-landed grill input: it grills only the residue and never re-litigates
 > landed decisions. Its section IS its spec. Design the child produces for
-> itself expands that section in place; a leaf whose design will not fit a
-> section is a composite in disguise and gets its own composite spec
-> instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
+> itself expands that section in place; a leaf whose residue design trips
+> the gate's split signals is a composite in disguise and gets its own
+> composite spec instead. The child's artifact — its plan, ExecPlan, PR, or ticket — opens
 > by citing this composite spec (path + child id + parent pin); that
 > citation is what keeps the flow-back channel alive when there is no
 > board. Children read the parent document's *current* state at dispatch,
@@ -253,7 +264,13 @@ including the codex plan review.
 **Common Mistakes** — a row is added after "Child quietly diverging from
 the parent":
 
-> | Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf that needs a spec of its own is a composite in disguise — cut it. |
+> | Writing a spec for a leaf child | Its section is its spec; its document is its execution artifact. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
+
+**The Derivation Contract**, the Track hint line — `direct` joins the
+vocabulary: "controlled, autonomous, direct, spike (deliverable is
+findings, never a merge), or another decomposing run at dispatch"; the
+template's child heading reads `[track hint: controlled | autonomous |
+direct | spike (findings, never a merge) | decomposing]`.
 
 **references/composite-spec-template.md** — in the header note, "Children
 dispatch per their track hint; each child spec opens by citing this
@@ -287,12 +304,14 @@ bullet:
 >   edges, contracts, graded design inheritance — as pre-landed design.
 >   Grill only the residue, against the code; record the residue's decisions
 >   in the parent's Decision Log under the child's id; design you produce
->   expands the child's section in place, and a design that will not fit a
->   section means the child is a composite — route it to
->   doperpowers:decomposing. The child writes no spec of its own: its
->   section is its spec, the track hint names its exit
->   (doperpowers:writing-plans, doperpowers:execplan, or direct), and the
->   track's own review covers the residue.
+>   expands the child's section in place, and a residue design that trips
+>   doperpowers:decomposing's split signals means the child is a composite —
+>   route it there. The composite's approval covers the section, so present
+>   only the residue; the track hint is your recommendation, confirmed like
+>   any track. The child writes no spec of its own: its section is its spec,
+>   the track names its exit (doperpowers:writing-plans,
+>   doperpowers:execplan, or direct), and the track's own review covers the
+>   residue.
 
 **The path**, steps 5 and 7 — each gains a trailing clause:
 
@@ -319,14 +338,31 @@ writing-plans row becomes:
 **doperpowers:subagent-driven-execution › executor-prompt.md** — "Your Job"
 items 1–2 become:
 
-> 1. Implement what the task's Deliverables and Decisions specify.
+> 1. Write the tests first (doperpowers:test-driven-development) for
+>    testable logic — the brief names the behaviors they assert.
+> 2. Implement what the task's Deliverables and Decisions specify.
 >    Code blocks in the brief are decisions — honor them as written;
 >    everything else is yours to write.
-> 2. Write the tests first (doperpowers:test-driven-development) for
->    testable logic — the brief names the behaviors they assert.
 
-and the report format's "**TDD Evidence** (if TDD was required for this
-task)" becomes "**TDD Evidence** (for testable logic)".
+the report format's "**TDD Evidence** (if TDD was required for this
+task)" becomes "**TDD Evidence** (for testable logic)", and the
+self-review line "Did I follow TDD if required?" becomes "Did I write the
+tests first for testable logic?".
+
+**doperpowers:subagent-driven-execution › SKILL.md**, loop step 6 — the
+living-tail routing gains the same conditional as writing-plans'
+Self-Review 4:
+
+> (doperpowers:execspec; for a child of a composite spec, advisory
+> content in place and a binding contradiction as `[parent-impact]` per
+> doperpowers:decomposing)
+
+**doperpowers:finishing-a-development-branch**, Step 1's retrospective
+sentence — a child must not overwrite the composite's Outcomes:
+
+> For a child of a composite spec the entry is the child's Tracking Map
+> row — closing evidence and artifact — and the composite's Outcomes waits
+> for recomposition.
 
 **scripts/sde-telemetry** — the role classifier learns the
 initiative-prefixed description forms this session used ("Implement i2 Task
@@ -357,7 +393,9 @@ runs.
 spec 2,402 lines; plan 5,715 lines, 28 tasks, 4,489 lines (79%) inside
 fenced code; 1,440 of 2,289 plan code lines ≥25 chars (63%) present verbatim
 in the shipped tree — core-library tasks 75–93%, integration and spike tasks
-(T12, T17, T19, T22, T27) 17–31%; writing-plans invoked 11:37, SDE started
+(T12, T17, T19, T22, T27) 17–31% (survival shows the code was used, not
+that pre-writing it paid; the monitoring's fix-rate row is what settles
+that); writing-plans invoked 11:37, SDE started
 15:35; execution 2026-08-20 15:38 → 08-22 07:09, 20 of 28 tasks with
 review-fix commits, three final-review rounds. ptc-tool, session `56c9ce21`,
 2026-09-01 (the new grain, old resolution): three plans of 1,402 / 1,000 /
@@ -375,19 +413,20 @@ child specs of 663 and 834 lines before any plan.
 `docs/doperpowers/specs/2026-08-20-client-agent-grade-reads-design.md`;
 control: the shipped plan
 `docs/doperpowers/plans/2026-08-20-client-agent-grade-reads.md` (806 lines,
-67% in code blocks, 5 tasks). Three fresh opus reps write a plan for that
-spec with the new `skills/writing-plans/SKILL.md` as their instructions.
+67% in code blocks, 5 tasks). Five fresh opus reps write a plan for that
+spec with the new `skills/writing-plans/SKILL.md` as their instructions,
+and two opus reps write one under the old text as the same-model control.
 Measured per rep: total lines, fenced-code share, task count, presence of
 the Deliverables / Tests / Decisions slots, and a reviewer's placeholder
 scan (deferred decisions found). Binding = reps converge on the slot shape;
 the expectation recorded here (not in the skill): under 400 lines, code
 share under a third, no deferred decisions.
 
-**Micro-test B (child entry).** Three single-shot opus reps are dispatched
+**Micro-test B (child entry).** Five single-shot opus reps are dispatched
 as the owner of a controlled leaf child of an existing composite spec (the
 Vitrea composite, child C5, at its recorded pin) with the new brainstorming
 and decomposing text as instructions and asked what they will produce
-before code; three more with the current text as control. Pass = no rep
+before code; five more with the current text as control. Pass = no rep
 under the new text opens a child design document; the control's behavior
 is recorded either way (the afleet session is the observed baseline
 failure).
@@ -398,9 +437,10 @@ share (`awk '/^```/{f=!f;next} f{n++} END{print n"/"NR}' PLAN`), task
 count, plan-authoring span (writing-plans invocation → `sde-workspace`),
 and controller output tokens; appended as a row under Surprises. Reopen
 when: two consecutive monitored features show final-review
-Critical+Important above four; a task needs more than two fix rounds; an
-executor reports BLOCKED or NEEDS_CONTEXT citing a decision the plan should
-have carried. Prediction on record: plan lines down ≥5× against the 09-01
+Critical+Important above four; two consecutive features need a task-level
+fix on more than one task in three; a task needs more than two fix rounds;
+an executor reports BLOCKED or NEEDS_CONTEXT citing a decision the plan
+should have carried. Prediction on record: plan lines down ≥5× against the 09-01
 runs' 1,000–1,400 at comparable task counts, code share under a third,
 executor span up modestly, fix rate and final-review defects within the
 08-21 baseline.
@@ -422,13 +462,13 @@ executor span up modestly, fix rate and final-review defects within the
 ## Acceptance
 
 - `grep -n "questionable taste\|Bite-Sized\|Complete code in every step\|task's steps" skills/writing-plans/SKILL.md` prints nothing; `grep -c "## Contract Resolution\|\*\*Deliverables:\*\*\|\*\*Decisions:\*\*\|A placeholder is a deferred decision" skills/writing-plans/SKILL.md` prints 4.
-- `grep -rn "child spec" skills/` prints nothing; `grep -n "composite tree" skills/decomposing/SKILL.md` and `grep -n "composite child's own composite spec" skills/decomposing/references/composite-spec-template.md` each print one line.
+- `grep -rn "child spec" skills/` prints nothing; `grep -n "composite tree" skills/decomposing/SKILL.md` and `grep -n "own composite spec" skills/decomposing/references/composite-spec-template.md` each print one line.
 - `grep -c "child of a composite spec" skills/brainstorming/SKILL.md` prints 4 (the bullet, steps 5 and 7, the Documentation line).
-- `grep -n "at contract resolution" skills/execspec/SKILL.md` prints the table row; `grep -n "Code blocks in the brief are decisions" skills/subagent-driven-execution/executor-prompt.md` prints one line.
+- `grep -n "at contract resolution" skills/execspec/SKILL.md` prints the table row; `grep -n "Code blocks in the brief are decisions" skills/subagent-driven-execution/executor-prompt.md` prints one line; `grep -c "child of a composite spec" skills/finishing-a-development-branch/SKILL.md skills/subagent-driven-execution/SKILL.md skills/writing-plans/SKILL.md` prints 1, 1, and 3.
 - `python3 scripts/sde-telemetry ~/.claude/projects/-Users-new-Developer-GitHub-ptc-tool/56c9ce21-0c8e-457a-b31f-a03de48651d3.jsonl | grep '^dispatches:'` shows executor=15 and task-reviewer=12 (the 09-01 forms classified; the two spike runs and the pre-09-01 dispatches stay `other`).
-- Micro-test A: three reps, each with the Deliverables / Tests / Decisions slots present and a placeholder scan finding no deferred decision; lines and code share recorded under Surprises.
-- Micro-test B: zero of three new-text reps open a child design document; results recorded under Surprises.
-- `tests/claude-code/run-skill-tests.sh` and `tests/executing/test-protocol-content.sh` pass.
+- Micro-test A: five reps, each with the Deliverables / Tests / Decisions slots present and a placeholder scan finding no deferred decision; lines and code share recorded under Surprises beside the two old-text controls.
+- Micro-test B: zero of five new-text reps open a child design document; the five controls' behavior recorded under Surprises.
+- `tests/executing/test-protocol-content.sh` and `tests/claude-code/test-sde-workspace.sh` pass (they read this tree; `run-skill-tests.sh` queries the installed plugin and does not exercise the edit).
 - Version bumped via `scripts/bump-version.sh`; this spec committed with the edits.
 
 ## Decision Log
@@ -545,6 +585,27 @@ executor span up modestly, fix rate and final-review defects within the
   ("Implement i2 Task 2") were filed as `other`; a one-pattern fix.
   Date/Author: 2026-09-04 / fable session
 
+- Decision: the independent spec review's surviving findings (review of
+  2026-09-04, 18 findings, 17 adopted in some form): finishing writes a
+  child's Tracking Map row instead of the composite's Outcomes;
+  writing-plans' Self-Review 4 and SDE step 6 distinguish advisory (fix in
+  place) from binding (`[parent-impact]`) for a child; `direct` joins the
+  track-hint vocabulary; "will not fit a section" becomes "trips the
+  gate's split signals" — the gate is the only law, and section size is
+  taste; Global Constraints copies the binding clauses verbatim rather than
+  by id; test-first is the executor's first step; the Tests slot carries
+  expected output; commit messages ride the Deliverable checkboxes; the
+  parent pin is defined once (commit, or the board's hash); Scope Check
+  routes to decomposing; the micro-tests run five reps per variant with a
+  same-model control; the monitoring gains a task-level fix-rate reopen;
+  the live skill suite is dropped from acceptance because it reads the
+  installed plugin.
+  Rejected (design-bounded): grouping the parent's Decision Log under
+  per-child headings to avoid merge conflicts between parallel children —
+  the log stays chronological per PLANS.md; entries carry the child id, and
+  the parent's owner lands flow-back from child reports as Vitrea did.
+  Date/Author: 2026-09-04 / fable session (review findings adopted)
+
 ## Surprises & Discoveries
 
 - Observation: plan writing is fast; the plan's cost is tokens and
@@ -583,3 +644,9 @@ Pending — written at finish.
 - 2026-09-04: initial spec from the design pass (this session's grill:
   four forks, all resolved to the recommendation), written after the
   baseline measurements above.
+- 2026-09-04 (second revision): independent spec review folded — the
+  finishing conditional, the advisory/binding conditional in Self-Review 4
+  and SDE step 6, `direct` in the track-hint vocabulary, the split-signals
+  wording, verbatim binding clauses in Global Constraints, executor order,
+  Tests slot expected output, commit messages on Deliverables, five-rep
+  micro-tests, fix-rate reopen, acceptance corrections.
