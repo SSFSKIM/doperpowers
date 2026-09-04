@@ -16,11 +16,26 @@ unset BOARD_RUN_TOKEN
 # environment would silently retarget every fixture repo in these suites. Each
 # drill that wants an override states it on the invocation.
 unset BOARD_REPO
+# Same reason again, for the session a verb self-locates by: a run context is
+# resolved from the seat record whose id matches $CLAUDE_CODE_SESSION_ID, and
+# every one of these suites is itself run from inside a Claude session. Left
+# set, that ambient id would let a verb here find the OPERATOR's own seat
+# record and speak as whatever run it is bound to. The drills that want a
+# self-locating session state the id on the invocation.
+unset CLAUDE_CODE_SESSION_ID
 # The live-binding guard (board-transition.sh, dp#63) adjudicates on the LOCAL
 # seat registry — an operator's real registry (a live worker bound to a
 # ticket number these fixtures reuse) would inject refusals into suites that
 # never seeded a binding. Every suite starts from an empty registry of its
 # own; `finish` takes it away again.
+#
+# $SMINOS_HOME goes with it, and goes AWAY rather than to the same value: the
+# root rule is $SMINOS_HOME first, then $DAEMON_HOME, so an operator holding
+# one would send every read here at their real registry — while a scratch one
+# exported from this file would OUTRANK the per-invocation `DAEMON_HOME=…`
+# prefixes these suites pin their fixtures with. Unset, DAEMON_HOME is the
+# whole rule, which is what every drill in this tier already assumes.
+unset SMINOS_HOME
 DAEMON_HOME="$(mktemp -d)"; export DAEMON_HOME
 FAILS=0
 t() {  # t <name> <expected-substring> cmd...
