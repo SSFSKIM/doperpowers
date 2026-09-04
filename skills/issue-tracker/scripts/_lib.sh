@@ -34,6 +34,52 @@ BOARD_ROOT="$(_board_root)"
 BOARD_DIR="$BOARD_ROOT/doperpowers/issue-tracker"   # render cache only (gitignored)
 BOARD_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Seat registry — ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME,
+# then $DAEMON_HOME, then the default. Both names are exported at the same
+# value so the CLI, the board scripts and every child read one root.
+DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
+SMINOS_HOME="$DAEMON_HOME"
+export SMINOS_HOME DAEMON_HOME
+
+# THE MIGRATION PRECEDES THE FIRST READ — including _binding.sh's, which is
+# why this whole block sits AHEAD of the source below rather than after it: an
+# api binding with no `repo` in its board.json falls back to this session's own
+# seat record, and that read is the first one in the process. Several scripts
+# sourcing this file also glob $DAEMON_HOME/*.json directly and never touch
+# the CLI, so without this
+# they would read a pre-cutover root as an empty fleet: no bound owner, no
+# live worker, every guard open. Gated on the cutover actually being pending
+# — the legacy root still a real directory — because that check is a stat
+# while the migration itself takes $DAEMON_HOME/.metalock, and a lock taken
+# at SOURCE TIME by every board script would serialise scripts that only ever
+# needed it to write (and deadlocks against a caller already holding it).
+# Once per process, and fail closed: "the migration broke" and "the fleet is
+# idle" are indistinguishable downstream.
+SMINOS_CLI="${SMINOS_CLI:-$BOARD_SCRIPTS/../../sminos/scripts/sminos}"
+_sminos_cutover_pending() {
+  [ -z "${SMINOS_MIGRATED:-}" ] || return 1
+  # A former root still a real directory: the daemon substrate's, or sminos's
+  # under its former name.
+  local legacy
+  for legacy in orchestrating-daemons agora; do
+    if [ -d "$HOME/.claude/$legacy" ] && [ ! -L "$HOME/.claude/$legacy" ]; then
+      return 0
+    fi
+  done
+  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
+  # of the old groups/ did not finish: the registry is mid-cutover, which is
+  # precisely the half-migrated state a direct reader must never mistake for
+  # an idle fleet. One glob, no lock.
+  set -- "$HOME"/.claude/sminos.v2-*
+  [ -e "$1" ]
+}
+if _sminos_cutover_pending; then
+  "$SMINOS_CLI" migrate --quiet \
+    || die "sminos migrate failed — refusing to read a possibly half-migrated registry"
+fi
+SMINOS_MIGRATED=1
+export SMINOS_CLI SMINOS_MIGRATED
+
 # shellcheck source=_binding.sh
 . "$BOARD_SCRIPTS/_binding.sh"
 
@@ -67,55 +113,18 @@ fi
 # repo dies on `binding=api but no repo` mid-run. Today that is the two
 # dispatchers' spawns and the sweep's three handovers (relay resume, successor
 # resume, fresh-successor spawn); a new one inherits the rule, not a review.
-# The prefix is the DECLARED channel, not yet a delivered one: `claude --bg`
-# drops every spawn-prefix variable (the run bearer and the fence included, not
-# just these two), so today the pin reaches a worker's own shells only on the
-# foreground route. Board ticket 35 owns that handoff; these pins ride along the
-# moment it is fixed, and the rule above is what makes that true without a
-# second pass over every call site.
+# The prefix is the DECLARED channel; the seat record is the DELIVERED one.
+# `claude --bg` drops every spawn-prefix variable — the run bearer and the fence
+# included, not just these two — so on the background route the pin reaches the
+# dispatcher's child process and no shell inside it. What reaches those shells
+# is $CLAUDE_CODE_SESSION_ID, and the client resolves the whole run context
+# (bearer, run id, fence) and this repo key out of the seat record that names it
+# (dp#35, _board_api.own_seat). The prefix still earns its place: it is correct
+# wherever env survives, it is what board-bind stamps the record FROM, and it is
+# resolved first — so it remains the rule above, and a new call site inherits
+# that rule rather than a review.
 if [ "$BOARD_BINDING" = gh ]; then export BOARD_REPO; fi
 
-# Seat registry — ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME,
-# then $DAEMON_HOME, then the default. Both names are exported at the same
-# value so the CLI, the board scripts and every child read one root.
-DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
-SMINOS_HOME="$DAEMON_HOME"
-export SMINOS_HOME DAEMON_HOME
-
-# THE MIGRATION PRECEDES THE FIRST READ. Several scripts sourcing this file
-# glob $DAEMON_HOME/*.json directly and never touch the CLI, so without this
-# they would read a pre-cutover root as an empty fleet: no bound owner, no
-# live worker, every guard open. Gated on the cutover actually being pending
-# — the legacy root still a real directory — because that check is a stat
-# while the migration itself takes $DAEMON_HOME/.metalock, and a lock taken
-# at SOURCE TIME by every board script would serialise scripts that only ever
-# needed it to write (and deadlocks against a caller already holding it).
-# Once per process, and fail closed: "the migration broke" and "the fleet is
-# idle" are indistinguishable downstream.
-SMINOS_CLI="${SMINOS_CLI:-$BOARD_SCRIPTS/../../sminos/scripts/sminos}"
-_sminos_cutover_pending() {
-  [ -z "${SMINOS_MIGRATED:-}" ] || return 1
-  # A former root still a real directory: the daemon substrate's, or sminos's
-  # under its former name.
-  local legacy
-  for legacy in orchestrating-daemons agora; do
-    if [ -d "$HOME/.claude/$legacy" ] && [ ! -L "$HOME/.claude/$legacy" ]; then
-      return 0
-    fi
-  done
-  # A `.v2-<ts>` aside beside the root means the rename landed but the merge
-  # of the old groups/ did not finish: the registry is mid-cutover, which is
-  # precisely the half-migrated state a direct reader must never mistake for
-  # an idle fleet. One glob, no lock.
-  set -- "$HOME"/.claude/sminos.v2-*
-  [ -e "$1" ]
-}
-if _sminos_cutover_pending; then
-  "$SMINOS_CLI" migrate --quiet \
-    || die "sminos migrate failed — refusing to read a possibly half-migrated registry"
-fi
-SMINOS_MIGRATED=1
-export SMINOS_CLI SMINOS_MIGRATED
 
 # Render-cache dir: created on demand, always gitignored — BOARD.html/BOARD.md
 # are views of GitHub state and must never be committed (a committed render is

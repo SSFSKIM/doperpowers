@@ -15,6 +15,32 @@
 # in gh mode it is owner/name and _lib.sh resolves it.
 BOARD_BINDING=gh
 BOARD_API_URL="${BOARD_API_URL:-}"
+# This file's own directory, so non-board entry points (dispatch scripts) get
+# the right PYTHONPATH without BOARD_SCRIPTS. Defined up here because the repo
+# fallback below imports the client too, not only _api_py at the foot.
+_BINDING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The repo THIS SESSION's own seat record was bound for, or nothing.
+#
+# A worker checks out the head it was dispatched for, and a head predating the
+# `repo` key carries a two-key board.json — so the file cannot answer. The env
+# prefix that was meant to was dropped by `claude --bg` before the worker's own
+# shells ran (dp#35). The record can answer: board-bind.sh stamped `board_repo`
+# onto it beside the run when the dispatcher bound this session.
+#
+# The URL is never taken from the record. The checkout's board.json names the
+# board; a record naming a different service is not this checkout's session, and
+# that same board equality is the whole guard here. Silent on every failure —
+# no session id, no registry, no record — because the caller's next line is the
+# fatal that says the repo is undeclared, which is the right diagnosis for all
+# of them.
+_repo_from_own_seat() {
+  BOARD_API_URL="$BOARD_API_URL" \
+  PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import _board_api as A
+seat = A.own_seat()
+print(str(seat[1].get("board_repo") or "").strip() if seat else "")' 2>/dev/null || true
+}
 if [ -z "${BOARD_ROOT:-}" ]; then
   BOARD_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || { echo "error: not inside a git repo" >&2; return 1 2>/dev/null || exit 1; }
@@ -57,6 +83,7 @@ PY
          BOARD_REPO="$(printf '%s' "${BOARD_REPO:-}" \
            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
          [ -n "$BOARD_REPO" ] || BOARD_REPO="${_binding_rest#*|}"
+         [ -n "$BOARD_REPO" ] || BOARD_REPO="$(_repo_from_own_seat)"
          [ -n "$BOARD_REPO" ] || { echo "error: .doperpowers/board.json names binding=api but no repo" >&2
                                    return 1 2>/dev/null || exit 1; } ;;
     gh) : ;;
@@ -86,9 +113,7 @@ fi
 export BOARD_BINDING
 
 # Run an inline python3 board operation with the API client importable and the
-# binding env visible. _BINDING_DIR: this file's own directory, so non-board
-# entry points (dispatch scripts) get the right PYTHONPATH without BOARD_SCRIPTS.
-_BINDING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# binding env visible.
 _api_py() { PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   BOARD_API_URL="$BOARD_API_URL" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
   BOARD_REPO="${BOARD_REPO:-}" \

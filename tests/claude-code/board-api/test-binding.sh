@@ -65,6 +65,39 @@ printf '{"binding":"api","url":"https://b.example"}' > "$r7/.doperpowers/board.j
 t  "api without repo dies" "board.json names binding=api but no repo" probe "$r7"
 nt "and never guesses one"  "api|https://b.example|"                   probe "$r7"
 
+# ...unless THIS SESSION's own seat record answers it (dp#35). A worker checks
+# out the head it was dispatched for, and a head predating the `repo` key
+# carries exactly r7's two-key board.json — while `claude --bg` drops the env
+# prefix that was meant to pin the key. board-bind.sh stamped `board_repo` onto
+# the record when the dispatcher bound this session, so the fact is on disk
+# under a name the worker can read off its own environment.
+WSESS="beef0000-0000-4000-8000-00000000000a"
+seat() {  # seat <board-key> — one record for $WSESS, alone in the registry
+  rm -f "$DAEMON_HOME"/*.json
+  printf '{"uuid":"w","current":"%s","board":"%s","board_repo":"from-record",
+           "run_id":41,"fence":3,"run_bearer":"b","bind_confirmed":true}\n' \
+    "$WSESS" "$1" > "$DAEMON_HOME/w.json"
+}
+seat "api:https://b.example"
+t "a repo-less api head falls back to this session's seat record" \
+  "api|https://b.example|$(basename "$r7").env|from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+# The board is the whole guard. The registry is machine-global and ticket
+# namespaces are not: a session bound on another service says nothing about
+# which repo THIS checkout speaks for, so the fatal stands rather than a
+# neighbour's repo key being adopted silently.
+seat "api:https://other.example"
+t  "a record from another board is not this checkout's session" \
+  "board.json names binding=api but no repo" probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+nt "and its repo key is never borrowed" "from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+# The declared value still outranks it — the record is the LAST resort, after
+# the env override and the file.
+seat "api:https://b.example"
+t "the file's own repo still wins over the record" "|alpha" \
+  probe "$r2" CLAUDE_CODE_SESSION_ID="$WSESS"
+rm -f "$DAEMON_HOME"/*.json
+
 # A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of
 # spaces passed the emptiness check and then rode the wire as an encoded blank —
 # which the server reads as NO filter, the exact widening the key exists to
