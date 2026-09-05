@@ -387,4 +387,68 @@ rc 1 "api fence: a STAMPED-OWN live worker still fences" \
     '$SCRIPTS/board-transition.sh' 9 done 'a note'"
 rm -f "$DAEMON_HOME/fence-own-9.json"
 
+# ...AND THE RUN IS AN IDENTITY, NOT ONLY THE SESSION. Ownership used to be
+# identity-by-session alone, so the caller the record itself names — a worker
+# driving the protocol from a second shell, and every integration drill —
+# was refused on its own ticket. Since the run bearer became the client's
+# principal, a caller holding run N's bearer IS run N wherever it runs, and
+# the server derives the actor from it; the fence agrees by matching the
+# record's run_id against the run THIS process speaks as.
+plant_run_fence() {  # a live mid-turn record on #9, owned by run 41
+  python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" <<'PYR'
+import json, os, sys
+json.dump({"uuid": "fence-run-9", "current": "fence-run-9", "ticket": "9",
+           "status": "working", "board": sys.argv[2], "board_repo": "testrepo",
+           "run_id": 41, "bind_confirmed": True},
+          open(os.path.join(sys.argv[1], "fence-run-9.json"), "w"))
+PYR
+}
+plant_run_fence
+: > "$FIX.log"
+t "api fence: the record's own run passes from a foreign session" "#9:" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    BOARD_RUN_TOKEN=rt BOARD_RUN_ID=41 '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+t "and that transition reached the wire" '"path": "/tickets/9/transition"' cat "$FIX.log"
+
+# A DIFFERENT run is a different principal — a predecessor's stale record, a
+# successor mid-handover — and stays fenced. This is the half the widening
+# could silently take away.
+: > "$FIX.log"
+OTHERRUN_OUT="$(mktemp)"; OTHERRUN_RC=0
+bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+  BOARD_RUN_TOKEN=rt BOARD_RUN_ID=42 '$SCRIPTS/board-transition.sh' 9 done 'a note'" \
+  > "$OTHERRUN_OUT" 2>&1 || OTHERRUN_RC=$?
+t "api fence: another run on the same ticket is still refused" \
+  "#9 is mid-turn under live worker" cat "$OTHERRUN_OUT"
+t "and that refusal exits nonzero" "rc=1" echo "rc=$OTHERRUN_RC"
+nt "and it never reached the wire" '"path": "/tickets/9/transition"' cat "$FIX.log"
+
+# A caller holding no run context at all is a human shell, and it is fenced
+# exactly as before: the widening is identity, not an opening.
+: > "$FIX.log"
+rc 1 "api fence: no run context is still refused" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID=someone-else BOARD_CREDENTIALS_FILE='$CREDS' \
+    '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+nt "and that one never reached the wire either" '"path": "/tickets/9/transition"' cat "$FIX.log"
+
+# THE PRODUCTION WORKER'S OWN PATH: no BOARD_RUN_* in env at all — `claude --bg`
+# drops the spawn prefix — so the run comes off this session's seat record.
+# Here the seat is not the record holding the ticket (a resume of run 41 into a
+# fresh session leaves the predecessor's meta on #9), so the session match
+# cannot carry it: the run id is the only thing that says these are one owner.
+RESUMER="resumer-0000-4000-8000-00000000000b"
+python3 - "$DAEMON_HOME" "api:http://127.0.0.1:$PORT" "$RESUMER" <<'PYS'
+import json, os, sys
+json.dump({"uuid": "seat-resumer", "current": sys.argv[3], "status": "working",
+           "board": sys.argv[2], "board_repo": "testrepo", "run_id": 41,
+           "fence": 3, "run_bearer": "seat-rt", "bind_confirmed": True},
+          open(os.path.join(sys.argv[1], "seat-resumer.json"), "w"))
+PYS
+: > "$FIX.log"
+t "api fence: the run self-located from this session's seat record passes" "#9:" \
+  bash -c "cd '$r' && CLAUDE_CODE_SESSION_ID='$RESUMER' BOARD_CREDENTIALS_FILE='$CREDS' \
+    '$SCRIPTS/board-transition.sh' 9 done 'a note'"
+t "and it spoke as that run on the wire" '"auth": "Bearer seat-rt"' cat "$FIX.log"
+rm -f "$DAEMON_HOME/fence-run-9.json" "$DAEMON_HOME/seat-resumer.json"
+
 finish
