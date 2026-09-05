@@ -226,14 +226,22 @@ t "a body read from stdin reaches the wire" '{"body": "piped statement"}' \
 # fixture's four 200s — since a hard exit must clean up too.
 LEAK_SENTINEL="spool-leak-probe-$$-$RANDOM"
 LEAK_TMPD="$(dirname "$(mktemp -u)")"
-LEAK_BEFORE="$(mktemp)"; find "$LEAK_TMPD" -maxdepth 1 -type f > "$LEAK_BEFORE" 2>/dev/null || true
+# A MARKER FILE, not a pre-listing to diff against. The shared temp directory
+# holds six figures of entries on a long-lived machine, and `grep -vxF -f` over
+# two listings that size is quadratic — tens of minutes for a probe that is
+# looking for at most one file. Anything the verb spooled is newer than a file
+# stamped immediately before it ran. The fixture log is the one exception the
+# pre-listing used to absorb for free: the call reaches the wire, so the mock
+# records the sentinel body there — the harness's own transcript, not a spool.
+LEAK_MARK="$(mktemp)"
 ( cd "$r" && printf 'statement %s\n' "$LEAK_SENTINEL" | \
   BOARD_CREDENTIALS_FILE="$CREDS" "$SCRIPTS/board-body.sh" 5 --body-file - ) >/dev/null 2>&1 || true
 leak_probe() {
   local f n=0
   while IFS= read -r f; do
     grep -qF "$LEAK_SENTINEL" "$f" 2>/dev/null && n=$((n + 1))
-  done < <(find "$LEAK_TMPD" -maxdepth 1 -type f 2>/dev/null | grep -vxF -f "$LEAK_BEFORE" || true)
+  done < <(find "$LEAK_TMPD" -maxdepth 1 -type f -newer "$LEAK_MARK" \
+             ! -path "$FIX.log" 2>/dev/null || true)
   printf 'leftover-spools=%s\n' "$n"
 }
 t "the stdin spool file does not outlive the run" "leftover-spools=0" leak_probe
