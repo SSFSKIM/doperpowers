@@ -1715,9 +1715,26 @@ PY
     _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
       "$control_dir" "$name" || spawn_rc=1
   unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL
+  # THE RECORD LOSES THE RUN WITH THE RUN. _spawn_reviewer's post-bind failures
+  # — the barrier could not be published, the worker never acknowledged it —
+  # retire the worker, but a retire stops a turn; it does not make the seat
+  # forget. The bind has already landed by then, so without a strip the record
+  # keeps a confirmed bind and a live bearer for the run ended on the next line,
+  # and a session resolves its own run context out of exactly those fields
+  # (dp#35): resumed by hand, that seat would authenticate with a revoked bearer
+  # on every verb instead of falling back cleanly. Ended through the reconciler's
+  # helper rather than _api_end_run's swallow, because here the answer decides
+  # whether the strip is owed — and _retire_run_locally strips only while the
+  # record still names THAT run. The pre-bind failures reach this line too and
+  # cost nothing: their record names no run for the guard to match.
   [ "$spawn_rc" -eq 0 ] \
     || { echo "#$C_TICKET: handover failed — releasing run $C_RUN_ID" >&2
-         _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
+         if _claim_end_run "$C_RUN_ID" abandoned \
+            && [ -n "${REVIEWER_UUID:-}" ] && [ -f "$DAEMON_HOME/$REVIEWER_UUID.json" ]; then
+           _retire_run_locally "$DAEMON_HOME/$REVIEWER_UUID.json" "$C_RUN_ID" \
+             || echo "#$C_TICKET: run $C_RUN_ID ended, but $REVIEWER_UUID's record could not be stripped of it — clear run_bearer/bind_confirmed there by hand" >&2
+         fi
+         _api_drop_journal "$nonce"; return 1; }
 
   # Lane, role and nonce into the registry meta: the lane is what the cap above
   # counts, the role is what a lane-aware resume reads back, and the nonce is

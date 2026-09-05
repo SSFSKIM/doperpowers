@@ -88,7 +88,10 @@ PY
 bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
 wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
 [ "$wname" = "$name" ] || bind_ready=""
-if [ -n "$bind_ready" ]; then
+# REVIEW_STUB_NO_ACK plays the worker that never crosses its barrier — a model
+# or auth failure on the far side. The dispatcher has to notice, and the record
+# has to lose the run the dispatcher then ends.
+if [ -n "$bind_ready" ] && [ -z "${REVIEW_STUB_NO_ACK:-}" ]; then
   READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
 import json, os, shutil, time
 ready = os.environ["READY"]
@@ -936,5 +939,51 @@ nt "so no reviewer is spawned for it" "ARGS name=33"  \
    bash -c "cat '$DH10/spawn-capture.txt' 2>/dev/null || echo none"
 journal10() { ls "$DH10/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
 t  "and the journal is dropped with it"  "journal dropped"  journal10
+
+# =========================================================================
+# Scenario 11 — THE RECORD LOSES THE RUN WITH THE RUN. _spawn_reviewer's
+# post-bind failures (the barrier could not be published; the worker never
+# acknowledged it) retire the worker and hand back a failure, and the caller
+# then ends the run and drops the journal. The bind, however, already landed:
+# without a strip the record keeps a confirmed bind and a live bearer for a run
+# that no longer exists — and a session resolves its own run context out of
+# exactly those fields (dp#35), so resuming that seat by hand would turn every
+# board verb into a 401 instead of a clean fall-back to operator credentials.
+# Same end-and-strip the reconciler's `stranded` arm performs, at the other
+# site that ends a bound run.
+# =========================================================================
+PORT11="$(free_port)"
+FIX11="$(mktemp)"; : > "$FIX11.log"
+cat > "$FIX11" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":81,"ticketId":44,"fence":2,"bearer":"tok-noack","plan":null,
+          "body":"a review nobody acknowledges","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/81/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/81/end","status":200,"body":{"ended":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX11" "$PORT11" & MOCK11=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 2>/dev/null' EXIT
+wait_for_port "$PORT11" || { echo "FAIL mock server never listened on $PORT11"; exit 1; }
+
+r11="$(apirepo "$PORT11")"
+DH11="$(mktemp -d)"
+OUT11="$(mktemp)"
+( cd "$r11" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH11" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r11" \
+    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=1 \
+    REVIEW_ACK_POLLS=5 REVIEW_ACK_DELAY=0.02 REVIEW_STUB_NO_ACK=1 \
+    "$DISPATCH" --sweep ) > "$OUT11" 2>&1 || true
+
+rec11() { cat "$DH11"/bbbb0001-*.json; }
+t  "a worker that never acknowledges the barrier is retired" \
+   "did not acknowledge startup barrier"                     cat "$OUT11"
+t  "and its run is released"        '"path": "/runs/81/end"' cat "$FIX11.log"
+t  "the bind had landed first"      '"path": "/runs/81/bind"' cat "$FIX11.log"
+nt "the ended run's bearer does not stay at rest on its seat" "tok-noack" rec11
+nt "nor the confirmed bind that would let it speak as that run" "bind_confirmed" rec11
+t  "and the seat records when the run ended"                  "run_ended_at"    rec11
 
 finish
