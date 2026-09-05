@@ -760,7 +760,8 @@ pass_surface() {
       *) log "$line" ;;
     esac
   done <<EOF
-$(BOARD_SCRIPTS="$BOARD_SCRIPTS" python3 - <<'PY'
+$(BOARD_SCRIPTS="$BOARD_SCRIPTS" T_LOCK_ROOT="$(board_store_dir surface-locks)" \
+  python3 - <<'PY'
 import json
 import os
 import sys
@@ -810,10 +811,10 @@ for tid in sorted(tickets, key=int):
 # register moment deferred (live workers) or never saw (diff-derived
 # labels). Bounded per tick: body writes are the expensive, racy resource.
 writes = 0
-lock_root = os.path.join(os.environ.get("SMINOS_HOME")
-    or os.environ.get("DAEMON_HOME")
-    or os.path.expanduser("~/.claude/sminos"), "surface-locks")
-os.makedirs(lock_root, exist_ok=True)
+# KEYED BY BINDING, and handed in rather than resolved here: this is the
+# same store the dispatcher's _surf_lock takes, so both sides have to agree
+# on the path down to the digest or the lock serializes nothing.
+lock_root = os.environ["T_LOCK_ROOT"]
 # Registered names only, here and in the queue-depth watch below: an
 # orphaned label (entry deleted, or invented — lint FAILs it) must not
 # drive body writes, and a CONSOLIDATE on it would register with a

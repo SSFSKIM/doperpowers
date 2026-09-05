@@ -607,21 +607,29 @@ for s in os.environ["T_SURFS"].split():
 PY
 }
 
-# Per-surface mkdir locks under $DAEMON_HOME/surface-locks/ — the
-# cross-PROCESS half of serialization (the in-tick claim set only covers one
-# sweep process; two triggered dispatches, or a triggered dispatch beside the
-# sweep, would otherwise both pass the occupancy check inside the
-# check-to-meta window). Same stale-steal policy as the review dispatch lock.
-# Also taken by the sweep SURFACE pass around its relates body writes, which
-# is what serializes those against this dispatcher's parent-pin stamp.
+# Per-surface mkdir locks — the cross-PROCESS half of serialization (the in-tick
+# claim set only covers one sweep process; two triggered dispatches, or a
+# triggered dispatch beside the sweep, would otherwise both pass the occupancy
+# check inside the check-to-meta window). Same stale-steal policy as the review
+# dispatch lock. Also taken by the sweep SURFACE pass around its relates body
+# writes, which is what serializes those against this dispatcher's parent-pin
+# stamp.
+#
+# KEYED BY BINDING, like every store under the machine-global registry root. A
+# surface name means something only inside one board, so two repos that both
+# call a surface `auth` serialized against each other for no reason: one repo's
+# dispatcher declined to dispatch because the other's held the name. Resolved
+# once here rather than per lock — this is the gh branch, so BOARD_REPO is
+# already resolved and exported above. No legacy handling: a lock directory
+# carries no state, and the stale-eviction rule below already sweeps leftovers.
+SURFACE_LOCK_ROOT="$(board_store_dir surface-locks)"
 _surf_lock() {  # <surfaces...> — 0 = all acquired; 1 = contention (none held)
   local s got=""
-  mkdir -p "$DAEMON_HOME/surface-locks"
   for s in $1; do
-    if ! mkdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null; then
-      if [ -n "$(find "$DAEMON_HOME/surface-locks/$s" -maxdepth 0 -mmin +"${SURFACE_LOCK_STALE:-30}" 2>/dev/null)" ]; then
-        rmdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null || true
-        mkdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null \
+    if ! mkdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null; then
+      if [ -n "$(find "$SURFACE_LOCK_ROOT/$s" -maxdepth 0 -mmin +"${SURFACE_LOCK_STALE:-30}" 2>/dev/null)" ]; then
+        rmdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null || true
+        mkdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null \
           || { _surf_unlock "$got"; return 1; }
       else
         _surf_unlock "$got"; return 1
@@ -633,7 +641,7 @@ _surf_lock() {  # <surfaces...> — 0 = all acquired; 1 = contention (none held)
 }
 _surf_unlock() {  # <surfaces...>
   local s
-  for s in $1; do rmdir "$DAEMON_HOME/surface-locks/$s" 2>/dev/null || true; done
+  for s in $1; do rmdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null || true; done
 }
 
 # Newest registry meta bound to ticket <1> → "uuid|status|name" (empty if none).
