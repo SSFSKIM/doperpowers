@@ -308,6 +308,18 @@ chmod +x "$DS/sminos"
 # sha256("api:<url>|<repo>")[:16], url normalized the way the client's
 # api_url() normalizes it. The same key names every per-board store under the
 # registry root (_board_api.store_dir), and this is the independent mirror.
+# The per-binding subdirectory a store's records live in. $DAEMON_HOME is
+# machine-global and a board is not, so board-claims and board-suppress are
+# each filed under one digest of the binding; every registry in this suite is
+# bound to the one mock, so one repo key answers for all of them. Records
+# planted directly under the store root are the LEGACY shape, drilled as such.
+# The port names the BINDING, and this suite runs several boards: the main
+# fixture on $PORT, the claim-failure board on $CPORT, and one throwaway per
+# rboard on $RPORT. A fixture that named the wrong one would plant into a
+# neighbour binding's key and never be seen.
+claimdir() { store_dir "$1" board-claims "${2:-$PORT}"; }
+supdir()   { store_dir "$1" board-suppress "${2:-$PORT}"; }
+
 lock_key() {  # lock_key <repo-key>
   T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
 import hashlib, os
@@ -373,7 +385,7 @@ nt "the bearer never rides on argv"        "tok-s"                     argv_only
 # The whole tick holds the lock while this resume blocks — an unbounded wait
 # would starve lease renewal past the 15-minute lease, exactly as in phase 2.
 t  "the successor resume wait is bounded"  "DAEMON_TIMEOUT=300"        cat "$RESUME_LOG"
-journal() { cat "$DH"/board-claims/*.json 2>/dev/null || echo "no journal"; }
+journal() { cat "$(claimdir "$DH")"/*.json 2>/dev/null || echo "no journal"; }
 t  "the successor claim is journalled"     '"ticket": "12"'            journal
 t  "under a lane neither dispatcher owns"  '"lane": "successor"'       journal
 t  "and marked handed off"                 '"spawn_completed": true'   journal
@@ -548,7 +560,7 @@ t  "and it asked for that state by id"  '"path": "/tickets/12"'        cat "$FIX
 t  "probing the paged surface before believing the 404" \
    '"path": "/tickets?limit=1&repo=testrepo"'                                        cat "$FIX.log"
 nt "it registers no env-issue"             '\"category\": \"env-issue\"' cat "$FIX.log"
-suppression_for() { cat "$DH/board-suppress/$1.json" 2>/dev/null || echo "no suppression record"; }
+suppression_for() { cat "$(supdir "$DH")/$1.json" 2>/dev/null || echo "no suppression record"; }
 t  "and writes no suppression record"      "no suppression record"     suppression_for 12
 
 : > "$FIX.log"
@@ -558,9 +570,9 @@ t  "escalation registers env-issue"        '\"category\": \"env-issue\"' cat "$F
 t  "the env-issue names the stuck ticket"  '#12'                       cat "$FIX.log"
 t  "registered as automation"              '"auth": "Bearer a"'        cat "$FIX.log"
 t  "the escalation is reported"            "escalated #12 → env-issue #90 (suppressed)" cat "$OUT5"
-t  "suppression file written"              '"ticket": 12'              cat "$DH/board-suppress/12.json"
-t  "recording the board state it was stuck in" '"state": "in-progress"' cat "$DH/board-suppress/12.json"
-t  "and the env-issue that lifts it"       '"env_issue": 90'           cat "$DH/board-suppress/12.json"
+t  "suppression file written"              '"ticket": 12'              cat "$(supdir "$DH")/12.json"
+t  "recording the board state it was stuck in" '"state": "in-progress"' cat "$(supdir "$DH")/12.json"
+t  "and the env-issue that lifts it"       '"env_issue": 90'           cat "$(supdir "$DH")/12.json"
 # Automation holds no transition authority in API mode (the matrix admits
 # humans and runs only) — the env-issue IS the park, and the ticket is left
 # exactly where it was.
@@ -581,9 +593,8 @@ nt "and no successor is claimed for it"    "/runs/claim-successor"     cat "$FIX
 # suppressed ticket is released and that lane stands down.
 # =========================================================================
 : > "$FIX.log"
-mkdir -p "$DH/board-suppress"
 printf '%s\n' '{"ticket": 14, "state": "in-progress", "env_issue": 92}' \
-  > "$DH/board-suppress/14.json"
+  > "$(supdir "$DH")/14.json"
 OUT7="$TDIR/dispatch.out"
 SW dispatch > "$OUT7" 2>&1 || true
 t  "phase 4 claims the architect lane"     '\"lane\": \"architect\"'   cat "$FIX.log"
@@ -594,20 +605,20 @@ t  "a claim yielding a suppressed ticket is released" \
    "#14 is suppressed — releasing run 60"  cat "$OUT7"
 t  "and that run is ended"                 '"path": "/runs/60/end"'    cat "$FIX.log"
 nt "phase 4 never invokes gh"              "GH-CALLED"                 cat "$MARKER"
-rm -f "$DH/board-suppress/14.json"
+rm -f "$(supdir "$DH")/14.json"
 
 # =========================================================================
 # Phase 3, rung 5b — suppression lifts on EITHER trigger, both checked each
 # tick: #12's env-issue closed, #13's own board state moved.
 # =========================================================================
 printf '%s\n' '{"ticket": 13, "state": "in-progress", "env_issue": 91}' \
-  > "$DH/board-suppress/13.json"
+  > "$(supdir "$DH")/13.json"
 : > "$FIX.log"
 OUT8="$TDIR/resume7.out"
 SW resume > "$OUT8" 2>&1 || true
 t  "suppression lifts on env-issue close"  "suppression lifted for #12" cat "$OUT8"
 t  "suppression lifts when the ticket moved" "suppression lifted for #13" cat "$OUT8"
-lifted() { ls "$DH/board-suppress"/*.json 2>/dev/null || echo "no suppression records"; }
+lifted() { ls "$(supdir "$DH")"/*.json 2>/dev/null || echo "no suppression records"; }
 t  "and the records are gone"              "no suppression records"    lifted
 
 # =========================================================================
@@ -637,9 +648,8 @@ printf '%s\n' '{"uuid":"u-arch","current":"u-arch","status":"working",
 # Reached through reconciliation rather than the feed: a successor claim whose
 # response was lost is replayed under its own nonce, and that replay runs the
 # same recovery the feed does.
-mkdir -p "$DH/board-claims"
 printf '%s\n' '{"lane":"successor","run_id":null,"spawn_completed":false,"ticket":"16"}' \
-  > "$DH/board-claims/n-lane.json"
+  > "$(claimdir "$DH")/n-lane.json"
 OUTL="$TDIR/resume-lane.out"
 RESUME_MUST_FAIL=1 SW resume > "$OUTL" 2>&1 || true
 t  "the successor inherits a RETIRED predecessor's lane" \
@@ -647,7 +657,7 @@ t  "the successor inherits a RETIRED predecessor's lane" \
 t  "and that lane's own model"        "model=fable"     cat "$SPAWN_LOG"
 t  "and that lane's own protocol"     "architecting/SKILL.md"  cat "$SPAWN_LOG"
 t  "and that lane's own role"         "ARCHITECT."             cat "$SPAWN_LOG"
-rm -f "$DH/u-arch.json" "$DH/board-claims/n-lane.json"
+rm -f "$DH/u-arch.json" "$(claimdir "$DH")/n-lane.json"
 
 # =========================================================================
 # A HISTORICAL DAEMON NAME IS NOT SPAWN PROOF, and successor names are
@@ -666,23 +676,23 @@ rm -f "$DH/u-arch.json" "$DH/board-claims/n-lane.json"
 printf '%s\n' '{"uuid":"u-hist","current":"u-hist","status":"idle",
  "name":"12-successor-retired"}' > "$DH/u-hist.json"
 printf '%s\n' '{"lane":"successor","run_id":99,"spawn_completed":false,
- "ticket":"12","daemon":"12-successor-retired"}' > "$DH/board-claims/n-hist.json"
+ "ticket":"12","daemon":"12-successor-retired"}' > "$(claimdir "$DH")/n-hist.json"
 # No /runs/98/end fixture exists: the mock answers 404, which is what a
 # transport or service outage looks like from here.
 printf '%s\n' '{"lane":"successor","run_id":98,"spawn_completed":false,
- "ticket":"12"}' > "$DH/board-claims/n-fail.json"
+ "ticket":"12"}' > "$(claimdir "$DH")/n-fail.json"
 OUTJ="$TDIR/resume-journal.out"
 SW resume > "$OUTJ" 2>&1 || true
 nt "a retired session's name is not read as a spawn" \
    "but never bound it"                                 cat "$OUTJ"
 t  "so the undelivered run is released instead"  '"path": "/runs/99/end"' cat "$FIX.log"
-journal_gone() { [ -e "$DH/board-claims/n-hist.json" ] && echo "journal kept" || echo "journal removed"; }
+journal_gone() { [ -e "$(claimdir "$DH")/n-hist.json" ] && echo "journal kept" || echo "journal removed"; }
 t  "and its journal is closed out"     "journal removed"  journal_gone
 t  "a release that FAILED keeps its journal" \
    "the journal is KEPT so the next tick can retry"      cat "$OUTJ"
-journal_kept() { [ -e "$DH/board-claims/n-fail.json" ] && echo "journal kept" || echo "journal removed"; }
+journal_kept() { [ -e "$(claimdir "$DH")/n-fail.json" ] && echo "journal kept" || echo "journal removed"; }
 t  "the retry handle survives on disk"  "journal kept"    journal_kept
-rm -f "$DH/u-hist.json" "$DH/board-claims/n-fail.json"
+rm -f "$DH/u-hist.json" "$(claimdir "$DH")/n-fail.json"
 
 # =========================================================================
 # THE WHOLE-TICK BUDGET BOUNDS THE TICK, INCLUDING FRESH CLAIMS. Relay and
@@ -862,9 +872,9 @@ CSW() {  # CSW <registry> — one resume tick against the claim-failure board
       DAEMON_HOME="$1" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
       "$SCRIPTS/_sweep_api.sh" resume )
 }
-journals() {  # journals <registry> — how many claim journals it is holding
+journals() {  # journals <registry> [port] — how many claim journals it holds
   local n=0 f
-  for f in "$1"/board-claims/*.json; do [ -e "$f" ] || continue; n=$((n + 1)); done
+  for f in "$(claimdir "$1" "${2:-$RPORT}")"/*.json; do [ -e "$f" ] || continue; n=$((n + 1)); done
   echo "journals=$n"
 }
 
@@ -872,7 +882,7 @@ CDHA="$TDIR/dh-claim-fault"; mkdir -p "$CDHA"
 OUTCA="$TDIR/claim-fault.out"
 CSW "$CDHA" > "$OUTCA" 2>&1 || true
 t  "a claim that FAULTS charges a recovery cycle" "recovery cycle 1 of 3" cat "$OUTCA"
-t  "and the journal is kept as the replay handle" "journals=1" journals "$CDHA"
+t  "and the journal is kept as the replay handle" "journals=1" journals "$CDHA" "$CPORT"
 
 CDHB="$TDIR/dh-claim-nonce"; mkdir -p "$CDHB"
 OUTCB="$TDIR/claim-nonce.out"
@@ -881,7 +891,7 @@ t  "a nonce-consumed claim names the journal obsolete" \
    "journal is obsolete (nonce-consumed)"            cat "$OUTCB"
 nt "and is not reported as a fault"    "successor claim failed"  cat "$OUTCB"
 nt "so no recovery cycle is charged"   "recovery cycle"          cat "$OUTCB"
-t  "the spent journal is dropped"      "journals=0"  journals "$CDHB"
+t  "the spent journal is dropped"      "journals=0"  journals "$CDHB" "$CPORT"
 
 CDHC="$TDIR/dh-claim-stale"; mkdir -p "$CDHC"
 OUTCC="$TDIR/claim-stale.out"
@@ -890,7 +900,7 @@ t  "a stale-resume claim names the journal obsolete too" \
    "journal is obsolete (stale-resume)"              cat "$OUTCC"
 nt "and is not reported as a fault either" "successor claim failed" cat "$OUTCC"
 nt "so no recovery cycle is charged for it" "recovery cycle"        cat "$OUTCC"
-t  "and that journal is dropped as well"   "journals=0"  journals "$CDHC"
+t  "and that journal is dropped as well"   "journals=0"  journals "$CDHC" "$CPORT"
 
 CDHD="$TDIR/dh-claim-none"; mkdir -p "$CDHD"
 OUTCD="$TDIR/claim-none.out"
@@ -898,7 +908,7 @@ CSW "$CDHD" > "$OUTCD" 2>&1 || true
 t  "backpressure is a wait state, not a failure" \
    "the board granted no successor"                  cat "$OUTCD"
 nt "it charges no recovery cycle"      "recovery cycle"  cat "$OUTCD"
-t  "and leaves no journal behind"      "journals=0"  journals "$CDHD"
+t  "and leaves no journal behind"      "journals=0"  journals "$CDHD" "$CPORT"
 kill $CMOCK 2>/dev/null || true
 
 # =========================================================================
@@ -927,8 +937,9 @@ kill $CMOCK 2>/dev/null || true
 # attempt counter and a suppression record all have to start from a known state.
 # =========================================================================
 RMOCKS=""
-rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO and RLOG
+rboard() {  # rboard <fixtures-file> — a throwaway board; sets RREPO, RLOG, RPORT
   local port; port="$(free_port)"
+  RPORT="$port"
   RLOG="$1.log"; : > "$RLOG"
   python3 "$TESTS_DIR/mock-server.py" "$1" "$port" &
   RMOCKS="$RMOCKS $!"
@@ -948,16 +959,15 @@ standing_journal() {  # standing_journal <registry> — which journals are on di
   # A glob rather than `ls`: an EXISTING but empty directory makes ls print
   # nothing at all, which would pass an absence assertion by accident.
   local f n=0
-  for f in "$1"/board-claims/*; do
+  for f in "$(claimdir "$1" "$RPORT")"/*; do
     [ -e "$f" ] || continue
     basename "$f"; n=$((n + 1))
   done
   [ "$n" -gt 0 ] || echo "no journals"
 }
 mkjournal() {  # mkjournal <registry> <nonce> <ticket> — an unfinished claim
-  mkdir -p "$1/board-claims"
   printf '{"lane":"successor","run_id":null,"spawn_completed":false,"ticket":"%s"}\n' \
-    "$3" > "$1/board-claims/$2.json"
+    "$3" > "$(claimdir "$1" "$RPORT")/$2.json"
 }
 
 # ---- a standing journal AND the same ticket on the feed, one tick ---------
@@ -1029,10 +1039,10 @@ cat > "$BFIX" <<'JSON'
 ]
 JSON
 rboard "$BFIX"
-BDH="$TDIR/dh-moved"; mkdir -p "$BDH/board-suppress"
+BDH="$TDIR/dh-moved"
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
-  > "$BDH/board-suppress/12.json"
-printf '2\n' > "$BDH/board-suppress/.attempts-12"
+  > "$(supdir "$BDH" "$RPORT")/12.json"
+printf '2\n' > "$(supdir "$BDH" "$RPORT")/.attempts-12"
 mkjournal "$BDH" n-moved 12
 OUTM="$TDIR/moved.out"
 RSW "$BDH" > "$OUTM" 2>&1 || true
@@ -1054,9 +1064,9 @@ cat > "$CFIX2" <<'JSON'
 ]
 JSON
 rboard "$CFIX2"
-FDH="$TDIR/dh-frozen"; mkdir -p "$FDH/board-suppress"
+FDH="$TDIR/dh-frozen"
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
-  > "$FDH/board-suppress/12.json"
+  > "$(supdir "$FDH" "$RPORT")/12.json"
 mkjournal "$FDH" n-frozen 12
 OUTF="$TDIR/frozen.out"
 RSW "$FDH" > "$OUTF" 2>&1 || true
@@ -1082,9 +1092,9 @@ cat > "$DFIX" <<'JSON'
 ]
 JSON
 rboard "$DFIX"
-LDH="$TDIR/dh-lifting"; mkdir -p "$LDH/board-suppress"
+LDH="$TDIR/dh-lifting"
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
-  > "$LDH/board-suppress/12.json"
+  > "$(supdir "$LDH" "$RPORT")/12.json"
 mkjournal "$LDH" n-lifted 12
 OUTLF="$TDIR/lifting.out"
 RSW "$LDH" > "$OUTLF" 2>&1 || true
@@ -1143,7 +1153,7 @@ t  "the waiting journal is left untouched"  "n-b.json"  standing_journal "$TDH"
 # the whole ladder and minting the human a fresh env-issue every three cycles.
 # Absent is UNKNOWN on both sides, and the suppression keeps waiting.
 suppression_present() {  # suppression_present <registry> <ticket>
-  if [ -e "$1/board-suppress/$2.json" ]; then echo "still-there"; else echo "gone"; fi
+  if [ -e "$(supdir "$1" "$RPORT")/$2.json" ]; then echo "still-there"; else echo "gone"; fi
 }
 tick_exit() {  # tick_exit <registry> <out> — run a tick, record its exit status
   if RSW "$1" > "$2" 2>&1; then echo "tick exit=0" >> "$2"
@@ -1160,9 +1170,9 @@ cat > "$GFIX" <<'JSON'
 ]
 JSON
 rboard "$GFIX"
-GDH="$TDIR/dh-absent-ticket"; mkdir -p "$GDH/board-suppress"
+GDH="$TDIR/dh-absent-ticket"
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
-  > "$GDH/board-suppress/12.json"
+  > "$(supdir "$GDH" "$RPORT")/12.json"
 OUTG="$TDIR/absent-ticket.out"
 tick_exit "$GDH" "$OUTG"
 t  "a suppression whose ticket the board does not carry is not lifted" \
@@ -1192,9 +1202,9 @@ cat > "$HFIX" <<'JSON'
 ]
 JSON
 rboard "$HFIX"
-HDH="$TDIR/dh-absent-env"; mkdir -p "$HDH/board-suppress"
+HDH="$TDIR/dh-absent-env"
 printf '%s\n' '{"ticket": 12, "state": "in-progress", "env_issue": 90}' \
-  > "$HDH/board-suppress/12.json"
+  > "$(supdir "$HDH" "$RPORT")/12.json"
 OUTH="$TDIR/absent-env.out"
 tick_exit "$HDH" "$OUTH"
 t  "an env-issue the board does not carry is not a closed env-issue" \
@@ -1310,22 +1320,67 @@ cat > "$KFIX" <<JSON
 ]
 JSON
 rboard "$KFIX"
-KDH="$TDIR/dh-dup-walk"; mkdir -p "$KDH/board-suppress"
-printf '2\n' > "$KDH/board-suppress/.attempts-12"
+KDH="$TDIR/dh-dup-walk"
+printf '2\n' > "$(supdir "$KDH" "$RPORT")/.attempts-12"
 OUTK="$TDIR/dup-walk.out"
 RSW "$KDH" > "$OUTK" 2>&1 || true
 t  "a lost registration's duplicate refusal still escalates" \
    "escalated #12 → env-issue #94 (suppressed)"        cat "$OUTK"
 t  "the suppression names the env-issue the walk found on PAGE 2" \
-   '"env_issue": 94'                cat "$KDH/board-suppress/12.json"
+   '"env_issue": 94'                cat "$(supdir "$KDH" "$RPORT")/12.json"
 nt "not the page-1 row whose title merely CONTAINS the real one" \
-   '"env_issue": 88'                cat "$KDH/board-suppress/12.json"
+   '"env_issue": 88'                cat "$(supdir "$KDH" "$RPORT")/12.json"
 # The trailing quote is the delimiter: without it the first-page assertion is
 # also satisfied by the cursor request, and both pages would collapse into one.
 t  "the scan read the first page"       '"path": "/tickets?limit=200&repo=testrepo"'  cat "$RLOG"
 t  "and asked for the second carrying the cursor verbatim" \
    "\"path\": \"/tickets?limit=200&repo=testrepo&cursor=$KC\""       cat "$RLOG"
 
+# =========================================================================
+# THE SUCCESSOR JOURNAL IS THIS BOARD'S, NOT THIS MACHINE'S. The registry root
+# is machine-global; a successor nonce is a handoff between one sweep and one
+# board. Reconciling a neighbour repo's unfinished handoff releases its run and
+# frees its ticket under it — and ticket numbers repeat across boards, so the
+# neighbour here holds the same number ours does. A journal written before the
+# stores were keyed sits flat under the root, is still read, and drains: the
+# replay re-journals it under the key and the flat copy goes.
+# =========================================================================
+SFIX="$TDIR/fix-scope.json"; : > "$SFIX.log"
+cat > "$SFIX" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim-successor","status":409,
+  "body":{"error":{"code":"nonce-consumed",
+                   "message":"a nonce on an ended run is spent, not replayable"}}},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+rboard "$SFIX"
+SDH="$TDIR/dh-store-scope"; mkdir -p "$SDH"
+FOREIGN_S="$(store_dir "$SDH" board-claims "$RPORT" otherrepo)"
+mkjs() {  # mkjs <path> <ticket> — one unfinished successor claim, replay shape
+  printf '{"lane": "successor", "run_id": null, "spawn_completed": false, "ticket": "%s"}\n' \
+    "$2" > "$1"
+}
+mkjs "$(claimdir "$SDH" "$RPORT")/n-mine.json"   12
+mkjs "$FOREIGN_S/n-theirs.json"                  12
+mkjs "$SDH/board-claims/n-legacy.json"           13
+OUTS="$TDIR/store-scope.out"
+RSW "$SDH" > "$OUTS" 2>&1 || true
+
+t  "our own successor journal is reconciled" \
+   "successor claim n-mine never reached a run" cat "$OUTS"
+t  "a flat legacy successor journal is read too" \
+   "successor claim n-legacy never reached a run" cat "$OUTS"
+nt "a neighbour board's successor journal is never even mentioned" \
+   "n-theirs" cat "$OUTS"
+t  "and it is left exactly where it lies" "still-there" \
+   bash -c "[ -e '$FOREIGN_S/n-theirs.json' ] && echo still-there || echo gone"
+t  "while the flat legacy copy drains once its replay has run" "gone" \
+   bash -c "[ -e '$SDH/board-claims/n-legacy.json' ] && echo still-there || echo gone"
+
+# The rboard mocks hold this suite's stdout open, so they go LAST — after every
+# board any drill above needed. One left running keeps a piped reader waiting
+# for an EOF that never comes.
 # shellcheck disable=SC2086  # RMOCKS is a deliberate word-split pid list
 kill $RMOCKS 2>/dev/null || true
 
