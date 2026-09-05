@@ -982,4 +982,53 @@ t  "its run is released too"              '"path": "/runs/63/end"'      cat "$FI
 t  "and the drop reaches it where it lies" "gone" gone \
    "$DH12/board-claims/nonce-legacy.json"
 
+# =========================================================================
+# Scenario 13 — THE OTHER HALF OF THE SUPPRESSION DRILL. Scenario 1 shows a
+# NEIGHBOUR board's suppression of ticket 12 leaving our claim alone; this one
+# shows our own suppression still doing its job, keyed and flat. A claim is the
+# only way to learn which ticket the server picked, so a suppression can only
+# be honoured after the fact — by handing the run straight back.
+# =========================================================================
+PORT13="$(free_port)"
+FIX13="$(mktemp)"; : > "$FIX13.log"
+cat > "$FIX13" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":71,"ticketId":31,"fence":1,"bearer":"tok-s","plan":null,
+          "body":"suppressed work","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"once":true,
+  "body":{"runId":72,"ticketId":32,"fence":1,"bearer":"tok-s","plan":null,
+          "body":"legacy-suppressed work","parentPin":null}},
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/72/end","status":200,"body":{"ended":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX13" "$PORT13" & MOCK13=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 $MOCK12 $MOCK13 2>/dev/null' EXIT
+wait_for_port "$PORT13" || { echo "FAIL mock server never listened on $PORT13"; exit 1; }
+
+r13="$(apirepo "$PORT13")"
+DH13="$(mktemp -d)"
+printf '{"ticket": 31, "state": "in-progress", "env_issue": 90}\n' \
+  > "$(store_dir "$DH13" board-suppress "$PORT13")/31.json"
+# Ticket 32 is suppressed FLAT, the shape a tick that predates the key left
+# behind: still ours, still enforced, and never rewritten.
+mkdir -p "$DH13/board-suppress"
+printf '{"ticket": 32, "state": "in-progress", "env_issue": 91}\n' \
+  > "$DH13/board-suppress/32.json"
+OUT13="$(mktemp)"
+( cd "$r13" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH13" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r13" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT13" 2>&1 || true
+
+t  "our own suppression releases the claim it yielded" \
+   "#31 is suppressed — releasing run 71"   cat "$OUT13"
+t  "and the run is handed straight back"    '"path": "/runs/71/end"' cat "$FIX13.log"
+t  "a flat legacy suppression is enforced too" \
+   "#32 is suppressed — releasing run 72"   cat "$OUT13"
+t  "and its run goes back as well"          '"path": "/runs/72/end"' cat "$FIX13.log"
+nt "no worker is spawned for either"        "ARGS name=31"  \
+   bash -c "cat '$DH13/spawn-capture.txt' 2>/dev/null || true"
+
 finish
