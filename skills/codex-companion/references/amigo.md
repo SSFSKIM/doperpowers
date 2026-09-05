@@ -36,8 +36,15 @@ progress doesn't multiply what you read back.
   escalated commands) are judged by Codex's built-in auto-review guardian
   instead of failing outright. A denial comes back in the answer — Codex
   is told to take a safer path or stop and ask.
-- `--model` and `--effort` left unset defer to the user's codex
-  `config.toml`.
+- Choose `--model` and `--effort` from the routing table in SKILL.md. Left
+  unset, both defer to the user's codex `config.toml`.
+- Tier 3's `max` effort is newer than the vendored task parser. Apply it at
+  the call site instead:
+
+      node "<skill-base>/scripts/with-effort.mjs" --effort max -- \
+        task --model gpt-5.6-luna -- [prompt text]
+
+  Omit the task verb's own `--effort`; the private app-server supplies `max`.
 - Long or structured prompts go in a file via `--prompt-file` instead of
   fighting shell quoting.
 

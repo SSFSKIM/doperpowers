@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Runs a codex-companion verb against a codex app-server started with config
-// overrides — the only way to choose reasoning effort for `review` /
-// `adversarial-review`, whose app-server protocol has no effort field (effort
-// is inherited from the app-server process's config). This is a call site,
-// not a runtime patch: it serves a real unix socket and hands it to the
+// overrides. `review` / `adversarial-review` need it because their app-server
+// protocol has no effort field; `task` uses it only for an effort newer than
+// the vendored task parser, such as `max`. This is a call-site adaptation, not
+// a runtime patch: it serves a real unix socket and hands it to the
 // runtime via CODEX_COMPANION_APP_SERVER_ENDPOINT, the env knob the runtime
 // already honors. Each incoming connection gets its own
 // `codex app-server -c key=value …` that dies with the connection, so
@@ -12,8 +12,9 @@
 // Usage:
 //   node with-effort.mjs --effort <level> [-c key=value ...] -- <verb> [flags…]
 //
-// Example:
-//   CLAUDE_PLUGIN_DATA=… node with-effort.mjs --effort medium -- review --base main
+// Examples:
+//   CLAUDE_PLUGIN_DATA=… node with-effort.mjs --effort high -- review --base main --model gpt-6-astra
+//   CLAUDE_PLUGIN_DATA=… node with-effort.mjs --effort max -- task --model gpt-5.6-luna -- "mechanical work"
 
 import net from "node:net";
 import os from "node:os";

@@ -43,13 +43,14 @@ which serves the verb a private app-server started with the override:
 
     CLAUDE_PLUGIN_DATA="$HOME/.claude/doperpowers/codex-companion" \
     CODEX_COMPANION_SESSION_ID="$CLAUDE_CODE_SESSION_ID" \
-      node "<skill-base>/scripts/with-effort.mjs" --effort medium -- \
-      review --base main --wait
+      node "<skill-base>/scripts/with-effort.mjs" --effort high -- \
+      review --base main --wait --model gpt-6-astra
 
 Everything after `--` is ordinary verb arguments (works for
-`adversarial-review` too; `task` has a native `--effort` flag and doesn't
-need it). Repeatable `-c key=value` before `--` passes any other codex
-config override the same way. Don't set
+`adversarial-review` too). `task` normally uses its native `--effort` flag;
+Tier 3's `max` exception uses this wrapper as documented in references/amigo.md.
+Repeatable `-c key=value` before `--` passes any other codex config override
+the same way. Don't set
 `CODEX_COMPANION_APP_SERVER_ENDPOINT` yourself on a wrapped run — the
 wrapper provides its own live endpoint, and its per-connection app-servers
 die with the run, so the broker kill-switch isn't needed there either.

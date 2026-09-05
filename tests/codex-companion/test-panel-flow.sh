@@ -752,13 +752,14 @@ assert_eq "a zero-finding verdict says what else zero findings can mean" \
 # ---------------------------------------------------------------------------
 SHORT_VERDICTS='{"verdicts":[{"id":"sweep#1","verdict":"CONFIRMED","duplicateOf":null,"priority":"P1","comment":"real"}]}'
 new_case verifier-omission "$(scenario \
+  "$(msg_turn '{"lenses":["only one mandate."]}')" \
   "$(review_turn "$ONE_A")" \
   "$(review_turn "$ONE_B")" \
   "$(msg_turn "$SHORT_VERDICTS")" \
   "$(msg_turn "$SHORT_VERDICTS")")"
-run_panel '{"base":"main","lenses":["only one mandate."],"finderModel":"gpt-5.6-terra","finderEffort":"high","verifierModel":"gpt-5.6-luna","verifierEffort":"xhigh"}'
+run_panel '{"base":"main","finderModel":"gpt-5.6-sol","finderEffort":"xhigh","verifierModel":"gpt-5.6-sol","verifierEffort":"high"}'
 [ "$rc" -eq 0 ] || cat "$scratch/err.log"
-assert_eq "an unrepairable verifier still exits 0, having spent exactly one retry" "0:4" "$(rc_and_turns)"
+assert_eq "an unrepairable verifier still exits 0, having spent exactly one retry" "0:5" "$(rc_and_turns)"
 assert_eq "the pool the verifier was given had both candidates" \
   "scalpel-1#1,sweep#1" "$(pool_ids)"
 assert_eq "an incomplete verdict set is refused rather than half-trusted" \
@@ -792,14 +793,16 @@ assert_contains "the repair prompt keeps the duplicateOf and priority rules" "$s
   "Mark true duplicates with duplicateOf pointing at the strongest formulation"
 assert_contains "the repair prompt keeps the diff base" "$scratch/repair.txt" "merge-base(HEAD, main)"
 assert_contains "the repair prompt keeps the lens map" "$scratch/repair.txt" "- sweep: (lens-free sweep)"
-assert_eq "finders run on the caller's finder model, the verifier on its own" \
-  "2 gpt-5.6-luna
-2 gpt-5.6-terra" "$(thread_models)"
+assert_eq "each panel lane keeps its own model route" \
+  "4 gpt-5.6-sol
+1 gpt-6-astra" "$(thread_models)"
+assert_eq "a finder override does not change the deriver's Tier 1 pair" \
+  "gpt-6-astra medium" "$(turn_field 0 '"\(.params.model) \(.params.effort)"')"
 assert_eq "the verifier's own model and effort ride both its turns" \
-  "gpt-5.6-luna xhigh
-gpt-5.6-luna xhigh" "$(verifier_turns '"\(.model) \(.effort)"')"
+  "gpt-5.6-sol high
+gpt-5.6-sol high" "$(verifier_turns '"\(.model) \(.effort)"')"
 assert_eq "the caller's finder effort reaches both finders" "2" \
-  "$(jq -r '.argv[] | select(. == "model_reasoning_effort=high")' "$CODEX_MOCK_DIR"/spawn-*.json | wc -l | tr -d ' ')"
+  "$(jq -r '.argv[] | select(. == "model_reasoning_effort=xhigh")' "$CODEX_MOCK_DIR"/spawn-*.json | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 # 7. A duplicateOf cycle: every id is covered exactly once, so only the graph

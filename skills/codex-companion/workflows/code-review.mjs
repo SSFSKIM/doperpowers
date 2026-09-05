@@ -193,6 +193,8 @@ Return the FULL corrected verdicts array covering every candidate id exactly onc
 export default async function run({ agent, review, parallel, log, args }) {
   if (!args?.base) throw new Error("code-review workflow requires args.base");
   const base = args.base;
+  const deriverModel  = args.deriverModel  ?? "gpt-6-astra";
+  const deriverEffort = args.deriverEffort ?? "medium";
   const finderModel  = args.finderModel  ?? "gpt-6-astra";
   const finderEffort = args.finderEffort ?? "high";
 
@@ -219,11 +221,11 @@ export default async function run({ agent, review, parallel, log, args }) {
 
   let lenses = args.lenses;
   if (!Array.isArray(lenses)) {
-    // Deliberately the finder model: the deriver reads the same diff the
-    // finders will, so re-routing the finders re-routes the read of what they
-    // should look at. Its effort is fixed low — this is a skim, not a review.
+    // Lens derivation is a bounded skim with its own Tier 1 operating point.
+    // Keep it independent from finder overrides so each lane retains a valid
+    // model/effort pair.
     const derived = await agent(DERIVER_PROMPT(base, baseCommit), {
-      model: finderModel, effort: "medium",
+      model: deriverModel, effort: deriverEffort,
       schema: DERIVER_SCHEMA, label: "lens-deriver"
     });
     lenses = derived.lenses;

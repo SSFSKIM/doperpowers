@@ -60,8 +60,11 @@ one binding verifier over the merged candidate pool:
       --args '{"base":"main"}' --cwd <repo> 2> <scratch>.events.log
 
 `base` is the only required arg. Optional: `lenses` (an array replacing the
-derived set), `finderModel`/`finderEffort` (default `gpt-6-astra`/`high`),
-`verifierModel`/`verifierEffort` (default `gpt-6-astra`/`high`).
+derived set), `deriverModel`/`deriverEffort` (default Tier 1
+`gpt-6-astra`/`medium`), `finderModel`/`finderEffort` (default Tier 0
+`gpt-6-astra`/`high`), and `verifierModel`/`verifierEffort` (also default Tier
+0 `gpt-6-astra`/`high`). Each lane has independent overrides so changing a
+finder model cannot create an invalid model/effort pair in the deriver.
 
 The verb's stdout `result` is `{verdict, findings, coverage, lenses,
 explanation}`. `verdict` is `correct`, `incorrect`, or `interrupted`;
@@ -84,17 +87,19 @@ anything JSON-serializable:
 // review-then-summarize.mjs
 export default async function run({ agent, review, parallel, pipeline, log, args }) {
   log(`reviewing ${args.base}`);
-  const { reviewText } = await review({ base: args.base, effort: "high" });
+  const { reviewText } = await review({
+    base: args.base, model: "gpt-6-astra", effort: "high"
+  });
 
   const takes = await parallel(
     ["security", "performance"].map((lens) =>
       () => agent(`Read the diff against ${args.base} and report ${lens} risks.`,
-                  { label: lens, effort: "medium" }))
+                  { label: lens, model: "gpt-6-astra", effort: "medium" }))
   );
 
   return agent(
     `Merge these into one verdict:\n${reviewText}\n${takes.filter(Boolean).join("\n")}`,
-    { label: "synthesis", schema: {
+    { label: "synthesis", model: "gpt-5.6-sol", effort: "high", schema: {
         type: "object", additionalProperties: false,
         required: ["verdict", "issues"],
         properties: {

@@ -9,6 +9,27 @@ OpenAI's Codex companion runtime (`runtime/`). You drive it
 directly with Bash; It needs the `codex` CLI installed and authenticated on this
 machine (the `setup` verb diagnoses both).
 
+## Model routing
+
+Set both model and effort explicitly wherever the invocation surface supports
+them. Route by the hardest judgment the delegated work requires; lower tier
+numbers mean greater capability.
+
+| Tier | Model and effort | Use |
+|---|---|---|
+| 0 | `gpt-6-astra` at `high` or `xhigh` | Absolute frontier intelligence for the most ambitious work. Default to `high`; reserve `xhigh` for the most important assignments because the difference is marginal. |
+| 1 | `gpt-6-astra` at `medium` or `gpt-5.6-sol` at `xhigh` | Near-frontier intelligence for complex work. Prefer Sol when its marginal cost advantage matters. |
+| 2 | `gpt-5.6-sol` at `high` | Trusted execution worker for well-defined, well-scoped tasks. |
+| 3 | `gpt-5.6-luna` at `max` | Extremely cost-efficient worker for mechanical work and large-scale fan-out. |
+
+`task` accepts `--model` and efforts through `xhigh` directly. For Tier 3,
+wrap `task --model gpt-5.6-luna` with `scripts/with-effort.mjs --effort max`;
+the vendored task parser predates `max`, while the wrapper applies it at the
+app-server call site. For `review` and `adversarial-review`, pass `--model` to
+the verb and set effort through the same wrapper. Workflow scripts set both on
+each `agent` or `review` call; the bundled code-review panel deliberately
+defaults to Tier 0.
+
 Every invocation follows one shape — `<skill-base>` is this skill's base
 directory, printed when the skill loads:
 
