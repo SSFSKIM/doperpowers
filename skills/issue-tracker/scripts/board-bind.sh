@@ -56,21 +56,13 @@ else:
 # The registry predicate is PURE and lives in the API client only because that
 # is where it was first needed — it takes the identity rather than resolving
 # one, so gh mode imports it just as safely (_py puts BOARD_SCRIPTS on the path
-# in both bindings).
+# in both bindings). Its companion RESOLVES that identity from the environment,
+# and lives in the same module for the same reason the digest keyed off it
+# does: one spelling, used to STAMP a meta below, to recognize our own above,
+# and to name every per-board store under the registry root. Two copies of this
+# expression is how a stamp and its reader drift apart.
+from _board_api import binding_ident as _board_ident
 from _board_api import meta_is_mine as _meta_is_mine
-
-
-def _board_ident():
-    """This binding's identity as the registry spells it. ONE spelling, used
-    both to STAMP a meta below and to recognize our own above — two copies of
-    this expression is how a stamp and its reader drift apart."""
-    if API:
-        # rstrip: _board_api.url() normalizes the same way — one spelling
-        # per board.
-        return ("api:" + env.get("BOARD_API_URL", "").rstrip("/"),
-                env.get("BOARD_REPO", ""))
-    # gh mode needs no repo dimension: the owner/name inside the key IS it.
-    return ("gh:" + B.repo(), "")
 
 
 def MINE(meta):

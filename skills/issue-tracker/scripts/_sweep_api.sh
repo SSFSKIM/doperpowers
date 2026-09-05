@@ -147,11 +147,11 @@ mkdir -p "$DAEMON_HOME"
 # is normalized exactly as the client's api_url() normalizes it, so a binding
 # an override spells with a trailing slash — one service to every request this
 # tick makes — still lands on the one lock rather than a second one.
-_LOCK_KEY="$(T_URL="$BOARD_API_URL" T_REPO="$BOARD_REPO" python3 -c '
-import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
-                                 os.environ["T_REPO"]))
-                     .encode()).hexdigest()[:16])')"
+# THE SAME KEY NAMES THE PER-BOARD STORES under this root (the claim journals,
+# the suppressions, the surface locks), and it is computed in ONE place so the
+# lock and the state it serializes can never disagree about which board they
+# belong to.
+_LOCK_KEY="$(_api_py -c 'import _board_api as A; print(A.binding_digest())')"
 LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone
 # is wrong in both directions: a legitimate tick can run for the better part of
