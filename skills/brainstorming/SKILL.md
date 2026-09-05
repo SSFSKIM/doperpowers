@@ -7,9 +7,15 @@ description: "Use when starting any creative work — creating features, buildin
 
 Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
 
-Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design and get approval.
+Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design at a depth proportionate to the work.
 
-**The gate:** no implementation — code, scaffolding, invoking implementation skills — until a design has been presented and your human partner has approved it. Simple projects too: the design may be three sentences, but it exists and gets a yes — "too simple to need a design" is where unexamined assumptions cause the most wasted work.
+**The gate:** implementation waits when it would commit an unapproved product,
+taste, or substantive design decision. Present those decisions in the design and
+get your human partner's approval first. When the work is already authorized,
+well-scoped, and the remaining choices are technical or mechanical consequences
+of that scope, state the brief design and proceed without another design or
+track-selection approval. Simple projects still get proportionate design
+thought: three sentences may be enough to expose an assumption before work.
 
 ## The path
 
@@ -17,22 +23,22 @@ Work through these in order:
 
 1. **Explore project context** — check files, docs, recent commits
 2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
-3. **Recommend the track, then get confirmation** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); see Choosing the Track below
-4. **Present the design** — one holistic pass, attention-ranked, one approval (see Presenting the Design below)
+3. **Choose and state the track** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); confirmation follows the gate above; see Choosing the Track below
+4. **Present the design** — one holistic pass, attention-ranked; get approval when the gate applies (see Presenting the Design below)
 5. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
 6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 7. **Independent spec review** — dispatch a spec reviewer subagent; evaluate its findings, fix what survives (see below; a child of a composite spec skips this — its track's own review covers the residue)
 8. **Transition to implementation** — invoke doperpowers:writing-plans (a goal routed to decomposing invokes doperpowers:decomposing here instead)
 
-Three exits leave this skill: writing-plans (controlled), execplan (autonomous, on your human partner's explicit choice), or implementing directly in this session (direct track — no spec, no plan; the approved design is the contract, and test-driven-development still applies for testable logic). A fourth exit routes to doperpowers:decomposing when the goal fails its ownability gate — too big for one agent to reliably own as one unit — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and approved here, carrying that design as decomposing's input.
+Three exits leave this skill: writing-plans (controlled), execplan (autonomous), or implementing directly in this session (direct track — no spec, no plan; the brief design is the contract, and test-driven-development still applies for testable logic). A fourth exit routes to doperpowers:decomposing when the goal fails its ownability gate — too big for one agent to reliably own as one unit — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and, when the gate applies, approved here, carrying that design as decomposing's input.
 
 ## The Process
 
 **Understanding the idea:**
 
 - Check out the current project state first (files, docs, recent commits)
-- Before asking detailed questions, assess scope and coupling: brainstorming defines and matures one goal at a time, whatever its size. A goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing) will be divided — but WHEN to hand it over depends on whether its pieces share a design surface. Pieces that don't interact — no shared data, contracts, or decisions that need the whole in view (e.g., "build a platform with chat, file storage, billing, and analytics" as four freestanding products) — are a bundle, not a whole: recommend doperpowers:decomposing immediately, since joint maturation would generate nothing; each child returns through this skill later with its parent section as pre-landed input. Pieces that DO interact are the reason to design before dividing: the interaction surface — shared models, contract shapes, decisions that come out differently with everything in view — is generated in this session or never. Run the full grill and design pass on the whole, regardless of size, and hand the approved design to doperpowers:decomposing, which derives the cut from it. Capture everything the session produces: the spec is the only durable memory this org has — a stale written decision is detectably wrong at child time and flows back, an uncaptured insight is silently gone. Confirm the route with your human partner before switching either way.
-- A goal that arrives as a child of a composite spec (doperpowers:decomposing) carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design. Grill only the residue, against the code; record the residue's decisions in the parent's Decision Log under the child's id; design you produce expands the child's section in place, and a residue design that trips doperpowers:decomposing's split signals means the child is a composite — route it there. The composite's approval covers the section, so present only the residue; the track hint is your recommendation, confirmed like any track. The child writes no spec of its own: its section is its spec, the hint names its exit (a plan child to doperpowers:writing-plans; a brief child implements against its section and brief, keeping the ledger doperpowers:decomposing describes), and the track's own review covers the residue.
+- Before asking detailed questions, assess scope and coupling: brainstorming defines and matures one goal at a time, whatever its size. A goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing) will be divided — but WHEN to hand it over depends on whether its pieces share a design surface. Pieces that don't interact — no shared data, contracts, or decisions that need the whole in view (e.g., "build a platform with chat, file storage, billing, and analytics" as four freestanding products) — are a bundle, not a whole: recommend doperpowers:decomposing immediately, since joint maturation would generate nothing; each child returns through this skill later with its parent section as pre-landed input. Pieces that DO interact are the reason to design before dividing: the interaction surface — shared models, contract shapes, decisions that come out differently with everything in view — is generated in this session or never. Run the full grill and design pass on the whole, regardless of size, and hand the matured design to doperpowers:decomposing, which derives the cut from it. Capture everything the session produces: the spec is the only durable memory this org has — a stale written decision is detectably wrong at child time and flows back, an uncaptured insight is silently gone. State the route; ask for confirmation only when it carries a decision reserved by the gate.
+- A goal that arrives as a child of a composite spec (doperpowers:decomposing) carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design. Grill only the residue, against the code; record the residue's decisions in the parent's Decision Log under the child's id; design you produce expands the child's section in place, and a residue design that trips doperpowers:decomposing's split signals means the child is a composite — route it there. The composite's approval covers the section, so present only the residue; state the track recommendation and apply the same gate as any other track. The child writes no spec of its own: its section is its spec, the hint names its exit (a plan child to doperpowers:writing-plans; a brief child implements against its section and brief, keeping the ledger doperpowers:decomposing describes), and the track's own review covers the residue.
 - For appropriately-scoped projects, run the grill below to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Focus on understanding: purpose, constraints, success criteria
@@ -58,7 +64,14 @@ One more move extends the grill's codebase rule outward — **situate at four ra
 
 Triage the grilling: grill what is fuzzy or important; don't grind an already-clear request to death. Depth has a stopping point, not a size limit: the design is mature when the remaining unknowns are empirical — answerable only by a spike, by implementation contact, or by watching the thing run — and no longer architectural (answerable now from the assembled picture). Answer everything the full view can answer; name the empirical residue in the design as delegated unknowns rather than leaving it implicit.
 
-A design fork with genuinely sound alternatives is a grill question, not presentation material — put it to your human partner when it surfaces, with your recommendation, like any other question. By the time you present the design, the forks the grill could see are already settled; only forks that first emerge while composing the full design survive to the presentation, and those go to the top of its attention ranking.
+A fork that turns on an unapproved product, taste, or substantive design
+decision is a grill question, not presentation material — put it to your human
+partner when it surfaces, with your recommendation. A fork among technical or
+mechanical means within authorized scope is yours: choose the best fit and
+record it as a silent decision. By the time you present the design, the
+human-owned forks the grill could see are already settled; only human-owned
+forks that first emerge while composing the full design survive to the
+presentation, and those go to the top of its attention ranking.
 
 **The contribution duty.** Your human partner's framing of the idea is a starting point, not the boundary of the design space — the partner who initiated it may not see it as fully as you can. You carry expert-level knowledge of nearly every domain an idea touches; spend it on the idea's substance, not only its clarification. Contemplate the idea from angles the framing didn't open and consider what your partner didn't seem to consider; situate it within the project and its standing purpose; illuminate the questions whose answers provide valuable insights to the idea; and offer reasoned opinions of your own that develop and mature the idea. The challenger duty below is this posture's sharpest form — the contribution itself runs throughout the grill.
 
@@ -66,32 +79,36 @@ A design fork with genuinely sound alternatives is a grill question, not present
 
 **Choosing the Track (after the grill):**
 
-Three tracks leave this skill. The controlled track is the rest of this skill: design → spec → doperpowers:writing-plans. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, get approval, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
+Three tracks leave this skill. The controlled track is the rest of this skill: design → spec → doperpowers:writing-plans. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, satisfy the gate when it applies, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
 
-**You recommend the track; your human partner confirms it.** Don't drift silently into controlled, and don't ask an open "which track do you want?" — assess the work, name the track that fits with a one-line reason, and get a yes. This is the same posture as the grill: recommend, then confirm.
+**You choose and state the track.** Assess the work and name the track that fits
+with a one-line reason. When that route follows from already-authorized scope,
+continue into it. Ask your human partner to confirm when the route would commit
+an unapproved product, taste, or substantive design decision; recommend a
+specific route rather than asking an open "which track do you want?"
 
 - Read the shape of the work off the grill and recommend accordingly:
   - **Well-scoped and delegable** — the grill exhausted the open questions and the only remaining unknowns are feasibility ("we won't know until we try," which become prototyping milestones), not taste → **recommend autonomous**.
   - **Large, novel, taste-heavy, or high-stakes** — taste questions keep arising that can't be settled up front, or the work needs human judgment mid-flight → **recommend controlled**.
   - **Narrow and small** — a focused change an engineer would just do (a config tweak, a small bugfix, one thin feature slice), where a spec or ExecPlan would outweigh the work itself → **recommend direct**.
-- State the recommendation and its reason in one message, then wait — e.g. *"This is well-scoped and the open questions are closed, so I'd take the autonomous track (execplan) and run it end to end. Good with that, or would you rather stay controlled?"*
+- State the recommendation and its reason in one message. For authorized technical work, continue — e.g. *"This is well-scoped and the open questions are closed, so I'm taking the autonomous track (execplan) and running it end to end."* When the gate applies, ask a focused confirmation and wait.
 - When in doubt between two tracks, take the heavier one — and the choice
   ratchets one way: complexity discovered mid-flight (a direct task that
   sprouts design questions, hidden scope that turns a bounded change
   architectural) upgrades the track, returning here for the design pass it
   now deserves; never downgrade mid-task.
-- Routing still requires your human partner's explicit confirmation — never route silently, and never treat "just handle it" as the choice. Their explicit yes to autonomous is the approval the gate requires; doperpowers:execplan's contract governs from there.
-- If they override your recommendation, follow their choice. On a confirmed controlled track (whether you recommended it or they chose it), continue this skill.
+- Authorization for the work includes choosing its technical execution route; "just handle it" is sufficient when no reserved decision remains. doperpowers:execplan's contract governs once routed there.
+- If your human partner overrides your recommendation, follow their choice. On the controlled track, continue this skill.
 
 **Presenting the design:**
 
 Once you believe you understand what you're building, present the whole design in one pass. The design itself — the description of the thing you intend to build — is the body of the presentation; the structure around it triages your human partner's attention, so they know which parts need their judgment and which they can skim:
 
-1. **Open forks** (rare) — decisions that first emerged while composing the design and have genuinely sound alternatives. Present each with its candidates, trade-offs, and your recommendation; your human partner decides.
+1. **Open forks** (rare) — human-owned decisions under the gate that first emerged while composing the design and have genuinely sound alternatives. Present each with its candidates, trade-offs, and your recommendation; your human partner decides.
 2. **The design itself** — architecture, components, data flow, error handling, and testing, described in sections scaled to their complexity: a few sentences if straightforward, up to 200-300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, and the reasoning behind the significant calls. Where a section turns on your human partner's taste or domain knowledge, mark it as one to review carefully.
 3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
 
-One approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the grill's frontier logic).
+When the gate applies, one approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the grill's frontier logic).
 
 **Peer review (optional).** When the design genuinely matters — high-stakes,
 novel, or complex enough that an independent perspective would materially
@@ -147,7 +164,7 @@ Fix any issues inline. No need to re-review — just fix and move on.
 **Independent Spec Review:**
 After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review.
 
-From design approval onward, what returns to your human partner is exceptions: a design-level fork the approved design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the approved design is fixed where it stands and logged in the spec's Decision Log.
+Once the gate is satisfied by existing authorization or current approval, what returns to your human partner is exceptions: a design-level fork the design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the design is fixed where it stands and logged in the spec's Decision Log.
 
 **Implementation:**
 

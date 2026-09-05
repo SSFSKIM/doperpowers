@@ -7,11 +7,11 @@ description: Use when taking a well-scoped, delegable piece of work through the 
 
 ## Overview
 
-This repo has two development tracks. The controlled pipeline (doperpowers:brainstorming → living spec → doperpowers:writing-plans → doperpowers:subagent-driven-execution) places human gates throughout. This track places one: a grilling session that front-loads ALL human judgment, after which you author a single self-contained ExecPlan and execute it without interruption. The gate is moved, not removed — autonomy is safe only because the grill exhausted the ambiguity space while your human partner was present.
+This repo has two development tracks. The controlled pipeline (doperpowers:brainstorming → living spec → doperpowers:writing-plans → doperpowers:subagent-driven-execution) keeps human involvement available as design judgment arises. This track front-loads that judgment in one grilling session, after which you author a single self-contained ExecPlan and execute it without interruption. It inherits brainstorming's approval boundary: unresolved product, taste, or substantive design decisions wait for your human partner; already-authorized technical scope proceeds once the grill closes. Autonomy is safe because the grill exhausted the ambiguity space.
 
 ## Which track?
 
-Routing lives in doperpowers:brainstorming's track choice (its grill is this track's Step 1) — you normally arrive here with the grill done and your human partner having explicitly chosen this track.
+Routing lives in doperpowers:brainstorming's track choice (its grill is this track's Step 1) — you normally arrive here with the grill done and its approval boundary satisfied, either by existing authorization for resolved technical work or by your human partner's approval of the product, taste, or substantive design decisions. The route itself needs no separate confirmation.
 
 - **This track**: the work is delegable and the grill can resolve every open question up front. Fits long-running work and durable background daemons.
 - **Controlled track**: taste-heavy, novel, or high-stakes work where design judgment keeps arising mid-flight → doperpowers:brainstorming.
