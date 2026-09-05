@@ -653,4 +653,37 @@ t  "and the same binding still excludes itself" \
   "another api sweep holds the lock" SW renew
 rm -rf "$DH/.sweep-api.$(lock_key testrepo).lock"
 
+# =========================================================================
+# THE LOCK KEY CHANGED SHAPE, AND THE CHANGEOVER IS ITS OWN RACE. dp#36 gave
+# the key the `api:` prefix so the lock and the stores it serializes are named
+# by one identity. A tick started by the PREVIOUS version is holding the OLD
+# name, and a tick that looked only at the new one would run beside it — the
+# concurrent tick this lock exists to prevent, on the one day the upgrade
+# lands. So a LIVE owner under the old name holds this tick back too. A dead
+# one does not: nothing writes that name again, so an obeyed leftover would
+# stop every later tick on this board forever.
+# =========================================================================
+legacy_lock_key() {  # the pre-dp#36 hash — url and repo, no board prefix
+  T_URL="http://127.0.0.1:$PORT" T_REPO="$1" python3 -c '
+import hashlib, os
+print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
+                                 os.environ["T_REPO"]))
+                     .encode()).hexdigest()[:16])'
+}
+: > "$FIX.log"
+OLDLK="$DH/.sweep-api.$(legacy_lock_key testrepo).lock"
+rm -rf "$OLDLK"; mkdir "$OLDLK"
+printf '%s\n' "$$" > "$OLDLK/owner"
+started_now > "$OLDLK/owner-start"
+t  "a live pre-upgrade tick still holds this one back" \
+   "another api sweep holds the lock"  SW renew
+nt "and it sends nothing"              '"method"'  cat "$FIX.log"
+# This shell is alive, so the pid answers; the recorded start belongs to the
+# sweep that died under that number. Provably a different process.
+printf '%s:%s\n' "$FMT" "Thu Jan  1 00:00:00 2000" > "$OLDLK/owner-start"
+: > "$FIX.log"
+nt "while a leftover under the old name is ignored, not obeyed" \
+   "another api sweep holds the lock"  SW renew
+rm -rf "$OLDLK" "$DH/.sweep-api.$(lock_key testrepo).lock"
+
 finish

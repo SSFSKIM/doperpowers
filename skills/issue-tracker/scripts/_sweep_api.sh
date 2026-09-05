@@ -281,6 +281,28 @@ _owner_live() {  # <pid> <recorded start ('' = unknown)>
       [ "$now" = "$2" ] ;;
   esac
 }
+# ROLLOUT GUARD, ONE RELEASE WIDE. The key gained its `api:` prefix when the
+# stores took it up (dp#36), so a tick started by the PREVIOUS version of this
+# script is holding `.sweep-api.<legacy digest>.lock` — and this one would take
+# a different directory and run beside it, which is the concurrent tick the
+# lock exists to prevent, on the one day the upgrade lands. A LIVE owner under
+# the old name therefore holds this tick back exactly as the keyed lock does.
+# A DEAD one does not, and that half matters just as much: nothing writes the
+# old name again, so an obeyed leftover would stop every later tick on this
+# board forever, with no renewal, no relay, no resume and no dispatch. Remove
+# this block once no host can still be running the pre-dp#36 sweep.
+_LEGACY_LOCK="$DAEMON_HOME/.sweep-api.$(_api_py -c '
+import hashlib
+import _board_api as A
+print(hashlib.sha256(("%s|%s" % (A.api_url(), A.repo())).encode()).hexdigest()[:16])').lock"
+if [ -d "$_LEGACY_LOCK" ]; then
+  _legacy_owner="$(cat "$_LEGACY_LOCK/owner" 2>/dev/null || true)"
+  if [ -n "$_legacy_owner" ] \
+     && _owner_live "$_legacy_owner" \
+                    "$(cat "$_LEGACY_LOCK/owner-start" 2>/dev/null || true)"; then
+    echo "another api sweep holds the lock — exiting"; exit 0
+  fi
+fi
 if ! _take_lock; then
   _lock_owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
   _lock_start="$(cat "$LOCK/owner-start" 2>/dev/null || true)"
