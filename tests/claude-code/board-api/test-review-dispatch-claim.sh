@@ -57,17 +57,21 @@ spawn) ;;
 *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
 name="$1"; task="$2"; shift 2
-cwd=""; wt=""; model=""
+cwd=""; wt=""; model=""; role=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) cwd="$2"; shift 2 ;;
     --worktree) wt="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
+    # --role is parsed and PERSISTED, like the real spawn's launch dict: it is
+    # the only thing a pre-bind record says about whose seat this is, so a stub
+    # that dropped it would make every fixture record look undispatched.
+    --role) role="$2"; shift 2 ;;
     --wait|--no-wait) shift ;;
     *) shift ;;
   esac
 done
-{ echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model"
+{ echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model role=$role"
   env | grep '^BOARD_' | sort || true
   echo "GW settings=[${DAEMON_CLAUDE_SETTINGS-unset}] effort=[${DAEMON_CLAUDE_EFFORT-unset}]"
 } >> "$DAEMON_HOME/spawn-capture.txt"
@@ -75,11 +79,11 @@ printf '%s' "$task" > "$DAEMON_HOME/prompt-$name.md"
 n=$(cat "$DAEMON_HOME/.spawncount" 2>/dev/null || echo 0); n=$((n + 1))
 echo "$n" > "$DAEMON_HOME/.spawncount"
 uuid="$(printf 'bbbb%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" R="$role" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
 json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
-           "status": "working", "updated": "2026-08-09T00:00:00Z"},
+           "role": os.environ["R"], "status": "working", "updated": "2026-08-09T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 # The worker's first protocol action is the BINDING BARRIER: wait for the
@@ -147,7 +151,8 @@ cat > "$FIX2" <<'JSON'
           "body":"replayed review","parentPin":null}},
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/55/bind","status":200,"body":{"bound":true}},
- {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}}
+ {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/66/end","status":200,"body":{"ended":true}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX2" "$PORT2" & MOCK2=$!
@@ -183,6 +188,16 @@ t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" 
 # --- the worker's environment: the run credentials it cannot review without -
 t "worker got the run bearer" "BOARD_RUN_TOKEN=tok-q"                cat "$DH/spawn-capture.txt"
 t "worker got the run id"     "BOARD_RUN_ID=51"                      cat "$DH/spawn-capture.txt"
+# THE SEAT SAYS AT BIRTH WHAT IT WAS LAUNCHED FOR. `sminos spawn` writes `role`
+# into the launch dict, so it is on the record BEFORE the bind — and it is the
+# only thing a pre-bind record carries that separates a dispatched worker from
+# an operator's own session. The client fails a dispatched worker closed when
+# its bind never lands, instead of letting it write as the operator (dp#35), so
+# this flag is load-bearing rather than bookkeeping.
+t "the spawn declares the role the seat was launched for" "role=QAGENT" \
+  cat "$DH/spawn-capture.txt"
+spawned_meta() { cat "$DH"/bbbb0001-*.json; }
+t "and it is on the record before any bind" '"role": "QAGENT"' spawned_meta
 t "fence exported"            "BOARD_RUN_FENCE=2"                    cat "$DH/spawn-capture.txt"
 t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
 # THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
@@ -398,23 +413,31 @@ t "and the delivery it confirms clears the ticket's failed-cycle count" \
 t "another lane's journal is left untouched" '"run_id": 77, "spawn_completed": false' \
   cat "$DH2/board-claims/nonce-d.json"
 # --- (e) a spawned-but-unbound run is never ended --------------------------
-nt "a live unbound run is NOT ended" '"path": "/runs/66/end"' cat "$FIX2.log"
-t  "its journal is kept, closed to replay" '"spawn_completed": true' \
-  cat "$DH2/board-claims/nonce-e.json"
-t  "and the orphaned session is reported by name" "33-api-qagent" cat "$OUT2"
-t  "the report says the run was not ended"        "is NOT being ended" cat "$OUT2"
-# The ticket must not reach a second reviewer: no end means the server lease
-# still holds #33, and reconcile itself spawns nothing for it.
-nt "the ticket is not re-dispatched" "name=33-api-qagent" cat "$DH2/spawn-capture.txt"
+# --- (e) an unbound worker cannot speak for its run, so neither is kept ---
+# A spawn that landed with no bind leaves a worker holding NOTHING: `claude
+# --bg` dropped the env prefix, no bearer ever reached its record, and every
+# verb it runs would go out as the OPERATOR — unfenced, on a ticket its own
+# claimed run still owns (dp#35). Leaving it live was the old answer, and it
+# rested on a premise this ticket disproved: that the worker still had its
+# bearer in its environment. Retired, released, and the journal dropped with it.
+t  "an unbound worker's run IS ended" '"path": "/runs/66/end"' cat "$FIX2.log"
+t  "and ended as abandoned"           '\"reason\": \"abandoned\"' cat "$FIX2.log"
+t  "the orphaned session is retired by name" "retire 33-api-qagent" \
+   cat "$DH2/spawn-capture.txt"
+t  "the report says why it could never work"  "can never speak for the run" cat "$OUT2"
+t  "and its journal is dropped"  "gone" gone "$DH2/board-claims/nonce-e.json"
+# The ticket must not reach a second worker from THIS pass: the release is what
+# frees it, and reconcile itself spawns nothing.
+nt "reconcile re-dispatches nothing for it" "name=33-api-qagent" cat "$DH2/spawn-capture.txt"
 # --- (f) a corrupt journal is loud, not invisible ---------------------------
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-f.json"       cat "$OUT2"
 t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-f.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
-# bind, and the stranded run's end. Nothing more — the reconciled worker plus
-# the replayed one fill the cap of 2, so the fresh-claim loop never opens. A
-# repaired marker sends nothing (no end for its live run 51), and no foreign
-# lane appears on the wire at all.
+# bind, the stranded run's end and the UNBOUND worker's. Nothing more — the
+# reconciled worker plus the replayed one fill the cap of 2, so the fresh-claim
+# loop never opens. A repaired marker sends nothing (no end for its live run
+# 51), and no foreign lane appears on the wire at all.
 wire_summary() {
   printf 'posts=%s ends51=%s ends77=%s foreign=%s\n' \
     "$(grep -c '"method"' "$FIX2.log" || true)" \
@@ -422,7 +445,7 @@ wire_summary() {
     "$(grep -c '/runs/77/end' "$FIX2.log" || true)" \
     "$(grep -cF '\"lane\": \"implementer\"' "$FIX2.log" || true)"
 }
-t "reconcile sends only what it must" "posts=3 ends51=0 ends77=0 foreign=0" wire_summary
+t "reconcile sends only what it must" "posts=4 ends51=0 ends77=0 foreign=0" wire_summary
 
 # =========================================================================
 # Scenario 3 — a REGISTRY meta nobody can read. A meta is the only evidence

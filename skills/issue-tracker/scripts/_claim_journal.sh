@@ -328,15 +328,24 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         with open(p, "w") as f:
             json.dump(j, f)
         print("repaired\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, ticket))
-    elif run and daemon and daemon in names:
+    elif run and daemon and daemon in names and not alive(j.get("pid")):
         # A session by that name exists but no meta carries the run: the spawn
-        # landed and the bind did not. The worker is alive with its bearer in
-        # its environment, so the run is NOT ended and the ticket is NOT freed.
-        # The journal is closed to replay and left as the record.
-        j["spawn_completed"] = True
-        with open(p, "w") as f:
-            json.dump(j, f)
+        # landed and the bind did not. That worker holds NOTHING — `claude --bg`
+        # drops the spawn env prefix before its own shells run, and the bind is
+        # what would have put a bearer at rest — so it can never act as the run,
+        # and every verb it runs would go out as the operator instead (dp#35).
+        # It is retired and the run released, like `stranded`.
+        #
+        # THE WRITER MUST BE DEAD, for the same reason that arm says so: this
+        # one now retires a session, and a peer dispatcher between its own spawn
+        # and its own bind has exactly this journal. Nothing is sealed here
+        # either — a release that fails must leave the journal open, or the
+        # retry handle is gone.
         print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, daemon))
+    elif run and daemon and daemon in names:
+        # The same shape with the writer STILL ALIVE: a peer mid-handover, in
+        # the seconds between its spawn and its bind. Left entirely alone.
+        print("inflight\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, j.get("pid")))
     elif run and blind:
         print("held\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
     elif (time.time() - os.path.getmtime(p) < grace) and alive(j.get("pid")):
@@ -390,7 +399,27 @@ PY
           echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
         fi ;;
       orphaned)
-        echo "reconcile: $nonce spawned $extra for run $run but never bound it — the session is live and is NOT being ended; it has no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" ;;
+        # The bind is what puts a bearer at rest, and `claude --bg` dropped the
+        # one on the spawn prefix — so this worker can never speak for the run,
+        # and every verb it runs would act as the operator on a ticket its own
+        # claimed run still owns. Leaving it live was the older answer and it
+        # rested on the opposite premise (that the bearer was in its
+        # environment). Retire it, release the run, drop the journal — the
+        # `stranded` shape, for the same reason.
+        #
+        # The retire is best-effort by name, and it does not have to land for
+        # this to be safe: the client refuses to resolve any principal at all on
+        # a dispatched seat whose bind never landed, so an orphan that outlives
+        # its retirement can still only stop, never write as somebody else.
+        # There is nothing to strip locally — a record carrying the run is what
+        # would have made this `repaired` rather than `orphaned`.
+        echo "reconcile: $nonce spawned $extra for run $run but never bound it — that worker can never speak for the run (no bearer reached it and none is at rest), so retiring it and releasing the run rather than leaving it to write as the operator" >&2
+        _claim_retire_worker "$extra"
+        if _claim_end_run "$run" abandoned; then
+          _claim_drop_journal "$nonce"
+        else
+          echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
+        fi ;;
       held)
         echo "reconcile: $nonce claimed run $run — holding it; the registry has an unreadable meta, so a live session cannot be ruled out. The server lease reclaim owns this one." >&2 ;;
       inflight)
