@@ -429,3 +429,13 @@ in_repo() { (cd "$REPO" && env HOME="$DRILL_HOME" DAEMON_HOME="$DAEMON_HOME" \
 
 # The sweep, one phase at a time, in that same world.
 sweep() { in_repo "$SCRIPTS/_sweep_api.sh" "$@"; }
+
+# The per-binding subdirectory a machine-global registry store files under.
+# $DAEMON_HOME is shared by every board a machine runs, so `board-claims`,
+# `board-suppress` and `surface-locks` each live under one digest of the binding
+# (dp#36). Resolved through the toolkit's OWN resolver, in the drill's bound
+# checkout, so a drill path cannot disagree with what the product writes — a
+# drill that spelled the digest itself would pass on its own arithmetic.
+drill_store_dir() {  # drill_store_dir <store name>
+  in_repo bash -c ". '$SCRIPTS/_binding.sh'; board_store_dir '$1'"
+}
