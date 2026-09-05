@@ -1627,6 +1627,20 @@ _attempts() {  # <ticket> reset|fail [run-to-release]
     [ -z "$SUPPRESS_LEGACY" ] || rm -f "$SUPPRESS_LEGACY/.attempts-$1"
     return 0
   fi
+  # A COUNT FROM BEFORE THE KEY IS CARRIED, NOT RESTARTED. The ladder is three
+  # failed cycles to an escalation, so a ticket that had already spent two under
+  # the flat store would be handed a fresh three — two more churning cycles on a
+  # ticket the fleet has already proved it cannot recover. Carried on the first
+  # keyed increment; the flat copy goes with it, so it is carried once.
+  if [ ! -f "$f" ] && [ -n "$SUPPRESS_LEGACY" ] \
+     && [ -f "$SUPPRESS_LEGACY/.attempts-$1" ]; then
+    # A carry that FAILED is not a carry: the flat copy stays, and the next
+    # increment tries again rather than the count being lost between the two.
+    # `|| true` because this whole block is the last command in the `if`, and
+    # `set -e` would otherwise make an unreadable leftover fatal to the tick.
+    { cp "$SUPPRESS_LEGACY/.attempts-$1" "$f" 2>/dev/null \
+        && rm -f "$SUPPRESS_LEGACY/.attempts-$1"; } || true
+  fi
   n="$(( $(cat "$f" 2>/dev/null || echo 0) + 1 ))"
   echo "$n" > "$f"
   # An undeliverable successor run must not squat the ticket until its lease

@@ -1349,6 +1349,26 @@ t  "and asked for the second carrying the cursor verbatim" \
    "\"path\": \"/tickets?limit=200&repo=testrepo&cursor=$KC\""       cat "$RLOG"
 
 # =========================================================================
+# A COUNT FROM BEFORE THE KEY IS CARRIED, NOT RESTARTED. The ladder is three
+# failed cycles to an env-issue escalation, and a ticket that had already spent
+# two under the flat store would be handed a fresh three — two more churning
+# cycles on a ticket the fleet has already proved it cannot recover, and the
+# escalation an operator is waiting on postponed by two ticks. Carried on the
+# first keyed increment, and the flat copy goes with it.
+# =========================================================================
+rboard "$KFIX"
+LKDH="$TDIR/dh-legacy-attempts"; mkdir -p "$LKDH/board-suppress"
+printf '2\n' > "$LKDH/board-suppress/.attempts-12"
+OUTLK="$TDIR/legacy-attempts.out"
+RSW "$LKDH" > "$OUTLK" 2>&1 || true
+t  "a flat legacy count lands on the rung it had reached" \
+   "recovery cycle 3 of 3"                              cat "$OUTLK"
+t  "so this very tick escalates rather than starting over" \
+   "escalated #12 → env-issue #94 (suppressed)"         cat "$OUTLK"
+t  "and the flat copy does not outlive the carry" "gone" \
+   bash -c "[ -e '$LKDH/board-suppress/.attempts-12' ] && echo still-there || echo gone"
+
+# =========================================================================
 # THE SUCCESSOR JOURNAL IS THIS BOARD'S, NOT THIS MACHINE'S. The registry root
 # is machine-global; a successor nonce is a handoff between one sweep and one
 # board. Reconciling a neighbour repo's unfinished handoff releases its run and
