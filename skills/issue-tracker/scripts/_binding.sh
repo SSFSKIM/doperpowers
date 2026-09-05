@@ -51,8 +51,24 @@ if [ -z "${BOARD_ROOT:-}" ]; then
   BOARD_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || { echo "error: not inside a git repo" >&2; return 1 2>/dev/null || exit 1; }
 fi
-if [ -f "$BOARD_ROOT/.doperpowers/board.json" ]; then
-  _binding_line="$(python3 - "$BOARD_ROOT/.doperpowers/board.json" <<'PY'
+# The main checkout's .git, always — in a plain checkout it is "$BOARD_ROOT/.git",
+# and in a linked worktree it is still the main checkout's, which is the only
+# stable identity a worktree has. Empty when BOARD_ROOT is no checkout at all:
+# that is a repo with no board and no credentials slug, not a fatal, and the
+# `git` failure must not take the caller down before the binding is decided.
+_board_common_dir="$(git -C "$BOARD_ROOT" rev-parse --path-format=absolute \
+  --git-common-dir 2>/dev/null || true)"
+_board_config="$BOARD_ROOT/.doperpowers/board.json"
+# A LINKED WORKTREE READS THE MAIN CHECKOUT'S FILE WHEN IT HAS NONE OF ITS OWN.
+# board.json is committed, so a worktree at a current head carries it — but a
+# worker checks out the head it was DISPATCHED for, and a head predating that
+# commit has no file at all. The answer was a silent gh: the first board
+# command spoke to the fork's GitHub issues, and a write would have landed on
+# an unrelated one. The repo is one binding wherever it is checked out from.
+[ -f "$_board_config" ] || [ -z "$_board_common_dir" ] \
+  || _board_config="$(dirname "$_board_common_dir")/.doperpowers/board.json"
+if [ -f "$_board_config" ]; then
+  _binding_line="$(python3 - "$_board_config" <<'PY'
 import json, sys
 try:
     cfg = json.load(open(sys.argv[1]))
@@ -103,12 +119,13 @@ PY
 fi
 # Credentials slug: the repo's stable identity, NOT the checkout directory.
 # In a linked worktree --show-toplevel is the worktree dir (usually a branch
-# name), which would name a token file nobody ever wrote; --git-common-dir is
-# always <main-checkout>/.git, and in a plain checkout it is "$BOARD_ROOT/.git",
-# so the same expression serves both. An inherited/exported override still wins.
+# name), which would name a token file nobody ever wrote, so the common dir
+# derived above is what names the file — the same identity the binding was just
+# read from. A root that is no checkout has none and names itself. An
+# inherited/exported override still wins.
 if [ -z "${BOARD_CREDENTIALS_FILE:-}" ]; then
-  _board_common_dir="$(git -C "$BOARD_ROOT" rev-parse --path-format=absolute --git-common-dir)"
-  BOARD_CREDENTIALS_FILE="$HOME/.arkho-board/$(basename "$(dirname "$_board_common_dir")").env"
+  BOARD_CREDENTIALS_FILE="$HOME/.arkho-board/$(basename \
+    "$(dirname "${_board_common_dir:-$BOARD_ROOT/.git}")").env"
 fi
 # Only the binding is exported. BOARD_ROOT, BOARD_API_URL, BOARD_CREDENTIALS_FILE
 # and BOARD_REPO are repo-scoped: exporting them would let a descendant that
