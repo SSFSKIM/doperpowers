@@ -148,8 +148,15 @@ PY
 # names (`<ticket>-api-<lane>`) already carry it, so it keeps its spelling.
 CLAIM_LANES=architect,implementer,spike
 _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
+# REMOVED FROM WHEREVER IT LIVES. The journals are keyed by binding now, but a
+# journal written before that key sits flat under the registry root and is
+# still read by reconciliation — a drop that only cleared the keyed path would
+# replay it forever.
 _claim_drop_journal() {  # <nonce>
-  rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
+  local d
+  for d in "$(_claim_dir)" "$(_claim_dir_legacy)"; do
+    rm -f "$d/$1.json" "$d/$1.body.md"
+  done
 }
 # RETURNS THE CLI'S STATUS. The reconciler's orphan arm ends a run only when
 # the worker it belongs to is actually stopped — swallowed, a failed retire read
@@ -209,8 +216,18 @@ PY
 # (it writes these files; we only read them). A claim is the only way to learn
 # WHICH ticket the server picked, so suppression can only be honored after the
 # fact — by handing the run straight back.
-_api_suppress_dir() { echo "${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}"; }
-_api_suppressed() { [ -f "$(_api_suppress_dir)/$1.json" ]; }
+# KEYED BY BINDING, because a suppression is keyed by TICKET NUMBER and ticket
+# numbers repeat across boards: ticket 9 suppressed in one repo suppressed
+# ticket 9 in its neighbour. An operator BOARD_SUPPRESS_DIR is honoured
+# verbatim — an override is already binding-specific by construction, and
+# splitting it would put the writer and the reader in different directories.
+_api_suppress_dir() { echo "${BOARD_SUPPRESS_DIR:-$(board_store_dir board-suppress)}"; }
+# Keyed first, then the flat records that predate the key — ours by the same
+# argument, and draining, since every new suppression is written keyed.
+_api_suppressed() {
+  if [ -f "$(_api_suppress_dir)/$1.json" ]; then return 0; fi
+  [ -z "${BOARD_SUPPRESS_DIR:-}" ] && [ -f "$DAEMON_HOME/board-suppress/$1.json" ]
+}
 
 # The same sweep's resume phase records every ticket it already attempted a
 # recovery for THIS TICK. A replay that faulted leaves its ticket unowned, so
@@ -228,7 +245,10 @@ _api_tick_ledgered() {
 # fault two rungs early. Called from the bind side ONE LINE AHEAD of the
 # journal's durable mark, so the only crash that can skip it is the one
 # reconciliation still sees (`repaired`), which clears it there.
-_api_attempts_clear() { rm -f "$(_api_suppress_dir)/.attempts-$1"; }
+_api_attempts_clear() {
+  rm -f "$(_api_suppress_dir)/.attempts-$1"
+  [ -n "${BOARD_SUPPRESS_DIR:-}" ] || rm -f "$DAEMON_HOME/board-suppress/.attempts-$1"
+}
 _claim_suppress_dir() { _api_suppress_dir; }
 
 _api_end_run() {  # <run-id> <reason> — best-effort release of a claimed run
@@ -252,7 +272,8 @@ PY
 #         and a second lane claimed now would run beside the replayed one,
 #         over the combined cap.
 _claim_one_with_nonce() {  # <lane> <nonce> <lane-cap>
-  local lane="$1" nonce="$2" cap="$3" claims_dir="$DAEMON_HOME/board-claims"
+  local lane="$1" nonce="$2" cap="$3" claims_dir
+  claims_dir="$(_claim_dir)"
   local body_file="$claims_dir/$nonce.body.md" exports
   mkdir -p "$claims_dir"
   # The nonce is journalled BEFORE the POST. A crash between the two leaves a
@@ -475,7 +496,6 @@ _claim_one() {  # <lane> <lane-cap>
 
 dispatch_api() {
   local rc
-  mkdir -p "$DAEMON_HOME/board-claims"
   _reconcile_claims
   # Local cap first (the registry), the server's laneCap as the belt: if a
   # lane stamp is ever lost the count cannot rise, and laneCap is then the

@@ -4,13 +4,19 @@
 # is reconciled afterwards. Sourced by execute-dispatch.sh and
 # review-dispatch.sh, which had verbatim copies of both halves.
 #
-# THE JOURNAL DIRECTORY IS SHARED ($DAEMON_HOME/board-claims) and every entry
+# THE JOURNAL DIRECTORY IS SHARED BY THIS BOARD'S DISPATCHERS and every entry
 # names its lane. A dispatcher touches only its OWN lanes: replaying a qagent
 # nonce from the implement side would hand a review assignment an executor
 # prompt, and ending a qagent run would strand the review dispatcher's ticket.
 # A lane nobody recognizes is skipped for the same reason — not acting is the
 # safe direction. The sweep's `successor` lane is outside both, and the sweep
 # reconciles it itself.
+#
+# SHARED BY THIS BOARD'S, NOT BY THIS MACHINE'S. The registry root is
+# machine-global, so the journals live in a per-binding subdirectory of it. A
+# nonce is a handoff between one dispatcher and one board; classifying a
+# neighbour repo's unfinished handoff as `end`/`replay`/`orphaned` retires its
+# worker and ends its run.
 #
 # _claim_nonce needs nothing. _reconcile_claims needs all of:
 #   CLAIM_LANES                  comma-separated lanes this dispatcher owns
@@ -22,7 +28,25 @@
 #   _claim_suppress_dir          print the suppression directory (the sweep's
 #                                failed-cycle counts live beside its records)
 #   _api_py                      the API-client python runner (_binding.sh)
+#   board_store_dir              the keyed store resolver (_binding.sh)
 #   DAEMON_HOME                  registry root
+
+# The journal directory for THIS binding, and the flat one a journal written
+# before the key still lives in. Resolved on demand rather than at source time:
+# both dispatchers source this file unconditionally, and in gh mode BOARD_REPO
+# is not resolved until much further down their own scripts.
+_claim_dir() { board_store_dir board-claims; }
+# READ, NEVER WRITTEN. Only one binding on this machine ran daemons before the
+# key existed, so a flat record is ours by the same argument meta_is_mine makes
+# for an unstamped seat record. It drains: nothing adds to it.
+_claim_dir_legacy() { printf '%s\n' "$DAEMON_HOME/board-claims"; }
+# The flat copy of a nonce, dropped once the keyed store holds the live record
+# for it. Only the replay arm needs this: every other arm that finishes a
+# journal goes through _claim_drop_journal, which clears both stores.
+_claim_drop_legacy() {  # <nonce>
+  local d; d="$(_claim_dir_legacy)"
+  rm -f "$d/$1.json" "$d/$1.body.md"
+}
 
 # The nonce a claim is filed under. uuidgen is NOT a declared dependency of
 # anything else here and a host without util-linux has none of it; python3 is
@@ -178,8 +202,17 @@ _reconcile_claims() {
   if [ "${BOARD_BINDING:-gh}" = api ]; then
     _cj_board="api:$BOARD_API_URL"; _cj_repo="${BOARD_REPO:-}"
   fi
+  # The store directories are RESOLVED HERE and handed over, the way the
+  # registry root already is — a python block that resolved its own would be a
+  # second copy of the binding rule, free to disagree with the writers'.
+  # An operator BOARD_SUPPRESS_DIR is binding-specific by construction, so
+  # when one is set there is no flat half to read.
+  local _cj_suppress_legacy=""
+  [ -n "${BOARD_SUPPRESS_DIR:-}" ] || _cj_suppress_legacy="$DAEMON_HOME/board-suppress"
   actions="$(T_DHOME="$DAEMON_HOME" T_LANES="$CLAIM_LANES" \
              T_SUPPRESS="$(_claim_suppress_dir)" \
+             T_SUPPRESS_LEGACY="$_cj_suppress_legacy" \
+             T_CLAIMS="$(_claim_dir)" T_CLAIMS_LEGACY="$(_claim_dir_legacy)" \
              T_BOARD="$_cj_board" T_BOARD_REPO="$_cj_repo" \
              T_GRACE="${BOARD_CLAIM_INFLIGHT_GRACE:-120}" _api_py - <<'PY'
 import glob, json, os, time
@@ -187,6 +220,7 @@ from _board_api import meta_is_mine
 home = os.environ["T_DHOME"]
 lanes = set(os.environ["T_LANES"].split(","))
 suppress = os.environ.get("T_SUPPRESS") or ""
+suppress_legacy = os.environ.get("T_SUPPRESS_LEGACY") or ""
 grace = float(os.environ["T_GRACE"])
 # run id -> the uuid of the meta carrying it. The uuid is needed by the
 # `stranded` arm, which has a worker to retire and not merely a run to end.
@@ -232,7 +266,14 @@ def alive(pid):
 # cannot occur in a nonce, a lane, a run id or a pid.
 for p in blind:
     print("unreadable\x1f%s\x1f\x1f\x1f" % p)
-for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
+# BOTH DIRECTORIES ARE READ, ONE IS WRITTEN. The keyed one belongs to this
+# binding; the flat one holds journals written before the store was keyed,
+# which are ours because only one binding on this machine ran daemons then.
+# Nothing adds to the flat one, so it drains and the branch goes with it.
+claim_paths = []
+for d in (os.environ["T_CLAIMS"], os.environ["T_CLAIMS_LEGACY"]):
+    claim_paths.extend(glob.glob(os.path.join(d, "*.json")))
+for p in sorted(claim_paths):
     try:
         j = json.load(open(p))
     except Exception:
@@ -294,6 +335,15 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         ticket = str(j.get("ticket") or "")
         failed = ""
         if ticket and suppress:
+            # A count written before the store was keyed sits flat under the
+            # root. Best-effort and first: the keyed removal below is the one
+            # whose failure decides whether this journal may be sealed.
+            if suppress_legacy:
+                try:
+                    os.remove(os.path.join(suppress_legacy,
+                                           ".attempts-" + ticket))
+                except OSError:
+                    pass
             try:
                 os.remove(os.path.join(suppress, ".attempts-" + ticket))
             except FileNotFoundError:
@@ -450,7 +500,13 @@ PY
         # The nonce persisted but no run id ever did: the response was lost in
         # flight. Replaying THIS nonce is the only legal replay there is.
         echo "reconcile: $nonce never reached a run — replaying the claim"
-        _claim_one_with_nonce "$lane" "$nonce" "$(_claim_lane_cap "$lane")" || true ;;
+        _claim_one_with_nonce "$lane" "$nonce" "$(_claim_lane_cap "$lane")" || true
+        # A REPLAY RE-JOURNALS THE NONCE IN THE KEYED STORE, as its first act
+        # and ahead of its own POST, so by here the live record for this nonce
+        # is there (or the claim is over and there is none). The flat copy this
+        # row was read from is redundant either way — and left standing it
+        # would be replayed again on every later tick, forever.
+        _claim_drop_legacy "$nonce" ;;
     esac
   done
 }

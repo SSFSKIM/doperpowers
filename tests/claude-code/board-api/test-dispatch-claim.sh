@@ -152,13 +152,28 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
+# THE STORES UNDER THAT ROOT ARE KEYED BY BINDING. $DAEMON_HOME is
+# machine-global and a board is not, so the claim journals live in a
+# per-binding subdirectory of it; fixtures resolve the path the way the scripts
+# do rather than spelling out a digest.
+CL="$(store_dir "$DH" board-claims "$PORT")"
 OUT="$(mktemp)"
 # A standing failed-cycle count for the ticket this claim will yield. Only the
 # sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
 # stale count and a much later, unrelated fault escalated early. A delivered
 # recovery is a recovery, whichever phase delivered it.
+# PLANTED FLAT, under the store root rather than under this binding's key: a
+# count written before the stores were keyed. It is ours by the same argument
+# an unstamped seat record is — only one binding on this machine ran daemons
+# then — so a clear still has to reach it.
 mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-12"
 plant_foreign "$DH" "$PORT"
+# A NEIGHBOUR REPO'S SUPPRESSION OF TICKET 12, planted under ITS key. A
+# suppression is keyed by ticket NUMBER and ticket numbers repeat across
+# boards, so flat under the root this record suppressed our ticket 12 as well
+# as theirs — the claim below would have been handed straight back.
+printf '{"ticket": 12, "state": "in-progress", "env_issue": 90}\n' \
+  > "$(store_dir "$DH" board-suppress "$PORT" otherrepo)/12.json"
 # A board-scripts overlay whose board-bind.sh SNAPSHOTS the claim journal at the
 # instant it runs and then execs the real one. Ordering is only observable from
 # INSIDE that window — after the fact every order looks the same.
@@ -167,7 +182,7 @@ for _f in "$SCRIPTS"/*; do ln -s "$_f" "$BSOVL/$(basename "$_f")"; done
 rm -f "$BSOVL/board-bind.sh"
 cat > "$BSOVL/board-bind.sh" <<EOF
 #!/usr/bin/env bash
-cp -R "\$DAEMON_HOME/board-claims" "\$DAEMON_HOME/claims-at-bind" 2>/dev/null || true
+cp -R "$CL" "\$DAEMON_HOME/claims-at-bind" 2>/dev/null || true
 exec "$SCRIPTS/board-bind.sh" "\$@"
 EOF
 chmod +x "$BSOVL/board-bind.sh"
@@ -183,9 +198,11 @@ chmod +x "$BSOVL/board-bind.sh"
     "$DISPATCH" --sweep ) > "$OUT" 2>&1 || true
 
 t "the granted claim is reported" "claimed #12 run=41 lane=architect" cat "$OUT"
+nt "a neighbour board's suppression of the same ticket number does not bind us" \
+   "#12 is suppressed" cat "$OUT"
 nt "api dispatch never invokes gh" "GH-CALLED" cat "$MARKER"
 attempts12() { [ -e "$DH/board-suppress/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
-t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" attempts12
+t "a delivered dispatch clears a flat legacy failed-cycle count" "count cleared" attempts12
 
 # --- the worker's environment: the run credentials it cannot run without ----
 t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/spawn-capture.txt"
@@ -227,11 +244,11 @@ t "architect route pins the architect model" "model=fable"            cat "$DH/s
 
 # --- the claim journal: the crash-recovery record --------------------------
 t "claim journal marks the spawn complete" '"spawn_completed": true' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 t "claim journal carries the run id"       '"run_id": 41' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 t "claim journal carries the lane"         '"lane": "architect"' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 # THE HANDOFF IS DONE ONLY AFTER THE BIND. Marked ahead of it, a crash in that
 # window left a journal saying "handed off" over a meta holding no run
 # credential and no locator — reconciliation skips a completed journal, so
@@ -251,7 +268,7 @@ t "the parent pin reaches the worker prompt" "#7 @ event 118" \
 t "and lands in the registry meta"          '"parent_pin": "#7 @ event 118"' \
   bash -c "grep -l parent_pin '$DH'/*.json | head -1 | xargs cat"
 t "assignment body written beside it"      "build it" \
-  bash -c "cat '$DH'/board-claims/*.body.md"
+  bash -c "cat '$CL'/*.body.md"
 # The journal filename IS the nonce that went on the wire — that identity is
 # the whole reconciliation mechanism, so pin it rather than assume it.
 nonce_on_wire() {
@@ -260,7 +277,7 @@ nonce_on_wire() {
 }
 NONCE="$(nonce_on_wire || true)"
 t "the journal is filed under the nonce that went on the wire" "journal=yes" \
-  bash -c "[ -f '$DH/board-claims/$NONCE.json' ] && echo journal=yes || echo journal=no"
+  bash -c "[ -f '$CL/$NONCE.json' ] && echo journal=yes || echo journal=no"
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names its lane"        '\"lane\": \"architect\"'    cat "$FIX.log"
@@ -308,7 +325,7 @@ t "the bearer is stored at rest" '"run_bearer": "tok-w"' meta
 prompt() { cat "$DH/prompt-12-api-architect.md"; }
 t  "the worker is told its role and ticket" "ARCHITECT worker for ticket #12" prompt
 t  "the ticket url points at the board api" "http://127.0.0.1:$PORT/tickets/12" prompt
-t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
+t  "the assignment file is pinned in the prompt" "$CL/" prompt
 t  "the api block replaces the gh ticket read" "delivered by the claim that dispatched you" prompt
 # The worker is oriented by the BOARD's name for the repo, the way a gh-mode
 # worker is oriented by owner/name — not by whatever the checkout directory
@@ -332,16 +349,18 @@ t "and says what to use instead"                  "--sweep" triggered
 # one of each shape, on a second board.
 # =========================================================================
 r2="$(apirepo "$PORT2")"
-DH2="$(mktemp -d)"; mkdir -p "$DH2/board-claims"
+DH2="$(mktemp -d)"
+CL2="$(store_dir "$DH2" board-claims "$PORT2")"
+SUP2="$(store_dir "$DH2" board-suppress "$PORT2")"
 # (a) nonce persisted, response lost: no run_id was ever recorded, so the
 #     claim may or may not have landed — replaying the SAME nonce is the one
 #     legal replay.
 printf '{"lane": "implementer", "run_id": null, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-a.json"
+  > "$CL2/nonce-a.json"
 # (b) claimed but never handed off: a run exists, no session ever did.
 printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-b.json"
-printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
+  > "$CL2/nonce-b.json"
+printf 'orphaned assignment\n' > "$CL2/nonce-b.body.md"
 # ...and A NEIGHBOUR REPO'S meta carrying THAT SAME run id. The registry is
 # machine-global, so an unfiltered scan let another board's worker vouch for
 # our run 99: the journal read as live, the run was never ended, and its
@@ -354,13 +373,13 @@ printf '{"uuid":"f0re1gn1","current":"f0re1gn1","name":"99-other-implementer",
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
 printf '{"lane": "architect", "run_id": 41, "spawn_completed": false, "ticket": "12"}\n' \
-  > "$DH2/board-claims/nonce-c.json"
+  > "$CL2/nonce-c.json"
 # ...and the delivery it confirms is where the ticket's failed-cycle count is
 # cleared when the inline reset never ran. The reset sits one line ahead of the
 # marker write, so THIS crash — bind landed, marker lost — is exactly the
 # window that leaves a durable recovery beside a stale counter, and a much
 # later unrelated fault would then escalate two rungs early.
-mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-12"
+echo 2 > "$SUP2/.attempts-12"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","status":"working","run_id":41,"lane":"architect","ticket":"12"}' \
   > "$DH2/cccc0001.json"
 # (d) THE SPAWN LANDED, THE BIND DID NOT — a crash inside `sminos spawn` uuid
@@ -370,28 +389,28 @@ printf '{"uuid":"cccc0001","current":"cccc0001","name":"12-api-architect","statu
 #     before the spawn — and that name is in the registry, alive. Ending this
 #     run would kill a live worker and hand its ticket to a second one.
 printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-implementer"}\n' \
-  > "$DH2/board-claims/nonce-d.json"
-printf 'live assignment\n' > "$DH2/board-claims/nonce-d.body.md"
+  > "$CL2/nonce-d.json"
+printf 'live assignment\n' > "$CL2/nonce-d.body.md"
 printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-implementer","status":"working"}' \
   > "$DH2/dddd0001.json"
 # (e) a journal no reader can parse — a half-written file, or the truncated
 #     record a crash mid-write leaves. Skipping it silently hid a claimed run
 #     forever, every tick, with nothing on any log to say so.
-printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-e.json"
+printf '{"lane": "implementer", "run_id": 88, "spawn_' > "$CL2/nonce-e.json"
 # (f) THE REVIEW DISPATCHER'S JOURNAL. The claims directory is shared, and every
 #     entry names its lane. Replaying a qagent nonce here would hand a review
 #     assignment an executor prompt; ending its run would strand the review
 #     dispatcher's ticket. Anything outside architect|executor|spike is not
 #     this script's to touch.
 printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-f.json"
+  > "$CL2/nonce-f.json"
 # (g) A REUSED DAEMON NAME IS NOT PROOF OF A SPAWN. Names are deterministic per
 #     ticket and lane, and a retired daemon keeps its meta — so a HISTORICAL
 #     entry into the same lane left a name that read as "spawned, live,
 #     unbound" for the NEXT claim, closing its journal and leaving the run
 #     ownerless until the lease expired. Only a RUNNING session is evidence.
 printf '{"lane": "implementer", "run_id": 78, "spawn_completed": false, "ticket": "34", "daemon": "34-api-implementer"}\n' \
-  > "$DH2/board-claims/nonce-g.json"
+  > "$CL2/nonce-g.json"
 printf '{"uuid":"gggg0001","current":"gggg0001","name":"34-api-implementer","status":"retired"}' \
   > "$DH2/gggg0001.json"
 # (h) A JOURNAL WHOSE WRITER IS STILL ALIVE IS NOT A CRASH. Nothing serializes
@@ -400,7 +419,7 @@ printf '{"uuid":"gggg0001","current":"gggg0001","name":"34-api-implementer","sta
 #     bearer under the peer and both callers spawn from their own answers.
 #     This test's own shell is the live writer.
 printf '{"lane": "implementer", "run_id": null, "spawn_completed": false, "pid": %s}\n' "$$" \
-  > "$DH2/board-claims/nonce-h.json"
+  > "$CL2/nonce-h.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -409,16 +428,16 @@ OUT2="$(mktemp)"
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
 
 t "a lost response is replayed under its own nonce" '\"dispatchNonce\": \"nonce-a\"' cat "$FIX2.log"
-t "the replay reaches a run and completes"          '"run_id": 55' cat "$DH2/board-claims/nonce-a.json"
-t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$DH2/board-claims/nonce-a.json"
+t "the replay reaches a run and completes"          '"run_id": 55' cat "$CL2/nonce-a.json"
+t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$CL2/nonce-a.json"
 t "a stranded claim ends its run"                   '"path": "/runs/99/end"' cat "$FIX2.log"
 t "a neighbour repo's meta does not vouch for our run" '"path": "/runs/99/end"' cat "$FIX2.log"
 t "and ends it as abandoned"                        '\"reason\": \"abandoned\"' cat "$FIX2.log"
 gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
-t "the stranded journal is dropped"      "gone" gone "$DH2/board-claims/nonce-b.json"
-t "so is its orphaned assignment body"   "gone" gone "$DH2/board-claims/nonce-b.body.md"
-t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
-attempts12r() { [ -e "$DH2/board-suppress/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
+t "the stranded journal is dropped"      "gone" gone "$CL2/nonce-b.json"
+t "so is its orphaned assignment body"   "gone" gone "$CL2/nonce-b.body.md"
+t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$CL2/nonce-c.json"
+attempts12r() { [ -e "$SUP2/.attempts-12" ] && echo "count kept" || echo "count cleared"; }
 t "and the delivery it confirms clears the ticket's failed-cycle count" \
   "count cleared" attempts12r
 # --- (d) a spawned-but-unbound run is never ended --------------------------
@@ -434,27 +453,27 @@ t  "and ended as abandoned"           '\"reason\": \"abandoned\"' cat "$FIX2.log
 t  "the orphaned session is retired by name" "retire 33-api-implementer" \
    cat "$DH2/spawn-capture.txt"
 t  "the report says why it could never work"  "can never speak for the run" cat "$OUT2"
-t  "and its journal is dropped"  "gone" gone "$DH2/board-claims/nonce-d.json"
+t  "and its journal is dropped"  "gone" gone "$CL2/nonce-d.json"
 # The ticket must not reach a second worker from THIS pass: the release is what
 # frees it, and reconcile itself spawns nothing.
 nt "reconcile re-dispatches nothing for it" "name=33-api-implementer" cat "$DH2/spawn-capture.txt"
 # --- (e) a corrupt journal is loud, not invisible ---------------------------
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-e.json"       cat "$OUT2"
-t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-e.json"
+t "and is left on disk for repair"     "still-there" gone "$CL2/nonce-e.json"
 # --- (f) another dispatcher's lane is not this script's to reconcile --------
 nt "a foreign lane's run is never ended" '"path": "/runs/66/end"' cat "$FIX2.log"
 t  "a foreign lane's journal is left byte-identical" \
-  '{"lane": "qagent", "run_id": 66, "spawn_completed": false}' cat "$DH2/board-claims/nonce-f.json"
+  '{"lane": "qagent", "run_id": 66, "spawn_completed": false}' cat "$CL2/nonce-f.json"
 nt "and no foreign lane is claimed from here" '\"lane\": \"qagent\"' cat "$FIX2.log"
 # --- (g) a retired daemon's name proves nothing ----------------------------
 t  "a run whose only witness is a RETIRED daemon is ended" '"path": "/runs/78/end"' cat "$FIX2.log"
-t  "its journal is dropped"                     "gone" gone "$DH2/board-claims/nonce-g.json"
+t  "its journal is dropped"                     "gone" gone "$CL2/nonce-g.json"
 # --- (h) a peer's in-flight claim is left alone ----------------------------
 nt "an in-flight nonce is not replayed"  '\"dispatchNonce\": \"nonce-h\"' cat "$FIX2.log"
 t  "and it is reported as in flight"     "nonce-h is in flight"           cat "$OUT2"
 t  "its journal stays open for its own writer" '"spawn_completed": false' \
-  cat "$DH2/board-claims/nonce-h.json"
+  cat "$CL2/nonce-h.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, the stranded run's end, the UNBOUND worker's end, the retired-witness
 # end, and the two empty execution lanes. A repaired marker sends nothing (no
@@ -488,12 +507,13 @@ trap 'kill $MOCK $MOCK2 $MOCK3 2>/dev/null' EXIT
 wait_for_port "$PORT3" || { echo "FAIL mock server never listened on $PORT3"; exit 1; }
 
 r3="$(apirepo "$PORT3")"
-DH3="$(mktemp -d)"; mkdir -p "$DH3/board-claims"
+DH3="$(mktemp -d)"
+CL3="$(store_dir "$DH3" board-claims "$PORT3")"
 # The same shape as scenario 2's (b) — claimed, no session, nothing to prove it
 # alive — which on a readable registry is ended. Here it must NOT be.
 printf '{"lane": "implementer", "run_id": 99, "spawn_completed": false}\n' \
-  > "$DH3/board-claims/nonce-g.json"
-printf 'held assignment\n' > "$DH3/board-claims/nonce-g.body.md"
+  > "$CL3/nonce-g.json"
+printf 'held assignment\n' > "$CL3/nonce-g.body.md"
 printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-imple' \
   > "$DH3/eeee0001.json"
 
@@ -508,8 +528,8 @@ t  "the hold is reported"        "holding it"        cat "$OUT3"
 t  "and names who owns it"       "server lease reclaim" cat "$OUT3"
 t  "the unreadable meta is named" "eeee0001.json"    cat "$OUT3"
 t  "the held journal stays on disk, open" '"spawn_completed": false' \
-  cat "$DH3/board-claims/nonce-g.json"
-t  "and its assignment body is not dropped" "still-there" gone "$DH3/board-claims/nonce-g.body.md"
+  cat "$CL3/nonce-g.json"
+t  "and its assignment body is not dropped" "still-there" gone "$CL3/nonce-g.body.md"
 held_wire() {
   printf 'posts=%s ends=%s\n' \
     "$(grep -c '"method"' "$FIX3.log" || true)" \
@@ -549,6 +569,7 @@ chmod +x "$NOUUID/uuidgen"
 
 r4="$(apirepo "$PORT4")"
 DH4="$(mktemp -d)"
+CL4="$(store_dir "$DH4" board-claims "$PORT4")"
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$NOUUID:$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH4" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r4" \
@@ -567,7 +588,7 @@ t "and the dispatch lands"                      "claimed #31 run=71" cat "$OUT4"
 # journal, so the next claim on that lane overwrote the granted run's record
 # and then removed it when the lane answered empty. The one record that could
 # have recovered run 71 was gone before the tick ended.
-journal4() { cat "$DH4"/board-claims/*.json 2>/dev/null || echo "no journal survived"; }
+journal4() { cat "$CL4"/*.json 2>/dev/null || echo "no journal survived"; }
 t "the granted run keeps its recovery record" '"run_id": 71'          journal4
 t "and that record says the handoff completed" '"spawn_completed": true' journal4
 
@@ -616,6 +637,7 @@ wait_for_port "$PORT5" || { echo "FAIL mock server never listened on $PORT5"; ex
 
 r5="$(apirepo "$PORT5")"
 DH5="$(mktemp -d)"
+CL5="$(store_dir "$DH5" board-claims "$PORT5")"
 OUT5="$(mktemp)"
 ( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH5" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r5" \
@@ -628,7 +650,7 @@ nt "and the spike lane is NOT claimed behind it" '\"lane\": \"spike\"' cat "$FIX
 claim5() { echo "claims=$(grep -c '"path": "/runs/claim"' "$FIX5.log")"; }
 t  "the tick stops on the uncertain claim"  "claims=1"     claim5
 nt "so nothing is spawned this tick"        "ARGS name="   bash -c "cat '$DH5/spawn-capture.txt' 2>/dev/null || echo none"
-journal5() { ls "$DH5/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal gone"; }
+journal5() { ls "$CL5"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal gone"; }
 t  "the record the replay needs survives"   "journal kept" journal5
 
 # =========================================================================
@@ -699,6 +721,7 @@ wait_for_port "$PORT7" || { echo "FAIL mock server never listened on $PORT7"; ex
 
 r7="$(apirepo "$PORT7")"
 DH7="$(mktemp -d)"
+CL7="$(store_dir "$DH7" board-claims "$PORT7")"
 LEDGER7="$(mktemp)"; echo 33 > "$LEDGER7"
 OUT7="$(mktemp)"
 ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -711,7 +734,7 @@ t  "a claim yielding a tick-ledgered ticket is released" \
 t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX7.log"
 nt "so no worker is spawned for it" "ARGS name=33"  \
    bash -c "cat '$DH7/spawn-capture.txt' 2>/dev/null || echo none"
-journal7() { ls "$DH7/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+journal7() { ls "$CL7"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
 t  "and the journal is dropped with it"  "journal dropped"  journal7
 
 # =========================================================================
@@ -738,23 +761,25 @@ trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 2>/dev/null' E
 wait_for_port "$PORT8" || { echo "FAIL mock server never listened on $PORT8"; exit 1; }
 
 r8="$(apirepo "$PORT8")"
-DH8="$(mktemp -d)"; mkdir -p "$DH8/board-claims" "$DH8/board-suppress"
+DH8="$(mktemp -d)"
+CL8="$(store_dir "$DH8" board-claims "$PORT8")"
+SUP8="$(store_dir "$DH8" board-suppress "$PORT8")"
 printf '{"uuid":"eeee0001","current":"eeee0001","name":"15-api-implementer","status":"working","run_id":43,"lane":"implementer","ticket":"15"}' \
   > "$DH8/eeee0001.json"
 printf '{"lane": "implementer", "run_id": 43, "spawn_completed": false, "ticket": "15"}\n' \
-  > "$DH8/board-claims/nonce-i.json"
-chmod 444 "$DH8/board-claims/nonce-i.json"
-echo 2 > "$DH8/board-suppress/.attempts-15"
+  > "$CL8/nonce-i.json"
+chmod 444 "$CL8/nonce-i.json"
+echo 2 > "$SUP8/.attempts-15"
 OUT8="$(mktemp)"
 ( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH8" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r8" \
     BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
-chmod 644 "$DH8/board-claims/nonce-i.json"
+chmod 644 "$CL8/nonce-i.json"
 
 t  "a seal that never lands still leaves the count cleared" "count cleared" \
-   bash -c "[ -e '$DH8/board-suppress/.attempts-15' ] && echo 'count kept' || echo 'count cleared'"
+   bash -c "[ -e '$SUP8/.attempts-15' ] && echo 'count kept' || echo 'count cleared'"
 t  "and the unsealed journal is left for the next pass to redo" \
-   '"spawn_completed": false'  cat "$DH8/board-claims/nonce-i.json"
+   '"spawn_completed": false'  cat "$CL8/nonce-i.json"
 
 # =========================================================================
 # Scenario 9 — A RESET THAT FAILED IS NOT A RESET. Absent is the one benign
@@ -776,25 +801,27 @@ trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 2>/dev/
 wait_for_port "$PORT9" || { echo "FAIL mock server never listened on $PORT9"; exit 1; }
 
 r9="$(apirepo "$PORT9")"
-DH9="$(mktemp -d)"; mkdir -p "$DH9/board-claims" "$DH9/board-suppress"
+DH9="$(mktemp -d)"
+CL9="$(store_dir "$DH9" board-claims "$PORT9")"
+SUP9="$(store_dir "$DH9" board-suppress "$PORT9")"
 printf '{"uuid":"eeee0002","current":"eeee0002","name":"16-api-implementer","status":"working","run_id":44,"lane":"implementer","ticket":"16"}' \
   > "$DH9/eeee0002.json"
 printf '{"lane": "implementer", "run_id": 44, "spawn_completed": false, "ticket": "16"}\n' \
-  > "$DH9/board-claims/nonce-j.json"
-echo 2 > "$DH9/board-suppress/.attempts-16"
-chmod 555 "$DH9/board-suppress"      # an unlink needs write on the DIRECTORY
+  > "$CL9/nonce-j.json"
+echo 2 > "$SUP9/.attempts-16"
+chmod 555 "$SUP9"      # an unlink needs write on the DIRECTORY
 OUT9="$(mktemp)"
 ( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH9" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r9" \
     BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
-chmod 755 "$DH9/board-suppress"
+chmod 755 "$SUP9"
 
 t  "a failed reset leaves the journal open for the next pass" \
-   '"spawn_completed": false'  cat "$DH9/board-claims/nonce-j.json"
+   '"spawn_completed": false'  cat "$CL9/nonce-j.json"
 t  "and says so, naming the ticket whose count still stands" \
    "failed-cycle reset failed"  cat "$OUT9"
 t  "the count is still there to be retried" "count kept" \
-   bash -c "[ -e '$DH9/board-suppress/.attempts-16' ] && echo 'count kept' || echo 'count cleared'"
+   bash -c "[ -e '$SUP9/.attempts-16' ] && echo 'count kept' || echo 'count cleared'"
 
 # =========================================================================
 # Scenario 10 — ENOENT ANSWERS TWO OPPOSITE QUESTIONS. os.remove says "no
@@ -825,11 +852,11 @@ wait_for_port "$PORT10" || { echo "FAIL mock server never listened on $PORT10"; 
 r10="$(apirepo "$PORT10")"
 
 mkjrepaired() {  # mkjrepaired <registry> <ticket> <run> — one repaired-shaped journal
-  mkdir -p "$1/board-claims"
+  local d; d="$(store_dir "$1" board-claims "$PORT10")"
   printf '{"uuid":"aaaa%s","current":"aaaa%s","name":"%s-api-implementer","status":"working","run_id":%s,"lane":"implementer","ticket":"%s"}' \
     "$2" "$2" "$2" "$3" "$2" > "$1/aaaa$2.json"
   printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false, "ticket": "%s"}\n' \
-    "$3" "$2" > "$1/board-claims/nonce-$2.json"
+    "$3" "$2" > "$d/nonce-$2.json"
 }
 SWEEP10() {  # SWEEP10 <registry> [env...] — one dispatch tick against this board
   local dh="$1"; shift
@@ -844,7 +871,7 @@ OUTA10="$(mktemp)"
 SWEEP10 "$DHA10" BOARD_SUPPRESS_DIR="$DHA10/gone-volume/board-suppress" \
   > "$OUTA10" 2>&1 || true
 t  "an unreachable suppression path does not seal the journal" \
-   '"spawn_completed": false'  cat "$DHA10/board-claims/nonce-17.json"
+   '"spawn_completed": false'  cat "$(store_dir "$DHA10" board-claims "$PORT10")/nonce-17.json"
 t  "and reports the reset it could not make" \
    "failed-cycle reset failed"  cat "$OUTA10"
 
@@ -856,7 +883,7 @@ DHB10="$(mktemp -d)"; mkjrepaired "$DHB10" 18 46
 OUTB10="$(mktemp)"
 SWEEP10 "$DHB10" > "$OUTB10" 2>&1 || true
 t  "a registry with no suppression directory repairs normally" \
-   '"spawn_completed": true'  cat "$DHB10/board-claims/nonce-18.json"
+   '"spawn_completed": true'  cat "$(store_dir "$DHB10" board-claims "$PORT10")/nonce-18.json"
 nt "and reports no failure" "failed-cycle reset failed" cat "$OUTB10"
 
 # =========================================================================
@@ -880,9 +907,10 @@ trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10
 wait_for_port "$PORT11" || { echo "FAIL mock server never listened on $PORT11"; exit 1; }
 
 r11="$(apirepo "$PORT11")"
-DH11="$(mktemp -d)"; mkdir -p "$DH11/board-claims"
+DH11="$(mktemp -d)"
+CL11="$(store_dir "$DH11" board-claims "$PORT11")"
 printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-implementer"}\n' \
-  > "$DH11/board-claims/nonce-k.json"
+  > "$CL11/nonce-k.json"
 printf '{"uuid":"dddd0002","current":"dddd0002","name":"33-api-implementer","status":"working"}' \
   > "$DH11/dddd0002.json"
 OUT11="$(mktemp)"
@@ -895,6 +923,63 @@ OUT11="$(mktemp)"
 t  "the retire was attempted"           "retire 33-api-implementer" cat "$DH11/spawn-capture.txt"
 t  "and its failure is reported"        "could not be retired"      cat "$OUT11"
 nt "the run is NOT ended over it"       '"path": "/runs/77/end"'    cat "$FIX11.log"
-t  "the journal is kept for the retry"  "still-there" gone "$DH11/board-claims/nonce-k.json"
+t  "the journal is kept for the retry"  "still-there" gone "$CL11/nonce-k.json"
+
+# =========================================================================
+# Scenario 12 — THE CLAIM JOURNAL IS THIS BOARD'S, NOT THIS MACHINE'S. The
+# registry root is machine-global; a nonce is a handoff between one dispatcher
+# and one board. Reconciling a neighbour repo's unfinished handoff ends its run
+# and frees its ticket under it. Three journals sit in one root: ours, a
+# neighbour's, and a flat one written before the stores were keyed — which is
+# ours by the same argument an unstamped seat record is, since only one binding
+# on this machine ran daemons then.
+# =========================================================================
+PORT12="$(free_port)"
+FIX12="$(mktemp)"; : > "$FIX12.log"
+cat > "$FIX12" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
+ {"method":"POST","path":"/runs/61/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/62/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/63/end","status":200,"body":{"ended":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX12" "$PORT12" & MOCK12=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 $MOCK12 2>/dev/null' EXIT
+wait_for_port "$PORT12" || { echo "FAIL mock server never listened on $PORT12"; exit 1; }
+
+r12="$(apirepo "$PORT12")"
+DH12="$(mktemp -d)"
+CL12="$(store_dir "$DH12" board-claims "$PORT12")"
+FOREIGN12="$(store_dir "$DH12" board-claims "$PORT12" otherrepo)"
+# All three are the `end` shape — claimed, never spawned, no session to prove
+# otherwise — so the only thing separating their fates is which store they sit
+# in.
+mkj12() { printf '{"lane": "implementer", "run_id": %s, "spawn_completed": false}\n' "$2" > "$1"; }
+mkj12 "$CL12/nonce-ours.json"      61
+mkj12 "$FOREIGN12/nonce-theirs.json" 62
+mkj12 "$DH12/board-claims/nonce-legacy.json" 63
+printf 'their assignment\n' > "$FOREIGN12/nonce-theirs.body.md"
+OUT12="$(mktemp)"
+( cd "$r12" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH12" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r12" \
+    BOARD_CREDENTIALS_FILE="$CREDS" "$DISPATCH" --sweep ) > "$OUT12" 2>&1 || true
+
+t  "our own journal is reconciled"        "nonce-ours claimed run 61" cat "$OUT12"
+t  "and its run is released"              '"path": "/runs/61/end"'    cat "$FIX12.log"
+t  "and the journal is dropped"           "gone" gone "$CL12/nonce-ours.json"
+
+nt "a neighbour board's journal is not even mentioned" "nonce-theirs" cat "$OUT12"
+nt "and its run is never ended"           '"path": "/runs/62/end"'    cat "$FIX12.log"
+t  "and its journal is left exactly where it lies" "still-there" gone \
+   "$FOREIGN12/nonce-theirs.json"
+t  "assignment body included"             "still-there" gone "$FOREIGN12/nonce-theirs.body.md"
+
+# The flat store drains rather than being migrated: it is read until the last
+# record is gone, and the drop that finishes a record reaches it wherever it is.
+t  "a flat legacy journal is still read"  "nonce-legacy claimed run 63" cat "$OUT12"
+t  "its run is released too"              '"path": "/runs/63/end"'      cat "$FIX12.log"
+t  "and the drop reaches it where it lies" "gone" gone \
+   "$DH12/board-claims/nonce-legacy.json"
 
 finish
