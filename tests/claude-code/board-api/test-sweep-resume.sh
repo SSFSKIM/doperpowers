@@ -459,6 +459,13 @@ nt "and the successor run is not released out from under the fork" \
 : > "$FIX.log"
 : > "$SPAWN_LOG"
 before_2c="$(wc -l < "$RESUME_LOG")"
+# A FLAT journal for the same fork-blocked ticket, in the shape a pre-key tick
+# left behind: no run id, so reconciliation classifies it `replay`. The replay
+# hits the fork guard and returns having journalled NOTHING under the key, so
+# the flat record is the only handle any later tick has — dropping it on the
+# way out would strand the recovery for good.
+printf '{"lane": "successor", "run_id": null, "spawn_completed": false, "ticket": "12"}\n' \
+  > "$DH/board-claims/n-fork-flat.json"
 OUT2C="$TDIR/resume-fork-guard.out"
 SW resume > "$OUT2C" 2>&1 || true
 after_2c="$(wc -l < "$RESUME_LOG")"
@@ -471,6 +478,11 @@ nt "so its run is not ended under the fork"  '"path": "/runs/49/end"' cat "$FIX.
 t  "the session is not resumed again"       "delta=0"                resumes_2c
 nt "and no second worker is spawned"        "SPAWN"                  cat "$SPAWN_LOG"
 nt "no recovery cycle is charged"           "recovery cycle"         cat "$OUT2C"
+t  "the flat journal WAS taken up for replay"  "replaying it for #12"  cat "$OUT2C"
+t  "and a replay that returned before journalling keeps its only handle" \
+   "still-there" \
+   bash -c "[ -e '$DH/board-claims/n-fork-flat.json' ] && echo still-there || echo gone"
+rm -f "$DH/board-claims/n-fork-flat.json"
 
 # The operator (or the fork resolving itself) clears it: status back off `error`
 # is what "resolved" means to `sminos resume` and therefore to the sweep.

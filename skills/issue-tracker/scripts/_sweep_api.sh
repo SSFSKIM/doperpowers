@@ -1085,8 +1085,25 @@ PY
 # claim, and settle's release is designed to be served by this very tick's
 # feed. The feed loop writes it too — an attempt is an attempt whichever door
 # it came through, and phase 4 reads the ledger to stay off both.
+# The flat copy of a replayed successor nonce, dropped only once it is safe to.
+# Left standing it would be replayed again on every later tick, forever; dropped
+# too early it is a recovery nobody can retry.
+#
+# A replay re-journals the nonce in the KEYED store ahead of its own POST, so
+# that file existing means the handle moved and the flat one is redundant. So
+# does a replay that ran to a definite end (rc 0): an obsolete nonce and a board
+# that granted nothing both remove the keyed journal themselves, and neither
+# leaves anything to retry. What is NOT safe is a replay that returned BEFORE it
+# journalled anything — an unresolved fork on the bound session, a registry scan
+# that failed — because then the flat record is the only handle there is.
+_drop_legacy_successor() {  # <nonce> <journal dir> <_resume_one rc>
+  [ "$2" != "$CLAIMS_DIR" ] || return 0
+  { [ -f "$CLAIMS_DIR/$1.json" ] || [ "$3" = 0 ]; } || return 0
+  rm -f "$2/$1.json" "$2/$1.body.md"
+}
+
 _reconcile_successors() {
-  local plan lines line act nonce run tid sess daemon jdir transcript
+  local plan lines line act nonce run tid sess daemon jdir transcript rrc
   [ -d "$CLAIMS_DIR" ] || return 0
   plan="$(T_DHOME="$DAEMON_HOME" T_CLAIMS="$CLAIMS_DIR" \
           T_CLAIMS_LEGACY="$CLAIMS_LEGACY" _api_py - <<'PY'
@@ -1205,14 +1222,9 @@ PY
           continue
         fi
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
-        # The replay re-journals this nonce in the keyed store ahead of its
-        # own POST, so a flat copy this row was read from is redundant once
-        # the replay has run — and left standing it would be replayed again on
-        # every later tick, forever.
         [ -z "$tid" ] || { printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
-                           _resume_one "$tid" "$nonce" || true
-                           [ "$jdir" = "$CLAIMS_DIR" ] \
-                             || rm -f "$jdir/$nonce.json" "$jdir/$nonce.body.md"; } ;;
+                           rrc=0; _resume_one "$tid" "$nonce" || rrc=$?
+                           _drop_legacy_successor "$nonce" "$jdir" "$rrc"; } ;;
       orphaned)
         echo "resume: successor claim $nonce spawned $daemon for run $run but never bound it — the session is live and is NOT being ended; it holds no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" >&2
         _journal "$jdir/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess" ;;
