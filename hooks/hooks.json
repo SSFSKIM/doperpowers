@@ -1,0 +1,16 @@
+{
+  "description": "kairos: a session launched with KAIROS=1 starts in proactive mode and keeps it across compaction",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
