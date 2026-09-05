@@ -221,15 +221,20 @@ def _seat_of_session(session):
 
 
 def _seat_verdict(rec, board, repo_key):
-    """`mine`, `pending` or `foreign`, for a record that IS this session's.
+    """`mine`, `pending` or `no`, for a record that IS this session's.
 
-    `pending` is a bind that has not landed. board-bind.sh writes `board`,
+    THE BOARD KEY IS THE WHOLE CLOCK. board-bind.sh writes `board`,
     `board_repo`, `run_id`, `fence`, `run_bearer` and `bind_confirmed` in ONE
-    locked write, so a record naming no board at all is mid-handover — there is
-    no state where some of them are there and the rest are not.
+    locked write, so under an api binding a record naming no board is a bind
+    that has not landed yet — and one naming this board without a confirmation
+    is a bind that has been UNDONE, which is the end-of-run strip
+    (`_retire_run_locally` pops the run, the bearer, the fence and the
+    confirmation and leaves `board` standing). The first is worth waiting for;
+    the second is over, and waiting on it would only delay the fall-back that
+    is already the right answer.
 
-    `foreign` is this session bound somewhere that is not this checkout. The
-    url names the SERVICE, and one instance serves several repos out of one
+    `no` also covers this session bound somewhere that is not this checkout.
+    The url names the SERVICE, and one instance serves several repos out of one
     ticket namespace, so the url alone does not separate them: a record stamped
     for a neighbour repo would otherwise have this checkout's verbs acting on
     that repo's run. The repo is compared only when the caller HAS one — the
@@ -241,13 +246,13 @@ def _seat_verdict(rec, board, repo_key):
     if not stamped:
         return "pending"
     if stamped != board:
-        return "foreign"
+        return "no"
     mrepo = str(rec.get("board_repo") or "").strip()
     if repo_key and mrepo and mrepo != repo_key:
-        return "foreign"
+        return "no"
     if rec.get("bind_confirmed") and str(rec.get("run_bearer") or ""):
         return "mine"
-    return "pending"
+    return "no"
 
 
 def own_seat():
@@ -322,7 +327,7 @@ def own_seat():
                 break            # the record went away; there is nothing to wait for
             hit = again
             verdict = _seat_verdict(hit[1], board, repo_key)
-    if verdict == "foreign":
+    if verdict != "mine" and verdict != "pending":
         return None
     # A bind that never landed is returned as it stands: run_context() reads no
     # bearer on it and falls back, which is the same answer as no record at all

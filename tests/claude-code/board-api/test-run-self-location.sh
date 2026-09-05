@@ -143,6 +143,11 @@ t "a record bound on another board is ignored" "ctx=none" reveal CLAUDE_CODE_SES
 only_seat seat-a '{"uuid":"seat-a","current":"'"$SESSION"'","run_id":41,"fence":3,
   "run_bearer":"'"$BEARER"'","board":"'"$BOARD"'","board_repo":"testrepo"}'
 t "an unconfirmed bind is not a run" "ctx=none" reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+# ...and it is not a bind to WAIT for either. Under an api binding board-bind
+# writes the board key and the confirmation together, so a record naming this
+# board without one is a bind that has been UNDONE, never one still in flight.
+t "and it is answered at once, not waited out" "waited=no" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
 # The end-of-run shape: _sweep_api.sh's _retire_run_locally pops run_id,
 # run_bearer, fence and bind_confirmed the moment the run is ended, and stamps
@@ -151,7 +156,13 @@ t "an unconfirmed bind is not a run" "ctx=none" reveal CLAUDE_CODE_SESSION_ID="$
 only_seat seat-a '{"uuid":"seat-a","current":"'"$SESSION"'","status":"working",
   "ticket":"12","run_ended_at":"2026-09-05T00:00:00Z","board":"'"$BOARD"'",
   "board_repo":"testrepo"}'
-t "a record whose run has ended carries nothing to speak as" "ctx=none" reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "a record whose run has ended carries nothing to speak as" "ctx=none" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+# The strip leaves `board` standing, which is exactly the shape a bind in
+# flight does NOT have — so a finished worker falls back immediately rather
+# than sitting out a budget waiting for a run that is over.
+t "and a finished run is not mistaken for a bind in flight" "waited=no" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
 # No session id at all: a cron shell, an operator's terminal, a harness that
 # does not export one. Nothing to locate by, so nothing is located.
