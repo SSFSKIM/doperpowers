@@ -41,8 +41,8 @@
 #   CLODEX_SETTINGS     gateway settings file for the codex route
 #                       (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
-#   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-5.6-sol)
-#   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default xhigh)
+#   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-6-astra)
+#   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default high)
 #   REVIEW_PRIORITY_LABEL  opt-in sweep ordering hint (dp#64): PRs carrying
 #                       this label enumerate FIRST in --sweep (stable within
 #                       both groups), so a priority cohort cannot be starved
@@ -239,8 +239,8 @@ case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;
 esac
-CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
-CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-6-astra}"
+CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-high}"
 REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
 
 # Newest registry entry for worker name <1> (review-pr-<n> or review-epic-<n>)

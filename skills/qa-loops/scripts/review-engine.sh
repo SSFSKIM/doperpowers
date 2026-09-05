@@ -15,8 +15,8 @@
 # Usage: review-engine.sh --base <ref> --out <file>
 #   --base  diff base (e.g. origin/main); the engine reviews <ref>...HEAD
 #   --out   findings file the engine writes
-# Env: CODEX_REVIEW_MODEL (default gpt-5.6-sol), CODEX_REVIEW_EFFORT
-# (default xhigh), CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS (optional
+# Env: CODEX_REVIEW_MODEL (default gpt-6-astra), CODEX_REVIEW_EFFORT
+# (default high), CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS (optional
 # diff-derived structural focus mandate — see the lens block below; both
 # empty keeps the plain review).
 # Run from the worktree root — the engine reviews $PWD.
@@ -41,8 +41,8 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 companion="$script_dir/../../codex-companion"
 [ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: codex-companion skill not found at $companion" >&2; exit 127; }
 
-model="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
-effort="${CODEX_REVIEW_EFFORT:-xhigh}"
+model="${CODEX_REVIEW_MODEL:-gpt-6-astra}"
+effort="${CODEX_REVIEW_EFFORT:-high}"
 source_codex_home="${CODEX_HOME:-$HOME/.codex}"
 
 # TLS trust anchors as a FILE bundle — a nested codex cannot reach the OS

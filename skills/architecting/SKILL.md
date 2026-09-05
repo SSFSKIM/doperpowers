@@ -97,7 +97,7 @@ parks carry the quality machinery.
     convergence; run the spec-review pass; then give the execution
     plan the same independent review doperpowers:writing-plans
     prescribes — doperpowers:codex-companion's `adversarial-review` verb
-    (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper) in
+    (model `gpt-6-astra`, effort `high` via its with-effort wrapper) in
     a background Bash, focused on whether the plan is complete,
     spec-aligned, well-decomposed, and buildable by an engineer with
     zero context. Evaluate its findings rather than accepting them

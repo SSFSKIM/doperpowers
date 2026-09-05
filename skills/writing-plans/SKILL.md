@@ -228,7 +228,7 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 
 ## Execution Handoff
 
-After saving the plan, report the path ("Plan complete and saved to `docs/doperpowers/plans/<filename>.md`"), then run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-5.6-sol`, effort `xhigh` via its with-effort wrapper), in a background Bash, with the focus text:
+After saving the plan, report the path ("Plan complete and saved to `docs/doperpowers/plans/<filename>.md`"), then run the plan review on the Codex side — doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper), in a background Bash, with the focus text:
 
 > Review the execution plan at [PLAN_FILE_PATH] against its spec at [SPEC_FILE_PATH]. Verify the implementation architecture is sound and the plan is complete, spec-aligned, well-decomposed, and buildable by an engineer with zero context.
 

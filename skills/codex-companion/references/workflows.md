@@ -60,8 +60,8 @@ one binding verifier over the merged candidate pool:
       --args '{"base":"main"}' --cwd <repo> 2> <scratch>.events.log
 
 `base` is the only required arg. Optional: `lenses` (an array replacing the
-derived set), `finderModel`/`finderEffort` (default `gpt-5.6-sol`/`xhigh`),
-`verifierModel`/`verifierEffort` (default `gpt-5.6-sol`/`high`).
+derived set), `finderModel`/`finderEffort` (default `gpt-6-astra`/`high`),
+`verifierModel`/`verifierEffort` (default `gpt-6-astra`/`high`).
 
 The verb's stdout `result` is `{verdict, findings, coverage, lenses,
 explanation}`. `verdict` is `correct`, `incorrect`, or `interrupted`;

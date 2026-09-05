@@ -99,7 +99,7 @@ reset
 "${CLEAN_ENV[@]}" "$ENGINE" --base origin/main --out "$TEST_ROOT/out.txt" 2> "$TEST_ROOT/err.txt"
 LOG="$(cat "$ENGINE_LOG")"
 assert_contains "$LOG" "with-effort.mjs" "the engine drives the companion wrapper, not codex"
-assert_contains "$LOG" "--effort xhigh -- review --base origin/main --wait --model gpt-5.6-sol" "default effort/model on the native review verb"
+assert_contains "$LOG" "--effort high -- review --base origin/main --wait --model gpt-6-astra" "default effort/model on the native review verb"
 assert_not_contains "$LOG" "adversarial-review" "no lens means the plain review verb"
 assert_not_contains "$LOG" "CODEX_INVOKED_DIRECTLY" "codex is never invoked past the preflight"
 assert_contains "$LOG" "ENV_CODEX_HOME=$TMPDIR/review-engine-home." "temporary CODEX_HOME stays outside the reviewed tree"

@@ -193,8 +193,8 @@ Return the FULL corrected verdicts array covering every candidate id exactly onc
 export default async function run({ agent, review, parallel, log, args }) {
   if (!args?.base) throw new Error("code-review workflow requires args.base");
   const base = args.base;
-  const finderModel  = args.finderModel  ?? "gpt-5.6-sol";
-  const finderEffort = args.finderEffort ?? "xhigh";
+  const finderModel  = args.finderModel  ?? "gpt-6-astra";
+  const finderEffort = args.finderEffort ?? "high";
 
   // Once, before any worker: every prompt below names the pinned base commit, so
   // the whole panel — deriver, finders, verifier — is talking about one range
@@ -269,7 +269,7 @@ export default async function run({ agent, review, parallel, log, args }) {
   let verified = [];
   if (pool.length > 0) {
     const opts = {
-      model: args.verifierModel ?? "gpt-5.6-sol", effort: args.verifierEffort ?? "high",
+      model: args.verifierModel ?? "gpt-6-astra", effort: args.verifierEffort ?? "high",
       schema: VERIFIER_SCHEMA
     };
     const attempt = await agent(VERIFIER_PROMPT(base, baseCommit, finders, pool), { ...opts, label: "verifier" }).catch(() => null);

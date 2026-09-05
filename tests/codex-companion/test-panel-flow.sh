@@ -361,7 +361,7 @@ run_panel '{"base":"main"}'
 [ "$rc" -eq 0 ] || cat "$scratch/err.log"
 assert_eq "the full panel exits 0 having spent deriver + 3 finders + verifier" "0:5" "$(rc_and_turns)"
 assert_eq "the first turn is the deriver agent turn, not a review" "turn/start" "$(turn_field 0 .method)"
-assert_eq "deriver runs on the panel's deriver model" "gpt-5.6-sol" "$(turn_field 0 .params.model)"
+assert_eq "deriver runs on the panel's deriver model" "gpt-6-astra" "$(turn_field 0 .params.model)"
 assert_eq "deriver runs at medium effort" "medium" "$(turn_field 0 .params.effort)"
 assert_eq "deriver turn is schema-forced" "object" "$(turn_field 0 '.params.outputSchema.type')"
 assert_eq "exactly three finders ran, as native reviews" 3 \
@@ -393,10 +393,10 @@ assert_eq "derived lenses reach the result" \
   '["watch the auth paths.","check removed guards."]' "$(jq -c '.result.lenses' "$scratch/out.json")"
 assert_eq "every finder carries the clean sentinel; only the scalpels carry a mandate" \
   "$(expected_lenses "watch the auth paths." "check removed guards.")" "$(actual_lenses)"
-assert_eq "finder effort defaults to xhigh, on every finder's own app-server" "3" \
-  "$(jq -r '.argv[] | select(. == "model_reasoning_effort=xhigh")' "$CODEX_MOCK_DIR"/spawn-*.json | wc -l | tr -d ' ')"
-assert_eq "finder model defaults to sol — deriver, finders and verifier all on it" \
-  "5 gpt-5.6-sol" "$(thread_models)"
+assert_eq "finder effort defaults to high, on every finder's own app-server" "3" \
+  "$(jq -r '.argv[] | select(. == "model_reasoning_effort=high")' "$CODEX_MOCK_DIR"/spawn-*.json | wc -l | tr -d ' ')"
+assert_eq "finder model defaults to astra — deriver, finders and verifier all on it" \
+  "5 gpt-6-astra" "$(thread_models)"
 assert_contains "the run logs the panel shape" "$scratch/err.log" "panel: sweep + 2 scalpels"
 # Each finder's label is its own journal key, so a resume gives each lane back
 # its OWN cached review; finders sharing a label would be re-matched by
@@ -417,7 +417,7 @@ assert_eq "the verifier spends exactly one turn when its verdicts hold" "1" \
   "$(verifier_prompts | grep -c '^You are the binding verifier' || true)"
 assert_eq "no repair turn is spent on a contract-clean verdict set" "0" \
   "$(verifier_prompts | grep -c '^Your verdict set violated' || true)"
-assert_eq "the verifier runs on sol at high effort" "gpt-5.6-sol high" \
+assert_eq "the verifier runs on astra at high effort" "gpt-6-astra high" \
   "$(verifier_turns '"\(.model) \(.effort)"')"
 assert_eq "the verifier turn is schema-forced on a verdicts array" "array" \
   "$(verifier_turns '.outputSchema.properties.verdicts.type')"
