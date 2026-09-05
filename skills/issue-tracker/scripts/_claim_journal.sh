@@ -17,7 +17,8 @@
 #   _claim_one_with_nonce L N C  replay one claim under an existing nonce
 #   _claim_lane_cap L            the lane cap to replay that lane under
 #   _claim_drop_journal N        remove a nonce's journal (and its body file)
-#   _claim_retire_worker U       retire a spawned session by uuid
+#   _claim_retire_worker U       retire a spawned session by uuid; rc 0 only
+#                                when the CLI accepted it
 #   _claim_suppress_dir          print the suppression directory (the sweep's
 #                                failed-cycle counts live beside its records)
 #   _api_py                      the API-client python runner (_binding.sh)
@@ -383,7 +384,7 @@ PY
         # and end the run so the ticket goes back on the queue. The end is
         # checked, not best-effort — see the `end` arm below.
         echo "reconcile: $nonce bound run $run to session $extra but the startup barrier never opened — retiring that worker and ending the run so the ticket returns to the queue" >&2
-        _claim_retire_worker "$extra"
+        _claim_retire_worker "$extra" || true
         if _claim_end_run "$run" abandoned; then
           # A retire stops a turn; it does not make the seat forget. This
           # record still names the run, its fence and its BEARER — and a
@@ -414,8 +415,13 @@ PY
         # There is nothing to strip locally — a record carrying the run is what
         # would have made this `repaired` rather than `orphaned`.
         echo "reconcile: $nonce spawned $extra for run $run but never bound it — that worker can never speak for the run (no bearer reached it and none is at rest), so retiring it and releasing the run rather than leaving it to write as the operator" >&2
-        _claim_retire_worker "$extra"
-        if _claim_end_run "$run" abandoned; then
+        # THE RELEASE IS WHAT FREES THE TICKET, so it may not outrun the retire.
+        # Ending a run whose worker is still running hands its ticket to a
+        # successor beside a live predecessor — the divergence the retire exists
+        # to prevent. A refused retire keeps the journal, like a refused release.
+        if ! _claim_retire_worker "$extra"; then
+          echo "reconcile: $nonce — $extra could not be retired, so run $run is NOT released (freeing the ticket beside a live worker is the one outcome worse than leaving it); the journal is KEPT for the next tick" >&2
+        elif _claim_end_run "$run" abandoned; then
           _claim_drop_journal "$nonce"
         else
           echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
