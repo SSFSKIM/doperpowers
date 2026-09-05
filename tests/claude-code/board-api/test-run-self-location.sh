@@ -83,7 +83,15 @@ bound_record() {  # bound_record <locator-key> <locator-value> [board]
 # suite turns — the session id itself included — rides in as a leading
 # VAR=VALUE word, so each case states the whole environment it is about.
 REVEAL_PY="$CORE
+import time as _t
+_started = _t.time()
 c = A.run_context()
+# TIMED INSIDE THE RESOLVER, not around the process. A python interpreter's
+# own start-up is a moving target under load, and a shell's \$SECONDS is
+# whole-second — between them they can report a microsecond scan as a second
+# of waiting. This measures the one call the wait belongs to. The threshold
+# sits between an immediate answer (a directory listing) and one poll (0.5s).
+print('waited=%s' % ('yes' if _t.time() - _started >= 0.4 else 'no'))
 print('ctx=%s' % ('none' if c is None else
                   '%s/%s/%s' % (c['bearer'], c['run_id'], c['fence'])))"
 reveal() {  # reveal [VAR=VALUE ...]
@@ -166,17 +174,6 @@ t "a process that declares itself not-the-run ignores the record" "ctx=none" \
 # the run, the bearer and the confirmation in ONE later write, so mid-handover
 # the record exists and says nothing about any board. That is the wait window,
 # and it is the only one.
-TIMED_OUT="" TIMED_SECS=0
-run_timed() {  # run_timed <cmd...> — capture the output AND the wall clock
-  local start=$SECONDS
-  TIMED_OUT="$("$@" 2>&1)" || :
-  TIMED_SECS=$((SECONDS - start))
-}
-said() { printf '%s\n' "$TIMED_OUT"; }
-# Coarse on purpose: the point is "did it sit out a budget or not", and a
-# second-resolution verdict cannot flake on a 0.5s poll interval.
-waited() { [ "$TIMED_SECS" -ge 1 ] && echo "waited=yes" || echo "waited=no"; }
-
 # The pre-bind shape sminos leaves behind: a launch, and nothing else.
 unbound_record() {
   printf '{"uuid":"seat-a","short":"%s","status":"working","task":"do the thing"}' "$SHORT"
@@ -185,14 +182,20 @@ unbound_record() {
 # A session with no record at all is an operator's shell, and it may not pay a
 # millisecond for a race it is not in.
 rm -f "$DAEMON_HOME"/*.json
-run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION"
-t "no record at all is still no run"      "ctx=none"  said
-t "and costs nothing to find out"         "waited=no" waited
+t "no record at all is still no run" "ctx=none" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "and costs nothing to find out"    "waited=no" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
+# RE-PLANTED FOR EACH PROBE, and that is the mtime rule showing its face: the
+# budget is spent from the record's last write, so the first probe here uses it
+# up and a second one against the same file is correctly not waited on at all.
 only_seat seat-a "$(unbound_record)"
-run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
-t "a bind that never lands falls through to no run" "ctx=none"   said
-t "...having waited for it rather than giving up at once" "waited=yes" waited
+t "a bind that never lands falls through to no run" "ctx=none" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+only_seat seat-a "$(unbound_record)"
+t "...having waited for it rather than giving up at once" "waited=yes" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
 
 # THE BUDGET IS THE RECORD'S, NOT THE CALLER'S. An operator's own joined seat
 # looks exactly like a pre-bind one — sminos writes no board key for either —
@@ -202,9 +205,10 @@ t "...having waited for it rather than giving up at once" "waited=yes" waited
 # budget.
 only_seat seat-a "$(unbound_record)"
 touch -t 200001010000 "$DAEMON_HOME/seat-a.json"
-run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION"
-t "a seat nobody is binding is not waited on" "waited=no" waited
-t "and it is still no run"                    "ctx=none"  said
+t "a seat nobody is binding is not waited on" "waited=no" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "and it is still no run"                    "ctx=none"  \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
 # And the window doing its job: the bind lands while the verb is waiting.
 only_seat seat-a "$(unbound_record)"
