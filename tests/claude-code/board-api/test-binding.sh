@@ -72,11 +72,12 @@ nt "and never guesses one"  "api|https://b.example|"                   probe "$r
 # the record when the dispatcher bound this session, so the fact is on disk
 # under a name the worker can read off its own environment.
 WSESS="beef0000-0000-4000-8000-00000000000a"
-seat() {  # seat <board-key> — one record for $WSESS, alone in the registry
-  rm -f "$DAEMON_HOME"/*.json
+seat() {  # seat <board-key> [path] — one record for $WSESS, alone in the registry
+  local into="${2:-}"
+  [ -n "$into" ] || { rm -f "$DAEMON_HOME"/*.json; into="$DAEMON_HOME/w.json"; }
   printf '{"uuid":"w","current":"%s","board":"%s","board_repo":"from-record",
            "run_id":41,"fence":3,"run_bearer":"b","bind_confirmed":true}\n' \
-    "$WSESS" "$1" > "$DAEMON_HOME/w.json"
+    "$WSESS" "$1" > "$into"
 }
 seat "api:https://b.example"
 t "a repo-less api head falls back to this session's seat record" \
@@ -91,6 +92,34 @@ t  "a record from another board is not this checkout's session" \
   "board.json names binding=api but no repo" probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
 nt "and its repo key is never borrowed" "from-record" \
   probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+# ...and it waits out a bind still in flight, because _repo_from_own_seat asks
+# own_seat() the same question a verb does. The executor lane binds AFTER the
+# spawn and has no startup barrier, so the worker's first board command can run
+# while the record still names no board — and on a repo-less head that is a
+# fatal, not a fallback.
+rm -f "$DAEMON_HOME"/*.json
+printf '{"uuid":"w","short":"beef0000","status":"working","task":"x"}\n' \
+  > "$DAEMON_HOME/w.json"
+# Renamed into place, as board-bind.sh does it: a scan that caught a truncated
+# record would skip it and read the absence as "the record went away".
+( sleep 2
+  seat "api:https://b.example" "$DAEMON_HOME/w.tmp"
+  mv "$DAEMON_HOME/w.tmp" "$DAEMON_HOME/w.json" ) &
+LATE=$!
+t "a bind that lands mid-source still names the repo" \
+  "api|https://b.example|$(basename "$r7").env|from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+wait "$LATE" 2>/dev/null || :
+
+# ONE SERVICE, SEVERAL REPOS. The repo guard applies only where the caller
+# already HAS a repo to compare — and on a repo-less head it has none, which is
+# the whole reason it is asking. So the record's own claim is the answer here,
+# even though the same record is refused once this checkout knows its own repo
+# (pinned on the client side in test-run-self-location.sh).
+seat "api:https://b.example"
+t "a repo-less head takes the record's repo, whichever repo that is" \
+  "|from-record" probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+
 # The declared value still outranks it — the record is the LAST resort, after
 # the env override and the file.
 seat "api:https://b.example"

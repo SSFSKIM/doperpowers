@@ -158,6 +158,77 @@ only_seat seat-a "$(bound_record current "$SESSION")"
 t "a process that declares itself not-the-run ignores the record" "ctx=none" \
   reveal BOARD_NO_SELF_LOCATE=1 CLAUDE_CODE_SESSION_ID="$SESSION"
 
+# ---- the spawn-before-bind race --------------------------------------------
+# The executor lane has no startup barrier: execute-dispatch.sh spawns the
+# worker and binds it AFTERWARDS, so the worker's first board command can land
+# between the two. `sminos spawn` has already written the record by then — with
+# `short` off the launch banner — but board-bind.sh writes `board`, the repo,
+# the run, the bearer and the confirmation in ONE later write, so mid-handover
+# the record exists and says nothing about any board. That is the wait window,
+# and it is the only one.
+TIMED_OUT="" TIMED_SECS=0
+run_timed() {  # run_timed <cmd...> — capture the output AND the wall clock
+  local start=$SECONDS
+  TIMED_OUT="$("$@" 2>&1)" || :
+  TIMED_SECS=$((SECONDS - start))
+}
+said() { printf '%s\n' "$TIMED_OUT"; }
+# Coarse on purpose: the point is "did it sit out a budget or not", and a
+# second-resolution verdict cannot flake on a 0.5s poll interval.
+waited() { [ "$TIMED_SECS" -ge 1 ] && echo "waited=yes" || echo "waited=no"; }
+
+# The pre-bind shape sminos leaves behind: a launch, and nothing else.
+unbound_record() {
+  printf '{"uuid":"seat-a","short":"%s","status":"working","task":"do the thing"}' "$SHORT"
+}
+
+# A session with no record at all is an operator's shell, and it may not pay a
+# millisecond for a race it is not in.
+rm -f "$DAEMON_HOME"/*.json
+run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "no record at all is still no run"      "ctx=none"  said
+t "and costs nothing to find out"         "waited=no" waited
+
+only_seat seat-a "$(unbound_record)"
+run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+t "a bind that never lands falls through to no run" "ctx=none"   said
+t "...having waited for it rather than giving up at once" "waited=yes" waited
+
+# THE BUDGET IS THE RECORD'S, NOT THE CALLER'S. An operator's own joined seat
+# looks exactly like a pre-bind one — sminos writes no board key for either —
+# so the only thing separating "a bind is in flight" from "this seat is not a
+# board worker" is when the record was last written. Anchored on the caller's
+# clock instead, every verb run from a joined seat would sit out the whole
+# budget.
+only_seat seat-a "$(unbound_record)"
+touch -t 200001010000 "$DAEMON_HOME/seat-a.json"
+run_timed reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "a seat nobody is binding is not waited on" "waited=no" waited
+t "and it is still no run"                    "ctx=none"  said
+
+# And the window doing its job: the bind lands while the verb is waiting.
+only_seat seat-a "$(unbound_record)"
+# ATOMIC, like the write it stands in for: board-bind.sh renames a temp file
+# into place under the registry lock, and a scan that caught a truncated one
+# would skip it and read the absence as "the record went away".
+( sleep 2
+  printf '%s\n' "$(bound_record short "$SHORT")" > "$DAEMON_HOME/seat-a.tmp"
+  mv "$DAEMON_HOME/seat-a.tmp" "$DAEMON_HOME/seat-a.json" ) &
+LATE=$!
+t "a bind that lands mid-wait is the run the verb speaks as" "ctx=$BEARER/41/3" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+wait "$LATE" 2>/dev/null || :
+
+# ---- one service, several repos --------------------------------------------
+# The board url names the SERVICE, and one instance serves several repos out of
+# one ticket namespace — so a session bound for a NEIGHBOUR repo passes the url
+# guard. This checkout knows which repo it speaks for, so it can say no.
+only_seat seat-a "$(bound_record current "$SESSION")"
+t "a record bound for another repo on the same service is not ours" "ctx=none" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_REPO=otherrepo BOARD_SEAT_BIND_WAIT=0
+t "and the one bound for ours still is" "ctx=$BEARER/41/3" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_REPO=testrepo
+
 # ---- the pre-dp#35 behaviours, unchanged -----------------------------------
 rm -f "$DAEMON_HOME"/*.json
 t "auto without any run context still dies naming it" "no BOARD_RUN_TOKEN" \

@@ -177,7 +177,77 @@ def _registry_root():
             or os.path.join(os.path.expanduser("~"), ".claude", "sminos"))
 
 
-_OWN_SEAT = {}   # per-process memo: this session's record, found once
+_OWN_SEAT = {}          # per-process memo: this session's record, found once
+_SEAT_POLL = 0.5        # the bind lands in one write; this only has to notice
+_SEAT_BIND_WAIT = 30.0  # seconds, from the RECORD's last write — see own_seat
+
+
+def _seat_bind_wait():
+    try:
+        v = float(os.environ.get("BOARD_SEAT_BIND_WAIT") or _SEAT_BIND_WAIT)
+    except ValueError:
+        return _SEAT_BIND_WAIT
+    return max(0.0, v)
+
+
+def _seat_of_session(session):
+    """(seat id, record, mtime) for THIS session — or None. The BOARD is not
+    examined here: a record can name this session before it names any board,
+    and telling those two absences apart is the whole of the wait below."""
+    prefix_hit = None
+    root = _registry_root()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json") or name.endswith(".reply.json"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            mtime = os.stat(path).st_mtime
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("current") or "") == session:
+            return (name[:-5], rec, mtime)   # the exact match always wins
+        short = str(rec.get("short") or "")
+        if short and prefix_hit is None and session.startswith(short):
+            prefix_hit = (name[:-5], rec, mtime)
+    return prefix_hit
+
+
+def _seat_verdict(rec, board, repo_key):
+    """`mine`, `pending` or `foreign`, for a record that IS this session's.
+
+    `pending` is a bind that has not landed. board-bind.sh writes `board`,
+    `board_repo`, `run_id`, `fence`, `run_bearer` and `bind_confirmed` in ONE
+    locked write, so a record naming no board at all is mid-handover — there is
+    no state where some of them are there and the rest are not.
+
+    `foreign` is this session bound somewhere that is not this checkout. The
+    url names the SERVICE, and one instance serves several repos out of one
+    ticket namespace, so the url alone does not separate them: a record stamped
+    for a neighbour repo would otherwise have this checkout's verbs acting on
+    that repo's run. The repo is compared only when the caller HAS one — the
+    repo-less-head fallback in _binding.sh asks this question precisely because
+    it does not — and only when the record carries one, since a bind predating
+    dp#33 stamped no repo and is still this session's own.
+    """
+    stamped = str(rec.get("board") or "").rstrip("/")
+    if not stamped:
+        return "pending"
+    if stamped != board:
+        return "foreign"
+    mrepo = str(rec.get("board_repo") or "").strip()
+    if repo_key and mrepo and mrepo != repo_key:
+        return "foreign"
+    if rec.get("bind_confirmed") and str(rec.get("run_bearer") or ""):
+        return "mine"
+    return "pending"
 
 
 def own_seat():
@@ -197,23 +267,39 @@ def own_seat():
     `current` is the exact match and wins; `short` is a PREFIX of the session
     uuid, which is all a worker has in the seconds before the uuid poll returns.
 
+    THE BIND CAN STILL BE IN FLIGHT. execute-dispatch.sh spawns the worker and
+    binds it afterwards, and the executor lane has no startup barrier to hold
+    the worker in the meantime — so a worker's first board command can land
+    between the two writes and find a record that names no board yet. Resolving
+    `None` there is the very failure this mechanism exists to remove, one race
+    narrower. So: no record for this session at all is an answer, returned at
+    once; a record whose bind has not landed is a bind to WAIT for.
+
+    The budget is measured from the RECORD's last write, not from the caller's
+    clock, and that is what keeps an ordinary shell fast. An operator's own
+    joined seat is byte-indistinguishable from a pre-bind one — sminos writes no
+    board key for either — so the only thing separating "a bind is in flight"
+    from "this seat is not a board worker" is how long ago somebody wrote it. A
+    record older than the budget cannot be mid-handover, and is not waited on.
+    $BOARD_SEAT_BIND_WAIT tunes it; 0 disables the wait entirely.
+
     The BOARD guard is strict here, unlike meta_is_mine's: the registry is
-    machine-global, and a record that names a different service — or names none
-    at all — is not evidence that this checkout's board handed this session a
-    run. meta_is_mine reads an unstamped record as the caller's because
-    SKIPPING one there would strand a live run with no renewal; here the safe
-    direction is the opposite one, since adopting the wrong record makes every
-    verb act as a principal nobody chose.
+    machine-global, and a record that names a different service — or a different
+    repo on the same one — is not evidence that this checkout's board handed
+    this session a run. meta_is_mine reads an unstamped record as the caller's
+    because SKIPPING one there would strand a live run with no renewal; here the
+    safe direction is the opposite one, since adopting the wrong record makes
+    every verb act as a principal nobody chose.
 
     $BOARD_NO_SELF_LOCATE is a process saying it is not its session: the two
-    dispatchers and the sweep declare it beside the `unset BOARD_RUN_TOKEN`
-    that already closed the env channel for them (THE TICK IS AUTOMATION, FULL
-    STOP), because a tick launched from a worker's own session would otherwise
-    act as that worker. It shuts the whole record off, the repo key included —
-    a tick has its own binding to read one from, and a neighbour's record is
-    not it. It cannot reach a spawned worker as a suppression: that worker
-    either loses the entire env prefix, which takes this with it, or keeps it
-    and keeps the explicit bearer beside it, which is resolved first.
+    dispatchers and the sweep declare it ahead of the binding they resolve (THE
+    TICK IS AUTOMATION, FULL STOP), because a tick launched from a worker's own
+    session would otherwise act as that worker. It shuts the whole record off,
+    the repo key included — a tick has its own binding to read one from, and a
+    neighbour's record is not it. It cannot reach a spawned worker as a
+    suppression: that worker either loses the entire env prefix, which takes
+    this with it, or keeps it and keeps the explicit bearer beside it, which is
+    resolved first.
     """
     if "v" in _OWN_SEAT:
         return _OWN_SEAT["v"]
@@ -222,31 +308,27 @@ def own_seat():
     board = "api:" + os.environ.get("BOARD_API_URL", "").rstrip("/")
     if not session or board == "api:" or os.environ.get("BOARD_NO_SELF_LOCATE"):
         return None
-    prefix_hit = None
-    try:
-        names = sorted(os.listdir(_registry_root()))
-    except OSError:
+    repo_key = os.environ.get("BOARD_REPO", "").strip()
+    hit = _seat_of_session(session)
+    if hit is None:
         return None
-    for name in names:
-        if not name.endswith(".json") or name.endswith(".reply.json"):
-            continue
-        try:
-            with open(os.path.join(_registry_root(), name)) as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(rec, dict):
-            continue
-        if str(rec.get("board") or "").rstrip("/") != board:
-            continue
-        if str(rec.get("current") or "") == session:
-            _OWN_SEAT["v"] = (name[:-5], rec)
-            return _OWN_SEAT["v"]
-        short = str(rec.get("short") or "")
-        if short and prefix_hit is None and session.startswith(short):
-            prefix_hit = (name[:-5], rec)
-    _OWN_SEAT["v"] = prefix_hit
-    return prefix_hit
+    verdict = _seat_verdict(hit[1], board, repo_key)
+    if verdict == "pending":
+        deadline = hit[2] + _seat_bind_wait()
+        while verdict == "pending" and time.time() < deadline:
+            time.sleep(_SEAT_POLL)
+            again = _seat_of_session(session)
+            if again is None:
+                break            # the record went away; there is nothing to wait for
+            hit = again
+            verdict = _seat_verdict(hit[1], board, repo_key)
+    if verdict == "foreign":
+        return None
+    # A bind that never landed is returned as it stands: run_context() reads no
+    # bearer on it and falls back, which is the same answer as no record at all
+    # — reached the slow way, once, because it was worth waiting to be sure.
+    _OWN_SEAT["v"] = (hit[0], hit[1])
+    return _OWN_SEAT["v"]
 
 
 _RUN_CTX = {}    # per-process memo: resolved once, logged once
