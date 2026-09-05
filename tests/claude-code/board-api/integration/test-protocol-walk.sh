@@ -129,6 +129,9 @@ t "in-review requires the artifact and takes it" "#$TID: → in-review" \
 # The crossing ENDED the run server-side, and the bearer died with the commit.
 t "the ended run's bearer is revoked" "unauthenticated" \
   api "$BEARER" GET /tickets
+# ...and the worker's TURN is over with it. Only a mid-turn owner fences a
+# transition (dp#63), and in this tier nothing else ends a scripted turn.
+end_turn "$UUID"
 # THE VERDICT IS THE CLOSE. `confident-ready` was retired from this fork's
 # state machine (the Reviewer worker merges what it is confident about, and the
 # merge closes the ticket), so the walk takes `in-review → done` — the one
