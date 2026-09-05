@@ -15,7 +15,10 @@
 #   RELAY  answers the human has posted, from /answers/unrelayed, into the
 #          bound worker session. The ack is DELIVERY-GATED: it fires only when
 #          the sentinel is already in the transcript or a resume returned
-#          success. Undeliverable answers are never ack-and-dropped.
+#          success. Undeliverable answers are never ack-and-dropped. The feed
+#          itself serves only answers a successor could still deliver — a
+#          ticket gone terminal drops its answer server-side (arkho board
+#          ticket 26), so never-dropped has no immortal-entry corollary.
 #   RESUME every run the server reclaimed, from /runs/needing-resume, on a
 #          freshly claimed SUCCESSOR — the registry persist lands BEFORE any
 #          delivery attempt, unrelayed answers for that ticket ride the same
