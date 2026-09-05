@@ -136,8 +136,16 @@ nt "on a NEW run — the ended one never reaches a worker" "owner=[$RUN_E]" owne
 # ---- (f) spawned, and the dispatcher died before the bind -----------------
 # SPAWN_KILL_PARENT makes the stub kill the dispatcher after the session is
 # registered — a detached worker is already alive, holding the run, and no bind
-# has landed. This is the one boundary where doing something is worse than
-# doing nothing.
+# has landed.
+#
+# LEAVING IT LIVE WAS THE OLDER ANSWER, and it rested on a premise that turned
+# out to be false: that the bearer was in the worker's environment. `claude
+# --bg` drops the spawn prefix, and the bind is what would have put a bearer at
+# rest — so this worker can never speak for its run, and every verb it ran
+# would write as the OPERATOR on a ticket its own claimed run still owns. The
+# reconciler retires it, releases the run and lets the ticket be dispatched
+# afresh; the client refuses to resolve any principal on such a seat, so an
+# orphan that outlives its retirement can only stop.
 T4="$(register 'crash drill — spawned but never bound')"
 OUT_F1="$DRILL_TMP/dispatch-f1.out"
 in_repo SPAWN_KILL_PARENT=1 "$DISPATCH" --sweep >"$OUT_F1" 2>&1 || true
@@ -149,10 +157,16 @@ before_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
 OUT_F2="$DRILL_TMP/dispatch-f2.out"
 in_repo "$DISPATCH" --sweep >"$OUT_F2" 2>&1 || true
 t  "a spawned-but-unbound session is reported"         "but never bound it" cat "$OUT_F2"
-t  "and explicitly NOT ended"                          "is NOT being ended" cat "$OUT_F2"
-t  "the live run still owns its ticket"                "owner=[$RUN_F]" owner_line "$T4"
+t  "and retired rather than left to write as the operator" \
+   "retiring it and releasing the run" cat "$OUT_F2"
+# THE RETIRE MUST REACH THE SESSION LAYER, and it must precede the release:
+# freeing the ticket beside a live predecessor is the one outcome worse than
+# leaving the orphan alone.
+t  "the retire reached the session layer"              "retire $T4-api-implementer" \
+   cat "$SPAWN_LOG"
+nt "the released run no longer owns the ticket"        "owner=[$RUN_F]" owner_line "$T4"
 after_f="$(grep -c "SPAWN name=$T4-api-implementer" "$SPAWN_LOG" || true)"
-t  "and no second worker is spawned onto it"           "spawns=[$before_f]" \
+t  "and the freed ticket is dispatched afresh"         "spawns=[$((before_f + 1))]" \
    printf 'spawns=[%s]\n' "$after_f"
 
 nt "no boundary case ever reached the gh CLI"          "GH INVOKED"      cat "$GH_LOG"
