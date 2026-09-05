@@ -270,10 +270,27 @@ for p in blind:
 # binding; the flat one holds journals written before the store was keyed,
 # which are ours because only one binding on this machine ran daemons then.
 # Nothing adds to the flat one, so it drains and the branch goes with it.
+#
+# AND A NONCE IS READ ONCE. A replay writes the keyed journal ahead of its own
+# POST and drops the flat original after it; a death between the two leaves the
+# same nonce in both stores, and acting on both replays one claim twice. The
+# keyed directory is walked first, so a second sighting is the flat leftover:
+# dropped where it lies, never classified.
 claim_paths = []
+seen = set()
 for d in (os.environ["T_CLAIMS"], os.environ["T_CLAIMS_LEGACY"]):
-    claim_paths.extend(glob.glob(os.path.join(d, "*.json")))
-for p in sorted(claim_paths):
+    for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+        nonce = os.path.basename(p)[:-5]
+        if nonce in seen:
+            for ext in (".json", ".body.md"):
+                try:
+                    os.remove(os.path.join(d, nonce + ext))
+                except OSError:
+                    pass
+            continue
+        seen.add(nonce)
+        claim_paths.append(p)
+for p in claim_paths:
     try:
         j = json.load(open(p))
     except Exception:

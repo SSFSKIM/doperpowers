@@ -1364,6 +1364,13 @@ mkjs() {  # mkjs <path> <ticket> — one unfinished successor claim, replay shap
 mkjs "$(claimdir "$SDH" "$RPORT")/n-mine.json"   12
 mkjs "$FOREIGN_S/n-theirs.json"                  12
 mkjs "$SDH/board-claims/n-legacy.json"           13
+# ONE NONCE IN BOTH STORES: the shape a replay that wrote the keyed journal and
+# died before dropping the flat original leaves behind. Read from both, that
+# claim is replayed twice. The keyed copy is the state — sealed here — and the
+# flat leftover is dropped without being acted on.
+printf '{"lane": "successor", "run_id": 55, "spawn_completed": true, "ticket": "14"}\n' \
+  > "$(claimdir "$SDH" "$RPORT")/n-dup.json"
+mkjs "$SDH/board-claims/n-dup.json"              14
 OUTS="$TDIR/store-scope.out"
 RSW "$SDH" > "$OUTS" 2>&1 || true
 
@@ -1377,6 +1384,12 @@ t  "and it is left exactly where it lies" "still-there" \
    bash -c "[ -e '$FOREIGN_S/n-theirs.json' ] && echo still-there || echo gone"
 t  "while the flat legacy copy drains once its replay has run" "gone" \
    bash -c "[ -e '$SDH/board-claims/n-legacy.json' ] && echo still-there || echo gone"
+nt "a nonce the keyed store already seals is not replayed from the flat one" \
+   "n-dup" cat "$OUTS"
+t  "the flat duplicate is dropped" "gone" \
+   bash -c "[ -e '$SDH/board-claims/n-dup.json' ] && echo still-there || echo gone"
+t  "and the keyed record is left alone" "still-there" \
+   bash -c "[ -e '$(claimdir "$SDH" "$RPORT")/n-dup.json' ] && echo still-there || echo gone"
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting

@@ -960,6 +960,15 @@ mkj12 "$CL12/nonce-ours.json"      61
 mkj12 "$FOREIGN12/nonce-theirs.json" 62
 mkj12 "$DH12/board-claims/nonce-legacy.json" 63
 printf 'their assignment\n' > "$FOREIGN12/nonce-theirs.body.md"
+# ONE NONCE IN BOTH STORES. A replay writes the keyed journal ahead of its own
+# POST and drops the flat original after; a death between the two leaves both,
+# and reading both replays one claim twice. The keyed copy is the state — here
+# it is already sealed — and the flat leftover is dropped without being acted
+# on.
+printf '{"lane": "implementer", "run_id": 64, "spawn_completed": true}\n' \
+  > "$CL12/nonce-dup.json"
+mkj12 "$DH12/board-claims/nonce-dup.json" 64
+printf 'a superseded assignment\n' > "$DH12/board-claims/nonce-dup.body.md"
 OUT12="$(mktemp)"
 ( cd "$r12" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH12" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r12" \
@@ -981,6 +990,12 @@ t  "a flat legacy journal is still read"  "nonce-legacy claimed run 63" cat "$OU
 t  "its run is released too"              '"path": "/runs/63/end"'      cat "$FIX12.log"
 t  "and the drop reaches it where it lies" "gone" gone \
    "$DH12/board-claims/nonce-legacy.json"
+
+nt "a nonce the keyed store already seals is not replayed from the flat one" \
+   "nonce-dup" cat "$OUT12"
+t  "the flat duplicate is dropped"        "gone" gone "$DH12/board-claims/nonce-dup.json"
+t  "its stale assignment body goes too"   "gone" gone "$DH12/board-claims/nonce-dup.body.md"
+t  "and the keyed record is left alone"   "still-there" gone "$CL12/nonce-dup.json"
 
 # =========================================================================
 # Scenario 13 — THE OTHER HALF OF THE SUPPRESSION DRILL. Scenario 1 shows a
