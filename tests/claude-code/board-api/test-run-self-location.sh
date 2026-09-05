@@ -138,15 +138,19 @@ t "an explicit BOARD_RUN_TOKEN wins over the record" "ctx=env-tok/99/7" \
 only_seat seat-a "$(bound_record current "$SESSION" "api:http://other.example")"
 t "a record bound on another board is ignored" "ctx=none" reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
-# bind_confirmed is board-bind's claim that the SERVER accepted the bind. An
-# unconfirmed record may name a run the board never gave this session.
+# THE BEARER AT REST IS THE EVIDENCE, not the confirmation flag. The sweep's
+# successor path writes the NEW run, fence and bearer onto the existing record
+# with `bind_confirmed: false` and only binds AFTER the resumed turn returns —
+# so for that whole turn this is what the worker's own record looks like. Read
+# as "not a run", every verb of a successor turn went out as the operator.
+# The server minted that bearer for this seat, and the end-of-run strip is what
+# takes it away again; `bind_confirmed` keeps its own meaning for the sweep.
 only_seat seat-a '{"uuid":"seat-a","current":"'"$SESSION"'","run_id":41,"fence":3,
-  "run_bearer":"'"$BEARER"'","board":"'"$BOARD"'","board_repo":"testrepo"}'
-t "an unconfirmed bind is not a run" "ctx=none" reveal CLAUDE_CODE_SESSION_ID="$SESSION"
-# ...and it is not a bind to WAIT for either. Under an api binding board-bind
-# writes the board key and the confirmation together, so a record naming this
-# board without one is a bind that has been UNDONE, never one still in flight.
-t "and it is answered at once, not waited out" "waited=no" \
+  "run_bearer":"'"$BEARER"'","bind_confirmed":false,
+  "board":"'"$BOARD"'","board_repo":"testrepo"}'
+t "a persisted successor speaks as its run before the bind lands" \
+  "ctx=$BEARER/41/3" reveal CLAUDE_CODE_SESSION_ID="$SESSION"
+t "and it does not sit out a wait to do it" "waited=no" \
   reveal CLAUDE_CODE_SESSION_ID="$SESSION"
 
 # The end-of-run shape: _sweep_api.sh's _retire_run_locally pops run_id,
@@ -284,9 +288,13 @@ nt "nor does the human token this verb would otherwise have used" "human-tok" \
 # claimed run still owns. So the seat says at birth what it was launched for:
 # both dispatchers pass `--role` to `sminos spawn`, and a record carrying a
 # dispatch role whose bind never lands refuses to act as anyone.
+# `role` is ordinary sminos metadata — `join` takes any value a human types and
+# `fill` preserves it — so it cannot say who launched a seat. The dispatchers
+# stamp `board_dispatch` (the claim nonce) onto the record between the spawn and
+# the bind, and that field, alone, is the provenance.
 dispatched_record() {  # the pre-bind shape, spawned by a dispatcher
   printf '{"uuid":"seat-a","short":"%s","status":"working","role":"IMPLEMENT",' "$SHORT"
-  printf '"task":"do the thing"}'
+  printf '"board_dispatch":"n-77","task":"do the thing"}'
 }
 only_seat seat-a "$(dispatched_record)"
 t "a seat spawned for run work refuses to act on a bind that never landed" \
@@ -310,7 +318,17 @@ t  "and nothing at all reached the board" "new-requests=0" wire_delta
 
 # The other half of the same rule: a seat NOBODY dispatched — an operator's own
 # joined session — keeps the ordinary fall-back. It has no run to fail closed
-# on, and refusing there would break every board verb a human runs.
+# on, and refusing there would break every board verb a human runs. A role of
+# IMPLEMENT does not make one dispatched: a human may `sminos join --role
+# IMPLEMENT` and a re-fill preserves whatever was there, so reading provenance
+# off that field refused a manually operated seat every verb it ran.
+only_seat seat-a '{"uuid":"seat-a","short":"'"$SHORT"'","status":"working",
+  "role":"IMPLEMENT","task":"a human typed this"}'
+t "a role literal alone is not provenance" "ctx=none" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+nt "and such a seat is never refused" "spawned for run work" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+
 only_seat seat-a "$(unbound_record)"
 UM_OUT="$(cd "$REPO" && env CLAUDE_CODE_SESSION_ID="$SESSION" \
   BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SEAT_BIND_WAIT=1 \
