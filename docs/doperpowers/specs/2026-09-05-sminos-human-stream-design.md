@@ -20,10 +20,11 @@ when it comes, does not re-derive them.
 Human-confirmed frame (2026-09-05): direction is agent → human only (the
 human's replies ride the existing `SendMessage` and `sminos send`); the mark is
 a tag in the message, not a command; the per-session and all-sessions views
-are the same scan with a filter; no message kinds; every session is a source,
-seats and seatless interactive sessions alike; the agent-facing instruction is
-one sentence, with no list of what to send or withhold; deferred until afleet
-plumbs it.
+are the same scan with a filter; three marks — `<to-human>`, `<essential>`,
+`<need-input>` — that divide the human's attention, not the content's kind;
+every session is a source, seats and seatless interactive sessions alike; the
+agent-facing instruction is a few sentences, with no list of what to send or
+withhold; deferred until afleet plumbs it.
 
 ## §1 The agent's side
 
@@ -34,19 +35,26 @@ No verb. The agent writes, and wraps what the human should read:
     until the review lands.
     </to-human>
 
-The doctrine is one sentence: *your tool results and messages are not shown to
-the human; wrap what the human should read in `<to-human>…</to-human>`.* It is
-carried by an output style — `output-styles/to-human.md` in this plugin, which
+Three marks, told apart by the attention they ask of the human:
+
+- `<to-human>` — what the human would want to know.
+- `<essential>` — what is essential for the human to know.
+- `<need-input>` — input the agent needs from the human: a decision, a
+  judgment, a real value, or more.
+
+The doctrine is those three lines and one premise: *your tool results and
+messages are not shown to the human.* It is carried by an output style — `output-styles/to-human.md` in this plugin, which
 the harness injects as persistent context at session start and after every
 compaction, and which also carries the explanatory-insights style so a session
 loses nothing by selecting it. A launcher whose surface is the stream (afleet)
 selects it with `"outputStyle": "to-human"` in the settings file it passes at
 launch; a seat spawned for such a surface gets the same setting; every other
 session on the machine is untouched, and a human in a plain session can turn
-it on or off with the output-style command. No kinds, no
-criteria, no cadence. The judgment of what a human needs to hear is the
-agent's, and it is expected to be good; if observed failures show otherwise,
-the doctrine is refined from those failures, not from anticipation.
+it on or off with the output-style command. No content kinds, no
+criteria beyond the three lines, no cadence. The judgment of what a human
+needs to hear, and how much of their attention it deserves, is the agent's,
+and it is expected to be good; if observed failures show otherwise, the
+doctrine is refined from those failures, not from anticipation.
 
 Consequences worth stating. A tag costs the agent nothing — no tool call, no
 turn, no permission prompt — and it can appear anywhere the agent writes
@@ -71,10 +79,13 @@ consumer:
 2. Within `message.content`, take blocks with `type == "text"`. Tool-use
    blocks, tool results, user records, and peer messages are never scanned,
    so a tag quoted inside any of those can never surface.
-3. In each text block, every `<to-human>…</to-human>` span is one message to
-   the human, in order. The tag opens and closes within one assistant
-   message; a reader joins the text blocks of one message (same `uuid`)
-   before matching, so a span split by streaming is still one span.
+3. In each text block, every `<to-human>…</to-human>`,
+   `<essential>…</essential>`, and `<need-input>…</need-input>` span is one
+   message to the human, in order, carrying its mark. The tag opens and
+   closes within one assistant message; a reader joins the text blocks of one
+   message before matching, so a span split by streaming is still one span.
+   (Which record field groups the blocks of one streamed message is
+   confirmed against real files when the reader is built.)
 4. Each message carries the record's `sessionId` and `timestamp`. The session
    name comes from the transcript's own `custom-title` / `agent-name`
    records, or from the harness peer registry while the session is live; the
@@ -105,7 +116,12 @@ For a terminal, and as the reference reader, sminos grows one verb:
     sminos inbox --group <group>          # sessions filling a seat in the group
     sminos inbox --since 7d               # widen the window
     sminos inbox -n 20                    # the last N
-    sminos inbox --json                   # {session, name, seat, ts, text} per line
+    sminos inbox --essential              # only <essential> and <need-input> spans
+    sminos inbox --json                   # {session, name, seat, ts, mark, text} per line
+
+What a consumer does with a mark — a notification for `<essential>`, an open
+list for `<need-input>` — is the consumer's choice, made later and in its own
+code; the marks only divide the human's attention.
 
 sminos already reads transcripts (`reply`, the delivery evidence in
 `wake --wait`), so `inbox` is the same scan with §2's rule and a modification
@@ -133,22 +149,24 @@ intended reading surface.
 
 Observable when the build lands:
 
-- Given a transcript containing `<to-human>` spans in assistant text, in a
-  subagent's text, inside a tool result, and inside a user message, a §2
-  reader yields exactly the assistant main-line spans, in order, each with
-  the record's session id and timestamp.
+- Given a transcript containing `<to-human>`, `<essential>`, and
+  `<need-input>` spans in assistant text, in a subagent's text, inside a tool
+  result, and inside a user message, a §2 reader yields exactly the assistant
+  main-line spans, in order, each with its mark and the record's session id
+  and timestamp.
 - A span whose text was streamed as two text blocks of one assistant message
   yields one message.
 - `sminos inbox` lists spans from every session file modified within the
   window, oldest first; `--session` narrows by full id, prefix, or name;
   `--group` narrows to sessions filling a seat in the group; `--since` widens
-  the window; `-n` bounds the tail; `--json` prints one object per span with
-  session, name, seat, ts, and text.
+  the window; `-n` bounds the tail; `--essential` drops plain `<to-human>`
+  spans; `--json` prints one object per span with session, name, seat, ts,
+  mark, and text.
 - Reading the same files twice returns the same spans; reading after a file
   grows returns only the new spans when the reader kept its offset.
-- `output-styles/to-human.md` carries the one-sentence doctrine and the
-  explanatory style, keeps the coding instructions, and nothing more about
-  what to send; a session launched with `"outputStyle": "to-human"` in its
+- `output-styles/to-human.md` carries the premise, the three marks with one
+  line each, and the explanatory style, keeps the coding instructions, and
+  nothing more about what to send; a session launched with `"outputStyle": "to-human"` in its
   settings shows the doctrine in its context, and a session launched without
   it does not.
 - `tests/sminos/run-sminos-tests.sh` covers each point above against
@@ -189,6 +207,25 @@ Observable when the build lands:
   taxonomy is a list of what to send in disguise, and it hardens before
   anyone has watched agents use the stream. Failures observed later may
   reintroduce structure with evidence.
+- Decision: three marks — `<to-human>`, `<essential>`, `<need-input>` — added
+  by the human once the single tag was in use. Not a reversal of the
+  decision above: these divide the human's *attention* (what they would
+  want to know, what they must know, what they must supply), not the
+  content's kind, and agents were expected to mark more than a human wants
+  to read at one grade. Rejected: `<to-human-p0>` / `<to-human-p1>` — a
+  priority code needs the style to define it, while a plain word is its own
+  criterion; and an unmarked `<to-human>` is the low grade, so a forgotten
+  mark degrades rather than disappears. Rejected: `<important>` — a common
+  emphasis tag in system prompts and skills, which an agent quoting one
+  would surface; `<attention>` names what the reader should do, not what the
+  text is; `<crucial>` is fine but one word away from the criterion.
+  Rejected: defining each mark by a reader behavior (notify, queue,
+  accumulate) — what a consumer does with a mark is its own later choice.
+  Rejected: separating `<need-input>` from a blocking question — a
+  question the agent cannot proceed past is `AskUserQuestion`, which parks
+  the session and is already rendered by `sminos reply`; `<need-input>`
+  covers the input the agent asks for while continuing, and needs no
+  further split.
 - Decision: every session is a source. Rejected: seats only. The human's
   interactive sessions are where much of the work happens, and they hold no
   seat; keying on session id with the seat as an optional join covers both.
@@ -196,10 +233,11 @@ Observable when the build lands:
   where they were write-time snapshots: the transcript carries neither, and
   its own `custom-title` / `agent-name` records already hold the name
   history, so a reader has what it needs without sminos writing anything.
-- Decision: one-sentence doctrine. Rejected: a criteria list ("send
-  decisions, completions, blockers, surprises"). The human's call, and
-  consistent with this repo's rule that a constraint earns its place only
-  against an observed failure.
+- Decision: the doctrine is the premise plus one line per mark. Rejected: a
+  criteria list ("send decisions, completions, blockers, surprises"),
+  examples, and failure modes. The human's call, and consistent with this
+  repo's rule that a constraint earns its place only against an observed
+  failure.
 - Decision: the doctrine travels as an output style, selected per launch.
   Rejected: the root or project CLAUDE.md — its premise ("your messages are
   not shown to the human") is false in a plain terminal session, and
@@ -267,3 +305,8 @@ Pending — written at finish.
 - 2026-09-05 — The doctrine's carrier became the `to-human` output style,
   shipped in `output-styles/` and selected per launch; the style file lands
   with this revision (the reader does not).
+- 2026-09-05 — Two marks added beside `<to-human>`: `<essential>` and
+  `<need-input>`, dividing the human's attention; the style, §1, §2's rule 3,
+  `inbox --essential` and the `mark` field in `--json` follow. The Decision
+  Log records why this is not the rejected kind taxonomy and the names not
+  chosen.
