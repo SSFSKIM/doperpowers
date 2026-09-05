@@ -18,7 +18,7 @@ numbers mean greater capability.
 | Tier | Model and effort | Use |
 |---|---|---|
 | 0 | `gpt-6-astra` at `high` or `xhigh` | Absolute frontier intelligence for the most ambitious work. Default to `high`; reserve `xhigh` for the most important assignments because the difference is marginal. |
-| 1 | `gpt-6-astra` at `medium` or `gpt-5.6-sol` at `xhigh` | Near-frontier intelligence for complex work. Prefer Sol when its marginal cost advantage matters. |
+| 1 | `gpt-6-astra` at `medium` or `gpt-5.6-sol` at `xhigh` | Near-frontier intelligence for complex work and executions that are advanced, complex, or need to be reliable. Prefer Sol when its marginal cost advantage matters. |
 | 2 | `gpt-5.6-sol` at `high` | Trusted execution worker for well-defined, well-scoped tasks. |
 | 3 | `gpt-5.6-luna` at `max` | Extremely cost-efficient worker for mechanical work and large-scale fan-out. |
 
