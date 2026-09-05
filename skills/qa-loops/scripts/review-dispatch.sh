@@ -959,12 +959,9 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
   REVIEWER_UUID=""
-  # Both spawns below carry `--role QAGENT`, and it is not bookkeeping: it is
-  # the ONLY thing a pre-bind record says about whose seat this is. The bind
-  # happens further down, and a crash before it leaves the worker live with a
-  # record naming no board and no run — at which point the client has to tell a
-  # dispatched reviewer (refuse: its claimed run owns the ticket) from an
-  # operator's own session (fall back). Same literal both later stamps write.
+  # Both spawns below carry `--role QAGENT`, which is the seat's honest role in
+  # every fleet view from birth. Provenance is a different question and a
+  # different field — see the `board_dispatch` stamp below the spawn.
 
   # ONE worker harness, two model routes. The default "claude" engine is a
   # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
@@ -993,6 +990,21 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
   REVIEWER_UUID="$uuid"
+  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
+  # the bind the record says nothing about whose seat it is, and that is exactly
+  # the window a dispatcher crash freezes forever — after which the worker is
+  # live, the claim is outstanding, and every verb it runs would go out as the
+  # operator. `board_dispatch` is what the client reads to refuse that instead
+  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
+  # `sminos join` takes whatever role a human types and a re-fill preserves it.
+  # Non-fatal — the bind is the very next step and normally supersedes this —
+  # but loud, because losing it silently loses the refusal.
+  # Through the CLI rather than _stamp_meta, so all three dispatch sites mark a
+  # seat the same way; the nonce comes off the journal path the api caller set,
+  # and gh mode — which has no claim — says `true`.
+  "$SMINOS_CLI" meta set "$uuid" board_dispatch \
+    "$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)" >/dev/null \
+    || echo "$name: could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
 
   # The worker's first protocol action waits on bind_ready. Publish it only
   # after the new registry meta exists and (for ticketed work) board-bind has

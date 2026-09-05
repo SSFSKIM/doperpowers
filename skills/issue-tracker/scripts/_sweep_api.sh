@@ -1407,6 +1407,18 @@ $(cat "$dir/body.md")"
         | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
       if [ -n "$uuid" ]; then
         delivered="$uuid"
+        # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the
+        # spawn and the bind the record says nothing about whose seat it is,
+        # and that is exactly the window a dispatcher crash freezes forever —
+        # after which the worker is live, the claim is outstanding, and every
+        # verb it runs would go out as the operator. `board_dispatch` is what
+        # the client reads to refuse that instead (dp#35). It is provenance,
+        # not bookkeeping: `role` cannot serve, since `sminos join` takes
+        # whatever role a human types and a re-fill preserves it. Non-fatal —
+        # the bind is the next step and normally supersedes this — but loud,
+        # because losing it silently loses the refusal.
+        "$SMINOS_CLI" meta set "$uuid" board_dispatch "$nonce" >/dev/null \
+          || echo "resume: #$tid — could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
         echo "resume: #$tid run $C_RUN → fresh worker $uuid (session resume failed)"
       else
         echo "resume: #$tid — spawned worker UUID unparseable (a session may be orphaned)" >&2

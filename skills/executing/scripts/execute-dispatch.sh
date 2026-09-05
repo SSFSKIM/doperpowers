@@ -392,14 +392,17 @@ PY
   [ -n "$uuid" ] || { echo "#$C_TICKET: spawned worker UUID was not parseable — releasing run $C_RUN_ID (a session may be orphaned)" >&2
                       _api_end_run "$C_RUN_ID" abandoned
                       rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
-  # `--role` is not bookkeeping: it is the ONLY thing a pre-bind record says
-  # about whose seat this is. The bind is the next line, and a crash before it
-  # leaves the worker live with a record that names no board and no run — at
-  # which point the client has to tell a dispatched worker (refuse: its claimed
-  # run owns the ticket) from an operator's own session (fall back). The value
-  # is the same literal the post-bind stamp below writes, so the field never
-  # changes and the two writes cannot disagree.
-  #
+  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
+  # the bind the record says nothing about whose seat it is, and that is exactly
+  # the window a dispatcher crash freezes forever — after which the worker is
+  # live, the claim is outstanding, and every verb it runs would go out as the
+  # operator. `board_dispatch` is what the client reads to refuse that instead
+  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
+  # `sminos join` takes whatever role a human types and a re-fill preserves it.
+  # Non-fatal — the bind is the very next step and normally supersedes this —
+  # but loud, because losing it silently loses the refusal.
+  "$SMINOS_CLI" meta set "$uuid" board_dispatch "$nonce" >/dev/null \
+    || echo "#$C_TICKET: could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
   # The bearer goes to board-bind so it lands in the meta at 0600: the sweep's
   # renew/relay/resume phases read it back out of there, and a worker whose
   # bearer was never stored can never be spoken for again.

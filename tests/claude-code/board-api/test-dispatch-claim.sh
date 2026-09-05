@@ -51,6 +51,24 @@ migrate) exit 0 ;;
 retire)
   echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
   exit 0 ;;
+meta)
+  # `meta set <uuid> <field> <value>` — the dispatchers mark a seat as
+  # dispatcher-spawned here, between the spawn and the bind. Recorded AND
+  # applied: the field is what the client reads to refuse an unbound worker, so
+  # a stub that only logged it would leave every fixture record undispatched.
+  echo "META $*" >> "$DAEMON_HOME/spawn-capture.txt"
+  shift
+  M_P="$DAEMON_HOME/$1.json" M_K="$2" M_V="$3" python3 - <<'PYM'
+import json, os
+p = os.environ["M_P"]
+try:
+    m = json.load(open(p))
+except Exception:
+    raise SystemExit(0)
+m[os.environ["M_K"]] = os.environ["M_V"]
+json.dump(m, open(p, "w"))
+PYM
+  exit 0 ;;
 spawn) ;;
 *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
@@ -190,6 +208,14 @@ t "the spawn declares the role the seat was launched for" "role=ARCHITECT" \
   cat "$DH/spawn-capture.txt"
 spawned_meta() { cat "$DH"/bbbb0001-*.json; }
 t "and it is on the record before any bind" '"role": "ARCHITECT"' spawned_meta
+# PROVENANCE IS ITS OWN FIELD. `role` is ordinary sminos metadata — `join`
+# takes whatever a human types, a re-fill preserves it — so it cannot say who
+# launched a seat. The dispatcher stamps `board_dispatch` between the spawn and
+# the bind, and that is what makes the client refuse an unbound worker rather
+# than let it write as the operator (dp#35).
+t "the seat is marked dispatcher-spawned before the bind" \
+  "META set bbbb0001-0000-4000-8000-000000000000 board_dispatch" cat "$DH/spawn-capture.txt"
+t "and the mark is on the record"  '"board_dispatch"' spawned_meta
 t "fence exported"              "BOARD_RUN_FENCE=3"                    cat "$DH/spawn-capture.txt"
 t "api url exported"            "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
 # THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
