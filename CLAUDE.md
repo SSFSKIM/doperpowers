@@ -70,7 +70,7 @@ Triage each candidate commit: files still byte-identical to the merge base can b
 taken wholesale; files the fork rewrote need a re-graft or a decline. Rebrand on
 import (`superpowers:` → `doperpowers:`, `.superpowers/` → `.doperpowers/`,
 `docs/superpowers/` → `docs/doperpowers/`) and grep for residual `superpowers`
-afterward. Commits touching mechanisms this fork removed — `hooks/`, the Gemini
+afterward. Commits touching mechanisms this fork removed — the `hooks/` bootstrap, the Gemini
 CLI adapter, Codex portal packaging — are automatically irrelevant.
 
 ## Repo map
@@ -78,7 +78,7 @@ CLI adapter, Codex portal packaging — are automatically irrelevant.
 | Path | What it is |
 |------|-----------|
 | `skills/` | The core product — one dir per skill, each with `SKILL.md` (frontmatter `name` + `description` that drives auto-trigger). 14 skills; `using-doperpowers` is the bootstrap entrypoint. |
-| ~~`hooks/`~~ | **Removed.** The `SessionStart` bootstrap (which injected the `using-doperpowers` skill index to shape auto-triggering) was torn out across all harnesses; the `using-doperpowers` skill itself was already deleted upstream-side in this fork, leaving the hook injecting an error. Skills still load from `skills/`; they just no longer get the bootstrap's trigger guidance. |
+| `hooks/` | One hook: `hooks.json` wires `kairos.sh` on `SessionStart` — a session launched with `KAIROS=1` starts in proactive mode (the `kairos` skill's body, re-injected after every compaction); every other session gets nothing. The upstream `SessionStart` bootstrap that used to live here (injecting the `using-doperpowers` skill index) was torn out; skills load from `skills/` directly. |
 | `output-styles/` | Output styles the harness auto-loads from the plugin. `to-human.md`: for sessions whose human reads a report stream (`<to-human>`, `<essential>`, `<need-input>`) instead of the transcript (selected per launch via `outputStyle`; design in `docs/doperpowers/specs/2026-09-05-sminos-human-stream-design.md`). |
 | `.claude-plugin/` | Claude Code manifest (`plugin.json`) + dev `marketplace.json`. |
 | `.codex-plugin/`, `.cursor-plugin/`, `.kimi-plugin/`, `.opencode/`, `.pi/`, `.agents/`, `gemini-extension.json` | Per-harness plugin manifests/adapters. `.codex-plugin` is a local manifest only (the external fork sync was retired in v7.23.0; script recoverable from git history). |

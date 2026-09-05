@@ -78,6 +78,8 @@ done
 tests=(
     "test-worktree-path-policy.sh"
     "test-sde-workspace.sh"
+    # The kairos SessionStart hook — hermetic, sub-second.
+    "test-kairos-hook.sh"
     "test-subagent-driven-execution.sh"
     # board-api (A2): hermetic and fast — every suite below drives the toolkit's
     # verbs against the fixture mock in board-api/mock-server.py, no network and
