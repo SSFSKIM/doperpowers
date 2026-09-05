@@ -92,9 +92,12 @@ t "the claim landed on the registered ticket" "ticket=[$TID]" \
   echo "ticket=[$TICKET]"
 
 # ---- the worker ------------------------------------------------------------
-# Four mechanical steps. The `go` gate is what orders the drill against the
-# worker: the seat cannot be bound until `sminos spawn` has told us its uuid,
-# and the worker must not write to the board before that bind lands.
+# Four mechanical steps. The `go` gate orders the drill against the worker:
+# the seat cannot be bound until `sminos spawn` has told us its uuid. The
+# release comes BEFORE the bind, on purpose — that is the dispatcher's order
+# (execute-dispatch spawns, parses the uuid, then binds, with no startup
+# barrier on the executor lane), so the worker's first board verb finds a
+# seat record whose bind is still in flight and has to wait it out.
 SETTINGS="$DRILL_TMP/worker-settings.json"
 printf '{"env":{"SMINOS_HOME":"%s","DAEMON_HOME":"%s"}}\n' \
   "$DAEMON_HOME" "$DAEMON_HOME" >"$SETTINGS"
@@ -141,10 +144,14 @@ if [ -z "$WORKER_UUID" ]; then
 fi
 echo "note: worker model=$MODEL uuid=$WORKER_UUID"
 
-# ---- the bind, then the release --------------------------------------------
-# board-bind.sh runs with the run env, as the dispatcher runs it, and with the
-# repo key it cannot read from this checkout's board.json — that stamp is what
-# the worker will later resolve its own repo from.
+# ---- the release, then the bind --------------------------------------------
+# The worker polls for `go` every 2s and runs its transition at once, which on
+# this repo-less checkout enters own_seat()'s bind wait; the bind lands a few
+# seconds into that window. board-bind.sh runs with the run env, as the
+# dispatcher runs it, and with the repo key it cannot read from this checkout's
+# board.json — that stamp is what the worker resolves its own repo from.
+: >"$WORK/go"
+sleep 4
 in_repo BOARD_RUN_TOKEN="$BEARER" BOARD_RUN_ID="$RUN" BOARD_RUN_FENCE="$FENCE" \
   BOARD_REPO="$REPO_KEY" "$SCRIPTS/board-bind.sh" "$WORKER_UUID" "$TID" \
   >"$DRILL_TMP/bind.log" 2>&1
@@ -152,7 +159,6 @@ t "the seat is bound to the ticket" "bound #$TID" cat "$DRILL_TMP/bind.log"
 t "and the record carries the repo the checkout cannot name" \
   '"board_repo": "doperpowers"' cat "$DAEMON_HOME/$WORKER_UUID.json"
 
-: >"$WORK/go"
 LANDED=1
 # The LOG, not the board state: a refused write is an answer too, and waiting
 # out the full budget for a state that will never arrive costs five minutes and
