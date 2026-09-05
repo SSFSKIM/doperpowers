@@ -30,16 +30,22 @@ _BINDING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # The URL is never taken from the record. The checkout's board.json names the
 # board; a record naming a different service is not this checkout's session, and
-# that same board equality is the whole guard here. Silent on every failure —
-# no session id, no registry, no record — because the caller's next line is the
-# fatal that says the repo is undeclared, which is the right diagnosis for all
-# of them.
+# that same board equality is the whole guard here. Empty on every ordinary
+# failure — no session id, no registry, no record — because the caller's next
+# line is the fatal that says the repo is undeclared, which is the right
+# diagnosis for all of them.
+#
+# STDERR IS NOT SWALLOWED. own_seat() writes there for one reason: a seat this
+# session was DISPATCHED into whose bind never landed, where it refuses to
+# resolve anything rather than let the process act as somebody else. That
+# refusal is the diagnosis, and the `no repo` fatal that follows it is only the
+# symptom — hiding the first would leave an operator reading the wrong one.
 _repo_from_own_seat() {
   BOARD_API_URL="$BOARD_API_URL" \
   PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import _board_api as A
 seat = A.own_seat()
-print(str(seat[1].get("board_repo") or "").strip() if seat else "")' 2>/dev/null || true
+print(str(seat[1].get("board_repo") or "").strip() if seat else "")' || true
 }
 if [ -z "${BOARD_ROOT:-}" ]; then
   BOARD_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \

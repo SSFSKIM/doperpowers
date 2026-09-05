@@ -276,4 +276,47 @@ nt "the bearer never reaches stdout or stderr" "$BEARER" echo "$TR_OUT"
 nt "nor does the human token this verb would otherwise have used" "human-tok" \
   echo "$TR_OUT"
 
+# ---- a bind that never lands on a seat spawned FOR run work ----------------
+# The dispatcher spawns and binds afterwards, and it can die in between: the
+# claim is outstanding, the worker is live, and its record stays pre-bind
+# forever. Falling back there is the worst available answer — the worker's
+# human-defaulted verbs would act as the OPERATOR, unfenced, on a ticket a
+# claimed run still owns. So the seat says at birth what it was launched for:
+# both dispatchers pass `--role` to `sminos spawn`, and a record carrying a
+# dispatch role whose bind never lands refuses to act as anyone.
+dispatched_record() {  # the pre-bind shape, spawned by a dispatcher
+  printf '{"uuid":"seat-a","short":"%s","status":"working","role":"IMPLEMENT",' "$SHORT"
+  printf '"task":"do the thing"}'
+}
+only_seat seat-a "$(dispatched_record)"
+t "a seat spawned for run work refuses to act on a bind that never landed" \
+  "spawned for run work" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+t "the refusal names the reconciler as the way out" "reconciler" \
+  reveal CLAUDE_CODE_SESSION_ID="$SESSION" BOARD_SEAT_BIND_WAIT=1
+
+# ...and it refuses BEFORE anything reaches the board. A wrong-principal write
+# cannot be taken back, so the only safe place to stop is ahead of the socket.
+only_seat seat-a "$(dispatched_record)"
+WIRE_BEFORE="$(wc -l < "$FIX.log")"
+FC_OUT="$(cd "$REPO" && env CLAUDE_CODE_SESSION_ID="$SESSION" \
+  BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SEAT_BIND_WAIT=1 \
+  "$SCRIPTS/board-transition.sh" 12 in-review drill 2>&1 || true)"
+wire_delta() { echo "new-requests=$(( $(wc -l < "$FIX.log") - WIRE_BEFORE ))"; }
+t  "the verb dies rather than writing as somebody else" \
+   "spawned for run work"  echo "$FC_OUT"
+nt "it never falls back to the operator's credentials" "human-tok" echo "$FC_OUT"
+t  "and nothing at all reached the board" "new-requests=0" wire_delta
+
+# The other half of the same rule: a seat NOBODY dispatched — an operator's own
+# joined session — keeps the ordinary fall-back. It has no run to fail closed
+# on, and refusing there would break every board verb a human runs.
+only_seat seat-a "$(unbound_record)"
+UM_OUT="$(cd "$REPO" && env CLAUDE_CODE_SESSION_ID="$SESSION" \
+  BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SEAT_BIND_WAIT=1 \
+  "$SCRIPTS/board-transition.sh" 12 in-review drill 2>&1 || true)"
+t  "an undispatched seat still falls back to the operator" "#12: → in-review" \
+   echo "$UM_OUT"
+nt "and is never refused"  "spawned for run work" echo "$UM_OUT"
+
 finish

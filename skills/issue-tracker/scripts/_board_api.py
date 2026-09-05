@@ -180,6 +180,17 @@ def _registry_root():
 _OWN_SEAT = {}          # per-process memo: this session's record, found once
 _SEAT_POLL = 0.5        # the bind lands in one write; this only has to notice
 _SEAT_BIND_WAIT = 30.0  # seconds, from the RECORD's last write — see own_seat
+# The role literals a board dispatcher launches a seat with. Both dispatchers
+# pass `--role` to `sminos spawn`, so the record carries one from BIRTH — before
+# any bind — and that is the only thing on a pre-bind record that says whether
+# this session was spawned to do run work or is somebody's own. The same four
+# strings the post-bind stamps write, so the field never changes value; they are
+# already the shared vocabulary board-answer and the sweep read roles back by.
+_DISPATCH_ROLES = ("IMPLEMENT", "ARCHITECT", "SPIKE", "QAGENT")
+
+
+def _is_dispatch_seat(rec):
+    return str(rec.get("role") or "").strip() in _DISPATCH_ROLES
 
 
 def _seat_bind_wait():
@@ -233,6 +244,10 @@ def _seat_verdict(rec, board, repo_key):
     the second is over, and waiting on it would only delay the fall-back that
     is already the right answer.
 
+    A `pending` verdict that never resolves is not always survivable, and
+    own_seat decides that by asking whose seat it is — see the fail-closed rule
+    there.
+
     `no` also covers this session bound somewhere that is not this checkout.
     The url names the SERVICE, and one instance serves several repos out of one
     ticket namespace, so the url alone does not separate them: a record stamped
@@ -279,6 +294,17 @@ def own_seat():
     `None` there is the very failure this mechanism exists to remove, one race
     narrower. So: no record for this session at all is an answer, returned at
     once; a record whose bind has not landed is a bind to WAIT for.
+
+    A BIND THAT NEVER LANDS IS NOT ALWAYS A FALL-BACK. The dispatcher can die
+    between the spawn and the bind: the claim is outstanding, the worker is
+    live, and its record stays pre-bind forever. Falling back there is the worst
+    answer available — the worker's human-defaulted verbs would act as the
+    OPERATOR, unfenced, on a ticket a claimed run still owns, and a
+    wrong-principal write cannot be taken back. So a seat the DISPATCHER
+    launched (`role` is one of _DISPATCH_ROLES, written by `sminos spawn
+    --role` before any bind) refuses to act as anyone at all once its wait is
+    spent. A seat nobody dispatched — an operator's own joined session — has no
+    run to fail closed on and keeps the ordinary fall-back.
 
     The budget is measured from the RECORD's last write, not from the caller's
     clock, and that is what keeps an ordinary shell fast. An operator's own
@@ -329,9 +355,17 @@ def own_seat():
             verdict = _seat_verdict(hit[1], board, repo_key)
     if verdict != "mine" and verdict != "pending":
         return None
-    # A bind that never landed is returned as it stands: run_context() reads no
-    # bearer on it and falls back, which is the same answer as no record at all
-    # — reached the slow way, once, because it was worth waiting to be sure.
+    if verdict == "pending" and _is_dispatch_seat(hit[1]):
+        die("this session was spawned for run work (role %s) and its bind never "
+            "landed, so it holds no run to speak as — refusing to act as any "
+            "other principal on a ticket a claimed run still owns. The "
+            "reconciler retires an unbound worker and releases its run; there "
+            "is nothing to do here but stop."
+            % str(hit[1].get("role") or "").strip())
+    # An undispatched seat's unlanded bind is returned as it stands:
+    # run_context() reads no bearer on it and falls back, which is the same
+    # answer as no record at all — reached the slow way, once, because it was
+    # worth waiting to be sure.
     _OWN_SEAT["v"] = (hit[0], hit[1])
     return _OWN_SEAT["v"]
 

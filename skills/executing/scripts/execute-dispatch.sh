@@ -383,7 +383,7 @@ PY
     BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-    --model "$model")" \
+    --model "$model" --role "$role")" \
     || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
@@ -392,6 +392,14 @@ PY
   [ -n "$uuid" ] || { echo "#$C_TICKET: spawned worker UUID was not parseable — releasing run $C_RUN_ID (a session may be orphaned)" >&2
                       _api_end_run "$C_RUN_ID" abandoned
                       rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
+  # `--role` is not bookkeeping: it is the ONLY thing a pre-bind record says
+  # about whose seat this is. The bind is the next line, and a crash before it
+  # leaves the worker live with a record that names no board and no run — at
+  # which point the client has to tell a dispatched worker (refuse: its claimed
+  # run owns the ticket) from an operator's own session (fall back). The value
+  # is the same literal the post-bind stamp below writes, so the field never
+  # changes and the two writes cannot disagree.
+  #
   # The bearer goes to board-bind so it lands in the meta at 0600: the sweep's
   # renew/relay/resume phases read it back out of there, and a worker whose
   # bearer was never stored can never be spoken for again.

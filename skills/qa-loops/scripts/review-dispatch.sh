@@ -959,6 +959,12 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
   REVIEWER_UUID=""
+  # Both spawns below carry `--role QAGENT`, and it is not bookkeeping: it is
+  # the ONLY thing a pre-bind record says about whose seat this is. The bind
+  # happens further down, and a crash before it leaves the worker live with a
+  # record naming no board and no run — at which point the client has to tell a
+  # dispatched reviewer (refuse: its claimed run owns the ticket) from an
+  # operator's own session (fall back). Same literal both later stamps write.
 
   # ONE worker harness, two model routes. The default "claude" engine is a
   # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
@@ -969,7 +975,7 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-fable}")" \
+      --model "${REVIEW_MODEL:-fable}" --role QAGENT)" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
@@ -981,7 +987,7 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     # and every later resume would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-opus}")" \
+      --model "${REVIEW_MODEL:-opus}" --role QAGENT)" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
