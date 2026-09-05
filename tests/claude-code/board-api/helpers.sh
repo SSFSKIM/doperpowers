@@ -37,6 +37,19 @@ unset CLAUDE_CODE_SESSION_ID
 # whole rule, which is what every drill in this tier already assumes.
 unset SMINOS_HOME
 DAEMON_HOME="$(mktemp -d)"; export DAEMON_HOME
+# The per-binding subdirectory a store's records live in. $DAEMON_HOME is
+# machine-global and a board is not, so `board-claims`, `board-suppress` and
+# `surface-locks` are each filed under one 16-hex digest of the binding — a
+# neighbour repo on the same service keys differently, and a FLAT record
+# directly under the store root is the legacy shape that predates the key.
+# Drills plant and read through this so a fixture path can never disagree with
+# the digest the scripts compute.
+store_dir() {  # store_dir <registry root> <store> <port> [repo key]
+  SMINOS_HOME="" DAEMON_HOME="$1" BOARD_BINDING=api \
+  BOARD_API_URL="http://127.0.0.1:$3" BOARD_REPO="${4:-testrepo}" \
+  PYTHONPATH="$SCRIPTS" python3 -c \
+    'import sys, _board_api as A; print(A.store_dir(sys.argv[1]))' "$2"
+}
 FAILS=0
 t() {  # t <name> <expected-substring> cmd...
   local name="$1" want="$2"; shift 2 || { echo "t: bad call"; exit 2; }

@@ -191,10 +191,12 @@ fi
 T_TITLE="$title" T_CATEGORY="$category" T_PRIORITY="$priority" T_STATE="$state" \
 T_STATE_EXPLICIT="$state_explicit" \
 T_NOTE="$note" T_PARENT="$parent" T_BLOCKED="$blocked_by" T_SPAWNED="$spawned_by" \
-T_BODY_FILE="$body_file" T_SURFACE_HINTS="$surface_hints" _py - <<'PY'
+T_BODY_FILE="$body_file" T_SURFACE_HINTS="$surface_hints" \
+T_LOCK_ROOT="$(board_store_dir surface-locks)" _py - <<'PY'
 import os
 import re
 import _board as B
+import _board_api as BA
 
 env = os.environ
 # Titles are one line: collapse newlines/whitespace runs so a title can never
@@ -336,13 +338,17 @@ if surfaces:
     # per-surface locks the dispatcher holds across its check-to-bind
     # window and re-check liveness UNDER them; contention or a live
     # worker defers the edge to the sweep's SURFACE pass.
-    lock_root = os.path.join(
-        os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
-        or os.path.expanduser("~/.claude/sminos"),
-        "surface-locks")
-    os.makedirs(lock_root, exist_ok=True)
+    # KEYED BY BINDING, and handed in rather than resolved here: this is the
+    # same store the dispatcher's _surf_lock takes, so both sides have to agree
+    # on the path down to the digest or the lock serializes nothing.
+    lock_root = os.environ["T_LOCK_ROOT"]
     held = []
     for s_ in surfaces:
+        # A dispatch started before the locks were keyed holds the FLAT path,
+        # and taking the keyed name beside it would race exactly the writes
+        # this lock serializes. Probed, never created.
+        if BA.flat_surface_lock_held(s_):
+            continue
         try:
             os.mkdir(os.path.join(lock_root, s_))
             held.append(s_)

@@ -204,6 +204,20 @@ shell profile or a launchd environment — exactly as every other `sminos` call 
 worker makes already requires; a root exported only inside a dispatcher's
 process reaches neither.
 
+That root is machine-global and a board is not, so everything under it that
+means something only within one board is filed under a 16-hex digest of the
+binding — `sha256("<board>|<repo>")`, where the board is `api:<url>` or
+`gh:<owner/name>`. The sweep's tick lock, the seat records, the claim journals
+(`board-claims/`), the suppressions (`board-suppress/`) and the per-surface
+dispatch locks (`surface-locks/`) all key off that one digest. Two bound repos
+on one machine therefore share the registry and see none of each other's state:
+neither reconciles the other's handoffs, a ticket number suppressed in one is
+still dispatchable in the other, and two boards that both have a surface called
+`auth` no longer serialize against each other. Records left flat under a store
+by a version that predated the key are still read, and drain as they are
+finished; nothing new is written there. `$BOARD_SUPPRESS_DIR`, when an operator
+sets one, is honoured verbatim — an override already names one board.
+
 Every read narrows to the bound repo, and so does every write. The two **browse**
 verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back
 to the whole service. A widened listing says so in its header line and carries

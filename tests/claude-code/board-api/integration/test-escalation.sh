@@ -79,7 +79,7 @@ SQL
 broken_resume() { in_repo RESUME_MUST_FAIL=1 SPAWN_MUST_FAIL=1 "$SCRIPTS/_sweep_api.sh" resume; }
 # `eol` because the record is JSON the drill did not author: `"env_issue": 9`
 # ENDS its line, so only an explicit terminator keeps it from matching 90.
-suppression() { eol "$DAEMON_HOME/board-suppress/$TID.json" 2>/dev/null || echo "no suppression record"; }
+suppression() { eol "$(drill_store_dir board-suppress)/$TID.json" 2>/dev/null || echo "no suppression record"; }
 
 # ---- cycles 1 and 2: counted, never escalated -----------------------------
 arm_cycle

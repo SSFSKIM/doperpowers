@@ -236,4 +236,39 @@ typo_binding() { ( cd "$r6" && . "$SCRIPTS/_binding.sh" && echo "binding=$BOARD_
 t  "an unknown binding fails loud" 'unknown binding "arkho"' typo_binding
 nt "and never silently falls back to gh" "binding=gh"        typo_binding
 
+# =========================================================================
+# THE BINDING DIGEST. $DAEMON_HOME is machine-global and a board is not, so
+# every per-board store under that root — the sweep's tick lock, the claim
+# journals, the suppressions, the surface locks — is filed under ONE 16-hex
+# key derived from the binding. Two bound repos on one Mac then share the root
+# and see none of each other's state, and they do so because a single
+# expression answers "which binding is this" for every one of those stores.
+DH_D="$(mktemp -d)"
+digest() {  # digest <repo dir> [VAR=val ...] — the key that repo files under
+  local d="$1"; shift
+  ( cd "$d" && env DAEMON_HOME="$DH_D" "$@" bash -c \
+      ". '$SCRIPTS/_binding.sh'; board_store_dir board-claims" ) || :
+}
+API_DIGEST="$(python3 -c 'import hashlib
+print(hashlib.sha256(b"api:https://b.example|alpha").hexdigest()[:16])')"
+GH_DIGEST="$(python3 -c 'import hashlib
+print(hashlib.sha256(b"gh:alpha|").hexdigest()[:16])')"
+t "an api binding keys off api:<url>|<repo>" "$API_DIGEST" digest "$r2"
+t "and the store is that key's subdirectory of the root" \
+  "$DH_D/board-claims/$API_DIGEST" digest "$r2"
+t "the store directory is created on demand" "yes" \
+  bash -c "[ -d '$DH_D/board-claims/$API_DIGEST' ] && echo yes || echo no"
+# The url is normalized exactly as the client's api_url() normalizes it, so a
+# binding an override spells with a trailing slash files under ONE key rather
+# than a second one — the same rule the sweep lock has always applied.
+t "a trailing slash in the url is the same binding" "$API_DIGEST" \
+  digest "$r2" BOARD_API_URL=https://b.example/
+# THE SERVICE IS PART OF THE IDENTITY, not just the repo name: two services
+# could each call a repo `alpha`, and a gh-bound `alpha` is a third board
+# again. A digest over the repo name alone would merge all of them.
+t "a gh binding keys off gh:<owner/name>" "$GH_DIGEST" digest "$r1" BOARD_REPO=alpha
+nt "and never collides with an api binding of the same repo name" \
+  "$API_DIGEST" digest "$r1" BOARD_REPO=alpha
+rm -rf "$DH_D"
+
 finish

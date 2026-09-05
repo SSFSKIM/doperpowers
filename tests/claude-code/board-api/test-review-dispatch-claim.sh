@@ -103,7 +103,7 @@ wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/
 # has to lose the run the dispatcher then ends.
 if [ -n "$bind_ready" ] && [ -z "${REVIEW_STUB_NO_ACK:-}" ]; then
   READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
-import json, os, shutil, time
+import glob, json, os, shutil, time
 ready = os.environ["READY"]
 home = os.environ["DAEMON_HOME"]
 for _ in range(500):
@@ -111,9 +111,13 @@ for _ in range(500):
         # The claim journal AT THE INSTANT BEFORE THE ACK. The handoff is not
         # durable until this ack exists, so the dispatcher may not have marked
         # it done yet — and after the fact every order looks the same.
+        # The journals live in a per-binding subdirectory of the root; this
+        # fixture world has exactly one binding, so the one subdirectory under
+        # the store IS the journal directory.
         snap = os.path.join(home, "claims-at-ack")
-        if not os.path.exists(snap):
-            shutil.copytree(os.path.join(home, "board-claims"), snap)
+        keyed = glob.glob(os.path.join(home, "board-claims", "*"))
+        if not os.path.exists(snap) and keyed:
+            shutil.copytree(keyed[0], snap)
         ack = ready + ".ack"; tmp = ack + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"uuid": os.environ["UUID"]}, f)
@@ -168,11 +172,19 @@ wait_for_port "$PORT2" || { echo "FAIL mock server never listened on $PORT2"; ex
 
 r="$(apirepo "$PORT")"
 DH="$(mktemp -d)"   # pinned: a fall-through would read the operator's registry
+# THE STORES UNDER THAT ROOT ARE KEYED BY BINDING. $DAEMON_HOME is
+# machine-global and a board is not, so the claim journals live in a
+# per-binding subdirectory of it; fixtures resolve the path the way the scripts
+# do rather than spelling out a digest.
+CL="$(store_dir "$DH" board-claims "$PORT")"
 OUT="$(mktemp)"
 # A standing failed-cycle count for the ticket this claim will yield. Only the
 # sweep's own resume reset it, so a ticket the DISPATCHER recovered kept the
 # stale count and a much later, unrelated fault escalated early. A delivered
 # recovery is a recovery, whichever phase delivered it.
+# PLANTED FLAT, under the store root rather than under this binding's key: a
+# count written before the stores were keyed. It is ours by the same argument
+# an unstamped seat record is, so a clear still has to reach it.
 mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 # BOARD_RUN_TOKEN is set on the way in ON PURPOSE: a --sweep launched from a
 # worker's own shell inherits that worker's run bearer, and the client hands
@@ -233,11 +245,11 @@ t "the reviewer runs in its own worktree off the repo" \
 
 # --- the claim journal: the crash-recovery record --------------------------
 t "claim journal marks the spawn complete" '"spawn_completed": true' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 t "claim journal carries the run id"       '"run_id": 51' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 t "claim journal carries the lane"         '"lane": "qagent"' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 # THE HANDOFF IS DURABLE ONLY AFTER THE WORKER ACKS. Marked at the bind, a
 # crash before the barrier was published left a journal saying "handed off"
 # over a reviewer that can never start: it waits out its 120-second barrier
@@ -247,9 +259,9 @@ t "claim journal carries the lane"         '"lane": "qagent"' \
 t "the journal is still open when the worker acks" '"spawn_completed": false' \
   bash -c "cat '$DH'/claims-at-ack/*.json"
 t "and it names the control dir the barrier lives in" '"control"' \
-  bash -c "cat '$DH'/board-claims/*.json"
+  bash -c "cat '$CL'/*.json"
 t "assignment body written beside it"      "review it" \
-  bash -c "cat '$DH'/board-claims/*.body.md"
+  bash -c "cat '$CL'/*.body.md"
 # The journal filename IS the nonce that went on the wire — that identity is
 # the whole reconciliation mechanism, so pin it rather than assume it.
 nonce_on_wire() {
@@ -258,7 +270,7 @@ nonce_on_wire() {
 }
 NONCE="$(nonce_on_wire || true)"
 t "the journal is filed under the nonce that went on the wire" "journal=yes" \
-  bash -c "[ -f '$DH/board-claims/$NONCE.json' ] && echo journal=yes || echo journal=no"
+  bash -c "[ -f '$CL/$NONCE.json' ] && echo journal=yes || echo journal=no"
 
 # --- the wire: lane discipline and the server-side belt --------------------
 t "the claim names the qagent lane"      '\"lane\": \"qagent\"' cat "$FIX.log"
@@ -312,7 +324,7 @@ t  "the api review mode is the one rendered"     '`REVIEW_MODE`: api' prompt
 # `REVIEW_MODE`: api is a prefix of api-scale, so the positive assert alone
 # cannot tell the two variants apart — the pair can.
 nt "and it is not the api-scale variant"         '`REVIEW_MODE`: api-scale' prompt
-t  "the assignment file is pinned in the prompt" "$DH/board-claims/" prompt
+t  "the assignment file is pinned in the prompt" "$CL/" prompt
 t  "the board scripts, not gh, are the board"    "board-show.sh 9"   prompt
 t  "the barrier file is bound"                   '`BIND_READY_FILE`: ' prompt
 nt "no PR framing reaches an api reviewer"       "You are a REVIEW worker for PR" prompt
@@ -362,33 +374,35 @@ t "and says what to use instead"                  "--sweep" triggered
 # journals share the directory and must be left exactly alone.
 # =========================================================================
 r2="$(apirepo "$PORT2")"
-DH2="$(mktemp -d)"; mkdir -p "$DH2/board-claims"
+DH2="$(mktemp -d)"
+CL2="$(store_dir "$DH2" board-claims "$PORT2")"
+SUP2="$(store_dir "$DH2" board-suppress "$PORT2")"
 # (a) nonce persisted, response lost: no run id was ever recorded, so the
 #     claim may or may not have landed — replaying the SAME nonce is the one
 #     legal replay.
 printf '{"lane": "qagent", "run_id": null, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-a.json"
+  > "$CL2/nonce-a.json"
 # (b) claimed but never handed off: a run exists, no session ever did.
 printf '{"lane": "qagent", "run_id": 99, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-b.json"
-printf 'orphaned assignment\n' > "$DH2/board-claims/nonce-b.body.md"
+  > "$CL2/nonce-b.json"
+printf 'orphaned assignment\n' > "$CL2/nonce-b.body.md"
 # (c) the spawn DID complete — its worker is right there in the registry —
 #     and only the marker write was lost.
 printf '{"lane": "qagent", "run_id": 51, "spawn_completed": false, "ticket": "9"}\n' \
-  > "$DH2/board-claims/nonce-c.json"
+  > "$CL2/nonce-c.json"
 # ...and the delivery it confirms is where the ticket's failed-cycle count is
 # cleared when the inline reset never ran. The reset sits one line ahead of the
 # marker write, so THIS crash — bind landed, marker lost — is exactly the
 # window that leaves a durable recovery beside a stale counter, and a much
 # later unrelated fault would then escalate two rungs early.
-mkdir -p "$DH2/board-suppress"; echo 2 > "$DH2/board-suppress/.attempts-9"
+echo 2 > "$SUP2/.attempts-9"
 printf '{"uuid":"cccc0001","current":"cccc0001","name":"9-api-qagent","status":"working","run_id":51,"lane":"qagent","ticket":"9"}' \
   > "$DH2/cccc0001.json"
 # (d) another dispatcher's journal, mid-handoff. Replaying it here would spawn
 #     an IMPLEMENT assignment with a reviewer's prompt; ending it would strand
 #     that dispatcher's ticket. Neither is this script's business.
 printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false}\n' \
-  > "$DH2/board-claims/nonce-d.json"
+  > "$CL2/nonce-d.json"
 # (e) THE SPAWN LANDED, THE BIND DID NOT — a crash inside the spawn/ack window,
 #     which is many seconds wide and leaves the session detached and running.
 #     The run id reaches a meta only via board-bind, so this journal is
@@ -396,14 +410,14 @@ printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false}\n' \
 #     the spawn — and that name is in the registry, alive. Ending this run
 #     would kill a live reviewer and hand its ticket to a second one.
 printf '{"lane": "qagent", "run_id": 66, "spawn_completed": false, "ticket": "33", "daemon": "33-api-qagent"}\n' \
-  > "$DH2/board-claims/nonce-e.json"
-printf 'live review assignment\n' > "$DH2/board-claims/nonce-e.body.md"
+  > "$CL2/nonce-e.json"
+printf 'live review assignment\n' > "$CL2/nonce-e.body.md"
 printf '{"uuid":"dddd0001","current":"dddd0001","name":"33-api-qagent","status":"working"}' \
   > "$DH2/dddd0001.json"
 # (f) a journal no reader can parse — a half-written file, or the truncated
 #     record a crash mid-write leaves. Skipping it silently hides a claimed run
 #     forever, every tick, with nothing on any log to say so.
-printf '{"lane": "qagent", "run_id": 88, "spawn_' > "$DH2/board-claims/nonce-f.json"
+printf '{"lane": "qagent", "run_id": 88, "spawn_' > "$CL2/nonce-f.json"
 
 OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -413,19 +427,19 @@ OUT2="$(mktemp)"
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
 
 t "a lost response is replayed under its own nonce" '\"dispatchNonce\": \"nonce-a\"' cat "$FIX2.log"
-t "the replay reaches a run and completes"          '"run_id": 55' cat "$DH2/board-claims/nonce-a.json"
-t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$DH2/board-claims/nonce-a.json"
+t "the replay reaches a run and completes"          '"run_id": 55' cat "$CL2/nonce-a.json"
+t "the replayed claim is spawned"                   '"spawn_completed": true' cat "$CL2/nonce-a.json"
 t "a stranded claim ends its run"                   '"path": "/runs/99/end"' cat "$FIX2.log"
 t "and ends it as abandoned"                        '\"reason\": \"abandoned\"' cat "$FIX2.log"
 gone() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
-t "the stranded journal is dropped"       "gone" gone "$DH2/board-claims/nonce-b.json"
-t "so is its orphaned assignment body"    "gone" gone "$DH2/board-claims/nonce-b.body.md"
-t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$DH2/board-claims/nonce-c.json"
-attempts9r() { [ -e "$DH2/board-suppress/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
+t "the stranded journal is dropped"       "gone" gone "$CL2/nonce-b.json"
+t "so is its orphaned assignment body"    "gone" gone "$CL2/nonce-b.body.md"
+t "a lost marker is repaired, not replayed" '"spawn_completed": true' cat "$CL2/nonce-c.json"
+attempts9r() { [ -e "$SUP2/.attempts-9" ] && echo "count kept" || echo "count cleared"; }
 t "and the delivery it confirms clears the ticket's failed-cycle count" \
   "count cleared" attempts9r
 t "another lane's journal is left untouched" '"run_id": 77, "spawn_completed": false' \
-  cat "$DH2/board-claims/nonce-d.json"
+  cat "$CL2/nonce-d.json"
 # --- (e) a spawned-but-unbound run is never ended --------------------------
 # --- (e) an unbound worker cannot speak for its run, so neither is kept ---
 # A spawn that landed with no bind leaves a worker holding NOTHING: `claude
@@ -439,14 +453,14 @@ t  "and ended as abandoned"           '\"reason\": \"abandoned\"' cat "$FIX2.log
 t  "the orphaned session is retired by name" "retire 33-api-qagent" \
    cat "$DH2/spawn-capture.txt"
 t  "the report says why it could never work"  "can never speak for the run" cat "$OUT2"
-t  "and its journal is dropped"  "gone" gone "$DH2/board-claims/nonce-e.json"
+t  "and its journal is dropped"  "gone" gone "$CL2/nonce-e.json"
 # The ticket must not reach a second worker from THIS pass: the release is what
 # frees it, and reconcile itself spawns nothing.
 nt "reconcile re-dispatches nothing for it" "name=33-api-qagent" cat "$DH2/spawn-capture.txt"
 # --- (f) a corrupt journal is loud, not invisible ---------------------------
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-f.json"       cat "$OUT2"
-t "and is left on disk for repair"     "still-there" gone "$DH2/board-claims/nonce-f.json"
+t "and is left on disk for repair"     "still-there" gone "$CL2/nonce-f.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
 # bind, the stranded run's end and the UNBOUND worker's. Nothing more — the
 # reconciled worker plus the replayed one fill the cap of 2, so the fresh-claim
@@ -480,12 +494,13 @@ trap 'kill $MOCK $MOCK2 $MOCK3 2>/dev/null' EXIT
 wait_for_port "$PORT3" || { echo "FAIL mock server never listened on $PORT3"; exit 1; }
 
 r3="$(apirepo "$PORT3")"
-DH3="$(mktemp -d)"; mkdir -p "$DH3/board-claims"
+DH3="$(mktemp -d)"
+CL3="$(store_dir "$DH3" board-claims "$PORT3")"
 # The same shape as scenario 2's (b) — claimed, no session, nothing to prove it
 # alive — which on a readable registry is ended. Here it must NOT be.
 printf '{"lane": "qagent", "run_id": 99, "spawn_completed": false}\n' \
-  > "$DH3/board-claims/nonce-g.json"
-printf 'held review assignment\n' > "$DH3/board-claims/nonce-g.body.md"
+  > "$CL3/nonce-g.json"
+printf 'held review assignment\n' > "$CL3/nonce-g.body.md"
 printf '{"uuid":"eeee0001","current":"eeee0001","name":"70-api-qage' \
   > "$DH3/eeee0001.json"
 
@@ -501,8 +516,8 @@ t  "the hold is reported"         "holding it"           cat "$OUT3"
 t  "and names who owns it"        "server lease reclaim" cat "$OUT3"
 t  "the unreadable meta is named" "eeee0001.json"        cat "$OUT3"
 t  "the held journal stays on disk, open" '"spawn_completed": false' \
-  cat "$DH3/board-claims/nonce-g.json"
-t  "and its assignment body is not dropped" "still-there" gone "$DH3/board-claims/nonce-g.body.md"
+  cat "$CL3/nonce-g.json"
+t  "and its assignment body is not dropped" "still-there" gone "$CL3/nonce-g.body.md"
 held_wire() {
   printf 'posts=%s ends=%s\n' \
     "$(grep -c '"method"' "$FIX3.log" || true)" \
@@ -541,15 +556,17 @@ trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 2>/dev/null' EXIT
 wait_for_port "$PORT4" || { echo "FAIL mock server never listened on $PORT4"; exit 1; }
 
 r4="$(apirepo "$PORT4")"
-DH4="$(mktemp -d)"; mkdir -p "$DH4/board-claims"
+DH4="$(mktemp -d)"
+CL4="$(store_dir "$DH4" board-claims "$PORT4")"
+SUP4="$(store_dir "$DH4" board-suppress "$PORT4")"
 # (s) the stranded reviewer: a control dir with no ack in it.
 CTL_S="$DH4/41-api-qagent-control.stranded"; mkdir -p "$CTL_S"
 printf '{"uuid": "ffff0001", "ticket": "41", "ledger": "x"}\n' > "$CTL_S/bind-ready.json"
 printf '{"uuid":"ffff0001","current":"ffff0001","name":"41-api-qagent","status":"working","run_id":70,"lane":"qagent","ticket":"41","run_bearer":"tok-stranded","bind_confirmed":true}' \
   > "$DH4/ffff0001.json"
 printf '{"lane": "qagent", "run_id": 70, "spawn_completed": false, "ticket": "41", "daemon": "41-api-qagent", "control": "%s"}\n' \
-  "$CTL_S" > "$DH4/board-claims/nonce-s.json"
-printf 'stranded review assignment\n' > "$DH4/board-claims/nonce-s.body.md"
+  "$CTL_S" > "$CL4/nonce-s.json"
+printf 'stranded review assignment\n' > "$CL4/nonce-s.body.md"
 # (t) the same shape with the ack present — a reviewer already at work.
 CTL_T="$DH4/42-api-qagent-control.acked"; mkdir -p "$CTL_T"
 printf '{"uuid": "ffff0002", "ticket": "42", "ledger": "x"}\n' > "$CTL_T/bind-ready.json"
@@ -557,11 +574,11 @@ printf '{"uuid": "ffff0002"}\n' > "$CTL_T/bind-ready.json.ack"
 printf '{"uuid":"ffff0002","current":"ffff0002","name":"42-api-qagent","status":"working","run_id":71,"lane":"qagent","ticket":"42"}' \
   > "$DH4/ffff0002.json"
 printf '{"lane": "qagent", "run_id": 71, "spawn_completed": false, "ticket": "42", "daemon": "42-api-qagent", "control": "%s"}\n' \
-  "$CTL_T" > "$DH4/board-claims/nonce-t.json"
+  "$CTL_T" > "$CL4/nonce-t.json"
 # (u) claimed, never handed off, and the release will fail.
 printf '{"lane": "qagent", "run_id": 72, "spawn_completed": false}\n' \
-  > "$DH4/board-claims/nonce-u.json"
-printf 'undelivered review assignment\n' > "$DH4/board-claims/nonce-u.body.md"
+  > "$CL4/nonce-u.json"
+printf 'undelivered review assignment\n' > "$CL4/nonce-u.body.md"
 # (v) THE SAME SHAPE AS (s) WITH A LIVE WRITER: bound, no ack, and the process
 #     that claimed it is still running — a peer between its bind and the ack it
 #     is waiting for. That handover legitimately outlives any mtime grace (the
@@ -576,8 +593,8 @@ printf '{"uuid": "ffff0003", "ticket": "43", "ledger": "x"}\n' > "$CTL_V/bind-re
 printf '{"uuid":"ffff0003","current":"ffff0003","name":"43-api-qagent","status":"working","run_id":73,"lane":"qagent","ticket":"43"}' \
   > "$DH4/ffff0003.json"
 printf '{"lane": "qagent", "run_id": 73, "spawn_completed": false, "ticket": "43", "daemon": "43-api-qagent", "control": "%s", "pid": %s}\n' \
-  "$CTL_V" "$$" > "$DH4/board-claims/nonce-v.json"
-mkdir -p "$DH4/board-suppress"; echo 2 > "$DH4/board-suppress/.attempts-43"
+  "$CTL_V" "$$" > "$CL4/nonce-v.json"
+echo 2 > "$SUP4/.attempts-43"
 
 OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -592,7 +609,7 @@ t  "its worker is retired"                "retire ffff0001"  cat "$DH4/spawn-cap
 t  "and its run ended so the ticket requeues" '"path": "/runs/70/end"' cat "$FIX4.log"
 t  "ended as abandoned"                   '\"reason\": \"abandoned\"'  cat "$FIX4.log"
 gone4() { [ -e "$1" ] && echo "still-there" || echo "gone"; }
-t  "the journal is dropped"               "gone" gone4 "$DH4/board-claims/nonce-s.json"
+t  "the journal is dropped"               "gone" gone4 "$CL4/nonce-s.json"
 # THE RECORD LOSES THE RUN WITH THE RUN. A retire stops a turn; it does not
 # make the seat forget. Left stamped, this record still names a confirmed bind
 # and a bearer for a run that has just been ended — and a session resolves its
@@ -607,11 +624,11 @@ t  "and the seat records when the run ended"  "run_ended_at" cat "$DH4/ffff0001.
 # --- (v) a delivery still waiting on its ack is not a delivery -------------
 t  "a bound handover under a live writer is left in flight" \
    "is in flight under a live dispatcher"     cat "$OUT4"
-attempts43() { [ -e "$DH4/board-suppress/.attempts-43" ] && echo "count kept" || echo "count cleared"; }
+attempts43() { [ -e "$SUP4/.attempts-43" ] && echo "count kept" || echo "count cleared"; }
 t  "and its ticket keeps its failed-cycle count until the ack lands" \
    "count kept"                               attempts43
 t  "its journal is left open for the peer to mark" '"spawn_completed": false' \
-   cat "$DH4/board-claims/nonce-v.json"
+   cat "$CL4/nonce-v.json"
 nt "and its run is not ended"    '"path": "/runs/73/end"'   cat "$FIX4.log"
 
 # --- (t) a reviewer that DID cross its barrier is left alone ---------------
@@ -619,13 +636,13 @@ nt "an acked reviewer's run is never ended" '"path": "/runs/71/end"' cat "$FIX4.
 nt "and its worker is never retired"        "retire ffff0002"  \
    bash -c "cat '$DH4/spawn-capture.txt' 2>/dev/null || echo none"
 t  "its marker is simply repaired"          '"spawn_completed": true' \
-   cat "$DH4/board-claims/nonce-t.json"
+   cat "$CL4/nonce-t.json"
 # --- (u) the retry handle survives a failed release ------------------------
 t  "a release that FAILED keeps its journal" \
    "the journal is KEPT so the next tick can retry"  cat "$OUT4"
 t  "the record stays open on disk"          '"spawn_completed": false' \
-   cat "$DH4/board-claims/nonce-u.json"
-t  "and its assignment body is not dropped" "still-there" gone4 "$DH4/board-claims/nonce-u.body.md"
+   cat "$CL4/nonce-u.json"
+t  "and its assignment body is not dropped" "still-there" gone4 "$CL4/nonce-u.body.md"
 
 # =========================================================================
 # Scenario 5 — THE MANIFEST SNAPSHOTS COME FROM A CURRENT TRACKING REF. The
@@ -960,6 +977,7 @@ wait_for_port "$PORT10" || { echo "FAIL mock server never listened on $PORT10"; 
 
 r10="$(apirepo "$PORT10")"
 DH10="$(mktemp -d)"
+CL10="$(store_dir "$DH10" board-claims "$PORT10")"
 LEDGER10="$(mktemp)"; echo 33 > "$LEDGER10"
 OUT10="$(mktemp)"
 ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
@@ -974,7 +992,7 @@ t  "a claim yielding a tick-ledgered ticket is released" \
 t  "and that run is ended"          '"path": "/runs/71/end"'  cat "$FIX10.log"
 nt "so no reviewer is spawned for it" "ARGS name=33"  \
    bash -c "cat '$DH10/spawn-capture.txt' 2>/dev/null || echo none"
-journal10() { ls "$DH10/board-claims"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
+journal10() { ls "$CL10"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
 t  "and the journal is dropped with it"  "journal dropped"  journal10
 
 # =========================================================================

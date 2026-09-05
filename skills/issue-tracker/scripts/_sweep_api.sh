@@ -44,8 +44,14 @@
 #                                always finishes. Lease safety across a long
 #                                tick is renewal interleaved between items, not
 #                                this budget.
-#   BOARD_SUPPRESS_DIR           (exported to the dispatchers) suppression
-#                                records; they read, this tick writes
+#   BOARD_SUPPRESS_DIR           an OPERATOR override for the suppression
+#                                records, honoured verbatim on both sides (an
+#                                override is already binding-specific by
+#                                construction, so it is neither keyed nor
+#                                read-both) and forwarded to the dispatchers
+#                                only when one is set; unset, each side
+#                                resolves the same keyed store for itself.
+#                                They read, this tick writes
 #   BOARD_RESUMED_LEDGER         (exported to the dispatchers) the tickets this
 #                                tick already attempted a recovery for; they
 #                                read, phase 3 writes
@@ -147,11 +153,11 @@ mkdir -p "$DAEMON_HOME"
 # is normalized exactly as the client's api_url() normalizes it, so a binding
 # an override spells with a trailing slash — one service to every request this
 # tick makes — still lands on the one lock rather than a second one.
-_LOCK_KEY="$(T_URL="$BOARD_API_URL" T_REPO="$BOARD_REPO" python3 -c '
-import hashlib, os
-print(hashlib.sha256(("%s|%s" % (os.environ["T_URL"].rstrip("/"),
-                                 os.environ["T_REPO"]))
-                     .encode()).hexdigest()[:16])')"
+# THE SAME KEY NAMES THE PER-BOARD STORES under this root (the claim journals,
+# the suppressions, the surface locks), and it is computed in ONE place so the
+# lock and the state it serializes can never disagree about which board they
+# belong to.
+_LOCK_KEY="$(_api_py -c 'import _board_api as A; print(A.binding_digest())')"
 LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone
 # is wrong in both directions: a legitimate tick can run for the better part of
@@ -275,6 +281,28 @@ _owner_live() {  # <pid> <recorded start ('' = unknown)>
       [ "$now" = "$2" ] ;;
   esac
 }
+# ROLLOUT GUARD, ONE RELEASE WIDE. The key gained its `api:` prefix when the
+# stores took it up (dp#36), so a tick started by the PREVIOUS version of this
+# script is holding `.sweep-api.<legacy digest>.lock` — and this one would take
+# a different directory and run beside it, which is the concurrent tick the
+# lock exists to prevent, on the one day the upgrade lands. A LIVE owner under
+# the old name therefore holds this tick back exactly as the keyed lock does.
+# A DEAD one does not, and that half matters just as much: nothing writes the
+# old name again, so an obeyed leftover would stop every later tick on this
+# board forever, with no renewal, no relay, no resume and no dispatch. Remove
+# this block once no host can still be running the pre-dp#36 sweep.
+_LEGACY_LOCK="$DAEMON_HOME/.sweep-api.$(_api_py -c '
+import hashlib
+import _board_api as A
+print(hashlib.sha256(("%s|%s" % (A.api_url(), A.repo())).encode()).hexdigest()[:16])').lock"
+if [ -d "$_LEGACY_LOCK" ]; then
+  _legacy_owner="$(cat "$_LEGACY_LOCK/owner" 2>/dev/null || true)"
+  if [ -n "$_legacy_owner" ] \
+     && _owner_live "$_legacy_owner" \
+                    "$(cat "$_LEGACY_LOCK/owner-start" 2>/dev/null || true)"; then
+    echo "another api sweep holds the lock — exiting"; exit 0
+  fi
+fi
 if ! _take_lock; then
   _lock_owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
   _lock_start="$(cat "$LOCK/owner-start" 2>/dev/null || true)"
@@ -750,10 +778,24 @@ PY
 # overwriting it here split the two halves of one mechanism — this phase wrote
 # records into the registry default while the dispatchers read the configured
 # directory, so every suppression was invisible to the side that enforces it.
-SUPPRESS_DIR="${BOARD_SUPPRESS_DIR:-$DAEMON_HOME/board-suppress}"
-CLAIMS_DIR="$DAEMON_HOME/board-claims"
+# KEYED BY BINDING, because a suppression is keyed by TICKET NUMBER and ticket
+# numbers repeat across boards: suppressing ticket 9 here suppressed ticket 9
+# in every other repo bound on this machine. SUPPRESS_LEGACY is the flat store
+# that predates the key — read, never written, and empty when an operator has
+# set an override, since an override has no legacy half.
+if [ -n "${BOARD_SUPPRESS_DIR:-}" ]; then
+  SUPPRESS_DIR="$BOARD_SUPPRESS_DIR"; SUPPRESS_LEGACY=""
+else
+  SUPPRESS_DIR="$(board_store_dir board-suppress)"
+  SUPPRESS_LEGACY="$DAEMON_HOME/board-suppress"
+fi
+CLAIMS_DIR="$(_claim_dir)"
+CLAIMS_LEGACY="$(_claim_dir_legacy)"
 
-_suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
+_suppressed() {
+  if [ -f "$SUPPRESS_DIR/$1.json" ]; then return 0; fi
+  [ -n "$SUPPRESS_LEGACY" ] && [ -f "$SUPPRESS_LEGACY/$1.json" ]
+}
 
 # Lift the suppression on ticket $1 if either trigger fired. Both are checked
 # every tick because either one alone is a trap: an operator who moves the
@@ -774,11 +816,16 @@ _suppressed() { [ -f "$SUPPRESS_DIR/$1.json" ]; }
 # state either. Absent is UNKNOWN on both sides: keep waiting.
 # This is the read-site mirror of the write-site guard at _escalate.
 _check_lift() {
-  T_TID="$1" T_DIR="$SUPPRESS_DIR" _api_py - <<'PY'
+  T_TID="$1" T_DIR="$SUPPRESS_DIR" T_LEGACY="$SUPPRESS_LEGACY" _api_py - <<'PY'
 import json, os
 import _board_api as A
-path = os.path.join(os.environ["T_DIR"], os.environ["T_TID"] + ".json")
-if not os.path.exists(path):
+# The record may sit in the keyed store or in the flat one that predates the
+# key. Whichever it is, a LIFT clears both: a ticket suppressed twice over is
+# one an operator would have to hunt for by hand.
+paths = [os.path.join(d, os.environ["T_TID"] + ".json")
+         for d in (os.environ["T_DIR"], os.environ.get("T_LEGACY") or "") if d]
+path = next((p for p in paths if os.path.exists(p)), None)
+if path is None:
     raise SystemExit(0)
 with open(path) as f:
     rec = json.load(f)
@@ -791,7 +838,11 @@ env_row = rows.get(int(rec["env_issue"]))
 env = env_row["state"] if env_row else None
 closed = env in ("done", "wontfix")   # absent env-issue: unknown, keep waiting
 if moved or closed:
-    os.remove(path)
+    for p in paths:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
     print("suppression lifted for #%s — %s" %
           (rec["ticket"], "the ticket moved" if moved else "the env-issue closed"))
 PY
@@ -1034,10 +1085,28 @@ PY
 # claim, and settle's release is designed to be served by this very tick's
 # feed. The feed loop writes it too — an attempt is an attempt whichever door
 # it came through, and phase 4 reads the ledger to stay off both.
+# The flat copy of a replayed successor nonce, dropped only once it is safe to.
+# Left standing it would be replayed again on every later tick, forever; dropped
+# too early it is a recovery nobody can retry.
+#
+# A replay re-journals the nonce in the KEYED store ahead of its own POST, so
+# that file existing means the handle moved and the flat one is redundant. So
+# does a replay that ran to a definite end (rc 0): an obsolete nonce and a board
+# that granted nothing both remove the keyed journal themselves, and neither
+# leaves anything to retry. What is NOT safe is a replay that returned BEFORE it
+# journalled anything — an unresolved fork on the bound session, a registry scan
+# that failed — because then the flat record is the only handle there is.
+_drop_legacy_successor() {  # <nonce> <journal dir> <_resume_one rc>
+  [ "$2" != "$CLAIMS_DIR" ] || return 0
+  { [ -f "$CLAIMS_DIR/$1.json" ] || [ "$3" = 0 ]; } || return 0
+  rm -f "$2/$1.json" "$2/$1.body.md"
+}
+
 _reconcile_successors() {
-  local plan lines line act nonce run tid sess daemon transcript
+  local plan lines line act nonce run tid sess daemon jdir transcript rrc
   [ -d "$CLAIMS_DIR" ] || return 0
-  plan="$(T_DHOME="$DAEMON_HOME" _api_py - <<'PY'
+  plan="$(T_DHOME="$DAEMON_HOME" T_CLAIMS="$CLAIMS_DIR" \
+          T_CLAIMS_LEGACY="$CLAIMS_LEGACY" _api_py - <<'PY'
 import glob, json, os
 import _board_api as A
 home = os.environ["T_DHOME"]
@@ -1068,7 +1137,31 @@ for p in glob.glob(os.path.join(home, "*.json")):
     # lease expired.
     if m.get("name") and m.get("status") in ("working", "blocked"):
         names.add(str(m["name"]))
-for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
+# BOTH DIRECTORIES ARE READ, ONE IS WRITTEN — the keyed store belongs to
+# this binding, and the flat one holds journals from before the key, ours
+# because only one binding on this machine ran daemons then. It drains:
+# nothing adds to it, so this branch goes when the last record does.
+#
+# AND A NONCE IS READ ONCE. A replay writes the keyed journal ahead of its own
+# POST and drops the flat original after it; a death between the two leaves the
+# same nonce in both stores, and acting on both replays one claim twice. The
+# keyed directory is walked first, so a second sighting is the flat leftover:
+# dropped where it lies, never classified.
+claim_paths = []
+seen = set()
+for d in (os.environ["T_CLAIMS"], os.environ["T_CLAIMS_LEGACY"]):
+    for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+        nonce = os.path.basename(p)[:-5]
+        if nonce in seen:
+            for ext in (".json", ".body.md"):
+                try:
+                    os.remove(os.path.join(d, nonce + ext))
+                except OSError:
+                    pass
+            continue
+        seen.add(nonce)
+        claim_paths.append(p)
+for p in claim_paths:
     try:
         j = json.load(open(p))
     except Exception:
@@ -1079,8 +1172,13 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         continue
     nonce = os.path.basename(p)[:-5]
     run = j.get("run_id")
+    # The DIRECTORY the journal was found in rides the row. A record in the
+    # flat legacy store has to be sealed and dropped where it lies — a seal
+    # written to the keyed store instead would leave the flat original open,
+    # and this pass would reconcile it again every tick, forever.
     row = (nonce, str(run or ""), str(j.get("ticket") or ""),
-           str(j.get("session") or ""), str(j.get("daemon") or ""))
+           str(j.get("session") or ""), str(j.get("daemon") or ""),
+           os.path.dirname(p))
     # 0x1f, NOT tab, for the same reason the registry rows use it: TAB IS IFS
     # WHITESPACE, so a run of tabs collapses into one delimiter and every field
     # after an empty column shifts left. Three of these five columns are
@@ -1090,11 +1188,11 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
     # daemon name as the session. 0x1f is IFS-non-whitespace and cannot occur
     # in a nonce, a ticket id or a daemon name.
     if not run:
-        print("replay\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
+        print("replay\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
     elif row[4] and row[4] in names:
-        print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
+        print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
     else:
-        print("settle\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
+        print("settle\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % row)
 PY
 )" || { echo "resume: successor journal reconciliation failed — skipped this tick" >&2; return 0; }
   [ -n "$plan" ] || return 0
@@ -1106,7 +1204,7 @@ PY
     [ -n "$line" ] && lines+=("$line")
   done <<<"$plan"
   for line in ${lines[@]+"${lines[@]}"}; do
-    IFS=$'\x1f' read -r act nonce run tid sess daemon <<<"$line"
+    IFS=$'\x1f' read -r act nonce run tid sess daemon jdir <<<"$line"
     if [ -n "$tid" ] && _suppressed "$tid"; then
       echo "resume: successor claim $nonce for #$tid is suppressed — the journal stands untouched until the suppression lifts"
       continue
@@ -1125,10 +1223,11 @@ PY
         fi
         echo "resume: successor claim $nonce never reached a run — replaying it for #$tid"
         [ -z "$tid" ] || { printf '%s\n' "$tid" >> "$RESUMED_LEDGER"
-                           _resume_one "$tid" "$nonce" || true; } ;;
+                           rrc=0; _resume_one "$tid" "$nonce" || rrc=$?
+                           _drop_legacy_successor "$nonce" "$jdir" "$rrc"; } ;;
       orphaned)
         echo "resume: successor claim $nonce spawned $daemon for run $run but never bound it — the session is live and is NOT being ended; it holds no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" >&2
-        _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess" ;;
+        _journal "$jdir/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess" ;;
       settle)
         # An UNRESOLVED FORK on the target session is the one shape this may not
         # settle either way: the fork may be live on exactly this run, so
@@ -1142,7 +1241,7 @@ PY
         [ -z "$sess" ] || transcript="$(_transcript_for_uuid "$sess")"
         if _delivered "$transcript" "$(_successor_marker "$run")"; then
           echo "resume: successor run $run was delivered to $sess but never recorded — closing the journal; phase 1 completes the bind"
-          _journal "$CLAIMS_DIR/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess"
+          _journal "$jdir/$nonce.json" "$run" 1 "$tid" "$daemon" "$sess"
         else
           echo "resume: successor run $run was claimed for #$tid and never delivered — releasing it so the ticket returns to needing-resume"
           # THE JOURNAL IS THE ONLY RETRY HANDLE. A transport or service outage
@@ -1161,7 +1260,7 @@ except A.RunEnded:
     pass
 PY
           then
-            rm -f "$CLAIMS_DIR/$nonce.json"
+            rm -f "$jdir/$nonce.json"
           else
             echo "resume: releasing successor run $run failed — the journal is KEPT so the next tick can retry the release" >&2
           fi
@@ -1521,7 +1620,27 @@ PY
 _attempts() {  # <ticket> reset|fail [run-to-release]
   local f="$SUPPRESS_DIR/.attempts-$1" n
   mkdir -p "$SUPPRESS_DIR"
-  if [ "$2" = reset ]; then rm -f "$f"; return 0; fi
+  if [ "$2" = reset ]; then
+    rm -f "$f"
+    # A count written before the store was keyed, too: a reset that missed it
+    # would leave the escalation ladder standing under a later, unrelated fault.
+    [ -z "$SUPPRESS_LEGACY" ] || rm -f "$SUPPRESS_LEGACY/.attempts-$1"
+    return 0
+  fi
+  # A COUNT FROM BEFORE THE KEY IS CARRIED, NOT RESTARTED. The ladder is three
+  # failed cycles to an escalation, so a ticket that had already spent two under
+  # the flat store would be handed a fresh three — two more churning cycles on a
+  # ticket the fleet has already proved it cannot recover. Carried on the first
+  # keyed increment; the flat copy goes with it, so it is carried once.
+  if [ ! -f "$f" ] && [ -n "$SUPPRESS_LEGACY" ] \
+     && [ -f "$SUPPRESS_LEGACY/.attempts-$1" ]; then
+    # A carry that FAILED is not a carry: the flat copy stays, and the next
+    # increment tries again rather than the count being lost between the two.
+    # `|| true` because this whole block is the last command in the `if`, and
+    # `set -e` would otherwise make an unreadable leftover fatal to the tick.
+    { cp "$SUPPRESS_LEGACY/.attempts-$1" "$f" 2>/dev/null \
+        && rm -f "$SUPPRESS_LEGACY/.attempts-$1"; } || true
+  fi
   n="$(( $(cat "$f" 2>/dev/null || echo 0) + 1 ))"
   echo "$n" > "$f"
   # An undeliverable successor run must not squat the ticket until its lease
@@ -1633,6 +1752,7 @@ with open(os.path.join(env["T_DIR"], env["T_TID"] + ".json"), "w") as f:
     f.write("\n")
 PY
   rm -f "$SUPPRESS_DIR/.attempts-$tid"
+  [ -z "$SUPPRESS_LEGACY" ] || rm -f "$SUPPRESS_LEGACY/.attempts-$tid"
   echo "escalated #$tid → env-issue #$eid (suppressed)"
 }
 
@@ -1646,10 +1766,15 @@ phase_resume() {
   # and then let the feed claim a FRESH nonce: the old journal survived to
   # replay beside the new successor on a later tick. Lifting first lets a
   # just-lifted ticket replay its own standing journal.
-  for f in "$SUPPRESS_DIR"/*.json; do
-    [ -e "$f" ] || continue
-    _check_lift "$(basename "$f" .json)" \
-      || echo "resume: suppression check for $(basename "$f" .json) failed" >&2
+  # Both stores: a record left flat by a pre-key tick still holds its ticket
+  # off the feed, so a lift walk that skipped it would suppress that ticket
+  # forever. _check_lift itself finds and clears whichever copies exist.
+  for dir in "$SUPPRESS_DIR" ${SUPPRESS_LEGACY:+"$SUPPRESS_LEGACY"}; do
+    for f in "$dir"/*.json; do
+      [ -e "$f" ] || continue
+      _check_lift "$(basename "$f" .json)" \
+        || echo "resume: suppression check for $(basename "$f" .json) failed" >&2
+    done
   done
   # Unfinished successor claims before the feed: a run this machine already
   # holds but never delivered keeps its ticket off the feed below, so
@@ -1733,10 +1858,16 @@ phase_dispatch() {
   # below could pick that very ticket seconds later and spend a second attempt
   # on it. Empty on a phase asked for by name — that tick made no recovery
   # attempt, so it fences nothing.
-  local env_common=(BOARD_SUPPRESS_DIR="$SUPPRESS_DIR" DAEMON_HOME="$DAEMON_HOME"
+  # BOARD_SUPPRESS_DIR travels ONLY when an operator set one. Both sides now
+  # derive the same keyed store from the same binding, so forwarding the
+  # resolved path bought nothing and cost the dispatchers their flat-legacy
+  # half — every record left by a pre-key tick would have gone unread there.
+  local env_common=(DAEMON_HOME="$DAEMON_HOME"
                     SMINOS_CLI="$SMINOS_CLI" LOCAL_REPO="${LOCAL_REPO:-$BOARD_ROOT}"
                     BOARD_RESUMED_LEDGER="${RESUMED_LEDGER:-}"
                     BOARD_TICK_DEADLINE="${TICK_DEADLINE:-}")
+  [ -z "${BOARD_SUPPRESS_DIR:-}" ] \
+    || env_common+=(BOARD_SUPPRESS_DIR="$BOARD_SUPPRESS_DIR")
   env "${env_common[@]}" "$impl" --sweep \
     || echo "dispatch: the execution lanes failed this tick" >&2
   env "${env_common[@]}" "$revw" --sweep \

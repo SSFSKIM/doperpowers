@@ -60,7 +60,7 @@ t "the bootstrap points the worker at its delivered assignment" \
   "delivered by the claim that dispatched you" cat "$SPAWN_LOG"
 # The claim response is by contract the only route a run has to its own ticket
 # text, and the API path delivers it as a file rather than inline.
-claim_body() { cat "$DAEMON_HOME"/board-claims/*.body.md; }
+claim_body() { cat "$(drill_store_dir board-claims)"/*.body.md; }
 t "and that assignment is the ticket body the human registered" \
   "The protocol walk needs one ticket carrying a real body" claim_body
 

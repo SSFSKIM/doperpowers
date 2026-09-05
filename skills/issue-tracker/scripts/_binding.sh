@@ -124,3 +124,12 @@ _api_py() { PYTHONPATH="$_BINDING_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   BOARD_API_URL="$BOARD_API_URL" BOARD_CREDENTIALS_FILE="$BOARD_CREDENTIALS_FILE" \
   BOARD_REPO="${BOARD_REPO:-}" \
   python3 "$@"; }
+
+# The per-binding subdirectory of a machine-global registry store — the shell's
+# reach into _board_api.store_dir(), created on demand. NOT exported, by the
+# same rule BOARD_REPO follows in api mode: each script calls it after sourcing
+# this file, so a descendant that resolves a DIFFERENT repo's binding never
+# inherits this one's store paths.
+board_store_dir() {  # <store name> — echoes <registry root>/<name>/<digest>
+  _api_py -c 'import sys, _board_api as A; print(A.store_dir(sys.argv[1]))' "$1"
+}
