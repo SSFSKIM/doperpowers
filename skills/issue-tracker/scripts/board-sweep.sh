@@ -767,6 +767,7 @@ import os
 import sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
+import _board_api as BA
 reg = B.surfaces_registry()
 if reg is None:
     print("[sweep] SURFACE: no registry — skipped")
@@ -830,6 +831,11 @@ for s in sorted({x for n in tickets.values() for x in n["surfaces"]} & set(reg))
     # is what keeps these relates RMWs from racing a dispatch. Contention
     # or a fresh live worker → skip; next tick converges.
     lock = os.path.join(lock_root, s)
+    # A dispatch started before the locks were keyed holds the FLAT path;
+    # taking the keyed name beside it would race the very body writes this
+    # lock serializes. Probed, never created.
+    if BA.flat_surface_lock_held(s):
+        continue
     try:
         os.mkdir(lock)
     except OSError:

@@ -643,9 +643,19 @@ PY
 # already resolved and exported above. No legacy handling: a lock directory
 # carries no state, and the stale-eviction rule below already sweeps leftovers.
 SURFACE_LOCK_ROOT="$(board_store_dir surface-locks)"
+# A dispatch started BEFORE the locks were keyed holds the flat path, and a
+# prober that looked only at the keyed one would take a surface that process is
+# mid-dispatch on. The rule lives in the client so all three users of this store
+# apply the same one; it never creates a flat lock, and it evicts a leftover on
+# the same staleness rule rather than obeying it forever.
+_surf_flat_held() {  # <surface>
+  [ "$(_api_py -c 'import sys, _board_api as A
+print("held" if A.flat_surface_lock_held(sys.argv[1]) else "free")' "$1")" = held ]
+}
 _surf_lock() {  # <surfaces...> — 0 = all acquired; 1 = contention (none held)
   local s got=""
   for s in $1; do
+    if _surf_flat_held "$s"; then _surf_unlock "$got"; return 1; fi
     if ! mkdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null; then
       if [ -n "$(find "$SURFACE_LOCK_ROOT/$s" -maxdepth 0 -mmin +"${SURFACE_LOCK_STALE:-30}" 2>/dev/null)" ]; then
         rmdir "$SURFACE_LOCK_ROOT/$s" 2>/dev/null || true

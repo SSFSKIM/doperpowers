@@ -57,6 +57,28 @@ t "a gh binding's surface locks are keyed too" \
   "$DAEMON_HOME/surface-locks/" gh_locks
 nt "and never share an api binding's key" "$OURS_LOCKS" gh_locks
 
+# THE CHANGEOVER IS ITS OWN RACE. A dispatch started by the previous version is
+# holding a FLAT `surface-locks/<name>`, and a prober that looked only at the
+# keyed path would take a surface that process is mid-dispatch on. So the flat
+# path is probed too — never created — under the same staleness rule the keyed
+# lock applies; a leftover is evicted rather than obeyed, since nothing writes
+# that path again and an obeyed one would block the surface for good.
+flat_held() {  # flat_held <surface>
+  ( cd "$OURS" && bash -c ". '$SCRIPTS/_binding.sh'
+_api_py -c 'import sys, _board_api as A
+print(A.flat_surface_lock_held(sys.argv[1]))' '$1'" )
+}
+there() { [ -d "$1" ] && echo still-there || echo gone; }
+mkdir -p "$DAEMON_HOME/surface-locks/auth"
+t "a fresh pre-key holder of the name is contention" "True" flat_held auth
+t "and it is left standing for the process that holds it" "still-there" \
+  there "$DAEMON_HOME/surface-locks/auth"
+touch -t 200001010000 "$DAEMON_HOME/surface-locks/auth"
+t "a leftover under the same rule is not"  "False" flat_held auth
+t "and is evicted rather than obeyed"      "gone"  there "$DAEMON_HOME/surface-locks/auth"
+t "a name nobody ever held flat is free"   "False" flat_held never-held
+t "and probing it creates nothing there"   "gone"  there "$DAEMON_HOME/surface-locks/never-held"
+
 # The three users of this store sit in three files and in both bindings, and
 # there is no hermetic harness that drives the gh two. This is the guard that
 # keeps them routed through the one helper: a user that resolved the root for
@@ -68,5 +90,14 @@ surface_lock_users() {
     "$REPO_ROOT/skills/issue-tracker/scripts/board-sweep.sh"
 }
 nt "no surface-lock user resolves the store root for itself" ":0" surface_lock_users
+# ...and each of them probes the flat path as well, or the changeover above is
+# guarded in one caller and open in the other two.
+surface_lock_legacy_probe() {
+  grep -c 'flat_surface_lock_held' \
+    "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" \
+    "$REPO_ROOT/skills/issue-tracker/scripts/board-register.sh" \
+    "$REPO_ROOT/skills/issue-tracker/scripts/board-sweep.sh"
+}
+nt "and none of them skips the pre-key holder probe" ":0" surface_lock_legacy_probe
 
 finish

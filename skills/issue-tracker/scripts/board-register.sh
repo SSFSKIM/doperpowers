@@ -196,6 +196,7 @@ T_LOCK_ROOT="$(board_store_dir surface-locks)" _py - <<'PY'
 import os
 import re
 import _board as B
+import _board_api as BA
 
 env = os.environ
 # Titles are one line: collapse newlines/whitespace runs so a title can never
@@ -343,6 +344,11 @@ if surfaces:
     lock_root = os.environ["T_LOCK_ROOT"]
     held = []
     for s_ in surfaces:
+        # A dispatch started before the locks were keyed holds the FLAT path,
+        # and taking the keyed name beside it would race exactly the writes
+        # this lock serializes. Probed, never created.
+        if BA.flat_surface_lock_held(s_):
+            continue
         try:
             os.mkdir(os.path.join(lock_root, s_))
             held.append(s_)

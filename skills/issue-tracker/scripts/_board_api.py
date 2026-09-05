@@ -234,6 +234,38 @@ def store_dir(name):
     return d
 
 
+def flat_surface_lock_held(surface):
+    """Is a PRE-KEY dispatch still holding this surface name?
+
+    Rollout guard, one release wide, and the one store where the changeover can
+    actually collide: a process started before the locks were keyed holds
+    <root>/surface-locks/<name>, and a prober looking only at the keyed path
+    would take a surface that process is mid-dispatch on.
+
+    Probed, never created — and evicted on the same staleness rule the keyed
+    lock applies, because nothing writes the flat path again and a leftover
+    obeyed forever would block that surface for good. Remove this with the flat
+    store. It lives here rather than in each of the three callers because one
+    rule in three languages is how the three of them drift apart.
+    """
+    p = os.path.join(_registry_root(), "surface-locks", surface)
+    try:
+        age = time.time() - os.stat(p).st_mtime
+    except OSError:
+        return False
+    try:
+        stale = float(os.environ.get("SURFACE_LOCK_STALE") or 30)
+    except ValueError:
+        stale = 30.0
+    if age <= stale * 60:
+        return True
+    try:
+        os.rmdir(p)
+    except OSError:
+        pass
+    return False
+
+
 _OWN_SEAT = {}          # per-process memo: this session's record, found once
 _SEAT_POLL = 0.5        # the bind lands in one write; this only has to notice
 # Seconds, from the RECORD's last write — see own_seat. Sized to the gap it has
