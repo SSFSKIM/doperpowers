@@ -961,7 +961,19 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   REVIEWER_UUID=""
   # Both spawns below carry `--role QAGENT`, which is the seat's honest role in
   # every fleet view from birth. Provenance is a different question and a
-  # different field — see the `board_dispatch` stamp below the spawn.
+  # different field: `board_dispatch` is what the client reads to refuse a
+  # dispatched reviewer whose bind never landed rather than let it write as the
+  # operator (dp#35), and `role` cannot serve — `sminos join` takes whatever a
+  # human types and a re-fill preserves it. The nonce comes off the journal path
+  # the api caller set; gh mode has no claim and says `true`.
+  # ATOMIC WITH THE RECORD, not a write after it. `--stamp` merges into the
+  # launch dict, so provenance is on the record's very FIRST write: a separate
+  # `meta set` never runs when `sminos spawn` times out polling the session uuid
+  # (up to 60s) or the caller dies inside that poll, and a marker that can go
+  # missing is a marker that fails open — the worker would be live, unbound, and
+  # taken for an operator's own seat.
+  local dispatch_mark
+  dispatch_mark="$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)"
 
   # ONE worker harness, two model routes. The default "claude" engine is a
   # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
@@ -972,7 +984,8 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-fable}" --role QAGENT)" \
+      --model "${REVIEW_MODEL:-fable}" --role QAGENT \
+      --stamp "board_dispatch=$dispatch_mark")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
@@ -984,27 +997,13 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     # and every later resume would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-opus}" --role QAGENT)" \
+      --model "${REVIEW_MODEL:-opus}" --role QAGENT \
+      --stamp "board_dispatch=$dispatch_mark")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
   REVIEWER_UUID="$uuid"
-  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
-  # the bind the record says nothing about whose seat it is, and that is exactly
-  # the window a dispatcher crash freezes forever — after which the worker is
-  # live, the claim is outstanding, and every verb it runs would go out as the
-  # operator. `board_dispatch` is what the client reads to refuse that instead
-  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
-  # `sminos join` takes whatever role a human types and a re-fill preserves it.
-  # Non-fatal — the bind is the very next step and normally supersedes this —
-  # but loud, because losing it silently loses the refusal.
-  # Through the CLI rather than _stamp_meta, so all three dispatch sites mark a
-  # seat the same way; the nonce comes off the journal path the api caller set,
-  # and gh mode — which has no claim — says `true`.
-  "$SMINOS_CLI" meta set "$uuid" board_dispatch \
-    "$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)" >/dev/null \
-    || echo "$name: could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
 
   # The worker's first protocol action waits on bind_ready. Publish it only
   # after the new registry meta exists and (for ticketed work) board-bind has
@@ -1414,7 +1413,10 @@ sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-lab
 CLAIM_LANES=qagent
 _claim_lane_cap() { : "$1"; echo "$REVIEW_CAP"; }
 _claim_drop_journal() { _api_drop_journal "$1"; }
-_claim_retire_worker() { _retire "$1"; }
+# NOT `_retire`, which is best-effort by design for this file's own callers:
+# the reconciler's orphan arm ends a run only when the worker it belongs to is
+# actually stopped, so this one reports the CLI's status.
+_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 

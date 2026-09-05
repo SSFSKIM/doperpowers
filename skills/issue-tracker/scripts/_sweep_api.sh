@@ -1395,30 +1395,26 @@ $(cat "$dir/body.md")"
     # tick can itself run inside a gateway-routed seat, and `sminos spawn`
     # persists what it inherits into the record, so every later resume would
     # ride the gateway while the log said claude.
+    # `--stamp board_dispatch=` marks the seat as dispatcher-spawned on the
+    # record's FIRST write. Between that write and the bind below nothing else
+    # says whose seat it is, and a crash in there leaves the worker live with a
+    # claim outstanding — the client reads this field to refuse it rather than
+    # let it write as the operator (dp#35). Atomic with the launch for the same
+    # reason the other two sites are: a stamp written after the spawn never runs
+    # when the uuid poll times out or this process dies inside it.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
          BOARD_REPO="$BOARD_REPO" \
          DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
          "$SMINOS_CLI" spawn "$name" "$prompt" \
          --cwd "${LOCAL_REPO:-$BOARD_ROOT}" --worktree "$name" \
-         --model "$(_model_for_lane "$lane")")"; then
+         --model "$(_model_for_lane "$lane")" \
+         --stamp "board_dispatch=$nonce")"; then
       printf '%s\n' "$spawn_out"
       uuid="$(printf '%s\n' "$spawn_out" \
         | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
       if [ -n "$uuid" ]; then
         delivered="$uuid"
-        # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the
-        # spawn and the bind the record says nothing about whose seat it is,
-        # and that is exactly the window a dispatcher crash freezes forever —
-        # after which the worker is live, the claim is outstanding, and every
-        # verb it runs would go out as the operator. `board_dispatch` is what
-        # the client reads to refuse that instead (dp#35). It is provenance,
-        # not bookkeeping: `role` cannot serve, since `sminos join` takes
-        # whatever role a human types and a re-fill preserves it. Non-fatal —
-        # the bind is the next step and normally supersedes this — but loud,
-        # because losing it silently loses the refusal.
-        "$SMINOS_CLI" meta set "$uuid" board_dispatch "$nonce" >/dev/null \
-          || echo "resume: #$tid — could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
         echo "resume: #$tid run $C_RUN → fresh worker $uuid (session resume failed)"
       else
         echo "resume: #$tid — spawned worker UUID unparseable (a session may be orphaned)" >&2

@@ -151,7 +151,11 @@ _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
 _claim_drop_journal() {  # <nonce>
   rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
 }
-_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1 || true; }
+# RETURNS THE CLI'S STATUS. The reconciler's orphan arm ends a run only when
+# the worker it belongs to is actually stopped — swallowed, a failed retire read
+# as success and the ticket was freed for a successor while the first worker was
+# still running.
+_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 
@@ -378,12 +382,25 @@ PY
   # against cannot arise here: this worker is bound to THIS dispatcher's repo
   # by construction, since the run bearer it also carries ties it to a ticket
   # in that repo and nothing else.
+  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
+  # the bind the record says nothing about whose seat it is, and that is exactly
+  # the window a dispatcher crash freezes forever — after which the worker is
+  # live, the claim is outstanding, and every verb it runs would go out as the
+  # operator. `board_dispatch` is what the client reads to refuse that instead
+  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
+  # `sminos join` takes whatever role a human types and a re-fill preserves it.
+  # ATOMIC WITH THE RECORD, not a write after it. `--stamp` merges into the
+  # launch dict, so provenance is on the record's very FIRST write: a separate
+  # `meta set` never runs when `sminos spawn` times out polling the session uuid
+  # (up to 60s) or the caller dies inside that poll, and a marker that can go
+  # missing is a marker that fails open — the worker would be live, unbound, and
+  # taken for an operator's own seat.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
     BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-    --model "$model" --role "$role")" \
+    --model "$model" --role "$role" --stamp "board_dispatch=$nonce")" \
     || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
@@ -392,17 +409,6 @@ PY
   [ -n "$uuid" ] || { echo "#$C_TICKET: spawned worker UUID was not parseable — releasing run $C_RUN_ID (a session may be orphaned)" >&2
                       _api_end_run "$C_RUN_ID" abandoned
                       rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
-  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
-  # the bind the record says nothing about whose seat it is, and that is exactly
-  # the window a dispatcher crash freezes forever — after which the worker is
-  # live, the claim is outstanding, and every verb it runs would go out as the
-  # operator. `board_dispatch` is what the client reads to refuse that instead
-  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
-  # `sminos join` takes whatever role a human types and a re-fill preserves it.
-  # Non-fatal — the bind is the very next step and normally supersedes this —
-  # but loud, because losing it silently loses the refusal.
-  "$SMINOS_CLI" meta set "$uuid" board_dispatch "$nonce" >/dev/null \
-    || echo "#$C_TICKET: could not mark $uuid as dispatcher-spawned (non-fatal; an unbound worker would fall back instead of refusing)" >&2
   # The bearer goes to board-bind so it lands in the meta at 0600: the sweep's
   # renew/relay/resume phases read it back out of there, and a worker whose
   # bearer was never stored can never be spoken for again.
