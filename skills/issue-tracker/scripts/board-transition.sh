@@ -85,7 +85,8 @@ else _fence_board="gh:$BOARD_REPO"; _fence_repo=""; fi
 T_ID="$tid" T_DHOME="$DAEMON_HOME" T_SELF="${CLAUDE_CODE_SESSION_ID:-}" \
 T_DSELF="${DAEMON_SELF_UUID:-}" \
 T_OVR="${BOARD_OWNER_OVERRIDE:-}" T_BOARD="$_fence_board" \
-T_BOARD_REPO="$_fence_repo" _py - <<'PY'
+T_BOARD_REPO="$_fence_repo" \
+BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="${BOARD_REPO:-}" _py - <<'PY'
 import glob
 import json
 import os
@@ -114,7 +115,21 @@ if tid:
     # transitions of OUR #9. One predicate, shared with every other scan over
     # this machine-global registry; an unstamped meta still fences, as it did
     # before the stamp existed.
-    from _board_api import meta_is_mine
+    from _board_api import meta_is_mine, run_context
+
+    # THE RUN IS AN IDENTITY, NOT ONLY THE SESSION. The run bearer is the
+    # client's principal — the server derives the actor from it — so a caller
+    # holding run N's bearer IS run N, whichever shell or session it runs
+    # from. Ownership by session alone refused exactly that caller on its own
+    # ticket: a worker driving the protocol from a second shell, a resume of
+    # the run into a fresh session, every integration drill. Resolved LAZILY,
+    # on the would-refuse path only, so an ordinary transition never pays for
+    # the seat-record scan (and never logs a principal it did not need).
+    # Nothing widens in gh mode: bind stamps run_id in the api binding only,
+    # so a gh meta has no run id for this to match.
+    def self_run():
+        ctx = run_context()          # memoised per process; the call is free
+        return str(ctx["run_id"] or "") if ctx else ""
 
     for path in glob.glob(os.path.join(env["T_DHOME"], "*.json")):
         if path.endswith(".reply.json"):
@@ -139,6 +154,9 @@ if tid:
         if env["T_DSELF"] and env["T_DSELF"] == owner:
             break      # a legacy codex-CLI turn: no harness session id, so
                        # its caller hands it the seat id explicitly
+        mrun = str(meta.get("run_id") or "")
+        if mrun and mrun == self_run():
+            break      # the run the record names is the run transitioning
         if env["T_OVR"]:
             print("override: #%s is mid-turn under %s (status=%s) — proceeding: %s"
                   % (tid, meta.get("name") or owner, meta.get("status"), env["T_OVR"]))

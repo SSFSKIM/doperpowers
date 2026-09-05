@@ -355,6 +355,26 @@ PY
   : >"$PROJECTS/$1.jsonl"
 }
 
+# THE SCRIPTED WORKER'S TURN ENDS. A drill's worker is a meta and a transcript,
+# never a session, so nothing in this tier ever takes it out of `working` —
+# while in production the next tick's `sminos sync` does, as soon as the turn
+# finishes. The distinction is load-bearing downstream: only a MID-TURN owner
+# fences a transition (dp#63), so a drill that walks on past a worker's last
+# write without ending its turn is asserting against a machine state that
+# cannot outlive the worker it describes.
+end_turn() {  # end_turn <uuid>
+  T_P="$DAEMON_HOME/$1.json" python3 - <<'PY'
+import json, os
+path = os.environ["T_P"]
+with open(path) as f:
+    m = json.load(f)
+m["status"] = "idle"
+mode = os.stat(path).st_mode & 0o777
+with os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC, mode), "w") as f:
+    json.dump(m, f, indent=2)
+PY
+}
+
 # The registry meta bound to ticket $1, as `uuid<TAB>run<TAB>fence<TAB>bearer`.
 # The bearer crosses into a shell variable here and is never echoed — the drills
 # that read it hand it straight back to a verb as BOARD_RUN_TOKEN.
