@@ -1471,8 +1471,32 @@ def cwd_or_die(cwd, verb):
     return cwd
 
 
+def parse_stamps(items):
+    """`--stamp field=value`, repeatable, as a dict merged into the launch record.
+
+    For provenance a caller needs on the record from its FIRST write rather than
+    a moment later. A separate `meta set` after the spawn never runs when the
+    uuid poll times out or the caller dies inside it, and the board client reads
+    `board_dispatch` precisely to tell a dispatched seat from an operator's own
+    — a marker that can go missing is a marker that fails open.
+    """
+    out = {}
+    for item in items or []:
+        field, sep, value = item.partition("=")
+        field = field.strip()
+        if not sep or not field:
+            die("--stamp takes field=value: %s" % item, EXIT_USAGE)
+        if SECRET_RE.search(field):
+            # Same refusal `meta set` makes: a launch record is written before
+            # anything narrows its mode, so a credential stamped here would
+            # exist world-readable for the width of that write.
+            die("'%s' is a credential field — not writable through --stamp" % field, EXIT_USAGE)
+        out[field] = value
+    return out
+
+
 def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, worktree,
-                model, settings, effort, preamble_flag, wait, locks, verb):
+                model, settings, effort, preamble_flag, wait, locks, verb, stamp=None):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -1501,6 +1525,9 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
         "settings": settings, "effort": effort, "status": "working", "host": host_name(),
         "boot_id": boot_id(), "updated": now(), "turns": "1", "preamble": "1" if preamble_flag else "",
     }
+    # Merged into the launch dict itself, so the caller's fields are on the
+    # record's very first write and cannot be lost to a later failure.
+    launch.update(stamp or {})
     if seat_id is None:
         rec_id = str(uuidlib.uuid4())
         meta_set(rec_id, {"uuid": rec_id, "now": "", "note": "", "created": now(), "attempts": 1,
@@ -1527,11 +1554,17 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
             history.append(entry)
         # The predecessor's run and board binding belonged to ITS run: board-bind
         # re-stamps the new occupant (`lane` and `role` describe the seat and stay).
+        # `board_dispatch` is per-OCCUPANT, like the run binding beside it: a seat
+        # a dispatcher once launched, re-filled by hand, would otherwise still
+        # read as dispatched — and the board client refuses a dispatched seat
+        # whose bind never lands. A dispatched re-fill re-stamps it, so the drop
+        # skips anything this launch supplies (meta_set removes AFTER it merges).
+        drop = ("pending_short", "engine", "pid", "event_log", "run_id", "run_bearer", "fence",
+                "bind_confirmed", "nonce", "run_ended_at", "ticket", "board", "board_dispatch",
+                "closure_package", "retired_from", "relayed_comment", "sweep_recoveries")
         meta_set(rec_id, {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1,
                           "history": history[-10:]},
-                 remove=("pending_short", "engine", "pid", "event_log", "run_id", "run_bearer", "fence",
-                         "bind_confirmed", "nonce", "run_ended_at", "ticket", "board", "closure_package",
-                         "retired_from", "relayed_comment", "sweep_recoveries"))
+                 remove=tuple(k for k in drop if k not in launch))
     polled = poll_uuid(short)
     if not polled or not UUID_RE.match(polled[0]):
         meta_set(rec_id, {"status": "error", "pending_short": short, "updated": now()})
@@ -1641,7 +1674,8 @@ def cmd_spawn(a):
     else:
         parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group
     spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, parent, role, brief,
-                a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned")
+                a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned",
+                stamp=parse_stamps(a.stamp))
 
 
 def cmd_seat_add(a):
@@ -2717,6 +2751,8 @@ def build_parser():
     sp.add_argument("--cwd", default="")
     sp.add_argument("--worktree", default="")
     sp.add_argument("--addr", default=None)
+    sp.add_argument("--stamp", action="append", default=None,
+                    metavar="FIELD=VALUE", help="merge a field into the launch record (repeatable)")
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)

@@ -483,9 +483,30 @@ assert_contains "$OUT" "message it with sminos send/wake" "filled refusal points
 run "$SMINOS" spawn refillme "FIRST" --group grp --role r1 --brief b1
 assert_rc 0 "$RC" "first spawn of refillme exits 0"
 RF="$(seat_id_of refillme)"
-"$SMINOS" meta set refillme ticket 42 lane implement >/dev/null   # pipeline-owned: ticket is per-run, lane describes the seat
+"$SMINOS" meta set refillme ticket 42 lane implement board_dispatch n-8 >/dev/null   # pipeline-owned: ticket and the dispatch marker are per-run, lane describes the seat
 "$SMINOS" status refillme "did the first pass" >/dev/null
 RF_FIRST="$(field "$RF" current)"
+# PROVENANCE RIDES THE LAUNCH DICT. `--stamp field=value` merges into the very
+# first write of the record, which is what the board pipeline needs: a separate
+# `meta set` after the spawn never runs when the uuid poll times out or the
+# caller dies inside it, and the client reads `board_dispatch` precisely to tell
+# a dispatched seat from an operator's own.
+run "$SMINOS" spawn stamped "STAMPED-1" --group grp --stamp board_dispatch=n-7 --stamp lane=implementer
+assert_rc 0 "$RC" "spawn with --stamp exits 0"
+ST="$(seat_id_of stamped)"
+assert_equals "$(field "$ST" board_dispatch)" "n-7" "--stamp lands on the record"
+assert_equals "$(field "$ST" lane)" "implementer" "--stamp is repeatable"
+run "$SMINOS" spawn badstamp "X" --group grp --stamp nosign
+assert_rc 2 "$RC" "--stamp without field=value is a usage error"
+run "$SMINOS" spawn badstamp "X" --group grp --stamp run_bearer=leak
+assert_rc 2 "$RC" "--stamp refuses a credential field"
+# The drop and the stamp meet on a re-fill, and the stamp wins: meta_set removes
+# AFTER it merges, so a dispatched re-fill has to be exempt from its own drop.
+"$SMINOS" meta set stamped board_dispatch n-old >/dev/null
+run "$SMINOS" spawn stamped "STAMPED-2" --group grp --stamp board_dispatch=n-new
+assert_rc 0 "$RC" "a dispatched re-fill exits 0"
+assert_equals "$(field "$ST" board_dispatch)" "n-new" "its --stamp survives the re-fill's own drop"
+
 run "$SMINOS" spawn refillme "SECOND" --group grp
 assert_rc 0 "$RC" "re-spawning a stopped seat re-fills it (exit 0)"
 assert_contains "$OUT" "seat re-filled: grp/refillme" "re-fill is reported"
@@ -497,6 +518,11 @@ assert_contains "$(field "$RF" task)" "SECOND" "re-fill updates the task"
 assert_equals "$(field "$RF" turns)" "1" "re-fill resets turns"
 assert_equals "$(field "$RF" lane)" "implement" "re-fill keeps the seat-describing pipeline field (lane)"
 assert_equals "$(field "$RF" ticket)" "" "re-fill clears the predecessor's run binding (ticket)"
+# A RE-FILL IS A NEW OCCUPANT, so it does not inherit the predecessor's
+# provenance: a seat a dispatcher once launched, re-filled by hand, would
+# otherwise still read as dispatched — and the board client refuses a
+# dispatched seat whose bind never lands. A dispatched re-fill re-stamps it.
+assert_equals "$(field "$RF" board_dispatch)" "" "re-fill drops the predecessor's dispatch marker"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["history"][0]["ticket"])' "$SMINOS_HOME/$RF.json")" "42" "history[0].ticket records the predecessor's ticket"
 if [ "$(field "$RF" current)" != "$RF" ]; then pass "re-fill gives the seat a new session"; else fail "re-fill gives the seat a new session"; fi
 assert_not_contains "$(field "$RF" now)" "did the first pass" "a fresh re-fill clears the stale now line"
