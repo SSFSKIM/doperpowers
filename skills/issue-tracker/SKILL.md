@@ -192,7 +192,11 @@ matching `$CLAUDE_CODE_SESSION_ID` — the one thing a backgrounded session's ow
 shells reliably carry. An explicit `BOARD_RUN_TOKEN` in the environment still
 wins where one survives; a record is used only if its bind confirmed and it was
 bound on this checkout's board; otherwise there is no run context and the
-credentials file above is what answers. A verb that resolved a run says so in
+credentials file above is what answers. With one exception, because falling
+back there would be worse than stopping: a seat a dispatcher *spawned* for run
+work whose bind never landed refuses to act at all rather than write as the
+operator on a ticket its own claimed run still owns — the reconciler retires
+that worker and releases the run. A verb that resolved a run says so in
 one line on stderr, naming the run and the seat and never the bearer. The
 registry root is the fleet's own (`$SMINOS_HOME`, then `$DAEMON_HOME`, then
 `~/.claude/sminos`), so a non-default root has to be machine-wide — set in a
