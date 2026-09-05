@@ -9,6 +9,7 @@ import it for a pure derivation it renders (board-map.sh calls B.eligible to
 label a node), which shares the single source of that derivation rather than
 forking a second, drifting copy of it.
 """
+import hashlib
 import json
 import os
 import sys
@@ -175,6 +176,62 @@ def _registry_root():
     """
     return (os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
             or os.path.join(os.path.expanduser("~"), ".claude", "sminos"))
+
+
+def binding_ident():
+    """(board, repo_key) for the binding THIS PROCESS runs under, read from the
+    environment — the same pair board-bind.sh stamps onto a seat record and
+    meta_is_mine compares a record against.
+
+    meta_is_mine is pure because every one of its callers already holds an
+    identity. This is where an identity comes from when nobody hands one over,
+    and it is deliberately the ONLY such resolver: the digest below keys the
+    sweep's tick lock and every store under the registry root, so a dispatcher's
+    shell, a sweep tick and a bare `python3 -c` in a worker's hands have to
+    reach the same answer or they file into different directories.
+    """
+    if os.environ.get("BOARD_BINDING") == "api":
+        # Both halves die loud on a blank rather than keying off one: an empty
+        # url or repo is a broken hand-over, and the digest of a blank is a
+        # directory every mis-bound process on the machine would share.
+        return (board_key(), repo())
+    # gh mode carries no repo dimension — the owner/name inside the key IS the
+    # whole identity. _lib.sh and board-sweep.sh both resolve and export it
+    # before anything here is reached.
+    name = os.environ.get("BOARD_REPO", "").strip()
+    if not name:
+        die("BOARD_REPO is unset — a gh binding's registry stores are keyed by "
+            "owner/name; _lib.sh resolves it, so source that first")
+    return ("gh:" + name, "")
+
+
+def binding_digest():
+    """The 16 hex characters every per-board store under the registry root is
+    filed by: sha256("<board>|<repo>").
+
+    Hashed rather than sanitized so that no url or repo name can collide with
+    another's after character substitution, and so the path stays a fixed,
+    filesystem-safe length. Both dimensions are in it because neither settles
+    the identity alone — one service serves several repos, and two services
+    could each serve a repo of the same name.
+    """
+    board, repo_key = binding_ident()
+    return hashlib.sha256(("%s|%s" % (board, repo_key)).encode()).hexdigest()[:16]
+
+
+def store_dir(name):
+    """<registry root>/<name>/<digest>, created on demand.
+
+    The root is machine-global and a board is not, while these stores carry
+    board-local meaning with nothing in their own keys to say so: claim
+    journals keyed by dispatch nonce, suppressions keyed by TICKET NUMBER,
+    mkdir locks keyed by surface name. Flat under the root, a second bound repo
+    on the same Mac reconciled our handoffs, suppressed our ticket numbers and
+    serialized against our surface names.
+    """
+    d = os.path.join(_registry_root(), name, binding_digest())
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 _OWN_SEAT = {}          # per-process memo: this session's record, found once
