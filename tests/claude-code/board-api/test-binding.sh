@@ -227,6 +227,102 @@ t "worktree credentials slug is the main repo, not the worktree dir" \
 t "a worktree speaks for the same repo as its main checkout" "repo=wt-repo" \
   bash -c "cd '$WT' && . '$SCRIPTS/_binding.sh' && echo \"repo=\$BOARD_REPO\""
 
+# =========================================================================
+# A LINKED WORKTREE AT AN OLDER HEAD RESOLVES ITS BINDING FROM THE MAIN
+# CHECKOUT. board.json is committed now, so a worktree at a CURRENT head
+# carries it — but an executor checks out the head it was dispatched for, and
+# that head routinely predates the commit, where the file is simply absent.
+# The answer then was a silent `gh`: the first board command spoke to the
+# fork's GitHub issues, and a write would have landed on an unrelated one
+# (dp#10). The main checkout is one `--git-common-dir` away, and the
+# credentials slug below already walks exactly that path.
+WPORT="$(python3 -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+WFIX="$(mktemp)"; : > "$WFIX.log"
+# Longest-prefix-first: /tickets/12 registered ahead of the timeline would
+# swallow the timeline read too.
+cat > "$WFIX" <<JSON
+[
+ {"method":"GET","path":"/tickets/12/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"title":"T wt","category":"work","state":"in-progress",
+          "priority":"P1","owner_run":null,"parent":null,"plan":null,"pr_url":null,
+          "branch":null,"blocked_by":[],"relates":[],"body":"served to the worktree"}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$WFIX" "$WPORT" & WMOCK=$!
+trap 'kill $WMOCK 2>/dev/null' EXIT
+wtries=200
+while [ "$wtries" -gt 0 ] && ! python3 -c "import socket, sys
+sys.exit(0 if socket.socket().connect_ex(('127.0.0.1', $WPORT)) == 0 else 1)"; do
+  wtries=$((wtries - 1)); sleep 0.05
+done
+[ "$wtries" -gt 0 ] || { echo "FAIL mock server never listened on $WPORT"; exit 1; }
+
+gitq() { git -C "$1" -c user.email=t@t -c user.name=t "${@:2}"; }
+# bind_probe <dir> [VAR=val ...] — _binding.sh alone, resolved the way a board
+# script resolves it: `set -euo pipefail`, because a `git` that fails inside
+# this file aborts a real caller before it prints anything at all.
+bind_probe() { local d="$1"; shift
+  ( cd "$d" && env "$@" bash -c "set -euo pipefail
+. '$SCRIPTS/_binding.sh'
+echo \"\$BOARD_BINDING|\${BOARD_API_URL:-}|\${BOARD_REPO:-}|\$(basename \"\$BOARD_CREDENTIALS_FILE\")\"" ) 2>&1 || :
+}
+
+r10="$(mkrepo)"; : > "$r10/README"
+gitq "$r10" add README; gitq "$r10" commit -q -m init
+gitq "$r10" branch older-head          # the head the executor was dispatched for
+mkdir -p "$r10/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"main-repo"}' "$WPORT" \
+  > "$r10/.doperpowers/board.json"
+gitq "$r10" add .doperpowers/board.json; gitq "$r10" commit -q -m board
+WT10="$(mktemp -d)/older-head"
+gitq "$r10" worktree add -q "$WT10" older-head
+
+t "a worktree at a head without board.json takes the main checkout's binding" \
+  "api|http://127.0.0.1:$WPORT|main-repo|$(basename "$r10").env" bind_probe "$WT10"
+
+WCREDS="$(mktemp)"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$WCREDS"
+wt_show() { : > "$MARKER"
+  ( cd "$WT10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    BOARD_CREDENTIALS_FILE="$WCREDS" "$SCRIPTS/board-show.sh" 12 ) 2>&1 || :; }
+t  "and a verb run from that worktree reaches that board" "#12 in-progress" wt_show
+t  "the read landed on the mock, from the worktree" "/tickets/12" cat "$WFIX.log"
+nt "and gh was never reached from it" "GH_INVOKED" cat "$MARKER"
+
+# ORDERING. The common dir is consulted only where the root has no file of its
+# own, so a worktree that carries one still speaks for itself.
+mkdir -p "$WT10/.doperpowers"
+printf '{"binding":"api","url":"https://wt-own.example","repo":"wt-own"}' \
+  > "$WT10/.doperpowers/board.json"
+gitq "$WT10" add .doperpowers/board.json; gitq "$WT10" commit -q -m "own board"
+t "a worktree's own board.json outranks the main checkout's" \
+  "api|https://wt-own.example|wt-own|$(basename "$r10").env" bind_probe "$WT10"
+
+# An explicit BOARD_ROOT keeps winning — its own file is what is checked, and
+# only its absence sends the lookup to the common dir of THAT root.
+mkdir -p "$r10/sub"
+t "an explicit BOARD_ROOT with no file consults its own common dir" \
+  "api|http://127.0.0.1:$WPORT|main-repo|$(basename "$r10").env" \
+  bind_probe "$r10/sub" "BOARD_ROOT=$r10/sub"
+# ...and a BOARD_ROOT that is no git checkout at all has no common dir to ask.
+# That is gh, as it always was — not a `git` failure that kills the caller
+# before the binding is even decided.
+NOGIT="$(mktemp -d)"
+t "a BOARD_ROOT outside any repo is gh, not a fatal" "gh||" \
+  bind_probe "$r10" "BOARD_ROOT=$NOGIT"
+
+# A repo with no board.json ANYWHERE is unchanged: gh, and no board exists to
+# be spoken to.
+r11="$(mkrepo)"; : > "$r11/README"
+gitq "$r11" add README; gitq "$r11" commit -q -m init
+WT11="$(mktemp -d)/unbound"
+gitq "$r11" worktree add -q "$WT11" -b unbound
+WIRE_BEFORE="$(wc -l < "$WFIX.log" | tr -d ' ')"
+t "a worktree of an unbound repo is still gh" "gh||" bind_probe "$WT11"
+t "and nothing of it reached the wire" "unchanged" bash -c \
+  "[ \"\$(wc -l < '$WFIX.log' | tr -d ' ')\" = '$WIRE_BEFORE' ] && echo unchanged || echo grew"
+
 # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling through
 # left BOARD_BINDING=gh, so a typo silently sent every read and every mutation
 # to GitHub — against a repo whose board lives somewhere else entirely.

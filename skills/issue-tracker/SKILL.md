@@ -154,7 +154,8 @@ return), never to implementation.
 A repo's board lives either in its GitHub issues (**gh binding**, the default)
 or on an Arkho board service (**api binding**). `.doperpowers/board.json` says
 which — it is committed, so every checkout and every linked worktree of the
-repo resolves the same board:
+repo resolves the same board (a linked worktree checked out at a head that
+predates the file resolves the binding from its main checkout):
 
 ```json
 { "binding": "api", "url": "https://…", "repo": "doperpowers" }
