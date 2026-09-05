@@ -97,6 +97,7 @@ tests=(
     "board-api/test-sweep-renew-relay.sh"
     "board-api/test-sweep-resume.sh"
     "board-api/test-run-self-location.sh"
+    "board-api/test-store-scope.sh"
     # The integration tier carries its OWN gate rather than living under
     # --integration: it needs $ARKHO_DIR plus a container runtime for the
     # scratch Postgres, and skips loudly (exit 77, counted as a SKIP below)
