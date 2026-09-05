@@ -184,6 +184,26 @@ BOARD_AUTOMATION_TOKEN=…    # the fleet: dispatch, claims, sweeps
 BOARD_HUMAN_TOKEN=…         # your human partner: register, transition, answer
 ```
 
+Those two are the operator's credentials. A dispatched **worker** speaks as its
+*run* instead, and it is handed nothing to do so: the dispatcher claims the run
+and `board-bind.sh` stamps the bearer, run id and fence onto that session's seat
+record in the sminos registry, and the scripts resolve them back out of it by
+matching `$CLAUDE_CODE_SESSION_ID` — the one thing a backgrounded session's own
+shells reliably carry. An explicit `BOARD_RUN_TOKEN` in the environment still
+wins where one survives; a record is used only if its bind confirmed and it was
+bound on this checkout's board; otherwise there is no run context and the
+credentials file above is what answers. With one exception, because falling
+back there would be worse than stopping: a seat a dispatcher *spawned* for run
+work whose bind never landed refuses to act at all rather than write as the
+operator on a ticket its own claimed run still owns — the reconciler retires
+that worker and releases the run. A verb that resolved a run says so in
+one line on stderr, naming the run and the seat and never the bearer. The
+registry root is the fleet's own (`$SMINOS_HOME`, then `$DAEMON_HOME`, then
+`~/.claude/sminos`), so a non-default root has to be machine-wide — set in a
+shell profile or a launchd environment — exactly as every other `sminos` call a
+worker makes already requires; a root exported only inside a dispatcher's
+process reaches neither.
+
 Every read narrows to the bound repo, and so does every write. The two **browse**
 verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back
 to the whole service. A widened listing says so in its header line and carries

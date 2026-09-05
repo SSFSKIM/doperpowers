@@ -159,14 +159,287 @@ def _creds():
     return out
 
 
+def _registry_root():
+    """The seat registry, by the ONE rule the sminos CLI and _lib.sh apply:
+    $SMINOS_HOME, then $DAEMON_HOME, then the default. Resolved here rather
+    than taken from a caller because this module is reached from shells that
+    never sourced _lib.sh (a bare `python3 -c` in a worker's own hands).
+
+    A root overridden only in a dispatcher's own process never reaches the
+    worker it spawns, so the worker reads the default one — which is sminos's
+    own standing assumption, not a new exposure this adds: the spawn preamble
+    has every worker run `sminos topology`/`post`/`status` from its own shell,
+    and those resolve the root by this same rule. An override has to be
+    machine-wide (a shell profile, a launchd environment) for the fleet to work
+    at all, and where it is, self-location reads exactly what sminos wrote.
+    """
+    return (os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
+            or os.path.join(os.path.expanduser("~"), ".claude", "sminos"))
+
+
+_OWN_SEAT = {}          # per-process memo: this session's record, found once
+_SEAT_POLL = 0.5        # the bind lands in one write; this only has to notice
+# Seconds, from the RECORD's last write — see own_seat. Sized to the gap it has
+# to cover, not picked round: `sminos spawn` writes the record from the launch
+# banner and then polls the harness for the full session uuid before it returns
+# at all (poll_uuid: 30 iterations at a 2s interval, so up to 60s), and the bind
+# is the caller's next step after that. A budget shorter than the poll would
+# expire while the dispatcher is still waiting to learn who it spawned.
+_SEAT_BIND_WAIT = 90.0
+def _is_dispatch_seat(rec):
+    """Did a board DISPATCHER launch this seat? `board_dispatch` says so.
+
+    The dispatchers stamp it (the claim nonce, or `true` where none is at hand)
+    between the spawn and the bind, so it is on the record for exactly the
+    window where nothing else identifies the seat. `role` cannot answer this:
+    it is ordinary sminos metadata — `join` takes whatever a human types and a
+    re-fill preserves it — so a manually operated seat carrying IMPLEMENT would
+    have been refused every verb it ran, while the sweep's fresh-successor
+    spawn, which passes no role at all, would have fallen back.
+    """
+    return bool(str(rec.get("board_dispatch") or "").strip())
+
+
+def _seat_bind_wait():
+    try:
+        v = float(os.environ.get("BOARD_SEAT_BIND_WAIT") or _SEAT_BIND_WAIT)
+    except ValueError:
+        return _SEAT_BIND_WAIT
+    return max(0.0, v)
+
+
+def _seat_of_session(session):
+    """(seat id, record, mtime) for THIS session — or None. The BOARD is not
+    examined here: a record can name this session before it names any board,
+    and telling those two absences apart is the whole of the wait below."""
+    prefix_hit = None
+    root = _registry_root()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json") or name.endswith(".reply.json"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            mtime = os.stat(path).st_mtime
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("current") or "") == session:
+            return (name[:-5], rec, mtime)   # the exact match always wins
+        short = str(rec.get("short") or "")
+        if short and prefix_hit is None and session.startswith(short):
+            prefix_hit = (name[:-5], rec, mtime)
+    return prefix_hit
+
+
+def _seat_verdict(rec, board, repo_key):
+    """`mine`, `pending` or `no`, for a record that IS this session's.
+
+    THE BOARD KEY IS THE CLOCK, AND THE BEARER AT REST IS THE EVIDENCE.
+    board-bind.sh writes `board` in the same locked write as the run, so under
+    an api binding a record naming no board is a bind that has not landed yet —
+    worth waiting for. Once a board IS named, what makes this a run is a bearer
+    and a run id ON THE RECORD, not `bind_confirmed`: the server minted that
+    bearer for this seat, and the end-of-run strip (`_retire_run_locally`) is
+    what takes it and the run id away again, so their absence is the run being
+    over rather than a bind still in flight.
+
+    `bind_confirmed` is deliberately NOT part of this. It is the sweep's claim
+    about what the server accepted, and the successor path writes the new run,
+    fence and bearer with it set FALSE, binding only after the resumed turn
+    returns — so for that entire turn the worker's own record is exactly this
+    shape. Requiring the flag sent every verb of every successor turn out as
+    the operator.
+
+    A `pending` verdict that never resolves is not always survivable, and
+    own_seat decides that by asking whose seat it is — see the fail-closed rule
+    there.
+
+    `no` also covers this session bound somewhere that is not this checkout.
+    The url names the SERVICE, and one instance serves several repos out of one
+    ticket namespace, so the url alone does not separate them: a record stamped
+    for a neighbour repo would otherwise have this checkout's verbs acting on
+    that repo's run. The repo is compared only when the caller HAS one — the
+    repo-less-head fallback in _binding.sh asks this question precisely because
+    it does not — and only when the record carries one, since a bind predating
+    dp#33 stamped no repo and is still this session's own.
+    """
+    stamped = str(rec.get("board") or "").rstrip("/")
+    if not stamped:
+        return "pending"
+    if stamped != board:
+        return "no"
+    mrepo = str(rec.get("board_repo") or "").strip()
+    if repo_key and mrepo and mrepo != repo_key:
+        return "no"
+    if str(rec.get("run_bearer") or "") and str(rec.get("run_id") or ""):
+        return "mine"
+    return "no"
+
+
+def own_seat():
+    """This session's OWN seat record on THIS board — (seat id, record) — or
+    None.
+
+    A worker's shells are handed nothing: `claude --bg` drops the dispatcher's
+    whole spawn env prefix (measured twice, harness v2.1.261), so the bearer,
+    the run id and the fence never reach the process that needs them. What DOES
+    survive is $CLAUDE_CODE_SESSION_ID — and that is the very key the dispatcher
+    already indexed the run by: `sminos spawn` writes the record's `short` (the
+    launch banner's 8 hex) and then `current` (the full uuid), and board-bind.sh
+    stamps run_id, fence, run_bearer, bind_confirmed, board and board_repo onto
+    it. Everything the prefix was meant to deliver is on disk under a name the
+    worker can read off its own environment.
+
+    `current` is the exact match and wins; `short` is a PREFIX of the session
+    uuid, which is all a worker has in the seconds before the uuid poll returns.
+
+    THE BIND CAN STILL BE IN FLIGHT. execute-dispatch.sh spawns the worker and
+    binds it afterwards, and the executor lane has no startup barrier to hold
+    the worker in the meantime — so a worker's first board command can land
+    between the two writes and find a record that names no board yet. Resolving
+    `None` there is the very failure this mechanism exists to remove, one race
+    narrower. So: no record for this session at all is an answer, returned at
+    once; a record whose bind has not landed is a bind to WAIT for.
+
+    A BIND THAT NEVER LANDS IS NOT ALWAYS A FALL-BACK. The dispatcher can die
+    between the spawn and the bind: the claim is outstanding, the worker is
+    live, and its record stays pre-bind forever. Falling back there is the worst
+    answer available — the worker's human-defaulted verbs would act as the
+    OPERATOR, unfenced, on a ticket a claimed run still owns, and a
+    wrong-principal write cannot be taken back. So a seat the DISPATCHER
+    launched (`board_dispatch`, stamped between the spawn and the bind) refuses
+    to act as anyone at all once its wait is spent. A seat nobody dispatched —
+    an operator's own joined session — has no run to fail closed on and keeps
+    the ordinary fall-back.
+
+    The budget is measured from the RECORD's last write, not from the caller's
+    clock, and that is what keeps an ordinary shell fast. An operator's own
+    joined seat is byte-indistinguishable from a pre-bind one — sminos writes no
+    board key for either — so the only thing separating "a bind is in flight"
+    from "this seat is not a board worker" is how long ago somebody wrote it. A
+    record older than the budget cannot be mid-handover, and is not waited on.
+    $BOARD_SEAT_BIND_WAIT tunes it; 0 disables the wait entirely.
+
+    The BOARD guard is strict here, unlike meta_is_mine's: the registry is
+    machine-global, and a record that names a different service — or a different
+    repo on the same one — is not evidence that this checkout's board handed
+    this session a run. meta_is_mine reads an unstamped record as the caller's
+    because SKIPPING one there would strand a live run with no renewal; here the
+    safe direction is the opposite one, since adopting the wrong record makes
+    every verb act as a principal nobody chose.
+
+    $BOARD_NO_SELF_LOCATE is a process saying it is not its session: the two
+    dispatchers and the sweep declare it ahead of the binding they resolve (THE
+    TICK IS AUTOMATION, FULL STOP), because a tick launched from a worker's own
+    session would otherwise act as that worker. It shuts the whole record off,
+    the repo key included — a tick has its own binding to read one from, and a
+    neighbour's record is not it. It cannot reach a spawned worker as a
+    suppression: that worker either loses the entire env prefix, which takes
+    this with it, or keeps it and keeps the explicit bearer beside it, which is
+    resolved first.
+    """
+    if "v" in _OWN_SEAT:
+        return _OWN_SEAT["v"]
+    _OWN_SEAT["v"] = None
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    board = "api:" + os.environ.get("BOARD_API_URL", "").rstrip("/")
+    if not session or board == "api:" or os.environ.get("BOARD_NO_SELF_LOCATE"):
+        return None
+    repo_key = os.environ.get("BOARD_REPO", "").strip()
+    hit = _seat_of_session(session)
+    if hit is None:
+        return None
+    verdict = _seat_verdict(hit[1], board, repo_key)
+    if verdict == "pending":
+        deadline = hit[2] + _seat_bind_wait()
+        while verdict == "pending" and time.time() < deadline:
+            time.sleep(_SEAT_POLL)
+            again = _seat_of_session(session)
+            if again is None:
+                break            # the record went away; there is nothing to wait for
+            hit = again
+            verdict = _seat_verdict(hit[1], board, repo_key)
+    if verdict != "mine" and verdict != "pending":
+        return None
+    if verdict == "pending" and _is_dispatch_seat(hit[1]):
+        die("this session was spawned for run work (dispatch %s) and its bind "
+            "never landed, so it holds no run to speak as — refusing to act as "
+            "any other principal on a ticket a claimed run still owns. The "
+            "reconciler retires an unbound worker and releases its run; there "
+            "is nothing to do here but stop."
+            % str(hit[1].get("board_dispatch") or "").strip())
+    # An undispatched seat's unlanded bind is returned as it stands:
+    # run_context() reads no bearer on it and falls back, which is the same
+    # answer as no record at all — reached the slow way, once, because it was
+    # worth waiting to be sure.
+    _OWN_SEAT["v"] = (hit[0], hit[1])
+    return _OWN_SEAT["v"]
+
+
+_RUN_CTX = {}    # per-process memo: resolved once, logged once
+
+
+def run_context():
+    """The run this process speaks as — {bearer, run_id, fence} — or None.
+
+    Resolution order, once per process:
+
+      1. an explicit BOARD_RUN_TOKEN (with BOARD_RUN_ID / BOARD_RUN_FENCE).
+         The dispatchers' and the sweep's per-command prefix, and a foreground
+         harness that keeps env. Consulted FIRST, so a bearer the caller just
+         handed can never be displaced by a record.
+      2. this session's own seat record, if its bind confirmed and it still
+         holds a bearer. That is the channel `claude --bg` actually delivers.
+      3. neither — no run context at all, which is an ordinary operator shell.
+
+    Rule 2 is own_seat(), so $BOARD_NO_SELF_LOCATE closes it here too.
+    """
+    if "v" in _RUN_CTX:
+        return _RUN_CTX["v"]
+    _RUN_CTX["v"] = None
+    run_tok = os.environ.get("BOARD_RUN_TOKEN", "")
+    if run_tok:
+        _RUN_CTX["v"] = {"bearer": run_tok,
+                         "run_id": os.environ.get("BOARD_RUN_ID", "") or None,
+                         "fence": os.environ.get("BOARD_RUN_FENCE", "") or None}
+        return _RUN_CTX["v"]
+    found = own_seat()
+    if not found:
+        return None
+    seat_id, rec = found
+    bearer = str(rec.get("run_bearer") or "")
+    run_id = str(rec.get("run_id") or "")
+    # A record stripped of its bearer is a run that ENDED — the sweep's
+    # _retire_run_locally pops it and the run id the moment it posts /end — so
+    # the answer is "no run", never a 401 on every verb after it. The
+    # confirmation flag is not consulted: see _seat_verdict.
+    if not bearer or not run_id:
+        return None
+    # ONE line, on stderr, once: a transcript should show which principal acted.
+    # The run and the seat say that; the bearer would only put a live credential
+    # into a log nobody meant to write.
+    print("speaking as run %s via seat %s" % (run_id, seat_id), file=sys.stderr)
+    _RUN_CTX["v"] = {"bearer": bearer, "run_id": run_id,
+                     "fence": str(rec.get("fence") or "") or None}
+    return _RUN_CTX["v"]
+
+
 def token(principal):
     """principal: 'auto' (run token or die), 'automation', 'human'."""
-    run_tok = os.environ.get("BOARD_RUN_TOKEN", "")
-    if run_tok:                      # a run context always speaks as the run
-        return run_tok
+    ctx = run_context()
+    if ctx:                          # a run context always speaks as the run
+        return ctx["bearer"]
     if principal == "auto":
-        die("no BOARD_RUN_TOKEN in env and the caller demanded the run "
-            "principal — this verb is worker-context-only here")
+        die("no BOARD_RUN_TOKEN in env, and this session's seat record carries "
+            "no confirmed bind to speak for — and the caller demanded the run "
+            "principal; this verb is worker-context-only here")
     key = {"automation": "BOARD_AUTOMATION_TOKEN",
            "human": "BOARD_HUMAN_TOKEN"}[principal]
     val = _creds().get(key, "")
@@ -417,14 +690,14 @@ def _claim_gated(what):
     """q and include=body are refused to run bearers server-side
     (arkho#12): a run's statement of work arrives in its claim payload,
     and a run's search would be a term-membership oracle over body text
-    it cannot read. token() speaks as the run whenever BOARD_RUN_TOKEN
-    is set, so the refusal is deterministic — die here, before any
+    it cannot read. token() speaks as the run whenever this process HAS
+    a run context, so the refusal is deterministic — die here, before any
     request, with the reason instead of a bare `forbidden`."""
-    if os.environ.get("BOARD_RUN_TOKEN"):
+    if run_context():
         die("%s is claim-gated for runs (arkho#12): this process speaks "
-            "as its run (BOARD_RUN_TOKEN is set) and the server refuses "
-            "q/include=body to run bearers — a run reads its statement "
-            "of work from the claim payload" % what)
+            "as its run and the server refuses q/include=body to run "
+            "bearers — a run reads its statement of work from the claim "
+            "payload" % what)
 
 
 def ticket(tid, principal="human", include_body=False):

@@ -65,6 +65,100 @@ printf '{"binding":"api","url":"https://b.example"}' > "$r7/.doperpowers/board.j
 t  "api without repo dies" "board.json names binding=api but no repo" probe "$r7"
 nt "and never guesses one"  "api|https://b.example|"                   probe "$r7"
 
+# ...unless THIS SESSION's own seat record answers it (dp#35). A worker checks
+# out the head it was dispatched for, and a head predating the `repo` key
+# carries exactly r7's two-key board.json — while `claude --bg` drops the env
+# prefix that was meant to pin the key. board-bind.sh stamped `board_repo` onto
+# the record when the dispatcher bound this session, so the fact is on disk
+# under a name the worker can read off its own environment.
+WSESS="beef0000-0000-4000-8000-00000000000a"
+seat() {  # seat <board-key> [path] — one record for $WSESS, alone in the registry
+  local into="${2:-}"
+  [ -n "$into" ] || { rm -f "$DAEMON_HOME"/*.json; into="$DAEMON_HOME/w.json"; }
+  printf '{"uuid":"w","current":"%s","board":"%s","board_repo":"from-record",
+           "run_id":41,"fence":3,"run_bearer":"b","bind_confirmed":true}\n' \
+    "$WSESS" "$1" > "$into"
+}
+seat "api:https://b.example"
+t "a repo-less api head falls back to this session's seat record" \
+  "api|https://b.example|$(basename "$r7").env|from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+# The board is the whole guard. The registry is machine-global and ticket
+# namespaces are not: a session bound on another service says nothing about
+# which repo THIS checkout speaks for, so the fatal stands rather than a
+# neighbour's repo key being adopted silently.
+seat "api:https://other.example"
+t  "a record from another board is not this checkout's session" \
+  "board.json names binding=api but no repo" probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+nt "and its repo key is never borrowed" "from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+# ...and it waits out a bind still in flight, because _repo_from_own_seat asks
+# own_seat() the same question a verb does. The executor lane binds AFTER the
+# spawn and has no startup barrier, so the worker's first board command can run
+# while the record still names no board — and on a repo-less head that is a
+# fatal, not a fallback.
+rm -f "$DAEMON_HOME"/*.json
+printf '{"uuid":"w","short":"beef0000","status":"working","task":"x"}\n' \
+  > "$DAEMON_HOME/w.json"
+# Renamed into place, as board-bind.sh does it: a scan that caught a truncated
+# record would skip it and read the absence as "the record went away".
+( sleep 2
+  seat "api:https://b.example" "$DAEMON_HOME/w.tmp"
+  mv "$DAEMON_HOME/w.tmp" "$DAEMON_HOME/w.json" ) &
+LATE=$!
+t "a bind that lands mid-source still names the repo" \
+  "api|https://b.example|$(basename "$r7").env|from-record" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+wait "$LATE" 2>/dev/null || :
+
+# ONE SERVICE, SEVERAL REPOS. The repo guard applies only where the caller
+# already HAS a repo to compare — and on a repo-less head it has none, which is
+# the whole reason it is asking. So the record's own claim is the answer here,
+# even though the same record is refused once this checkout knows its own repo
+# (pinned on the client side in test-run-self-location.sh).
+seat "api:https://b.example"
+t "a repo-less head takes the record's repo, whichever repo that is" \
+  "|from-record" probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS"
+
+# The declared value still outranks it — the record is the LAST resort, after
+# the env override and the file.
+seat "api:https://b.example"
+t "the file's own repo still wins over the record" "|alpha" \
+  probe "$r2" CLAUDE_CODE_SESSION_ID="$WSESS"
+# A process that declares it is not its session gets nothing from the record —
+# the repo key no less than the bearer. The dispatchers and the sweep say this,
+# and a tick has its own binding to read a repo from; a neighbouring worker's
+# record is not it.
+t "a process that is not its session borrows no repo either" \
+  "board.json names binding=api but no repo" \
+  probe "$r7" CLAUDE_CODE_SESSION_ID="$WSESS" BOARD_NO_SELF_LOCATE=1
+# ...AND IT MUST DECLARE IT IN TIME. The binding is resolved at SOURCE time, so
+# an export that lands further down the file is a no-op for the one read it was
+# meant to close. A tick launched from a bound worker's session, in a checkout
+# whose board.json predates the `repo` key, would then take the neighbour's key
+# out of that session's record and claim, sweep and end runs against the wrong
+# repo — the accident this key exists to prevent, reached by the other channel.
+cat > "$STUB/sminos" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$STUB/sminos"
+tick() {  # tick <entrypoint> [args...] — run one from the repo-less checkout
+  ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+      CLAUDE_CODE_SESSION_ID="$WSESS" SMINOS_CLI="$STUB/sminos" \
+      LOCAL_REPO="$r7" "$@" ) 2>&1 || :
+}
+t "the sweep refuses a repo it could only have borrowed" \
+  "board.json names binding=api but no repo" \
+  tick "$SCRIPTS/_sweep_api.sh" renew
+t "and so does the executor dispatcher" \
+  "board.json names binding=api but no repo" \
+  tick "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" --sweep
+t "and the review dispatcher" \
+  "board.json names binding=api but no repo" \
+  tick "$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh" --sweep
+rm -f "$DAEMON_HOME"/*.json
+
 # A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of
 # spaces passed the emptiness check and then rode the wire as an encoded blank —
 # which the server reads as NO filter, the exact widening the key exists to

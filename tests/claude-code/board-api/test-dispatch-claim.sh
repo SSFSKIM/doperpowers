@@ -50,22 +50,35 @@ case "$verb" in
 migrate) exit 0 ;;
 retire)
   echo "retire $*" >> "$DAEMON_HOME/spawn-capture.txt"
+  # RETIRE_MUST_FAIL names a seat this stub refuses to retire — an ambiguous
+  # alias, a seat already removed, a sminos that is simply unhappy. The
+  # reconciler may not end a run it could not stop the worker of.
+  [ "${RETIRE_MUST_FAIL:-}" != "$1" ] || exit 1
   exit 0 ;;
 spawn) ;;
 *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
 name="$1"; task="$2"; shift 2
-cwd=""; wt=""; model=""
+cwd=""; wt=""; model=""; role=""; stamps=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) cwd="$2"; shift 2 ;;
     --worktree) wt="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
+    # --role is parsed and PERSISTED, like the real spawn's launch dict: it is
+    # the only thing a pre-bind record says about whose seat this is, so a stub
+    # that dropped it would make every fixture record look undispatched.
+    --role) role="$2"; shift 2 ;;
+    # --stamp field=value, repeatable — merged into the launch record, as the
+    # real spawn merges it into its launch dict. Recorded AND applied: the
+    # dispatchers mark provenance here, and a stub that only logged it would
+    # leave every fixture record undispatched.
+    --stamp) stamps="$stamps $2"; shift 2 ;;
     --wait|--no-wait) shift ;;
     *) shift ;;
   esac
 done
-{ echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model"
+{ echo "ARGS name=$name cwd=$cwd worktree=$wt model=$model role=$role stamps=$stamps"
   env | grep '^BOARD_' | sort || true
   echo "GW settings=[${DAEMON_CLAUDE_SETTINGS-unset}] effort=[${DAEMON_CLAUDE_EFFORT-unset}]"
 } >> "$DAEMON_HOME/spawn-capture.txt"
@@ -73,12 +86,13 @@ printf '%s' "$task" > "$DAEMON_HOME/prompt-$name.md"
 n=$(cat "$DAEMON_HOME/.spawncount" 2>/dev/null || echo 0); n=$((n + 1))
 echo "$n" > "$DAEMON_HOME/.spawncount"
 uuid="$(printf 'bbbb%04d' "$n")-0000-4000-8000-000000000000"
-U="$uuid" N="$name" C="$cwd" python3 - <<'PY'
+U="$uuid" N="$name" C="$cwd" R="$role" S="$stamps" python3 - <<'PY'
 import json, os
 u = os.environ["U"]
-json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
-           "status": "working", "updated": "2026-08-09T00:00:00Z"},
-          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+rec = dict(p.split("=", 1) for p in os.environ["S"].split() if "=" in p)
+rec.update({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["C"],
+            "role": os.environ["R"], "status": "working", "updated": "2026-08-09T00:00:00Z"})
+json.dump(rec, open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
@@ -127,6 +141,7 @@ cat > "$FIX2" <<'JSON'
  {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
  {"method":"POST","path":"/runs/55/bind","status":200,"body":{"bound":true}},
  {"method":"POST","path":"/runs/99/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/77/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/78/end","status":200,"body":{"ended":true}}
 ]
 JSON
@@ -175,6 +190,24 @@ t "a delivered dispatch clears the ticket's failed-cycle count" "count cleared" 
 # --- the worker's environment: the run credentials it cannot run without ----
 t "worker got the run bearer"   "BOARD_RUN_TOKEN=tok-w"                cat "$DH/spawn-capture.txt"
 t "worker got the run id"       "BOARD_RUN_ID=41"                      cat "$DH/spawn-capture.txt"
+# THE SEAT SAYS AT BIRTH WHAT IT WAS LAUNCHED FOR. `sminos spawn` writes `role`
+# into the launch dict, so it is on the record BEFORE the bind — and it is the
+# only thing a pre-bind record carries that separates a dispatched worker from
+# an operator's own session. The client fails a dispatched worker closed when
+# its bind never lands, instead of letting it write as the operator (dp#35), so
+# this flag is load-bearing rather than bookkeeping.
+t "the spawn declares the role the seat was launched for" "role=ARCHITECT" \
+  cat "$DH/spawn-capture.txt"
+spawned_meta() { cat "$DH"/bbbb0001-*.json; }
+t "and it is on the record before any bind" '"role": "ARCHITECT"' spawned_meta
+# PROVENANCE IS ITS OWN FIELD. `role` is ordinary sminos metadata — `join`
+# takes whatever a human types, a re-fill preserves it — so it cannot say who
+# launched a seat. The dispatcher stamps `board_dispatch` between the spawn and
+# the bind, and that is what makes the client refuse an unbound worker rather
+# than let it write as the operator (dp#35).
+t "the seat is marked dispatcher-spawned before the bind" \
+  "stamps= board_dispatch=" cat "$DH/spawn-capture.txt"
+t "and the mark is on the record"  '"board_dispatch"' spawned_meta
 t "fence exported"              "BOARD_RUN_FENCE=3"                    cat "$DH/spawn-capture.txt"
 t "api url exported"            "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/spawn-capture.txt"
 # THE REPO PIN SURVIVES THE WORKER'S OWN CHECKOUT. A worker checks out the head
@@ -389,14 +422,22 @@ attempts12r() { [ -e "$DH2/board-suppress/.attempts-12" ] && echo "count kept" |
 t "and the delivery it confirms clears the ticket's failed-cycle count" \
   "count cleared" attempts12r
 # --- (d) a spawned-but-unbound run is never ended --------------------------
-nt "a live unbound run is NOT ended" '"path": "/runs/77/end"' cat "$FIX2.log"
-t  "its journal is kept, closed to replay" '"spawn_completed": true' \
-  cat "$DH2/board-claims/nonce-d.json"
-t  "and the orphaned session is reported by name" "33-api-implementer" cat "$OUT2"
-t  "the report says the run was not ended"        "is NOT being ended"  cat "$OUT2"
-# The ticket must not reach a second worker: no end means the server lease
-# still holds #33, and reconcile itself spawns nothing for it.
-nt "the ticket is not re-dispatched" "name=33-api-implementer" cat "$DH2/spawn-capture.txt"
+# --- (d) an unbound worker cannot speak for its run, so neither is kept ---
+# A spawn that landed with no bind leaves a worker holding NOTHING: `claude
+# --bg` dropped the env prefix, no bearer ever reached its record, and every
+# verb it runs would go out as the OPERATOR — unfenced, on a ticket its own
+# claimed run still owns (dp#35). Leaving it live was the old answer, and it
+# rested on a premise this ticket disproved: that the worker still had its
+# bearer in its environment. Retired, released, and the journal dropped with it.
+t  "an unbound worker's run IS ended" '"path": "/runs/77/end"' cat "$FIX2.log"
+t  "and ended as abandoned"           '\"reason\": \"abandoned\"' cat "$FIX2.log"
+t  "the orphaned session is retired by name" "retire 33-api-implementer" \
+   cat "$DH2/spawn-capture.txt"
+t  "the report says why it could never work"  "can never speak for the run" cat "$OUT2"
+t  "and its journal is dropped"  "gone" gone "$DH2/board-claims/nonce-d.json"
+# The ticket must not reach a second worker from THIS pass: the release is what
+# frees it, and reconcile itself spawns nothing.
+nt "reconcile re-dispatches nothing for it" "name=33-api-implementer" cat "$DH2/spawn-capture.txt"
 # --- (e) a corrupt journal is loud, not invisible ---------------------------
 t "an unparseable journal is reported" "unreadable json at" cat "$OUT2"
 t "it names the file"                  "nonce-e.json"       cat "$OUT2"
@@ -415,10 +456,10 @@ t  "and it is reported as in flight"     "nonce-h is in flight"           cat "$
 t  "its journal stays open for its own writer" '"spawn_completed": false' \
   cat "$DH2/board-claims/nonce-h.json"
 # Everything this tick was allowed to send, counted: the replayed claim, its
-# bind, the stranded run's end, and the two empty execution lanes. A repaired
-# marker sends nothing (no end for its live run 41), and the architect lane —
-# already full in the registry, by the very meta that proved run 41 live —
-# claims nothing on top of it.
+# bind, the stranded run's end, the UNBOUND worker's end, the retired-witness
+# end, and the two empty execution lanes. A repaired marker sends nothing (no
+# end for its live run 41), and the architect lane — already full in the
+# registry, by the very meta that proved run 41 live — claims nothing on top.
 ARCH_ON_WIRE='\"lane\": \"architect\"'
 wire_summary() {
   printf 'posts=%s ends41=%s arch=%s\n' \
@@ -426,7 +467,7 @@ wire_summary() {
     "$(grep -c '/runs/41/end' "$FIX2.log" || true)" \
     "$(grep -cF "$ARCH_ON_WIRE" "$FIX2.log" || true)"
 }
-t "reconcile sends only what it must" "posts=6 ends41=0 arch=0" wire_summary
+t "reconcile sends only what it must" "posts=7 ends41=0 arch=0" wire_summary
 
 # =========================================================================
 # Scenario 3 — a REGISTRY meta nobody can read. A meta is the only evidence
@@ -817,5 +858,43 @@ SWEEP10 "$DHB10" > "$OUTB10" 2>&1 || true
 t  "a registry with no suppression directory repairs normally" \
    '"spawn_completed": true'  cat "$DHB10/board-claims/nonce-18.json"
 nt "and reports no failure" "failed-cycle reset failed" cat "$OUTB10"
+
+# =========================================================================
+# Scenario 11 — A RETIRE THAT FAILED DOES NOT LICENSE THE RELEASE. The orphan
+# arm retires the worker and then ends its run, and the second step is what
+# frees the ticket for a successor. If the retire did not take — an ambiguous
+# alias, a seat already gone, a sminos that is simply unhappy — ending anyway
+# hands the ticket to a second worker while the first is still running, which
+# is the whole hazard the retire exists to remove. The journal is kept: it is
+# the only handle a later tick has to retry the pair.
+# =========================================================================
+PORT11="$(free_port)"
+FIX11="$(mktemp)"; : > "$FIX11.log"
+cat > "$FIX11" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX11" "$PORT11" & MOCK11=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 2>/dev/null' EXIT
+wait_for_port "$PORT11" || { echo "FAIL mock server never listened on $PORT11"; exit 1; }
+
+r11="$(apirepo "$PORT11")"
+DH11="$(mktemp -d)"; mkdir -p "$DH11/board-claims"
+printf '{"lane": "implementer", "run_id": 77, "spawn_completed": false, "ticket": "33", "daemon": "33-api-implementer"}\n' \
+  > "$DH11/board-claims/nonce-k.json"
+printf '{"uuid":"dddd0002","current":"dddd0002","name":"33-api-implementer","status":"working"}' \
+  > "$DH11/dddd0002.json"
+OUT11="$(mktemp)"
+( cd "$r11" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+    DAEMON_HOME="$DH11" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r11" \
+    BOARD_CREDENTIALS_FILE="$CREDS" IMPLEMENT_MAX_CONCURRENT=1 \
+    RETIRE_MUST_FAIL=33-api-implementer \
+    "$DISPATCH" --sweep ) > "$OUT11" 2>&1 || true
+
+t  "the retire was attempted"           "retire 33-api-implementer" cat "$DH11/spawn-capture.txt"
+t  "and its failure is reported"        "could not be retired"      cat "$OUT11"
+nt "the run is NOT ended over it"       '"path": "/runs/77/end"'    cat "$FIX11.log"
+t  "the journal is kept for the retry"  "still-there" gone "$DH11/board-claims/nonce-k.json"
 
 finish

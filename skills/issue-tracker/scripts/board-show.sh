@@ -25,7 +25,7 @@ import _board_api as A
 
 tid = A.ref(os.environ["T_ID"])   # '#12' → 12, and a junk ref dies as a junk
                                   # ref rather than as a request nobody can build
-run_ctx = bool(os.environ.get("BOARD_RUN_TOKEN"))
+run_ctx = bool(A.run_context())
 # The body rides the by-id read for every non-run reader — "one ticket in
 # full" finally includes the statement of work. A run context omits the
 # opt-in (the server refuses the class; its body arrived in the claim

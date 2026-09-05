@@ -165,6 +165,13 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 # dedupe and cap check and dispatches over live workers.
 "$SMINOS_CLI" migrate --quiet || die "sminos migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
+# THE TICK IS NOT ITS SESSION, and it has to say so BEFORE the binding is
+# resolved: _binding.sh reads this session's seat record at SOURCE time when the
+# checkout's board.json predates the `repo` key, so a declaration made further
+# down would arrive after the one read it exists to close. The doctrine is the
+# block beside `unset BOARD_RUN_TOKEN` in the api branch below; only the timing
+# puts the export up here.
+export BOARD_NO_SELF_LOCATE=1
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE, for the same reason
 # execute-dispatch resolves it there: an api-bound repo never invokes gh at
 # all, so requiring the CLI before knowing the binding would make the whole API
@@ -952,6 +959,21 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
   REVIEWER_UUID=""
+  # Both spawns below carry `--role QAGENT`, which is the seat's honest role in
+  # every fleet view from birth. Provenance is a different question and a
+  # different field: `board_dispatch` is what the client reads to refuse a
+  # dispatched reviewer whose bind never landed rather than let it write as the
+  # operator (dp#35), and `role` cannot serve — `sminos join` takes whatever a
+  # human types and a re-fill preserves it. The nonce comes off the journal path
+  # the api caller set; gh mode has no claim and says `true`.
+  # ATOMIC WITH THE RECORD, not a write after it. `--stamp` merges into the
+  # launch dict, so provenance is on the record's very FIRST write: a separate
+  # `meta set` never runs when `sminos spawn` times out polling the session uuid
+  # (up to 60s) or the caller dies inside that poll, and a marker that can go
+  # missing is a marker that fails open — the worker would be live, unbound, and
+  # taken for an operator's own seat.
+  local dispatch_mark
+  dispatch_mark="$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)"
 
   # ONE worker harness, two model routes. The default "claude" engine is a
   # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
@@ -962,7 +984,8 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-fable}")" \
+      --model "${REVIEW_MODEL:-fable}" --role QAGENT \
+      --stamp "board_dispatch=$dispatch_mark")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   else
     # The QAgent tier is opus/high by design — pinned, not inherited, so the
@@ -974,7 +997,8 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
     # and every later resume would ride the gateway while the log said claude.
     spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
       "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-opus}")" \
+      --model "${REVIEW_MODEL:-opus}" --role QAGENT \
+      --stamp "board_dispatch=$dispatch_mark")" \
       || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   fi
   printf '%s\n' "$spawn_out"
@@ -1389,7 +1413,10 @@ sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-lab
 CLAIM_LANES=qagent
 _claim_lane_cap() { : "$1"; echo "$REVIEW_CAP"; }
 _claim_drop_journal() { _api_drop_journal "$1"; }
-_claim_retire_worker() { _retire "$1"; }
+# NOT `_retire`, which is best-effort by design for this file's own callers:
+# the reconciler's orphan arm ends a run only when the worker it belongs to is
+# actually stopped, so this one reports the CLI's status.
+_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 
@@ -1708,9 +1735,26 @@ PY
     _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
       "$control_dir" "$name" || spawn_rc=1
   unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL
+  # THE RECORD LOSES THE RUN WITH THE RUN. _spawn_reviewer's post-bind failures
+  # — the barrier could not be published, the worker never acknowledged it —
+  # retire the worker, but a retire stops a turn; it does not make the seat
+  # forget. The bind has already landed by then, so without a strip the record
+  # keeps a confirmed bind and a live bearer for the run ended on the next line,
+  # and a session resolves its own run context out of exactly those fields
+  # (dp#35): resumed by hand, that seat would authenticate with a revoked bearer
+  # on every verb instead of falling back cleanly. Ended through the reconciler's
+  # helper rather than _api_end_run's swallow, because here the answer decides
+  # whether the strip is owed — and _retire_run_locally strips only while the
+  # record still names THAT run. The pre-bind failures reach this line too and
+  # cost nothing: their record names no run for the guard to match.
   [ "$spawn_rc" -eq 0 ] \
     || { echo "#$C_TICKET: handover failed — releasing run $C_RUN_ID" >&2
-         _api_end_run "$C_RUN_ID" abandoned; _api_drop_journal "$nonce"; return 1; }
+         if _claim_end_run "$C_RUN_ID" abandoned \
+            && [ -n "${REVIEWER_UUID:-}" ] && [ -f "$DAEMON_HOME/$REVIEWER_UUID.json" ]; then
+           _retire_run_locally "$DAEMON_HOME/$REVIEWER_UUID.json" "$C_RUN_ID" \
+             || echo "#$C_TICKET: run $C_RUN_ID ended, but $REVIEWER_UUID's record could not be stripped of it — clear run_bearer/bind_confirmed there by hand" >&2
+         fi
+         _api_drop_journal "$nonce"; return 1; }
 
   # Lane, role and nonce into the registry meta: the lane is what the cap above
   # counts, the role is what a lane-aware resume reads back, and the nonce is
@@ -1774,7 +1818,10 @@ if [ "$BOARD_BINDING" = api ]; then
   # straight out of a worker shell would claim, and end runs, as that worker.
   # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
   # after this, and are unaffected. This is the automation route only: no
-  # human-route verb is touched.
+  # human-route verb is touched. The second channel — the seat record
+  # $CLAUDE_CODE_SESSION_ID names, which is how a `claude --bg` worker gets its
+  # credentials at all (dp#35) — is shut by $BOARD_NO_SELF_LOCATE, exported at
+  # the head of this file because it governs the binding resolution too.
   unset BOARD_RUN_TOKEN
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;

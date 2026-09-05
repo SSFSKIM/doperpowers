@@ -96,6 +96,7 @@ tests=(
     "board-api/test-review-dispatch-claim.sh"
     "board-api/test-sweep-renew-relay.sh"
     "board-api/test-sweep-resume.sh"
+    "board-api/test-run-self-location.sh"
     # The integration tier carries its OWN gate rather than living under
     # --integration: it needs $ARKHO_DIR plus a container runtime for the
     # scratch Postgres, and skips loudly (exit 77, counted as a SKIP below)
@@ -114,6 +115,11 @@ tests=(
     "board-api/integration/test-escalation.sh"
     "board-api/integration/test-human-verbs.sh"
     "board-api/integration/test-lease-renewal.sh"
+    # ...and the one drill in the tier that spawns a REAL model session: the
+    # `claude --bg` env drop is a property of the harness, so no stub and no
+    # hermetic suite can carry it. Needs `claude` on PATH on top of the tier's
+    # own gate, and skips 77 without it.
+    "board-api/integration/test-bg-worker-actor.sh"
     # qa-loops: the suites in tests/qa-loops/ are hand-run (the spec's
     # acceptance invokes them as a glob). The bootstrap parity fence is listed
     # here because it is hermetic and sub-second — no dispatcher, no gh, no

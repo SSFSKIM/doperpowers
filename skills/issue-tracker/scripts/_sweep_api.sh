@@ -53,6 +53,15 @@
 #   BOARD_API_URL BOARD_CREDENTIALS_FILE   resolved by _binding.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# THE TICK IS NOT ITS SESSION, and it has to say so BEFORE the binding is
+# resolved. _binding.sh reads this session's seat record at SOURCE time when the
+# checkout's board.json predates the `repo` key, so a declaration made further
+# down this file arrives after the one read it exists to close — and a tick
+# launched from a bound worker's session would have taken that worker's repo key
+# and claimed, swept and ended runs against the wrong repo. The doctrine block
+# beside `unset BOARD_RUN_TOKEN` below is the same one; only the timing puts the
+# export here.
+export BOARD_NO_SELF_LOCATE=1
 # shellcheck source=_binding.sh
 . "$SCRIPT_DIR/_binding.sh"
 # For _claim_nonce ONLY — the successor claim below is filed under a nonce on
@@ -76,6 +85,20 @@ die() { echo "error: $*" >&2; exit 1; }
 # bearer this tick read out of THAT run's own meta (or was just handed by that
 # run's own claim): the relay's resume, the successor's resume/spawn/bind, and
 # phase 1's bind repair. Never inherited, never ambient.
+#
+# TWO channels, one doctrine. A tick launched from a worker's own session would
+# otherwise reach that worker's run through the OTHER one — the client resolves
+# a missing bearer from the seat record $CLAUDE_CODE_SESSION_ID names, which is
+# how a `claude --bg` worker gets its credentials at all (dp#35). That half is
+# $BOARD_NO_SELF_LOCATE, exported at the head of this file rather than here,
+# because the binding resolution it also governs runs at source time.
+#
+# It is EXPORTED, unlike everything else this toolkit scopes: it describes the
+# ROLE of this process tree, not a repo, and the verbs the tick shells out to
+# are the tick. It cannot reach a worker as a suppression — a spawned worker
+# either loses the whole env prefix (`claude --bg` drops it, which is the fact
+# this mechanism exists for) or keeps it, and then keeps the explicit bearer
+# beside it, which resolves first.
 unset BOARD_RUN_TOKEN
 # The delivery marker, from the client module rather than a second copy of the
 # literal: what the relay WRITES into a transcript and what it later greps for
@@ -464,58 +487,6 @@ else:
 PY
 }
 _alive() { [ "$(_liveness "$1")" = live ]; }
-
-# A run the SERVER has ended is over locally too. Without this the meta keeps
-# its run id and its lane, and the dispatchers' local cap counts it — so a
-# normally released run occupies a dispatch slot forever while never appearing
-# in needing-resume (nothing reclaimed it; it simply finished).
-#
-# The RUN ASSOCIATION is stripped, and only that: the session is still a real
-# session, it just no longer speaks for a run. The bearer goes with it — a
-# token for an ended run authenticates nothing, and keeping it is only a secret
-# still lying at rest. `lane` and `role` STAY, deliberately: the reclaim path
-# reaches this same branch (a reclaimed run answers renew with 409 run-ended),
-# and the successor claimed for that ticket inherits its lane from exactly this
-# meta. The slot is freed by the run id going away, not the lane — the
-# dispatchers count OPEN RUNS, which is what a cap is about.
-_retire_run_locally() {  # <meta path> <run id>
-  T_PATH="$1" T_RUN="$2" T_DHOME="$DAEMON_HOME" python3 - <<'PY'
-import fcntl, json, os
-env = os.environ
-lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
-fcntl.flock(lock, fcntl.LOCK_EX)
-try:
-    path = env["T_PATH"]
-    with open(path) as f:
-        m = json.load(f)
-    # Only if the meta STILL names the run that ended. A successor persist can
-    # re-point this very meta at a fresh run between the renew and this write,
-    # and clearing that one would strand a live run nothing could speak for.
-    if str(m.get("run_id") or "") != env["T_RUN"]:
-        raise SystemExit(0)
-    for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
-        m.pop(k, None)
-    m["run_ended_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                    __import__("time").gmtime())
-    mode = os.stat(path).st_mode & 0o777
-    tmp = path + ".tmp"
-    # Unlink first: os.open(..., mode) does NOT re-mode an existing inode, so a
-    # leftover 0644 tmp from an earlier crash would be truncated and rewritten
-    # world-readable. (This writer removes the bearer rather than adding one,
-    # but the rule is the writer's, not the payload's.)
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
-        json.dump(m, f, indent=2)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
-finally:
-    fcntl.flock(lock, fcntl.LOCK_UN)
-    lock.close()
-PY
-}
 
 # ---- phase 1: lease renewal + bind repair ----------------------------------
 phase_renew() {
@@ -1424,13 +1395,21 @@ $(cat "$dir/body.md")"
     # tick can itself run inside a gateway-routed seat, and `sminos spawn`
     # persists what it inherits into the record, so every later resume would
     # ride the gateway while the log said claude.
+    # `--stamp board_dispatch=` marks the seat as dispatcher-spawned on the
+    # record's FIRST write. Between that write and the bind below nothing else
+    # says whose seat it is, and a crash in there leaves the worker live with a
+    # claim outstanding — the client reads this field to refuse it rather than
+    # let it write as the operator (dp#35). Atomic with the launch for the same
+    # reason the other two sites are: a stamp written after the spawn never runs
+    # when the uuid poll times out or this process dies inside it.
     if spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
          BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
          BOARD_REPO="$BOARD_REPO" \
          DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
          "$SMINOS_CLI" spawn "$name" "$prompt" \
          --cwd "${LOCAL_REPO:-$BOARD_ROOT}" --worktree "$name" \
-         --model "$(_model_for_lane "$lane")")"; then
+         --model "$(_model_for_lane "$lane")" \
+         --stamp "board_dispatch=$nonce")"; then
       printf '%s\n' "$spawn_out"
       uuid="$(printf '%s\n' "$spawn_out" \
         | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"

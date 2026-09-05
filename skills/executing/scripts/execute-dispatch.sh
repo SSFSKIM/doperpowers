@@ -92,6 +92,13 @@ cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 # dedupe and cap check and dispatches over live workers.
 "$SMINOS_CLI" migrate --quiet || die "sminos migrate failed — refusing to dispatch against a possibly half-migrated registry"
 
+# THE TICK IS NOT ITS SESSION, and it has to say so BEFORE the binding is
+# resolved: _binding.sh reads this session's seat record at SOURCE time when the
+# checkout's board.json predates the `repo` key, so a declaration made further
+# down would arrive after the one read it exists to close. The doctrine is the
+# block beside `unset BOARD_RUN_TOKEN` in the api branch below; only the timing
+# puts the export up here.
+export BOARD_NO_SELF_LOCATE=1
 # THE BINDING IS RESOLVED BEFORE THE gh PROBE. An api-bound repo never invokes
 # gh at all, so requiring the CLI before knowing the binding would make the
 # whole API path unreachable on a machine that has no gh. Everything above is
@@ -144,7 +151,11 @@ _claim_lane_cap() { [ "$1" != architect ] && echo "$CAP" || echo "$ARCH_CAP"; }
 _claim_drop_journal() {  # <nonce>
   rm -f "$DAEMON_HOME/board-claims/$1.json" "$DAEMON_HOME/board-claims/$1.body.md"
 }
-_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1 || true; }
+# RETURNS THE CLI'S STATUS. The reconciler's orphan arm ends a run only when
+# the worker it belongs to is actually stopped — swallowed, a failed retire read
+# as success and the ticket was freed for a successor while the first worker was
+# still running.
+_claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1; }
 # shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 
@@ -371,12 +382,25 @@ PY
   # against cannot arise here: this worker is bound to THIS dispatcher's repo
   # by construction, since the run bearer it also carries ties it to a ticket
   # in that repo and nothing else.
+  # THE SEAT IS MARKED AS DISPATCHED BEFORE IT IS BOUND. Between the spawn and
+  # the bind the record says nothing about whose seat it is, and that is exactly
+  # the window a dispatcher crash freezes forever — after which the worker is
+  # live, the claim is outstanding, and every verb it runs would go out as the
+  # operator. `board_dispatch` is what the client reads to refuse that instead
+  # (dp#35). It is provenance, not bookkeeping: `role` cannot serve, since
+  # `sminos join` takes whatever role a human types and a re-fill preserves it.
+  # ATOMIC WITH THE RECORD, not a write after it. `--stamp` merges into the
+  # launch dict, so provenance is on the record's very FIRST write: a separate
+  # `meta set` never runs when `sminos spawn` times out polling the session uuid
+  # (up to 60s) or the caller dies inside that poll, and a marker that can go
+  # missing is a marker that fails open — the worker would be live, unbound, and
+  # taken for an operator's own seat.
   spawn_out="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" \
     BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
     BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-    --model "$model")" \
+    --model "$model" --role "$role" --stamp "board_dispatch=$nonce")" \
     || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
@@ -480,7 +504,10 @@ if [ "$BOARD_BINDING" = api ]; then
   # straight out of a worker shell would claim, and end runs, as that worker.
   # The claim path's explicit `BOARD_RUN_TOKEN=…` prefixes set it per command,
   # after this, and are unaffected. This is the automation route only: no
-  # human-route verb is touched.
+  # human-route verb is touched. The second channel — the seat record
+  # $CLAUDE_CODE_SESSION_ID names, which is how a `claude --bg` worker gets its
+  # credentials at all (dp#35) — is shut by $BOARD_NO_SELF_LOCATE, exported at
+  # the head of this file because it governs the binding resolution too.
   unset BOARD_RUN_TOKEN
   case "${1:-}" in
     --sweep) dispatch_api; exit 0 ;;

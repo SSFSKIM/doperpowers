@@ -17,7 +17,8 @@
 #   _claim_one_with_nonce L N C  replay one claim under an existing nonce
 #   _claim_lane_cap L            the lane cap to replay that lane under
 #   _claim_drop_journal N        remove a nonce's journal (and its body file)
-#   _claim_retire_worker U       retire a spawned session by uuid
+#   _claim_retire_worker U       retire a spawned session by uuid; rc 0 only
+#                                when the CLI accepted it
 #   _claim_suppress_dir          print the suppression directory (the sweep's
 #                                failed-cycle counts live beside its records)
 #   _api_py                      the API-client python runner (_binding.sh)
@@ -89,6 +90,58 @@ if e["J_CONTROL"]:
 with open(e["J_PATH"], "w") as f:
     json.dump(j, f)
     f.write("\n")
+PY
+}
+
+# A run the SERVER has ended is over locally too. Without this the meta keeps
+# its run id and its lane, and the dispatchers' local cap counts it — so a
+# normally released run occupies a dispatch slot forever while never appearing
+# in needing-resume (nothing reclaimed it; it simply finished).
+#
+# The RUN ASSOCIATION is stripped, and only that: the session is still a real
+# session, it just no longer speaks for a run. The bearer goes with it — a
+# token for an ended run authenticates nothing, and keeping it is only a secret
+# still lying at rest. `lane` and `role` STAY, deliberately: the reclaim path
+# reaches this same branch (a reclaimed run answers renew with 409 run-ended),
+# and the successor claimed for that ticket inherits its lane from exactly this
+# meta. The slot is freed by the run id going away, not the lane — the
+# dispatchers count OPEN RUNS, which is what a cap is about.
+_retire_run_locally() {  # <meta path> <run id>
+  T_PATH="$1" T_RUN="$2" T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+import fcntl, json, os
+env = os.environ
+lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    path = env["T_PATH"]
+    with open(path) as f:
+        m = json.load(f)
+    # Only if the meta STILL names the run that ended. A successor persist can
+    # re-point this very meta at a fresh run between the renew and this write,
+    # and clearing that one would strand a live run nothing could speak for.
+    if str(m.get("run_id") or "") != env["T_RUN"]:
+        raise SystemExit(0)
+    for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
+        m.pop(k, None)
+    m["run_ended_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                    __import__("time").gmtime())
+    mode = os.stat(path).st_mode & 0o777
+    tmp = path + ".tmp"
+    # Unlink first: os.open(..., mode) does NOT re-mode an existing inode, so a
+    # leftover 0644 tmp from an earlier crash would be truncated and rewritten
+    # world-readable. (This writer removes the bearer rather than adding one,
+    # but the rule is the writer's, not the payload's.)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
 PY
 }
 
@@ -276,15 +329,24 @@ for p in sorted(glob.glob(os.path.join(home, "board-claims", "*.json"))):
         with open(p, "w") as f:
             json.dump(j, f)
         print("repaired\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, ticket))
-    elif run and daemon and daemon in names:
+    elif run and daemon and daemon in names and not alive(j.get("pid")):
         # A session by that name exists but no meta carries the run: the spawn
-        # landed and the bind did not. The worker is alive with its bearer in
-        # its environment, so the run is NOT ended and the ticket is NOT freed.
-        # The journal is closed to replay and left as the record.
-        j["spawn_completed"] = True
-        with open(p, "w") as f:
-            json.dump(j, f)
+        # landed and the bind did not. That worker holds NOTHING — `claude --bg`
+        # drops the spawn env prefix before its own shells run, and the bind is
+        # what would have put a bearer at rest — so it can never act as the run,
+        # and every verb it runs would go out as the operator instead (dp#35).
+        # It is retired and the run released, like `stranded`.
+        #
+        # THE WRITER MUST BE DEAD, for the same reason that arm says so: this
+        # one now retires a session, and a peer dispatcher between its own spawn
+        # and its own bind has exactly this journal. Nothing is sealed here
+        # either — a release that fails must leave the journal open, or the
+        # retry handle is gone.
         print("orphaned\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, daemon))
+    elif run and daemon and daemon in names:
+        # The same shape with the writer STILL ALIVE: a peer mid-handover, in
+        # the seconds between its spawn and its bind. Left entirely alone.
+        print("inflight\x1f%s\x1f%s\x1f%s\x1f%s" % (nonce, lane, run, j.get("pid")))
     elif run and blind:
         print("held\x1f%s\x1f%s\x1f%s\x1f" % (nonce, lane, run))
     elif (time.time() - os.path.getmtime(p) < grace) and alive(j.get("pid")):
@@ -322,14 +384,48 @@ PY
         # and end the run so the ticket goes back on the queue. The end is
         # checked, not best-effort — see the `end` arm below.
         echo "reconcile: $nonce bound run $run to session $extra but the startup barrier never opened — retiring that worker and ending the run so the ticket returns to the queue" >&2
-        _claim_retire_worker "$extra"
+        _claim_retire_worker "$extra" || true
         if _claim_end_run "$run" abandoned; then
+          # A retire stops a turn; it does not make the seat forget. This
+          # record still names the run, its fence and its BEARER — and a
+          # session resolves its own run context out of exactly those fields,
+          # so a hand-resumed seat would authenticate with a revoked token on
+          # every verb instead of falling back cleanly. The strip is the same
+          # one the sweep applies when a run ends under it.
+          [ ! -f "$DAEMON_HOME/$extra.json" ] \
+            || _retire_run_locally "$DAEMON_HOME/$extra.json" "$run" \
+            || echo "reconcile: run $run ended, but $extra's record could not be stripped of it — clear run_bearer/bind_confirmed there by hand" >&2
           _claim_drop_journal "$nonce"
         else
           echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
         fi ;;
       orphaned)
-        echo "reconcile: $nonce spawned $extra for run $run but never bound it — the session is live and is NOT being ended; it has no bearer at rest, so no later relay or resume can speak for it (retire it by hand once it is done)" ;;
+        # The bind is what puts a bearer at rest, and `claude --bg` dropped the
+        # one on the spawn prefix — so this worker can never speak for the run,
+        # and every verb it runs would act as the operator on a ticket its own
+        # claimed run still owns. Leaving it live was the older answer and it
+        # rested on the opposite premise (that the bearer was in its
+        # environment). Retire it, release the run, drop the journal — the
+        # `stranded` shape, for the same reason.
+        #
+        # The retire is best-effort by name, and it does not have to land for
+        # this to be safe: the client refuses to resolve any principal at all on
+        # a dispatched seat whose bind never landed, so an orphan that outlives
+        # its retirement can still only stop, never write as somebody else.
+        # There is nothing to strip locally — a record carrying the run is what
+        # would have made this `repaired` rather than `orphaned`.
+        echo "reconcile: $nonce spawned $extra for run $run but never bound it — that worker can never speak for the run (no bearer reached it and none is at rest), so retiring it and releasing the run rather than leaving it to write as the operator" >&2
+        # THE RELEASE IS WHAT FREES THE TICKET, so it may not outrun the retire.
+        # Ending a run whose worker is still running hands its ticket to a
+        # successor beside a live predecessor — the divergence the retire exists
+        # to prevent. A refused retire keeps the journal, like a refused release.
+        if ! _claim_retire_worker "$extra"; then
+          echo "reconcile: $nonce — $extra could not be retired, so run $run is NOT released (freeing the ticket beside a live worker is the one outcome worse than leaving it); the journal is KEPT for the next tick" >&2
+        elif _claim_end_run "$run" abandoned; then
+          _claim_drop_journal "$nonce"
+        else
+          echo "reconcile: releasing run $run failed — the journal is KEPT so the next tick can retry the release" >&2
+        fi ;;
       held)
         echo "reconcile: $nonce claimed run $run — holding it; the registry has an unreadable meta, so a live session cannot be ruled out. The server lease reclaim owns this one." >&2 ;;
       inflight)
