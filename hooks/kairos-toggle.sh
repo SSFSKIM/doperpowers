@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# kairos — UserPromptExpansion hook, matched on the `kairos` command. When the
+# kairos — UserPromptExpansion hook, matched on the kairos command. The harness
+# expands a plugin skill under its qualified name (`doperpowers:kairos`) and
+# the matcher is a whole-string match, so hooks.json names both forms. When the
 # human types /kairos, the skill body enters this turn on its own; this hook
 # records the mode so kairos.sh re-injects it after every compaction and on
 # resume. `/kairos off` removes the record. The flag is one empty file named

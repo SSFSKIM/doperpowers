@@ -14,7 +14,7 @@
     ],
     "UserPromptExpansion": [
       {
-        "matcher": "kairos",
+        "matcher": "doperpowers:kairos|kairos",
         "hooks": [
           {
             "type": "command",

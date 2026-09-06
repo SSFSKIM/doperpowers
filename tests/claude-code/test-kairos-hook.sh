@@ -75,7 +75,7 @@ ss = h["SessionStart"]
 assert any("kairos.sh" in x["command"] for e in ss for x in e["hooks"]), "hooks.json does not wire kairos.sh"
 assert all(m in ss[0]["matcher"] for m in ("startup", "compact", "resume")), "SessionStart must fire on startup, resume and compact"
 ex = h["UserPromptExpansion"]
-assert ex[0]["matcher"] == "kairos", "the toggle must match only the kairos command"
+assert ex[0]["matcher"] == "doperpowers:kairos|kairos", "the harness expands a plugin skill under its qualified name (observed: command_name=doperpowers:kairos), and the matcher is a whole-string match"
 assert any("kairos-toggle.sh" in x["command"] for e in ex for x in e["hooks"]), "hooks.json does not wire kairos-toggle.sh"
 PY
 then pass "hooks.json wires SessionStart and the kairos expansion"; else fail "hooks.json wiring"; fi
