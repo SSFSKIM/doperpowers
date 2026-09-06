@@ -1,5 +1,5 @@
 {
-  "description": "kairos: a session launched with KAIROS=1 starts in proactive mode and keeps it across compaction",
+  "description": "kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,17 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "kairos",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos-toggle.sh\""
           }
         ]
       }
