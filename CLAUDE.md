@@ -102,7 +102,15 @@ not gate plugin changes.
 
 - **Version bumps** touch many manifests at once — always use
   `scripts/bump-version.sh`, never hand-edit versions (see `.version-bump.json`
-  for the file list).
+  for the file list). Bump in the same commit as the change: the plugin
+  marketplace updates by version number alone, so a feature merged under a
+  number the cache already holds reports "already at the latest version" and
+  never installs (kairos, 2026-09-06).
+- **Plugin hook matchers see qualified names.** The harness expands a plugin
+  skill's slash command as `doperpowers:<skill>` (observed in a
+  `UserPromptExpansion` payload: `command_name: "doperpowers:kairos"`), and a
+  matcher is a whole-string match — write `doperpowers:<skill>|<skill>`, not
+  `<skill>`. Not in the harness docs.
 - **Changing a skill is changing behavior, not prose.** Upstream's bar is high
   (eval evidence, adversarial testing). For fork-local skill tweaks, still use
   the `writing-skills` skill and sanity-test the change before relying on it.
