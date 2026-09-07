@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-execution
-description: Use when running an execution plan with independent tasks in the current session
+description: Use when running an execution plan with independent tasks in the current session. Invoke this only after doperpowers:writing-plans produced that plan; never straight from a request.
 ---
 
 # Subagent-Driven Execution

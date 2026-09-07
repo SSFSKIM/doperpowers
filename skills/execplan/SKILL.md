@@ -1,6 +1,6 @@
 ---
 name: execplan
-description: Use when taking a well-scoped, delegable piece of work through the autonomous track — a relentless grill that exhausts ambiguity up front, then one self-contained ExecPlan.
+description: Use when taking a well-scoped, delegable piece of work through the autonomous track — a relentless grill that exhausts ambiguity up front, then one self-contained ExecPlan. Invoke this only after doperpowers:brainstorming ran and routed here; never straight from a request.
 ---
 
 # ExecPlan Track

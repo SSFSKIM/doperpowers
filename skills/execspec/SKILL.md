@@ -1,6 +1,6 @@
 ---
 name: execspec
-description: Use when writing, revising, or closing out a design spec (docs/doperpowers/specs/) — the living-spec doctrine.
+description: Use when writing, revising, or closing out a design spec (docs/doperpowers/specs/) — the living-spec doctrine. Invoke this only after doperpowers:brainstorming ran; a spec is written at brainstorm end, never straight from a request.
 ---
 
 # Execspec — Living Specs
