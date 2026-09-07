@@ -667,7 +667,7 @@ RESUME_MUST_FAIL=1 SW resume > "$OUTL" 2>&1 || true
 t  "the successor inherits a RETIRED predecessor's lane" \
    "SPAWN name=16-successor-architect"                  cat "$SPAWN_LOG"
 t  "and that lane's own model"        "model=fable"     cat "$SPAWN_LOG"
-t  "and that lane's own protocol"     "architecting/SKILL.md"  cat "$SPAWN_LOG"
+t  "and that lane's own protocol"     "architect-worker-protocol.md"  cat "$SPAWN_LOG"
 t  "and that lane's own role"         "ARCHITECT."             cat "$SPAWN_LOG"
 rm -f "$DH/u-arch.json" "$(claimdir "$DH")/n-lane.json"
 

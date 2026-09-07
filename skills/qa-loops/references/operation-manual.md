@@ -2,7 +2,7 @@
 
 ## Overview
 
-The inverse-symmetric counterpart of the executing daemon: where a worker
+The inverse-symmetric counterpart of the execution loop: where a worker
 turns a ticket into a PR, a **Reviewer worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
 background seat (spawned through the sminos CLI) that runs TWO review tracks at
@@ -82,7 +82,8 @@ fan-out. The dispatch layer injects it from the PR's **base ref, never
 HEAD**, so a PR cannot delist a surface it touches in the same commit.
 
 **Repo facts feed the cross-check.** The optional
-`.doperpowers/repo-facts.md` manifest (format: doperpowers:executing)
+`.doperpowers/repo-facts.md` manifest (format: doperpowers:issue-tracker
+`references/execution-loop.md`)
 is injected the same way — base ref, never HEAD. The Reviewer worker checks
 claimed Validation Evidence against the repo's declared validation
 commands, and a diff hitting a declared Evidence add-on class without the

@@ -1,6 +1,6 @@
 ---
 name: issue-tracker
-description: Use when managing the issue board — registering tickets, dispatching, working the wake queue, reconciling after time away, or asking what is in progress or parked. The board IS the repo's GitHub issues.
+description: Use when managing the issue board — registering tickets, dispatching, working the wake queue, reconciling after time away, or asking what is in progress or parked — or when operating or setting up the autonomous execution loop that dispatches Architect and Executor workers onto tickets. The board IS the repo's GitHub issues.
 ---
 
 # Issue Tracker
@@ -9,7 +9,7 @@ A repo's issue board, stored where it cannot fork: **GitHub Issues is the
 single source of truth.** Tickets are **purpose-units**: born as pre-specs
 from an `organizing-sprints` materialization (or registered directly here),
 gated and driven to a PR by autonomous Executor
-workers (doperpowers:executing), reviewed to a confident merge by
+workers (`references/implement-worker-protocol.md`), reviewed to a confident merge by
 Reviewer workers (doperpowers:qa-loops), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
 spawned-by).
@@ -43,8 +43,8 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | doperpowers:architecting |
-| **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | doperpowers:executing |
+| **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | `references/architect-worker-protocol.md` |
+| **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | `references/implement-worker-protocol.md` |
 | **Reviewer Worker** (daemon, one PR) | its PR's ticket (`needs-human` / `ready-for-architect`); finding-tickets; the merge itself + post-merge finalize on a confident verdict; a scale review's clean `done` on a recomposition epic | doperpowers:qa-loops |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
@@ -55,7 +55,7 @@ unattended repos).
 `bug` | `enhancement` | `spike` | `env-issue`. The first two are GitHub's
 own labels; the board manages the other two. `spike` is the exploration
 lane — its deliverable is a findings comment, never a merge
-(doperpowers:executing). `env-issue` is environmental friction a
+(`references/spike-worker-protocol.md`). `env-issue` is environmental friction a
 worker hit and routed around (missing tool in the image, flaky registry,
 broken fixture), filed as its own ticket so the report survives the
 session that found it.
@@ -297,7 +297,7 @@ pick by repo visibility:
    `WORKER_ENGINE` override is set — under `WORKER_ENGINE=codex` it is the
    one per-ticket way back onto plain Claude, so it is never safe to strip.
    Render the spawn bootstrap
-   (`doperpowers:executing` `references/worker-bootstrap.md` —
+   (`references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
    bootstrap names, then reads its own ticket and the repo's
    `.doperpowers/repo-facts.md` itself). Substitute every
@@ -307,16 +307,15 @@ pick by repo visibility:
    exit), `SPIKE` when the category is `spike` (category selects a
    protocol only WITHIN the execution lane), else `IMPLEMENT`;
    `PROTOCOL_FILE` =
-   the lane's protocol (spike → doperpowers:executing
-   `references/spike-worker-protocol.md`; architect →
-   doperpowers:architecting `SKILL.md`; else doperpowers:executing
-   `SKILL.md`). The ARCHITECT dispatch ignores `engine:*` labels and
+   the lane's protocol (spike → `references/spike-worker-protocol.md`;
+   architect → `references/architect-worker-protocol.md`; else
+   `references/implement-worker-protocol.md`). The ARCHITECT dispatch ignores `engine:*` labels and
    `$WORKER_ENGINE` — plan authorship is never label-routed — and pins
    `${ARCHITECT_MODEL:-fable}` on the plain-Claude route; the
    engine resolution earlier in this step applies to the other roles.
    `ISSUE_NUMBER`, `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
    `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
-   executing's `references/implement-decompose.md` (a
+   `references/implement-decompose.md` (a
    runtime-opened procedure: the prompt carries only the pointer; the
    worker opens it when Check-2 says decompose; "(none — spike lane)" for
    a spike).
@@ -342,8 +341,7 @@ pick by repo visibility:
 
 Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
 are picked up by the review loop (doperpowers:qa-loops). The ritual is
-mechanized end-to-end by doperpowers:executing
-`scripts/execute-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
+mechanized end-to-end by `scripts/execute-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
 same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
 invokes it on a timer. Running the ritual by hand stays valid — the sweep's
 dedupe sees a hand-dispatched worker's binding like any other.
@@ -352,8 +350,9 @@ dedupe sees a hand-dispatched worker's binding like any other.
 calls, not a parallel doctrine.** For your own work: in-session fan-out is
 native subagents; a raw ad-hoc
 seat is reserved for work that must survive your session with no board to
-hold it. Board pipeline workers' doctrine is executing /
-qa-loops, and nobody sits between them and the board.
+hold it. Board pipeline workers' doctrine is the worker protocols under
+`references/` and doperpowers:qa-loops, and nobody sits between them and
+the board.
 
 ## The wake ritual (the human's catch-up)
 
@@ -399,13 +398,15 @@ qa-loops, and nobody sits between them and the board.
 
 ## Worker protocols
 
-Both loops keep their protocol in the skill file and spawn through a short
-bootstrap that names the dispatcher-owned protocol path and supplies the
-runtime bindings: the execution-side protocols are doperpowers:executing
-itself (`SKILL.md`; spike lane → its `references/spike-worker-protocol.md`)
-and, on the architect lane, doperpowers:architecting itself (`SKILL.md`) —
-all three share the execution-side bootstrap
-(`references/worker-bootstrap.md`). The review-side protocol is
+Worker protocols are plain files, never skills: nothing invokes them by
+name — the dispatcher pins the lane's file path into a short bootstrap
+that supplies the runtime bindings, and the worker opens it. The
+execution-side protocols live here — `references/implement-worker-protocol.md`,
+`references/architect-worker-protocol.md`, and
+`references/spike-worker-protocol.md` — sharing one bootstrap
+(`references/worker-bootstrap.md`) and one dispatcher
+(`scripts/execute-dispatch.sh`); the operator manual for that loop is
+`references/execution-loop.md`. The review-side protocol is
 doperpowers:qa-loops itself (`SKILL.md`; bootstrap
 `references/review-worker-bootstrap.md`). This file owns only the schema
 they write against.
@@ -520,7 +521,7 @@ The worker registers the residue as tickets (`--spawned-by <n>`) BEFORE its
 turn-end message and lists the numbers in its FOLLOW-UPS section — a
 follow-up not registered does not exist. (A few-line residual inside the
 PR's own diff is in-scope polish the PR absorbs, not residue — see the
-executing skill's Closing Artifact.)
+Executor protocol's Closing Artifact.)
 
 ## Edge cases
 

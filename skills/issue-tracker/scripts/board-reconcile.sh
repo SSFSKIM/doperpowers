@@ -8,7 +8,7 @@
 # bound daemon, lists dispatchable tickets, and finishes with a board-lint
 # pass.
 # There is no proposal scanner: v8 workers write their own ticket states and
-# register child/follow-up tickets directly (doperpowers:executing).
+# register child/follow-up tickets directly (the worker protocols under references/).
 #
 # API mode answers the same three questions from the server, and the middle one
 # differently: run liveness is server-owned there, so there is no local scan for

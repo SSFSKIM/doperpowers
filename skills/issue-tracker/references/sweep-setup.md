@@ -112,7 +112,7 @@ doperpowers:qa-loops `references/runner-setup.md`), GitHub events can
 dispatch the latency-sensitive lanes directly; the sweep stays as catch-up:
 
 - PR opened → Reviewer worker: `qa-loops/references/pr-review-dispatch.yml`
-- issue becomes ready → Executor worker: `executing/references/issue-dispatch.yml`
+- issue becomes ready → Executor worker: `references/issue-dispatch.yml`
 
 Both templates keep the same security posture: no checkout of PR code,
 `permissions: {}`, numeric-only interpolation, actor allowlist.

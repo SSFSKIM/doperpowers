@@ -60,11 +60,11 @@ DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
 SMINOS_HOME="$DAEMON_HOME"
 export SMINOS_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
-BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
+BOARD_SCRIPTS="${BOARD_SCRIPTS:-$SCRIPT_DIR}"
 BOOTSTRAP_TEMPLATE="${IMPLEMENT_BOOTSTRAP_TEMPLATE:-$SKILL_DIR/references/worker-bootstrap.md}"
 SPIKE_PROTOCOL="$SKILL_DIR/references/spike-worker-protocol.md"
-IMPLEMENT_PROTOCOL="$SKILL_DIR/SKILL.md"
-ARCHITECT_PROTOCOL="$SKILL_DIR/../architecting/SKILL.md"
+IMPLEMENT_PROTOCOL="$SKILL_DIR/references/implement-worker-protocol.md"
+ARCHITECT_PROTOCOL="$SKILL_DIR/references/architect-worker-protocol.md"
 ARCH_CAP="${ARCHITECT_MAX_CONCURRENT:-1}"
 DECOMPOSE_DOC="$SKILL_DIR/references/implement-decompose.md"
 CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
@@ -103,7 +103,7 @@ export BOARD_NO_SELF_LOCATE=1
 # gh at all, so requiring the CLI before knowing the binding would make the
 # whole API path unreachable on a machine that has no gh. Everything above is
 # mode-independent; the gh-mode half starts below the api branch.
-# shellcheck source=../../issue-tracker/scripts/_binding.sh
+# shellcheck source=_binding.sh
 . "$BOARD_SCRIPTS/_binding.sh"
 
 # The uuid `sminos spawn` prints, from its banner line:
@@ -163,7 +163,7 @@ _claim_drop_journal() {  # <nonce>
 # as success and the ticket was freed for a successor while the first worker was
 # still running.
 _claim_retire_worker() { "$SMINOS_CLI" retire "$1" >/dev/null 2>&1; }
-# shellcheck source=../../issue-tracker/scripts/_claim_journal.sh
+# shellcheck source=_claim_journal.sh
 . "$BOARD_SCRIPTS/_claim_journal.sh"
 
 # The sweep's tick deadline, when it set one. A single budget check ahead of
@@ -869,7 +869,7 @@ dispatch_one() {
   # HEAD sha, which answers a different question entirely: a body edit does
   # not move HEAD and an unrelated commit does, so the pin changed when the
   # contract had not and held still when it had. The recomposing Architect's
-  # lineage check (doperpowers:architecting, "compare its parent-pin against
+  # lineage check (architect-worker-protocol.md, "compare its parent-pin against
   # the parent's current revision") could not be performed at all.
   # B.contract_hash: sha256/12 over the parent's body with its board:meta
   # block STRIPPED — immutable, comparable by re-hashing the body today, and

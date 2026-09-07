@@ -7,7 +7,7 @@
 #                     [--body-file F] [--repair-path TEXT] [--surface HINT]...
 #
 #   category  bug | enhancement | spike (exploration lane: deliverable is a
-#             findings comment, never a merge — see doperpowers:executing)
+#             findings comment, never a merge — see references/spike-worker-protocol.md)
 #             | env-issue (environmental friction report — E2: defaults to
 #             needs-human unless the registrar names an agent-executable
 #             repair path via an explicit --state)

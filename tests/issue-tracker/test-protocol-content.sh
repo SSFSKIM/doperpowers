@@ -8,14 +8,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# The skill IS the protocol: SKILL.md carries the Executor Worker Protocol
-# (mirroring qa-loops); the operator doctrine lives in
-# references/operation-manual.md; spawn goes through references/worker-bootstrap.md.
-PROTO="$REPO_ROOT/skills/executing/SKILL.md"
-SKILL="$REPO_ROOT/skills/executing/SKILL.md"
-MANUAL="$REPO_ROOT/skills/executing/references/operation-manual.md"
-BOOTSTRAP="$REPO_ROOT/skills/executing/references/worker-bootstrap.md"
-ARCHITECT="$REPO_ROOT/skills/architecting/SKILL.md"
+# Worker protocols are plain reference files under issue-tracker, never
+# skills: the dispatcher pins the lane's file path into the bootstrap
+# (references/worker-bootstrap.md) and the worker opens it. The operator
+# doctrine lives in references/execution-loop.md.
+REFS="$REPO_ROOT/skills/issue-tracker/references"
+PROTO="$REFS/implement-worker-protocol.md"
+MANUAL="$REFS/execution-loop.md"
+BOOTSTRAP="$REFS/worker-bootstrap.md"
+ARCHITECT="$REFS/architect-worker-protocol.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -79,14 +80,12 @@ got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
 
-echo "skill-as-protocol shape:"
-assert_contains "$proto" "name: executing" "frontmatter survives on the protocol skill file"
-assert_contains "$proto" "references/operation-manual.md" "operator-routing line points at the operation manual"
-if [ -e "$REPO_ROOT/skills/executing/references/implement-worker-protocol.md" ]; then
-    fail "the old separate protocol file is retired (the skill IS the protocol)"
-else
-    pass "the old separate protocol file is retired (the skill IS the protocol)"
-fi
+echo "protocols are files, not skills:"
+assert_not_contains "$proto" "name: executing" "no skill frontmatter on the implement protocol"
+assert_not_contains "$proto" "Operator or setup invocation" "no operator-routing line (only a dispatched worker ever opens this file)"
+for _dead in skills/executing skills/architecting; do
+    if [ -e "$REPO_ROOT/$_dead" ]; then fail "$_dead is retired (worker protocols are not skills)"; else pass "$_dead is retired (worker protocols are not skills)"; fi
+done
 
 echo "worker bootstrap:"
 [ -f "$BOOTSTRAP" ] || { echo "missing $BOOTSTRAP"; exit 1; }
@@ -110,7 +109,7 @@ if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exact
 echo "operation manual:"
 [ -f "$MANUAL" ] || { echo "missing $MANUAL"; exit 1; }
 manual="$(cat "$MANUAL")"
-assert_contains "$manual" "SKILL.md" "manual: names the skill file as the protocol"
+assert_contains "$manual" "worker-protocol.md" "manual: names the protocol files"
 assert_contains "$manual" "worker-bootstrap.md" "manual: names the spawn bootstrap"
 assert_contains "$manual" "repo-facts" "manual: repo-facts doctrine present"
 assert_contains "$manual" "board-answer.sh" "manual: names the answer relay (park = pause)"
@@ -118,7 +117,7 @@ assert_contains "$manual" "doperpowers:issue-tracker" "manual: points at the boa
 assert_not_contains "$manual" "status:blocked" "manual: no retired vocabulary"
 
 echo "spike protocol:"
-SPIKE="$REPO_ROOT/skills/executing/references/spike-worker-protocol.md"
+SPIKE="$REFS/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 # The brief/facts tails ride the bootstrap's binding sections for both lanes.
@@ -137,7 +136,7 @@ assert_contains "$spike" "author its body at register time" "spike: graduated ti
 assert_not_contains "$spike" "no exploring" "spike: the decompose verdict states its deliverable, not an exploration ban"
 
 echo "decompose procedure (runtime-opened):"
-DECOMP="$REPO_ROOT/skills/executing/references/implement-decompose.md"
+DECOMP="$REFS/implement-decompose.md"
 [ -f "$DECOMP" ] || { echo "missing $DECOMP"; exit 1; }
 decomp="$(cat "$DECOMP")"
 assert_contains "$decomp" "a chain IS" "decompose doc: serialization-as-edges present"
@@ -150,13 +149,13 @@ echo "execution doctrine (inline — no engine-blocks indirection):"
 # One harness, one doctrine: both model routes (gateway "codex" / plain
 # "claude") are Claude-harness sessions, and the execution text lives in
 # the protocol's own Execution section.
-if [ -e "$REPO_ROOT/skills/executing/references/engine-blocks" ]; then
+if [ -e "$REFS/engine-blocks" ]; then
     fail "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 else
     pass "engine-blocks dir is retired (execution doctrine lives in the protocol)"
 fi
 assert_contains "$proto" "PLAN-EXECUTION:" "execution: plan-execution mode wired (not bare PLAN)"
-assert_contains "$proto" "doperpowers:architecting" "execution: routes plan authorship to the architect lane"
+assert_contains "$proto" "architect-worker-protocol.md" "execution: routes plan authorship to the architect lane"
 assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
 assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
 assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
@@ -165,13 +164,9 @@ assert_contains "$proto" "subagent-driven-execution" "execution: names the forbi
 assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
 assert_contains "$proto" "AGENT-answerable" "gate: plan-need names agent-answerable design gaps (the E1 escalation criterion)"
 
-echo "skill doctrine:"
-[ -f "$SKILL" ] || { echo "missing $SKILL"; exit 1; }
-skill="$(cat "$SKILL")"
-assert_contains "$skill" "name: executing" "frontmatter name"
-assert_contains "$skill" "doperpowers:issue-tracker" "skill points at the board schema"
-assert_not_contains "$skill" "status:blocked" "no retired vocabulary in doctrine"
-assert_not_contains "$skill" ".agents/skills" "skill: no vendored-doctrine pointer (one Claude harness, plugin skills native)"
+echo "protocol doctrine:"
+assert_contains "$proto" "doperpowers:issue-tracker" "protocol points at the board schema"
+assert_not_contains "$proto" "status:blocked" "no retired vocabulary in doctrine"
 
 echo "dispatch ritual (issue-tracker):"
 TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
@@ -183,7 +178,9 @@ assert_contains "$tracker" "sminos spawn" "ritual: one spawn command for both ro
 assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
 assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
 assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
-assert_not_contains "$tracker" "implement-worker-protocol.md" "ritual: no reference to the retired protocol file"
+assert_contains "$tracker" "implement-worker-protocol.md" "ritual: names the implement protocol file it pins"
+assert_not_contains "$tracker" "doperpowers:executing" "ritual: no pointer at the retired executing skill"
+assert_not_contains "$tracker" "doperpowers:architecting" "ritual: no pointer at the retired architecting skill"
 
 echo "ticket gate (schema file, single copy):"
 GATE="$REPO_ROOT/skills/issue-tracker/references/ticket-gate.md"
@@ -228,15 +225,15 @@ assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the ma
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
 assert_not_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: retired land template stays absent"
-tbody="$(cat "$REPO_ROOT/skills/executing/references/issue-dispatch.yml")"
+tbody="$(cat "$REFS/issue-dispatch.yml")"
 assert_contains "$tbody" "permissions: {}" "issue-dispatch.yml: zero-permission job"
 assert_not_contains "$tbody" "uses: actions/checkout" "issue-dispatch.yml: never checks out repo code"
 assert_not_contains "$tbody" ".title" "issue-dispatch.yml: no title/body interpolation (injection surface)"
 
-echo "architecting protocol (Architect Worker, E1 skill split):"
+echo "architect protocol (Architect Worker):"
 [ -f "$ARCHITECT" ] || { echo "missing $ARCHITECT"; exit 1; }
 arch="$(cat "$ARCHITECT")"
-assert_contains "$arch" "name: architecting" "frontmatter names the architecting skill"
+assert_not_contains "$arch" "name: architecting" "no skill frontmatter on the architect protocol"
 assert_contains "$arch" "ARCHITECT worker" "role names the ARCHITECT worker"
 assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
 assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
@@ -391,8 +388,8 @@ assert_contains "$decomposing" "[parent-impact]" "decomposing doctrine names the
 # E2 made "epics are never dispatched" false: the recomposition/reconciliation
 # claim IS a dispatch, and a manual that tells a worker to refuse any epic
 # dispatch is instructing it to refuse a valid claim.
-OPS_MANUAL="$REPO_ROOT/skills/executing/references/operation-manual.md"
-DECOMPOSE_DOC="$REPO_ROOT/skills/executing/references/implement-decompose.md"
+OPS_MANUAL="$MANUAL"
+DECOMPOSE_DOC="$DECOMP"
 ops="$(cat "$OPS_MANUAL")"; decompose_doc="$(cat "$DECOMPOSE_DOC")"
 assert_contains "$ops" "epics are never dispatched for implementation" \
     "the operator manual's edge case bans IMPLEMENTATION dispatch, not every dispatch"

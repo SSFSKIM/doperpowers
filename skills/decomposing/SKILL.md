@@ -214,8 +214,9 @@ share no design surface, so there was nothing to mature jointly; phases
    Deferred list. Skip for document-only
    projects — the tracking map is the handoff contract either way. (A
    dispatched worker that finds its ticket gate-failing on scope runs this
-   same division at board altitude — doperpowers:executing's
-   decompose procedure is this skill's move in worker clothes.)
+   same division at board altitude — doperpowers:issue-tracker's
+   `references/implement-decompose.md` is this skill's move in worker
+   clothes.)
 7. **Dispatch and tend** — children go to their tracks per their track
    hint, each carrying its section as pre-landed design and writing no
    spec of its own: a brief child implements against its section and a

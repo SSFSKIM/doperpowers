@@ -1,13 +1,9 @@
----
-name: executing
-description: Use when dispatched as an IMPLEMENT worker onto a board ticket (including the spike lane) — plan-execution or DIRECT mode; plan authorship belongs to doperpowers:architecting. Also when operating or setting up the autonomous execution loop — the inverse of doperpowers:qa-loops.
----
 # Executor Worker Protocol
 
-Operator or setup invocation: read `references/operation-manual.md` instead.
-The protocol below is for a dispatched Executor worker. (A spike-lane
-dispatch binds `references/spike-worker-protocol.md` as its protocol — same
-bootstrap, different role.)
+The protocol for a dispatched Executor worker — the bootstrap that spawned
+you pinned this file. (A spike-lane dispatch binds
+`spike-worker-protocol.md` beside it instead — same bootstrap, different
+role.)
 
 ## Role
 
@@ -141,9 +137,9 @@ frequently, open the PR.
   plan (not merely divergent) returns to its author — see Mid-build
   below. You author no plan document, ever: writing-plans,
   subagent-driven-execution, and execplan authoring are other scopes'
-  skills — plan AUTHORSHIP belongs to the architect lane
-  (doperpowers:architecting); when work needs a plan, escalate, never
-  self-author.
+  skills — plan AUTHORSHIP belongs to the architect lane (its protocol,
+  `architect-worker-protocol.md`, sits beside this file); when work needs
+  a plan, escalate, never self-author.
 
 Pre-PR self-review: one independent review pass before opening the PR (and fixing findings) is fine judgment — scale it to the change, and a small diff needs none: skip reviewing yourself and let the reviewer see it all. Do not run review-fix LOOPS: the loop  
 is the Reviewer worker's, and it attaches to every non-draft PR you open  
