@@ -5,55 +5,36 @@ description: "Use when starting any creative work — creating features, buildin
 
 # Brainstorming Ideas Into Designs
 
-Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
+Help turn ideas into fully formed designs and specs through natural collaborative dialogue: understand the project, grill the idea in batched rounds until nothing is silently assumed, then present the design at a depth proportionate to the work.
 
-Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design at a depth proportionate to the work.
-
-Implementation waits when it would commit an unapproved product,
-taste, or substantive design decision. Present those decisions in the design and
-get your human partner's approval first. When the work is already authorized,
-well-scoped, and the remaining choices are technical or mechanical consequences
-of that scope, state the brief design and proceed without another design or
-track-selection approval. Simple projects still get proportionate design
-thought: three sentences may be enough to expose an assumption before work.
+One gate governs the whole skill: implementation waits when it would commit an unapproved product, taste, or substantive design decision — present those decisions in the design and get your human partner's approval first. When the work is already authorized and well-scoped, and the remaining choices are technical or mechanical consequences of that scope, state the brief design and proceed without another design or track approval. Simple projects still get proportionate design thought; three sentences may be enough to expose an assumption before work.
 
 ## The path
 
-Work through these in order:
+1. Explore project context — files, docs, recent commits — and assess scope
+2. Grill
+3. Choose and state the track
+4. Present the design
+5. Write the spec
+6. Self-review the spec
+7. Independent spec review
+8. Hand off to doperpowers:writing-plans
 
-1. **Explore project context** — check files, docs, recent commits
-2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
-3. **Choose and state the track** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); confirmation follows the gate above; see Choosing the Track below
-4. **Present the design** — one holistic pass, attention-ranked; get approval when the gate applies (see Presenting the Design below)
-5. **Write design doc** — in living-spec doctrine per [references/living-spec.md](references/living-spec.md) (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
-6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-7. **Independent spec review** — dispatch a spec reviewer subagent; evaluate its findings, fix what survives (see below; a child of a composite spec skips this — its track's own review covers the residue)
-8. **Transition to implementation** — invoke doperpowers:writing-plans (a goal routed to decomposing invokes doperpowers:decomposing here instead)
+The controlled track runs all eight. The autonomous track leaves after step 3 for doperpowers:execplan; the direct track leaves after step 4 and implements in this session (doperpowers:test-driven-development still applies to testable logic). A goal too big for one agent to reliably own as one unit — doperpowers:decomposing's gate — leaves for that skill instead: at step 1 when its pieces are an uncoupled bundle, at step 8 in place of writing-plans when they are coupled. Scope below says which.
 
-Three exits leave this skill: writing-plans, execplan, or direct implementations (test-driven-development still applies for testable logics). 
-A fourth exit routes to doperpowers:decomposing when the goal is too big and complex for one agent to reliably own as one unit and finish reliably in a single session — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and, when the gate applies, approved here, carrying that design as decomposing's input.
+## Scope and context
 
-## The Process
+Explore the project state first, then assess scope and coupling before detailed questions. This skill defines and matures one goal at a time, whatever its size; what decides when an oversized goal hands over to doperpowers:decomposing is whether its pieces share a design surface. Pieces that don't interact — no shared data, contracts, or decisions that need the whole in view (e.g. "a platform with chat, file storage, billing, and analytics" as four freestanding products) — are a bundle, not a whole: route to decomposing now, since joint maturation would generate nothing, and each child returns through this skill later. Pieces that do interact are the reason to design before dividing: the interaction surface — shared models, contract shapes, decisions that come out differently with everything in view — is generated in this session or never. Run the full grill and design pass on the whole, and hand the matured design to decomposing, which derives the cut from it. State the route; ask for confirmation only when it carries a decision under the gate.
 
-**Understanding the idea:**
+A goal that arrives as a child of a composite spec carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design, and the composite's approval already covers it. Grill only the residue, against the code, and present only the residue; expand the child's section in place instead of writing a spec of its own, recording residue decisions in the parent's Decision Log under the child's id. Its section's track hint names its exit — state it and apply the gate as for any other track — and that track's own review covers the residue, so step 7 is skipped. A residue design that trips decomposing's split signals means the child is itself a composite: route it there.
 
-- Check out the current project state first (files, docs, recent commits)
-- Before asking detailed questions, assess scope and coupling: brainstorming defines and matures one goal at a time, whatever its size. A goal too big for one agent to reliably own as one unit (the gate in doperpowers:decomposing) will be divided — but WHEN to hand it over depends on whether its pieces share a design surface. Pieces that don't interact — no shared data, contracts, or decisions that need the whole in view (e.g., "build a platform with chat, file storage, billing, and analytics" as four freestanding products) — are a bundle, not a whole: recommend doperpowers:decomposing immediately, since joint maturation would generate nothing; each child returns through this skill later with its parent section as pre-landed input. Pieces that DO interact are the reason to design before dividing: the interaction surface — shared models, contract shapes, decisions that come out differently with everything in view — is generated in this session or never. Run the full grill and design pass on the whole, regardless of size, and hand the matured design to doperpowers:decomposing, which derives the cut from it. Capture everything the session produces: the spec is the only durable memory this org has — a stale written decision is detectably wrong at child time and flows back, an uncaptured insight is silently gone. State the route; ask for confirmation only when it carries a decision reserved by the gate.
-- A goal that arrives as a child of a composite spec (doperpowers:decomposing) carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design. Grill only the residue, against the code; record the residue's decisions in the parent's Decision Log under the child's id; design you produce expands the child's section in place, and a residue design that trips doperpowers:decomposing's split signals means the child is a composite — route it there. The composite's approval covers the section, so present only the residue; state the track recommendation and apply the same gate as any other track. The child writes no spec of its own: its section is its spec, the hint names its exit (a plan child to doperpowers:writing-plans; a brief child implements against its section and brief, keeping the ledger doperpowers:decomposing describes), and the track's own review covers the residue.
-- For appropriately-scoped projects, run the grill below to refine the idea
-- Prefer multiple choice questions when possible, but open-ended is fine too
-- Focus on understanding: purpose, constraints, success criteria
+## The grill
 
-**The Grill** — this is the clarification protocol:
+Interview relentlessly about every aspect of the initiative until you and your human partner share one understanding. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and work the tree in batched rounds. The frontier is every decision whose prerequisites are settled: the questions you can ask now without guessing at answers you haven't heard. Ask the whole frontier in one round; each round's answers reshape the tree and push the frontier outward, and a question that depends on another still open this round waits for the next. The grill is done when the frontier is empty — every branch visited, nothing silently assumed.
 
-> Interview relentlessly about every aspect of the initiative until you reach a shared understanding with your human partner. Map the initiative as a design tree — every decision branches into the decisions that hang off it.
->
-> Work the tree in batched rounds. The frontier is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet. Ask the whole frontier in one round: each round's answers reshape the tree and push the frontier outward, and a question whose answer depends on another question still open in this round belongs to a later round. The grill is done when the frontier is empty — every branch of design tree visited, nothing left silently assumed. Act only after you confidently reached a shared understanding.
->
-> Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; relatively open but still bounded questions go as prose inline in the chat. In a non-interactive context (a board ticket, a relay comment), the whole round is one numbered message.
->
-> Finding facts is your job, never your human partner's: a question the codebase, filesystem, external information on web can answer is answered by exploring them; when you need more extensive exploration, run dedicated research exploring web, codebase, or whatever you need. Don't block a round on a running exploration — running exploration is an unsettled prerequisite, so only its downstream questions wait for it; ask the rest of the frontier now.
+Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; open but bounded questions go as prose inline. In a non-interactive context (a board ticket, a relay comment) the whole round is one numbered message.
 
+Finding facts is your job, never your human partner's, and the rule reaches outward at four radii: a question the codebase can answer is answered by reading it; one only the world can answer (prior art, the literature, an external service's real behavior) is answered by research, not speculation; one only an experiment can answer becomes a spike — run inline when small, registered as its own goal when not; and every idea is situated against the project's standing purpose. A running exploration is an unsettled prerequisite: only its downstream questions wait for it; ask the rest of the frontier now.
 
 Three moves to use throughout:
 
@@ -61,108 +42,42 @@ Three moves to use throughout:
 - **Stress-test with concrete scenarios** — invent scenarios that probe edge cases and force precision about the boundaries between concepts.
 - **Cross-reference with code** — when your human partner states how something works, check whether the code agrees; surface contradictions.
 
-One more move extends the grill's codebase rule outward — **situate at four radii**: a question the codebase can answer is answered by reading it; a question the codebase cannot answer but the world can (prior art, the literature, an external service's real behavior) is answered by research, not speculation; a question only an experiment can answer becomes a spike — run inline when small, registered as its own goal when not; and every idea is situated against the project's standing purpose (the top-level goal of the project). Explore, research, and spike are not separate ceremonies — they are this one rule at different radii.
+Grill what is fuzzy or important; don't grind an already-clear request to death. Depth has a stopping point, not a size limit: the design is mature when the remaining unknowns are empirical — answerable only by a spike, by implementation contact, or by watching the thing run — and no longer architectural. Answer everything the assembled picture can answer, and name the empirical residue in the design as delegated unknowns rather than leaving it implicit.
 
-Triage the grilling: grill what is fuzzy or important; don't grind an already-clear request to death. Depth has a stopping point, not a size limit: the design is mature when the remaining unknowns are empirical — answerable only by a spike, by implementation contact, or by watching the thing run — and no longer architectural (answerable now from the assembled picture). Answer everything the full view can answer; name the empirical residue in the design as delegated unknowns rather than leaving it implicit.
+A fork that turns on a decision under the gate is a grill question, not presentation material: put it to your human partner when it surfaces, with your recommendation. A fork among technical or mechanical means within authorized scope is yours — choose the best fit and record it as a silent decision. By presentation time the human-owned forks the grill could see are settled; only those that first emerge while composing the full design survive to the presentation.
 
-A fork that turns on an unapproved product, taste, or substantive design
-decision is a grill question, not presentation material — put it to your human
-partner when it surfaces, with your recommendation. A fork among technical or
-mechanical means within authorized scope is yours: choose the best fit and
-record it as a silent decision. By the time you present the design, the
-human-owned forks the grill could see are already settled; only human-owned
-forks that first emerge while composing the full design survive to the
-presentation, and those go to the top of its attention ranking.
+Your human partner's framing is a starting point, not the boundary of the design space — whoever initiated the idea may not see it as fully as you can. You carry expert-level knowledge of nearly every domain it touches; spend it on the idea's substance, not only its clarification: angles the framing didn't open, what your partner didn't seem to consider, questions whose answers give the idea real insight, reasoned opinions of your own that mature it. And judge, for every idea, whether it deserves to converge as conceived. Make the outward move your human partner cannot: hold the idea against the project's standing purpose, compare it with the other levers that purpose suggests — including levers absent from the codebase, where an absent obvious lever is often the prerequisite frame rather than background to assume — and with what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find once, sharply, before convergence, grounded in this project's purpose, this codebase, or named sources.
 
-Your human partner's framing of the idea is a starting point, not the boundary of the design space — the partner who initiated it may not see it as fully as you can. You carry expert-level knowledge of nearly every domain an idea touches; spend it on the idea's substance, not only its clarification. Contemplate the idea from angles the framing didn't open and consider what your partner didn't seem to consider; situate it within the project and its standing purpose; illuminate the questions whose answers provide valuable insights to the idea; and offer reasoned opinions of your own that develop and mature the idea. The challenger duty below is this posture's sharpest form — the contribution itself runs throughout the grill.
+## Choosing the track
 
-Converging the idea is half the grill; the other half is judging whether the idea as conceived deserves to converge. Run this assessment on every idea: hold it against the project's standing purpose — and not only for internal fit. Make the outward move your human partner cannot: compare the idea against the other levers the purpose itself suggests, including levers absent from the codebase (an absent obvious lever is often the prerequisite frame, not background to assume) and what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find once, sharply, BEFORE convergence, grounded in this project's purpose, this codebase, or named sources.
+Read the shape of the work off the grill and name the track that fits, with a one-line reason:
 
-**Choosing the Track (after the grill):**
+- **Well-scoped and delegable** — the grill exhausted the open questions and the only remaining unknowns are feasibility ("we won't know until we try", which become prototyping milestones), not taste → autonomous: doperpowers:execplan authors one self-contained ExecPlan and executes it with no mid-flight human gates.
+- **Large, novel, taste-heavy, or high-stakes** — taste questions keep arising that can't be settled up front, or the work needs human judgment mid-flight → controlled: the rest of this skill, design → spec → doperpowers:writing-plans.
+- **Narrow and small** — a focused change an engineer would just do (a config tweak, a small bugfix, one thin feature slice), where a spec or ExecPlan would outweigh the work → direct: a brief design, the gate when it applies, then implement in this session — no spec, no plan.
 
-Three tracks leave this skill. The controlled track is the rest of this skill: design → spec → doperpowers:writing-plans. The autonomous track hands off to doperpowers:execplan, which authors one self-contained ExecPlan and executes it with no mid-flight human gates. The direct track is for work too narrow to deserve either: present a brief design, satisfy the gate when it applies, then implement right away in this session — no spec, no plan. A goal that fails the ownability gate chooses none of these — its route is doperpowers:decomposing (see the scope bullet): a coupled goal still runs the design presentation and spec writing first; then step 8 becomes invoking doperpowers:decomposing, which extends that same spec with the roadmap sections.
+When the route follows from already-authorized scope, state it and continue: *"This is well-scoped and the open questions are closed, so I'm taking the autonomous track and running it end to end."* When it would commit a decision under the gate, recommend a specific route and ask a focused confirmation rather than an open "which track do you want?". In doubt between two tracks, take the heavier; the choice ratchets one way, so complexity discovered mid-flight — a direct task that sprouts design questions, hidden scope that turns a bounded change architectural — upgrades the track and returns here for the design pass it now deserves. Authorization for the work includes choosing its technical route: "just handle it" is sufficient when no reserved decision remains, and doperpowers:execplan's contract governs once routed there.
 
-**You choose and state the track.** Assess the work and name the track that fits
-with a one-line reason. When that route follows from already-authorized scope,
-continue into it. Ask your human partner to confirm when the route would commit
-an unapproved product, taste, or substantive design decision; recommend a
-specific route rather than asking an open "which track do you want?"
+## Presenting the design
 
-- Read the shape of the work off the grill and recommend accordingly:
-  - **Well-scoped and delegable** — the grill exhausted the open questions and the only remaining unknowns are feasibility ("we won't know until we try," which become prototyping milestones), not taste → **recommend autonomous**.
-  - **Large, novel, taste-heavy, or high-stakes** — taste questions keep arising that can't be settled up front, or the work needs human judgment mid-flight → **recommend controlled**.
-  - **Narrow and small** — a focused change an engineer would just do (a config tweak, a small bugfix, one thin feature slice), where a spec or ExecPlan would outweigh the work itself → **recommend direct**.
-- State the recommendation and its reason in one message. For authorized technical work, continue — e.g. *"This is well-scoped and the open questions are closed, so I'm taking the autonomous track (execplan) and running it end to end."* When the gate applies, ask a focused confirmation and wait.
-- When in doubt between two tracks, take the heavier one — and the choice
-  ratchets one way: complexity discovered mid-flight (a direct task that
-  sprouts design questions, hidden scope that turns a bounded change
-  architectural) upgrades the track, returning here for the design pass it
-  now deserves;
-- Authorization for the work includes choosing its technical execution route; "just handle it" is sufficient when no reserved decision remains. doperpowers:execplan's contract governs once routed there.
+Present the whole design in one pass. The design itself — the description of the thing you intend to build — is the body; the structure around it triages your human partner's attention, so they know which parts need their judgment and which they can skim:
 
-**Presenting the design:**
+1. **Open forks** (rare) — decisions under the gate that first emerged while composing the design and have genuinely sound alternatives, each with its candidates, trade-offs, and your recommendation. Your human partner decides.
+2. **The design** — architecture, components, data flow, error handling, and testing, in sections scaled to their complexity: a few sentences if straightforward, up to 200–300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, the reasoning behind the significant calls — and mark the sections that turn on your partner's taste or domain knowledge as ones to review carefully.
+3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each.
 
-Once you believe you understand what you're building, present the whole design in one pass. The design itself — the description of the thing you intend to build — is the body of the presentation; the structure around it triages your human partner's attention, so they know which parts need their judgment and which they can skim:
+When the gate applies, one approval covers the whole pass; revise conversationally. Split into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it.
 
-1. **Open forks** (rare) — human-owned decisions under the gate that first emerged while composing the design and have genuinely sound alternatives. Present each with its candidates, trade-offs, and your recommendation; your human partner decides.
-2. **The design itself** — architecture, components, data flow, error handling, and testing, described in sections scaled to their complexity: a few sentences if straightforward, up to 200-300 words if nuanced. Describe the thing, not just your choices about it — what each part does, how the parts fit together, and the reasoning behind the significant calls. Where a section turns on your human partner's taste or domain knowledge, mark it as one to review carefully.
-3. **Silent decisions** — the trivial calls you made without asking, a skimmable line each, for transparency.
+Prefer small units with one clear purpose and a well-defined interface — you reason better about code you can hold in context at once, and edits to focused files are more reliable; a file that has grown large is usually doing too much. Follow the codebase's existing patterns, and where existing code has problems that affect the work (a file grown too large, unclear boundaries, tangled responsibilities), fold targeted improvements into the design the way a good developer improves the code they work in.
 
-When the gate applies, one approval covers the whole pass; revise conversationally, and be ready to go back and clarify if something doesn't make sense. Split the presentation into sequential rounds only when a real dependency forces it: an open fork that reshapes everything downstream is its own frontier — present it, get the decision, then present what hangs off it (the grill's frontier logic).
+Peer review is optional. When the design genuinely matters — high-stakes, novel, or complex enough that an independent perspective would materially raise confidence — bring in a critic and debate until the discussion converges: adopt what survives, rebut what doesn't, and hand a disagreement that survives honest debate to your human partner as an open question. Route by the design's center of gravity. A technical-heavy design (protocols, concurrency, data models, failure semantics) goes to a Codex thread via doperpowers:codex-companion's `task` verb — cross-model eyes catch what same-model review is blind to; its references/amigo.md has the critic recipe, debated over `--resume-last`. A product-heavy, judgment-heavy, or still-open design goes to the `doperpowers:critique` agent with brief context and paths to the design artifacts, debated via SendMessage. Most designs don't need either.
 
-**Peer review (optional).** When the design genuinely matters — high-stakes,
-novel, or complex enough that an independent perspective would materially
-raise confidence in it — bring in a critic and debate until the discussion
-converges: evaluate each finding, adopt what survives, rebut what doesn't.
-A disagreement that survives honest debate goes to your human partner as an
-open question. Route by the design's center of gravity: a technical-heavy
-design (protocols, concurrency, data models, failure semantics) goes to a
-Codex thread via doperpowers:codex-companion's `task` verb — cross-model
-eyes catch what same-model review is blind to; its references/amigo.md has
-the critic recipe, debated over `--resume-last`. A product-heavy,
-judgment-heavy, or still-open design goes to the `doperpowers:critique`
-agent with brief context and paths to the design artifacts, debated via
-SendMessage. Whether to fire either is your call; most designs don't
-need it.
+## The spec
 
-**Design for isolation and clarity:**
+Write the design to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` in the shape [references/living-spec.md](references/living-spec.md) gives — purpose-first opening, acceptance phrased as observable behavior, the living tail — and commit it. Seed the Decision Log from the grill's resolved forks and the presentation's decisions, each choice with its strongest rejected alternative and why it lost; they are already generated, so capturing them is free. Capture everything the session produced: the spec is the only durable memory this work has — a stale written decision is detectably wrong later and flows back, an uncaptured insight is silently gone.
 
-- Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood and tested independently
-- For each unit, you should be able to answer: what does it do, how do you use it, and what does it depend on?
-- Can someone understand what a unit does without reading its internals? Can you change the internals without breaking consumers? If not, the boundaries need work.
-- Smaller, well-bounded units are also easier for you to work with - you reason better about code you can hold in context at once, and your edits are more reliable when files are focused. When a file grows large, that's often a signal that it's doing too much.
+Then reread it with fresh eyes: placeholders, sections that contradict each other, requirements that read two ways, whether the scope still fits one execution plan, the living tail present. The check easiest to miss is traceability: every load-bearing declaration in the Decision Log or design prose — anything that says the artifact must carry X — needs a concrete section, slot, or instruction that carries it, and a declaration without a counterpart is a defect. Fix what you find inline and move on.
 
-**Working in existing codebases:**
+Report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as peer review: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — 1–2 sentences of context and the spec path are enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, re-run the self-review, and stop when a round yields nothing worth changing. Once the gate is satisfied, what returns to your human partner is exceptions — a design-level fork the design doesn't cover, a finding that conflicts with the design itself, a blocker you can't resolve; everything resolvable within the design is fixed where it stands and logged in the Decision Log.
 
-- Explore the current structure before proposing changes. Follow existing patterns.
-- Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.
-
-## After the Design
-
-**Documentation:**
-
-- Write the validated design (spec) to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`
-- A child of a composite spec writes no document of its own: expand its section in the composite and commit that.
-- Shape it per [references/living-spec.md](references/living-spec.md): purpose-first opening, acceptance phrased as observable behavior, and the living tail (`## Decision Log`, `## Surprises & Discoveries`, `## Outcomes & Retrospective` reading "Pending — written at finish.", `## Revision Notes`)
-- Seed the Decision Log from the grill's resolved forks and the presentation's decisions — each choice with its one strongest rejected alternatives and why they lost; they are already generated, capturing them is free
-
-**Spec Self-Review:**
-After writing the spec document, look at it with fresh eyes:
-
-1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
-2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?
-3. **Scope check:** Is this focused enough for a single execution plan, or does it need decomposition?
-4. **Ambiguity check:** Could any requirement be interpreted two different ways? If so, pick one and make it explicit.
-5. **Living tail:** Are `## Decision Log` (with at least one rejected alternative), `## Surprises & Discoveries`, `## Outcomes & Retrospective` ("Pending — written at finish."), and `## Revision Notes` all present?
-6. **Traceability:** For every load-bearing declaration in the Decision Log or design prose — anything that says the artifact must carry X — point to the concrete section, slot, or instruction that carries it. A declaration without a counterpart is a defect.
-
-Fix any issues inline. No need to re-review — just fix and move on.
-
-**Independent Spec Review:**
-After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review, but don't run it endlessly, know when to stop and proceed.
-
-Once the gate is satisfied by existing authorization or current approval, what returns to your human partner is exceptions: a design-level fork the design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the design is fixed where it stands and logged in the spec's Decision Log.
-
-**Implementation:**
-
-Invoke doperpowers:writing-plans to create the execution plan — the next step on the controlled track.
+Then invoke doperpowers:writing-plans — or doperpowers:decomposing for a coupled goal that fails its gate, which extends this same spec with the roadmap sections.

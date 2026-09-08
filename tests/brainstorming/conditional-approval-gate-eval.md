@@ -99,3 +99,33 @@ was then fixed and held constant across all counted paired arms.
 An external `codex exec` batch was not used after automatic approval review
 rejected sending the private skill body to separate external sessions. All
 counted repetitions used the in-session agent path described above.
+
+## 2026-09-08 prose revision re-run
+
+The skill was rewritten for prose effectiveness (repetition removed, obvious
+guidance cut, blockquote and checklist forms folded into prose; 3,189 → 2,298
+words). The gate, fork-ownership, and track-authorization wording all changed,
+so the paired matrix above was re-run, plus two retrieval probes on the
+sections restructured most heavily.
+
+Method as above: fresh-context in-session agents on `luna` at `max` effort,
+no tools, one turn, the skill body as the controlling workflow (execplan
+appended for the handoff scenarios). Both arms ran the same day.
+
+- Before (HEAD `8032d6f3`): `754188f2095c…`
+- Revised: `283d2b5c660c…`
+
+| Scenario | Expected | Before | Revised |
+|---|---|---:|---:|
+| Authorized technical | PROCEED | 5/5 | 5/5 |
+| Unresolved product | PAUSE | 5/5 | 5/5 |
+| Mechanical fork | PROCEED | 5/5 | 5/5 |
+| Authorized ExecPlan handoff | PROCEED | 5/5 | 5/5 |
+| Unresolved API-contract handoff | PAUSE | 5/5 | 5/5 |
+| Uncoupled bundle → decompose before design | DECOMPOSE-NOW | 5/5 | 5/5 |
+| Composite child → expand section, skip step 7 | SECTION SKIP | 5/5 | 5/5 |
+
+Every rep was read, not just counted. Revised-arm reasons converge on the
+skill's own vocabulary across reps ("narrow direct-track fix", "no shared
+design surface", "the track's review covers the residue"), so the shorter
+wording binds as tightly as the longer one did.
