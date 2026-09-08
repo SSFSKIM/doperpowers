@@ -9,7 +9,7 @@ Help turn ideas into fully formed designs and specs through natural collaborativ
 
 Start by understanding the current project context, then grill in batched rounds to refine the idea. Once you understand what you're building, present the design at a depth proportionate to the work.
 
-**The gate:** implementation waits when it would commit an unapproved product,
+Implementation waits when it would commit an unapproved product,
 taste, or substantive design decision. Present those decisions in the design and
 get your human partner's approval first. When the work is already authorized,
 well-scoped, and the remaining choices are technical or mechanical consequences
@@ -25,12 +25,13 @@ Work through these in order:
 2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
 3. **Choose and state the track** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); confirmation follows the gate above; see Choosing the Track below
 4. **Present the design** — one holistic pass, attention-ranked; get approval when the gate applies (see Presenting the Design below)
-5. **Write design doc** — in living-spec shape per [references/living-spec.md](references/living-spec.md) (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
+5. **Write design doc** — in living-spec doctrine per [references/living-spec.md](references/living-spec.md) (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
 6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 7. **Independent spec review** — dispatch a spec reviewer subagent; evaluate its findings, fix what survives (see below; a child of a composite spec skips this — its track's own review covers the residue)
 8. **Transition to implementation** — invoke doperpowers:writing-plans (a goal routed to decomposing invokes doperpowers:decomposing here instead)
 
-Three exits leave this skill: writing-plans (controlled), execplan (autonomous), or implementing directly in this session (direct track — no spec, no plan; the brief design is the contract, and test-driven-development still applies for testable logic). A fourth exit routes to doperpowers:decomposing when the goal fails its ownability gate — too big for one agent to reliably own as one unit — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and, when the gate applies, approved here, carrying that design as decomposing's input.
+Three exits leave this skill: writing-plans, execplan, or direct implementations (test-driven-development still applies for testable logics). 
+A fourth exit routes to doperpowers:decomposing when the goal is too big and complex for one agent to reliably own as one unit and finish reliably in a single session — and WHEN it exits depends on coupling (see the scope bullet below): an uncoupled bundle exits at scope-assessment time, before any design; a coupled goal exits only after its design is matured and, when the gate applies, approved here, carrying that design as decomposing's input.
 
 ## The Process
 
@@ -73,9 +74,9 @@ human-owned forks the grill could see are already settled; only human-owned
 forks that first emerge while composing the full design survive to the
 presentation, and those go to the top of its attention ranking.
 
-**The contribution duty.** Your human partner's framing of the idea is a starting point, not the boundary of the design space — the partner who initiated it may not see it as fully as you can. You carry expert-level knowledge of nearly every domain an idea touches; spend it on the idea's substance, not only its clarification. Contemplate the idea from angles the framing didn't open and consider what your partner didn't seem to consider; situate it within the project and its standing purpose; illuminate the questions whose answers provide valuable insights to the idea; and offer reasoned opinions of your own that develop and mature the idea. The challenger duty below is this posture's sharpest form — the contribution itself runs throughout the grill.
+Your human partner's framing of the idea is a starting point, not the boundary of the design space — the partner who initiated it may not see it as fully as you can. You carry expert-level knowledge of nearly every domain an idea touches; spend it on the idea's substance, not only its clarification. Contemplate the idea from angles the framing didn't open and consider what your partner didn't seem to consider; situate it within the project and its standing purpose; illuminate the questions whose answers provide valuable insights to the idea; and offer reasoned opinions of your own that develop and mature the idea. The challenger duty below is this posture's sharpest form — the contribution itself runs throughout the grill.
 
-**The challenger duty.** Converging the idea is half the grill; the other half is judging whether the idea as conceived deserves to converge. Run this assessment on every idea: hold it against the project's standing purpose — and not only for internal fit. Make the outward move your human partner cannot: compare the idea against the other levers the purpose itself suggests, including levers absent from the codebase (an absent obvious lever is often the prerequisite frame, not background to assume) and what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find once, sharply, BEFORE convergence, grounded in this project's purpose, this codebase, or named sources.
+Converging the idea is half the grill; the other half is judging whether the idea as conceived deserves to converge. Run this assessment on every idea: hold it against the project's standing purpose — and not only for internal fit. Make the outward move your human partner cannot: compare the idea against the other levers the purpose itself suggests, including levers absent from the codebase (an absent obvious lever is often the prerequisite frame, not background to assume) and what the world already knows about this problem class. An idea can be perfectly coherent and still be dominated by an alternative nobody named. Voice what you find once, sharply, BEFORE convergence, grounded in this project's purpose, this codebase, or named sources.
 
 **Choosing the Track (after the grill):**
 
@@ -96,9 +97,8 @@ specific route rather than asking an open "which track do you want?"
   ratchets one way: complexity discovered mid-flight (a direct task that
   sprouts design questions, hidden scope that turns a bounded change
   architectural) upgrades the track, returning here for the design pass it
-  now deserves; never downgrade mid-task.
+  now deserves;
 - Authorization for the work includes choosing its technical execution route; "just handle it" is sufficient when no reserved decision remains. doperpowers:execplan's contract governs once routed there.
-- If your human partner overrides your recommendation, follow their choice. On the controlled track, continue this skill.
 
 **Presenting the design:**
 
@@ -136,18 +136,15 @@ need it.
 
 - Explore the current structure before proposing changes. Follow existing patterns.
 - Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.
-- Don't propose unrelated refactoring. Stay focused on what serves the current goal.
 
 ## After the Design
 
 **Documentation:**
 
 - Write the validated design (spec) to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`
-  - (User preferences for spec location override this default)
 - A child of a composite spec writes no document of its own: expand its section in the composite and commit that.
 - Shape it per [references/living-spec.md](references/living-spec.md): purpose-first opening, acceptance phrased as observable behavior, and the living tail (`## Decision Log`, `## Surprises & Discoveries`, `## Outcomes & Retrospective` reading "Pending — written at finish.", `## Revision Notes`)
-- Seed the Decision Log from the grill's resolved forks and the presentation's decisions — each choice with its rejected alternatives and why they lost; they are already generated, capturing them is free
-- Commit the design document to git
+- Seed the Decision Log from the grill's resolved forks and the presentation's decisions — each choice with its one strongest rejected alternatives and why they lost; they are already generated, capturing them is free
 
 **Spec Self-Review:**
 After writing the spec document, look at it with fresh eyes:
@@ -162,7 +159,7 @@ After writing the spec document, look at it with fresh eyes:
 Fix any issues inline. No need to re-review — just fix and move on.
 
 **Independent Spec Review:**
-After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review.
+After the spec self-review passes, report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as the peer-review layer: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — a brief prompt with 1-2 sentences of context and the spec path is enough; a technical-heavy spec goes to doperpowers:codex-companion's `adversarial-review` verb (model `gpt-6-astra`, effort `high` via its with-effort wrapper) with the spec path in the focus text. Evaluate the findings rather than accepting them wholesale, make the changes that survive, and re-run the spec self-review, but don't run it endlessly, know when to stop and proceed.
 
 Once the gate is satisfied by existing authorization or current approval, what returns to your human partner is exceptions: a design-level fork the design doesn't cover, a finding that conflicts with the design itself, or a blocker you can't resolve. Everything resolvable within the design is fixed where it stands and logged in the spec's Decision Log.
 
