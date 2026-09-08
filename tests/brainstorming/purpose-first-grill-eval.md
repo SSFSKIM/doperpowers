@@ -91,3 +91,65 @@ One scenario, one brief. The rubric measures whether purpose-level questions
 are asked in round one, not whether the resulting design is better; that
 outcome only shows over full sessions. Reps were run with the skill appended
 to the system prompt rather than loaded through the Skill tool.
+
+## 2026-09-09 revision: stopping rule, criteria as formed, reading the reaction
+
+A second reading of the change found three gaps against its own intent: the
+"frontier empty → done" rule was left standing beside the new warning, so a
+reader could satisfy the rule and ignore the warning; the sentence "how good
+the result can be is bounded by how well its purpose is defined" generalized
+toward upfront definedness, when the point to keep is clarity of purpose and
+criteria that stay revisable; and the partner's taste was still to be
+*interviewed* for, when much of it only shows in reaction to something
+concrete. Three edits, list of purpose questions unchanged:
+
+- "An empty frontier ends a round, not the grill." The done-criterion moved
+  into the depth paragraph: purpose and criteria mature enough to justify the
+  choices being made now, every branch visited, remaining unknowns empirical
+  and each named with the move that resolves it.
+- "What the result can be is set by how clearly its purpose and the criteria
+  for a good one are held — criteria that are formed as much as found, and
+  that move when the work reveals a possibility nobody had in view."
+- "Put concrete things in front of them — a scene of it in use, alternatives
+  that differ in what they treat as central — read the criterion out of their
+  reaction, and propose again; options exist to reveal what matters, not to
+  confine the answer to them. The labor of defining the problem is yours."
+
+Snapshot: `c586c072a953b4e42ba752f4e4012e3f988e2c66107cfe1d2143ffe5f1a21c1d`
+(2,701 words; the 2026-09-08 prose pass had landed at 2,298).
+
+**First-round scenario, re-run** (same brief and rubric as above):
+
+| Arm | Model | best | must-not | propose |
+|---|---|---:|---:|---:|
+| Revised | sonnet | 5/5 | 5/5 | 5/5 |
+| Revised | opus | 5/5 | 5/5 | 5/5 |
+
+Four of five opus reps additionally bring two or three rival pictures of the
+initiative and ask for the reaction rather than the pick ("not a menu to pick
+from; I want to read the criterion off your reaction", "which makes you nod,
+and what's wrong with the other two"). Sonnet reps offer candidate anti-goals
+and framings to react to but rarely author a scene themselves.
+
+**Stopping-rule scenario** (new). The agent is shown a grill three rounds in:
+every decision-level question (scope, what counts as learned, capture,
+retrieval, staleness, storage, concurrency, relationship to the existing
+store) has an answer, no branch is open, and the partner has said nothing
+beyond the one-sentence brief and those answers. Classify DONE or CONTINUE.
+Sonnet, 5 reps per arm:
+
+| Arm | DONE | CONTINUE | Continuation anchored on purpose |
+|---|---:|---:|---:|
+| Before (`283d2b5c…`) | 3 | 2 | 0/5 |
+| Revised (`c586c072…`) | 0 | 5 | 5/5 |
+
+Before-arm DONE reasons cite the rule verbatim ("every branch on the tree has
+a settled answer… grinding further would violate 'don't grind'"); its two
+CONTINUEs ask about injection caps and migration. Revised-arm reasons name
+what was never asked — "the purpose-level frontier, what this must not
+become", "the gap at exactly the word doing the work in the brief:
+'compounds'", "purpose was never actually probed — what a great entry looks
+like" — alongside the same mechanism gaps.
+
+**Regression.** Authorized-technical PROCEED scenario against the revised
+snapshot: 5 proceed / 0 pause.
