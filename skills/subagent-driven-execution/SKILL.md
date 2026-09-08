@@ -28,9 +28,11 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 1. Read the plan once — and the spec its header names: the spec is the
    authority the plan argues from when a finding or ⚠️ item needs
-   adjudicating. Note the Global Constraints, create todos, resolve
-   the workspace (`scripts/sde-workspace PLAN_FILE`) and check for an
-   existing ledger (Durable Progress below) before dispatching anything.
+   adjudicating. Note the Global Constraints, create todos, make sure
+   you are on an isolated checkout ([isolated-workspace.md](isolated-workspace.md)),
+   resolve the artifact workspace (`scripts/sde-workspace PLAN_FILE`) and
+   check for an existing ledger (Durable Progress below) before
+   dispatching anything.
 2. **Pre-flight:** scan the plan for tasks that contradict each other, the
    Global Constraints, or the review rubric (e.g. a mandated test that
    asserts nothing). Present findings to your human partner as one batched
@@ -99,8 +101,9 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    `review` verb with `--base <base>`; a
    fresh top-tier Claude reviewer if codex is unavailable) with its own
    package (`scripts/review-package PLAN_FILE MERGE_BASE HEAD`,
-   MERGE_BASE = `git merge-base main HEAD`). Then
-   doperpowers:finishing-a-development-branch.
+   MERGE_BASE = `git merge-base main HEAD`). Then write the spec's
+   `## Outcomes & Retrospective` entry, commit it, and integrate the
+   branch ([isolated-workspace.md](isolated-workspace.md), "At finish").
 
 ## Model selection
 
@@ -218,6 +221,5 @@ expensive failure observed. The ledger file, not your todos, is the record:
 
 ## Integration
 
-- **doperpowers:using-git-worktrees** — isolated workspace before starting
+- [isolated-workspace.md](isolated-workspace.md) — the workspace before the first task and its cleanup after the last
 - **doperpowers:writing-plans** — creates the plan this skill executes
-- **doperpowers:finishing-a-development-branch** — after the final review

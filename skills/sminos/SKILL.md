@@ -150,9 +150,9 @@ marker — wake it with an instruction, or `sminos attach` and approve.
 shared directory: give any seat that writes code a `--worktree NAME` (the
 harness's native `--worktree`; the seat runs in `<repo>/.claude/worktrees/NAME`
 on branch `worktree-NAME`, and `fill`, `wake`, `reply`, and `attach` follow it).
-Its finished work is a committed branch, not merged — integrate with
-doperpowers:finishing-a-development-branch. Skip the worktree for read-only
-seats. `retire` never deletes a worktree or branch.
+Its finished work is a committed branch, not merged — you merge it or open
+the PR. Skip the worktree for read-only seats. `retire` never deletes a
+worktree or branch.
 
 **Spawn-prompt hygiene.** Seats run unattended, so the prompt does the guardrail
 work: state the scope, name the deliverable, and tell the seat to end its turn

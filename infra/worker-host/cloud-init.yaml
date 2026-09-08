@@ -71,7 +71,7 @@ users:
     lock_passwd: true
 
 # ---- triage tenant: systemd timer (body-side; arming is guarded) ---------------
-# Replaces the Mac's launchd label (skills/triaging-feedback/references/setup.md
+# Replaces the Mac's launchd label (application-agents/triaging-feedback/references/setup.md
 # §6). systemd gives the same single-instance serialization the reclaim design
 # depends on: a timer never re-triggers a oneshot service that is still running.
 # ExecCondition makes pre-seed ticks silent no-ops, so the timer can be enabled
@@ -87,8 +87,8 @@ write_files:
       Type=oneshot
       User=triage
       Environment=HOME=/data/triage
-      ExecCondition=/usr/bin/test -f /data/triage/doperpowers/skills/triaging-feedback/.env
-      ExecStart=/data/triage/doperpowers/skills/triaging-feedback/scripts/feedback-poll.sh
+      ExecCondition=/usr/bin/test -f /data/triage/doperpowers/application-agents/triaging-feedback/.env
+      ExecStart=/data/triage/doperpowers/application-agents/triaging-feedback/scripts/feedback-poll.sh
   - path: /etc/systemd/system/doper-triage.timer
     content: |
       [Unit]

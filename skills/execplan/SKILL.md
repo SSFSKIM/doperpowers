@@ -30,10 +30,10 @@ Save to `docs/doperpowers/execplans/YYYY-MM-DD-<topic>.md` (omit the triple-back
 
 ## Step 3 — Execute
 
-In an isolated workspace (doperpowers:using-git-worktrees). Follow PLANS.md's implementing contract as written: do not prompt your human partner for next steps; resolve ambiguities autonomously (the grill already exhausted the ones that needed a human); keep `Progress`, `Surprises & Discoveries`, and the `Decision Log` current at every stopping point; commit frequently.
+In an isolated workspace ([../subagent-driven-execution/isolated-workspace.md](../subagent-driven-execution/isolated-workspace.md)). Follow PLANS.md's implementing contract as written: do not prompt your human partner for next steps; resolve ambiguities autonomously (the grill already exhausted the ones that needed a human); keep `Progress`, `Surprises & Discoveries`, and the `Decision Log` current at every stopping point; commit frequently.
 
 This profile fits durable background sessions — seats spawned through doperpowers:sminos: the ExecPlan is exactly what a spawn prompt can carry, and it survives the seat's context death — the document is the memory.
 
 ## Exit gate
 
-Exactly one, at the end. Before merging: dispatch the final whole-branch review to an external reviewer (codex native review via doperpowers:codex-companion's `review` verb with `--base <base-branch>`; a fresh Claude reviewer subagent if codex is unavailable), then finish with doperpowers:finishing-a-development-branch. Its retrospective step writes into the ExecPlan's own `Outcomes & Retrospective` section — the ExecPlan is this track's spec-equivalent.
+Exactly one, at the end. Before merging: dispatch the final whole-branch review to an external reviewer (codex native review via doperpowers:codex-companion's `review` verb with `--base <base-branch>`; a fresh Claude reviewer subagent if codex is unavailable), then write the ExecPlan's own `Outcomes & Retrospective` section (the ExecPlan is this track's spec-equivalent), commit it, and integrate the branch per the isolated-workspace reference's finish rules.

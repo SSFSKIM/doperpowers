@@ -167,7 +167,7 @@ then restart the runner so it rereads its env:
 Verify: `grep WORKER_ENGINE ~/.env ~/runner/.env` returns nothing, and the
 next label-less implement dispatch spawns a plain-Claude worker.
 
-## 5. Triage tenant (`skills/triaging-feedback` poller)
+## 5. Triage tenant (`application-agents/triaging-feedback` poller)
 
 The first production tenant, and deliberately the burn-in one: real value
 from day one (24/7 feedback triage instead of a sleep-prone Mac's launchd),
@@ -191,7 +191,7 @@ ida-solution (`references/setup.md` §0/§4):
    ida-solution to `~/repos/ida-solution` with a contents-READ-only
    fine-grained PAT in the remote URL (the poller fetches origin every tick,
    never pushes).
-2. **Deps** — `cd ~/doperpowers/skills/triaging-feedback && npm ci`.
+2. **Deps** — `cd ~/doperpowers/application-agents/triaging-feedback && npm ci`.
 3. **Env** — copy `env.triage.example` → that same skill dir's `.env`,
    fill it, `chmod 600`. Keep `TRIAGE_K=1` until ticket quality is trusted
    (`references/setup.md` §5).
