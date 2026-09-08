@@ -153,3 +153,126 @@ like" — alongside the same mechanism gaps.
 
 **Regression.** Authorized-technical PROCEED scenario against the revised
 snapshot: 5 proceed / 0 pause.
+
+## 2026-09-09 revision 2: purpose exploration as the grill's sibling
+
+The partner's review of the PR text found four places where it fell short of
+the intent it encodes:
+
+1. The third bullet sourced constraints only from "real-world context outside
+   the codebase"; the intent also derives them from the higher purpose — and
+   that higher purpose itself has to be discovered and given its nuances
+   before anything is derived from it.
+2. "The labor of defining the problem is yours, not theirs" read as relieving
+   the partner of thinking. The exploration is carved between both sides; the
+   agent drives it and, above all, interviews the partner for what only they
+   hold.
+3. "Clarity" is the wrong measure. A purpose can look clear and be narrow.
+   Where the grill resolves what an initiative already poses, this process
+   reaches past what seems settled into what the initiative should even be —
+   which makes it a sibling of the grill, not a part of it.
+4. What the design reaches for is the best possible manifestation of the
+   initiative's intent and the higher purpose it serves, articulated downward
+   into a system of goals and conditions rich enough that one result is right
+   and the generic ones are wrong.
+
+Change: the purpose material moved out of "The grill" into a new section,
+"Exploring the purpose", placed before it, with a new path step 2 (later
+steps renumbered; the composite-child skip becomes step 8). The done-criterion
+now reads "the purpose and the system of goals and conditions under it".
+A first draft kept three questions with the higher purpose folded into
+"what precisely it is for"; after the first-round read below showed the
+higher purpose asked in only about half the reps on both arms, it became
+its own list item (four questions).
+
+Snapshots:
+
+- Before (PR head `68d6af5a`): `c586c072a953b4e42ba752f4e4012e3f988e2c66107cfe1d2143ffe5f1a21c1d`
+- Three-question sibling: `1467a931e095b8ba77aacb2099e9a57c3d47608f04ec3d1e3cda315f97b58a8d`
+- Four-question sibling (final, 2,800 words): `4eccc5fb8369e4b59e0677a8cd22ad5380e592704f997cb605b87a8e731de204`
+
+Method as above, with two differences. Children ran with an empty temp
+directory as cwd, so no project CLAUDE.md or auto-memory index loaded; they
+still load the user-level CLAUDE.md, which carries a compact form of the
+same principle — equal across arms, and it makes the before arm stronger
+than a bare skill would be. `max_turns` was raised from 1 to 4 after 17 of
+the 50 first-wave runs died at the one-turn cap (a structured-output or tool
+attempt before the answer); only those 17 were re-run.
+
+Rubric additions, read manually as before:
+
+- *higher* — asks what higher purpose the initiative serves (what it is in
+  service of), as distinct from which pain it removes.
+- *reframe* — questions or proposes what the intent should be (an alternative
+  lever or framing), rather than only clarifying the given one.
+
+**First-round scenario** (same brief):
+
+| Arm | Model | best | must-not | propose | higher | reframe |
+|---|---|---:|---:|---:|---:|---:|
+| Before | sonnet | 5/5 | 5/5 | 5/5 | 3/5 | 0/5 |
+| Three-question | sonnet | 5/5 | 5/5 | 5/5 | 2/5 | 1/5 |
+| Four-question | sonnet | 5/5 | 5/5 | 5/5 | 5/5 | 0/5 |
+| Before | opus | 5/5 | 5/5 | 5/5 | 4/5 | 5/5 |
+| Three-question | opus | 5/5 | 5/5 | 5/5 | 2/5 | 5/5 |
+| Four-question | opus | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+
+Notes from reading:
+
+- The three original items held at 5/5 through the restructure on both
+  models: moving the material into its own section and step displaced
+  nothing.
+- *higher* bound only when it got its own list item. Folded into "what
+  precisely it is for", both models read that item as "which pain is this
+  removing" (a failure-mode menu) and asked about the purpose above it in
+  roughly half the reps — the same rate as the before arm. With its own item
+  every rep asks it, in the skill's own words ("what is this in service
+  of?", "what project or way of working is this in service of").
+- *reframe* is model-bound and unmoved by this change: opus voices the
+  alternative-lever challenge in every arm (the existing "framing is a
+  starting point" paragraph), sonnet in none.
+- The "put concrete things in front of them" sentence shows in the final
+  arm more than before: two of five opus reps author a candidate scene of
+  the best manifestation and ask the partner to correct it ("react to
+  mine: I open a session on a repo I haven't touched in two months…"), one
+  offers three architectures with "don't pick — tell me what's wrong with
+  each", and one sonnet rep proposes the whole purpose reading — higher
+  purpose, intent, best manifestation, must-not — for the partner to
+  react to and correct.
+
+**Shallow-purpose stopping scenario** (new). Same set-up as the earlier
+stopping scenario, except round one *did* ask the three purpose questions
+and got one line each ("making my sessions smarter over time"; "I stop
+re-explaining my preferences and past decisions"; "must not be noisy or
+slow"), then rounds two and three settled every decision. Classify DONE or
+CONTINUE. Five reps per arm, both models.
+
+| Arm | sonnet | opus |
+|---|---|---|
+| Before | 5 CONTINUE | 5 CONTINUE |
+| Three-question | 5 CONTINUE | 5 CONTINUE |
+| Four-question | 5 CONTINUE | 5 CONTINUE |
+
+Not discriminating: the PR-head text already carried "stays open as the
+decisions below reveal more of it", and every arm treats three one-line
+answers as an unexplored purpose. What moved is the reason given. Before-arm
+reasons quote the old tree metaphor ("a tree grown from a vague purpose").
+Four-question reasons apply the new criteria as tests: "the higher purpose
+was never asked about at all" (three of ten), "a generic answer would
+satisfy every stated constraint, which is the tell the exploration is
+unfinished" (two opus reps — the system-of-conditions criterion), "terse
+clarity is easy to mistake for explored territory" (sonnet), and "the
+purpose and the system of goals under it" as the stopping condition by
+name.
+
+**Thin-purpose stopping scenario** (from the first revision), four-question
+snapshot, sonnet: 0 DONE / 5 CONTINUE, all five anchored on the sibling
+purpose exploration by name and its four questions.
+
+**Regression.** Authorized-technical PROCEED scenario: 5 proceed / 0 pause
+on both sibling snapshots.
+
+Limits: as above. The first-round scenario cannot show the co-carving or
+the system-of-conditions emphasis directly; those show only in what the
+stopping reps cite. Nothing here measures whether a full session's design
+comes out more specific.
