@@ -20,7 +20,8 @@ one group's organisation chart with live state on every node.
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
-    sminos send     <seat|addr> <msg> [--from F]         # live sessions only
+    sminos send     <seat|addr|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
+                                                          # codex:<id|exact name>) goes through codex's queue
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos mark     <seat> <status> [note]                # orchestrator judgment state
@@ -2043,9 +2044,61 @@ def cmd_wake(a):
     resume_session(s, text, a.wait, locks, verb="woke")
 
 
+CODEX_PREFIX = "codex:"
+CODEX_QUEUED_RE = re.compile(r"Queued message ([^\s.]+) for thread ([^\s.]+)")
+
+
+def codex_queue_send(target, text):
+    """Deliver `text` to a Codex thread through Codex's durable message queue.
+
+    `codex queue --thread <id|exact name>` writes one row to the queue every
+    Codex app-server shares (~/.codex/queue_1.sqlite); the process hosting the
+    thread reads it BETWEEN turns — at once when the thread is idle (its host
+    polls every 10 s), after the current turn when it is busy, at the next
+    resume when nothing hosts it. That is the only door into a Codex thread
+    from outside its process (a desktop-app thread has no reachable socket),
+    and it never loses a message, so unlike the inbox path this does not
+    refuse a target that is not live — it parks the message. The thread must
+    already be on disk (a session that has not finished its first turn is
+    refused as unknown).
+
+    Returns (thread_id, queued_id) on success; ("", "") when codex knows no
+    such thread; dies on any other codex failure.
+    """
+    if not shutil.which("codex"):
+        return "", ""
+    try:
+        p = subprocess.run(["codex", "queue", "--thread", target, "--message", text],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:  # noqa: BLE001 — a launch failure is a delivery failure
+        die("codex queue could not run: %s" % e, 1)
+    out = (p.stdout or "") + (p.stderr or "")
+    if p.returncode != 0:
+        if "No active session found matching" in out or "no rollout found for thread" in out:
+            return "", ""
+        die("codex queue failed for '%s': %s" % (target, " ".join(out.split())[:400]), 1)
+    m = CODEX_QUEUED_RE.search(out)
+    return (m.group(2), m.group(1)) if m else (target, "")
+
+
+def report_codex_queued(tid, qid):
+    print("queued for codex thread %s%s — read between turns (idle: within 10s; busy: after the turn; "
+          "unhosted: at the next resume)" % (tid, " (%s)" % qid if qid else ""))
+
+
 def cmd_send(a):
     frm = default_from(a.frm)
     text = "[sminos message from %s]\n%s" % (frm, a.msg)
+    if a.target.startswith(CODEX_PREFIX):
+        # `codex:<id|name>` skips the seat and harness lookups — for a Codex
+        # thread whose name happens to collide with an alias.
+        raw = a.target[len(CODEX_PREFIX):]
+        tid, qid = codex_queue_send(raw, text)
+        if not tid:
+            die("no codex thread matching '%s'%s" % (
+                raw, "" if shutil.which("codex") else " (codex CLI not on PATH)"), EXIT_UNKNOWN)
+        report_codex_queued(tid, qid)
+        return
     kind, res = find_seat(a.target)
     if kind == "ambiguous":
         # A genuine seat match that is ambiguous must NOT silently fall through
@@ -2083,7 +2136,18 @@ def cmd_send(a):
         return
     if len(peers) > 1:
         die("ambiguous: %d live sessions are named '%s'" % (len(peers), a.target), EXIT_UNKNOWN)
-    die("no seat or live session matching '%s'" % a.target, EXIT_UNKNOWN)
+    # Only when NO seat and NO live harness session matched, and only for a
+    # thread ID: codex resolves an id in about a second but a NAME by paging
+    # through the whole thread history (63 s for 7,000 threads, observed), so a
+    # mistyped alias must not pay that — names go through `codex:<name>`.
+    codex_here = bool(shutil.which("codex"))
+    if codex_here and UUID_RE.match(a.target.lower()):
+        tid, qid = codex_queue_send(a.target, text)
+        if tid:
+            report_codex_queued(tid, qid)
+            return
+    what = "no seat, live session, or codex thread" if codex_here else "no seat or live session"
+    die("%s matching '%s'" % (what, a.target), EXIT_UNKNOWN)
 
 
 # ------------------------------------------------ reply / sync / mark / status
