@@ -14,6 +14,9 @@ Reviewer workers (doperpowers:qa-loops), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
 spawned-by).
 
+Operator or setup invocation for the execution loop — arming it, tuning it,
+diagnosing a tick: read `references/execution-loop.md` instead.
+
 There is no local board file, nothing to sync, and no worktree restriction —
 every script talks to GitHub directly (`gh` required, fail-loud) and may run
 from any checkout. `doperpowers/issue-tracker/` in the consumer repo survives

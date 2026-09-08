@@ -189,9 +189,9 @@ proposals, registration and comments are the only channels.
   epics are never dispatched for implementation; end the turn naming the
   mistake (the sweep owns epic states). An ARCHITECT dispatch onto an epic
   in `ready-for-architect` is NOT that mistake — it is the recomposition or
-  reconciliation claim (see architecting), the one way an epic is
-  dispatchable at all, and the dispatcher routes it there on epic-hood over
-  the ticket's own category.
+  reconciliation claim (see `architect-worker-protocol.md`), the one way an
+  epic is dispatchable at all, and the dispatcher routes it there on
+  epic-hood over the ticket's own category.
 - **needs-human answered** — preferred path: the wake ritual relays the
   answers to the still-bound session (issue-tracker's `board-answer.sh` —
   park = pause, not death); the resumed worker re-states its gate verdict

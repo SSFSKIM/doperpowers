@@ -144,6 +144,7 @@ export SMINOS_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
+IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/issue-tracker/references/implement-worker-protocol.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -697,7 +698,7 @@ PY
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$BASE_REF" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
-    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/issue-tracker/references/implement-worker-protocol.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
@@ -848,7 +849,7 @@ _dispatch_epic_locked() {
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$base_ref" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
-    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/issue-tracker/references/implement-worker-protocol.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
@@ -1724,7 +1725,7 @@ PY
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$DEFAULT_BRANCH" \
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
-    P_IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/issue-tracker/references/implement-worker-protocol.md" \
+    P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
     P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
