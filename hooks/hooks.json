@@ -1,5 +1,5 @@
 {
-  "description": "kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it",
+  "description": "kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. experimental-context: keyed <revisit> entries re-injected after compaction — on with EXPERIMENTAL_CONTEXT=1 or /experimental-context; /experimental-context off ends it",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,15 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/experimental-context.sh\""
           }
         ]
       }
@@ -19,6 +28,15 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos-toggle.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "doperpowers:experimental-context|experimental-context",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/experimental-context-toggle.sh\""
           }
         ]
       }
