@@ -85,7 +85,7 @@ t "and probing it creates nothing there"   "gone"  there "$DAEMON_HOME/surface-l
 # itself is how the boards silently re-merge.
 surface_lock_users() {
   grep -c 'board_store_dir surface-locks' \
-    "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" \
+    "$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh" \
     "$REPO_ROOT/skills/issue-tracker/scripts/board-register.sh" \
     "$REPO_ROOT/skills/issue-tracker/scripts/board-sweep.sh"
 }
@@ -94,7 +94,7 @@ nt "no surface-lock user resolves the store root for itself" ":0" surface_lock_u
 # guarded in one caller and open in the other two.
 surface_lock_legacy_probe() {
   grep -c 'flat_surface_lock_held' \
-    "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" \
+    "$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh" \
     "$REPO_ROOT/skills/issue-tracker/scripts/board-register.sh" \
     "$REPO_ROOT/skills/issue-tracker/scripts/board-sweep.sh"
 }

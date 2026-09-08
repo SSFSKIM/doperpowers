@@ -153,7 +153,7 @@ t "the sweep refuses a repo it could only have borrowed" \
   tick "$SCRIPTS/_sweep_api.sh" renew
 t "and so does the executor dispatcher" \
   "board.json names binding=api but no repo" \
-  tick "$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh" --sweep
+  tick "$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh" --sweep
 t "and the review dispatcher" \
   "board.json names binding=api but no repo" \
   tick "$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh" --sweep

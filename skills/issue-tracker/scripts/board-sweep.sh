@@ -113,7 +113,7 @@ cd "$LOCAL_REPO" || { echo "error: cannot cd to LOCAL_REPO=$LOCAL_REPO" >&2; exi
 . "$SCRIPT_DIR/_binding.sh" || exit 1
 if [ "$BOARD_BINDING" = api ]; then exec "$SCRIPT_DIR/_sweep_api.sh" all; fi
 
-IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SKILL_DIR/../executing/scripts/execute-dispatch.sh}"
+IMPLEMENT_DISPATCH_CMD="${IMPLEMENT_DISPATCH_CMD:-$SCRIPT_DIR/execute-dispatch.sh}"
 REVIEW_DISPATCH_CMD="${REVIEW_DISPATCH_CMD:-$SKILL_DIR/../qa-loops/scripts/review-dispatch.sh}"
 BOARD_ANSWER_CMD="${BOARD_ANSWER_CMD:-$SCRIPT_DIR/board-answer.sh}"
 RECONCILE_CMD="${RECONCILE_CMD:-$SCRIPT_DIR/board-reconcile.sh}"

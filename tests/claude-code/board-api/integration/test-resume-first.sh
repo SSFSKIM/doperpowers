@@ -27,7 +27,7 @@
 
 drill_start
 REPO="$(api_repo)"
-DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh"
 
 BODY="$DRILL_TMP/spec.md"
 cat >"$BODY" <<'MD'

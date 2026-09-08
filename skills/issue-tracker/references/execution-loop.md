@@ -1,8 +1,9 @@
 # Executing Tickets — operating the autonomous execution loop
 
-The operator-facing manual for the execution-side loop. The worker's
-protocol is the skill file itself (`../SKILL.md`) — a dispatched worker is
-bootstrapped onto that file and never needs this manual.
+The operator-facing manual for the execution-side loop. The worker
+protocols are the three `*-worker-protocol.md` files beside this one — a
+dispatched worker is bootstrapped onto its lane's file and never needs
+this manual.
 
 ## Overview
 
@@ -19,13 +20,13 @@ audit trail, not requests. Full design + rationale:
 
 | piece | what |
 |---|---|
-| `SKILL.md` (the skill root) | the Executor Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
-| `../architecting/SKILL.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; ends at the plan, never touches implementation code |
+| `references/implement-worker-protocol.md` | the Executor Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
+| `references/architect-worker-protocol.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; ends at the plan, never touches implementation code |
 | `references/worker-bootstrap.md` | the spawn bootstrap shared by ALL THREE lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE/ARCHITECT), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
 | The Ticket Gate | the pre-code pass/park verdict (below; check definitions in issue-tracker's `references/ticket-gate.md`) |
-| board schema + dispatch ritual | owned by doperpowers:issue-tracker (states, scripts, the mechanical ritual, the wake ritual) |
+| board schema + dispatch ritual | `SKILL.md` (states, scripts, the mechanical ritual, the wake ritual) |
 | `scripts/execute-dispatch.sh` | the mechanical dispatch ritual, automated: `<n>` triggered mode, `--sweep` catch-up; `board-sweep.sh` invokes the sweep mode on a timer |
 
 ## The Ticket Gate
@@ -72,7 +73,7 @@ worker re-runs the same gate; no depth machinery exists.
   (testable logic → TDD; UI → build + verify rendered behavior;
   config/docs → the relevant check passes), commit, PR.
 - **PLAN-EXECUTION** — the ticket carries a `plan:` pin an Architect
-  worker authored (doperpowers:architecting); the Executor opens the
+  worker authored (`references/architect-worker-protocol.md`); the Executor opens the
   plan at its pinned revision and executes it to the letter (absorbing
   codebase divergence on the branch, never re-litigating the design), and
   runs no gate. The Executor authors no plan document, ever — plan
@@ -188,9 +189,9 @@ proposals, registration and comments are the only channels.
   epics are never dispatched for implementation; end the turn naming the
   mistake (the sweep owns epic states). An ARCHITECT dispatch onto an epic
   in `ready-for-architect` is NOT that mistake — it is the recomposition or
-  reconciliation claim (see architecting), the one way an epic is
-  dispatchable at all, and the dispatcher routes it there on epic-hood over
-  the ticket's own category.
+  reconciliation claim (see `architect-worker-protocol.md`), the one way an
+  epic is dispatchable at all, and the dispatcher routes it there on
+  epic-hood over the ticket's own category.
 - **needs-human answered** — preferred path: the wake ritual relays the
   answers to the still-bound session (issue-tracker's `board-answer.sh` —
   park = pause, not death); the resumed worker re-states its gate verdict
@@ -216,6 +217,6 @@ proposals, registration and comments are the only channels.
 ## Interim dispatch
 
 Until the auto-attach trigger lands, dispatch is the mechanical ritual in
-doperpowers:issue-tracker (render this skill's `references/worker-bootstrap.md`
+`SKILL.md` (render `references/worker-bootstrap.md`
 → spawn → bind — no board write, no judgment). The trigger phase replaces
 only who invokes it.

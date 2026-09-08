@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -178,7 +178,7 @@ assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries 
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
 assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-facts (the worker reads the manifest from its worktree)"
 assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
-assert_file_contains "$PROMPT" "executing/SKILL.md" "execution lane opens the SKILL protocol"
+assert_file_contains "$PROMPT" "implement-worker-protocol.md" "execution lane opens the implement protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
 meta_ticket="$(python3 -c "
 import glob, json
@@ -358,7 +358,7 @@ assert_contains "$out" "dispatched #8" "architect ticket dispatches"
 assert_contains "$out" "role=ARCHITECT" "architect role selected off the state"
 PROMPT8="$PROMPT_DIR/8-design-the-ledger-split.prompt"
 assert_file_contains "$PROMPT8" "ARCHITECT worker for ticket #8" "prompt carries the ARCHITECT role"
-assert_file_contains "$PROMPT8" "architecting/SKILL.md" "architect lane opens the architecting protocol"
+assert_file_contains "$PROMPT8" "architect-worker-protocol.md" "architect lane opens the architect protocol"
 assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" "architect route pins the frontier model"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "architect route never rides the gateway"
 role_meta_8="$(python3 -c "

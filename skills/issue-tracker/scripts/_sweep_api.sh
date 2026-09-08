@@ -950,11 +950,11 @@ _model_for_lane() {
                *) echo "${IMPLEMENT_MODEL:-opus}" ;; esac
 }
 _protocol_for_lane() {
-  local skills; skills="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  local refs; refs="$(cd "$SCRIPT_DIR/../references" && pwd)"
   case "$1" in
-    architect) echo "$skills/architecting/SKILL.md" ;;
-    spike)     echo "$skills/executing/references/spike-worker-protocol.md" ;;
-    *)         echo "$skills/executing/SKILL.md" ;;
+    architect) echo "$refs/architect-worker-protocol.md" ;;
+    spike)     echo "$refs/spike-worker-protocol.md" ;;
+    *)         echo "$refs/implement-worker-protocol.md" ;;
   esac
 }
 
@@ -1838,7 +1838,7 @@ PY
 # exactly that line.
 phase_dispatch() {
   local impl revw
-  impl="$SCRIPT_DIR/../../executing/scripts/execute-dispatch.sh"
+  impl="$SCRIPT_DIR/execute-dispatch.sh"
   revw="$SCRIPT_DIR/../../qa-loops/scripts/review-dispatch.sh"
   # DAEMON_HOME/SMINOS_CLI are resolved here but NOT exported (see above),
   # so they are passed explicitly: without them a non-default registry — a

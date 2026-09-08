@@ -9,7 +9,7 @@
 # the uuid the dispatcher hands to board-bind is parsed out of it.
 . "$(dirname "$0")/helpers.sh"
 
-DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh"
 
 free_port() { python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }

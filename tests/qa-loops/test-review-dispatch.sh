@@ -515,7 +515,7 @@ assert_not_contains "$PROMPT" "<!-- mode:" "mode blocks are resolved at render, 
 assert_contains "$PROMPT" "Use doperpowers:qa-loops" "prompt names the Review Worker Protocol skill"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/qa-loops/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
-assert_contains "$PROMPT" "$REPO_ROOT/skills/executing/SKILL.md" "prompt carries the canonical implement-contract path (the skill IS the protocol)"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path (the dispatcher-pinned protocol file)"
 assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
 assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
 assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"

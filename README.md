@@ -26,7 +26,7 @@ Both tracks enforce the same non-negotiables — design before code, tests befor
 The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks an executor can own from one self-contained brief (`writing-plans`), then executes each one through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`). You approve the design; independent reviews gate the rest.
 
 **Autonomous** — for work that's already well-scoped.
-A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues (`issue-tracker`), workers pick them up and build (`executing`), a review loop lands the PRs (`qa-loops`), and the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
+A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues and gated workers pick them up and build (`issue-tracker`), a review loop lands the PRs (`qa-loops`), and the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 
@@ -60,7 +60,7 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-four skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty-three skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -85,9 +85,7 @@ Twenty-four skills, grouped by what they're for. Each one auto-triggers from its
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 
 **Run it unattended**
-- `issue-tracker` — the board, backed by GitHub issues
-- `executing` — dispatch workers onto tickets, gate before building
-- `architecting` — the design lane: grill the ticket, decide the shape, author the plan
+- `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
 - `qa-loops` — the autonomous PR-review and self-merge loop
 - `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
 - `triaging-feedback` — turn product feedback into grounded board tickets

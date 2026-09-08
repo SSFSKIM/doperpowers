@@ -18,8 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEMPLATE="$REPO_ROOT/skills/qa-loops/references/review-worker-bootstrap.md"
 DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
-IMPL_TEMPLATE="$REPO_ROOT/skills/executing/references/worker-bootstrap.md"
-IMPL_DISPATCH="$REPO_ROOT/skills/executing/scripts/execute-dispatch.sh"
+IMPL_TEMPLATE="$REPO_ROOT/skills/issue-tracker/references/worker-bootstrap.md"
+IMPL_DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
