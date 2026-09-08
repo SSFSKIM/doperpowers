@@ -60,7 +60,7 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-three skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty-two skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
