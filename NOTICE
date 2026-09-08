@@ -70,8 +70,7 @@ third-party-adapted files listed in section 3 above).
     docs/doperpowers/specs/2026-07-06-issue-tracker-v7-gh-ssot-design.md
     docs/doperpowers/specs/2026-07-08-pr-review-loop-design.md
     skills/execplan/SKILL.md
-    skills/execspec/SKILL.md
-    skills/execspec/references/PLANS.md
+    skills/brainstorming/references/living-spec.md
     skills/issue-register/SKILL.md
     skills/issue-tracker/SKILL.md
     skills/issue-tracker/references/board-cloudflare-pages.yml

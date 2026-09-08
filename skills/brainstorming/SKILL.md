@@ -25,7 +25,7 @@ Work through these in order:
 2. **Grill** — batched rounds of clarifying questions per The Grill below; understand purpose/constraints/success criteria
 3. **Choose and state the track** — controlled (continue below), autonomous (hand off to doperpowers:execplan), or direct (narrow scope, clear task definition: briefly design, then implement right away — steps 5–8 don't apply); confirmation follows the gate above; see Choosing the Track below
 4. **Present the design** — one holistic pass, attention-ranked; get approval when the gate applies (see Presenting the Design below)
-5. **Write design doc** — in living-spec shape per doperpowers:execspec (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
+5. **Write design doc** — in living-spec shape per [references/living-spec.md](references/living-spec.md) (purpose-first opening, behavior-phrased acceptance, living tail with the Decision Log seeded from the grill's resolved forks and the presentation's decisions); save to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit (a child of a composite spec expands its section in the composite instead)
 6. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 7. **Independent spec review** — dispatch a spec reviewer subagent; evaluate its findings, fix what survives (see below; a child of a composite spec skips this — its track's own review covers the residue)
 8. **Transition to implementation** — invoke doperpowers:writing-plans (a goal routed to decomposing invokes doperpowers:decomposing here instead)
@@ -145,7 +145,7 @@ need it.
 - Write the validated design (spec) to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`
   - (User preferences for spec location override this default)
 - A child of a composite spec writes no document of its own: expand its section in the composite and commit that.
-- Shape it per doperpowers:execspec: purpose-first opening, acceptance phrased as observable behavior, and the living tail (`## Decision Log`, `## Surprises & Discoveries`, `## Outcomes & Retrospective` reading "Pending — written at finish.", `## Revision Notes`)
+- Shape it per [references/living-spec.md](references/living-spec.md): purpose-first opening, acceptance phrased as observable behavior, and the living tail (`## Decision Log`, `## Surprises & Discoveries`, `## Outcomes & Retrospective` reading "Pending — written at finish.", `## Revision Notes`)
 - Seed the Decision Log from the grill's resolved forks and the presentation's decisions — each choice with its rejected alternatives and why they lost; they are already generated, capturing them is free
 - Commit the design document to git
 
