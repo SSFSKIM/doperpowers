@@ -31,6 +31,16 @@ topology, each seat's address, a durable board, and shell-side delivery
 (`sminos send` rides the same inbox socket the tool uses, so an operator or a
 script can reach a live seat from a plain terminal).
 
+`sminos send` also reaches a Codex thread — by its thread id, or as
+`codex:<id|exact name>` (a name makes codex page through its whole thread
+history, about a minute on a big one; prefer the id) — through Codex's durable
+message queue (`codex queue`), the one door into a Codex thread from outside
+its process. That queue is read between turns, not mid-turn: at once when the
+thread is idle (its host polls every 10 s), after the current turn when it is
+busy, at the next resume when nothing hosts it. So a busy Codex target answers
+after its turn rather than inside it, the message is never lost, and `send`
+reports `queued` rather than `sent` — plan the round-trip accordingly.
+
 ## The agent protocol
 
 A seat spawned with an explicit `--group` boots with this protocol rendered
@@ -79,7 +89,8 @@ pending. Posts snapshot the poster's cwd and git branch.
     sminos list [group]           # fleet table: alias, group, role, status, live, short id, addr, now
     sminos view <group>           # spawn tree with role · live state · status line, then board summary
     sminos groups                 # groups with seat counts and last post
-    sminos send <seat> "…"        # deliver to a LIVE seat over its inbox socket (idle seats wake)
+    sminos send <seat> "…"        # deliver to a LIVE seat over its inbox socket (idle seats wake);
+                                 # a codex thread (its id, or codex:<id|exact name>) is queued via `codex queue`
     sminos wake <seat> "…"        # same, but resumes a stopped seat (same session id) when not live
     sminos resume <seat> "…"      # process-level: stop the live turn, continue the session from THIS env
     sminos reply <seat>           # the seat's latest reply (renders a pending AskUserQuestion)

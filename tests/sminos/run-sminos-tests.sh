@@ -202,7 +202,36 @@ fi
 echo "stub: unhandled invocation: $*" >&2; exit 1
 STUB
 chmod +x "$STUB_BIN/claude"
-export PATH="$STUB_BIN:$PATH"
+# Stand-in for the `codex` CLI's `queue` verb, in its own PATH dir so one case
+# can run without it. It knows the threads listed in $STUB_STATE/codex-threads
+# (one "<uuid> <name>" per line), appends every accepted message to
+# codex-queue.log, and answers like the real CLI. It shadows any real codex:
+# the real one would spin up an app-server under the test HOME.
+CODEX_BIN="$TEST_ROOT/bin-codex"
+mkdir -p "$CODEX_BIN"
+cat > "$CODEX_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$STUB_STATE/log/calls.log"
+[ "${1:-}" = "queue" ] || { echo "stub: unhandled codex invocation: $*" >&2; exit 1; }
+thread=""; message=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --thread) thread="$2"; shift ;;
+    --message) message="$2"; shift ;;
+  esac
+  shift
+done
+[ "${STUB_CODEX_FAIL:-0}" = "1" ] && { echo "Error: failed to queue session message: app server exploded" >&2; exit 1; }
+tid="$(awk -v q="$thread" '$1 == q || substr($0, length($1) + 2) == q { print $1; exit }' "$STUB_STATE/codex-threads" 2>/dev/null || true)"
+if [ -z "$tid" ]; then
+  echo "Error: No active session found matching '$thread'." >&2; exit 1
+fi
+printf '%s\t%s\n' "$tid" "$message" >> "$STUB_STATE/log/codex-queue.log"
+echo "Queued message 01a0aaaa-0000-7000-8000-000000000001 for thread $tid."
+STUB
+chmod +x "$CODEX_BIN/codex"
+export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
 
 # A stand-in for a live session's inbox socket: appends every frame it
 # receives to inbox.received, one connection at a time, forever.
@@ -729,6 +758,49 @@ sleep 0.2
 assert_contains "$(cat "$RECEIVED")" '[sminos message from ops]\nby name' "--from is honored"
 run "$SMINOS" send nobody-here "x"
 assert_rc 4 "$RC" "send to an unknown target exits 4"
+
+# ---- 6b) codex threads, through codex's durable message queue ----------------
+# When no seat and no live harness session matches, the target is tried as a
+# Codex thread (id or exact name) via `codex queue`; `codex:` skips the lookups.
+echo "send to codex:"
+NOCODEX_PATH="$STUB_BIN:$(dirname "$(command -v python3)"):/usr/bin:/bin"
+run env PATH="$NOCODEX_PATH" "$SMINOS" send nobody-here "x"
+assert_rc 4 "$RC" "without codex on PATH an unknown target still exits 4"
+assert_contains "$OUT" "no seat or live session matching" "without codex the refusal names only seats and sessions"
+assert_not_contains "$OUT" "codex" "without codex the refusal does not mention codex"
+printf '%s\n' "01a07a8a-569e-7923-b476-8a7d7d6271c3 spike thread" "01a0730b-88ff-7591-a446-c278aa14093f orchestrator" > "$STUB_STATE/codex-threads"
+run "$SMINOS" send nobody-here "x"
+assert_rc 4 "$RC" "with codex on PATH an unknown target exits 4"
+assert_contains "$OUT" "or codex thread matching" "with codex the refusal names codex threads too"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "queue --thread nobody-here" "a bare name is never tried as a codex thread (a name miss costs codex a full history scan)"
+run "$SMINOS" send 01a0aaaa-0000-7000-8000-00000000dead "x"
+assert_rc 4 "$RC" "an unknown thread id exits 4"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "queue --thread 01a0aaaa-0000-7000-8000-00000000dead" "a bare thread id IS tried with codex before giving up"
+run "$SMINOS" send 01a07a8a-569e-7923-b476-8a7d7d6271c3 "ping codex"
+assert_rc 0 "$RC" "a codex thread id is accepted"
+assert_contains "$OUT" "queued for codex thread 01a07a8a-569e-7923-b476-8a7d7d6271c3 (01a0aaaa-0000-7000-8000-000000000001)" "send reports the thread and the queued submission"
+assert_contains "$OUT" "read between turns" "the report says when codex reads it"
+assert_not_contains "$OUT" "sent to" "a queued message is not reported as sent"
+assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from human]" "sender identity travels in the queued text"
+assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "ping codex" "the message body is queued"
+run "$SMINOS" send "spike thread" "by name"
+assert_rc 4 "$RC" "a bare codex thread NAME is not resolved"
+run "$SMINOS" send "codex:spike thread" "by name" --from ops
+assert_rc 0 "$RC" "codex:<name> resolves an exact codex thread name"
+assert_contains "$OUT" "queued for codex thread 01a07a8a" "the name is reported as its thread id"
+assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from ops]" "--from is honored for codex targets"
+run "$SMINOS" send orchestrator "to the seat"
+assert_rc 0 "$RC" "a seat alias that a codex thread also carries reaches the seat"
+assert_contains "$OUT" "sent to grp/orchestrator" "the seat wins over the codex thread of the same name"
+run "$SMINOS" send codex:orchestrator "to codex"
+assert_rc 0 "$RC" "codex: routes straight to codex"
+assert_contains "$OUT" "queued for codex thread 01a0730b" "codex: skips the seat lookup"
+run "$SMINOS" send codex:no-such-thread "x"
+assert_rc 4 "$RC" "codex: with an unknown thread exits 4"
+assert_contains "$OUT" "no codex thread matching 'no-such-thread'" "codex: refusal names the thread"
+run env STUB_CODEX_FAIL=1 "$SMINOS" send codex:orchestrator "x"
+assert_rc 1 "$RC" "a codex failure other than an unknown thread exits 1"
+assert_contains "$OUT" "codex queue failed for 'orchestrator': Error: failed to queue session message: app server exploded" "the codex error text is surfaced"
 run "$SMINOS" list grp
 assert_contains "$OUT" "idle" "a seat with a live peer record shows idle"
 
