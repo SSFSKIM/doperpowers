@@ -75,10 +75,12 @@ only sanctioned way to change a thread's cwd:
 
 ## 5. Convert to paginated history
 
-The desktop app stores its own threads in paginated history mode; imports
-and forks come out in legacy mode. Run
+The desktop app stores its own threads in paginated history mode and its
+project view silently drops legacy-mode threads, even when they are intact
+and correctly filed. Imports and forks come out in legacy mode, so run
 `codex migrate-rollouts --thread <id> --apply` and confirm
 `threads.history_mode` in `~/.codex/state_5.sqlite` reads `paginated`.
+This step is what makes the thread appear; do not skip it.
 
 ## 6. Make the folder exist in the app
 
