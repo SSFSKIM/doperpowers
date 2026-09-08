@@ -30,7 +30,7 @@
 
 ## 2. `.env` 파일 (커밋 금지)
 
-`skills/triaging-feedback/.env`에 아래 변수를 채웁니다(`.gitignore`에 이미
+`application-agents/triaging-feedback/.env`에 아래 변수를 채웁니다(`.gitignore`에 이미
 `.env`가 포함돼 있음 — 실수로도 커밋되지 않습니다). 필수(`loadConfig`가 없으면
 throw):
 
@@ -121,7 +121,7 @@ executing 루프의 입력이므로, 티켓 품질이 신뢰를 얻은 뒤 `K`�
   <key>Label</key><string>kr.ida.feedback-poll</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/absolute/path/to/doperpowers/skills/triaging-feedback/scripts/feedback-poll.sh</string>
+    <string>/absolute/path/to/doperpowers/application-agents/triaging-feedback/scripts/feedback-poll.sh</string>
   </array>
   <key>StartInterval</key><integer>600</integer>
   <key>StandardOutPath</key><string>/tmp/feedback-poll.out.log</string>

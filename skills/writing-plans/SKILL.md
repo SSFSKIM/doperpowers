@@ -11,7 +11,7 @@ Write execution plans for an executor who is a skilled engineer, has never seen 
 
 **Announce at start:** "I'm using the writing-plans skill to create the execution plan."
 
-**Context:** If working in an isolated worktree, it should have been created via the `doperpowers:using-git-worktrees` skill at execution time.
+**Context:** Execution happens in an isolated worktree, created at execution time (subagent-driven-execution's `isolated-workspace.md`).
 
 **Save plans to:** `docs/doperpowers/plans/YYYY-MM-DD-<feature-name>.md`
 - (User preferences for plan location override this default)

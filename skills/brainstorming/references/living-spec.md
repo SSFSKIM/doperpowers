@@ -63,7 +63,7 @@ Seed it at brainstorm time with the chosen approach AND each rejected alternativ
 
 For anything that changed design understanding: an assumption that proved false, a measured behavior, a constraint discovered during planning or execution. Short evidence snippets — test output is ideal. Incidental implementation noise belongs in commit messages, not here.
 
-**`## Outcomes & Retrospective`** — until finish, exactly the line "Pending — written at finish." At finish (doperpowers:finishing-a-development-branch triggers this), summarize what was achieved against the spec's original purpose, what remains, and lessons learned.
+**`## Outcomes & Retrospective`** — until finish, exactly the line "Pending — written at finish." At finish (the execution track's last step, after the whole-branch review), summarize what was achieved against the spec's original purpose, what remains, and lessons learned.
 
 **`## Revision Notes`** — one dated line per spec revision describing what changed and why (PLANS.md's bottom-note rule: "you must write a note at the bottom of the plan describing the change and the reason why"). When you revise, keep the whole document consistent — reflect the change across sections, not just where convenient.
 

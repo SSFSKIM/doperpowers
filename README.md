@@ -75,7 +75,6 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 - `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
 - `subagent-driven-execution` — one fresh subagent per task, reviews at dependency frontiers
 - `execplan` — the autonomous single-plan track, gates front-loaded
-- `using-git-worktrees` — isolated workspaces so parallel work never clashes
 
 **Keep it honest**
 - `systematic-debugging` — four-phase root-cause process, not guess-and-check
@@ -87,8 +86,9 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 - `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
 - `qa-loops` — the autonomous PR-review and self-merge loop
 - `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
-- `triaging-feedback` — turn product feedback into grounded board tickets
-- `finishing-a-development-branch` — verify, then decide merge / PR / keep / discard
+
+**Deployed alongside, not a skill**
+- `application-agents/triaging-feedback/` — the feedback→triage poller: turns product feedback into grounded board tickets
 
 **Extend it**
 - `writing-skills` — create and test new skills that shape agent behavior
@@ -101,12 +101,10 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 ## How the controlled track flows
 
 1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read.
-2. **using-git-worktrees** — Activates after design approval. Creates an isolated workspace on a new branch and verifies a clean test baseline.
-3. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
-4. **subagent-driven-execution** — Dispatches a fresh subagent per task, reviews at dependency frontiers, and fixes by resuming the executor.
-5. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
-6. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.
-7. **finishing-a-development-branch** — Verifies tests, presents merge/PR/keep/discard, cleans up the worktree.
+2. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
+3. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per task, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
+4. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
+5. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.
 
 These are mandatory workflows, not suggestions. The agent checks for a relevant skill before any task.
 

@@ -7,8 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-USING_SKILL="$REPO_ROOT/skills/using-git-worktrees/SKILL.md"
-FINISHING_SKILL="$REPO_ROOT/skills/finishing-a-development-branch/SKILL.md"
+WORKSPACE_REF="$REPO_ROOT/skills/subagent-driven-execution/isolated-workspace.md"
 ROTOTILL_SPEC="$REPO_ROOT/docs/doperpowers/specs/2026-04-06-worktree-rototill-design.md"
 ROTOTILL_PLAN="$REPO_ROOT/docs/doperpowers/plans/2026-04-06-worktree-rototill.md"
 
@@ -47,13 +46,10 @@ assert_not_contains() {
 echo "=== Worktree Path Policy Test ==="
 echo ""
 
-assert_not_contains "$USING_SKILL" "~/.config/doperpowers/worktrees" "using-git-worktrees does not mention old global path"
-assert_not_contains "$USING_SKILL" "global legacy" "using-git-worktrees does not use unclear global legacy shorthand"
-assert_not_contains "$USING_SKILL" "Global path" "using-git-worktrees has no global path quick-reference row"
-assert_contains "$USING_SKILL" 'default to `.worktrees/` at the project root' "using-git-worktrees defaults new manual worktrees to .worktrees/"
-
-assert_not_contains "$FINISHING_SKILL" "~/.config/doperpowers/worktrees" "finishing-a-development-branch does not treat old global path as owned"
-assert_contains "$FINISHING_SKILL" '`.worktrees/` or `worktrees/`' "finishing-a-development-branch keeps project-local cleanup ownership"
+assert_not_contains "$WORKSPACE_REF" "~/.config/doperpowers/worktrees" "isolated-workspace does not mention old global path"
+assert_not_contains "$WORKSPACE_REF" "global legacy" "isolated-workspace does not use unclear global legacy shorthand"
+assert_contains "$WORKSPACE_REF" '`git worktree add .worktrees/<branch>' "isolated-workspace defaults new manual worktrees to .worktrees/"
+assert_contains "$WORKSPACE_REF" '`.worktrees/` or `worktrees/`' "isolated-workspace keeps project-local cleanup ownership"
 
 assert_not_contains "$ROTOTILL_SPEC" "~/.config/doperpowers/worktrees" "rototill spec does not preserve old global path policy"
 assert_not_contains "$ROTOTILL_PLAN" "~/.config/doperpowers/worktrees" "rototill plan does not preserve old global path policy"

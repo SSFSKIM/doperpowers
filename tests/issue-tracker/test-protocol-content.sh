@@ -399,7 +399,7 @@ assert_not_contains "$decompose_doc" "(never dispatched; the sweeps move" \
     "the decompose reference no longer claims an epic is never dispatched at all"
 # Feedback triage never births into the architect lane (E1 lane-split plan):
 # a design-heavy item parks needs-human and the human routes it.
-TRIAGE="$REPO_ROOT/skills/triaging-feedback/references/triage-worker-protocol.md"
+TRIAGE="$REPO_ROOT/application-agents/triaging-feedback/references/triage-worker-protocol.md"
 triage="$(cat "$TRIAGE")"
 assert_contains "$triage" '이 프로토콜은 `ready-for-architect`로 티켓을 낳지 않습니다' \
     "triage protocol states it never births an architect-lane ticket"
@@ -411,7 +411,7 @@ assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the disp
 # routine runs it, not src/dispatch.ts), so the provenance fencing that
 # dispatch.ts enforces in code has to be enforced here as prose or the
 # routine-created issue fires @mention/#N from untrusted feedback text.
-TRIAGE_SKILL="$REPO_ROOT/skills/triaging-feedback/SKILL.md"
+TRIAGE_SKILL="$REPO_ROOT/application-agents/triaging-feedback/README.md"
 triage_skill="$(cat "$TRIAGE_SKILL")"
 assert_contains "$triage_skill" 'verbatim original **inside a
      code fence**, marked as untrusted data' \

@@ -1,9 +1,10 @@
----
-name: triaging-feedback
-description: Use when operating or adopting the feedback→triage loop, or when invoked as the triage worker for one feedback item (see Worker mode).
----
-
 # Triaging feedback — the feedback→triage loop
+
+An application, not a skill: a deployed poller plus the worker protocol it
+renders. It lives under `application-agents/` so the plugin's `skills/` tree
+carries only agent-invoked doctrine. Nothing here loads into a session by
+name; a harness that triages one item (Worker mode below) is pointed at this
+file by its own instructions.
 
 ## Overview
 
@@ -43,8 +44,9 @@ Full design + rationale:
 
 Everything else in this file describes *operating the poller*. If instead
 you were invoked to triage ONE feedback item yourself — e.g. a Claude cloud
-routine fired with the feedback row as payload, or any harness without the
-poller — the operator material does not apply to you. Your contract:
+routine fired with the feedback row as payload and pointed at this file, or
+any harness without the poller — the operator material does not apply to
+you. Your contract:
 
 1. **Behavior**: follow `references/triage-worker-protocol.md`, mapping its
    placeholders from the payload row — `{{FEEDBACK_ID}}`=id,
@@ -122,7 +124,7 @@ poller — the operator material does not apply to you. Your contract:
 | `src/dispatch.ts` | `dispatchRow(row, deps)` — the orchestration: idempotency check → trust resolution → board snapshot → single diagnose+author turn → registration gate + lint → **second idempotency check** (a reclaimer may have registered during the long Codex turn) → dup? comment-merge : register (+ relates edges) → writeback. `duplicate_of`/`related` are honored **only for numbers in the candidate list the dispatcher itself supplied** — an injected verdict cannot target arbitrary or closed issues, and a dup claim's worst case is "a comment instead of a ticket". Composes the final ticket body: worker-authored content + dispatcher-appended provenance block (the original inside a code fence — a blockquote would still let an `@mention` or `#N` in feedback text fire on the artifact — marked as data for user trust) |
 | `src/poll.ts` | the entry: `TRIAGE_ENABLED=false` exits **before** any config parsing (the stop switch works even with missing secrets) → `loadConfig` → `findActionable` → per-row lease-issuing `claim` + `dispatchRow` with lease-bound writeback, sequential, catch → writeback `failed` |
 | `references/triage-worker-protocol.md` | the Triage Worker Protocol — rendered (`{{PLACEHOLDERS}}`) into every turn's prompt by `src/prompt.ts` |
-| `scripts/feedback-poll.sh` | launchd entry point: loads the skill dir's `.env`, runs `npx tsx src/poll.ts` |
+| `scripts/feedback-poll.sh` | launchd entry point: loads this directory's `.env`, runs `npx tsx src/poll.ts` |
 
 ## Two-tier trust: developer feedback is instruction, user feedback is data
 
@@ -209,7 +211,7 @@ Full step-by-step in `references/setup.md`. Summary:
    to the integration branch whose snapshot the worker should diagnose
    against.
 3. Confirm `TRIAGE_BOARD_SCRIPTS_DIR` + a `TRIAGE_REPO_PATH` that resolves
-   `BOARD_REPO` to the **target repo**, not this skill's repo — tickets must
+   `BOARD_REPO` to the **target repo**, not this repo — tickets must
    file into the target's own board.
 4. One-time: `gh label create source:user-feedback`,
    `gh label create source:dev-feedback`, and
