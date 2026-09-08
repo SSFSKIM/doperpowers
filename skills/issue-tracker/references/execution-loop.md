@@ -81,7 +81,7 @@ worker re-runs the same gate; no depth machinery exists.
   one escalates via the gate's plan-need check (→ `ready-for-architect`)
   instead of self-authoring.
 
-There is no in-daemon execspec mode: work that wants a living spec with a
+There is no in-daemon living-spec mode: work that wants a living spec with a
 human at the gates is precisely `interactive-preferred`.
 
 **No live progress mirror.** Status writes happen only where a scope ends:

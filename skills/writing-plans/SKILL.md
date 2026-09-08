@@ -1,6 +1,6 @@
 ---
 name: writing-plans
-description: Use when you have a spec or requirements for a multi-step task, before touching code. Invoke this only after doperpowers:brainstorming ran and doperpowers:execspec produced that spec; never straight from a request.
+description: Use when you have a spec or requirements for a multi-step task, before touching code. Invoke this only after doperpowers:brainstorming ran and produced that spec; never straight from a request.
 ---
 
 # Writing Plans
@@ -101,7 +101,7 @@ nothing left implicit. Only its escalation route differs.
 
 ## Spike Tasks
 
-If the spec declares a prototyping milestone (doperpowers:execspec), plan it as a spike task: the deliverable is knowledge, not shipped code. State the question the spike answers, what to build and how to run it, what to observe, and the spec's promote-or-discard criteria verbatim. A spike task has no Tests slot: its Deliverable is the recorded verdict — build, run, record — routed into the spec's `## Surprises & Discoveries` or `## Decision Log` with the criteria applied: promote (follow-up tasks harden it with tests) or discard (delete the prototype code; the knowledge stays in the spec).
+If the spec declares a prototyping milestone ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)), plan it as a spike task: the deliverable is knowledge, not shipped code. State the question the spike answers, what to build and how to run it, what to observe, and the spec's promote-or-discard criteria verbatim. A spike task has no Tests slot: its Deliverable is the recorded verdict — build, run, record — routed into the spec's `## Surprises & Discoveries` or `## Decision Log` with the criteria applied: promote (follow-up tasks harden it with tests) or discard (delete the prototype code; the knowledge stays in the spec).
 
 ## Final Verification Task
 
@@ -222,7 +222,7 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 **3. Interface consistency:** Do the names and signatures later tasks Consume match what earlier tasks Produce? A function produced as `clearLayers()` in Task 3 and consumed as `clearFullLayers()` in Task 7 is a bug.
 
-**4. Spec drift:** Planning is the first hostile read of the spec. If planning revealed a spec statement that is wrong — an argument that is actually an output, an infeasible constraint, a misnamed path — fix the spec now and add a line to its `## Revision Notes` (see doperpowers:execspec). Never let the plan silently diverge from the spec. For a child of a composite spec that fix is yours only for advisory content; a wrong binding clause flows back as `[parent-impact]` (doperpowers:decomposing), and the plan carries the clause as it stands.
+**4. Spec drift:** Planning is the first hostile read of the spec. If planning revealed a spec statement that is wrong — an argument that is actually an output, an infeasible constraint, a misnamed path — fix the spec now and add a line to its `## Revision Notes` (see [../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)). Never let the plan silently diverge from the spec. For a child of a composite spec that fix is yours only for advisory content; a wrong binding clause flows back as `[parent-impact]` (doperpowers:decomposing), and the plan carries the clause as it stands.
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 

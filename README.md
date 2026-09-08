@@ -23,7 +23,7 @@ Because every skill declares when it applies, you don't invoke any of this by ha
 Both tracks enforce the same non-negotiables — design before code, tests before implementation, evidence before "done." They differ only in where the human sits.
 
 **Controlled** — for work where taste and intent matter.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec (`execspec`), breaks that into tasks an executor can own from one self-contained brief (`writing-plans`), then executes each one through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`). You approve the design; independent reviews gate the rest.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec, breaks that into tasks an executor can own from one self-contained brief (`writing-plans`), then executes each one through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`). You approve the design; independent reviews gate the rest.
 
 **Autonomous** — for work that's already well-scoped.
 A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues and gated workers pick them up and build (`issue-tracker`), a review loop lands the PRs (`qa-loops`), and the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
@@ -60,11 +60,10 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-three skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty-two skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
-- `execspec` — living design specs: decision log, rejected alternatives, retrospective
 - `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
 - `domain-modeling` — pin down the ubiquitous language, map bounded contexts, record ADRs
 - `decomposing` — carve a large goal into a tree of well-scoped tickets

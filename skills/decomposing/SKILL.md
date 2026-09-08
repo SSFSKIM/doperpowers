@@ -15,7 +15,7 @@ before handing it here; this skill DIVIDES a goal that fails the gate
 below into child goals one level down, and tends the tree as children
 land; the tracks EXECUTE the leaves. The product of one run is a **composite spec** per
 `references/composite-spec-template.md` — the same species as any
-living spec (doperpowers:execspec), not a separate document type:
+living spec ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)), not a separate document type:
 design at the center, with the roadmap topology (children, edges,
 ordering) embedded as sections. Composite carries its
 Composite-pattern sense — a composite's child can itself be a
@@ -195,7 +195,7 @@ share no design surface, so there was nothing to mature jointly; phases
    piece's purpose and acceptance grilled here.
 4. **Author the composite spec** — per `references/composite-spec-template.md`,
    born landed: v1 already carries the design and the grill's decisions,
-   with the living tail of doperpowers:execspec. For matured intake,
+   with the living tail of [../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md). For matured intake,
    extend the approved design spec in place rather than opening a
    second document.
 5. **Self-review, then the human gate** — scan for placeholders and
@@ -298,7 +298,7 @@ alive when there is no board. Children read the parent document's
 Note lands that touches an in-flight child's contract, flag that child.
 When a child's work contradicts the parent, the discovery flows back into
 the parent's Revision Notes — never silent
-divergence. This is the doperpowers:execspec discipline one level up.
+divergence. This is the living-spec discipline one level up.
 
 ## Common Mistakes
 
