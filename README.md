@@ -60,7 +60,7 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-three skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Twenty-four skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -82,6 +82,7 @@ Twenty-three skills, grouped by what they're for. Each one auto-triggers from it
 - `systematic-debugging` — four-phase root-cause process, not guess-and-check
 - `verification-before-completion` — run the check, show the output, then claim success
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
+- `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues
