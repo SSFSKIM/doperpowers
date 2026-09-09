@@ -19,7 +19,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 
 
 - [x] (2026-09-10) Milestone 1: board schema — the `in-design → in-progress` build edge, plan pin on that edge, architect slot accounting, tests. `test-board-scripts.sh` and `test-execute-dispatch.sh` both green.
-- [ ] Milestone 2: the registered agent `agents/plan-executor.md`.
+- [x] (2026-09-10) Milestone 2: the registered agent `agents/plan-executor.md`, plus its row in the `agents/` cell of CLAUDE.md's Repo map.
 - [ ] Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text.
 - [ ] Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording.
 - [ ] Milestone 5: protocol-content tests, shell lint, version bump, live mechanism check with a scratch seat.
