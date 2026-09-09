@@ -78,7 +78,6 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 
 **Keep it honest**
 - `systematic-debugging` — four-phase root-cause process, not guess-and-check
-- `verification-before-completion` — run the check, show the output, then claim success
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
@@ -105,7 +104,6 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 2. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
 3. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per task, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
 4. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
-5. **verification-before-completion** — Before anything is called done, runs the check and shows the output; evidence, not assertions.
 
 These are mandatory workflows, not suggestions. The agent checks for a relevant skill before any task.
 

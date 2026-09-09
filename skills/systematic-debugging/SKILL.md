@@ -25,8 +25,7 @@ bug looks too simple to need process. Simple bugs have root causes too.
 
 Fix at the source, not where the symptom surfaces. Before the fix, write the
 failing reproduction (doperpowers:test-driven-development); after it,
-verify the original symptom is gone, not just that the tests pass
-(doperpowers:verification-before-completion).
+verify the original symptom is gone, not just that the tests pass.
 
 ## Three strikes: question the architecture
 
