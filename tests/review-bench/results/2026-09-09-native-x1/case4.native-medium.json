@@ -1,0 +1,88 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "reviewer#1",
+      "title": "Pass remote paths without shell interpolation",
+      "comment": "Both `BACKUP_REMOTE_DIR` and the archive basename are inserted raw inside a single-quoted remote shell command. An ordinary apostrophe in either value breaks replication, while a crafted config value or label can terminate the quote and execute additional commands as the replica account; the severity is remote command execution whenever those operator-supplied values are not fully trusted. Reject unsafe values or encode them as shell-safe remote arguments instead of interpolating them into command text.",
+      "priority": "P1",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "98",
+      "sources": [
+        "reviewer"
+      ]
+    },
+    {
+      "id": "reviewer#2",
+      "title": "Parse the four-column manifest in prune.sh",
+      "comment": "This new record is passed directly to `prune.sh`, but that consumer still reads only `epoch bytes path`. Bash therefore assigns the byte count plus a tab plus the actual filename to `path`, the file-existence check fails, and every successful backup silently skips rotation, so archives accumulate indefinitely. Update the consumer to read all four fields and use the explicit label rather than recovering it from the filename.",
+      "priority": "P1",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "114",
+      "sources": [
+        "reviewer"
+      ]
+    },
+    {
+      "id": "reviewer#3",
+      "title": "Treat only force=1 as a space-check override",
+      "comment": "`snapshot.sh` defaults `FORCE` to the nonempty string `0`, so this presence test succeeds even when neither `--force` nor `BACKUP_FORCE=1` was supplied. On an undersized archive or staging filesystem, an ordinary run merely warns and proceeds instead of enforcing the advertised guard, potentially filling the filesystem. Compare the value explicitly with the enabled sentinel.",
+      "priority": "P1",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "81-83",
+      "sources": [
+        "reviewer"
+      ]
+    },
+    {
+      "id": "reviewer#4",
+      "title": "Publish remote archives via an atomic rename",
+      "comment": "The redirection creates the final remote `.tar.gz` before the transfer completes. If SSH disconnects or the remote filesystem fills mid-stream, the local run fails but a truncated archive remains under a valid final name on the replica, which can later be mistaken for a restorable backup. Stream to a unique temporary path, remove it on failure, and rename it only after the transfer succeeds.",
+      "priority": "P1",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-99",
+      "sources": [
+        "reviewer"
+      ]
+    },
+    {
+      "id": "reviewer#5",
+      "title": "Set a restrictive umask on the remote host",
+      "comment": "The local `umask 077` is not propagated through SSH, so with a typical remote umask of `022` this command creates the replica directory as `0755` and each new archive as `0644`. On a multi-user replica host, other users can therefore read backup contents that are deliberately private locally. Set a restrictive umask or explicit modes in the remote command before creating either path.",
+      "priority": "P2",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-98",
+      "sources": [
+        "reviewer"
+      ]
+    },
+    {
+      "id": "reviewer#6",
+      "title": "Clean staging directories on every exit",
+      "comment": "The previous exit trap was removed, while the new `rmdir` runs only after successful replication and publication. A tar error, failed SSH transfer, failed move, or interruption now leaves the staging directory and potentially a full-sized archive in the temporary filesystem; repeated cron failures can exhaust that filesystem. Register cleanup immediately after creating the stage and disarm it only after successful removal.",
+      "priority": "P2",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "90",
+      "sources": [
+        "reviewer"
+      ]
+    }
+  ],
+  "lenses": [],
+  "target": {
+    "base": "main",
+    "baseCommit": "84ab879b35f4e60621e3c71541aedff3b900b27c",
+    "headCommit": "e531040c3bcce457a9e52f29fa057dd5d017a76a",
+    "repo": "/tmp/native-review-smoke/case4"
+  },
+  "level": "medium",
+  "coverage": [
+    {
+      "finder": "reviewer",
+      "lens": null,
+      "status": "ok",
+      "candidates": 6
+    }
+  ],
+  "explanation": "incorrect — The new manifest is incompatible with its pruning consumer, and the default force value bypasses the advertised disk-space protection. Replication also introduces command injection, non-atomic remote publication, permissive remote files, and leaked staging archives on failure."
+}

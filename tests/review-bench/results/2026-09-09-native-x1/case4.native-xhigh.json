@@ -1,0 +1,186 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "Parse the fourth manifest field before pruning",
+      "file": "/tmp/native-review-smoke/case4/prune.sh",
+      "lines": "70",
+      "comment": "The documented producer writes label<TAB>epoch<TAB>bytes<TAB>path, but /tmp/native-review-smoke/case4/prune.sh:70 reads only three variables. The last variable receives `bytes<TAB>path`, line 73 rejects it as nonexistent, and every successful v2 snapshot silently skips rotation.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-1#2",
+      "priority": "P1",
+      "title": "Use the v2 label instead of splitting archive names",
+      "file": "/tmp/native-review-smoke/case4/prune.sh",
+      "lines": "79",
+      "comment": "Independently of the field-count defect, /tmp/native-review-smoke/case4/prune.sh:79 discards the explicit v2 label and truncates the filename at its first hyphen. Once records are parsed, a daily-prod run is treated as daily, so daily-prod and daily-test archives are pooled and retention can delete an archive from the wrong label.",
+      "sources": [
+        "scalpel-1"
+      ]
+    },
+    {
+      "id": "scalpel-1#5",
+      "priority": "P1",
+      "title": "Stop SSH option parsing before the configured destination",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97",
+      "comment": "In /tmp/native-review-smoke/case4/lib/common.sh:97, an unvalidated BACKUP_REMOTE beginning with `-` is still in SSH's option position. For example `-oProxyCommand=...` is consumed as an option and its proxy command can execute locally, rather than being treated as a destination.",
+      "sources": [
+        "scalpel-1",
+        "sweep"
+      ]
+    },
+    {
+      "id": "scalpel-2#1",
+      "priority": "P1",
+      "title": "Stage the replica before publishing its final filename",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-99",
+      "comment": "The remote redirection at /tmp/native-review-smoke/case4/lib/common.sh:98 opens the final filename before payload delivery. If SSH disconnects midway or cat fails for lack of space, the caller gets an error but the replica retains a truncated archive that looks published.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-2#4",
+      "priority": "P1",
+      "title": "Stop interpolating raw paths into the remote shell",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "98",
+      "comment": "At /tmp/native-review-smoke/case4/lib/common.sh:98, config-controlled BACKUP_REMOTE_DIR and the label-derived archive name are interpolated unescaped into a command parsed by the remote shell. An apostrophe breaks normal replication and a suffix such as `'; command; #` executes command remotely.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-2#6",
+      "priority": "P1",
+      "title": "Create remote archives with private permissions",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-98",
+      "comment": "The private local umask at /tmp/native-review-smoke/case4/lib/common.sh:14 does not propagate to the remote shell. With remote umask 022 and a traversable parent, line 98 creates the replica directory as 0755 and archive as 0644, making source-derived contents readable by other host users.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-3#3",
+      "priority": "P1",
+      "title": "Treat zero as a disabled force flag",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "81-84",
+      "comment": "In /tmp/native-review-smoke/case4/snapshot.sh:22 an ordinary run sets FORCE=0; /tmp/native-review-smoke/case4/lib/common.sh:81 tests only whether that string is nonempty. Thus every default low-space run takes the warning-and-continue branch for both archive and staging filesystems.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-3#4",
+      "priority": "P1",
+      "title": "Restore cleanup for every staging exit path",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "90",
+      "comment": "Once /tmp/native-review-smoke/case4/snapshot.sh:90 creates the staging directory, no EXIT/INT/TERM cleanup exists. A tar error, missing remote-directory setting, SSH outage, failed mv, or interruption exits before line 111 and leaves up to a full snapshot in TMPDIR; scheduled retries accumulate those files.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-3#7",
+      "priority": "P2",
+      "title": "Reserve against archive size, not allocated source blocks",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "76-82",
+      "comment": "At /tmp/native-review-smoke/case4/snapshot.sh:81, `du -sk` measures allocated blocks, not a conservative archive upper bound. A 1 GiB sparse file can report 0 KB allocated while tar/gzip still creates a nonzero archive; on a tight staging or archive filesystem the preflight passes and the write can fill the disk. Dense incompressible data can also exceed the source allocation due to archive overhead.",
+      "sources": [
+        "scalpel-3"
+      ]
+    },
+    {
+      "id": "scalpel-4#6",
+      "priority": "P2",
+      "title": "Propagate archive-enumeration failures",
+      "file": "/tmp/native-review-smoke/case4/prune.sh",
+      "lines": "52-53",
+      "comment": "At /tmp/native-review-smoke/case4/prune.sh:52, find runs in a process substitution, so its nonzero status is not part of the list_archives pipeline; prune_label is itself consumed by another process substitution at line 65. If find cannot read the archive directory or encounters an enumeration error, the script can process zero or a partial list and still return success, leaving retention unenforced or making decisions from incomplete data.",
+      "sources": [
+        "scalpel-4"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 7
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Trace the manifest-v2 contract across /tmp/native-review-smoke/case4/snapshot.sh, /tmp/native-review-smoke/case4/run-backup.sh, and /tmp/native-review-smoke/case4/prune.sh. Pay special attention to field parsing and labels containing hyphens.",
+      "status": "ok",
+      "candidates": 8
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Scrutinize /tmp/native-review-smoke/case4/lib/common.sh replication for remote-shell safety and atomic publication when SSH fails mid-stream.",
+      "status": "ok",
+      "candidates": 6
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Check staging-file cleanup and disk-space behavior on every failure path introduced by replication in /tmp/native-review-smoke/case4/snapshot.sh.",
+      "status": "ok",
+      "candidates": 7
+    },
+    {
+      "finder": "scalpel-4",
+      "lens": "Verify that the glob-to-find rewrite in /tmp/native-review-smoke/case4/prune.sh preserves retention behavior and propagates directory-enumeration failures.",
+      "status": "ok",
+      "candidates": 7
+    }
+  ],
+  "lenses": [
+    "Trace the manifest-v2 contract across /tmp/native-review-smoke/case4/snapshot.sh, /tmp/native-review-smoke/case4/run-backup.sh, and /tmp/native-review-smoke/case4/prune.sh. Pay special attention to field parsing and labels containing hyphens.",
+    "Scrutinize /tmp/native-review-smoke/case4/lib/common.sh replication for remote-shell safety and atomic publication when SSH fails mid-stream.",
+    "Check staging-file cleanup and disk-space behavior on every failure path introduced by replication in /tmp/native-review-smoke/case4/snapshot.sh.",
+    "Verify that the glob-to-find rewrite in /tmp/native-review-smoke/case4/prune.sh preserves retention behavior and propagates directory-enumeration failures."
+  ],
+  "explanation": "confirmed: Parse the fourth manifest field before pruning; Use the v2 label instead of splitting archive names; Stop SSH option parsing before the configured destination",
+  "target": {
+    "base": "main",
+    "baseCommit": "84ab879b35f4e60621e3c71541aedff3b900b27c",
+    "headCommit": "e531040c3bcce457a9e52f29fa057dd5d017a76a",
+    "repo": "/tmp/native-review-smoke/case4"
+  },
+  "level": "xhigh"
+}

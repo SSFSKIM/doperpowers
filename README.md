@@ -79,6 +79,7 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 **Keep it honest**
 - `systematic-debugging` — four-phase root-cause process, not guess-and-check
 - `verification-before-completion` — run the check, show the output, then claim success
+- `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 

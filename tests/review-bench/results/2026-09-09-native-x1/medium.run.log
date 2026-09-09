@@ -1,0 +1,14 @@
+engine=native case=case5 secs=376 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case5.native-medium.json
+case5 rc=0
+engine=native case=case2 secs=465 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case2.native-medium.json
+case2 rc=0
+engine=native case=case3 secs=480 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case3.native-medium.json
+case3 rc=0
+engine=native case=case1 secs=482 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case1.native-medium.json
+case1 rc=0
+engine=native case=case4 secs=680 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case4.native-medium.json
+case4 rc=0
+engine=native case=case5 secs=435 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case5.native-medium.json
+case5 rerun rc=0
+engine=native case=case4 secs=639 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case4.native-medium.json
+case4 rerun rc=0

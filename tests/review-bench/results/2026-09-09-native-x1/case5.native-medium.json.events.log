@@ -1,0 +1,4 @@
+Permission ask rule (/Users/new/.claude/settings.json): Write(~/.ssh/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(~/.ssh/**) instead (Edit rules cover all file-editing tools).
+Permission ask rule (/Users/new/.claude/settings.json): Write(~/.aws/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(~/.aws/**) instead (Edit rules cover all file-editing tools).
+Permission ask rule (/Users/new/.claude/settings.json): Write(~/.claude/settings.json) is not matched by file permission checks — only Edit(path) rules are. Use Edit(~/.claude/settings.json) instead (Edit rules cover all file-editing tools).
+[claude-code:unrecognized_model] {"model":"sol","query_source":"agent:custom:doperpowers:reviewer"}

@@ -1,0 +1,116 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-2#1",
+      "priority": "P1",
+      "title": "Require admin authorization on the node-wide export",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "211",
+      "comment": "The concrete cross-tenant disclosure is verified in /tmp/native-review-smoke/case3/app.py: STATIC_ROUTES matches GET /exports/all before /exports/<name>, then handle_export_all's @authenticated decorator admits tok-ana and the handler ignores session.tenant while iterating store.list_tenants(). With Acme and Globex documents present, tok-ana received both tenants' rendered contents with status 200, contrary to the admin-only contract in /tmp/native-review-smoke/case3/README.md.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-2#2",
+      "priority": "P1",
+      "title": "Return the new revision instead of the row count",
+      "file": "/tmp/native-review-smoke/case3/store.py",
+      "lines": "122",
+      "comment": "The return-value contract is broken between /tmp/native-review-smoke/case3/store.py and /tmp/native-review-smoke/case3/app.py. save_document intentionally returns len(rows), but handle_put_document still labels that value revision and builds the ETag from it. A two-row initial write persisted revision 1 but returned revision 2/W/\"2\"; a subsequent write with expected_revision=2 then failed with 409 even though the client reused the successful response token.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-4#2",
+      "priority": "P1",
+      "title": "Bound or stream the node-wide export",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "224-230",
+      "comment": "The unbounded-memory failure is concrete in /tmp/native-review-smoke/case3/app.py: handle_export_all renders every document and retains every resulting content string in exports before returning. Neither document size/count nor export size is bounded in /tmp/native-review-smoke/case3/store.py or the API, so a node whose rendered corpus exceeds available process memory causes this warehouse export to raise MemoryError or be OOM-killed instead of producing a response; its synchronous traversal also occupies the service's sole request slot for the full corpus. The repository contains no response serializer, so the additional serialization allocation is not needed to establish the defect.",
+      "sources": [
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-4#4",
+      "priority": "P2",
+      "title": "Use an exclusive end index for page slices",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "103",
+      "comment": "In /tmp/native-review-smoke/case3/app.py, last = first + limit is the exclusive slice boundary, but names[first:last + 1] includes one additional name. An exercised limit=2 request returned three documents, adjacent pages overlapped at index 2, and limit=200 can consequently return 201 documents despite MAX_PAGE_SIZE=200.",
+      "sources": [
+        "scalpel-4",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2"
+      ]
+    },
+    {
+      "id": "scalpel-4#5",
+      "priority": "P2",
+      "title": "Do not clamp valid page numbers to 10,000",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "94",
+      "comment": "The page upper bound in /tmp/native-review-smoke/case3/app.py is undocumented and changes a valid page rather than rejecting it: page=10001 is reported as page 10000. With more than 10,000 names and limit=1, page 10001 repeats page 10000's slice, and documents beyond the clamped slice cannot be reached while continuing with that page size; /tmp/native-review-smoke/case3/README.md says only that page is 1-based and that limit is capped.",
+      "sources": [
+        "scalpel-4",
+        "scalpel-1"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Check the revision and return-value contract between /tmp/native-review-smoke/case3/store.py and /tmp/native-review-smoke/case3/app.py. Ensure conditional writes still report the actual persisted revision and ETag.",
+      "status": "ok",
+      "candidates": 4
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Scrutinize authorization and route precedence for the new export endpoints in /tmp/native-review-smoke/case3/app.py. In particular, verify that the node-wide export cannot be reached by an ordinary authenticated tenant.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Check pagination boundaries and response metadata for document listing in /tmp/native-review-smoke/case3/app.py. Exercise first, full, partial, and out-of-range pages.",
+      "status": "dead",
+      "candidates": 0
+    },
+    {
+      "finder": "scalpel-4",
+      "lens": "Assess the memory, CPU, and response-size behavior of the node-wide export in /tmp/native-review-smoke/case3/app.py. It eagerly loads and renders every tenant's documents into one response.",
+      "status": "ok",
+      "candidates": 5
+    }
+  ],
+  "lenses": [
+    "Check the revision and return-value contract between /tmp/native-review-smoke/case3/store.py and /tmp/native-review-smoke/case3/app.py. Ensure conditional writes still report the actual persisted revision and ETag.",
+    "Scrutinize authorization and route precedence for the new export endpoints in /tmp/native-review-smoke/case3/app.py. In particular, verify that the node-wide export cannot be reached by an ordinary authenticated tenant.",
+    "Check pagination boundaries and response metadata for document listing in /tmp/native-review-smoke/case3/app.py. Exercise first, full, partial, and out-of-range pages.",
+    "Assess the memory, CPU, and response-size behavior of the node-wide export in /tmp/native-review-smoke/case3/app.py. It eagerly loads and renders every tenant's documents into one response."
+  ],
+  "explanation": "confirmed: Require admin authorization on the node-wide export; Return the new revision instead of the row count; Bound or stream the node-wide export; coverage partial: scalpel-3",
+  "target": {
+    "base": "main",
+    "baseCommit": "8e5cb4785b5c0fdf603de5cdd20325ced83d672b",
+    "headCommit": "e6eef6d164499a4ed33fa125d419e3b4d4f22339",
+    "repo": "/tmp/native-review-smoke/case3"
+  },
+  "level": "xhigh"
+}

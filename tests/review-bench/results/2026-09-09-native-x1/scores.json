@@ -1,0 +1,209 @@
+{
+  "run_id": "2026-09-09-native-x1",
+  "engine": {
+    "name": "doperpowers:review-code (Claude-native lane, GPT via the local gateway)",
+    "invocation": "skills/review-code/workflows/code-review.js through the harness Workflow tool, run from an interactive session against materialized scratch repos (repo arg) \u2014 the headless -p path killed ~half its runs (see notes.md)",
+    "ladder": {
+      "medium": "one reviewer-agent, sol/xhigh",
+      "xhigh": "panel: deriver sol/high, finders sol/xhigh (sweep + up to 5 derived scalpels), verifier sol/xhigh",
+      "max": "panel: deriver sol/xhigh, finders astra/high, verifier astra/high (cases 3 and 4 only)"
+    },
+    "agent_body": "agents/reviewer-*.md (codex rubric + margin lessons); in-session agent name 'reviewer' (a copy in ~/.claude/agents while the plugin build was not yet installed)",
+    "date": "2026-09-09"
+  },
+  "baseline": {
+    "run_id": "2026-07-26-c2-codex-r3",
+    "engine": "single codex review through review-engine.sh, gpt-5.6-sol xhigh",
+    "seeded": {
+      "recall": 17,
+      "fp": 0
+    },
+    "promoted": 3,
+    "also": {
+      "run_id": "2026-08-03-panel-x1",
+      "engine": "codex review panel (workflow verb), sol/xhigh finders, sol/high verifier",
+      "seeded": {
+        "recall": 17,
+        "fp": 1
+      },
+      "promoted": 3
+    }
+  },
+  "bar": {
+    "rule": "seeded recall >= baseline seeded recall AND total seeded-set FP <= baseline FP + 1",
+    "required": "recall >= 17 and FP <= 1"
+  },
+  "totals": {
+    "medium": {
+      "seeded": {
+        "denominator": 17,
+        "recall": 17,
+        "fp": 0
+      },
+      "promoted": {
+        "denominator": 3,
+        "recall": 3
+      },
+      "full_denominator": "20/20",
+      "verdict": "PASS \u2014 equals the codex baseline exactly"
+    },
+    "xhigh": {
+      "seeded": {
+        "denominator": 17,
+        "recall": 17,
+        "fp": 2
+      },
+      "promoted": {
+        "denominator": 3,
+        "recall": 3
+      },
+      "full_denominator": "20/20",
+      "verdict": "FAIL by one FP \u2014 recall equal, FP 2 vs allowed 1; both FPs are intent-documented design choices the verifier confirmed (case3 export bound \u2014 the same FP the codex panel made; case4 du -sk reservation, bait 4)"
+    },
+    "max (cases 3+4)": {
+      "seeded": {
+        "denominator": 7,
+        "recall": 7
+      },
+      "promoted": {
+        "denominator": 2,
+        "recall": 2
+      },
+      "fp": 0,
+      "verdict": "exactly the truth set on both cases where xhigh produced its two FPs; no extra candidates raised at all"
+    }
+  },
+  "per_case": {
+    "case1": {
+      "medium": {
+        "secs": 482,
+        "seeded": "3/3",
+        "fp": 0
+      },
+      "xhigh": {
+        "secs": 564,
+        "workers": 6,
+        "lenses": 3,
+        "coverage": "4/4 ok",
+        "pool": 14,
+        "published": 5,
+        "seeded": "3/3",
+        "fp": 0,
+        "unseeded": [
+          "tenants.py max_value validation/NaN (prior-adjudicated genuine, panel-x1)",
+          "tenants.py explicit-null entry conflated with absence (same module/class)"
+        ]
+      }
+    },
+    "case2": {
+      "medium": {
+        "secs": 465,
+        "seeded": "3/3",
+        "fp": 0
+      },
+      "xhigh": {
+        "secs": 571,
+        "workers": 6,
+        "lenses": 3,
+        "coverage": "4/4 ok",
+        "pool": 9,
+        "published": 3,
+        "seeded": "3/3",
+        "fp": 0
+      }
+    },
+    "case3": {
+      "medium": {
+        "secs": 480,
+        "seeded": "3/3",
+        "fp": 0
+      },
+      "xhigh": {
+        "secs": 1094,
+        "workers": 9,
+        "lenses": 4,
+        "coverage": "4/5 ok (scalpel-3 died twice: gateway stream ended)",
+        "pool": 15,
+        "published": 5,
+        "seeded": "3/3",
+        "fp": 1,
+        "fp_detail": "Bound or stream the node-wide export (app.py:224-230) \u2014 fixture-stated feature; the codex panel's FP too",
+        "unseeded": [
+          "page clamp to 10000 (app.py:94) \u2014 introduced, undocumented, minor"
+        ]
+      },
+      "max": {
+        "secs": 233,
+        "workers": 7,
+        "lenses": 4,
+        "coverage": "5/5 ok",
+        "pool": 15,
+        "published": 3,
+        "seeded": "3/3",
+        "fp": 0,
+        "note": "the export-bound and page-clamp candidates were never raised by the astra finders"
+      }
+    },
+    "case4": {
+      "medium": {
+        "secs": 671,
+        "seeded": "4/4",
+        "promoted": "2/2",
+        "fp": 0
+      },
+      "xhigh": {
+        "secs": 9064,
+        "workers": 9,
+        "lenses": 4,
+        "coverage": "5/5 ok (verifier died once; repair round bound)",
+        "pool": 35,
+        "published": 10,
+        "seeded": "4/4",
+        "promoted": "2/2",
+        "fp": 1,
+        "fp_detail": "Reserve against archive size, not allocated source blocks (snapshot.sh:76-82) \u2014 bait 4, du -sk over-reservation is deliberate",
+        "unseeded": [
+          "prune label truncated at first hyphen (prune.sh:79) \u2014 prior-adjudicated genuine class, panel-x1",
+          "BACKUP_REMOTE beginning with '-' parsed as an ssh option (common.sh:97) \u2014 plausible, operator-controlled",
+          "find errors in process substitution not propagated (prune.sh:52) \u2014 minor"
+        ]
+      },
+      "max": {
+        "secs": 390,
+        "workers": 8,
+        "lenses": 5,
+        "coverage": "6/6 ok",
+        "pool": 32,
+        "published": 6,
+        "seeded": "4/4",
+        "promoted": "2/2",
+        "fp": 0,
+        "note": "the du -sk candidate was never raised; the label-truncation candidate was folded into the manifest finding as pre-existing"
+      }
+    },
+    "case5": {
+      "medium": {
+        "secs": 435,
+        "seeded": "4/4",
+        "promoted": "1/1",
+        "fp": 0
+      },
+      "xhigh": {
+        "secs": 1662,
+        "workers": 9,
+        "lenses": 4,
+        "coverage": "5/5 ok (verifier died once; repair round bound)",
+        "pool": 26,
+        "published": 6,
+        "seeded": "4/4",
+        "promoted": "1/1",
+        "fp": 0,
+        "unseeded": [
+          "keylock ref leak on CancelledError during timed acquire (keylock.py:49-54) \u2014 introduced, real, P2"
+        ]
+      }
+    }
+  },
+  "adjudication_rules": "X1 README: mechanism match against truth.json; a flagged bait is an FP by construction; a genuine unseeded defect is credited to neither side and excluded from FP. Strict reading (every non-truth finding an FP): medium 0, xhigh 8.",
+  "notes": "notes.md"
+}
