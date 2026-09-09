@@ -5,32 +5,44 @@ description: "Use when starting any creative work — creating features, buildin
 
 # Brainstorming Ideas Into Designs
 
-Help turn ideas into fully formed designs and specs through natural collaborative dialogue: understand the project, grill the idea in batched rounds until nothing is silently assumed, then present the design at a depth proportionate to the work.
+Help turn ideas into fully formed designs and specs through natural collaborative dialogue: understand the project, explore what the idea should be and grill it in batched rounds until nothing is silently assumed, then present the design at a depth proportionate to the work.
 
 One gate governs the whole skill: implementation waits when it would commit an unapproved product, taste, or substantive design decision — present those decisions in the design and get your human partner's approval first. When the work is already authorized and well-scoped, and the remaining choices are technical or mechanical consequences of that scope, state the brief design and proceed without another design or track approval. Simple projects still get proportionate design thought; three sentences may be enough to expose an assumption before work.
 
 ## The path
 
 1. Explore project context — files, docs, recent commits — and assess scope
-2. Grill
-3. Choose and state the track
-4. Present the design
-5. Write the spec
-6. Self-review the spec
-7. Independent spec review
-8. Hand off to doperpowers:writing-plans
+2. Explore the purpose
+3. Grill
+4. Choose and state the track
+5. Present the design
+6. Write the spec
+7. Self-review the spec
+8. Independent spec review
+9. Hand off to doperpowers:writing-plans
 
-The controlled track runs all eight. The autonomous track leaves after step 3 for doperpowers:execplan; the direct track leaves after step 4 and implements in this session (doperpowers:test-driven-development still applies to testable logic). A goal too big for one agent to reliably own as one unit — doperpowers:decomposing's gate — leaves for that skill instead: at step 1 when its pieces are an uncoupled bundle, at step 8 in place of writing-plans when they are coupled. Scope below says which.
+The controlled track runs all nine. The autonomous track leaves after step 4 for doperpowers:execplan; the direct track leaves after step 5 and implements in this session (doperpowers:test-driven-development still applies to testable logic). A goal too big for one agent to reliably own as one unit — doperpowers:decomposing's gate — leaves for that skill instead: at step 1 when its pieces are an uncoupled bundle, at step 9 in place of writing-plans when they are coupled. Scope below says which.
 
 ## Scope and context
 
 Explore the project state first, then assess scope and coupling before detailed questions. This skill defines and matures one goal at a time, whatever its size; what decides when an oversized goal hands over to doperpowers:decomposing is whether its pieces share a design surface. Pieces that don't interact — no shared data, contracts, or decisions that need the whole in view (e.g. "a platform with chat, file storage, billing, and analytics" as four freestanding products) — are a bundle, not a whole: route to decomposing now, since joint maturation would generate nothing, and each child returns through this skill later. Pieces that do interact are the reason to design before dividing: the interaction surface — shared models, contract shapes, decisions that come out differently with everything in view — is generated in this session or never. Run the full grill and design pass on the whole, and hand the matured design to decomposing, which derives the cut from it. State the route; ask for confirmation only when it carries a decision under the gate.
 
-A goal that arrives as a child of a composite spec carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design, and the composite's approval already covers it. Grill only the residue, against the code, and present only the residue; expand the child's section in place instead of writing a spec of its own, recording residue decisions in the parent's Decision Log under the child's id. Its section's track hint names its exit — state it and apply the gate as for any other track — and that track's own review covers the residue, so step 7 is skipped. A residue design that trips decomposing's split signals means the child is itself a composite: route it there.
+A goal that arrives as a child of a composite spec carries its section — purpose, acceptance, edges, contracts, graded design inheritance — as pre-landed design, and the composite's approval already covers it. Grill only the residue, against the code, and present only the residue; expand the child's section in place instead of writing a spec of its own, recording residue decisions in the parent's Decision Log under the child's id. Its section's track hint names its exit — state it and apply the gate as for any other track — and that track's own review covers the residue, so step 8 is skipped. A residue design that trips decomposing's split signals means the child is itself a composite: route it there.
+
+## Exploring the purpose
+
+The grill works the decisions the initiative already poses; this is its sibling, run first and kept open beside it: exploring what the initiative should even be. How good the result can be is set by how far its purpose has been developed, and clarity is not the measure — a purpose can look clear and be narrow, its framing already closing off better versions nobody has named. What the design reaches for is the best possible manifestation of the initiative's intent and of the higher purpose it serves, explored downward into a system of goals and conditions rich enough that one result is right and the generic ones are wrong. Four questions carry the exploration, asked in the first round before any mechanism and kept open as the grill's answers reveal more:
+
+- **What higher purpose it serves** — the project or way of working the initiative is in service of, discovered with its nuances first, since everything derived below inherits only the nuance it has.
+- **What precisely it is for** — the intent behind the framing, discovered and sharpened rather than taken as given; the exploration may change what it should be.
+- **What its best possible manifestation would look like** — the picture of it working at its best, and what you and your partner should want given that purpose, not only what was first said.
+- **What it must not be** — the constraints and taste that make the result specific instead of generic, derived from the higher purpose and drawn from real-world context only your partner holds.
+
+On an ambitious or open initiative most of this is latent — held by your human partner but unspoken, not yet clear even to them, or not yet thought of by anyone — and the more degrees of freedom the initiative has, the larger this space and the easier it is to declare it explored while most of it is untouched. It is carved between you, finished on neither side alone: contemplate from the higher purpose yourself and propose what you find, bring in research or another perspective, and above all interview your partner relentlessly for what only they hold. Much of that is taste they cannot state in the abstract, so put concrete things in front of them — a scene of it in use, alternatives that differ in what they treat as central — read the criterion out of their reaction, and propose again; options exist to reveal what matters, not to confine the answer to them. You drive the exploration; their judgment is for the calls that turn on taste and real-world context, and technical sophistication is yours to supply.
 
 ## The grill
 
-Interview relentlessly about every aspect of the initiative until you and your human partner share one understanding. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and work the tree in batched rounds. The frontier is every decision whose prerequisites are settled: the questions you can ask now without guessing at answers you haven't heard. Ask the whole frontier in one round; each round's answers reshape the tree and push the frontier outward, and a question that depends on another still open this round waits for the next. The grill is done when the frontier is empty — every branch visited, nothing silently assumed.
+Interview relentlessly about every aspect of the initiative until you and your human partner share one understanding. Map the initiative as a design tree — every decision branches into the decisions that hang off it — and work the tree in batched rounds. The frontier is every decision whose prerequisites are settled: the questions you can ask now without guessing at answers you haven't heard. Ask the whole frontier in one round; each round's answers reshape the tree and push the frontier outward, and a question that depends on another still open this round waits for the next. An empty frontier ends a round, not the grill.
 
 Deliver each round by fit: clear multiple-choice questions ride AskUserQuestion, several at once; open but bounded questions go as prose inline. In a non-interactive context (a board ticket, a relay comment) the whole round is one numbered message.
 
@@ -42,7 +54,7 @@ Three moves to use throughout:
 - **Stress-test with concrete scenarios** — invent scenarios that probe edge cases and force precision about the boundaries between concepts.
 - **Cross-reference with code** — when your human partner states how something works, check whether the code agrees; surface contradictions.
 
-Grill what is fuzzy or important; don't grind an already-clear request to death. Depth has a stopping point, not a size limit: the design is mature when the remaining unknowns are empirical — answerable only by a spike, by implementation contact, or by watching the thing run — and no longer architectural. Answer everything the assembled picture can answer, and name the empirical residue in the design as delegated unknowns rather than leaving it implicit.
+Grill what is fuzzy or important; don't grind an already-clear request to death. Depth has a stopping point, not a size limit. The grill is done when the purpose and the system of goals and conditions under it are mature enough to justify the choices being made now, every branch has been visited with nothing silently assumed, and the remaining unknowns are empirical — answerable only by a spike, by implementation contact, or by watching the thing run — and no longer architectural. Answer everything the assembled picture can answer, and name the empirical residue in the design as delegated unknowns, each with the move that will resolve it — a spike, research, a prototype looked at together — rather than leaving it implicit.
 
 A fork that turns on a decision under the gate is a grill question, not presentation material: put it to your human partner when it surfaces, with your recommendation. A fork among technical or mechanical means within authorized scope is yours — choose the best fit and record it as a silent decision. By presentation time the human-owned forks the grill could see are settled; only those that first emerge while composing the full design survive to the presentation.
 
