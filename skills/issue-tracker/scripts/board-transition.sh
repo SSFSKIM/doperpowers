@@ -215,8 +215,13 @@ print(row["state"] if row else "")
 PY
 )" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
     [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the handoff edge cannot be checked"
-    { [ "$_cur" = in-design ] && [ "$to" = ready-for-implementer ]; } \
-      || die "--plan rides the Architect handoff edge (in-design → ready-for-implementer) only (#$tid is $_cur → $to)"
+    { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
+      || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
+    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
+    # names no revision, so a build edge carrying it would leave the review loop
+    # with nothing to audit against.
+    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ]; } \
+      || die "--plan pre-spec is the down-shortcircuit — it rides in-design → ready-for-implementer; the build edge (in-design → in-progress) needs a real <path>@<sha> pin"
     if [ "$plan" != pre-spec ]; then
       # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
       #    or a short sha that can move under the worker.
@@ -312,6 +317,18 @@ if cur == "in-design" and to in ("done", "in-review", "wontfix"):
               "verdict edges belong to recomposition (every child terminal). "
               "A reconciliation claim releases the epic instead: needs-info "
               "\"reconciled: ... — waiting on children\"" % (tid, to))
+# The build edge: in-design → in-progress keeps the binding with the Architect,
+# which executes its own plan through a doperpowers:plan-executor subagent
+# instead of handing the ticket to the implement queue. Epics never build (they
+# recompose), and a build with no pin is an Architect skipping the artifact the
+# review loop audits against and a recovery Executor fetches.
+if cur == "in-design" and to == "in-progress":
+    if tid in B.epics(tickets):
+        B.die("in-design → in-progress is the build edge — #%s is an epic; "
+              "epics recompose, they never build" % tid)
+    if not env["T_PLAN"]:
+        B.die("the build edge needs --plan <path>@<sha>: the Architect pins "
+              "the plan before executing it")
 if to == cur:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))
@@ -417,9 +434,17 @@ if env["T_PLAN"]:
     # return from needs-info/needs-human/interactive-preferred/deferred)
     # would otherwise mint one too — and there is no legitimate re-supply
     # case, since plan meta survives park round-trips untouched.
-    if cur != "in-design" or to != "ready-for-implementer":
-        B.die("--plan rides the Architect handoff edge (in-design → "
-              "ready-for-implementer) only")
+    if cur != "in-design" or to not in ("ready-for-implementer", "in-progress"):
+        B.die("--plan rides the Architect edges out of in-design only "
+              "(in-design → ready-for-implementer for a handoff, "
+              "in-design → in-progress for a build)")
+    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
+    # names no revision, so a build edge carrying it would leave the review loop
+    # with nothing to audit against.
+    if to == "in-progress" and env["T_PLAN"] == "pre-spec":
+        B.die("--plan pre-spec is the down-shortcircuit — it rides in-design → "
+              "ready-for-implementer; the build edge (in-design → in-progress) "
+              "needs a real <path>@<sha> pin")
     if env["T_PLAN"] != "pre-spec":
         if not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
             B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")

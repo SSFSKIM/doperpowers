@@ -45,6 +45,7 @@ NOTE_REQUIRED = ("needs-human", "needs-info", "interactive-preferred", "wontfix"
 # the state-keyed NOTE_REQUIRED cannot express them.
 EDGE_NOTE_REQUIRED = {
     ("in-design", "ready-for-implementer"),
+    ("in-design", "in-progress"),
     ("ready-for-implementer", "ready-for-architect"),
     ("in-progress", "ready-for-architect"),
     ("in-review", "ready-for-architect"),
@@ -52,7 +53,8 @@ EDGE_NOTE_REQUIRED = {
 # Convergence-counted escalation edges: a SECOND traversal of the same
 # edge on one ticket converts to a needs-human park (board-transition
 # enforces; count resets at the last [answers] comment).
-CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer")}
+CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer"),
+                                          ("in-design", "in-progress")}
 # Park-return targets (E1 transition 7): written into pre-park: meta at
 # needs-human park time; board-answer returns the ticket there. Always an
 # IN-FLIGHT state — returning to a dispatchable queue would race the sweep
@@ -95,10 +97,13 @@ LEGAL = {
     "ready-for-architect":   {"in-design", "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},
     # in-design: the Architect's in-flight state. Exit = transition 2/3
-    # (plan handoff / down-shortcircuit / decompose-epic) or a park.
+    # (plan handoff / down-shortcircuit / decompose-epic), the build edge
+    # (in-progress, leaf only, real plan pin required — the Architect keeps
+    # the binding and executes through doperpowers:plan-executor), or a park.
     # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
     # terminal-authority exception; board-transition enforces the guard).
-    "in-design":             {"ready-for-implementer", "needs-info",
+    "in-design":             {"ready-for-implementer", "in-progress",
+                              "needs-info",
                               "needs-human", "interactive-preferred",
                               "wontfix", "deferred", "done", "in-review"},
     "ready-for-implementer": {"in-progress", "ready-for-architect",

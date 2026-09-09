@@ -18,7 +18,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 ## Progress
 
 
-- [ ] Milestone 1: board schema — the `in-design → in-progress` build edge, plan pin on that edge, architect slot accounting, tests.
+- [x] (2026-09-10) Milestone 1: board schema — the `in-design → in-progress` build edge, plan pin on that edge, architect slot accounting, tests. `test-board-scripts.sh` and `test-execute-dispatch.sh` both green.
 - [ ] Milestone 2: the registered agent `agents/plan-executor.md`.
 - [ ] Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text.
 - [ ] Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording.
@@ -33,6 +33,10 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
   Evidence (2026-09-10, probe seat `sminos-probe/probe-idle`, session `c2dd43a0`): `sminos reply probe-idle` printed `DISPATCHED` (the turn had ended) while `claude agents --json` printed `{'id': 'c2dd43a0', 'status': 'busy', 'state': 'working'}` and `sminos list` printed `LIVE busy`. This is what makes the fold safe against the sweep's RECOVER pass, which resumes an `idle` worker bound to an `in-progress` ticket on the assumption it "finished without a board transition" (`skills/issue-tracker/scripts/board-sweep.sh`, `pass_recover`). A building Architect is never idle in the harness's eyes.
 - Observation: a subagent can itself dispatch a subagent, and the grandchild can be continued with `SendMessage` from inside the child.
   Evidence (2026-09-10): a general-purpose sonnet subagent reported `agent_tool_available: yes`, `nested_dispatch: ok`, `nested_reply: PONG`, `resume_via_sendmessage: ok (PONG2)`. Depth-2 fan-out (Architect → plan-executor → task executors and reviewers) is therefore available.
+- Observation (implementation, M1): widening the architect lane's state tuple alone broke two existing dispatch assertions, because `_slots_used` deliberately falls back to STATE ALONE for a meta carrying no `role` field (a pre-role-write meta). Once `in-progress` is shared by both lanes, that fallback charges one roleless worker to BOTH caps: the fixture's roleless `4-mid-flight-work` meta on an in-progress ticket started occupying the single architect slot and suppressed the unrelated architect dispatch.
+  Evidence: `[FAIL] a pre-existing working implement meta occupies its lane's slot … expected to find: 2 / in: 1`. Fixed by making the architect lane require an explicit `ARCHITECT` role on `in-progress` only (every other architect state keeps the roleless fallback); a roleless meta there stays in the implement lane, where it has always been. Both assertions pass again.
+- Observation (implementation, M3): three assertions in `tests/issue-tracker/test-protocol-content.sh` had to move with the prose, not just be added to. Two of them the plan anticipated in spirit but scheduled as "pre-existing assertions still pass" for M3: `assert_contains "$arch" "Ends at the plan"` is the exact string the new Role paragraph deletes, and `"a cattle clone fetches the plan's sha from"` is the sentence the verbatim Build section replaces. The third was ALREADY FAILING on `main` before any edit here: it asserts the architect protocol names `doperpowers:codex-companion's \`adversarial-review\` verb`, but both the protocol and `skills/writing-plans/SKILL.md` name the `doperpowers:adversarial-reviewer` agent — the codex verb was retired and the test kept the stale name.
+  Evidence: `git stash && tests/issue-tracker/test-protocol-content.sh` → `1 test(s) FAILED`, that assertion alone. Re-pointed at the live mechanism, which is what the assertion's own description asks for ("by its real mechanism").
 
 
 ## Decision Log
@@ -59,6 +63,12 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - Decision: subagents still never write the board; the plan-executor opens the pull request and returns its URL and residue list, and the Architect makes the board writes (follow-up registration, `in-review --pr`).
   Rationale: one writer per ticket keeps the fence semantics (`board-transition` refuses a mid-turn write from any session but the bound one) and keeps the executor free of board credentials.
   Date/Author: 2026-09-10 / design session.
+- Decision: on the now-shared `in-progress` state the architect lane counts only metas whose persisted `role` is literally `ARCHITECT`; the roleless-meta fallback to state alone is kept everywhere else.
+  Rationale: the plan says the architect lane counts "an ARCHITECT-role worker" on in-progress, and the implement lane keeps its role filter. The existing fallback (a meta with no role charges whichever lane its ticket's state names) predates the two lanes sharing a state; left alone it double-charges one worker. Narrowing it to the shared state only is the smallest edit that satisfies the plan's stated accounting without weakening the fallback where it still disambiguates.
+  Date/Author: 2026-09-10 / implementing session.
+- Decision: the wrong-edge `--plan` refusal reads `--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build)` — each destination spelled with its source state rather than as a bare arrow.
+  Rationale: the plan gives the message text AND requires the substring `in-design → ready-for-implementer` to survive for the existing assertion at `tests/issue-tracker/test-board-scripts.sh`. The plan's literal wording (`→ ready-for-implementer for a handoff`) does not contain it; repeating the source state in each clause satisfies both and reads no worse.
+  Date/Author: 2026-09-10 / implementing session.
 
 
 ## Outcomes & Retrospective

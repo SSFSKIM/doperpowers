@@ -29,7 +29,9 @@
 #                   review-pr-*/land-pr-* workers never count against it
 #   ARCHITECT_MAX_CONCURRENT  architect-lane slot cap (default 1) — the
 #                   Fable-spend lever; counted over ready-for-architect/
-#                   in-design bound metas, separate from the implement cap
+#                   in-design/in-progress bound metas while an ARCHITECT holds
+#                   the binding (an Architect now builds its own plan),
+#                   separate from the implement cap
 #   ARCHITECT_MODEL model pin for the architect route (default fable);
 #                   the architect dispatch IGNORES engine:* labels and
 #                   WORKER_ENGINE — plan authorship is never label-routed
@@ -698,8 +700,13 @@ PY
 
 # Occupied slots for one lane: bound metas in an active status whose
 # ticket is still in that lane's active states. The architect lane's
-# states are (ready-for-architect, in-design); the execution lane's are
-# (ready-for-implementer, in-progress). A stale `working` meta on any
+# states are (ready-for-architect, in-design, in-progress) — an Architect
+# now executes its own plan through a plan-executor subagent and keeps the
+# binding through the build, so the frontier slot it meters spans design
+# plus build; the execution lane's are (ready-for-implementer, in-progress).
+# The role filter is what keeps the two apart on the shared state: an
+# Architect's in-progress ticket never occupies an implement slot.
+# A stale `working` meta on any
 # other state never eats a slot — that worker's scope ended when the
 # ticket moved on (binding release IS this accounting).
 _slots_used() {  # <architect|implement>
@@ -709,7 +716,7 @@ sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
 LANE = os.environ["LANE"]
-lane = {"architect": ("ready-for-architect", "in-design"),
+lane = {"architect": ("ready-for-architect", "in-design", "in-progress"),
         "implement": ("ready-for-implementer", "in-progress")}[LANE]
 ROLES = {"architect": ("ARCHITECT",), "implement": ("IMPLEMENT", "SPIKE")}[LANE]
 used = 0
@@ -749,6 +756,15 @@ for p in glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json")):
     # counting a worker that is genuinely in-lane.
     role = str(m.get("role") or "")
     if role and role not in ROLES:
+        continue
+    # ...with one exception, and it is the reason that fallback needs one:
+    # in-progress is now SHARED by the two lanes (an Architect executes its
+    # own plan there), so state alone no longer says which lane a roleless
+    # meta belongs to and it would charge both caps at once. On that state
+    # the architect lane needs the role said out loud; a roleless meta stays
+    # where it has always been, the implement lane.
+    if not role and LANE == "architect" \
+       and tickets.get(tk, {}).get("state") == "in-progress":
         continue
     used += 1
 print(used)

@@ -472,6 +472,58 @@ PY
 : > "$SPAWN_LOG"
 out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
 assert_contains "$out" "architect cap reached" "an ARCHITECT-role worker on a ready-for-architect ticket still occupies the slot"
+
+# ...and it keeps charging the architect lane through the BUILD. An Architect
+# that takes the in-design → in-progress edge executes its own plan through a
+# doperpowers:plan-executor subagent and holds the binding until in-review —
+# exactly the frontier spend ARCHITECT_MAX_CONCURRENT meters.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:in-progress", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):                     # #9 got dispatched just above
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) == "9":
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+PY
+: > "$SPAWN_LOG"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_contains "$out" "architect cap reached" "an ARCHITECT-role worker on an in-progress ticket occupies the architect slot through the build"
+# ...and never the implement one: the role filter is the only thing keeping the
+# two lanes apart now that they share the in-progress state.
+python3 - <<'PY'
+import json, os
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) in ("1", "9"):
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+PY
+: > "$SPAWN_LOG"
+out="$(IMPLEMENT_MAX_CONCURRENT=1 run 1)"
+assert_contains "$out" "dispatched #1" "a building Architect charges no implement slot"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:ready-for-architect", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) == "1":
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+PY
 python3 - <<'PY'
 import json, os
 os.remove(os.path.join(os.environ["DAEMON_HOME"],
