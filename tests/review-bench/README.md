@@ -25,7 +25,7 @@ Built by C1 (doperpowers#28); consumed by C2 (#29) and C4 (#31).
 One case, one engine (from anywhere; scratch repos are ephemeral):
 
     tests/review-bench/run-case.sh --case cases/seeded/case1 \
-        --engine codex|argus --out results/<run-id>/case1.<engine>.txt
+        --engine codex|argus|native|native-panel --out results/<run-id>/case1.<engine>.txt
 
 Both engines review the identical committed `bench-change` branch
 against `main` in a materialized scratch repo. The codex engine runs
@@ -34,7 +34,16 @@ through the loop's own `review-engine.sh` (env `CODEX_REVIEW_MODEL`,
 argus engine ALWAYS runs through the headless invocation path (`claude
 -p` slash invocation, `--permission-mode auto` — the C1.G3 probe
 mechanism), because that is the context C4 deploys; benching argus
-interactively would measure the wrong thing.
+interactively would measure the wrong thing. The `native` and `native-panel`
+engines are doperpowers:review-code's `workflows/code-review.js`
+(registered reviewer agents on GPT through the local gateway) run through
+the harness's Workflow tool by a headless session at `NATIVE_LEVEL` (medium
+and xhigh by default). Headless orchestration proved unreliable — a `-p`
+session that speaks before the workflow's completion notification kills the
+run — so the scored 2026-09-09 native run used `--engine materialize`, which
+keeps the scratch repo and prints its pin for an interactive session to run
+the workflow itself (`repo` arg) and save the result JSON as the findings
+file.
 
 ## Scoring
 

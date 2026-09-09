@@ -1,0 +1,86 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "Use an inclusive comparison for tier boundaries",
+      "file": "/tmp/native-review-smoke/case2/rates.ts",
+      "lines": "42",
+      "comment": "The strict predicate in `/tmp/native-review-smoke/case2/rates.ts:42` contradicts the documented inclusive `maxKg` contract. Exact weights 1, 5, and 20 kg select the following tier; for example, domestic 1 kg is computed from the second tier as 495 cents rather than 370 cents.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3"
+      ]
+    },
+    {
+      "id": "scalpel-2#2",
+      "priority": "P1",
+      "title": "Restore positive, finite weight validation",
+      "file": "/tmp/native-review-smoke/case2/quote.ts",
+      "lines": "82-83",
+      "comment": "The former positive-finite check in `quoteShipment` was removed, but `/tmp/native-review-smoke/case2/api.ts:25-29` still validates only `typeof weightKg === \"number\"`. Therefore both `quoteShipment({zone: \"domestic\", weightKg: 0})` and `handleQuote` price the invalid weight at $2.50, with the latter returning HTTP 200 despite the README's documented 400 contract; direct `NaN` and `Infinity` inputs also produce non-finite totals.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3"
+      ]
+    },
+    {
+      "id": "scalpel-3#1",
+      "priority": "P1",
+      "title": "Convert cents to dollars in `quickEstimate`",
+      "file": "/tmp/native-review-smoke/case2/api.ts",
+      "lines": "75",
+      "comment": "`/tmp/native-review-smoke/case2/rates.ts:45-51` establishes that `baseRateFor` returns cents, but `/tmp/native-review-smoke/case2/api.ts:75` omits the edge conversion already used by `handleQuote`. The marketing widget therefore receives `\"590.00\"` for a 590-cent domestic 2 kg base rate instead of `\"5.90\"`.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Scrutinize rate-tier boundary selection in `/tmp/native-review-smoke/case2/rates.ts`, especially parcels whose weight equals a tier's `maxKg`.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Trace validation ownership across `/tmp/native-review-smoke/case2/api.ts` and `/tmp/native-review-smoke/case2/quote.ts` now that direct quote calls no longer reject invalid weights.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Verify the cents-unit and rounding contract end to end across `/tmp/native-review-smoke/case2/rates.ts`, `/tmp/native-review-smoke/case2/discounts.ts`, and `/tmp/native-review-smoke/case2/quote.ts`, including promo thresholds and subtotal consistency.",
+      "status": "ok",
+      "candidates": 3
+    }
+  ],
+  "lenses": [
+    "Scrutinize rate-tier boundary selection in `/tmp/native-review-smoke/case2/rates.ts`, especially parcels whose weight equals a tier's `maxKg`.",
+    "Trace validation ownership across `/tmp/native-review-smoke/case2/api.ts` and `/tmp/native-review-smoke/case2/quote.ts` now that direct quote calls no longer reject invalid weights.",
+    "Verify the cents-unit and rounding contract end to end across `/tmp/native-review-smoke/case2/rates.ts`, `/tmp/native-review-smoke/case2/discounts.ts`, and `/tmp/native-review-smoke/case2/quote.ts`, including promo thresholds and subtotal consistency."
+  ],
+  "explanation": "confirmed: Use an inclusive comparison for tier boundaries; Restore positive, finite weight validation; Convert cents to dollars in `quickEstimate`",
+  "target": {
+    "base": "main",
+    "baseCommit": "c5bcc92dd322427154454c71577f3186e4ac94e9",
+    "headCommit": "d939b0772fc47665ebcfa8dee75213961d298191",
+    "repo": "/tmp/native-review-smoke/case2"
+  },
+  "level": "xhigh"
+}

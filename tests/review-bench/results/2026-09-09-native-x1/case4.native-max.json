@@ -1,0 +1,150 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "Update prune.sh to consume the v2 manifest before emitting it",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "114",
+      "comment": "/tmp/native-review-smoke/case4/snapshot.sh:114 emits label, epoch, bytes, path; /tmp/native-review-smoke/case4/prune.sh:70 still reads epoch, bytes, path. The resulting path contains the byte count and a tab, so the existence check skips it. End-to-end runs for nightly and nightly-prod with BACKUP_KEEP=1 both exited 0 and retained old archives. README explicitly declares v2 consumption; continued v1 parsing does not satisfy that contract. The first-hyphen label bug is pre-existing, but failure to consume the new explicit label is part of this migration defect.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4",
+        "scalpel-5"
+      ]
+    },
+    {
+      "id": "scalpel-3#1",
+      "priority": "P1",
+      "title": "Escape values before constructing the remote shell command",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-99",
+      "comment": "/tmp/native-review-smoke/case4/lib/common.sh:98 surrounds interpolated values with single quotes but does not escape embedded single quotes. A local SSH stand-in evaluating the actual generated command executed printf INJECTED from a crafted archive basename and returned success. snapshot.sh accepts that label because it only rejects empty labels. Ordinary apostrophes can also change command parsing; local argument quoting does not protect the remote shell.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-4",
+        "scalpel-5"
+      ]
+    },
+    {
+      "id": "scalpel-3#2",
+      "priority": "P1",
+      "title": "Publish remote archives only after a verified complete transfer",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "97-99",
+      "comment": "/tmp/native-review-smoke/case4/lib/common.sh:98 opens the final remote .tar.gz directly, with neither temporary publication nor cleanup. A stand-in remote cat that wrote eight bytes and returned failure left an eight-byte final-name archive while replicate exited 1. The same redirection also truncates an existing same-name replica before success. This contradicts the explicit partial-transfer guarantee at lines 89–92 and can leave an unusable backup appearing complete.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-4",
+        "scalpel-5"
+      ]
+    },
+    {
+      "id": "scalpel-2#1",
+      "priority": "P2",
+      "title": "Test the force value explicitly instead of its non-emptiness",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "81-83",
+      "comment": "/tmp/native-review-smoke/case4/snapshot.sh:22 maps unset, empty, and 0 BACKUP_FORCE values to the nonempty string 0. /tmp/native-review-smoke/case4/lib/common.sh:81 therefore enables the override during both preflight checks. With df reporting zero available KB, check_free_space / 100 0 returned 0. Reading FORCE before config is explicitly intentional in README; the defect is the truth test, not configuration precedence.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4",
+        "scalpel-5"
+      ]
+    },
+    {
+      "id": "scalpel-3#6",
+      "priority": "P2",
+      "title": "Set restrictive permissions on the remote replica",
+      "file": "/tmp/native-review-smoke/case4/lib/common.sh",
+      "lines": "98",
+      "comment": "/tmp/native-review-smoke/case4/lib/common.sh:14 sets only the local process umask; the SSH command at line 98 does not establish remote permissions. Running the actual generated command with remote umask 022 produced directory mode 0755 and archive mode 0644. On a replica with traversable parent directories, other users can read the backed-up source data, unlike the deliberately private local archives. Redirection also preserves permissive modes on an existing destination.",
+      "sources": [
+        "scalpel-3",
+        "sweep"
+      ]
+    },
+    {
+      "id": "scalpel-4#3",
+      "priority": "P2",
+      "title": "Restore unconditional cleanup after creating the stage",
+      "file": "/tmp/native-review-smoke/case4/snapshot.sh",
+      "lines": "90-94",
+      "comment": "/tmp/native-review-smoke/case4/snapshot.sh:90 creates STAGE without replacing the deleted EXIT/INT/TERM cleanup trap; make_stage only creates and prints the directory. The remaining rmdir at line 111 is reached only after tar, replication, and mv succeed. Separately injected failures in all three commands exited 1 and each left a partial or complete archive in TMPDIR. Repeated failed runs therefore accumulate scratch data instead of cleaning it as before.",
+      "sources": [
+        "scalpel-4",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-5"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 6
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Trace the manifest-v2 schema end to end across /tmp/native-review-smoke/case4/snapshot.sh, /tmp/native-review-smoke/case4/run-backup.sh, and /tmp/native-review-smoke/case4/prune.sh. Include labels containing hyphens and any v1 compatibility expectations.",
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Audit the free-space gate’s default and override semantics. Follow BACKUP_FORCE and --force through configuration loading and shell truth tests.",
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Scrutinize the off-host replication boundary for remote-shell quoting, partial-transfer publication, and failure behavior.",
+      "status": "ok",
+      "candidates": 6
+    },
+    {
+      "finder": "scalpel-4",
+      "lens": "Check scratch staging cleanup on every success and failure path. Include failures from tar, SSH, and moving the archive.",
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-5",
+      "lens": "Compare the new find-based archive enumeration with the previous glob behavior. Focus on literal labels, symlinked directories and files, unusual filenames, and retention ordering.",
+      "status": "ok",
+      "candidates": 5
+    }
+  ],
+  "lenses": [
+    "Trace the manifest-v2 schema end to end across /tmp/native-review-smoke/case4/snapshot.sh, /tmp/native-review-smoke/case4/run-backup.sh, and /tmp/native-review-smoke/case4/prune.sh. Include labels containing hyphens and any v1 compatibility expectations.",
+    "Audit the free-space gate’s default and override semantics. Follow BACKUP_FORCE and --force through configuration loading and shell truth tests.",
+    "Scrutinize the off-host replication boundary for remote-shell quoting, partial-transfer publication, and failure behavior.",
+    "Check scratch staging cleanup on every success and failure path. Include failures from tar, SSH, and moving the archive.",
+    "Compare the new find-based archive enumeration with the previous glob behavior. Focus on literal labels, symlinked directories and files, unusual filenames, and retention ordering."
+  ],
+  "explanation": "confirmed: Update prune.sh to consume the v2 manifest before emitting it; Escape values before constructing the remote shell command; Publish remote archives only after a verified complete transfer",
+  "target": {
+    "base": "main",
+    "baseCommit": "84ab879b35f4e60621e3c71541aedff3b900b27c",
+    "headCommit": "e531040c3bcce457a9e52f29fa057dd5d017a76a",
+    "repo": "/tmp/native-review-smoke/case4"
+  },
+  "level": "max"
+}

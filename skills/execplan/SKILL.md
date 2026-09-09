@@ -36,4 +36,4 @@ This profile fits durable background sessions — seats spawned through doperpow
 
 ## Exit gate
 
-Exactly one, at the end. Before merging: dispatch the final whole-branch review to an external reviewer (codex native review via doperpowers:codex-companion's `review` verb with `--base <base-branch>`; a fresh Claude reviewer subagent if codex is unavailable), then write the ExecPlan's own `Outcomes & Retrospective` section (the ExecPlan is this track's spec-equivalent), commit it, and integrate the branch per the isolated-workspace reference's finish rules.
+Exactly one, at the end. Before merging: dispatch the final whole-branch review through doperpowers:review-code against `<base-branch>` at the level the branch warrants (a rung agent, or the panel for a large branch), then write the ExecPlan's own `Outcomes & Retrospective` section (the ExecPlan is this track's spec-equivalent), commit it, and integrate the branch per the isolated-workspace reference's finish rules.

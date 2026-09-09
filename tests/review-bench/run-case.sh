@@ -7,7 +7,21 @@
 # (the C1.G3 probe mechanism) so baseline and deployment measure the same thing.
 #
 # Usage:
-#   run-case.sh --case <case-dir> --engine codex|argus|review|code-review --out <findings-file>
+#   run-case.sh --case <case-dir> --engine codex|argus|review|code-review|native|native-panel|materialize --out <findings-file>
+#
+#   native / native-panel run the doperpowers:review-code lane headless
+#   (`claude -p` with the plugin loaded from THIS checkout via --plugin-dir):
+#   the session runs skills/review-code/workflows/code-review.js
+#   through the Workflow tool at NATIVE_LEVEL (native: default medium, one
+#   reviewer; native-panel: default xhigh, the panel) and prints the result
+#   JSON. Progress and warnings land in <findings-file>.events.log.
+#   CAVEAT (2026-09-09): a `-p` orchestrator that writes ANY text before the
+#   workflow's completion notification ends the session and kills the run,
+#   and the default orchestrator did so in about half the runs despite the
+#   prompt. The reliable path is `--engine materialize`: it keeps the scratch
+#   repo and prints `{"repo","baseCommit","headCommit"}` so an INTERACTIVE
+#   session runs the workflow itself with those args (plus `repo`) and saves
+#   the result JSON as the findings file — the 2026-09-09-native-x1 run.
 #
 #   review / code-review run Claude Code's BUILT-IN slash commands in a fresh
 #   `claude --bg` background session started from the scratch repo (not the
@@ -23,10 +37,14 @@
 #      ARGUS_TIMEOUT (default 2700s) bounds the argus run; codex is bounded the same.
 #      ARGUS_LEVEL (default plain) pins the argus effort level.
 #      CR_LEVEL (default medium) pins the code-review effort level.
+#      NATIVE_LEVEL picks the native lane's effort level (low|medium|high|xhigh|max);
+#      NATIVE_CLAUDE_ARGS adds claude flags to native runs;
+#      PANEL_ARGS overrides the native lane's Workflow args JSON (default pins
+#      level/base/baseCommit/headCommit/repo from the scratch repo).
 #      BENCH_KEEP=1 keeps the scratch repo (printed) for postmortem.
 set -euo pipefail
 
-usage() { echo "usage: run-case.sh --case <dir> --engine codex|argus --out <file>" >&2; exit 2; }
+usage() { echo "usage: run-case.sh --case <dir> --engine codex|argus|review|code-review|native|native-panel|materialize --out <file>" >&2; exit 2; }
 case_dir="" engine="" out=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,10 +55,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$case_dir" ] && [ -n "$engine" ] && [ -n "$out" ] || usage
-case "$engine" in codex|argus|review|code-review) ;; *) usage ;; esac
+case "$engine" in codex|argus|review|code-review|native|native-panel|materialize) ;; *) usage ;; esac
 case_dir="$(cd "$case_dir" && pwd)"
 out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
 bench_root="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$bench_root/../.." && pwd)"
 timeout_s="${ARGUS_TIMEOUT:-2700}"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/review-bench.XXXXXX")"
@@ -131,6 +150,29 @@ case "$engine" in
       sleep 15; waited=$((waited+15))
     done
     python3 "$bench_root/extract-bg-findings.py" "$state_file" "$st" > "$out"
+    ;;
+  materialize)
+    # No engine: keep the scratch repo and print the pin for an interactive
+    # session to run the native workflow against (see the header caveat).
+    BENCH_KEEP=1
+    head_sha="$(git -C "$scratch" rev-parse bench-change)"
+    printf '{"repo":"%s","base":"main","baseCommit":"%s","headCommit":"%s"}\n' "$scratch" "$merge_base" "$head_sha" | tee "$out"
+    ;;
+  native|native-panel)
+    # The native lane: a headless session runs skills/review-code's
+    # workflow script through the Workflow tool at NATIVE_LEVEL (default
+    # medium; native-panel is the xhigh alias) with the pin resolved here, and
+    # prints the result JSON. --plugin-dir loads the plugin from THIS checkout
+    # so the agents under test are the ones in the working tree.
+    head_sha="$(git -C "$scratch" rev-parse bench-change)"
+    level="${NATIVE_LEVEL:-medium}"; [ "$engine" = "native-panel" ] && level="${NATIVE_LEVEL:-xhigh}"
+    script="$repo_root/skills/review-code/workflows/code-review.js"
+    default_args='{"level":"'"$level"'","base":"main","baseCommit":"'"$merge_base"'","headCommit":"'"$head_sha"'","repo":"'"$scratch"'"}'
+    wf_args="${PANEL_ARGS:-$default_args}"
+    prompt="Run the review workflow: call the Workflow tool with the scriptPath parameter set to \"$script\" (do not paste the script inline) and args $wf_args (pass args as a JSON object). The workflow runs in the background and you will receive a completion notification; write NOTHING until that notification arrives — a message before it ends this session and kills the run. When it arrives, print the workflow's result object as JSON and nothing else."
+    # shellcheck disable=SC2086
+    timeout "$timeout_s" claude -p "$prompt" --plugin-dir "$repo_root" --permission-mode auto \
+      ${NATIVE_CLAUDE_ARGS:-} > "$out" 2> "$out.events.log"
     ;;
 esac
 echo "engine=$engine case=$(basename "$case_dir") secs=$(( $(date +%s) - started )) out=$out" >&2

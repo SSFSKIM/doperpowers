@@ -1,0 +1,137 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "sweep#4",
+      "priority": "P1",
+      "title": "Honor timeouts when joining an in-flight computation",
+      "file": "/tmp/native-review-smoke/case5/cache.py",
+      "lines": "111",
+      "comment": "In /tmp/native-review-smoke/case5/cache.py:105-118, the existing-inflight branch awaits `pending.wait()` before either the per-call timeout or `_lock_timeout` is resolved. If the producer remains blocked, a same-key call with `timeout=0.001` remains pending beyond that bound instead of raising `asyncio.TimeoutError`.",
+      "sources": [
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "Release the map guard before acquiring per-key locks",
+      "file": "/tmp/native-review-smoke/case5/keylock.py",
+      "lines": "56-57",
+      "comment": "In /tmp/native-review-smoke/case5/keylock.py:34-61, the registry guard is retained across the per-key acquisition and the entire protected operation. Holding `a` consequently blocks acquisition of unrelated `b`, recursively holding another key deadlocks, and a same-key caller's timeout does not cover its preceding wait for `_guard`. This also directly contradicts /tmp/native-review-smoke/case5/README.md, which says the map guard is never held across caller-owned awaits.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-2#1",
+      "priority": "P1",
+      "title": "Clear and signal in-flight work on every exit",
+      "file": "/tmp/native-review-smoke/case5/cache.py",
+      "lines": "130-133",
+      "comment": "In /tmp/native-review-smoke/case5/cache.py:127-133, `_inflight` cleanup and event signaling occur only on success. If `factory()` raises or its task is cancelled, the unset event remains registered; already-joined calls block forever, and JobQueue's next retry joins that same event instead of calling the handler, so workers and `drain()` can hang.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-3#1",
+      "priority": "P1",
+      "title": "Check expiration before extending a hot entry's deadline",
+      "file": "/tmp/native-review-smoke/case5/cache.py",
+      "lines": "75-80",
+      "comment": "In /tmp/native-review-smoke/case5/cache.py:75-80, expiration is checked only after hit accounting can slide the deadline. With default settings, store an entry, read it twice while fresh, advance the injected clock past its deadline, and read again: the third hit extends `expires_at` and returns the stale value instead of running the factory. This violates the explicit README guarantee that an expired hot key is recomputed.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-1#5",
+      "priority": "P2",
+      "title": "Drop references when timed acquisition is cancelled",
+      "file": "/tmp/native-review-smoke/case5/keylock.py",
+      "lines": "49-54",
+      "comment": "In /tmp/native-review-smoke/case5/keylock.py:49-54, only `TimeoutError` rolls back the reference claimed at line 40. A task externally cancelled while `wait_for(lock.acquire(), 0)` is in its cancellation wait exits with `CancelledError` and leaves `_refs['x'] == 1` with an unlocked tracked lock; subsequent successful holds decrement only back to 1, so the slot is never evicted.",
+      "sources": [
+        "scalpel-1"
+      ]
+    },
+    {
+      "id": "scalpel-4#4",
+      "priority": "P2",
+      "title": "Consume the renamed cache metric keys",
+      "file": "/tmp/native-review-smoke/case5/jobqueue.py",
+      "lines": "203-204",
+      "comment": "In /tmp/native-review-smoke/case5/cache.py:102,124,129 the cache emits `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, but /tmp/native-review-smoke/case5/jobqueue.py:203-204 reads their former names. After real traffic those reads remain zero, so `cache_hit_rate()` and `stats()` report a false perfect rate and `warm_stale_keys()` always exits at line 226 instead of refreshing remembered keys.",
+      "sources": [
+        "scalpel-4",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-3"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "In /tmp/native-review-smoke/case5/keylock.py, scrutinize guard and per-key lock ordering under same-key and different-key contention. Verify timeouts and cancellation always release references without globally serializing callers.",
+      "status": "ok",
+      "candidates": 6
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "In /tmp/native-review-smoke/case5/cache.py, trace each in-flight computation through success, exception, and cancellation. Check that joined waiters and retrying jobs are always awakened or allowed to recompute.",
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "In /tmp/native-review-smoke/case5/cache.py, verify that sliding expiration cannot revive an entry whose deadline already passed. Check the ordering of expiry checks, hit accounting, and deadline mutation.",
+      "status": "ok",
+      "candidates": 5
+    },
+    {
+      "finder": "scalpel-4",
+      "lens": "Audit the renamed cache counter keys across /tmp/native-review-smoke/case5/cache.py and /tmp/native-review-smoke/case5/jobqueue.py. Confirm hit-rate reporting and warm-up gating still consume the metrics now emitted.",
+      "status": "ok",
+      "candidates": 5
+    }
+  ],
+  "lenses": [
+    "In /tmp/native-review-smoke/case5/keylock.py, scrutinize guard and per-key lock ordering under same-key and different-key contention. Verify timeouts and cancellation always release references without globally serializing callers.",
+    "In /tmp/native-review-smoke/case5/cache.py, trace each in-flight computation through success, exception, and cancellation. Check that joined waiters and retrying jobs are always awakened or allowed to recompute.",
+    "In /tmp/native-review-smoke/case5/cache.py, verify that sliding expiration cannot revive an entry whose deadline already passed. Check the ordering of expiry checks, hit accounting, and deadline mutation.",
+    "Audit the renamed cache counter keys across /tmp/native-review-smoke/case5/cache.py and /tmp/native-review-smoke/case5/jobqueue.py. Confirm hit-rate reporting and warm-up gating still consume the metrics now emitted."
+  ],
+  "explanation": "confirmed: Honor timeouts when joining an in-flight computation; Release the map guard before acquiring per-key locks; Clear and signal in-flight work on every exit",
+  "target": {
+    "base": "main",
+    "baseCommit": "51c29d021f0bef7ab1ad77bf33ac8e91d3f2a77d",
+    "headCommit": "ff265813ffea0dcd4bfee9b2c723e36e3823c4b6",
+    "repo": "/tmp/native-review-smoke/case5"
+  },
+  "level": "xhigh"
+}

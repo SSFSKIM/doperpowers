@@ -96,10 +96,9 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md); for a child of a composite spec, advisory
    content in place and a binding contradiction as `[parent-impact]` per
    doperpowers:decomposing). Implementation noise stays in commit messages.
-7. **After all tasks:** dispatch the final whole-branch review (external
-   reviewer — codex native review via doperpowers:codex-companion's
-   `review` verb with `--base <base>`; a
-   fresh top-tier Claude reviewer if codex is unavailable) with its own
+7. **After all tasks:** dispatch the final whole-branch review through
+   doperpowers:review-code against `<base>` at the level the branch
+   warrants (a rung agent, or the panel for a large branch) with its own
    package (`scripts/review-package PLAN_FILE MERGE_BASE HEAD`,
    MERGE_BASE = `git merge-base main HEAD`). Then write the spec's
    `## Outcomes & Retrospective` entry, commit it, and integrate the
@@ -118,9 +117,9 @@ than missing context, a sonnet task moves to opus; from opus there is no
 tier above — the difficulty moves into the brief: resolve the hard call
 yourself and re-dispatch, or split the task.
 
-The final whole-branch review is the deliberate exception: strongest
-available model, highest effort — it is the last gate before merge and the
-only reader of the entire branch.
+The final whole-branch review is the deliberate exception: it goes through
+doperpowers:review-code at the level the branch warrants — it is the
+last gate before merge and the only reader of the entire branch.
 
 Name the model in every dispatch — an omitted model silently inherits your
 session's, usually the most expensive.

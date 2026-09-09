@@ -1,0 +1,10 @@
+engine=native-panel case=case1 secs=684 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case1.native-xhigh.json
+case1 rc=0
+engine=native-panel case=case2 secs=687 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case2.native-xhigh.json
+case2 rc=0
+./run-case.sh: line 170: unexpected EOF while looking for matching `"'
+case3 rc=0
+./run-case.sh: line 170: unexpected EOF while looking for matching `"'
+case4 rc=0
+engine=native-panel case=case5 secs=693 out=/Users/new/Developer/GitHub/doperpowers/tests/review-bench/results/2026-09-09-native-x1/case5.native-xhigh.json
+case5 rc=0

@@ -1,0 +1,85 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "[P1] Subtract allowed lateness from the tenant watermark",
+      "file": "/tmp/native-review-smoke/case1/windows.py",
+      "lines": "70-73",
+      "comment": "The contract in /tmp/native-review-smoke/case1/windows.py:25-29 permits timestamps at or above watermark minus allowed_lateness, but line 70 adds it. With lateness 30, independently tested timestamps [100, 70, 90, 110] produce acceptance [true, false, false, false] instead of all true. dropped_late becomes 3 and the early return leaves the tenant watermark at 100 instead of 110. The base implementation used subtraction, so this is an introduced data-loss regression.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3"
+      ]
+    },
+    {
+      "id": "scalpel-2#1",
+      "priority": "P1",
+      "title": "[P1] Clear pending windows after taking the flush snapshot",
+      "file": "/tmp/native-review-smoke/case1/aggregate.py",
+      "lines": "85-87",
+      "comment": "/tmp/native-review-smoke/case1/aggregate.py:85-87 removed the previous pending-state clear, contradicting its retirement contract and the batch semantics in /tmp/native-review-smoke/case1/pipeline.py:20-23. Independently tested separate batches at timestamps 1 and 61 plus an empty batch: output starts were [[0], [0, 60], [0, 60]], not [[0], [60], []]. Separate batches in the same window with values 2 and 3 produced second-batch count 2 and total 5 instead of count 1 and total 3. Each new-window batch also retains historical state and copies it again, yielding quadratic cumulative output growth.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3"
+      ]
+    },
+    {
+      "id": "scalpel-3#3",
+      "priority": "P2",
+      "title": "[P2] Load tenant configuration outside the per-reading loop",
+      "file": "/tmp/native-review-smoke/case1/pipeline.py",
+      "lines": "39-40",
+      "comment": "/tmp/native-review-smoke/case1/pipeline.py:39-40 calls load_tenant_limits for every reading before clipping or lateness checks. /tmp/native-review-smoke/case1/tenants.py:36-37 opens and parses the entire configuration without caching. Independent instrumentation confirmed 1,000 configuration opens and parses for 1,000 readings from one tenant. Thus static configuration incurs synchronous I/O per record and parsing work proportional to reading count times configuration size. No per-reading refresh requirement is documented; this is an introduced ingestion-efficiency defect.",
+      "sources": [
+        "scalpel-3",
+        "sweep",
+        "scalpel-1",
+        "scalpel-2"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Check per-tenant lateness cutoff arithmetic and watermark advancement in /tmp/native-review-smoke/case1/windows.py against the allowed-lateness contract.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Check batch retirement semantics between /tmp/native-review-smoke/case1/aggregate.py and /tmp/native-review-smoke/case1/pipeline.py for repeated rows and retained window state.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Examine the per-reading configuration-loading path in /tmp/native-review-smoke/case1/pipeline.py and /tmp/native-review-smoke/case1/tenants.py for ingest costs that scale with stream size.",
+      "status": "ok",
+      "candidates": 3
+    }
+  ],
+  "lenses": [
+    "Check per-tenant lateness cutoff arithmetic and watermark advancement in /tmp/native-review-smoke/case1/windows.py against the allowed-lateness contract.",
+    "Check batch retirement semantics between /tmp/native-review-smoke/case1/aggregate.py and /tmp/native-review-smoke/case1/pipeline.py for repeated rows and retained window state.",
+    "Examine the per-reading configuration-loading path in /tmp/native-review-smoke/case1/pipeline.py and /tmp/native-review-smoke/case1/tenants.py for ingest costs that scale with stream size."
+  ],
+  "explanation": "confirmed: [P1] Subtract allowed lateness from the tenant watermark; [P1] Clear pending windows after taking the flush snapshot; [P2] Load tenant configuration outside the per-reading loop",
+  "target": {
+    "base": "main",
+    "baseCommit": "2de8b9fa52050aa1ec6fe9faf11f7fdca6eab744",
+    "headCommit": "7d88cd75cb077ce118b59f539906011720e280ea",
+    "repo": "/tmp/native-review-smoke/case1"
+  }
+}

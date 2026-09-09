@@ -1,0 +1,96 @@
+{
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "scalpel-1#1",
+      "priority": "P1",
+      "title": "Require admin authorization for the bulk export handler",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "211-212",
+      "comment": "Reproduced with tok-ana: /exports/all returns 200 including globex/private's secret, while /admin/tenants returns 403 and /exports/private returns 404. /tmp/native-review-smoke/case3/app.py routes the fixed bulk path directly to an @authenticated handler that reads every tenant without checking the role. The README explicitly requires admin access.",
+      "sources": [
+        "scalpel-1",
+        "sweep",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "scalpel-2#2",
+      "priority": "P1",
+      "title": "Return the persisted revision instead of the row count",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "171-173",
+      "comment": "Reproduced a three-row creation returning revision 3 and ETag W/\"3\" although the persisted revision is 1; the next conditional PUT using 3 fails with 409 without an intervening write. /tmp/native-review-smoke/case3/app.py uses save_document's return as the revision, but /tmp/native-review-smoke/case3/store.py explicitly documents its new row-count return and instructs callers to load the revision. Equal-row-count saves also necessarily produce unchanged response ETags.",
+      "sources": [
+        "scalpel-2",
+        "sweep",
+        "scalpel-1",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    },
+    {
+      "id": "sweep#3",
+      "priority": "P2",
+      "title": "Use an exclusive slice endpoint for pagination",
+      "file": "/tmp/native-review-smoke/case3/app.py",
+      "lines": "103",
+      "comment": "Verified /tmp/native-review-smoke/case3/app.py slices names[first:last + 1] with last = first + limit. Reproduced names a,b,c with limit=1: pages 1 and 2 return [a,b] and [b,c]. Also reproduced 201 entries for limit=200. The extra endpoint violates page size and overlaps consecutive pages.",
+      "sources": [
+        "sweep",
+        "scalpel-1",
+        "scalpel-2",
+        "scalpel-3",
+        "scalpel-4"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "finder": "sweep",
+      "lens": null,
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-1",
+      "lens": "Audit authorization and tenant isolation in the new bulk-export path in /tmp/native-review-smoke/case3/app.py. Verify that `/exports/all` is truly admin-only.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-2",
+      "lens": "Trace revision semantics across /tmp/native-review-smoke/case3/app.py and /tmp/native-review-smoke/case3/store.py. Check optimistic-write validation and the meaning of returned revision and ETag values.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-3",
+      "lens": "Check pagination math and boundary behavior for `GET /documents` in /tmp/native-review-smoke/case3/app.py. Each page should respect `limit` exactly.",
+      "status": "ok",
+      "candidates": 3
+    },
+    {
+      "finder": "scalpel-4",
+      "lens": "Check fixed-versus-variable route precedence in /tmp/native-review-smoke/case3/app.py. Focus on reserved `/exports/all` behavior and access to a document named `all`.",
+      "status": "ok",
+      "candidates": 3
+    }
+  ],
+  "lenses": [
+    "Audit authorization and tenant isolation in the new bulk-export path in /tmp/native-review-smoke/case3/app.py. Verify that `/exports/all` is truly admin-only.",
+    "Trace revision semantics across /tmp/native-review-smoke/case3/app.py and /tmp/native-review-smoke/case3/store.py. Check optimistic-write validation and the meaning of returned revision and ETag values.",
+    "Check pagination math and boundary behavior for `GET /documents` in /tmp/native-review-smoke/case3/app.py. Each page should respect `limit` exactly.",
+    "Check fixed-versus-variable route precedence in /tmp/native-review-smoke/case3/app.py. Focus on reserved `/exports/all` behavior and access to a document named `all`."
+  ],
+  "explanation": "confirmed: Require admin authorization for the bulk export handler; Return the persisted revision instead of the row count; Use an exclusive slice endpoint for pagination",
+  "target": {
+    "base": "main",
+    "baseCommit": "8e5cb4785b5c0fdf603de5cdd20325ced83d672b",
+    "headCommit": "e6eef6d164499a4ed33fa125d419e3b4d4f22339",
+    "repo": "/tmp/native-review-smoke/case3"
+  },
+  "level": "max"
+}
