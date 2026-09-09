@@ -60,12 +60,11 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Twenty-two skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Eighteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
 - `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
-- `domain-modeling` — pin down the ubiquitous language, map bounded contexts, record ADRs
 - `decomposing` — carve a large goal into a tree of well-scoped tickets
 - `writing-plans` — break a spec into tasks an executor can own from one brief: files, interfaces, deliverables, tests, decisions
 - `organizing-sprints` — turn a pile of raw observations into the next sprint
@@ -77,7 +76,6 @@ Twenty-two skills, grouped by what they're for. Each one auto-triggers from its 
 - `execplan` — the autonomous single-plan track, gates front-loaded
 
 **Keep it honest**
-- `systematic-debugging` — four-phase root-cause process, not guess-and-check
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)

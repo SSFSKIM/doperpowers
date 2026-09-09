@@ -58,14 +58,6 @@ never know about which others, which state never lives where, which
 surfaces are public. Future agents copy existing patterns, so an absence
 that isn't written down doesn't exist as a rule.
 
-In a multi-context repo (a `CONTEXT-MAP.md` exists at the root),
-ARCHITECTURE.md owns the physical boundaries — layers, dependency
-direction, module seams — and cross-references `CONTEXT-MAP.md` for the
-semantic ones (where a term's meaning changes;
-doperpowers:domain-modeling owns that side). The two kinds of boundary
-often coincide; they are not the same thing, and merging the documents
-breaks both.
-
 ## Invariants are the enforcement
 
 Number the architectural invariants (AI-1, AI-2, …), each with one

@@ -25,19 +25,8 @@ else
 fi
 echo ""
 
-# Test: use systematic-debugging
-echo ">>> Test 2: use-systematic-debugging"
-if "$SCRIPT_DIR/run-test.sh" "systematic-debugging" "$PROMPTS_DIR/use-systematic-debugging.txt"; then
-    PASSED=$((PASSED + 1))
-    RESULTS="$RESULTS\nPASS: use-systematic-debugging"
-else
-    FAILED=$((FAILED + 1))
-    RESULTS="$RESULTS\nFAIL: use-systematic-debugging"
-fi
-echo ""
-
 # Test: please use brainstorming
-echo ">>> Test 3: please-use-brainstorming"
+echo ">>> Test 2: please-use-brainstorming"
 if "$SCRIPT_DIR/run-test.sh" "brainstorming" "$PROMPTS_DIR/please-use-brainstorming.txt"; then
     PASSED=$((PASSED + 1))
     RESULTS="$RESULTS\nPASS: please-use-brainstorming"
@@ -48,7 +37,7 @@ fi
 echo ""
 
 # Test: mid-conversation execute plan
-echo ">>> Test 4: mid-conversation-execute-plan"
+echo ">>> Test 3: mid-conversation-execute-plan"
 if "$SCRIPT_DIR/run-test.sh" "subagent-driven-execution" "$PROMPTS_DIR/mid-conversation-execute-plan.txt"; then
     PASSED=$((PASSED + 1))
     RESULTS="$RESULTS\nPASS: mid-conversation-execute-plan"
