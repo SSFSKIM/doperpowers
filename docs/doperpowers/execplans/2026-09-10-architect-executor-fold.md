@@ -23,7 +23,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - [x] (2026-09-10) Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text. Three protocol-content assertions moved with the prose (see Surprises); `test-protocol-content.sh` green.
 - [x] (2026-09-10) Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording. `doperpowers:using-git-worktrees` does not exist as a skill, so execplan Step 3 keeps the existing `../subagent-driven-execution/isolated-workspace.md` link as the plan directs. The reconciliation grep left one hit to fix: the architect protocol's "repair or re-cut the plan, and hand off again" became "take the build edge again"; the epic-recomposition "ANY exit — handoff, park, verdict" stays, since an epic exit genuinely is one of those.
 - [x] (2026-09-10) Milestone 5: protocol-content assertions, all five suites + shellcheck green, version 7.81.0 → 7.82.0, and the live mechanism check — the seat read `busy` for the whole build with its `NOW` column tracking `build: milestone 1/2` → `2/2`, and both commits landed.
-- [ ] Final: whole-branch external review, retrospective written below, branch merged.
+- [ ] Final (completed: retrospective written below; whole-branch review dispatched to `doperpowers:reviewer-high`. Remaining: dispositioning the review findings, and the merge — the implementing session was instructed not to push or open a PR, so integration belongs to the session that owns this branch).
 
 
 ## Surprises & Discoveries
@@ -86,7 +86,55 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 ## Outcomes & Retrospective
 
 
-Pending — written at finish.
+Delivered, on branch `architect-fold` at version 7.82.0, in six commits.
+
+The board now has a build edge. `board-transition.sh <n> in-progress
+"plan-execution: <path>@<sha>" --plan <path>@<sha> --branch <b>` succeeds from
+`in-design` on a leaf, records the pin, and is refused on an epic, with
+`pre-spec`, with no pin, and with no note. `ARCHITECT_MAX_CONCURRENT` now meters
+the whole span from `ready-for-architect` through `in-progress`, so the frontier
+slot a building Architect holds is charged where the spend actually is. The
+Architect protocol's `Ends at the plan` scope is gone: it has a `## Build`
+section that takes the edge and dispatches `doperpowers:plan-executor`, and a
+`## Closing Artifact` that registers the executor's residue as follow-up tickets
+and closes to `in-review` with the PR. The Executor worker keeps PLAN-EXECUTION,
+reframed as the recovery lane that resumes from the ledger rather than the top.
+Interactively, `writing-plans` and `execplan` both dispatch the same agent
+instead of running the execution loop in the design session's own context.
+
+What the change is NOT yet proven to do: resolve `doperpowers:plan-executor` by
+name. The live check confirmed the two behaviours the fold rests on — a seat
+whose turn has ended but whose subagent is running reads `busy`, and the
+executor keeps the operator's status line current — but it had to reach them
+through `general-purpose` / `opus` with the agent body pasted, because a spawned
+seat loads the installed plugin (7.81.0) and not this worktree. That clause of
+Validation and Acceptance can only be exercised after 7.82.0 installs. It is the
+one thing to check first on the other side of the merge.
+
+Three lessons worth carrying:
+
+The plan predicted its own test churn imperfectly. It scheduled the
+protocol-content assertions for Milestone 5 and expected Milestone 3's prose
+edits to leave the existing ones passing; two of them asserted the exact strings
+the new prose deletes, so they had to move with the prose rather than after it.
+A prose change that a test pins by substring is not additive, and planning it as
+additive costs a red checkpoint. A third assertion was already failing on `main`
+against a mechanism retired months ago — worth knowing that this suite is not
+continuously green, so "the suite passes" needs a baseline run to mean anything.
+
+The slot-accounting change was subtler than one tuple. `_slots_used` falls back
+to state alone for a meta with no persisted `role`, which was safe only while no
+state belonged to two lanes. Making `in-progress` shared turned that fallback
+into a double charge, and the fixture caught it immediately. The general shape:
+when two partitions start sharing a key, every "infer the partition from the
+key" fallback in the system becomes a bug, and they are easy to miss because
+they read as defensive rather than load-bearing.
+
+The executor's isolation instinct fought the brief. Told to work in the checkout
+it was dispatched into, it created its own git worktree anyway, which left the
+dispatching checkout stale while the commits were correct. Nothing broke here,
+but a board Architect's brief should say which checkout is authoritative rather
+than assume the instruction lands.
 
 
 ## Context and Orientation
