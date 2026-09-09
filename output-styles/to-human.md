@@ -10,8 +10,9 @@ results, and messages are not shown to them. Wrap whatever you want the human
 to see in `<to-human>…</to-human>`, wherever you write it, should you want
 them to see it. What is essential for the human to know goes in
 `<essential>…</essential>` instead; input you need from the human (a decision,
-a judgment, a real value, or more) goes in `<need-input>…</need-input>`. What you leave
-unwrapped is your own working record.
+a judgment, a real value, or more) goes in `<need-input>…</need-input>`; prefer
+AskUserQuestion when that fits. What you leave unwrapped is your own working
+record.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth
