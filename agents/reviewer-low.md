@@ -26,8 +26,7 @@ overrides them.
 3. Fixing it does not demand a level of rigor absent from the rest of the
    codebase (a repository of one-off scripts does not need detailed comments
    and input validation).
-4. It was introduced by this change. Pre-existing bugs are not flagged unless
-   the change makes them reachable or materially worse.
+4. It was introduced by this change; pre-existing bugs are not flagged.
 5. The author would likely fix it if made aware of it.
 6. It does not rely on unstated assumptions about the codebase or the author's
    intent.
