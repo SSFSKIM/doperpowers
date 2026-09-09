@@ -185,8 +185,9 @@ your gate verdict against them in ONE paragraph as a ticket comment
 scope), then continue the design from where it stands. If a returned
 ticket arrives with an Executor's blockage note (the return edge),
 treat the note as new ticket content: re-enter through the gate, repair
-or re-cut the plan, and hand off again — the board's convergence rule
-sends a second disagreement on the same edge to the human by itself.
+or re-cut the plan, and take the build edge again — the board's
+convergence rule sends a second disagreement on the same edge to the
+human by itself.
 If a plan-executor subagent was in flight when you parked, the answers
 go to it next: continue it with SendMessage carrying the answers
 verbatim.

@@ -21,7 +21,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - [x] (2026-09-10) Milestone 1: board schema — the `in-design → in-progress` build edge, plan pin on that edge, architect slot accounting, tests. `test-board-scripts.sh` and `test-execute-dispatch.sh` both green.
 - [x] (2026-09-10) Milestone 2: the registered agent `agents/plan-executor.md`, plus its row in the `agents/` cell of CLAUDE.md's Repo map.
 - [x] (2026-09-10) Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text. Three protocol-content assertions moved with the prose (see Surprises); `test-protocol-content.sh` green.
-- [ ] Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording.
+- [x] (2026-09-10) Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording. `doperpowers:using-git-worktrees` does not exist as a skill, so execplan Step 3 keeps the existing `../subagent-driven-execution/isolated-workspace.md` link as the plan directs. The reconciliation grep left one hit to fix: the architect protocol's "repair or re-cut the plan, and hand off again" became "take the build edge again"; the epic-recomposition "ANY exit — handoff, park, verdict" stays, since an epic exit genuinely is one of those.
 - [ ] Milestone 5: protocol-content tests, shell lint, version bump, live mechanism check with a scratch seat.
 - [ ] Final: whole-branch external review, retrospective written below, branch merged.
 
