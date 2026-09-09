@@ -96,7 +96,7 @@ actually run before trusting a cron arming.
 | env | default | meaning |
 |---|---|---|
 | `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (Reviewer workers never count) |
-| `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted separately from the implement cap |
+| `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted over ARCHITECT-role workers from `ready-for-architect` through `in-progress` (an Architect executes its own plan), separate from the implement cap. The default 1 now spans design plus build; raise it when queued design work waits on a long build |
 | `ARCHITECT_MODEL` | fable | model pin for the architect route; the architect dispatch ignores `engine:*` labels and `WORKER_ENGINE` — plan authorship is never label-routed |
 | `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |

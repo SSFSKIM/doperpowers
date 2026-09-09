@@ -46,8 +46,8 @@ unattended repos).
 
 | writer | writes | doctrine |
 |---|---|---|
-| **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through the design phase (`in-design`, handoff to `ready-for-implementer` with the `plan:` pin); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | `references/architect-worker-protocol.md` |
-| **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations | `references/implement-worker-protocol.md` |
+| **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through design and build (`in-design`, the build edge to `in-progress` with the `plan:` pin, `in-review` with the PR); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | `references/architect-worker-protocol.md` |
+| **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations — DIRECT tickets, and PLAN-EXECUTION as the recovery lane for a plan whose Architect session was lost | `references/implement-worker-protocol.md` |
 | **Reviewer Worker** (daemon, one PR) | its PR's ticket (`needs-human` / `ready-for-architect`); finding-tickets; the merge itself + post-merge finalize on a confident verdict; a scale review's clean `done` on a recomposition epic | doperpowers:qa-loops |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
@@ -78,8 +78,9 @@ reporter never parks its own ticket over friction it routed around.
 ## State vocabulary
 
 The architect lane's happy path is `ready-for-architect → in-design →
-ready-for-implementer → in-progress → in-review → done`; a direct
-ticket starts at `ready-for-implementer`. Under the review loop the
+in-progress → in-review → done`, one bound session from design to PR; a
+direct ticket starts at `ready-for-implementer` and an Executor takes it
+`in-progress → in-review`. Under the review loop the
 Reviewer worker's confident verdict merges the PR, and the merge itself
 closes the ticket to `done`. (`ready-for-implementer` is the Executor
 lane's label; the string keeps its legacy spelling because live boards
@@ -88,9 +89,9 @@ depend on it.)
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
 | `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route); on an EPIC this is the recomposition/reconciliation claim (Epics below) | — |
-| `in-design` | open + `status:in-design` | the Architect's in-flight state — gate passed, grill/authoring underway; its parks return here (`pre-park:`). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
+| `in-design` | open + `status:in-design` | the Architect's in-flight design state — gate passed, grill/authoring underway; exits to `in-progress` (the build edge: plan pinned, the Architect executes it through its plan-executor subagent and stays bound), to `ready-for-implementer` (down-shortcircuit or decompose), or to a park (`pre-park:` returns here). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
 | `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → executor) | — |
-| `in-progress` | open + `status:in-progress` | a worker passed the gate and is driving it (an executor-queued or `needs-info`-released epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead, and the other three parks are never pulled) | optional |
+| `in-progress` | open + `status:in-progress` | a bound session is building it — an Architect past the build edge, or an Executor past its gate (an executor-queued or `needs-info`-released epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead, and the other three parks are never pulled) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
@@ -340,7 +341,9 @@ pick by repo visibility:
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
    Executor, `in-design` (+ a `[gate]` comment) for an Architect, or
    (PLAN-EXECUTION) `in-progress` with no gate comment; a park state means
-   it failed.
+   it failed. An Architect's later writes on the same binding are the build
+   edge (`in-progress`, plan pinned) and `in-review` with the PR — one
+   session end to end; `ARCHITECT_MAX_CONCURRENT` meters that whole span.
 
 Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
 are picked up by the review loop (doperpowers:qa-loops). The ritual is
@@ -375,7 +378,11 @@ the board.
      invalidates a standing plan — that edge clears any `plan:` pin
      automatically, since entering the lane means the design is being
      re-cut) — the next dispatch runs the lane's protocol against the
-     enriched ticket from fresh context. An answered park with a live
+     enriched ticket from fresh context. A ticket parked by the sweep's
+     recovery cap while its Architect was mid-build keeps its `plan:` pin
+     across the park: `board-transition.sh <n> ready-for-implementer` hands
+     it to an Executor in PLAN-EXECUTION, which resumes from the ledger on
+     the branch. An answered park with a live
      bound session returns to its `pre-park:` state automatically.
    - a spike's `needs-human "findings ready: …"` is a handoff, not a
      blockage: read the `[findings]` comment, then close (`done` — the

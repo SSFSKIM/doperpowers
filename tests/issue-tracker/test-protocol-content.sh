@@ -235,7 +235,8 @@ echo "architect protocol (Architect Worker):"
 arch="$(cat "$ARCHITECT")"
 assert_not_contains "$arch" "name: architecting" "no skill frontmatter on the architect protocol"
 assert_contains "$arch" "ARCHITECT worker" "role names the ARCHITECT worker"
-assert_contains "$arch" "Ends at the plan" "scope: ends at the plan"
+assert_not_contains "$arch" "Ends at the plan" "scope no longer ends at the plan — the Architect builds it"
+assert_contains "$arch" "plan-executor" "...through a plan-executor subagent it keeps bound to the ticket"
 assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
 assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
 assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
@@ -286,7 +287,7 @@ done
 # writing-plans prescribes, so the two cannot drift apart again.
 assert_not_contains "$arch" "plan-reviewer" \
     "the council never dispatches the deleted plan-reviewer agent"
-assert_contains "$arch" "doperpowers:codex-companion's \`adversarial-review\` verb" \
+assert_contains "$arch" "\`doperpowers:adversarial-reviewer\` agent" \
     "the plan gets the independent review writing-plans prescribes, by its real mechanism"
 assert_contains "$arch" "buildable by an engineer with" \
     "...focused on the same bar (same voice as writing-plans, not a bespoke variant)"
@@ -327,8 +328,8 @@ assert_contains "$arch" 'in-review "<summary>" --pr <package URL> --branch <inte
 assert_contains "$arch" "omit it when the children landed on the default branch" \
     "...and omitting it is the stated shape when there is no integration branch"
 # A real plan pin is only reclaimable from a recorded ref (cattle clone).
-assert_contains "$arch" "a cattle clone fetches the plan's sha from" \
-    "the handoff states why a pinned plan needs its branch recorded"
+assert_contains "$arch" "recovery Executor fetches if this session is lost" \
+    "the build edge states why a pinned plan needs its branch recorded"
 assert_contains "$arch" 'needs-info "reconciled:' "reconciliation release exit is the needs-info park"
 assert_contains "$arch" "waiting on children" "release note names what the released epic waits on"
 # R9-O1: the corrective-child branch needs the SAME release. PULL_FROM excludes
