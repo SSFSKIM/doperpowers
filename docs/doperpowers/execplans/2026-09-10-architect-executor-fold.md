@@ -22,7 +22,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - [x] (2026-09-10) Milestone 2: the registered agent `agents/plan-executor.md`, plus its row in the `agents/` cell of CLAUDE.md's Repo map.
 - [x] (2026-09-10) Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text. Three protocol-content assertions moved with the prose (see Surprises); `test-protocol-content.sh` green.
 - [x] (2026-09-10) Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording. `doperpowers:using-git-worktrees` does not exist as a skill, so execplan Step 3 keeps the existing `../subagent-driven-execution/isolated-workspace.md` link as the plan directs. The reconciliation grep left one hit to fix: the architect protocol's "repair or re-cut the plan, and hand off again" became "take the build edge again"; the epic-recomposition "ANY exit — handoff, park, verdict" stays, since an epic exit genuinely is one of those.
-- [ ] Milestone 5: protocol-content tests, shell lint, version bump, live mechanism check with a scratch seat.
+- [ ] Milestone 5 (completed: protocol-content assertions, all five suites + shellcheck green, version 7.81.0 → 7.82.0; remaining: the live mechanism check with a scratch seat).
 - [ ] Final: whole-branch external review, retrospective written below, branch merged.
 
 
@@ -425,7 +425,34 @@ Every edit is a plain file change on a feature branch; re-running a milestone re
 ## Artifacts and Notes
 
 
-To be filled in as work proceeds: the passing test summaries, the `sminos list` lines from the live check, and the PR URL.
+Test summaries after Milestone 5 (worktree root, 2026-09-10):
+
+    ### tests/issue-tracker/test-board-scripts.sh     exit=0   all tests passed
+    ### tests/issue-tracker/test-execute-dispatch.sh  exit=0   all tests passed
+    ### tests/issue-tracker/test-board-sweep.sh       exit=0   all tests passed
+    ### tests/issue-tracker/test-protocol-content.sh  exit=0   all tests passed
+    ### tests/sminos/run-sminos-tests.sh              exit=0   all 559 assertions passed
+    ### scripts/lint-shell.sh                         exit=0   Linting 1 shell files
+
+The new build-edge block inside test-board-scripts.sh:
+
+    build edge:
+      [PASS] a leaf Architect takes the build edge itself
+      [PASS] the build edge records the plan pin
+      [PASS] ...and the branch the sha is reachable from
+      [PASS] --plan pre-spec is refused on the build edge
+      [PASS] the refused build wrote nothing
+      [PASS] the build edge without a pin is refused
+      [PASS] the build edge is note-required
+      [PASS] an epic is refused on the build edge
+      [PASS] the refused epic build wrote nothing
+
+Version: 7.81.0 → 7.82.0 via `scripts/bump-version.sh 7.82.0` (package.json,
+.claude-plugin/plugin.json, .codex-plugin/plugin.json,
+.claude-plugin/marketplace.json all in sync).
+
+The `sminos list` lines from the live check and the PR URL follow below as
+they are produced.
 
 
 ## Interfaces and Dependencies

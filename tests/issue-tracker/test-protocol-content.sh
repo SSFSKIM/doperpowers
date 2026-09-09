@@ -58,6 +58,8 @@ assert_contains "$proto" "## Validation Evidence" "validation-evidence section m
 assert_contains "$proto" "## Confusions" "confusions section (conditional) mandated"
 assert_contains "$proto" "ORIENTATION SUMMARY" "park orientation summary mandated"
 assert_contains "$proto" "no live progress mirror" "no-mirror doctrine stated in the protocol"
+assert_contains "$proto" "pick up from where the work actually stands" "PLAN-EXECUTION is the recovery lane — it resumes work already under way"
+assert_contains "$proto" "never from the top" "...and says so where the mode is selected"
 assert_not_contains "$proto" "land on main independently" "landability criterion lives in the gate file, not the protocol"
 assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
 assert_not_contains "$proto" "Knowledge work anyone could do" "needs-info definition not re-vendored in the protocol"
@@ -241,6 +243,8 @@ assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --pla
 assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
 assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
 assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
+assert_contains "$arch" "## Build" "the Architect has a Build phase, not just a handoff"
+assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is the build edge with the plan-execution note"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
 REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
@@ -422,6 +426,14 @@ assert_contains "$triage_skill" "a blockquote will not do" \
 assert_contains "$triage_skill" "one backtick
      longer than the longest backtick run" \
     "...and pins the variable fence length, so an original carrying its own fence cannot escape"
+
+echo "plan-executor agent (the Architect's hands):"
+PLAN_EXECUTOR="$REPO_ROOT/agents/plan-executor.md"
+[ -f "$PLAN_EXECUTOR" ] || { echo "missing $PLAN_EXECUTOR"; exit 1; }
+pexec="$(cat "$PLAN_EXECUTOR")"
+assert_contains "$pexec" "model: opus" "the plan-executor is pinned to the worker tier"
+assert_contains "$pexec" "effort: high" "...at high reasoning effort"
+assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
