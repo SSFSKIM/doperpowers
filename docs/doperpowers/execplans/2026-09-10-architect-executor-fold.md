@@ -22,7 +22,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - [x] (2026-09-10) Milestone 2: the registered agent `agents/plan-executor.md`, plus its row in the `agents/` cell of CLAUDE.md's Repo map.
 - [x] (2026-09-10) Milestone 3: Architect protocol — Build section replaces the handoff; Executor protocol — PLAN-EXECUTION reframed as the recovery path; issue-tracker SKILL.md, sweep-setup.md, execute-dispatch.sh header text. Three protocol-content assertions moved with the prose (see Surprises); `test-protocol-content.sh` green.
 - [x] (2026-09-10) Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording. `doperpowers:using-git-worktrees` does not exist as a skill, so execplan Step 3 keeps the existing `../subagent-driven-execution/isolated-workspace.md` link as the plan directs. The reconciliation grep left one hit to fix: the architect protocol's "repair or re-cut the plan, and hand off again" became "take the build edge again"; the epic-recomposition "ANY exit — handoff, park, verdict" stays, since an epic exit genuinely is one of those.
-- [ ] Milestone 5 (completed: protocol-content assertions, all five suites + shellcheck green, version 7.81.0 → 7.82.0; remaining: the live mechanism check with a scratch seat).
+- [x] (2026-09-10) Milestone 5: protocol-content assertions, all five suites + shellcheck green, version 7.81.0 → 7.82.0, and the live mechanism check — the seat read `busy` for the whole build with its `NOW` column tracking `build: milestone 1/2` → `2/2`, and both commits landed.
 - [ ] Final: whole-branch external review, retrospective written below, branch merged.
 
 
@@ -35,6 +35,18 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
   Evidence (2026-09-10): a general-purpose sonnet subagent reported `agent_tool_available: yes`, `nested_dispatch: ok`, `nested_reply: PONG`, `resume_via_sendmessage: ok (PONG2)`. Depth-2 fan-out (Architect → plan-executor → task executors and reviewers) is therefore available.
 - Observation (implementation, M1): widening the architect lane's state tuple alone broke two existing dispatch assertions, because `_slots_used` deliberately falls back to STATE ALONE for a meta carrying no `role` field (a pre-role-write meta). Once `in-progress` is shared by both lanes, that fallback charges one roleless worker to BOTH caps: the fixture's roleless `4-mid-flight-work` meta on an in-progress ticket started occupying the single architect slot and suppressed the unrelated architect dispatch.
   Evidence: `[FAIL] a pre-existing working implement meta occupies its lane's slot … expected to find: 2 / in: 1`. Fixed by making the architect lane require an explicit `ARCHITECT` role on `in-progress` only (every other architect state keeps the roleless fallback); a roleless meta there stays in the implement lane, where it has always been. Both assertions pass again.
+- Observation (live check, M5): the fold's two load-bearing runtime behaviours both hold, on the substitute dispatch the plan anticipated. A `sonnet` seat spawned with `sminos spawn fold-live … --cwd /tmp/fold-live` dispatched one subagent and ended its turn; `sminos list` reported it `working / busy` for the entire build, and its `NOW` column moved `(empty)` → `build: milestone 1/2` → `build: milestone 2/2` → `build: 2/2 done …` before going `idle`. `git -C /tmp/fold-live log --oneline` then showed `1976a32 world`, `0014b75 hello` on `main`, and `sminos reply fold-live` printed a `status: DONE_WITH_CONCERNS` line in the required shape (status / commit range / tests / residue).
+  Evidence: consecutive `sminos list` samples 20s apart —
+
+      fold-live  fold-live  -  working  busy  a48e663c  fold-live  (empty)
+      fold-live  fold-live  -  working  busy  a48e663c  fold-live  build: milestone 1/2
+      fold-live  fold-live  -  working  busy  a48e663c  fold-live  build: milestone 2/2
+      fold-live  fold-live  -  working  idle  a48e663c  fold-live  build: 2/2 done — commits on main; /tmp/fold-l…
+
+- Observation (live check, M5): `doperpowers:plan-executor` did NOT resolve in the spawned seat, and the substitution the plan pre-authorised was used. The installed plugin is a git checkout at `~/.claude/plugins/marketplaces/doperpowers` still on 7.81.0; a seat loads that, not this worktree, so the new agent file is invisible to it until the version ships. The seat fell back to `subagent_type: "general-purpose"` with `model: "opus"` and the agent body pasted into the prompt.
+  Evidence: `grep -ho '"subagent_type":"[^"]*"' ~/.claude/projects/-private-tmp-fold-live/*.jsonl` → `1 "subagent_type":"general-purpose"`; `"model":"opus"` on the same dispatch. Agent registration is therefore still unverified end-to-end and is the one acceptance clause this branch cannot prove before install; the mechanism the check exists for (busy-while-building, the status line, a seat dispatching and ending its turn) is proven.
+- Observation (live check, M5): the executor created its own git worktree for the scratch repo (`/tmp/fold-live-wt`) even though the brief named the checkout it was dispatched into, which left `/tmp/fold-live`'s working tree pointing at the old commit while `main` carried both new ones. Harmless here (scratch, cleaned up), but it is a real signal for the brief: "work on the branch the brief names, in the checkout you were dispatched into" competes with the executor's own isolation instinct, and a board Architect's brief should say which checkout is authoritative rather than assume.
+  Evidence: the returned residue line — `git -C /tmp/fold-live status --short` showed `M PLAN.md` / `D hello.txt` staged after a `DONE_WITH_CONCERNS` return whose commits were nonetheless correct.
 - Observation (implementation, M3): three assertions in `tests/issue-tracker/test-protocol-content.sh` had to move with the prose, not just be added to. Two of them the plan anticipated in spirit but scheduled as "pre-existing assertions still pass" for M3: `assert_contains "$arch" "Ends at the plan"` is the exact string the new Role paragraph deletes, and `"a cattle clone fetches the plan's sha from"` is the sentence the verbatim Build section replaces. The third was ALREADY FAILING on `main` before any edit here: it asserts the architect protocol names `doperpowers:codex-companion's \`adversarial-review\` verb`, but both the protocol and `skills/writing-plans/SKILL.md` name the `doperpowers:adversarial-reviewer` agent — the codex verb was retired and the test kept the stale name.
   Evidence: `git stash && tests/issue-tracker/test-protocol-content.sh` → `1 test(s) FAILED`, that assertion alone. Re-pointed at the live mechanism, which is what the assertion's own description asks for ("by its real mechanism").
 
@@ -451,8 +463,32 @@ Version: 7.81.0 → 7.82.0 via `scripts/bump-version.sh 7.82.0` (package.json,
 .claude-plugin/plugin.json, .codex-plugin/plugin.json,
 .claude-plugin/marketplace.json all in sync).
 
-The `sminos list` lines from the live check and the PR URL follow below as
-they are produced.
+Live mechanism check (2026-09-10, seat `fold-live/fold-live`, `a48e663c`),
+scratch repo `/tmp/fold-live`, plan `/tmp/fold-live/PLAN.md`, two milestones:
+
+    ALIAS      GROUP      ROLE  STATUS   LIVE  SHORT     NOW
+    fold-live  fold-live  -     working  busy  a48e663c
+    fold-live  fold-live  -     working  busy  a48e663c  build: milestone 1/2
+    fold-live  fold-live  -     working  busy  a48e663c  build: milestone 2/2
+    fold-live  fold-live  -     working  idle  a48e663c  build: 2/2 done — commits on main; /tmp/fold-l…
+
+    $ git -C /tmp/fold-live log --oneline
+    1976a32 world
+    0014b75 hello
+    1657b46 plan: absolute sminos path
+    cd7c73a plan
+    5017d73 init
+
+    $ sminos reply fold-live
+    status: DONE_WITH_CONCERNS
+    commit range: 1657b46..1976a32 — 0014b75 hello, 1976a32 world, both on main
+    …
+
+Seat retired with `sminos retire fold-live --purge`; `/tmp/fold-live` and its
+worktree removed. The dispatch used the `general-purpose` / `opus` substitution
+(see Surprises) because the installed plugin is still 7.81.0.
+
+No PR: this branch is handed back to the session that authored the plan.
 
 
 ## Interfaces and Dependencies
