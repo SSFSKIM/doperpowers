@@ -30,23 +30,9 @@ Save to `docs/doperpowers/execplans/YYYY-MM-DD-<topic>.md` (omit the triple-back
 
 ## Step 3 — Execute
 
-Dispatch one `doperpowers:plan-executor` subagent (Agent tool,
-`subagent_type: "doperpowers:plan-executor"`) with the ExecPlan's path,
-the branch of an isolated workspace ([../subagent-driven-execution/isolated-workspace.md](../subagent-driven-execution/isolated-workspace.md) —
-create it first), and a report file path. It follows PLANS.md's
-implementing contract: no prompts for next steps, ambiguities resolved
-from the plan, `Progress`, `Surprises & Discoveries`, and the `Decision
-Log` kept current, frequent commits. It returns `DONE` with the branch
-ready for the exit gate, or `BLOCKED` naming the plan text it cannot
-absorb — revise the plan (the grill already exhausted the human-grade
-questions; a new one goes to your human partner), then continue the same
-subagent with SendMessage. Executing the plan in this session yourself is
-the fallback when no subagent can be dispatched.
+In an isolated workspace ([../subagent-driven-execution/isolated-workspace.md](../subagent-driven-execution/isolated-workspace.md)). Follow PLANS.md's implementing contract as written: do not prompt your human partner for next steps; resolve ambiguities autonomously (the grill already exhausted the ones that needed a human); keep `Progress`, `Surprises & Discoveries`, and the `Decision Log` current at every stopping point; commit frequently.
 
-This profile fits durable background sessions — seats spawned through
-doperpowers:sminos: the ExecPlan is exactly what a spawn prompt can
-carry, and it survives the seat's context death — the document is the
-memory.
+This profile fits durable background sessions — seats spawned through doperpowers:sminos: the ExecPlan is exactly what a spawn prompt can carry, and it survives the seat's context death — the document is the memory.
 
 ## Exit gate
 

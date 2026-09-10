@@ -151,8 +151,9 @@ The WORKER meanwhile audits executor protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
 body is the canonical primary spec, joined on an architect-lane ticket by
 the plan its `plan:` pin names at that immutable revision; drift since the
-authorization comment — the `[gate] pass`, or the Architect's
-`[board] ready-for-implementer:` handoff on a real-pin ticket — is
+authorization comment — the `[gate] pass`, or on a real-pin ticket the
+transition comment that minted the pin (`[board] ready-for-implementer:`
+for a handoff, `[board] in-progress: plan-execution:` for a build) — is
 resolved through GitHub edit-history timestamps; the verdict classes are
 PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
 progress), SPEC FINDING (fix-required; waves with native blockers), and

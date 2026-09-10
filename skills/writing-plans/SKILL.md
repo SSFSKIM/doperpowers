@@ -235,9 +235,8 @@ After saving the plan, report the path ("Plan complete and saved to `docs/doperp
 Evaluate its findings rather than accepting them wholesale; fix what survives.
 
 Then dispatch execution rather than running it here: one
-`doperpowers:plan-executor` subagent (Agent tool, `subagent_type:
-"doperpowers:plan-executor"`), briefed with the plan path, the spec path,
-the branch, and a report file path under the plan's directory. It reads
+`doperpowers:plan-executor` subagent, briefed with the plan path, the spec
+path, the branch, and a report file path under the plan's directory. It reads
 the header, invokes doperpowers:subagent-driven-execution, and runs that
 loop — fresh executor per task, reviews at dependency frontiers, fixes
 resuming the executor — in its own context, so yours stays the design

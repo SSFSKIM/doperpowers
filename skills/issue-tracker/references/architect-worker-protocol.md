@@ -134,18 +134,29 @@ branch are divergence evidence, not the contract) and the revision a
 recovery Executor fetches if this session is lost. `--branch` is not
 optional beside a pin.
 
-Then dispatch ONE `doperpowers:plan-executor` subagent (the Agent tool,
-`subagent_type: "doperpowers:plan-executor"`; its model and effort are
-pinned in its definition). The brief carries: the plan path and, for a
-spec-shaped plan, the spec path; the ticket number and URL; the branch;
-your seat alias (`{{ROLE}}`-lane seats are named `<n>-<slug>`; `sminos
-list` shows yours) and the sminos CLI path
-(`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos` — not on PATH) so it can
-keep your status line current; and a report
-file path under the plan's directory. An ExecPlan-shaped plan runs
-sequentially; a spec-shaped plan makes it the SDE controller, which
-dispatches its own task executors and reviewers — depth-2 fan-out is
-available and verified.
+When that edge is REFUSED for a stated reason — the ticket's surface is
+contested, or the board is an API board whose service does not carry the
+edge — hand off instead, with the same pin, and end your turn:
+
+{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "<brief context and intent>" --branch <branch> --plan <repo-path>@<full-commit-sha>
+
+The implement queue serializes the surface and an Executor runs
+PLAN-EXECUTION from that pin: the same plan, one lane over.
+
+Before dispatching, set your own status line once, so the fleet view says
+what this seat is doing:
+`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias>
+"building: <plan path>"` (the CLI is not on PATH; your seat is named
+`<n>-<slug>` and `sminos list` shows it). Progress itself lives in the SDE
+ledger or the ExecPlan's `Progress` section, and `sminos attach` shows the
+live session.
+
+Then dispatch ONE `doperpowers:plan-executor` subagent. The brief carries:
+the plan path and, for a spec-shaped plan, the spec path; the ticket number
+and URL; the branch; and a report file path under the plan's directory. An
+ExecPlan-shaped plan runs sequentially; a spec-shaped plan makes it the SDE
+controller, which dispatches its own task executors and reviewers —
+depth-2 fan-out is available and verified.
 
 While it runs your session is busy in the harness's eyes even though
 your turn has ended, so the sweep leaves you alone; its completion or
@@ -174,10 +185,10 @@ not registered does not exist — then close your scope:
 From the PR on, the review loop owns the path to merge. This transition
 ends your scope and releases your binding.
 
-The down-shortcircuit and the decompose exits above are unchanged: a
-ticket whose pre-spec suffices goes to `ready-for-implementer` with
-`--plan pre-spec` for an Executor worker, and an epic's children are
-registered, never built here.
+The other exits above are unchanged: a ticket whose pre-spec suffices goes
+to `ready-for-implementer` with `--plan pre-spec` for an Executor worker, a
+refused build edge goes to that same lane carrying its real pin, and an
+epic's children are registered, never built here.
 
 ## If Resumed With Answers
 

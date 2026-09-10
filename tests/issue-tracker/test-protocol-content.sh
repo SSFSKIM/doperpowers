@@ -58,7 +58,8 @@ assert_contains "$proto" "## Validation Evidence" "validation-evidence section m
 assert_contains "$proto" "## Confusions" "confusions section (conditional) mandated"
 assert_contains "$proto" "ORIENTATION SUMMARY" "park orientation summary mandated"
 assert_contains "$proto" "no live progress mirror" "no-mirror doctrine stated in the protocol"
-assert_contains "$proto" "pick up from where the work actually stands" "PLAN-EXECUTION is the recovery lane — it resumes work already under way"
+assert_contains "$proto" "from where the work actually stands" "PLAN-EXECUTION is the recovery lane — it resumes work already under way"
+assert_contains "$proto" "the build edge was refused" "...and the other way in: an Architect whose build edge was refused hands off the same pin"
 assert_contains "$proto" "never from the top" "...and says so where the mode is selected"
 assert_not_contains "$proto" "land on main independently" "landability criterion lives in the gate file, not the protocol"
 assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
@@ -245,6 +246,10 @@ assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt:
 assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 assert_contains "$arch" "## Build" "the Architect has a Build phase, not just a handoff"
 assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is the build edge with the plan-execution note"
+# The build edge can be refused (a contested surface, an API board whose
+# service has no such edge). The fallback is the legacy handoff with the same
+# pin — without it a refused Architect has nowhere to go but a park.
+assert_contains "$arch" "hand off instead" "a refused build edge hands off the same pin to the implement queue"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
 REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
@@ -255,6 +260,10 @@ assert_contains "$arch" "env-issue" "architect protocol carries env-issue author
 assert_contains "$proto" "env-issue" "executor protocol carries env-issue authority"
 assert_contains "$spike" "env-issue" "spike protocol carries env-issue authority"
 assert_contains "$review" "env-issue" "review protocol carries env-issue authority"
+# The audit's authorization anchor: whichever transition comment MINTED the
+# pin. The Architect's build edge mints one too, so naming only the handoff
+# comment left a built-by-Architect ticket with no anchor at all.
+assert_contains "$review" "in-progress: plan-execution:" "the audit anchors on the build edge's pin-minting comment too"
 assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-issue filing is fire-and-continue"
 # One doctrine in four voices: the load-bearing clauses are pinned in EVERY
 # copy. The --note pin is a regression guard — board-register.sh dies on an
@@ -434,6 +443,7 @@ pexec="$(cat "$PLAN_EXECUTOR")"
 assert_contains "$pexec" "model: opus" "the plan-executor is pinned to the worker tier"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
+assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
