@@ -8,9 +8,9 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 
 Today a ticket that needs design is worked by two separate background sessions in sequence. An Architect session (frontier model) writes the plan, pins it on the ticket, hands the ticket to the `ready-for-implementer` queue, and ends. Later a dispatcher spawns an Executor session (worker model) that reads the plan from zero context and builds it. When the plan turns out to be genuinely blocked, the Executor pushes the ticket back to `ready-for-architect` and a third session, a fresh Architect with no memory of the design, re-reads everything.
 
-After this change one session owns the ticket from design to pull request. The Architect writes and pins the plan exactly as before, then instead of handing off it dispatches a subagent that executes the plan while the Architect session stays bound to the ticket. If the executor gets stuck, it reports back to the very session that wrote the plan, which still holds the design reasoning and can repair the plan on the spot. The same shape applies to an interactive session: after `doperpowers:writing-plans` or `doperpowers:execplan` produces a plan, the session dispatches the executor subagent rather than running the execution loop in its own context.
+After this change one session owns the ticket from design to pull request. The Architect writes and pins the plan exactly as before, then instead of handing off it dispatches a subagent that executes the plan while the Architect session stays bound to the ticket. If the executor gets stuck, it reports back to the very session that wrote the plan, which still holds the design reasoning and can repair the plan on the spot. The same shape applies to an interactive session after `doperpowers:writing-plans` produces a task-decomposed plan: the session dispatches the executor subagent rather than running the SDE loop in its own context. `doperpowers:execplan`'s Step 3 is deliberately NOT folded — it stays inline (revised 2026-09-10; see the Decision Log).
 
-What you can observe afterwards: `sminos list` shows the Architect seat as `busy` for the whole build with its status line reading something like `build: task 3/7`; the ticket moves `ready-for-architect → in-design → in-progress → in-review` under one bound session with no `ready-for-implementer` stop in between; a new registered agent `doperpowers:plan-executor` exists and is what both the board Architect and an interactive session dispatch; and the shell test suites for the board scripts and protocol content pass with new assertions covering the new edge and the new prose.
+What you can observe afterwards: `sminos list` shows the Architect seat as `busy` for the whole build, under the status line the Architect set for itself before dispatching (`building: <plan path>`); the ticket moves `ready-for-architect → in-design → in-progress → in-review` under one bound session with no `ready-for-implementer` stop in between; a new registered agent `doperpowers:plan-executor` exists and is what both the board Architect and an interactive session dispatch; and the shell test suites for the board scripts and protocol content pass with new assertions covering the new edge and the new prose.
 
 This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding the Reviewer worker into the same session is deliberately out of scope here, as is renaming the controlled/autonomous tracks.
 
@@ -24,6 +24,7 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - [x] (2026-09-10) Milestone 4: interactive parity — writing-plans handoff, execplan Step 3, subagent-driven-execution controller wording. `doperpowers:using-git-worktrees` does not exist as a skill, so execplan Step 3 keeps the existing `../subagent-driven-execution/isolated-workspace.md` link as the plan directs. The reconciliation grep left one hit to fix: the architect protocol's "repair or re-cut the plan, and hand off again" became "take the build edge again"; the epic-recomposition "ANY exit — handoff, park, verdict" stays, since an epic exit genuinely is one of those.
 - [x] (2026-09-10) Milestone 5: protocol-content assertions, all five suites + shellcheck green, version 7.81.0 → 7.82.0, and the live mechanism check — the seat read `busy` for the whole build with its `NOW` column tracking `build: milestone 1/2` → `2/2`, and both commits landed.
 - [x] (2026-09-10) Milestone 6 (added after the M5 review): the sweep's stall clock counts subagent transcripts as liveness — `_activity_epoch` in `board-sweep.sh`, both `live` arms of `pass_recover`, and a `test-board-sweep.sh` pair (tickets 73/74) that fails against the parent-only clock and passes against the tree clock.
+- [x] (2026-09-10) Fix wave on the whole-branch review's four findings: the API binding refuses the build edge client-side, the build edge yields to an occupied surface (one occupancy rule, shared with the dispatcher), the review audit anchors on whichever comment minted the pin, and the plan-executor carries the repo-facts contract — all under one rule, the handoff is the fallback whenever the build edge is refused. See the Revision Note at the bottom.
 - [ ] Final (completed: retrospective written below; whole-branch review run by `doperpowers:reviewer-high`, verdict `incorrect`, its one P1 verified, reproduced, and fixed in Milestone 6; all six checks green afterwards. Remaining: the merge — the implementing session was instructed not to push or open a PR, so integration belongs to the session that owns this branch).
 
 
@@ -95,6 +96,83 @@ This is phase 1 of a larger fold ("one ownable ticket = one session"). Folding t
 - Decision: the wrong-edge `--plan` refusal reads `--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build)` — each destination spelled with its source state rather than as a bare arrow.
   Rationale: the plan gives the message text AND requires the substring `in-design → ready-for-implementer` to survive for the existing assertion at `tests/issue-tracker/test-board-scripts.sh`. The plan's literal wording (`→ ready-for-implementer for a handoff`) does not contain it; repeating the source state in each clause satisfies both and reads no worse.
   Date/Author: 2026-09-10 / implementing session.
+- Decision (the unifying rule of the fix wave): whenever the build edge is
+  REFUSED for a stated reason, the legacy handoff is the fallback — the same
+  `--plan` pin on `in-design → ready-for-implementer`, after which the implement
+  queue serializes and an Executor runs PLAN-EXECUTION exactly as before.
+  Rationale: the fold removed the handoff as the DEFAULT, not as a path. Every
+  refusal the build edge can raise (a contested surface, a board whose service
+  has no such edge) leaves an Architect holding a finished, pushed, pinned plan;
+  without a named exit its only remaining move is a `needs-human` park, which
+  spends a human on a queueing problem the board already solves. One rule
+  covers every present and future refusal, and the artifact the Architect
+  already produced is exactly what the other lane consumes.
+  Date/Author: 2026-09-10 / fix wave, from the M5 review findings.
+- Decision: the API binding refuses `in-design → in-progress` client-side,
+  before any request, and names the handoff in the refusal.
+  Rationale: legality on that path is the board service's, and its state table
+  (a separate repo) has no such edge — the transition comes back 409 with a
+  generic illegal-transition message, and it comes back AFTER the Architect has
+  committed and pushed the plan. A client-side refusal is the only place the
+  exit can be named. The two mirrored build-edge checks below it are thereby
+  unreachable on that path and stay: the day the service's state table gains
+  the edge, deleting the refusal is the whole change.
+  Date/Author: 2026-09-10 / fix wave.
+- Decision: the build edge yields to an occupied surface, under the
+  dispatcher's own occupancy rule, moved into `_board.surface_occupant` and
+  called by both callers; `SURFACE_OVERRIDE=1` bypasses it on stderr.
+  Rationale: the dispatcher deliberately admits an Architect onto an occupied
+  surface because design READS — a consolidation ticket has to be designable
+  while the surface is busy. Past the build edge the same session writes, with
+  no queue between it and the occupant, so the exemption ends exactly there.
+  Two copies of an occupancy rule are two rules eventually; one function, two
+  call sites, and `execute-dispatch.sh`'s behaviour is unchanged (its tests
+  pass unmodified). Gated on a loaded surfaces registry like every other
+  surface feature, so a leftover label in a repo whose registry was removed
+  cannot fence a build forever.
+  Date/Author: 2026-09-10 / fix wave.
+- Decision: the review audit's authorization anchor is whichever transition
+  comment MINTED the pin — `[board] ready-for-implementer:` for a handoff,
+  `[board] in-progress: plan-execution:` for an Architect's build edge — and
+  when both exist the later one carries the pin in force.
+  Rationale: a real pin means no `[gate] pass` exists, so the audit needs some
+  comment to key its drift rules to. The fold created a second minting edge and
+  the audit named only the first, which left every Architect-built ticket with
+  no anchor at all. The comment strings are what `_board.apply_state` actually
+  writes for a non-convergence edge with a note (`[board] <to>: <note>`), and
+  the build edge's note is the `plan-execution: <path>@<sha>` line the protocol
+  mandates. Both can exist on a ticket that took the handoff after a refused
+  build, or that bounced back for a re-cut; the later one is the one in force.
+  Date/Author: 2026-09-10 / fix wave.
+- Decision: `agents/plan-executor.md` carries the repo-facts contract the
+  IMPLEMENT worker has, generalized to any repository that declares
+  `.doperpowers/repo-facts.md`.
+  Rationale: the executor now does the building an IMPLEMENT worker used to do,
+  including the evidence claims a repo's manifest binds, so it needs the same
+  contract: bootstrap facts first, validation facts as the commands evidence
+  claims must use, evidence add-ons binding the PR body, and a manifest that
+  only ever ADDS — a contradiction with the plan is noted, not obeyed.
+  Date/Author: 2026-09-10 / fix wave.
+- Decision: `doperpowers:execplan`'s Step 3 stays inline — the interactive
+  session executes its own ExecPlan.
+  Rationale: an ExecPlan is one agent's sequential work, so delegating it in an
+  interactive session buys no fan-out and only removes the work from the
+  human's view. The board Architect delegates for a reason that does not apply
+  interactively: a frontier-model seat should not spend hours building. The
+  writing-plans path keeps its dispatch, where the delegated loop really is a
+  fan-out the design session should not hold in context.
+  Date/Author: 2026-09-10 / human partner, during the fix wave.
+- Decision: the plan-executor keeps no progress line of its own, its frontmatter
+  description is one sentence, and its ExecPlan contract is stated inline rather
+  than by citing `PLANS.md`.
+  Rationale: a per-milestone status line is a second progress record to keep
+  honest beside the ones that already exist (the SDE ledger, the ExecPlan's own
+  `Progress`), and `sminos attach` shows the live session anyway; what the fleet
+  view needs is one line saying what the seat is doing, which the dispatching
+  session sets once before dispatching. `PLANS.md` is the AUTHORING guide — an
+  executor told to follow it is told to follow the wrong document, so the four
+  clauses it actually needs are written out.
+  Date/Author: 2026-09-10 / human partner, during the fix wave.
 
 
 ## Outcomes & Retrospective
@@ -292,6 +370,8 @@ Create `agents/plan-executor.md` with exactly this content (frontmatter and body
     Environmental friction you routed around goes in the report; friction that
     blocked you is a `BLOCKED` return.
 
+(Revised 2026-09-10: the shipped body diverges from the text above — the `## Progress line` section is gone, the frontmatter `description` is one sentence, the ExecPlan contract is stated inline instead of citing `PLANS.md`, and a `## Repo facts` section carries the IMPLEMENT worker's manifest contract. `agents/plan-executor.md` is the artifact; see the Decision Log.)
+
 Add a row for it to the `agents/` entry of the Repo map table in `CLAUDE.md` (the project root), after the reviewer rungs: `plan-executor` (opus/high) executes a pinned plan for the session that authored it — SDE controller for a task-decomposed plan, sequential for an ExecPlan; dispatched by the board Architect and by writing-plans / execplan in an interactive session.
 
 ### Milestone 3 — the Architect builds; the Executor is the fallback
@@ -408,7 +488,7 @@ In `skills/writing-plans/SKILL.md`, replace the last block of `## Execution Hand
 
 Leave the plan header text (`REQUIRED SUB-SKILL: Use doperpowers:subagent-driven-execution`) exactly as it is: the plan-executor keys its mode off that line.
 
-In `skills/execplan/SKILL.md`, replace `## Step 3 — Execute` with:
+In `skills/execplan/SKILL.md` — REVISED 2026-09-10, and reverted in the fix wave: `## Step 3 — Execute` stays exactly as it is on `main`. An ExecPlan is one agent's sequential work, so an interactive session that delegates it buys no fan-out and only loses sight of the work; the daemon Architect delegates for a different reason (a frontier-model seat should not spend hours building). The superseded instruction, for the record, was to replace that step with:
 
     ## Step 3 — Execute
 
@@ -459,7 +539,7 @@ Run, from the worktree root:
 
 All must pass. Then bump the version: read the current one from `.claude-plugin/plugin.json`, add one to the minor number (7.81.0 → 7.82.0 if nothing else landed meanwhile; use whatever is current plus one minor), and run `scripts/bump-version.sh <new>`. Commit the bump with the milestone.
 
-Live mechanism check (no board involved): create a scratch git repository under `/tmp/fold-live/` with one file and a two-milestone ExecPlan at `/tmp/fold-live/PLAN.md` whose milestones are "create `hello.txt` containing `hello`, commit" and "append a line `world`, commit"; both with `sminos status <alias> "build: milestone N/2"` steps written in. Spawn a seat as the fold would: `skills/sminos/scripts/sminos spawn fold-live "<prompt>" --cwd /tmp/fold-live --model sonnet` where the prompt says: register nothing, dispatch one `doperpowers:plan-executor` subagent with the plan path `/tmp/fold-live/PLAN.md`, branch `main`, alias `fold-live`, report file `/tmp/fold-live/report.md`; end the turn after dispatching; on the completion notification reply with the returned status line. Then observe with `sminos list` that the seat is `busy` while the build runs and its `NOW` column changes to `build: milestone 1/2` then `2/2`; that `sminos reply fold-live` eventually prints a `DONE` line; and that `git -C /tmp/fold-live log --oneline` shows the two commits. Retire the seat with `sminos retire fold-live --purge` afterwards. Record the observed `sminos list` lines under Artifacts and Notes. Note: the registered agent is only visible to that seat if the plugin the seat loads is this checkout (a dev marketplace install pointing at the worktree, or the plugin cache already carrying the new version). If the seat cannot resolve `doperpowers:plan-executor`, run the same check with `subagent_type: "general-purpose"` and `model: opus` and the agent body pasted as the prompt's first section, and record that substitution here as a Surprise — the mechanism under test is the busy-while-building and status-line behaviour, not agent registration.
+Live mechanism check (no board involved): create a scratch git repository under `/tmp/fold-live/` with one file and a two-milestone ExecPlan at `/tmp/fold-live/PLAN.md` whose milestones are "create `hello.txt` containing `hello`, commit" and "append a line `world`, commit". (The check as run also had the executor write a per-milestone `sminos status` line, which is how the `NOW` column moves in the record below; that per-milestone line is no longer part of the contract — the dispatching session sets its own status once and progress lives in the plan's `Progress` section.) Spawn a seat as the fold would: `skills/sminos/scripts/sminos spawn fold-live "<prompt>" --cwd /tmp/fold-live --model sonnet` where the prompt says: register nothing, dispatch one `doperpowers:plan-executor` subagent with the plan path `/tmp/fold-live/PLAN.md`, branch `main`, alias `fold-live`, report file `/tmp/fold-live/report.md`; end the turn after dispatching; on the completion notification reply with the returned status line. Then observe with `sminos list` that the seat is `busy` while the build runs and its `NOW` column changes to `build: milestone 1/2` then `2/2`; that `sminos reply fold-live` eventually prints a `DONE` line; and that `git -C /tmp/fold-live log --oneline` shows the two commits. Retire the seat with `sminos retire fold-live --purge` afterwards. Record the observed `sminos list` lines under Artifacts and Notes. Note: the registered agent is only visible to that seat if the plugin the seat loads is this checkout (a dev marketplace install pointing at the worktree, or the plugin cache already carrying the new version). If the seat cannot resolve `doperpowers:plan-executor`, run the same check with `subagent_type: "general-purpose"` and `model: opus` and the agent body pasted as the prompt's first section, and record that substitution here as a Surprise — the mechanism under test is the busy-while-building and status-line behaviour, not agent registration.
 
 
 ## Concrete Steps
@@ -574,8 +654,49 @@ No PR: this branch is handed back to the session that authored the plan.
 
 `skills/issue-tracker/scripts/execute-dispatch.sh`, function `_slots_used`, must count `("ready-for-architect", "in-design", "in-progress")` for the architect lane.
 
-`agents/plan-executor.md` must exist with frontmatter `name: plan-executor`, `model: opus`, `effort: high`, and the body given in Milestone 2 verbatim; it is addressed as `doperpowers:plan-executor`.
+`agents/plan-executor.md` must exist with frontmatter `name: plan-executor`, `model: opus`, `effort: high`; it is addressed as `doperpowers:plan-executor`. The file itself is the body's contract (Milestone 2's text is the first draft, not the current one — see the Decision Log).
 
 The Architect protocol's build transition string is exactly `board-transition.sh {{ISSUE_NUMBER}} in-progress "plan-execution: <repo-path>@<full-commit-sha>" --branch <branch> --plan <repo-path>@<full-commit-sha>`.
 
 No new external dependency. The subagent nesting the design relies on (a subagent dispatching subagents and continuing them with SendMessage) and the harness's busy-while-a-subagent-runs reporting were both verified on 2026-09-10 and are recorded under Surprises & Discoveries.
+
+
+## Revision Note — 2026-09-10 (fix wave, post-review)
+
+An independent review of the branch returned four findings; all four are
+implemented above and each has a Decision Log entry. Under one rule: **the
+legacy handoff is the fallback whenever the build edge is refused for a stated
+reason.** The build edge is the Architect's default exit, not its only one.
+
+What changed against the plan as written:
+
+1. `board-transition.sh`'s api path refuses `in-design → in-progress`
+   client-side and names the handoff; the plan had assumed the edge was
+   binding-agnostic, but legality there belongs to a board service whose state
+   table does not carry it. Drilled in
+   `tests/claude-code/board-api/test-register-transition.sh`, which also had a
+   stale assertion on this branch (it still expected the pre-branch wording of
+   the wrong-edge `--plan` refusal) — fixed with it.
+2. The build edge now runs the surface-occupancy check. The plan's note that
+   "`_surface_occupant` already treats `in-progress` as occupied; nothing to
+   change" was true of the dispatcher and missed that the Architect enters
+   `in-progress` without passing the dispatcher at all. The rule moved into
+   `_board.surface_occupant`; `execute-dispatch.sh` calls it and its tests pass
+   unmodified.
+3. `skills/qa-loops/SKILL.md` (and the operation manual's summary of it) anchor
+   the audit on whichever transition comment minted the pin, since the build
+   edge mints one the audit did not know about.
+4. `agents/plan-executor.md` carries the repo-facts contract, and the Architect
+   and Executor protocols plus the issue-tracker state vocabulary name the
+   handoff fallback.
+
+Three further changes came from the human partner during the same wave and are
+in the Decision Log: the plan-executor's progress line is gone (the Architect
+sets its own seat status once before dispatching), its frontmatter description
+is one sentence and its ExecPlan contract is inline, and `execplan`'s Step 3 is
+back to `main` — interactive ExecPlan execution stays in the session.
+
+Suites after the wave: `test-board-scripts.sh`, `test-execute-dispatch.sh`,
+`test-board-sweep.sh`, `test-protocol-content.sh`, `run-sminos-tests.sh`,
+`lint-shell.sh`, and `board-api/test-register-transition.sh` all green. No
+version bump: 7.82.0 has not shipped — `main` is still 7.81.0.
