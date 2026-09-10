@@ -110,17 +110,18 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 ## Model selection
 
-`doperpowers:task-executor` and `doperpowers:task-reviewer` are pinned to
-opus at high reasoning effort; the task grain is calibrated to that tier,
-and fixes resume the same executor. A simple task — a doc update, a
-mechanical rename, a verification walk with every command given — can go
-to sonnet by passing `model: sonnet` at dispatch, which overrides the
-agent's pin. Never dispatch workers on the top tier (fable): it adds cost
-without adding reliability — the plan and the brief absorb the difficulty,
-not the model. When a worker reports BLOCKED on reasoning capacity rather
-than missing context, a sonnet task moves to opus; from opus there is no
-tier above — the difficulty moves into the brief: resolve the hard call
-yourself and re-dispatch, or split the task.
+`doperpowers:task-executor` is pinned to opus at high reasoning effort;
+the task grain is calibrated to that tier, and fixes resume the same
+executor. `doperpowers:task-reviewer` is pinned to sol at high effort
+through the local gateway, the same tier as the low review rung. A simple
+task — a doc update, a mechanical rename, a verification walk with every
+command given — can go to sonnet by passing `model: sonnet` at dispatch,
+which overrides the executor's pin. Never dispatch workers on the top
+tier (fable): it adds cost without adding reliability — the plan and the
+brief absorb the difficulty, not the model. When a worker reports BLOCKED
+on reasoning capacity rather than missing context, a sonnet task moves to
+opus; from opus there is no tier above — the difficulty moves into the
+brief: resolve the hard call yourself and re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: it goes through
 doperpowers:review-code at the level the branch warrants — it is the

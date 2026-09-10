@@ -1,6 +1,6 @@
 ---
 name: task-executor
-description: Implements one task of a subagent-driven-execution plan from its brief file, for the controller that dispatched it.
+description: Dispatch this agent during subagent-driven-execution to implement a task.
 model: opus
 effort: high
 color: blue

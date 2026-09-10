@@ -1,7 +1,7 @@
 ---
 name: task-reviewer
-description: Reviews one task of a subagent-driven-execution plan against its brief — spec compliance and code quality on the task's diff. Read-only.
-model: opus
+description: Dispatch this agent during subagent-driven-execution to review a task.
+model: sol
 effort: high
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent
