@@ -240,8 +240,5 @@ path, the branch, and a report file path under the plan's directory. It reads
 the header, invokes doperpowers:subagent-driven-execution, and runs that
 loop — fresh executor per task, reviews at dependency frontiers, fixes
 resuming the executor — in its own context, so yours stays the design
-session. It returns on completion (with the PR URL) or on a `BLOCKED`
-that names the plan text at issue: repair the plan or answer, then
-continue the same subagent with SendMessage; a fork that is your human
-partner's, put to them first. Running the loop in this session remains
-available when you want to watch every dispatch.
+session as an architect. It returns on completion (with the PR URL) or on a `BLOCKED`
+that names the plan text at issue: repair the plan or answer, or escalate to human if only human can unblock or provide necessary judgement, then continue the same subagent with SendMessage.
