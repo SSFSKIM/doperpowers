@@ -311,7 +311,7 @@ def issue(num, title, labels, state="OPEN", reason=None, body=""):
             "closesPRs": [], "xrefPRs": [], "comments": [],
             "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
             "url": "https://github.com/test/repo/issues/%d" % num}
-s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
+s = {"next": 75, "labels": ["status:needs-human", "status:in-progress",
                             "status:in-design", "status:ready-for-architect",
                             "status:in-review"], "issues": {
     "10": issue(10, "dead worker mid-build", ["status:in-progress"]),
@@ -425,6 +425,12 @@ s = {"next": 66, "labels": ["status:needs-human", "status:in-progress",
     "72": issue(72, "parked behind a long comment trail", ["status:needs-human"],
                 body="board:meta\nnote: q\n"),
     "71": issue(71, "child with a long comment trail", ["status:in-progress"]),
+    # The architect fold's stall pair: both are live workers past the build
+    # edge whose OWN transcript went quiet long ago. 73 has a subagent still
+    # writing (a plan-executor mid-build) and must survive; 74 is the same
+    # fixture with nothing under the session directory and must be reaped.
+    "73": issue(73, "architect building through a subagent", ["status:in-progress"]),
+    "74": issue(74, "architect silent everywhere", ["status:in-progress"]),
 }}
 s["issues"]["26"]["parent"] = 25
 s["issues"]["33"]["parent"] = 25
@@ -479,6 +485,8 @@ meta(U("aaaa0058"), "58-architect", "58", "working")
 meta(U("aaaa0060"), "60-recomposer", "60", "working")
 meta(U("aaaa0050"), "50-handed-off", "50", "working")
 meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
+meta(U("aaaa0073"), "73-building", "73", "working")
+meta(U("aaaa0074"), "74-silent", "74", "working")
 PY
 
 # sync verdicts per uuid (only consulted for working/blocked records —
@@ -493,7 +501,8 @@ json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0034"): "idle",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent",
            U("aaaa0050"): "live", U("aaaa0051"): "live",
-           U("aaaa0058"): "idle", U("aaaa0060"): "idle"},
+           U("aaaa0058"): "idle", U("aaaa0060"): "idle",
+           U("aaaa0073"): "live", U("aaaa0074"): "live"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
@@ -507,6 +516,21 @@ done
 touch "$HOME/.claude/projects/proj/aaaa0018-0000-4000-8000-000000000000.jsonl"
 touch "$HOME/.claude/projects/proj/aaaa0051-0000-4000-8000-000000000000.jsonl"
 touch "$HOME/.claude/projects/proj/aaaa0017-0000-4000-8000-000000000000.jsonl"
+
+# The stall clock counts DESCENDANT work. A session that dispatched a subagent
+# and ended its turn writes nothing to its own <uuid>.jsonl for the whole run;
+# the harness puts the child's stream in the sibling <uuid>/subagents/ tree.
+# 73 and 74 both have a parent transcript older than the stall threshold; only
+# 73 has a subagent file touched just now.
+for u in aaaa0073 aaaa0074; do
+  f="$HOME/.claude/projects/proj/$u-0000-4000-8000-000000000000.jsonl"
+  touch "$f"; touch -t 202607170000 "$f"
+done
+mkdir -p "$HOME/.claude/projects/proj/aaaa0073-0000-4000-8000-000000000000/subagents"
+touch "$HOME/.claude/projects/proj/aaaa0073-0000-4000-8000-000000000000/subagents/agent-x.jsonl"
+# ...and an EMPTY session directory is not activity either: 74 gets the dir
+# without a file, so the pair differs only in whether a child is writing.
+mkdir -p "$HOME/.claude/projects/proj/aaaa0074-0000-4000-8000-000000000000/subagents"
 
 # comments: 15 fresh human answer · 16 newest is [answers] · 17 stale comment
 cat > "$COMMENTS_DIR/15.json" <<'J'
@@ -564,6 +588,14 @@ log="$(cat "$ACTION_LOG")"
 # RECOVER
 assert_contains "$log" "resume:aaaa0010-0000-4000-8000-000000000000" "dead (absent) worker is resumed"
 assert_contains "$log" "resume:aaaa0012-0000-4000-8000-000000000000" "stalled live worker is resumed"
+# The architect fold: a delegated build is silent in its own transcript for as
+# long as it runs, so the parent-only clock reaped every build past the stall
+# threshold — and `sminos resume` stops the live turn first, killing the work.
+# Descendant transcripts are the activity signal.
+assert_not_contains "$log" "resume:aaaa0073-0000-4000-8000-000000000000" \
+  "a live worker whose subagent is still writing is NOT reaped, though its own transcript is stale"
+assert_contains "$log" "resume:aaaa0074-0000-4000-8000-000000000000" \
+  "...and the same fixture with nothing writing under its session dir still IS reaped"
 assert_contains "$log" "resume:aaaa0019-0000-4000-8000-000000000000" "an already-synced error record (sync noop) still recovers"
 assert_not_contains "$log" "resume:aaaa0018" "healthy live worker is left alone"
 assert_not_contains "$log" "resume:aaaa0011" "recovery cap exhausts — no fourth resume"
