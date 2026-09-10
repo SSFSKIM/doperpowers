@@ -844,6 +844,42 @@ def live_bound_tickets(include_reviewers=True):
     return live
 
 
+def surface_occupant(tickets, tid, surfaces, claimed=(), live=None):
+    """The first surface of `surfaces` (an iterable of names) that another
+    ticket already holds → (surface, occupant-label), else None.
+
+    THE one occupancy rule, shared by every gate that serializes a surface:
+    the dispatcher's implement gate and the Architect's build edge. A surface
+    is OCCUPIED when another open, non-epic ticket carrying the same label is
+    in an in-flight board state (in-progress / in-review / in-design) or is
+    live-bound to a non-reviewer worker (a reviewer's ticket is already
+    covered by its in-review state). Epics are excluded — they never hold a
+    working tree of their own. The spike exemption is LANE-scoped, not
+    category-scoped: a spike ticket in the architect queue routes ARCHITECT
+    (state outranks category) and its design run occupies like any
+    architect's. `claimed` is the caller's in-tick claim set (surfaces an
+    earlier dispatch this tick took, before any registry meta exists to see);
+    `live` lets a caller pass a registry read it already made."""
+    if live is None:
+        live = live_bound_tickets(include_reviewers=False)
+    claimed = set(claimed)
+    eps = epics(tickets)
+    for s in surfaces:
+        for t, m in tickets.items():
+            if t == tid or s not in m["surfaces"] or t in eps \
+               or m["state"] in TERMINAL:
+                continue
+            if m["category"] == "spike" \
+               and m["state"] not in ("ready-for-architect", "in-design"):
+                continue
+            if m["state"] in ("in-progress", "in-review", "in-design") \
+               or t in live:
+                return (s, "#%s" % t)
+        if s in claimed:
+            return (s, "an earlier dispatch this tick")
+    return None
+
+
 def ensure_surface_label(name):
     """Create the surface:<name> label if missing (idempotent; one list
     call per process would be nicer but registration is rare)."""

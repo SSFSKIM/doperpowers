@@ -602,30 +602,14 @@ _surface_occupant() {  # <ticket> <surfaces> <claimed>
 import os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
-tickets = B.snapshot()
-tid = os.environ["T_ID"]
-claimed = set((os.environ.get("T_CLAIMED") or "").split())
-live = B.live_bound_tickets(include_reviewers=False)
-epics = {t for t in tickets if any(
-    tickets[c].get("parent") == t for c in tickets)}
-for s in os.environ["T_SURFS"].split():
-    for t, m in tickets.items():
-        if t == tid or s not in m["surfaces"] or t in epics \
-           or m["state"] in B.TERMINAL:
-            continue
-        # Spike exemption is LANE-scoped, not category-scoped: a spike
-        # ticket in the architect queue routes ARCHITECT (state outranks
-        # category) and its design run must occupy like any architect's.
-        if m["category"] == "spike" \
-           and m["state"] not in ("ready-for-architect", "in-design"):
-            continue
-        if m["state"] in ("in-progress", "in-review", "in-design") \
-           or t in live:
-            print("%s|#%s" % (s, t))
-            raise SystemExit(0)
-    if s in claimed:
-        print("%s|an earlier dispatch this tick" % s)
-        raise SystemExit(0)
+# The rule itself lives in _board.surface_occupant — one definition, shared
+# with the Architect's build edge in board-transition.sh, so the two gates
+# that serialize a surface can never drift apart.
+hit = B.surface_occupant(B.snapshot(), os.environ["T_ID"],
+                         os.environ["T_SURFS"].split(),
+                         claimed=(os.environ.get("T_CLAIMED") or "").split())
+if hit:
+    print("%s|%s" % hit)
 PY
 }
 
