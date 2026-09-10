@@ -42,7 +42,8 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    comment.
 3. **Per task, in plan order:** extract the brief (`scripts/task-brief
    PLAN_FILE N`), record BASE (the current commit), dispatch the executor
-   ([executor-prompt.md](executor-prompt.md)) and write the task's
+   (`doperpowers:task-executor`, briefed per Dispatch hygiene below) and
+   write the task's
    `executed` ledger line with its agent handle (Durable Progress below)
    — fixes resume it. Answer its questions before it proceeds. One
    executor at a time — parallel executors conflict in a shared worktree.
@@ -54,8 +55,8 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    when the frontier closes (the next task consumes from them, or the
    plan ends): one review package per task (`scripts/review-package
    PLAN_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
-   per task ([task-reviewer-prompt.md](task-reviewer-prompt.md)) with the
-   printed path, dispatched together when their focused tests cannot
+   per task (`doperpowers:task-reviewer`) with the printed path,
+   dispatched together when their focused tests cannot
    collide — reviews read their package, not the tree, so hermetic suites
    run concurrently; suites that share mutable state — a test database, a
    fixed port — run one reviewer at a time.
@@ -87,7 +88,8 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    evidence there), and carries the refreshed checkout head and what
    landed since — plus a fresh detached worktree at the fix head if the
    review needs the task's own tree. A resumed reviewer otherwise judges
-   the fix against its pre-fix memory. A fresh fixer when the executor
+   the fix against its pre-fix memory. A fresh fixer (a new
+   `doperpowers:task-executor` briefed with the findings) when the executor
    cannot be resumed, or when its frame is the problem — two failed
    re-reviews is the usual sign. Record Minor findings in the ledger —
    the final review triages that list, so it is read, not discarded. Fix
@@ -108,22 +110,22 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 ## Model selection
 
-Dispatch workers — executors, task reviewers, fixers — on opus at high
-reasoning effort; the task grain is calibrated to that tier. A simple
+`doperpowers:task-executor` is pinned to opus at high reasoning effort;
+the task grain is calibrated to that tier, and fixes resume the same
+executor. `doperpowers:task-reviewer` is pinned to sol at high effort
+through the local gateway, the same tier as the low review rung. A simple
 task — a doc update, a mechanical rename, a verification walk with every
-command given — can go to sonnet. Never dispatch workers on the top tier
-(fable): it adds cost without adding reliability — the plan and the brief
-absorb the difficulty, not the model. When a worker reports BLOCKED on
-reasoning capacity rather than missing context, a sonnet task moves to
-opus; from opus there is no tier above — the difficulty moves into the brief: resolve the hard call
-yourself and re-dispatch, or split the task.
+command given — can go to sonnet by passing `model: sonnet` at dispatch,
+which overrides the executor's pin. Never dispatch workers on the top
+tier (fable): it adds cost without adding reliability — the plan and the
+brief absorb the difficulty, not the model. When a worker reports BLOCKED
+on reasoning capacity rather than missing context, a sonnet task moves to
+opus; from opus there is no tier above — the difficulty moves into the
+brief: resolve the hard call yourself and re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: it goes through
 doperpowers:review-code at the level the branch warrants — it is the
 last gate before merge and the only reader of the entire branch.
-
-Name the model in every dispatch — an omitted model silently inherits your
-session's, usually the most expensive.
 
 ## Executor statuses
 
@@ -153,20 +155,27 @@ back — stays resident in your context for the rest of the session. Hand
 artifacts over as files (a real session's dispatch hit 42k chars, 99% of it
 pasted prior-task history):
 
+- The worker contracts — TDD, self-review, escalation statuses, the
+  report shape, the reviewer's rubric and read-only posture — live in the
+  agent definitions, not in your dispatch. A dispatch carries only what
+  is particular to this task.
 - The brief file is the single source of requirements; exact values
-  (numbers, magic strings, signatures, test cases) live only there. A
-  dispatch carries: one line on where the task fits; the brief path ("read
-  this first — it is your requirements"); interfaces and decisions from
-  earlier tasks the brief cannot know; your resolution of any ambiguity you
-  noticed in the brief; the report-file path and report contract.
+  (numbers, magic strings, signatures, test cases) live only there. An
+  executor dispatch carries: the task number and name; one line on where
+  the task fits; the brief path ("read this first — it is your
+  requirements"); the directory to work from; interfaces and decisions
+  from earlier tasks the brief cannot know; your resolution of any
+  ambiguity you noticed in the brief; the report-file path.
 - The report file is named after the brief (`task-N-brief.md` →
   `task-N-report.md`); the executor writes detail there and returns only
   status, commits, a one-line test summary, and concerns.
-- The task reviewer gets three paths — brief, report, review package — plus
-  the plan's binding constraints copied verbatim (exact values, formats,
-  stated relationships) and, for a deferred review, the checkout head and
-  what landed since (the template's Checkout line). Its template already
-  carries the process rules.
+- A reviewer dispatch carries three paths — brief, report, review package
+  — the task's BASE and HEAD, the plan's binding constraints copied
+  verbatim (exact values, formats, stated relationships — not process
+  rules, which the agent already holds) and, for a deferred review, a
+  checkout line: where the shared checkout sits, the sibling commits and
+  files that landed since HEAD, and the detached worktree at HEAD if one
+  was made. Omit the checkout line when the checkout is at HEAD.
 - `review-package` BASE is the commit you recorded before dispatching the
   executor — never `HEAD~1`, which silently drops all but the last
   commit of a multi-commit task. A re-review's BASE is the ledger's
