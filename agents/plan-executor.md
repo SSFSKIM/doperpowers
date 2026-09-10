@@ -29,8 +29,9 @@ dispatched into. Test-driven development applies to testable logic.
 
 ## Progress line
 
-Keep the seat's status line current when the brief gives you an alias:
-`sminos status <alias> "build: task 3/7 — <one line>"` (SDE) or
+Keep the seat's status line current when the brief gives you an alias and
+the sminos CLI path (the plugin's `skills/sminos/scripts/sminos`; it is not
+on PATH): `<sminos> status <alias> "build: task 3/7 — <one line>"` (SDE) or
 `"build: milestone 2/4 — <one line>"` (ExecPlan), updated when a task or
 milestone completes and when you block. This is the only progress the
 operator sees without attaching; a stale line reads as a stalled build.

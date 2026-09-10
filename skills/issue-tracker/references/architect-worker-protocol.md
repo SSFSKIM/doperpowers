@@ -139,7 +139,9 @@ Then dispatch ONE `doperpowers:plan-executor` subagent (the Agent tool,
 pinned in its definition). The brief carries: the plan path and, for a
 spec-shaped plan, the spec path; the ticket number and URL; the branch;
 your seat alias (`{{ROLE}}`-lane seats are named `<n>-<slug>`; `sminos
-list` shows yours) so it can keep your status line current; and a report
+list` shows yours) and the sminos CLI path
+(`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos` — not on PATH) so it can
+keep your status line current; and a report
 file path under the plan's directory. An ExecPlan-shaped plan runs
 sequentially; a spec-shaped plan makes it the SDE controller, which
 dispatches its own task executors and reviewers — depth-2 fan-out is
