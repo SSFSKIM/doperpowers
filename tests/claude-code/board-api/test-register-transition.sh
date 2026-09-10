@@ -302,8 +302,21 @@ PIN_OUT="$(mktemp)"
 V board-transition.sh 9 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   > "$PIN_OUT" 2>&1 || true
 t "a plan pin off the Architect handoff edge is refused" \
-  "rides the Architect handoff edge" cat "$PIN_OUT"
+  "rides the Architect edges out of in-design only" cat "$PIN_OUT"
 nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
+# THE BUILD EDGE IS GH-ONLY, TODAY. The Architect's in-design → in-progress
+# edge is not on the board service's state table, so the request would come
+# back a generic 409 after the plan was already pushed. The client refuses it
+# first and names the exit: the legacy handoff carries the same pin into the
+# implement queue, where an Executor runs PLAN-EXECUTION.
+: > "$FIX.log"
+V board-transition.sh 8 in-progress "plan-execution: docs/p.md@$(printf 'a%.0s' $(seq 40))" \
+  --branch tick/build --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+t "the build edge is refused client-side on an API board" \
+  "not supported by the API board service yet" cat "$PIN_OUT"
+t "...and the refusal names the handoff fallback" \
+  "hand off instead: ready-for-implementer" cat "$PIN_OUT"
+nt "and the build edge never reaches the wire" '"path": "/tickets/8/transition"' cat "$FIX.log"
 V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@deadbeef" \
   > "$PIN_OUT" 2>&1 || true
 t "a short-sha pin is refused as mutable" "immutable pin" cat "$PIN_OUT"

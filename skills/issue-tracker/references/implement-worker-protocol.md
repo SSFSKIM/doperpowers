@@ -34,9 +34,20 @@ MODE SELECTION — read your ticket's `board:meta` block first. The
 `plan:` field decides your mode — machine-read, never note prose:
 
 - `plan: <path>@<sha>` → **PLAN-EXECUTION**: an Architect authored your
-  plan at that immutable revision on the recorded branch. NO intake
-  gate — the Architect's phase carried the quality machinery (council,
-  spec/plan review); you do not re-run the gate or re-judge the design.
+  plan at that immutable revision on the recorded branch and, in the
+  normal course, executed it itself through its plan-executor subagent.
+  You are here because the build edge was refused (a contested surface, or
+  an API board whose service lacks the edge), because that session was
+  lost (the sweep's recovery cap ran out and the human returned the
+  ticket to this lane), or because a human chose this lane. Pick up
+  from where the work actually stands — an SDE ledger at
+  `.doperpowers/sde/<plan-basename>/progress.md` on the branch, or the
+  ExecPlan's own `Progress` section — never from the top on the strength
+  of an assumption. A refused build edge is the case where nothing was
+  built yet, and the top IS where the work stands.
+  NO intake gate — the Architect's phase carried the quality machinery
+  (council, spec/plan review); you do not re-run the gate or re-judge
+  the design.
 - `plan: pre-spec` → **DIRECT**, with the plan-need ruling inherited:
   the Architect explicitly ruled the pre-spec suffices. Run the gate,
   but its plan-need check is bound by that ruling — you may still park

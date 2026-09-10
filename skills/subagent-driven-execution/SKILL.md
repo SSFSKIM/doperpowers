@@ -35,9 +35,11 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
    dispatching anything.
 2. **Pre-flight:** scan the plan for tasks that contradict each other, the
    Global Constraints, or the review rubric (e.g. a mandated test that
-   asserts nothing). Present findings to your human partner as one batched
-   question — each beside the plan text that mandates it — before execution;
-   a clean scan proceeds without comment.
+   asserts nothing). Present findings as one batched question — each
+   beside the plan text that mandates it — to whoever dispatched you (the
+   plan's author session, or your human partner when you are running the
+   loop yourself) before execution; a clean scan proceeds without
+   comment.
 3. **Per task, in plan order:** extract the brief (`scripts/task-brief
    PLAN_FILE N`), record BASE (the current commit), dispatch the executor
    ([executor-prompt.md](executor-prompt.md)) and write the task's
@@ -110,11 +112,10 @@ Dispatch workers — executors, task reviewers, fixers — on opus at high
 reasoning effort; the task grain is calibrated to that tier. A simple
 task — a doc update, a mechanical rename, a verification walk with every
 command given — can go to sonnet. Never dispatch workers on the top tier
-(fable): it adds cost without adding reliability and is the controller's
-tier, not the worker's — the plan and the brief absorb the difficulty,
-not the model. When a worker reports BLOCKED on reasoning capacity rather
-than missing context, a sonnet task moves to opus; from opus there is no
-tier above — the difficulty moves into the brief: resolve the hard call
+(fable): it adds cost without adding reliability — the plan and the brief
+absorb the difficulty, not the model. When a worker reports BLOCKED on
+reasoning capacity rather than missing context, a sonnet task moves to
+opus; from opus there is no tier above — the difficulty moves into the brief: resolve the hard call
 yourself and re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: it goes through
@@ -134,9 +135,10 @@ session's, usually the most expensive.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
   reasoning capacity (sonnet → opus; from opus, resolve the hard call in
-  the brief), task too large (split it), plan wrong (escalate to the
-  human). Something must change — a bare retry
-  answers an escalation with nothing.
+  the brief), task too large (split it), plan wrong (return to the
+  session that dispatched you, or to the human when that is you).
+  Something must change — a bare retry answers an escalation with
+  nothing.
 
 **Reviewer ⚠️ items** — requirements the reviewer could not verify from the
 diff (unchanged code, cross-task) come back marked ⚠️. Resolve each one
@@ -174,8 +176,9 @@ pasted prior-task history):
   flag ("don't treat X as a defect", "at most Minor") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
   come back. A finding that conflicts with the plan's own text is the
-  human's decision: present the finding and the plan text, ask which
-  governs.
+  plan author's decision: return it with the finding and the plan text and
+  ask which governs — the author session repairs the plan or escalates to
+  your human partner.
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;

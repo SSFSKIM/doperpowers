@@ -238,6 +238,41 @@ _mtime_iso() {
   date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
 }
 
+# Newest activity anywhere in a session's transcript TREE, epoch seconds;
+# empty when the session has no transcript at all (callers read that as "no
+# signal" and skip, exactly as they did with a missing file).
+#
+# The parent <uuid>.jsonl is only half the story. A session whose turn has
+# ENDED while a subagent it dispatched keeps working writes nothing to its own
+# file for the entire run — the harness puts the child's stream in the sibling
+# directory <uuid>/subagents/agent-*.jsonl instead. So the parent-only clock
+# reads a perfectly healthy delegated build as silence, and the stall arms
+# below reap it: `sminos resume` stops the live turn first, killing the work,
+# and the recovery cap eventually force-parks the ticket. Observed on a
+# four-minute delegated build: a 3m42s hole in the parent while the child's
+# file was appended to within two seconds of the return. Descendant work IS
+# the session being alive, so the stall clock takes the newest mtime in the
+# whole tree. (The meta's `updated` stays out of it — the sync in each caller
+# bumps it, which is why the transcript is the clock in the first place.)
+_activity_epoch() {  # <session-uuid>
+  local tx dir newest e f
+  tx="$(_transcript "$1")"
+  [ -n "$tx" ] || return 0
+  newest="$(_mtime_epoch "$tx" 2>/dev/null || true)"
+  dir="${tx%.jsonl}"
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      e="$(_mtime_epoch "$f" 2>/dev/null || true)"
+      [ -n "$e" ] || continue
+      if [ -z "$newest" ] || [ "$e" -gt "$newest" ]; then newest="$e"; fi
+    done <<EOF
+$(find "$dir" -type f 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$newest"
+}
+
 _recover() {  # <ticket> <uuid> <recoveries> <why>
   local tk="$1" uuid="$2" recov="$3" why="$4"
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
@@ -262,7 +297,7 @@ _recover() {  # <ticket> <uuid> <recoveries> <why>
 }
 
 pass_recover() {
-  local acted=0 state tk uuid status current recov fin tx age
+  local acted=0 state tk uuid status current recov fin tx age act
   while IFS='|' read -r state tk uuid status current _ recov is_epic; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked|error) ;; *) [ "$status" = "idle" ] || continue ;; esac
@@ -293,9 +328,12 @@ pass_recover() {
           error)  _recover "$tk" "$uuid" "$recov" "turn errored"; acted=$((acted+1)) ;;
           idle)   _recover "$tk" "$uuid" "$recov" "finished without a board transition"; acted=$((acted+1)) ;;
           live)
-            tx="$(_transcript "$current")"
-            if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
+            # Silence measured across the whole transcript tree: an Architect
+            # past the build edge has ended its turn and is silent in its own
+            # file while its plan-executor subagent works. See _activity_epoch.
+            act="$(_activity_epoch "$current")"
+            if [ -n "$act" ]; then
+              age="$(( ( $(date +%s) - act ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 _recover "$tk" "$uuid" "$recov" "silent for ${age}m (stall threshold ${STALL_MIN}m)"
                 acted=$((acted+1))
@@ -320,11 +358,13 @@ pass_recover() {
             # as long as the process lingers. Retire the binding — not the
             # in-flight arm's resume ladder, which exists for a worker that
             # still owns its exit. Same silence signal as that arm: the
-            # transcript's mtime, the only stable turn-end clock here (the
-            # meta's `updated` is bumped by the sync just above).
-            tx="$(_transcript "$current")"
-            if [ -n "$tx" ]; then
-              age="$(( ( $(date +%s) - $(_mtime_epoch "$tx" || date +%s) ) / 60 ))"
+            # transcript tree's newest mtime, the only stable turn-end clock
+            # here (the meta's `updated` is bumped by the sync just above).
+            # A live worker with a working subagent is not silent, on this
+            # state as much as on an in-flight one.
+            act="$(_activity_epoch "$current")"
+            if [ -n "$act" ]; then
+              age="$(( ( $(date +%s) - act ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
                 log "[sweep] RECOVER: #$tk worker $uuid is live but silent for ${age}m (threshold ${STALL_MIN}m) on a handed-off $state ticket — retiring the binding; it owns no further writes here"
                 "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1 || true

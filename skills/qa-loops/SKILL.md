@@ -133,9 +133,11 @@ Read the PR body, the ticket brief, and the diff shape
 full range is the engine's job — read what your audit needs, not to
 re-review. Locate the process evidence on the ticket: the `[gate] pass`
 comment (its GitHub timestamp is the authorization time) — or, on a
-`plan: <path>@<sha>` ticket, the `[board] ready-for-implementer:`
-handoff comment instead — and any human answers posted while the ticket
-was parked. Until JOIN, stay read-only in
+`plan: <path>@<sha>` ticket, the transition comment that MINTED the pin
+instead (`[board] ready-for-implementer:` for a handoff, `[board]
+in-progress: plan-execution:` for an Architect's build edge; when both
+exist, the later one carries the pin in force) — and any human answers
+posted while the ticket was parked. Until JOIN, stay read-only in
 this shared worktree: no test runs, no builds — the engine may be running
 its own.
 
@@ -248,11 +250,14 @@ audit against THAT; a material post-gate spec change the implementation
 never acknowledged is human-grade.
 
 On a ticket whose `plan:` pin names a revision (`<path>@<sha>`, not the
-`pre-spec` sentinel) there is no executor `[gate] pass` — that ticket
-ran in PLAN-EXECUTION mode, which posts none. The authorization time is
-the Architect's handoff: the `[board] ready-for-implementer:` comment's
-timestamp, and every rule in this audit keyed to the gate timestamp
-reads that comment instead. A `plan: pre-spec` ticket ran DIRECT and
+`pre-spec` sentinel) there is no executor `[gate] pass` — that ticket was
+built from a pinned plan, by the Architect's own plan-executor or by a
+worker in PLAN-EXECUTION mode, and neither posts one. The authorization
+time is the transition comment that MINTED that pin: `[board] ready-for-implementer:`
+for a handoff, `[board] in-progress: plan-execution:` for an Architect
+that built the plan itself. When both exist the later one carries the pin
+in force. Every rule in this audit keyed to the gate timestamp reads that
+comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT and
 carries a real `[gate] pass` — anchor on it as usual.
 
 The audit answers four questions: was the issue substantively ready for

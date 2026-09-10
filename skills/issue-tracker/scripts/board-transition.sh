@@ -215,8 +215,26 @@ print(row["state"] if row else "")
 PY
 )" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
     [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the handoff edge cannot be checked"
-    { [ "$_cur" = in-design ] && [ "$to" = ready-for-implementer ]; } \
-      || die "--plan rides the Architect handoff edge (in-design → ready-for-implementer) only (#$tid is $_cur → $to)"
+    # THE BUILD EDGE IS GH-ONLY, TODAY. Legality on this path is the board
+    # service's, and its state table has no in-design → in-progress entry: the
+    # request comes back 409 with a generic illegal-transition message, after
+    # the Architect has already pushed the plan. Refuse it here, where the
+    # exit can be named — the legacy handoff carries the same pin into the
+    # implement queue. (A build edge without --plan never reaches this block
+    # and still meets the server's 409; --plan is what the build edge is.)
+    { [ "$_cur" != in-design ] || [ "$to" != in-progress ]; } \
+      || die "the build edge (in-design → in-progress) is not supported by the API board service yet — hand off instead: ready-for-implementer \"<note>\" --branch <b> --plan <pin> (an Executor runs PLAN-EXECUTION)"
+    # The two build-edge checks below are consequently unreachable on this
+    # path today. They stay: they are the gh checks mirrored, and the day the
+    # service's state table gains the edge, deleting the refusal above is the
+    # whole change.
+    { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
+      || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
+    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
+    # names no revision, so a build edge carrying it would leave the review loop
+    # with nothing to audit against.
+    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ]; } \
+      || die "--plan pre-spec is the down-shortcircuit — it rides in-design → ready-for-implementer; the build edge (in-design → in-progress) needs a real <path>@<sha> pin"
     if [ "$plan" != pre-spec ]; then
       # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
       #    or a short sha that can move under the worker.
@@ -312,6 +330,40 @@ if cur == "in-design" and to in ("done", "in-review", "wontfix"):
               "verdict edges belong to recomposition (every child terminal). "
               "A reconciliation claim releases the epic instead: needs-info "
               "\"reconciled: ... — waiting on children\"" % (tid, to))
+# The build edge: in-design → in-progress keeps the binding with the Architect,
+# which executes its own plan through a doperpowers:plan-executor subagent
+# instead of handing the ticket to the implement queue. Epics never build (they
+# recompose), and a build with no pin is an Architect skipping the artifact the
+# review loop audits against and a recovery Executor fetches.
+if cur == "in-design" and to == "in-progress":
+    if tid in B.epics(tickets):
+        B.die("in-design → in-progress is the build edge — #%s is an epic; "
+              "epics recompose, they never build" % tid)
+    if not env["T_PLAN"]:
+        B.die("the build edge needs --plan <path>@<sha>: the Architect pins "
+              "the plan before executing it")
+    # SURFACE OCCUPANCY, and only here. The dispatcher deliberately admits an
+    # Architect onto an occupied surface — design reads, it does not write, and
+    # a consolidation ticket has to be designable while the surface is busy.
+    # Building is not read-only: past this edge the Architect's executor writes
+    # the same files as the occupant, with no queue between them. The rule is
+    # the dispatcher's own (B.surface_occupant), and the refusal has an exit
+    # rather than a wait — the legacy handoff carries the same pin into the
+    # implement queue, which serializes the surface, and an Executor runs
+    # PLAN-EXECUTION from it. Inert without a surfaces registry, like every
+    # other surface feature (a leftover label in a repo whose registry was
+    # removed must not fence a build forever).
+    if n["surfaces"] and B.surfaces_registry() is not None:
+        _occ = B.surface_occupant(tickets, tid, n["surfaces"])
+        if _occ and os.environ.get("SURFACE_OVERRIDE") == "1":
+            import sys as _sys_
+            _sys_.stderr.write(
+                "SURFACE_OVERRIDE=1: #%s takes the build edge onto occupied "
+                "surface %s (occupant %s)\n" % (tid, _occ[0], _occ[1]))
+        elif _occ:
+            B.die("surface %s is occupied by %s — hand off instead: "
+                  "ready-for-implementer with the same --plan; the implement "
+                  "queue serializes the surface" % (_occ[0], _occ[1]))
 if to == cur:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))
@@ -417,9 +469,17 @@ if env["T_PLAN"]:
     # return from needs-info/needs-human/interactive-preferred/deferred)
     # would otherwise mint one too — and there is no legitimate re-supply
     # case, since plan meta survives park round-trips untouched.
-    if cur != "in-design" or to != "ready-for-implementer":
-        B.die("--plan rides the Architect handoff edge (in-design → "
-              "ready-for-implementer) only")
+    if cur != "in-design" or to not in ("ready-for-implementer", "in-progress"):
+        B.die("--plan rides the Architect edges out of in-design only "
+              "(in-design → ready-for-implementer for a handoff, "
+              "in-design → in-progress for a build)")
+    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
+    # names no revision, so a build edge carrying it would leave the review loop
+    # with nothing to audit against.
+    if to == "in-progress" and env["T_PLAN"] == "pre-spec":
+        B.die("--plan pre-spec is the down-shortcircuit — it rides in-design → "
+              "ready-for-implementer; the build edge (in-design → in-progress) "
+              "needs a real <path>@<sha> pin")
     if env["T_PLAN"] != "pre-spec":
         if not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
             B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")

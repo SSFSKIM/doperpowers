@@ -45,6 +45,7 @@ NOTE_REQUIRED = ("needs-human", "needs-info", "interactive-preferred", "wontfix"
 # the state-keyed NOTE_REQUIRED cannot express them.
 EDGE_NOTE_REQUIRED = {
     ("in-design", "ready-for-implementer"),
+    ("in-design", "in-progress"),
     ("ready-for-implementer", "ready-for-architect"),
     ("in-progress", "ready-for-architect"),
     ("in-review", "ready-for-architect"),
@@ -52,7 +53,8 @@ EDGE_NOTE_REQUIRED = {
 # Convergence-counted escalation edges: a SECOND traversal of the same
 # edge on one ticket converts to a needs-human park (board-transition
 # enforces; count resets at the last [answers] comment).
-CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer")}
+CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer"),
+                                          ("in-design", "in-progress")}
 # Park-return targets (E1 transition 7): written into pre-park: meta at
 # needs-human park time; board-answer returns the ticket there. Always an
 # IN-FLIGHT state — returning to a dispatchable queue would race the sweep
@@ -95,10 +97,13 @@ LEGAL = {
     "ready-for-architect":   {"in-design", "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},
     # in-design: the Architect's in-flight state. Exit = transition 2/3
-    # (plan handoff / down-shortcircuit / decompose-epic) or a park.
+    # (plan handoff / down-shortcircuit / decompose-epic), the build edge
+    # (in-progress, leaf only, real plan pin required — the Architect keeps
+    # the binding and executes through doperpowers:plan-executor), or a park.
     # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
     # terminal-authority exception; board-transition enforces the guard).
-    "in-design":             {"ready-for-implementer", "needs-info",
+    "in-design":             {"ready-for-implementer", "in-progress",
+                              "needs-info",
                               "needs-human", "interactive-preferred",
                               "wontfix", "deferred", "done", "in-review"},
     "ready-for-implementer": {"in-progress", "ready-for-architect",
@@ -837,6 +842,42 @@ def live_bound_tickets(include_reviewers=True):
             if t:
                 live.add(t)
     return live
+
+
+def surface_occupant(tickets, tid, surfaces, claimed=(), live=None):
+    """The first surface of `surfaces` (an iterable of names) that another
+    ticket already holds → (surface, occupant-label), else None.
+
+    THE one occupancy rule, shared by every gate that serializes a surface:
+    the dispatcher's implement gate and the Architect's build edge. A surface
+    is OCCUPIED when another open, non-epic ticket carrying the same label is
+    in an in-flight board state (in-progress / in-review / in-design) or is
+    live-bound to a non-reviewer worker (a reviewer's ticket is already
+    covered by its in-review state). Epics are excluded — they never hold a
+    working tree of their own. The spike exemption is LANE-scoped, not
+    category-scoped: a spike ticket in the architect queue routes ARCHITECT
+    (state outranks category) and its design run occupies like any
+    architect's. `claimed` is the caller's in-tick claim set (surfaces an
+    earlier dispatch this tick took, before any registry meta exists to see);
+    `live` lets a caller pass a registry read it already made."""
+    if live is None:
+        live = live_bound_tickets(include_reviewers=False)
+    claimed = set(claimed)
+    eps = epics(tickets)
+    for s in surfaces:
+        for t, m in tickets.items():
+            if t == tid or s not in m["surfaces"] or t in eps \
+               or m["state"] in TERMINAL:
+                continue
+            if m["category"] == "spike" \
+               and m["state"] not in ("ready-for-architect", "in-design"):
+                continue
+            if m["state"] in ("in-progress", "in-review", "in-design") \
+               or t in live:
+                return (s, "#%s" % t)
+        if s in claimed:
+            return (s, "an earlier dispatch this tick")
+    return None
 
 
 def ensure_surface_label(name):

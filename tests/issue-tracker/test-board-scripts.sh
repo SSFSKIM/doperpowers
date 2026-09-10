@@ -65,10 +65,12 @@ import json, os
 sha = "0123456789abcdef0123456789abcdef01234567"
 json.dump({"compare": {"%s...%s" % (b, sha): "identical"
                        for b in ("tick/plan-probe", "tick/plan-clear", "tick/plan-keep",
-                                 "tick/conv-reset", "tick/reach", "tick/earlier")},
+                                 "tick/conv-reset", "tick/reach", "tick/earlier",
+                                 "tick/build-edge")},
            "contents": ["%s@%s" % (p, sha) for p in
                         ("docs/plans/x.md", "docs/p.md", "docs/q.md", "docs/plan.md",
-                         "docs/plans/reach.md", "docs/sneaky.md")]},
+                         "docs/plans/reach.md", "docs/sneaky.md",
+                         "docs/plans/b.md")]},
           open(os.environ["MOCK_GH_REFS"], "w"))
 REFS
 export MOCK_GH_LOG="$TEST_ROOT/gh-log.jsonl"
@@ -1317,6 +1319,107 @@ plan_err="$(run board-transition.sh "$pr_t" ready-for-implementer "unparked" \
 assert_contains "$plan_err" "in-design → ready-for-implementer" "the refusal names the full edge, not just the destination"
 assert_contains "$(state "s['issues']['$pr_t']['labels']")" "status:needs-info" "the refused park return wrote nothing"
 assert_not_contains "$(state "s['issues']['$pr_t']['body']")" "plan:" "a park return can never mint a plan pin"
+
+# ---- the build edge (in-design → in-progress) ---------------------------------
+# The Architect no longer hands its plan to the implement queue: it pins the
+# plan and executes it itself through a doperpowers:plan-executor subagent,
+# keeping the binding from design through the pull request. Same pin, second
+# edge — with three refusals that keep the pin meaningful.
+echo "build edge:"
+run board-register.sh "Build edge probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+be_t="$(state "s['next']-1")"
+run board-transition.sh "$be_t" in-design >/dev/null
+out="$(run board-transition.sh "$be_t" in-progress "plan-execution: docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" --branch tick/build-edge --plan "docs/plans/b.md@0123456789abcdef0123456789abcdef01234567")"
+assert_contains "$out" "#$be_t: in-design → in-progress" "a leaf Architect takes the build edge itself"
+assert_contains "$(state "s['issues']['$be_t']['body']")" "plan: docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" "the build edge records the plan pin"
+assert_contains "$(state "s['issues']['$be_t']['body']")" "branch: tick/build-edge" "...and the branch the sha is reachable from"
+# pre-spec is the DOWN-shortcircuit's sentinel: it names no revision, so a build
+# carrying it leaves the review loop nothing to audit against.
+run board-register.sh "Build edge pre-spec probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+be_ps_t="$(state "s['next']-1")"
+run board-transition.sh "$be_ps_t" in-design >/dev/null
+be_err="$(run board-transition.sh "$be_ps_t" in-progress "plan-execution: none" --branch tick/build-edge --plan pre-spec 2>&1 || true)"
+assert_contains "$be_err" "down-shortcircuit" "--plan pre-spec is refused on the build edge"
+assert_contains "$(state "s['issues']['$be_ps_t']['labels']")" "status:in-design" "the refused build wrote nothing"
+# ...and a build with no pin at all is an Architect skipping the artifact.
+be_err="$(run board-transition.sh "$be_ps_t" in-progress "plan-execution: none" --branch tick/build-edge 2>&1 || true)"
+assert_contains "$be_err" "needs --plan" "the build edge without a pin is refused"
+# The note carries the same words an Executor writes entering PLAN-EXECUTION.
+be_err="$(run board-transition.sh "$be_ps_t" in-progress --branch tick/build-edge --plan "docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" 2>&1 || true)"
+assert_contains "$be_err" "a note is required on the in-design → in-progress edge" "the build edge is note-required"
+# Epics recompose; they never build.
+run board-register.sh "Build edge epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+be_epic_t="$(state "s['next']-1")"
+run board-register.sh "Build edge epic child" enhancement P2 --parent "$be_epic_t" --body-file "$SPEC_BODY" >/dev/null
+be_kid_t="$(state "s['next']-1")"
+run board-transition.sh "$be_kid_t" in-progress >/dev/null
+run board-transition.sh "$be_kid_t" "done" >/dev/null
+run board-transition.sh "$be_epic_t" in-design >/dev/null
+be_err="$(run board-transition.sh "$be_epic_t" in-progress "plan-execution: docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" --branch tick/build-edge --plan "docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" 2>&1 || true)"
+assert_contains "$be_err" "epics recompose" "an epic is refused on the build edge"
+assert_contains "$(state "s['issues']['$be_epic_t']['labels']")" "status:in-design" "the refused epic build wrote nothing"
+# The API binding refuses this edge CLIENT-SIDE (its board service's state
+# table has no in-design → in-progress entry, so the request would 409 after
+# the plan was pushed). That path is untestable here — this suite is gh-only,
+# against mock-gh — and is drilled in
+# tests/claude-code/board-api/test-register-transition.sh instead.
+
+# ---- the build edge yields to an occupied surface ------------------------------
+# The dispatcher deliberately admits an Architect onto an occupied surface:
+# design reads, and a consolidation ticket must be designable while the surface
+# is busy. Building is not read-only, so the same occupancy rule the dispatcher
+# applies to an Executor (B.surface_occupant) applies to the Architect HERE, at
+# the edge where it stops designing. The refusal has an exit rather than a wait:
+# the legacy handoff carries the same pin into the implement queue, which
+# serializes the surface.
+echo "build edge / surface occupancy:"
+mkdir -p "$WORK/.doperpowers"
+printf '## payments\n- paths: services/payments/**\n' > "$WORK/.doperpowers/surfaces.md"
+git -C "$WORK" add .doperpowers/surfaces.md
+git -C "$WORK" -c user.email=t@t -c user.name=t commit -q -m surfaces
+SURF_REF="$(git -C "$WORK" rev-parse HEAD)"   # pinned per invocation: the
+# registry must not switch the whole suite's surface matching on
+label_surface() {  # <ticket>... — the label the dispatcher's matcher would add
+    python3 - "$@" <<'LBL'
+import json, os, sys
+path = os.environ["MOCK_GH_STATE"]
+s = json.load(open(path))
+for t in sys.argv[1:]:
+    s["issues"][t]["labels"].append("surface:payments")
+json.dump(s, open(path, "w"))
+LBL
+}
+BE_PIN="docs/plans/b.md@$SHA40"
+new_in_design() {  # <title> → a leaf ticket sitting in in-design
+    run board-register.sh "$1" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
+    local t; t="$(state "s['next']-1")"
+    run board-transition.sh "$t" in-design >/dev/null
+    echo "$t"
+}
+run board-register.sh "Surface occupant" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
+so_t="$(state "s['next']-1")"
+run board-transition.sh "$so_t" in-progress >/dev/null
+sb_t="$(new_in_design "Surface build probe")"
+label_surface "$so_t" "$sb_t"
+be_err="$(SURFACES_REF="$SURF_REF" run board-transition.sh "$sb_t" in-progress "plan-execution: $BE_PIN" --branch tick/build-edge --plan "$BE_PIN" 2>&1 || true)"
+assert_contains "$be_err" "surface payments is occupied by #$so_t" "the build edge yields to an occupied surface, naming the occupant"
+assert_contains "$be_err" "hand off instead: ready-for-implementer with the same --plan" "...and names the handoff as the exit"
+assert_contains "$(state "s['issues']['$sb_t']['labels']")" "status:in-design" "the refused build wrote nothing"
+# in-review occupies too — the rule is the dispatcher's, unchanged: a surface
+# whose PR is still open is a surface a second branch would collide with.
+run board-transition.sh "$so_t" in-review --pr "https://github.com/test/repo/pull/9" >/dev/null
+be_err="$(SURFACES_REF="$SURF_REF" run board-transition.sh "$sb_t" in-progress "plan-execution: $BE_PIN" --branch tick/build-edge --plan "$BE_PIN" 2>&1 || true)"
+assert_contains "$be_err" "surface payments is occupied by #$so_t" "an in-review occupant still holds the surface"
+# The operator's bypass, loudly.
+out="$(SURFACE_OVERRIDE=1 SURFACES_REF="$SURF_REF" run board-transition.sh "$sb_t" in-progress "plan-execution: $BE_PIN" --branch tick/build-edge --plan "$BE_PIN" 2>&1)"
+assert_contains "$out" "SURFACE_OVERRIDE=1" "SURFACE_OVERRIDE=1 takes the edge and says so"
+assert_contains "$(state "s['issues']['$sb_t']['labels']")" "status:in-progress" "...and the build edge went through"
+# The fallback the refusal names actually works: same pin, legacy handoff.
+sb2_t="$(new_in_design "Surface handoff fallback")"
+label_surface "$sb2_t"
+out="$(SURFACES_REF="$SURF_REF" run board-transition.sh "$sb2_t" ready-for-implementer "plan ready; surface busy" --branch tick/build-edge --plan "$BE_PIN")"
+assert_contains "$out" "#$sb2_t: in-design → ready-for-implementer" "the handoff is never surface-gated — the implement queue serializes it"
+assert_contains "$(state "s['issues']['$sb2_t']['body']")" "plan: $BE_PIN" "...and carries the same pin an Executor executes from"
 
 # ---- plan pin auto-clear (Finding B) -------------------------------------------
 # A superseded plan: pin is void by definition on two edges: any entry into

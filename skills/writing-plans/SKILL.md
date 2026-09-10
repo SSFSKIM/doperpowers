@@ -234,6 +234,14 @@ After saving the plan, report the path ("Plan complete and saved to `docs/doperp
 
 Evaluate its findings rather than accepting them wholesale; fix what survives.
 
-Then execute:
-- **REQUIRED SUB-SKILL:** Use doperpowers:subagent-driven-execution
-- Fresh executor per task; reviews at dependency frontiers; fixes resume the executor
+Then dispatch execution rather than running it here: one
+`doperpowers:plan-executor` subagent, briefed with the plan path, the spec
+path, the branch, and a report file path under the plan's directory. It reads
+the header, invokes doperpowers:subagent-driven-execution, and runs that
+loop — fresh executor per task, reviews at dependency frontiers, fixes
+resuming the executor — in its own context, so yours stays the design
+session. It returns on completion (with the PR URL) or on a `BLOCKED`
+that names the plan text at issue: repair the plan or answer, then
+continue the same subagent with SendMessage; a fork that is your human
+partner's, put to them first. Running the loop in this session remains
+available when you want to watch every dispatch.
