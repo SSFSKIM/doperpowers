@@ -231,9 +231,9 @@ PY
     { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
       || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
-    # its own body: no revision to pin (the review loop anchors on the gate
-    # pass, as for any pre-spec ticket), but the branch still names where the
-    # work lives — a recovery Executor runs DIRECT from the body on it.
+    # its own body: no revision to pin (the review loop anchors on this edge's
+    # comment), but the branch still names where the work lives — a recovery
+    # Executor runs DIRECT from the body on it.
     { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$branch" ]; } \
       || die "a pre-spec build needs --branch: the work lives there and a recovery Executor resumes from it"
     if [ "$plan" != pre-spec ]; then
@@ -478,9 +478,9 @@ if env["T_PLAN"]:
               "(in-design → ready-for-implementer for a handoff, "
               "in-design → in-progress for a build)")
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
-    # its own body: no revision to pin (the review loop anchors on the gate
-    # pass, as for any pre-spec ticket), but the branch still names where the
-    # work lives — a recovery Executor runs DIRECT from the body on it.
+    # its own body: no revision to pin (the review loop anchors on this edge's
+    # comment), but the branch still names where the work lives — a recovery
+    # Executor runs DIRECT from the body on it.
     if to == "in-progress" and env["T_PLAN"] == "pre-spec" \
             and not (env["T_BRANCH"] or n.get("branch")):
         B.die("a pre-spec build needs --branch: the work lives there and a "
