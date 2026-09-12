@@ -5,6 +5,8 @@ description: Use when taking a well-scoped, delegable piece of work through the 
 
 # ExecPlan Track
 
+> Retired 2026-09-12. The one-unit shape this skill served now lives in the living spec: `skills/brainstorming/references/living-spec.md` says what a spec that carries its own execution binds, brainstorming's step 9 and `agents/plan-executor.md` carry the execution contract, and PLANS.md moved to `skills/brainstorming/references/PLANS.md`. Kept for reference; not loaded by any harness. Design: `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
+
 ## Overview
 
 This repo has two development tracks. The controlled pipeline (doperpowers:brainstorming → living spec → doperpowers:writing-plans → doperpowers:subagent-driven-execution) keeps human involvement available as design judgment arises. This track front-loads that judgment in one grilling session, after which you author a single self-contained ExecPlan and execute it without interruption. It inherits brainstorming's approval boundary: unresolved product, taste, or substantive design decisions wait for your human partner; already-authorized technical scope proceeds once the grill closes. Autonomy is safe because the grill exhausted the ambiguity space.
