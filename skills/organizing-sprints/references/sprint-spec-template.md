@@ -15,7 +15,7 @@ A blockquote declaring:
 - **Living document** — which sections stay current during the sprint
   (Progress, Decision Log, Surprises, Retrospective) and that every
   revision lands in Revision Notes with a reason. This is the selective
-  transplant of living-spec discipline (brainstorming's references/living-spec.md, with PLANS.md beside it) to
+  transplant of living-spec discipline (brainstorming's references/living-spec.md) to
   umbrella scale: acceptance as observable behavior, living tail — but NO
   Concrete Steps. A delegated epic's Architect derives its plan from this
   document.

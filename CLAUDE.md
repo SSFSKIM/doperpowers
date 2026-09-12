@@ -86,7 +86,7 @@ CLI adapter, Codex portal packaging — are automatically irrelevant.
 | `.codex-plugin/`, `.cursor-plugin/`, `.kimi-plugin/`, `.opencode/`, `.pi/`, `.agents/`, `gemini-extension.json` | Per-harness plugin manifests/adapters. `.codex-plugin` is a local manifest only (the external fork sync was retired in v7.23.0; script recoverable from git history). |
 | `tests/` | Shell + harness integration tests, one subdir per harness (`claude-code/`, `codex/`, `shell-lint/`, …). Run via each dir's `run-*.sh`. (Note: `opencode/`, `kimi/`, `pi/`, `antigravity/` test harnesses whose plugin dirs were already pruned — orphaned, not wired to any runner.) |
 | `scripts/` | `bump-version.sh` (version across all manifests per `.version-bump.json`), `lint-shell.sh`. |
-| `archive/` | Retired skills kept for reference, not loaded by any harness (`domain-modeling/`: the CONTEXT.md glossary and ADR convention; `execplan/`: the single-ExecPlan skill, folded into the living spec in v7.84.0). |
+| `archive/` | Retired skills kept for reference, not loaded by any harness (`domain-modeling/`: the CONTEXT.md glossary and ADR convention; `execplan/`: the single-ExecPlan skill, folded into the living spec in v7.84.0, with the vendored Codex PLANS.md beside it under `references/` — the sections that bind are quoted verbatim in `skills/brainstorming/references/living-spec.md`, so nothing loads this copy). |
 | `docs/` | Harness porting/install docs + `docs/doperpowers/{plans,specs}` design history. |
 | `evals/` | Skill-behavior eval harness (`superpowers-evals`), **gitignored** — cloned in separately, not part of the plugin. |
 | `.github/` | `PULL_REQUEST_TEMPLATE.md` (strict — see upstream `CLAUDE.md`), issue templates. |
