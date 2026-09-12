@@ -23,7 +23,7 @@ Every change enforces the same non-negotiables — design before code, tests bef
 **One unit** — work one agent can reliably own.
 The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a living design spec that carries its own plan of work and progress, then runs it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
 
-**Several units** — work that needs more than one agent-ownable task.
+**Several units, or taste mid-flight** — work that needs more than one agent-ownable task, or your judgment while it is built.
 The same grill and spec, then the spec is broken into tasks an executor can own from one self-contained brief (`writing-plans`), and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
 
 **Unattended** — the same method with nobody watching.

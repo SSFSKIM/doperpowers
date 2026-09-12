@@ -1,7 +1,7 @@
 {
   "name": "doperpowers",
   "version": "7.84.0",
-  "description": "A two-track software-development methodology for coding agents: a human-gated controlled track (brainstorm, plan, TDD, review, ship) plus an autonomous board loop for unattended, well-scoped work.",
+  "description": "One software-development methodology for coding agents, sized by the work: brainstorm, design, spec, TDD, review, ship — run in order from the spec itself when one agent can own it, or through an execution plan with a fresh subagent per task when it takes more, and the same method unattended on the board loop.",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com",

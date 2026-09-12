@@ -250,10 +250,10 @@ assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is 
 # service has no such edge). The fallback is the legacy handoff with the same
 # pin — without it a refused Architect has nowhere to go but a park.
 assert_contains "$arch" "hand off instead" "a refused build edge hands off the same pin to the implement queue"
-# One spec, sized by the gate: the Architect sizes the plan by brainstorming's
-# routing criteria and names the verification separately, from stakes — the
+# One spec, sized by the gate: the Architect routes the plan by brainstorming's
+# step 4 criteria and names the verification separately, from stakes — the
 # old "track judgment" tied review depth to the artifact shape.
-assert_contains "$arch" "Size the plan" "architect: sizes the plan (one unit → the spec carries its execution; several → spec + execution plan)"
+assert_contains "$arch" "Route the plan" "architect: routes the plan by brainstorming's criteria (the spec carries its execution, or spec + execution plan)"
 assert_contains "$arch" "Name the verification" "architect: verification is its own call, made from stakes"
 assert_not_contains "$arch" "Track judgment" "architect: no track judgment (council no longer scales with artifact shape)"
 assert_contains "$arch" "carries its own execution" "architect: the build brief names the spec that carries its own execution"

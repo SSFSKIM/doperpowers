@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sde-telemetry — post-hoc metrics for a controlled-track (SDE) run.
+"""sde-telemetry — post-hoc metrics for a subagent-driven-execution (SDE) run.
 
 For each session transcript given, prints: wall-clock span, dispatch counts
 by role, and token totals by model for the controller and its subagents.

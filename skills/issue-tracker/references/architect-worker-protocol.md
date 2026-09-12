@@ -87,11 +87,12 @@ parks carry the quality machinery.
   PUSHED on the ticket branch, branch recorded via --branch. A parked
   session that dies unresumably must not take the pipeline's most
   expensive in-flight asset with it.
-- **Size the plan** — by doperpowers:brainstorming's routing criteria.
-  One unit (big-but-atomic included): the spec carries its own execution
-  — Progress, Plan of Work, Concrete Steps, per brainstorming's
-  references/living-spec.md — and a zero-context executor runs it
-  sequentially. Several units: the spec plus an execution plan through
+- **Route the plan** — by doperpowers:brainstorming's step 4 criteria.
+  Well-scoped and delegable (big-but-atomic included): the spec carries
+  its own execution — Progress, Plan of Work, Concrete Steps, per
+  brainstorming's references/living-spec.md — and a zero-context
+  executor runs it sequentially. Large, novel, taste-heavy, or
+  high-stakes: the spec plus an execution plan through
   doperpowers:writing-plans.
 - **Name the verification** — it follows from the stakes, not the size.
   One independent spec review by default; when the design is novel or

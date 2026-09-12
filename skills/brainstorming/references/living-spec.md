@@ -22,16 +22,17 @@ with no conversation history can pick up the spec and continue the work —
 decisions, their whys, and everything learned so far included. Define terms
 of art; reference repo common knowledge instead of duplicating it.
 
-**When the work is one unit** — one agent can reliably own it, and
-brainstorming routed it to run sequentially — the spec also carries its
-execution, and four more PLANS.md sections bind as written: `Progress`,
+**When brainstorming routed the work to a spec that carries its own
+execution** — its well-scoped-and-delegable route: one agent can reliably
+own the work, and it runs sequentially — four more PLANS.md sections bind
+as written: `Progress`,
 placed right after the purpose (it is this spec's ledger, kept current at
 every stopping point), `Plan of Work` (told as milestones, per the
 Milestones section, when the work has stages), `Concrete Steps`, and
-`Interfaces and Dependencies` when the work defines new interfaces. When the work is
-several units, those live in the execution plan doperpowers:writing-plans
-writes and in the SDE ledger, and the spec's execution section is one line
-naming the plan file.
+`Interfaces and Dependencies` when the work defines new interfaces. On the
+spec-plus-execution-plan route, those live in the execution plan
+doperpowers:writing-plans writes and in the SDE ledger, and the spec's
+execution section is one line naming the plan file.
 
 ## What binds — read these PLANS.md sections as written
 

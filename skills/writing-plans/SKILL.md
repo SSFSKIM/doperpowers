@@ -1,6 +1,6 @@
 ---
 name: writing-plans
-description: Use when a spec's work is several units and needs an execution plan of tasks an executor can own from one brief, before touching code. Invoke this only after doperpowers:brainstorming ran and produced that spec; never straight from a request.
+description: Use when a spec needs an execution plan — tasks an executor can own from one brief — before touching code. Invoke this only after doperpowers:brainstorming ran and produced that spec; never straight from a request.
 ---
 
 # Writing Plans
