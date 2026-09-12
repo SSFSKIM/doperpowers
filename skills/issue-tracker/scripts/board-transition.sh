@@ -223,7 +223,7 @@ PY
     # implement queue. (A build edge without --plan never reaches this block
     # and still meets the server's 409; --plan is what the build edge is.)
     { [ "$_cur" != in-design ] || [ "$to" != in-progress ]; } \
-      || die "the build edge (in-design → in-progress) is not supported by the API board service yet — hand off instead: ready-for-implementer \"<note>\" --branch <b> --plan <pin> (an Executor runs PLAN-EXECUTION)"
+      || die "the build edge (in-design → in-progress) is not supported by the API board service yet — hand off instead: ready-for-implementer \"<note>\" --branch <b> --plan <pin>|pre-spec (an Executor runs it: PLAN-EXECUTION from a real pin, DIRECT from the body on pre-spec)"
     # The two build-edge checks below are consequently unreachable on this
     # path today. They stay: they are the gh checks mirrored, and the day the
     # service's state table gains the edge, deleting the refusal above is the
@@ -334,26 +334,29 @@ if cur == "in-design" and to in ("done", "in-review", "wontfix"):
 # The build edge: in-design → in-progress keeps the binding with the Architect,
 # which executes its own plan through a doperpowers:plan-executor subagent
 # instead of handing the ticket to the implement queue. Epics never build (they
-# recompose), and a build with no pin is an Architect skipping the artifact the
-# review loop audits against and a recovery Executor fetches.
+# recompose), and a build with no plan value at all is an Architect skipping what
+# the review loop audits against and a recovery Executor resumes from: a pinned
+# artifact, or the `pre-spec` sentinel that names the ticket body as the plan.
 if cur == "in-design" and to == "in-progress":
     if tid in B.epics(tickets):
         B.die("in-design → in-progress is the build edge — #%s is an epic; "
               "epics recompose, they never build" % tid)
     if not env["T_PLAN"]:
-        B.die("the build edge needs --plan <path>@<sha>: the Architect pins "
-              "the plan before executing it")
+        B.die("the build edge needs --plan <path>@<sha>|pre-spec: the "
+              "Architect pins the plan before executing it, or declares "
+              "pre-spec to build a small ticket from its own body")
     # SURFACE OCCUPANCY, and only here. The dispatcher deliberately admits an
     # Architect onto an occupied surface — design reads, it does not write, and
     # a consolidation ticket has to be designable while the surface is busy.
     # Building is not read-only: past this edge the Architect's executor writes
     # the same files as the occupant, with no queue between them. The rule is
     # the dispatcher's own (B.surface_occupant), and the refusal has an exit
-    # rather than a wait — the legacy handoff carries the same pin into the
-    # implement queue, which serializes the surface, and an Executor runs
-    # PLAN-EXECUTION from it. Inert without a surfaces registry, like every
-    # other surface feature (a leftover label in a repo whose registry was
-    # removed must not fence a build forever).
+    # rather than a wait — the legacy handoff carries the same plan value into
+    # the implement queue, which serializes the surface, and an Executor runs it
+    # (PLAN-EXECUTION from a real pin, DIRECT from the body on `pre-spec`).
+    # Inert without a surfaces registry, like every other surface feature (a
+    # leftover label in a repo whose registry was removed must not fence a
+    # build forever).
     if n["surfaces"] and B.surfaces_registry() is not None:
         _occ = B.surface_occupant(tickets, tid, n["surfaces"])
         if _occ and os.environ.get("SURFACE_OVERRIDE") == "1":

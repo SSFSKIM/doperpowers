@@ -35,8 +35,12 @@ a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
 a review loop owns them (the board's does, from the PR on): then stop after
 the last frontier review or the last milestone and leave the branch review
-to it. Write the spec's `Outcomes & Retrospective` before you open the pull
-request (a ticket body has none).
+to it — but first disposition what that review would have triaged: fix the
+task reviews' deferred Minor findings from the ledger, or carry the ones
+you leave into the PR body's `## Residue`, since the loop's reviewer never
+sees the ledger. Write the spec's `Outcomes & Retrospective` before you
+open the pull request (a ticket body has none); when a review loop follows,
+it refreshes that section after its own fix waves.
 
 ## Repo facts
 

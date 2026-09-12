@@ -112,7 +112,11 @@ parks carry the quality machinery.
   its reviews, park ONE needs-human question in the batch format —
   approve the design at <spec path>@<sha>, with your recommended answer —
   and continue into doperpowers:writing-plans when board-answer resumes
-  you. The other route's criteria exclude taste; it builds without asking.
+  you. Planning revises the spec where it proves wrong; a revision that
+  changes a decision goes back to the human as a second park naming the
+  delta, wording fixes do not — the exceptions rule a live session
+  applies with the human present. The other route's criteria exclude
+  taste; it builds without asking.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
   suffices as the plan, and you build it here from the ticket body. Save
   the body to a file in your worktree (the bootstrap named it under an API

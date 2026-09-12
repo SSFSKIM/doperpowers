@@ -98,8 +98,10 @@ LEGAL = {
                               "interactive-preferred", "wontfix", "deferred"},
     # in-design: the Architect's in-flight state. Exit = transition 2/3
     # (plan handoff / down-shortcircuit / decompose-epic), the build edge
-    # (in-progress, leaf only, real plan pin required — the Architect keeps
-    # the binding and executes through doperpowers:plan-executor), or a park.
+    # (in-progress, leaf only, --plan <path>@<sha>|pre-spec required — the
+    # Architect keeps the binding and builds: a real pin executes through
+    # doperpowers:plan-executor, `pre-spec` builds from the ticket body), or
+    # a park.
     # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
     # terminal-authority exception; board-transition enforces the guard).
     "in-design":             {"ready-for-implementer", "in-progress",

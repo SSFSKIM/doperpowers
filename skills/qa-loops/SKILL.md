@@ -158,7 +158,12 @@ is a TOOL invocation, not a nested agent. Never add
    turn reads them.
 2. Judge the diff shape and choose this round's engine-run count — most
    PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
-   runs, whole-branch scale up to 4. From the worktree root, start each
+   runs, whole-branch scale up to 4. The spec behind the pin (the pinned
+   file itself, or the plan's `Spec:` header) may carry a verification
+   entry in its Decision Log naming the branch review rung or a panel:
+   that is a floor on this count, not a ceiling — it was set from the
+   work's stakes, and on the board this loop is the whole-branch review
+   it names. From the worktree root, start each
    run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
    empty lens assignments are deliberate — they shield the plain run
    from any inherited host value):
@@ -257,10 +262,12 @@ time is the transition comment that MINTED that pin: `[board] ready-for-implemen
 for a handoff, `[board] in-progress: plan-execution:` for an Architect
 that built the plan itself. When both exist the later one carries the pin
 in force. Every rule in this audit keyed to the gate timestamp reads that
-comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT — by an
-Executor, or by an Architect whose build edge minted the sentinel
-(`[board] in-progress: direct:`) — and carries a real `[gate] pass`
-either way: anchor on it as usual.
+comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT: built
+by an Executor, it carries that Executor's `[gate] pass` — anchor on it as
+usual; built by an Architect whose build edge minted the sentinel, anchor
+on that comment (`[board] in-progress: direct:`) — the Architect's own
+`[gate] pass` is the architect-lane variant, taken before its design work,
+and the build edge is where it ruled the body sufficient to build.
 
 The audit answers four questions: was the issue substantively ready for
 the implemented scope (settled scope, requirements, acceptance, and
@@ -406,6 +413,9 @@ re-wave → fall back (wave-board.md: reset the unpushed wave to its
 wave-base), merge the engine-reviewed head exactly as if no closing
 wave had run, and LOG the residue. Findings already LOGGED by
 stated-reason departure stay LOGGED — their deferral reason stands.
+When any wave changed behavior, refresh the spec's `Outcomes &
+Retrospective` on the branch before the merge: the executor wrote it
+before your review, and no one after you will.
 Severity does not
 promote exit residue to a ticket — TOO BIG is the only ticket gate at
 exit, as everywhere.
