@@ -43,12 +43,13 @@ one group's organisation chart with live state on every node.
 A seat is addressed by `group/alias`, by a bare alias when it is unique, by its
 seat id (or a prefix), or by the current session's short or full id.
 
-Messaging between agents is the harness's native cross-session SendMessage
-tool (a seat's addr is the target). sminos's own `send`/`wake` exist for the
-shell: they write a frame to the target session's inbox socket, which the
-harness delivers as a peer message (an idle session starts a new turn).
-`resume` is the process-level continuation the board pipeline relays through:
-a fresh `claude --bg --resume` carrying the invoking environment.
+Messaging between seats is `send` (live targets) and `wake` (stopped ones
+too): both write a frame to the target session's inbox socket — the socket
+the harness's native cross-session SendMessage tool also rides — which the
+harness delivers as a peer message (an idle session starts a new turn, a busy
+one reads it at its next tool round). `resume` is the process-level
+continuation the board pipeline relays through: a fresh `claude --bg
+--resume` carrying the invoking environment.
 
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
@@ -2704,10 +2705,10 @@ def cmd_post(a):
             f.write(json.dumps(rec) + "\n")
     finally:
         board_unlock(lk)
-    others = [s["addr"] for s in gs if s["alias"] != frm and s["status"] != "retired"]
+    others = ["%s/%s" % (g, s["alias"]) for s in gs if s["alias"] != frm and s["status"] != "retired"]
     print("posted #%d to %s board" % (rec["id"], g))
     if others:
-        print("  nudge readers via SendMessage — addrs: %s" % ", ".join(others))
+        print("  nudge readers — sminos send <seat> \"…\" to: %s" % ", ".join(others))
         print("  e.g.: sminos board post #%d by %s%s · read with: sminos board %s --id %d" % (
             rec["id"], frm, (' — "%s"' % a.title) if a.title else "", g, rec["id"]))
 
@@ -3004,8 +3005,8 @@ def main(argv=None):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)
     if argv[0] in ("listen", "log"):
-        die("'%s' is gone — messaging rides the harness SendMessage tool (a seat's addr in 'sminos topology' "
-            "is the target); from a terminal use 'sminos send'; the board (sminos post/board) is the durable record" % argv[0])
+        die("'%s' is gone — messaging is 'sminos send' (a live seat) or 'sminos wake' (a stopped one), riding "
+            "the harness's inbox socket; the board (sminos post/board) is the durable record" % argv[0])
     if argv[0] == "post":
         a = parse_post(argv[1:])
         migrate()
