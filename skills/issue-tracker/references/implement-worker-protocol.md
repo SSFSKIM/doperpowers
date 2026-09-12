@@ -42,8 +42,8 @@ MODE SELECTION — read your ticket's `board:meta` block first. The
   ticket to this lane), or because a human chose this lane. Pick up
   from where the work actually stands — an SDE ledger at
   `.doperpowers/sde/<plan-basename>/progress.md` on the branch, or the
-  `Progress` section of a spec that carries its own execution — never
-  from the top on the strength
+  `Progress` section of a spec that carries its own execution —
+  never from the top on the strength
   of an assumption. A refused build edge is the case where nothing was
   built yet, and the top IS where the work stands.
   NO intake gate — the Architect's phase carried the quality machinery

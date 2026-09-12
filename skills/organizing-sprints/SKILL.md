@@ -13,7 +13,7 @@ materialize that spec onto the issue board as tickets with typed edges.
 The note is testimony; the codebase is truth. Every observation is grounded
 in code reality before it becomes work, every open question is landed by
 grilling BEFORE the spec is authored, and the spec — not the board — is the
-primary artifact: tickets, dependency edges, derived specs, and the next
+primary artifact: tickets, dependency edges, the plans derived from it, and the next
 milestone's reservations all flow from it, and its living sections track the
 sprint through to retrospective.
 
@@ -60,7 +60,7 @@ Create a task per phase; complete them in order.
 5. **Author the umbrella spec** — per `references/sprint-spec-template.md`,
    born landed: v1 already carries the grill's decisions. Acceptance
    criteria are observable behavior. No per-epic execution plans —
-   a big epic derives its own spec at dispatch time, from this document.
+   a big epic's Architect derives its plan at dispatch time, from this document.
 6. **Self-review, then the human gate** — scan for placeholders,
    contradictions, and untraceable observations (every atomized observation
    maps to an epic, a maintenance bundle, a deferral, or an explicit park).
@@ -182,7 +182,7 @@ spec is self-contained).
 | Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
 | Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
 | Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
-| Per-epic execution plans in the umbrella | The umbrella stops at observable acceptance criteria; specs derive downstream at dispatch time. |
+| Per-epic execution plans in the umbrella | The umbrella stops at observable acceptance criteria; each epic's plan derives downstream at dispatch time. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
 | Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |

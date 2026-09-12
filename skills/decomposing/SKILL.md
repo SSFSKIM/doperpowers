@@ -13,7 +13,7 @@ ticket. doperpowers:brainstorming DEFINES one goal at a time, whatever its
 size — and for a goal whose pieces interact, MATURES the joint design
 before handing it here; this skill DIVIDES a goal that fails the gate
 below into child goals one level down, and tends the tree as children
-land; the tracks EXECUTE the leaves. The product of one run is a **composite spec** per
+land; the leaves are executed by their routes. The product of one run is a **composite spec** per
 `references/composite-spec-template.md` — the same species as any
 living spec ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)), not a separate document type:
 design at the center, with the roadmap topology (children, edges,

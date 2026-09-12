@@ -99,9 +99,11 @@ parks carry the quality machinery.
   matured design and debate to convergence; an execution plan gets the
   independent review doperpowers:writing-plans prescribes — the
   `doperpowers:adversarial-reviewer` agent, focused on whether the plan
-  is complete, spec-aligned, well-decomposed, and buildable by an
-  engineer with zero context. Evaluate findings rather than accepting
-  them wholesale. Record the call in the spec's Decision Log.
+  is complete, spec-aligned, well-decomposed, and
+  buildable by an engineer with zero context. Evaluate findings rather
+  than accepting them wholesale. Record the call in the spec's Decision
+  Log, and run the reviews before the build edge: your executor has no
+  context to absorb their findings.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
   suffices as the plan:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec

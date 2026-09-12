@@ -46,7 +46,7 @@ naming the plan file.
 
 | PLANS.md directive | Superseded by |
 |---|---|
-| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | Human gates: design approval and spec review in doperpowers:brainstorming |
+| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | At authoring: the human gates — design approval and spec review in doperpowers:brainstorming. While a spec that carries its own execution is being executed, the directive binds, with brainstorming's gate as the one stop: a fork under it that the spec does not cover goes to your human partner; everything else is decided and logged |
 | Single fenced code block, prose-first, no tables or checklists | Specs are files, not chat payloads; use tables/JSON/diagrams wherever they beat prose for precision |
 | Mandatory `Progress` section with timestamped checkboxes | When an execution plan exists: the SDE ledger + git + plan checkboxes — externally verifiable, not self-report. A spec that carries its own execution keeps `Progress` (above) |
 | Milestones narrative, Concrete Steps, Interfaces and Dependencies | When an execution plan exists: doperpowers:writing-plans, at contract resolution — decisions, interfaces, acceptance, exact commands; code only where it is a decision. A spec that carries its own execution keeps them (above) |
