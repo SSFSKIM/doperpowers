@@ -17,7 +17,7 @@ Seeing it work: a session reading `skills/brainstorming/SKILL.md`, `skills/issue
 - [x] (2026-09-12 12:50Z) Milestone 3 — consumers: writing-plans, plan-executor, Architect protocol, implement protocol, ticket-gate, issue-tracker SKILL, decomposing (+ composite template), organizing-sprints, SDE, execution-loop, triage protocol, CLAUDE.md.
 - [x] (2026-09-12 12:35Z) Milestone 4 — README pitch, diagram, "One method, sized by the work", skill list, flow section.
 - [x] (2026-09-12 13:05Z) Milestone 5 — validation: protocol-content assertions added; sweep clean; routing check passed (three of three, after the one-unit scenario was resized); suites and lint green; version bumped to 7.84.0.
-- [x] (2026-09-12 13:40Z) Exit — branch review at the high rung (three findings, all addressed: route keys the hand-off; no task-boundary callback promise; stale two-track surfaces), retrospective written. Remaining: open the PR.
+- [x] (2026-09-12 13:40Z) Exit — branch review at the high rung (three findings, all addressed: route keys the hand-off; no task-boundary callback promise; stale two-track surfaces), retrospective written; PR #138 opened.
 
 ## Acceptance
 
