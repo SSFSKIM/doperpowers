@@ -230,11 +230,12 @@ PY
     # whole change.
     { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
       || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
-    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
-    # names no revision, so a build edge carrying it would leave the review loop
-    # with nothing to audit against.
-    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ]; } \
-      || die "--plan pre-spec is the down-shortcircuit — it rides in-design → ready-for-implementer; the build edge (in-design → in-progress) needs a real <path>@<sha> pin"
+    # `pre-spec` on the build edge is a direct ticket the Architect builds from
+    # its own body: no revision to pin (the review loop anchors on the gate
+    # pass, as for any pre-spec ticket), but the branch still names where the
+    # work lives — a recovery Executor runs DIRECT from the body on it.
+    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$branch" ]; } \
+      || die "a pre-spec build needs --branch: the work lives there and a recovery Executor resumes from it"
     if [ "$plan" != pre-spec ]; then
       # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
       #    or a short sha that can move under the worker.
@@ -473,13 +474,14 @@ if env["T_PLAN"]:
         B.die("--plan rides the Architect edges out of in-design only "
               "(in-design → ready-for-implementer for a handoff, "
               "in-design → in-progress for a build)")
-    # ...and `pre-spec` is the down-shortcircuit's sentinel, not a build pin: it
-    # names no revision, so a build edge carrying it would leave the review loop
-    # with nothing to audit against.
-    if to == "in-progress" and env["T_PLAN"] == "pre-spec":
-        B.die("--plan pre-spec is the down-shortcircuit — it rides in-design → "
-              "ready-for-implementer; the build edge (in-design → in-progress) "
-              "needs a real <path>@<sha> pin")
+    # `pre-spec` on the build edge is a direct ticket the Architect builds from
+    # its own body: no revision to pin (the review loop anchors on the gate
+    # pass, as for any pre-spec ticket), but the branch still names where the
+    # work lives — a recovery Executor runs DIRECT from the body on it.
+    if to == "in-progress" and env["T_PLAN"] == "pre-spec" \
+            and not (env["T_BRANCH"] or n.get("branch")):
+        B.die("a pre-spec build needs --branch: the work lives there and a "
+              "recovery Executor resumes from it")
     if env["T_PLAN"] != "pre-spec":
         if not _re.match(r"^\S+@[0-9a-f]{40}$", env["T_PLAN"]):
             B.die("--plan must be <repo-path>@<full-40-hex-sha> (an immutable pin) or the literal pre-spec")

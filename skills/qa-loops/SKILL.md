@@ -257,8 +257,10 @@ time is the transition comment that MINTED that pin: `[board] ready-for-implemen
 for a handoff, `[board] in-progress: plan-execution:` for an Architect
 that built the plan itself. When both exist the later one carries the pin
 in force. Every rule in this audit keyed to the gate timestamp reads that
-comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT and
-carries a real `[gate] pass` — anchor on it as usual.
+comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT — by an
+Executor, or by an Architect whose build edge minted the sentinel
+(`[board] in-progress: direct:`) — and carries a real `[gate] pass`
+either way: anchor on it as usual.
 
 The audit answers four questions: was the issue substantively ready for
 the implemented scope (settled scope, requirements, acceptance, and

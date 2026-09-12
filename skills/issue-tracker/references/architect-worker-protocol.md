@@ -105,11 +105,24 @@ parks carry the quality machinery.
   than accepting them wholesale. Record the call in the spec's Decision
   Log, and run the reviews before the build edge: your executor has no
   context to absorb their findings.
+- **The human's approval, on the spec-plus-execution-plan route** — the
+  board form of brainstorming's gate. That route is chosen for work whose
+  design is large, novel, taste-heavy, or high-stakes, which a live
+  session would not build unapproved; neither do you. After the spec and
+  its reviews, park ONE needs-human question in the batch format —
+  approve the design at <spec path>@<sha>, with your recommended answer —
+  and continue into doperpowers:writing-plans when board-answer resumes
+  you. The other route's criteria exclude taste; it builds without asking.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
-  suffices as the plan:
+  suffices as the plan, and you build it here from the ticket body. Save
+  the body to a file in your worktree (the bootstrap named it under an API
+  board; `gh issue view {{ISSUE_NUMBER}} --json body -q .body` otherwise),
+  take the build edge with the sentinel as the pin —
+  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress "direct: pre-spec suffices as the plan" --branch <branch> --plan pre-spec
+  — and dispatch plan-executor on that file per Build below. Your ruling
+  binds the ticket, not one worker: a recovery Executor runs DIRECT from
+  the body. When that edge is refused, hand off instead and end your turn:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec
-  Your ruling binds the Executor's plan-need check (it attaches to
-  the ticket, not to one worker). End your turn.
 - **Decompose** — at the gate or discovered mid-design: register
   children per {{DECOMPOSE_DOC}}, applying the birth rule to each child
   (obvious multi-milestone / novel-design / cross-cutting children are
@@ -157,12 +170,15 @@ ledger or the spec's `Progress` section, and `sminos attach` shows the
 live session.
 
 Then dispatch ONE `doperpowers:plan-executor` subagent. The brief carries:
-the file to execute — the spec when it carries its own execution, or the
-execution plan and its spec; the ticket number and URL; the branch; and a
-report file path under that file's directory. A spec carrying its own
-execution runs sequentially; an execution plan makes it the SDE
-controller, which dispatches its own task executors and reviewers —
-depth-2 fan-out is available and verified.
+the file to execute — the spec when it carries its own execution, the
+execution plan and its spec, or the saved ticket body for a direct ticket;
+the ticket number and URL; the branch; a report file path under that
+file's directory; and that the review loop owns the whole-branch review,
+so the executor stops at its last frontier review or milestone and opens
+the PR without one. A spec carrying its own execution (or a ticket body)
+runs sequentially; an execution plan makes it the SDE controller, which
+dispatches its own task executors and reviewers — depth-2 fan-out is
+available and verified.
 
 While it runs your session is busy in the harness's eyes even though
 your turn has ended, so the sweep leaves you alone; its completion or
@@ -191,10 +207,11 @@ not registered does not exist — then close your scope:
 From the PR on, the review loop owns the path to merge. This transition
 ends your scope and releases your binding.
 
-The other exits above are unchanged: a ticket whose pre-spec suffices goes
-to `ready-for-implementer` with `--plan pre-spec` for an Executor worker, a
-refused build edge goes to that same lane carrying its real pin, and an
-epic's children are registered, never built here.
+The other exits above are unchanged: a ticket whose pre-spec suffices
+builds here from its body and goes to `ready-for-implementer` with `--plan
+pre-spec` only when its build edge is refused, a refused build edge on a
+planned ticket goes to that same lane carrying its real pin, and an epic's
+children are registered, never built here.
 
 ## If Resumed With Answers
 
@@ -209,7 +226,8 @@ convergence rule sends a second disagreement on the same edge to the
 human by itself.
 If a plan-executor subagent was in flight when you parked, the answers
 go to it next: continue it with SendMessage carrying the answers
-verbatim.
+verbatim. A design approval resumes you into doperpowers:writing-plans; a
+revision request re-enters the design at the point it names.
 
 ## Authority
 
