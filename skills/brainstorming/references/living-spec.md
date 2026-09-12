@@ -36,7 +36,7 @@ of art; reference repo common knowledge instead of duplicating it.
 > * Every ExecPlan must produce a demonstrably working behavior, not merely code changes to "meet a definition".
 > * Every ExecPlan must define every term of art in plain language or do not use it.
 
-**Self-containment and plain language.** The bar above governs how much to repeat; the rule itself binds:
+**Self-containment and plain language.** An excerpt: the paragraph goes on to ask for repetition ("even if you repeat yourself"), which the bar above recalibrates; the rule itself binds:
 
 > Self-containment and plain language are paramount. If you introduce a phrase that is not ordinary English ("daemon", "middleware", "RPC gateway", "filter graph"), define it immediately and remind the reader how it manifests in this repository (for example, by naming the files or commands where it appears).
 
@@ -50,7 +50,7 @@ of art; reference repo common knowledge instead of duplicating it.
 
 **Specify repository context explicitly.**
 
-> Specify repository context explicitly. Name files with full repository-relative paths, name functions and modules precisely, and describe where new files should be created.
+> Specify repository context explicitly. Name files with full repository-relative paths, name functions and modules precisely, and describe where new files should be created. If touching multiple areas, include a short orientation paragraph that explains how those parts fit together so a novice can navigate confidently. When running commands, show the working directory and exact command line. When outcomes depend on environment, state the assumptions and provide alternatives when reasonable.
 
 **Validation is not optional.**
 
@@ -103,7 +103,13 @@ the spec's execution section is one line naming the plan file.
 
     ## Interfaces and Dependencies
 
-    Be prescriptive. Name the libraries, modules, and services to use and why. Specify the types, traits/interfaces, and function signatures that must exist at the end of the milestone. Prefer stable names and paths such as `crate::module::function` or `package.submodule.Interface`.
+    Be prescriptive. Name the libraries, modules, and services to use and why. Specify the types, traits/interfaces, and function signatures that must exist at the end of the milestone. Prefer stable names and paths such as `crate::module::function` or `package.submodule.Interface`. E.g.:
+
+    In crates/foo/planner.rs, define:
+
+        pub trait Planner {
+            fn plan(&self, observed: &Observed) -> Vec<Action>;
+        }
 
 **Milestones** shape the Plan of Work when the work has stages:
 
