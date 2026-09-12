@@ -250,6 +250,14 @@ assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is 
 # service has no such edge). The fallback is the legacy handoff with the same
 # pin — without it a refused Architect has nowhere to go but a park.
 assert_contains "$arch" "hand off instead" "a refused build edge hands off the same pin to the implement queue"
+# One spec, sized by the gate: the Architect routes the plan by brainstorming's
+# step 4 criteria and names the verification separately, from stakes — the
+# old "track judgment" tied review depth to the artifact shape.
+assert_contains "$arch" "Route the plan" "architect: routes the plan by brainstorming's criteria (the spec carries its execution, or spec + execution plan)"
+assert_contains "$arch" "Name the verification" "architect: verification is its own call, made from stakes"
+assert_not_contains "$arch" "Track judgment" "architect: no track judgment (council no longer scales with artifact shape)"
+assert_contains "$arch" "carries its own execution" "architect: the build brief names the spec that carries its own execution"
+assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
 REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
@@ -444,6 +452,7 @@ assert_contains "$pexec" "model: opus" "the plan-executor is pinned to the worke
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
+assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is a spec that carries its own execution, worked in order"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

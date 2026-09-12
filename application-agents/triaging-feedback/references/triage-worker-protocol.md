@@ -54,8 +54,8 @@ verdict를 남기면 이후의 실제 side effect(티켓 등록, DB 기록)는 �
    - **저작 기준 = 구현 게이트**: 이 티켓은 구현 워커가 "well-defined +
      well-scoped" 게이트로 심사합니다. *well-defined* — 구현 중 만날 모든
      비자명한 갈림길(아키텍처·제품 판단)의 답이 티켓+코드베이스 안에 있어야
-     함. *well-scoped* — 대략 ExecPlan 1–2개 분량. 이 기준을 티켓이 통과할
-     수 있게 쓰는 것이 당신의 품질 목표입니다.
+     함. *well-scoped* — 대략 한 에이전트가 소유할 수 있는 작업 단위 1–2개
+     분량. 이 기준을 티켓이 통과할 수 있게 쓰는 것이 당신의 품질 목표입니다.
 5. **DECIDE — birth state 추천**:
    - `ready-for-implementer` — **전부** 만족할 때만: 근본 원인/대상이 실제 파일
      경로의 `file:line`으로 grounding됐고, 티켓이 위 게이트(well-defined +

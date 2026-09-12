@@ -42,7 +42,8 @@ MODE SELECTION — read your ticket's `board:meta` block first. The
   ticket to this lane), or because a human chose this lane. Pick up
   from where the work actually stands — an SDE ledger at
   `.doperpowers/sde/<plan-basename>/progress.md` on the branch, or the
-  ExecPlan's own `Progress` section — never from the top on the strength
+  `Progress` section of a spec that carries its own execution —
+  never from the top on the strength
   of an assumption. A refused build edge is the case where nothing was
   built yet, and the top IS where the work stands.
   NO intake gate — the Architect's phase carried the quality machinery
@@ -147,7 +148,7 @@ frequently, open the PR.
   your branch, adapt, and drive to the end. Only a GENUINELY blocked
   plan (not merely divergent) returns to its author — see Mid-build
   below. You author no plan document, ever: writing-plans,
-  subagent-driven-execution, and execplan authoring are other scopes'
+  subagent-driven-execution, and spec authoring are other scopes'
   skills — plan AUTHORSHIP belongs to the architect lane (its protocol,
   `architect-worker-protocol.md`, sits beside this file); when work needs
   a plan, escalate, never self-author.

@@ -87,19 +87,24 @@ parks carry the quality machinery.
   PUSHED on the ticket branch, branch recorded via --branch. A parked
   session that dies unresumably must not take the pipeline's most
   expensive in-flight asset with it.
-- **Track judgment (council scaling)** — pick the artifact shape:
-  - ExecPlan shape (medium; big-but-atomic): solo. Grill, author one
-    self-contained ExecPlan to the doperpowers:execplan bar (a
-    zero-context session executes it), end.
-  - Spec → Impl Plan shape (large/novel/high-stakes): the council —
-    dispatch doperpowers:critique on the matured design and debate to
-    convergence; run the spec-review pass; then give the execution
-    plan the same independent review doperpowers:writing-plans
-    prescribes — the `doperpowers:adversarial-reviewer` agent, focused
-    on whether the plan is complete,
-    spec-aligned, well-decomposed, and buildable by an engineer with
-    zero context. Evaluate its findings rather than accepting them
-    wholesale. All existing machinery, reused.
+- **Route the plan** — by doperpowers:brainstorming's step 4 criteria.
+  Well-scoped and delegable (big-but-atomic included): the spec carries
+  its own execution — Progress, Plan of Work, Concrete Steps, per
+  brainstorming's references/living-spec.md — and a zero-context
+  executor runs it sequentially. Large, novel, taste-heavy, or
+  high-stakes: the spec plus an execution plan through
+  doperpowers:writing-plans.
+- **Name the verification** — it follows from the stakes, not the size.
+  One independent spec review by default; when the design is novel or
+  the cost of being wrong is high, dispatch doperpowers:critique on the
+  matured design and debate to convergence; an execution plan gets the
+  independent review doperpowers:writing-plans prescribes — the
+  `doperpowers:adversarial-reviewer` agent, focused on whether the plan
+  is complete, spec-aligned, well-decomposed, and
+  buildable by an engineer with zero context. Evaluate findings rather
+  than accepting them wholesale. Record the call in the spec's Decision
+  Log, and run the reviews before the build edge: your executor has no
+  context to absorb their findings.
 - **Down-shortcircuit** — the ticket turned out small; the pre-spec
   suffices as the plan:
   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} ready-for-implementer "pre-spec suffices as the plan" --plan pre-spec
@@ -148,13 +153,14 @@ what this seat is doing:
 `{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias>
 "building: <plan path>"` (the CLI is not on PATH; your seat is named
 `<n>-<slug>` and `sminos list` shows it). Progress itself lives in the SDE
-ledger or the ExecPlan's `Progress` section, and `sminos attach` shows the
+ledger or the spec's `Progress` section, and `sminos attach` shows the
 live session.
 
 Then dispatch ONE `doperpowers:plan-executor` subagent. The brief carries:
-the plan path and, for a spec-shaped plan, the spec path; the ticket number
-and URL; the branch; and a report file path under the plan's directory. An
-ExecPlan-shaped plan runs sequentially; a spec-shaped plan makes it the SDE
+the file to execute — the spec when it carries its own execution, or the
+execution plan and its spec; the ticket number and URL; the branch; and a
+report file path under that file's directory. A spec carrying its own
+execution runs sequentially; an execution plan makes it the SDE
 controller, which dispatches its own task executors and reviewers —
 depth-2 fan-out is available and verified.
 

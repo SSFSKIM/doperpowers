@@ -1,8 +1,9 @@
 # Installing doperpowers
 
-`doperpowers` is a two-track software-development methodology for coding agents:
-a human-gated controlled track (brainstorm → plan → subagent-driven-TDD → review)
-plus an autonomous board loop (`issue-tracker`, `qa-loops`, `sminos`) for well-scoped, unattended work.
+`doperpowers` is one software-development methodology for coding agents, sized by the work:
+every change starts with a grill and a design you approve, then a spec — a change one agent
+can own runs in order from that spec, a larger one gets an execution plan and a fresh subagent
+per task — and the board loop (`issue-tracker`, `qa-loops`, `sminos`) runs the same method unattended.
 
 It ships as its own Claude Code plugin from a self-hosted marketplace in this repo,
 so it installs **side by side** with any other skills marketplace you use.

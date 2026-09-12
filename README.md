@@ -3,30 +3,31 @@
 **A methodology your coding agent actually follows** — not a pile of prompts, but a set of skills that trigger themselves at the right moment and keep the agent honest from first idea to merged branch.
 
 ```text
-                          d o p e r p o w e r s
+                     d o p e r p o w e r s
 
-   what you're building  ─┬─▶  CONTROLLED  · you sign off on the design
-                          │      brainstorm → spec → plan → subagent-TDD → review → ship
-                          │
-                          └─▶  AUTONOMOUS  · it runs while you're away
-                                 board → dispatch → build → review → merge
+   idea ─▶ grill ─▶ design you sign off ─▶ spec ─┬─▶ ONE UNIT · runs in order from the spec itself
+                                                 └─▶ SEVERAL  · execution plan, a fresh subagent per task
+   board ─▶ dispatch ─▶ build ─▶ review ─▶ merge     · the same method while you're away
 ```
 
-Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers splits that in two. When the work needs your judgement, the **controlled track** shows you the design in readable chunks and stops for your approval before anything is built. When the work is well-scoped and delegable, the **autonomous track** takes a ticket off the board and drives it to a reviewed pull request without waking you up. The skills route between the two based on what you actually asked for.
+Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers sizes the work first. Every change starts with a grill that closes the design questions while you are present, then a design you approve. From there the shape follows the size: a change one agent can own gets a spec that carries its own execution and runs sequentially; a larger one gets an execution plan and a fresh subagent per task, reviewed at every boundary. How much independent review the work gets is a separate call, made from its stakes rather than its size. Either way the agent runs without stopping until it meets a decision the design did not cover, and that comes back to you.
 
 Because every skill declares when it applies, you don't invoke any of this by hand. The agent checks for a relevant skill before it starts a task, and the right workflow just happens.
 
 ---
 
-## Two tracks, one discipline
+## One method, sized by the work
 
-Both tracks enforce the same non-negotiables — design before code, tests before implementation, evidence before "done." They differ only in where the human sits.
+Every change enforces the same non-negotiables — design before code, tests before implementation, evidence before "done." What varies is the shape, and the shape follows the size.
 
-**Controlled** — for work where taste and intent matter.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`), turns the conversation into a living design spec, breaks that into tasks an executor can own from one self-contained brief (`writing-plans`), then executes each one through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`). You approve the design; independent reviews gate the rest.
+**One unit** — work one agent can reliably own.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a living design spec that carries its own plan of work and progress, then runs it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
 
-**Autonomous** — for work that's already well-scoped.
-A single self-contained plan (`execplan`) front-loads every decision so the agent can run to the letter without mid-flight questions. At larger scale, the board loop takes over: tickets live as GitHub issues and gated workers pick them up and build (`issue-tracker`), a review loop lands the PRs (`qa-loops`), and the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
+**Several units, or taste mid-flight** — work that needs more than one agent-ownable task, or your judgment while it is built.
+The same grill and spec, then the spec is broken into tasks an executor can own from one self-contained brief (`writing-plans`), and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
+
+**Unattended** — the same method with nobody watching.
+Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; a review loop lands the PRs (`qa-loops`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 
@@ -60,7 +61,7 @@ A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local in
 
 ## The skills
 
-Eighteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -73,7 +74,6 @@ Eighteen skills, grouped by what they're for. Each one auto-triggers from its de
 **Build it**
 - `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
 - `subagent-driven-execution` — one fresh subagent per task, reviews at dependency frontiers
-- `execplan` — the autonomous single-plan track, gates front-loaded
 
 **Keep it honest**
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
@@ -96,10 +96,10 @@ Eighteen skills, grouped by what they're for. Each one auto-triggers from its de
 
 ---
 
-## How the controlled track flows
+## How a change flows
 
-1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read.
-2. **writing-plans** — Breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
+1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read, routes the work by its size, and writes the spec — with its own plan of work when one agent can own it, in which case the agent runs it from there.
+2. **writing-plans** — For work that is several units: breaks the approved design into tasks an executor can own from one brief, every one with exact file paths, the interfaces it consumes and produces, the behaviors its tests assert, and the decisions already settled — code only where the code is a decision.
 3. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per task, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
 4. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
 

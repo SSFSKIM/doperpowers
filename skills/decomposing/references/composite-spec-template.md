@@ -8,7 +8,7 @@
 > artifacts this unit builds on, if any — delete if none; an artifact
 > that participates in this unit's contracts or edges is a CHILD
 > (possibly already landed), not a Consumes entry]. Children dispatch
-> per their track hint, each carrying its section as its spec; each
+> per their grain hint, each carrying its section as its spec; each
 > child's artifact (brief or plan, ledger, findings, PR, ticket — or a
 > composite child's own composite spec) opens by citing this document
 > (path + child id + parent pin) — except a child that landed before this cut: it
@@ -54,7 +54,7 @@ assigned to the child or spike that will answer them.]
 
 ## Children
 
-### C1: [Child name] — [track hint: brief | plan | spike (findings, never a merge) | decomposing]
+### C1: [Child name] — [grain hint: brief | plan | spike (findings, never a merge) | decomposing]
 
 - **Purpose:** [one paragraph — the child's reason to exist]
 - **Acceptance:** [observable behavior that closes the child — one line

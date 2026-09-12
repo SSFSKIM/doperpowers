@@ -11,9 +11,9 @@ planning proves wrong, execution routes discoveries into its tail, and
 finishing writes the retrospective.
 
 The norms come from Codex's ExecPlan doctrine, vendored char-for-char at
-[../../execplan/references/PLANS.md](../../execplan/references/PLANS.md).
-That file is the source; this file is the adapter that says which parts
-bind at the spec layer and which are superseded by doperpowers machinery.
+[PLANS.md](PLANS.md). That file is the source; this file is the adapter
+that says which parts bind at the spec layer and which are superseded by
+doperpowers machinery.
 Where a section binds, follow the original text — details die in
 paraphrase.
 
@@ -22,27 +22,39 @@ with no conversation history can pick up the spec and continue the work —
 decisions, their whys, and everything learned so far included. Define terms
 of art; reference repo common knowledge instead of duplicating it.
 
+**When brainstorming routed the work to a spec that carries its own
+execution** — its well-scoped-and-delegable route: one agent can reliably
+own the work, and it runs sequentially — four more PLANS.md sections bind
+as written: `Progress`,
+placed right after the purpose (it is this spec's ledger, kept current at
+every stopping point), `Plan of Work` (told as milestones, per the
+Milestones section, when the work has stages), `Concrete Steps`, and
+`Interfaces and Dependencies` when the work defines new interfaces. On the
+spec-plus-execution-plan route, those live in the execution plan
+doperpowers:writing-plans writes and in the SDE ledger, and the spec's
+execution section is one line naming the plan file.
+
 ## What binds — read these PLANS.md sections as written
 
 - **"Purpose and intent come first"** (Requirements, paragraph after the non-negotiables): the spec opens with why the work matters from a user's perspective — what someone can do after this change that they could not do before, and how to see it working.
 - **Non-negotiables** (Requirements): the spec is a living document, revised as progress is made and discoveries occur; "define every term of art in plain language or do not use it"; the work must "produce a demonstrably working behavior, not merely code changes to 'meet a definition'".
 - **"Self-containment and plain language are paramount"** (Guidelines): define jargon on first use; name files with full repository-relative paths.
 - **"Anchor the plan with observable outcomes"** (Guidelines): acceptance is phrased as behavior a human can verify, with exact commands and expected output — never internal attributes.
-- **"Living plans and design decisions"** — all five bullets, with the spec as the target document (Progress excepted; see below).
+- **"Living plans and design decisions"** — all five bullets, with the spec as the target document (Progress excepted when an execution plan exists; see below).
 - **"Prototyping milestones and parallel implementations"**: when unknowns are large, the spec declares spike milestones — how to run and observe results, and "the criteria for promoting or discarding the prototype". doperpowers:writing-plans turns them into spike tasks.
 
 ## What does NOT bind — superseded, do not import
 
 | PLANS.md directive | Superseded by |
 |---|---|
-| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | Human gates: design approval and spec review in doperpowers:brainstorming |
+| "do not prompt the user for 'next steps'…Resolve ambiguities autonomously" | At authoring: the human gates — design approval and spec review in doperpowers:brainstorming. While a spec that carries its own execution is being executed, the directive binds, with brainstorming's gate as the one stop: a fork under it that the spec does not cover goes to your human partner; everything else is decided and logged |
 | Single fenced code block, prose-first, no tables or checklists | Specs are files, not chat payloads; use tables/JSON/diagrams wherever they beat prose for precision |
-| Mandatory `Progress` section with timestamped checkboxes | The SDE ledger + git + plan checkboxes — externally verifiable, not self-report |
-| Milestones narrative, Concrete Steps, Interfaces and Dependencies | doperpowers:writing-plans, at contract resolution — decisions, interfaces, acceptance, exact commands; code only where it is a decision |
+| Mandatory `Progress` section with timestamped checkboxes | When an execution plan exists: the SDE ledger + git + plan checkboxes — externally verifiable, not self-report. A spec that carries its own execution keeps `Progress` (above) |
+| Milestones narrative, Concrete Steps, Interfaces and Dependencies | When an execution plan exists: doperpowers:writing-plans, at contract resolution — decisions, interfaces, acceptance, exact commands; code only where it is a decision. A spec that carries its own execution keeps them (above) |
 | Idempotence and Recovery section | Worktree isolation + git |
 | Self-contained "for a complete novice" | The fresh-session bar in the Overview above |
 
-These rejections carry rationale — read the Decision Log in `docs/doperpowers/specs/2026-07-03-living-specs-design.md` before re-proposing one.
+These rejections carry rationale — read the Decision Log in `docs/doperpowers/specs/2026-07-03-living-specs-design.md` before re-proposing one; the two rows conditioned on an execution plan were narrowed for the one-unit shape in `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
 
 ## The living tail
 
@@ -54,7 +66,7 @@ Every spec ends with these four sections, in this order, headed exactly as shown
       Rationale: …
       Date/Author: …
 
-Seed it at brainstorm time with the chosen approach AND each rejected alternative with why it lost — the approaches step already generated them; capturing them is free and stops re-proposals. Extend it whenever course changes mid-feature.
+Seed it at brainstorm time with the chosen approach AND each rejected alternative with why it lost — the approaches step already generated them; capturing them is free and stops re-proposals. Extend it whenever course changes mid-feature. The verification call brainstorming makes when it routes the work — which independent reviews the work gets and the branch review rung — is one of these entries, so the executor, the reviewer, and a recovering session read the same council.
 
 **`## Surprises & Discoveries`** — in PLANS.md's skeleton format:
 
@@ -63,10 +75,10 @@ Seed it at brainstorm time with the chosen approach AND each rejected alternativ
 
 For anything that changed design understanding: an assumption that proved false, a measured behavior, a constraint discovered during planning or execution. Short evidence snippets — test output is ideal. Incidental implementation noise belongs in commit messages, not here.
 
-**`## Outcomes & Retrospective`** — until finish, exactly the line "Pending — written at finish." At finish (the execution track's last step, after the whole-branch review), summarize what was achieved against the spec's original purpose, what remains, and lessons learned.
+**`## Outcomes & Retrospective`** — until finish, exactly the line "Pending — written at finish." At finish (after the whole-branch review), summarize what was achieved against the spec's original purpose, what remains, and lessons learned.
 
 **`## Revision Notes`** — one dated line per spec revision describing what changed and why (PLANS.md's bottom-note rule: "you must write a note at the bottom of the plan describing the change and the reason why"). When you revise, keep the whole document consistent — reflect the change across sections, not just where convenient.
 
 ## Front of the spec
 
-Untemplated on purpose: across this repo's existing specs no heading structure repeats, and that variance is a feature — form fits problem (state tables for state machines, JSON for schemas, prose for concepts). Only three things are required: the purpose-first opening, an acceptance section phrased as observable behavior, and the living tail.
+Untemplated on purpose: across this repo's existing specs no heading structure repeats, and that variance is a feature — form fits problem (state tables for state machines, JSON for schemas, prose for concepts). Only three things are required: the purpose-first opening, an acceptance section phrased as observable behavior, and the living tail — plus the execution sections above when the spec carries its own execution.

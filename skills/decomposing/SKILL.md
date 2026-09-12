@@ -13,7 +13,7 @@ ticket. doperpowers:brainstorming DEFINES one goal at a time, whatever its
 size — and for a goal whose pieces interact, MATURES the joint design
 before handing it here; this skill DIVIDES a goal that fails the gate
 below into child goals one level down, and tends the tree as children
-land; the tracks EXECUTE the leaves. The product of one run is a **composite spec** per
+land; the leaves are executed by their routes. The product of one run is a **composite spec** per
 `references/composite-spec-template.md` — the same species as any
 living spec ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)), not a separate document type:
 design at the center, with the roadmap topology (children, edges,
@@ -49,17 +49,17 @@ the board's ticket gate (doperpowers:issue-tracker
   needs real work.
 - **WELL-SCOPED** — one agent can reliably own it as one unit. "One
   agent" means one accountable context: an owner may marshal subagent
-  workers (an SDE plan's task workers, an ExecPlan's milestones) without
+  workers (an execution plan's task workers, a sequential executor's milestones) without
   that being decomposition — execution mechanics live below the tree's
   resolution. Fails ⇒ divide into work-children.
 
-A goal that passes the gate is a LEAF whatever its size — it dispatches to
-its track, and this skill's reach ends. Reliably-ownable is a moving
+A goal that passes the gate is a LEAF whatever its size — it dispatches by
+its route, and this skill's reach ends. Reliably-ownable is a moving
 envelope, not a size class: big-but-coherent work that one context can
-carry is one leaf (evidence: an epic-sized phase correctly ran as a single
-ExecPlan). Depth is an output of the gate, never a target, and it is
-asymmetric by nature: one branch bottoms out in a single ExecPlan while
-its sibling divides twice more.
+carry is one leaf (evidence: an epic-sized phase correctly ran as one
+spec carrying its own execution). Depth is an output of the gate, never a
+target, and it is asymmetric by nature: one branch bottoms out in a single
+one-unit spec while its sibling divides twice more.
 
 **Split signals** (any altitude): parts with different state owners,
 invariants, failure modes, or verification strategies; acceptance you can
@@ -102,7 +102,7 @@ The frontier governs COMMITMENT, not capture. Divide one level per run,
 and cut a branch only as it nears execution: child boundaries, gates,
 and binding contracts drawn today for far-off work go stale as landed
 siblings move them, and an undivided branch is cheap to re-cut. A child
-whose own division can wait carries the track hint "decomposing run at
+whose own division can wait carries the grain hint "decomposing run at
 dispatch" and nothing more. Design prose is the opposite case — whatever
 the joint view produced about a distant branch stays in the parent at
 the depth it was produced, as advisory inheritance (see the Derivation
@@ -217,7 +217,7 @@ share no design surface, so there was nothing to mature jointly; phases
    same division at board altitude — doperpowers:issue-tracker's
    `references/implement-decompose.md` is this skill's move in worker
    clothes.)
-7. **Dispatch and tend** — children go to their tracks per their track
+7. **Dispatch and tend** — children go to their routes per their grain
    hint, each carrying its section as pre-landed design and writing no
    spec of its own: a brief child implements against its section and a
    dispatch brief, a plan child grills only its residue
@@ -249,7 +249,7 @@ Each child section of the composite spec fixes:
   ordering rules it participates in;
 - **Design inheritance** — the parent design content that bears on this
   child, each piece carrying its authority grade;
-- **Track hint** — brief (the section plus a dispatch brief is the
+- **Grain hint** — brief (the section plus a dispatch brief is the
   whole contract; the board's DIRECT mode), plan (a
   doperpowers:writing-plans plan at task grain; the board's
   PLAN-EXECUTION), spike (deliverable is findings, never a merge), or
@@ -304,7 +304,7 @@ divergence. This is the living-spec discipline one level up.
 
 | Mistake | Fix |
 |---|---|
-| Running on a goal that passes the gate | That's a leaf with ceremony. Define it in doperpowers:brainstorming and dispatch it to its track. |
+| Running on a goal that passes the gate | That's a leaf with ceremony. Define it in doperpowers:brainstorming and dispatch it by its route. |
 | Running on a raw ungrounded ideadump | Wrong skill — doperpowers:organizing-sprints grounds testimony first. |
 | A cut that yields one child | A gate misfire: either the goal was already a leaf (ceremony), or the cut found no seam where children land independently. Back to the gate. |
 | Forcing division because a goal is big | The gate asks reliably-ownable, not small. Big-but-coherent is one leaf. |
@@ -317,5 +317,4 @@ divergence. This is the living-spec discipline one level up.
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
 | Child quietly diverging from the parent | Contradictions flow back into the parent's Revision Notes; flagged, not silent. |
-| Writing a spec for a leaf child | Its section is its spec; its documents are its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
-| Authoring an ExecPlan for a child | An ExecPlan carries a design because it has no spec; a child has one — its section. The brief dispatches, the ledger records. |
+| Writing a spec for a leaf child | Its section is its spec — not a spec of its own, and not one carrying its own execution either: the composite is shared by parallel siblings, so the child's record is its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
