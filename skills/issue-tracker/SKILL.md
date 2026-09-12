@@ -395,7 +395,7 @@ the board.
      `ready-for-architect` by your judgment of the birth rule).
    - `interactive-preferred` → take it into a live doperpowers:brainstorming
      session (the note says which decision areas need steering); the session
-     ends in a controlled-track build, a decomposition into gate-passing
+     ends in a build from a spec, a decomposition into gate-passing
      children, or a re-spec back to its lane queue (`ready-for-implementer`,
      or `ready-for-architect` by your judgment of the birth rule).
 3. Finalize merges: `board-transition.sh <n> done` on merge-auto-closed

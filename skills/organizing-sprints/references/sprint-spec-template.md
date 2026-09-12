@@ -15,9 +15,9 @@ A blockquote declaring:
 - **Living document** — which sections stay current during the sprint
   (Progress, Decision Log, Surprises, Retrospective) and that every
   revision lands in Revision Notes with a reason. This is the selective
-  transplant of ExecPlan discipline (PLANS.md / brainstorming's references/living-spec.md) to
+  transplant of living-spec discipline (brainstorming's references/living-spec.md, with PLANS.md beside it) to
   umbrella scale: acceptance as observable behavior, living tail — but NO
-  Concrete Steps. A delegated epic derives its own ExecPlan from this
+  Concrete Steps. A delegated epic derives its own spec from this
   document.
 - **Evidence sources** — the observation note (origin, date), the grill
   session (date, question range), the code explorations run.
