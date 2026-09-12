@@ -307,8 +307,9 @@ nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
 # THE BUILD EDGE IS GH-ONLY, TODAY. The Architect's in-design → in-progress
 # edge is not on the board service's state table, so the request would come
 # back a generic 409 after the plan was already pushed. The client refuses it
-# first and names the exit: the legacy handoff carries the same pin into the
-# implement queue, where an Executor runs PLAN-EXECUTION.
+# first and names the exit: the legacy handoff carries the same plan value into
+# the implement queue, where an Executor runs it — PLAN-EXECUTION from a real
+# pin, DIRECT from the body on `pre-spec`.
 : > "$FIX.log"
 V board-transition.sh 8 in-progress "plan-execution: docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   --branch tick/build --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true

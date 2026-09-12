@@ -241,4 +241,4 @@ the header, invokes doperpowers:subagent-driven-execution, and runs that
 loop — fresh executor per task, reviews at dependency frontiers, fixes
 resuming the executor — in its own context, so yours stays the design
 session as an architect. It returns on completion (with the PR URL) or on a `BLOCKED`
-that names the plan text at issue: repair the plan or answer, or escalate to human if only human can unblock or provide necessary judgement, then continue the same subagent with SendMessage.
+that names the plan text at issue: repair the plan or answer, or escalate to human if only human can unblock or provide necessary judgement, then continue the same subagent with SendMessage. The residue in its return — work left behind that deserves its own ticket — is registered as board tickets through doperpowers:issue-tracker; it is bounded by construction, so a peer seat builds each one direct from the ticket body.

@@ -120,8 +120,9 @@ assert_contains "$SKILL" "board-answer" "active early park distinguishes notific
 
 echo "runtime skill — E1 architect-lane rules (plan pin, PLAN-EXECUTION mode, ready-for-architect escalation):"
 assert_contains "$SKILL" "resolve that path at exactly that SHA, never" "the plan: pin joins the spec hierarchy, resolved at its exact SHA, never the branch tip"
-assert_contains "$SKILL" "ran in PLAN-EXECUTION mode, which posts none." "a real plan: revision pin means no executor [gate] pass exists (PLAN-EXECUTION mode)"
-assert_contains "$SKILL" "carries a real \`[gate] pass\` — anchor on it as usual." "a plan: pre-spec ticket ran DIRECT and keeps a real [gate] pass to anchor on"
+assert_contains "$SKILL" "and neither posts one." "a real plan: revision pin means no executor [gate] pass exists (the Architect's plan-executor and a PLAN-EXECUTION worker both post none)"
+assert_contains "$SKILL" "carries that Executor's \`[gate] pass\`" "a plan: pre-spec ticket built by an Executor ran DIRECT and keeps a real [gate] pass to anchor on"
+assert_contains "$SKILL" "\`[board] in-progress: direct:\`" "a plan: pre-spec ticket built by an Architect anchors on the build-edge comment instead"
 assert_contains "$SKILL" "Architect handoff comment (the \`plan:\` pin's authorization — see the" "the missing-Validation-Evidence-section rule admits the Architect handoff comment alongside [gate] pass"
 assert_contains "$SKILL" "defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to" "RE-REVIEW's seam-clustered impasse routes to ready-for-architect, not needs-human"
 assert_contains "$SKILL" "cap) or was just routed to ready-for-architect (the seam-clustered" "ESCALATE's PARKED tier covers a ticket just routed to ready-for-architect"

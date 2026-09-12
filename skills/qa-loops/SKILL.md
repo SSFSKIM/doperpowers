@@ -136,8 +136,11 @@ comment (its GitHub timestamp is the authorization time) — or, on a
 `plan: <path>@<sha>` ticket, the transition comment that MINTED the pin
 instead (`[board] ready-for-implementer:` for a handoff, `[board]
 in-progress: plan-execution:` for an Architect's build edge; when both
-exist, the later one carries the pin in force) — and any human answers
-posted while the ticket was parked. Until JOIN, stay read-only in
+exist, the later one carries the pin in force), and on a `plan: pre-spec`
+ticket an Architect built itself, its build-edge comment (`[board]
+in-progress: direct:`) — and any human answers posted while the ticket
+was parked. Whichever comment that is, it is the ANCHOR every
+timestamp rule below reads. Until JOIN, stay read-only in
 this shared worktree: no test runs, no builds — the engine may be running
 its own.
 
@@ -158,7 +161,13 @@ is a TOOL invocation, not a nested agent. Never add
    turn reads them.
 2. Judge the diff shape and choose this round's engine-run count — most
    PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
-   runs, whole-branch scale up to 4. From the worktree root, start each
+   runs, whole-branch scale up to 4. Read the spec behind the pin too (the
+   pinned file itself, or the plan's `Spec:` header): its Decision Log may
+   carry a verification entry naming the branch review the work's stakes
+   warrant. On the board this loop is that review, so a call for a high
+   rung or a panel is a reason to fan out — 2–3 lensed runs regardless of
+   diff size; a low or medium call leaves the diff-shape judgment as it
+   stands. From the worktree root, start each
    run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
    empty lens assignments are deliberate — they shield the plain run
    from any inherited host value):
@@ -244,7 +253,7 @@ sentinel adds nothing — the issue body is the plan). Audit the PR
 against the pinned plan plus the issue body together.
 
 Timestamp drift: compare the issue body's last-edited time against the
-`[gate] pass` timestamp. Edited after the gate → reconstruct the at-gate
+anchor's timestamp (ORIENT). Edited after it → reconstruct the at-anchor
 body from GitHub edit history (gh api graphql: Issue.userContentEdits) and
 audit against THAT; a material post-gate spec change the implementation
 never acknowledged is human-grade.
@@ -257,8 +266,12 @@ time is the transition comment that MINTED that pin: `[board] ready-for-implemen
 for a handoff, `[board] in-progress: plan-execution:` for an Architect
 that built the plan itself. When both exist the later one carries the pin
 in force. Every rule in this audit keyed to the gate timestamp reads that
-comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT and
-carries a real `[gate] pass` — anchor on it as usual.
+comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT: built
+by an Executor, it carries that Executor's `[gate] pass` — anchor on it as
+usual; built by an Architect whose build edge minted the sentinel, anchor
+on that comment (`[board] in-progress: direct:`) — the Architect's own
+`[gate] pass` is the architect-lane variant, taken before its design work,
+and the build edge is where it ruled the body sufficient to build.
 
 The audit answers four questions: was the issue substantively ready for
 the implemented scope (settled scope, requirements, acceptance, and
@@ -404,6 +417,11 @@ re-wave → fall back (wave-board.md: reset the unpushed wave to its
 wave-base), merge the engine-reviewed head exactly as if no closing
 wave had run, and LOG the residue. Findings already LOGGED by
 stated-reason departure stay LOGGED — their deferral reason stands.
+A wave that changed behavior also left the spec's `Outcomes &
+Retrospective` stale — the executor wrote it before your review, and no
+one after you will revisit it — so it rides the closing wave as one more
+item: the fixer refreshes the section, you grade and push it like any
+other.
 Severity does not
 promote exit residue to a ticket — TOO BIG is the only ticket gate at
 exit, as everywhere.
