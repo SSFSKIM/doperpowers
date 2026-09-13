@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# review-engine.sh — the ONE review-engine invocation for the qa-loops
-# loop, driven by the doperpowers:codex-companion runtime (vendored codex
+# review-engine.sh — the codex review engine the qa-loops loop ran until it
+# moved onto doperpowers:review-code's lane (2026-09-13); kept here as the
+# bench's `--engine codex` baseline. Driven by the doperpowers:codex-companion runtime (vendored codex
 # app-server client; sibling skill). PURE correctness review: a plain run is
 # codex's native `review` verb with no ticket/spec input of any kind; the
 # single optional modification is a diff-derived structural LENS
@@ -38,7 +39,7 @@ command -v codex >/dev/null 2>&1 || { echo "review-engine: codex CLI not found" 
 command -v node  >/dev/null 2>&1 || { echo "review-engine: node not found" >&2; exit 127; }
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-companion="$script_dir/../../codex-companion"
+companion="$script_dir/../../skills/codex-companion"
 [ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: codex-companion skill not found at $companion" >&2; exit 127; }
 
 model="${CODEX_REVIEW_MODEL:-gpt-6-astra}"

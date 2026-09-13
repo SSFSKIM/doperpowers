@@ -368,3 +368,4 @@ plan re-execution; everything else executed as written.
    recovery spike, not the current interface. The environment recipe this
    document proved (temp CODEX_HOME, auth link, TLS bundle, code-mode host,
    nested-sandbox handling) is unchanged and remains the live contract.
+- 2026-09-13: the "reviewer is codex-only" mandate above is superseded by the human's direction of 2026-09-13 — the Reviewer worker now runs doperpowers:review-code's native lane (GPT models through the local gateway, so the cross-model second opinion this mandate protected is kept). The codex engine and its environment recipe live on in `tests/review-bench/review-engine.sh` as the bench's baseline. Design: `2026-09-13-qa-loops-native-review-design.md`.

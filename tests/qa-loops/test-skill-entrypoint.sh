@@ -155,7 +155,7 @@ echo "runtime skill — placeholder set:"
 # MANIFEST_REF is the API binding's addition: dispatch there cannot know the
 # PR's base, so it names the ref the two manifest snapshots were taken from and
 # the worker re-reads them when the base it resolves turns out to differ.
-want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_ENGINE}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
+want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
 got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_placeholders" == "$want_placeholders" ]]; then
     pass "runtime placeholder set is exact"
@@ -187,6 +187,20 @@ assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (a
 assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
 assert_contains "$SKILL" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
 assert_contains "$SKILL" "stays in-review" "engine-down never parks needs-human"
+# The engine is doperpowers:review-code's lane, run by the worker itself through
+# the lane's workflow at every level (isolated worktree per reviewer), at a
+# level the spec's verification entry can raise but never lower, and a
+# reviewer that could not inspect the range never reads as clean.
+assert_contains "$SKILL" "doperpowers:reviewer-low" "engine names the registered reviewer rungs"
+assert_contains "$SKILL" "{{REVIEW_CODE_DIR}}/workflows/code-review.js" "panel levels run review-code's workflow from the dispatcher-pinned skill dir"
+assert_contains "$SKILL" 'lens: "<mandate>"' "lensed runs ride the workflow's lens argument"
+assert_contains "$SKILL" "pass no \`repo\` argument" "reviewers work in fresh worktrees, never this checkout"
+assert_contains "$SKILL" "could not inspect" "a reviewer whose tools failed is a failed sweep, not a clean one"
+assert_contains "$SKILL" "the audit is your independent judgment" "a result that lands early waits for the audit"
+assert_contains "$SKILL" "Nothing lowers a rung the spec named" "the spec's verification rung is a floor"
+assert_not_contains "$SKILL" "review-engine" "the codex engine script is gone from the protocol"
+assert_not_contains "$SKILL" "codex" "no codex process in the review path"
+assert_not_contains "$SKILL" "CODEX_REVIEW" "no codex engine env in the protocol"
 assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code verification"
 assert_not_contains "$WAVEBOARD" "never implement from the finding text alone" "verify-then-fix is stated as grounding, not a prohibition"
 assert_contains "$WAVEBOARD" "a finding can be wrong" "the contract names why verification comes first"
@@ -260,6 +274,9 @@ assert_not_contains "$MANUAL" "developer instructions" "retired engine policy st
 assert_not_contains "$MANUAL" "it never edits code" "manual states edit ownership, not an edit prohibition"
 assert_not_contains "$MANUAL" "works the batch sequentially" "wave-work organization is the fixer's call"
 assert_not_contains "$MANUAL" "below the engine's critical/high class" "manual routes findings by the worker's judgment, not a severity class"
+assert_not_contains "$MANUAL" "review-engine.sh" "manual no longer names the codex engine script"
+assert_not_contains "$MANUAL" "codex login" "the codex CLI is no longer a runner prerequisite"
+assert_contains "$MANUAL" "REVIEW_LEVEL" "manual documents the operator's level floor"
 assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail-safe order, not shell packaging"
 
 echo "runtime skill — E2 scale-review variant (recomposition epics):"
@@ -289,7 +306,7 @@ assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a 
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
 # ...plus TICKET_BODY_FILE, the api-mode block's assignment file: a claim
 # response is the only route a run has to its own ticket text.
-want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{CODEX_REVIEW_EFFORT}} {{CODEX_REVIEW_MODEL}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_ENGINE}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
 got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$got_rboot" == "$want_rboot" ]]; then
     pass "bootstrap placeholder set is exact"
