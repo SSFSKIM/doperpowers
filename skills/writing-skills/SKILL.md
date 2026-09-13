@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: Use when creating new skills, editing existing skills, or verifying skills work before deployment
+description: Use when creating or editing any authored agent behavior — a skill, a registered agent definition, a worker protocol, a dispatch-prompt template — or verifying a skill works before deployment
 ---
 
 # Writing Skills

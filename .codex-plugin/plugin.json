@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.85.0",
+  "version": "7.86.0",
   "description": "One software-development methodology for coding agents, sized by the work: brainstorm, design, spec, TDD, review, ship — run in order from the spec itself when one agent can own it, or through an execution plan with a fresh subagent per task when it takes more, and the same method unattended on the board loop.",
   "author": {
     "name": "SSFSKIM",
