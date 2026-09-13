@@ -17,8 +17,8 @@ Seeing it work: `grep -n -E 'codex|review-engine|CODEX_REVIEW' skills/qa-loops/S
 - [x] (2026-09-13 13:35Z) Milestone 3 — relocation: `review-engine.sh` and `test-review-engine.sh` to `tests/review-bench/`; `run-case.sh` and the bench README follow.
 - [x] (2026-09-13 13:35Z) Milestone 4 — consumers and history: the implement protocol's clause; Revision Notes on the three review design specs.
 - [x] (2026-09-13 14:05Z) Spec review (adversarial-reviewer, background): four findings, all applied — the engine runs through the workflow at every level so each reviewer has a fresh worktree; a reviewer that could not inspect is a failed sweep; a result that lands before the audit waits; a live smoke test in the production seat shape joins the acceptance.
-- [ ] Milestone 5 — validation: suites green, lint, the sweep in Acceptance 11, the smoke in Acceptance 12, version bumped.
-- [ ] Exit — branch review at `doperpowers:reviewer-high`, retrospective, PR.
+- [x] (2026-09-13 15:10Z) Milestone 5 — validation: the five suites and lint green (two pre-existing red assertions in the dispatcher suite re-anchored), the sweep in Acceptance 11 clean, the smoke in Acceptance 12 passed (result after 21 minutes, reviewer isolated), version 7.87.0.
+- [x] (2026-09-13 15:15Z) Exit — branch review at `doperpowers:reviewer-high` (two findings, both applied by a fix wave: the explanation check scoped to single-reviewer levels; only the sweep's launch failure enters the outage path), retrospective written, PR opened.
 
 ## Acceptance
 
@@ -159,14 +159,26 @@ Run from the worktree root.
 - Observation: Two assertions in `tests/qa-loops/test-review-dispatch.sh` ("pins the QAgent model to opus") were already red on `main` before this change: they anchored `' opus$'` on the mock spawn line, and the spawn line has carried `--role QAGENT --stamp …` after the model pin since the provenance stamp landed. Re-anchored on `--model opus( |$)` in this PR, since the suite is part of its acceptance.
   Evidence: the suite run from the `main` checkout reports the same two failures and nothing else.
 
-- (smoke result pending)
+- Observation: The production seat shape works end to end. A `claude --bg` seat spawned by `sminos spawn … --worktree smoke-review-lane` called the workflow at level low with no `repo` argument, ended its turn ("waiting for the completion notification — no polling"), and was re-invoked by that notification 21 minutes later; it wrote the result object and `SMOKE-DONE incorrect 2 ok`. The reviewer ran in `.claude/worktrees/wf_450cf310-da9-1` (`spawnedWithWorktree: true`), which the workflow removed afterwards; the seat's own checkout was untouched.
+  Evidence: `/tmp/smoke-review-lane/log`; the workflow journal's `result` record; the seat transcript (Workflow call 08:48:05Z, turn end 08:48:14Z, wake and file write 09:09:43–47Z).
+
+- Observation: The reviewer spent most of those 21 minutes running the repository's own test suites from its scratch worktree — the sminos suite, the issue-tracker suites, lint, then the board-api runners one by one — before reading PR evidence with `gh`. The codex engine's read-only sandbox would have failed those runs fast; the native reviewer can run them, and on this repo they are slow. The protocol's 45-minute bound is therefore a real ceiling on a large range, not a formality.
+  Evidence: `ps` over the run showed `test-board-sweep.sh`, `test-register-transition.sh`, `test-sweep-resume.sh`, `test-run-self-location.sh` under `wf_450cf310-da9-1` between 17:54 and 18:06 local; the result's explanation opens with "The sminos, board-protocol, dispatch, sweep, and Claude skill suites passed".
+
+- Observation: The smoke's range was wider than intended — the seat's worktree HEAD (`e9159b7b`, the checkout snapshot) against `main` covered #139, #141, and this spec — and the reviewer's two findings land on #138's files, not this PR's: `skills/issue-tracker/references/ticket-gate.md` still says "when the work is several units" (a unit count where the route should key the shape, the same class the #138 branch review fixed elsewhere), and `archive/execplan/SKILL.md`'s relative links did not move with the file. Both are recorded as residue for a direct follow-up.
+  Evidence: `/tmp/smoke-review-lane/result.json` findings `reviewer#1` (P2) and `reviewer#2` (P3).
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Achieved against the purpose: no codex process remains in the review path. The board's Reviewer worker runs doperpowers:review-code's workflow from its own session at every level, each reviewer in a fresh worktree; the level is derived from the ticket's spec, the operator's `REVIEW_LEVEL` floor, and the diff's size, so a spec's verification call now reaches the board's review as the rung it names; the fail-closed check reads the result; the outage marker, the audit, JOIN, the wave board, and the caps are unchanged. `review-engine.sh` and its suite live in the bench. Every acceptance item holds on the final tree, including the live smoke in the production seat shape.
+
+What remains: the two findings the smoke's reviewer raised on #138's files (ticket-gate's "several units" wording; the archived skill's relative links) — direct follow-ups; the review-code follow-on to surface panel finders' explanations so a finder that could not inspect is visible at panel levels; the reviewer agents' habit of running a repository's slow test suites, which the lane's prompt could temper when CI covers them; the codex panel's deletion, still the lane design's own follow-on; the smoke seat's worktree `.claude/worktrees/smoke-review-lane` (branch `worktree-smoke-review-lane`), left for the human to remove.
+
+Lessons. (1) The spec review earned its place again: its first finding replaced the port's central mechanism (direct Agent dispatch would have dropped the sandbox boundary the codex engine enforced; the workflow already carried the isolation). Reading the agent definition's tool list — Bash stays — was the whole argument. (2) A rule ported from one engine to another has to be checked against what the new engine actually emits: the "explanation names nothing examined" check was right for a reviewer's prose and wrong for the panel's generated summary, which the branch review caught by reproducing it against stub reviewers. (3) The smoke was worth its 21 minutes: it proved the `--bg` seat wakes on a Workflow completion, that the workflow's worktree isolation holds from a linked worktree, and it exposed the reviewer's test-running habit, which nothing hermetic could have shown. (4) Writing this change as a one-unit spec kept three review rounds and a smoke test resumable from the Progress list without re-reading the transcript.
 
 ## Revision Notes
 
 - 2026-09-13: created from the human partner's direction to port the review loop onto the native lane, after the state-of-the-repo check that found qa-loops the last codex consumer in the review path.
 - 2026-09-13: revised after the independent spec review — the engine runs through the workflow at every level (isolation per reviewer), a reviewer that could not inspect is a failed sweep, a result that lands before the audit waits, the smoke in a real background seat joins the acceptance (12), `REVIEW_CODE_DIR` is a derived path rather than a probe; four Decision Log entries added or revised, four Surprises recorded.
 - 2026-09-13: revised after the high-rung branch review — the fail-closed explanation check is scoped to single-reviewer levels (the panel's explanation is workflow-generated; `interrupted` is its failure signal), and only the sweep's launch failure enters the outage path; two assertions added.
+- 2026-09-13: finished — the smoke in the production seat shape passed (Acceptance 12), its observations and the reviewer's two out-of-scope findings recorded under Surprises, Progress closed, retrospective written; PR opened against `board-seams`.
