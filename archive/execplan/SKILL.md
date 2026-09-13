@@ -5,7 +5,7 @@ description: Use when taking a well-scoped, delegable piece of work through the 
 
 # ExecPlan Track
 
-> Retired 2026-09-12. The one-unit shape this skill served now lives in the living spec: `skills/brainstorming/references/living-spec.md` says what a spec that carries its own execution binds, brainstorming's step 9 and `agents/plan-executor.md` carry the execution contract, and PLANS.md moved to `skills/brainstorming/references/PLANS.md`. Kept for reference; not loaded by any harness. Design: `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
+> Retired 2026-09-12. The one-unit shape this skill served now lives in the living spec: `skills/brainstorming/references/living-spec.md` says what a spec that carries its own execution binds, brainstorming's step 9 and `agents/plan-executor.md` carry the execution contract, and the sections of PLANS.md that bind are quoted verbatim in living-spec.md — the vendored source itself is kept beside this file at `references/PLANS.md`. Kept for reference; not loaded by any harness. Design: `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
 
 ## Overview
 
