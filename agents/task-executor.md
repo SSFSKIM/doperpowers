@@ -1,6 +1,6 @@
 ---
 name: task-executor
-description: Dispatch this agent during subagent-driven-execution to implement a task.
+description: Per-task implementer for doperpowers:subagent-driven-execution only.
 model: opus
 effort: high
 color: blue

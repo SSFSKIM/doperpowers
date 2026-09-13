@@ -1,6 +1,7 @@
 ---
 name: codex-companion
 description: Use when work should go to the Codex runtime — an independent or second-opinion review, delegating diagnosis, research, or implementation to Codex (GPT) models.
+disable-model-invocation: true
 ---
 
 # Codex Companion

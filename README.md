@@ -77,7 +77,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 
 **Keep it honest**
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
-- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
+- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`; the qa-loops review engine still runs its runtime)
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 
 **Run it unattended**

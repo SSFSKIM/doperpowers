@@ -84,7 +84,7 @@ When the gate applies, one approval covers the whole pass; revise conversational
 
 Prefer small units with one clear purpose and a well-defined interface — you reason better about code you can hold in context at once, and edits to focused files are more reliable; a file that has grown large is usually doing too much. Follow the codebase's existing patterns, and where existing code has problems that affect the work (a file grown too large, unclear boundaries, tangled responsibilities), fold targeted improvements into the design the way a good developer improves the code they work in.
 
-When the verification call names a critique debate, bring in a critic and debate until the discussion converges: adopt what survives, rebut what doesn't, and hand a disagreement that survives honest debate to your human partner as an open question. Route by the design's center of gravity. A technical-heavy design (protocols, concurrency, data models, failure semantics) goes to a Codex thread via doperpowers:codex-companion's `task` verb — cross-model eyes catch what same-model review is blind to; its references/amigo.md has the critic recipe, debated over `--resume-last`. A product-heavy, judgment-heavy, or still-open design goes to the `doperpowers:critique` agent with brief context and paths to the design artifacts, debated via SendMessage.
+When the verification call names a critique debate, bring in a critic and debate until the discussion converges: adopt what survives, rebut what doesn't, and hand a disagreement that survives honest debate to your human partner as an open question. The critic is the `doperpowers:critique` agent: dispatch it with brief context and paths to the design artifacts, and debate via SendMessage.
 
 ## The spec
 

@@ -1,6 +1,6 @@
 ---
 name: task-reviewer
-description: Dispatch this agent during subagent-driven-execution to review a task.
+description: Per-task reviewer for doperpowers:subagent-driven-execution only. Read-only.
 model: sol
 effort: high
 color: yellow
