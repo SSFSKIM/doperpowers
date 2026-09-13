@@ -196,6 +196,8 @@ assert_contains "$SKILL" "{{REVIEW_CODE_DIR}}/workflows/code-review.js" "panel l
 assert_contains "$SKILL" 'lens: "<mandate>"' "lensed runs ride the workflow's lens argument"
 assert_contains "$SKILL" "pass no \`repo\` argument" "reviewers work in fresh worktrees, never this checkout"
 assert_contains "$SKILL" "could not inspect" "a reviewer whose tools failed is a failed sweep, not a clean one"
+assert_contains "$SKILL" "at panel levels this is the" "the explanation check is scoped to single-reviewer levels; the panel's failure signal is interrupted"
+assert_contains "$SKILL" "never ends the review" "a lensed call that will not launch is a recorded failure, not an outage"
 assert_contains "$SKILL" "the audit is your independent judgment" "a result that lands early waits for the audit"
 assert_contains "$SKILL" "Nothing lowers a rung the spec named" "the spec's verification rung is a floor"
 assert_not_contains "$SKILL" "review-engine" "the codex engine script is gone from the protocol"

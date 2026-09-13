@@ -213,14 +213,19 @@ never has it.
    to its findings file as you open it; the wave board and the trail cite
    those files. The sweep — the lens-free call — is the round's required
    whole-range review, and it FAILED when its verdict is `interrupted`
-   (its `coverage` names the lane that died), when its verdict is
-   `correct` on an `explanation` that names nothing the reviewer
-   examined, or when the explanation says the reviewer could not inspect
-   the range — a reviewer whose tools failed must never read as a clean
-   review. A failed sweep fails the round (the fallback below owns
-   retries and the outage path); only lensed runs' failures are
-   tolerable. When the sweep succeeded, proceed on the successful results
-   and record any failed lensed runs in the review trail.
+   (its `coverage` names the lane that died; at panel levels this is the
+   workflow's own signal for a lost sweep or verifier) or, at a
+   single-reviewer level, when its verdict is `correct` on an
+   `explanation` that names nothing the reviewer examined or says the
+   reviewer could not inspect the range — a reviewer whose tools failed
+   must never read as a clean review. The panel's explanation is
+   assembled by the workflow, not written by a reviewer: a clean panel
+   whose explanation notes that every finder returned zero findings is a
+   prompt to re-check the pinned range, not an outage. A failed sweep
+   fails the round (the fallback below owns retries and the outage
+   path); only lensed runs' failures are tolerable. When the sweep
+   succeeded, proceed on the successful results and record any failed
+   lensed runs in the review trail.
 5. Read the findings file(s) — the round's findings are their union;
    overlapping findings collapse into one triaged item (keep the
    highest-priority duplicate as the anchor).
@@ -235,10 +240,11 @@ wave the single lens-free call is the norm — with fresh findings files,
 again in the background.
 
 ENGINE FALLBACK — there is no second engine; the lane is the gateway's.
-If a call errors instead of returning a task, or the sweep fails as
-step 4 defines (the gateway refusing, a reviewer lost before it reports,
-a reviewer that could not inspect), retry twice with a short backoff.
-Still failing:
+If the sweep's call errors instead of returning a task, or the sweep
+fails as step 4 defines (the gateway refusing, a reviewer lost before it
+reports, a reviewer that could not inspect), retry it twice with a short
+backoff; a lensed call that will not launch is recorded as a failed
+lensed run and never ends the review. Still failing:
 - post the review-trail comment recording the outage ("engine
   unavailable: <error>");
 - touch NO board state — the ticket stays in-review. An infra outage is
