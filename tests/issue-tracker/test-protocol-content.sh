@@ -263,6 +263,11 @@ assert_contains "$arch" "carries its own execution" "architect: the build brief 
 # route gets the human's design approval, the board form of brainstorming's gate.
 assert_contains "$arch" "review loop owns the whole-branch review" "architect: the brief hands the whole-branch review to the review loop (no double review)"
 assert_contains "$arch" 'in-progress "direct: pre-spec suffices as the plan"' "architect: a pre-spec ticket takes the build edge and is built here"
+# The reader-drawn boundary (PR #144) and the pre-spec build edge (PR #141) meet
+# here: interactive direct can be document-free, board DIRECT cannot — it runs
+# the self-contained ticket body as its document, so both clauses must coexist.
+assert_contains "$arch" "nothing here is document-free" "architect: board DIRECT is not document-free — the ticket body is its document"
+assert_not_contains "$arch" "Direct never applies here" "architect: the clause that contradicted the pre-spec build edge is gone"
 assert_contains "$arch" "approve the design at" "architect: the plan route parks for the human's design approval"
 assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 

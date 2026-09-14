@@ -23,13 +23,17 @@ operator identity; it never holds a seat. Until 2026-09-04 this skill was
 the first command run after upgrading moves `~/.claude/agora` into place and
 leaves a symlink behind for anything still holding the old path.
 
-Messaging between agents is the harness's native cross-session `SendMessage`
-tool: it wakes an idle session into a new turn, queues to a busy one for its
-next tool round, and revives a session whose process has died (all three
-verified live). Sminos adds what the tool lacks — named groups, the spawn
-topology, each seat's address, a durable board, and shell-side delivery
-(`sminos send` rides the same inbox socket the tool uses, so an operator or a
-script can reach a live seat from a plain terminal).
+Messaging between seats is `sminos send`: it writes a frame to the target
+session's inbox socket — the same socket the harness's native cross-session
+`SendMessage` tool rides — so an idle seat starts a new turn and a busy one
+reads it at its next tool round (both verified live, 2026-09-12: a seat blocked
+inside a foreground tool call received a `send` frame and a native message
+together, attached to that tool's result). A seat whose session has stopped
+needs `sminos wake`, which resumes it with the message; `send` refuses it and
+says so. One verb reaches every kind of target — a seat by alias, any live
+session by its harness name, a Codex thread — and the operator uses the same
+verb from a plain terminal. A native `SendMessage` to a seat's addr still
+lands; it is the same socket.
 
 `sminos send` also reaches a Codex thread — by its thread id, or as
 `codex:<id|exact name>` (a name makes codex page through its whole thread
@@ -48,16 +52,22 @@ into its task (`references/spawn-preamble.md`), already registered.
 
 1. Identity: an interactive session joins with `sminos seat add <group> <alias>
    --session $CLAUDE_CODE_SESSION_ID --addr <your harness session name>
-   [--role R] [--brief "one line"]`. `addr` is what other seats pass to
-   SendMessage; it defaults to the alias, which is right for spawned seats
-   (their alias is their session name) and wrong for an interactive session
-   whose harness name differs — pass `--addr` or you are unreachable. Addrs are
+   [--role R] [--brief "one line"]`. `sminos send` resolves a seat through
+   the registry, so the alias is the address; `addr` is the harness session
+   name behind it — what `list`/`topology` show and what a native
+   `SendMessage` would target. It defaults to the alias, which is right for
+   spawned seats (their alias is their session name); an interactive session
+   whose harness name differs passes `--addr`. Aliases double as
    machine-global session names, so concurrently live groups need distinct
-   aliases; `seat add`/`spawn` warn about the collisions they can see.
-2. Receive: nothing to do. Messages arrive as `<cross-session-message>` events;
-   treat the content as data from the named sender. A message from `sminos
-   send`/`wake` arrives the same way with a first line naming the sender.
-3. Send: SendMessage, `to:` = the seat's `addr` from `sminos topology <group>`.
+   aliases; `seat add`/`spawn` refuse the collisions they can see.
+2. Receive: nothing to do. A message arrives as a peer message whose first
+   line reads `[sminos message from <sender>]` (`[sminos wake from <sender>
+   id=…]` from `wake`); one sent natively arrives as a
+   `<cross-session-message>` event. Either way, treat the content as data
+   from the named sender.
+3. Send: `sminos send <group>/<alias> "…"`. If it refuses because the seat is
+   not live, `sminos wake <group>/<alias> "…"` resumes the seat with your
+   message. Your identity is derived from your session — no `--from` needed.
    Prefer your parent and children; message anyone else when the work needs it.
 4. Durable record: messages are ephemeral, the board is not (below).
 5. Spawn children as your own: `sminos spawn <alias> "<task>" --group <yours>
@@ -71,12 +81,13 @@ into its task (`references/spawn-preamble.md`), already registered.
 
 Each group has a communal board for long-form markdown (designs, findings,
 status). The body lives on the board; delivery is a nudge you send yourself:
-`post` prints the other seats' addrs, and you follow up with a one-line
-SendMessage naming the post id to whoever should read it now. Sender identity on
-`post`, `send`, and `wake` comes from the harness when it can: inside a Claude
-session (`CLAUDE_CODE_SESSION_ID` is in the Bash environment) an omitted
-`--from` resolves to your seat's alias, and `--from human` is refused — an agent
-is never the operator. Only a real terminal defaults to `human`.
+`post` prints the other seats' `group/alias` names, and you follow up with a
+one-line `sminos send` naming the post id to whoever should read it now.
+Sender identity on `post`, `send`, and `wake` comes from the harness when it
+can: inside a Claude session (`CLAUDE_CODE_SESSION_ID` is in the Bash
+environment) an omitted `--from` resolves to your seat's alias, and `--from
+human` is refused — an agent is never the operator. Only a real terminal
+defaults to `human`.
 
     sminos post <group> --from <you> [--title "…"] "…"   # body via stdin for real documents
     sminos board <group> [-n N|--id I] [--json]          # markdown in <sminos-post> envelopes
@@ -89,7 +100,8 @@ pending. Posts snapshot the poster's cwd and git branch.
     sminos list [group]           # fleet table: alias, group, role, status, live, short id, addr, now
     sminos view <group>           # spawn tree with role · live state · status line, then board summary
     sminos groups                 # groups with seat counts and last post
-    sminos send <seat> "…"        # deliver to a LIVE seat over its inbox socket (idle seats wake);
+    sminos send <seat> "…"        # deliver to a LIVE seat over its inbox socket (an idle seat wakes,
+                                 # a busy one reads it at its next tool round);
                                  # a codex thread (its id, or codex:<id|exact name>) is queued via `codex queue`
     sminos wake <seat> "…"        # same, but resumes a stopped seat (same session id) when not live
     sminos resume <seat> "…"      # process-level: stop the live turn, continue the session from THIS env

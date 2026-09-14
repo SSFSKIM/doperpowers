@@ -73,8 +73,9 @@ of art; reference repo common knowledge instead of duplicating it.
 ## When the spec carries its own execution
 
 When brainstorming routed the work to a spec that carries its own execution
-— its well-scoped-and-delegable route: one agent can reliably own the work,
-and it runs sequentially — the spec also carries the execution sections
+— its one-unit-with-a-reader route: one agent can reliably own the work,
+someone beyond the author's session will read the document, and it runs
+sequentially — the spec also carries the execution sections
 below, in PLANS.md's skeleton wording: `Progress`, placed right after the
 purpose (it is this spec's ledger, kept current at every stopping point),
 `Plan of Work` (told as milestones when the work has stages), `Concrete

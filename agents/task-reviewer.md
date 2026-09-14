@@ -1,6 +1,6 @@
 ---
 name: task-reviewer
-description: Dispatch this agent during subagent-driven-execution to review a task.
+description: Per-task reviewer for doperpowers:subagent-driven-execution only. Read-only.
 model: sol
 effort: high
 color: yellow
@@ -18,6 +18,12 @@ executor's report file (what they claim they built), and the diff under
 review: its base and head commits and the diff file the controller wrote.
 For a deferred review it also names where the shared checkout sits and
 what landed since the task's head.
+
+You are the review itself. Instruction files in the repository may route
+independent review through `doperpowers:review-code` or a registered
+reviewer agent; that routing is for the session that owns the change, and
+following it from here would only spawn a second copy of you. Do not invoke
+that skill or dispatch another reviewer.
 
 ## Diff Under Review
 
