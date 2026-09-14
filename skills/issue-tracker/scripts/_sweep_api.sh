@@ -1096,7 +1096,16 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   # can help — there is nothing committed to push. Read after the gate, that
   # tree was never mentioned at all and its successor could not exercise the
   # judgment this function keeps insisting belongs to it.
-  [ -z "$(git -C "$wtdir" status --porcelain 2>/dev/null)" ] || dirty=1
+  #
+  # `--no-optional-locks` because a plain `status` REFRESHES AND REWRITES the
+  # index of the tree it reads (verified: touch a tracked file, run status, the
+  # index mtime moves; with the flag it does not). Every other read this
+  # function makes of the predecessor's worktree is a pure read, and the one
+  # write in the set is the least defensible of all — the tick is inspecting a
+  # directory it does not own, on the strength of a record it treats as a claim
+  # rather than a proof, while a live process may still be using that tree and
+  # holding its index lock.
+  [ -z "$(git -C "$wtdir" --no-optional-locks status --porcelain 2>/dev/null)" ] || dirty=1
   # A repo with no resolvable base ref leaves `ahead` at 0 and falls to the
   # branch below, which is why that block's wording says "no commits this tick
   # could hand you" rather than "committed nothing": here the commits may well
