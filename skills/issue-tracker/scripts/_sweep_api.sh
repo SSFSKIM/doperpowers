@@ -1097,6 +1097,10 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   # tree was never mentioned at all and its successor could not exercise the
   # judgment this function keeps insisting belongs to it.
   [ -z "$(git -C "$wtdir" status --porcelain 2>/dev/null)" ] || dirty=1
+  # A repo with no resolvable base ref leaves `ahead` at 0 and falls to the
+  # branch below, which is why that block's wording says "no commits this tick
+  # could hand you" rather than "committed nothing": here the commits may well
+  # exist, and only the yardstick is missing.
   base="$(_base_ref "$wtdir")" || base=""
   ahead=0
   [ -z "$base" ] || ahead="$(git -C "$wtdir" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
@@ -1110,7 +1114,7 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
 
 
 ---- your predecessor's uncommitted work ----
-Your predecessor committed nothing, so there is no branch to take — but it left
+Your predecessor left no commits this tick could hand you — but it did leave
 UNCOMMITTED changes in its worktree ($wtdir), which the tick did not touch.
 None of it is in your tree. Read it before you start from scratch, and decide
 for yourself whether any of it is worth salvaging:
