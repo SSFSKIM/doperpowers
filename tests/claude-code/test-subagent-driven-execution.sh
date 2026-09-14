@@ -129,20 +129,24 @@ fi
 
 echo ""
 
-# Test 7: Verify full task text is provided
+# Test 7: Verify requirements are handed over as a brief file
+# Both assertions anchor to their answer line: grep is line-based, so the
+# label and the chosen option must appear together. An unanchored
+# alternation here matched incidental prose ("the brief holds the full text
+# of the task") and passed without reading the answer at all.
 echo "Test 7: Task context provision..."
 
-output=$(run_claude "In subagent-driven-execution, how does the controller provide task information to the executor subagent? Answer using exactly this structure:
-Controller provides: <directly or by file>
-Executor must read plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
+output=$(run_claude "In subagent-driven-execution, the controller dispatches a task-executor subagent to do one task of the plan. Answer using exactly this structure, choosing one option per line:
+Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
+Executor must read the plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "provide.*directly\|full.*text\|paste\|include.*prompt" "Provides text directly"; then
+if assert_contains "$output" "Requirements reach the executor as:.*brief" "Requirements handed over as a brief file"; then
     : # pass
 else
     exit 1
 fi
 
-if assert_contains "$output" "Executor must read plan file:.*no" "Doesn't make subagent read file"; then
+if assert_contains "$output" "Executor must read the plan file:.*no" "Executor is not sent to the plan file"; then
     : # pass
 else
     exit 1
@@ -155,7 +159,7 @@ echo "Test 8: Worktree requirement..."
 
 output=$(run_claude "What workflow skills are required before using subagent-driven-execution? List any prerequisites or required skills." "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "using-git-worktrees\|worktree" "Mentions worktree requirement"; then
+if assert_contains "$output" "worktree" "Mentions worktree requirement"; then
     : # pass
 else
     exit 1
