@@ -1020,7 +1020,15 @@ _push_bounded() {  # <dir> <branch> — 0 only when the push actually landed
   python3 - >&2 <<'PY'
 import os, subprocess, sys
 env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-cmd = ["git", "-C", env["T_DIR"], "push", "origin", env["T_REF"]]
+# `--no-follow-tags`: THE REFSPEC IS THE WHOLE AUTHORITY. An explicit refspec
+# is not by itself a bound on what the push publishes — with
+# `push.followTags` set in the repo or in the operator's global config, git
+# also sends every annotated tag reachable from that branch and missing on
+# the remote. Those tags never passed the "the dispatcher created this
+# branch" guard the caller takes such care over, and since the push is not
+# atomic a REJECTED branch update can leave them published while this
+# function reports failure. The flag says the refspec and nothing else.
+cmd = ["git", "-C", env["T_DIR"], "push", "--no-follow-tags", "origin", env["T_REF"]]
 try:
     sys.exit(subprocess.run(cmd, env=env, timeout=float(env["T_SECS"])).returncode)
 except subprocess.TimeoutExpired:
