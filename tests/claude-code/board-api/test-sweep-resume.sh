@@ -1532,10 +1532,24 @@ rboard "$PAFIX"
 PA_WT="$(predsetup 12-ahead 2)"; PA_ROOT="$RREPO"
 echo scratch > "$PA_WT/half-done"
 PA_HEAD="$(git -C "$PA_WT" rev-parse --short HEAD)"
+# THE TICK READS THAT TREE; IT MUST NOT WRITE IT. A plain `git status` refreshes
+# and rewrites the index of the worktree it reads, and this one belongs to a
+# process the tick does not own and may still be running. Touching a TRACKED
+# file without changing its content is what makes the stat cache stale, so a
+# refreshing read has no choice but to write; the index mtime is then backdated
+# so a rewrite cannot hide inside the same one-second stamp. The reading is
+# taken the instant the tick returns, because this suite's own `dirty_still`
+# assertion below runs an ordinary `git status` on that tree and would write the
+# index the tick left alone.
+mtime() { python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
+touch "$PA_WT/f"
+PA_IDX="$(git -C "$PA_WT" rev-parse --path-format=absolute --git-path index)"
+python3 -c 'import os, sys; os.utime(sys.argv[1], (946684800, 946684800))' "$PA_IDX"
 PADH="$TDIR/dh-pred-ahead"; predreg "$PADH" "$PA_ROOT" 12-ahead
 : > "$SPAWN_LOG"
 OUTPA="$TDIR/pred-ahead.out"
 RSW "$PADH" > "$OUTPA" 2>&1 || true
+PA_IDX_MTIME="$(mtime "$PA_IDX")"
 
 t  "the tick pushes the predecessor's branch to origin" "worktree-12-ahead" \
    git -C "$TDIR/origin-12-ahead.git" branch --list
@@ -1561,6 +1575,8 @@ t  "uncommitted changes are named"           "UNCOMMITTED"          cat "$SPAWN_
 dirty_still() { git -C "$PA_WT" status --porcelain; }
 t  "and left uncommitted — the tick commits nothing for a worker" \
    "half-done"                                                      dirty_still
+t  "and the predecessor's index is never written by the tick's read" \
+   "946684800"                                                      echo "$PA_IDX_MTIME"
 
 # ---- level with the base AND clean: nothing to rescue, nothing to say -----
 PLFIX="$TDIR/fix-pred-level.json"; predfix "$PLFIX" 71
