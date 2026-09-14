@@ -1232,6 +1232,27 @@ assert_contains "$out" "[sweep] STALL: 0 acted" "a cut ring produces no further 
 # The pass is guarded like every other: a failure in it never stops the tick.
 assert_contains "$out" "tick complete" "the tick still completes with the STALL pass in it"
 
+# ---- the STALL pass's comment-read cost ---------------------------------------
+# The IMPACT pass above is bounded by a cursor because reading every child
+# every tick was thousands of gh calls an hour at the documented board size.
+# This pass answers the same bound structurally rather than with a cursor: the
+# dedupe read happens only for a candidate that is ALREADY due on every other
+# predicate, so a board whose waits are all healthy costs it nothing beyond the
+# snapshot every pass takes.
+echo "board-sweep: STALL read cost"
+# Re-queue #80 by hand once more and let both passes settle their view of it.
+# From here #80 is due on every predicate EXCEPT the dedupe — the worst case,
+# and the only shape that costs a read every tick.
+board_do board-transition.sh 80 ready-for-implementer "re-queued again; the blocker is still where it was" >/dev/null
+out="$(run_sweep)"
+: > "$COMMENT_READ_LOG"
+out="$(run_sweep)"
+assert_equals "$(issue_labels 80)" "status:ready-for-implementer" "the re-queued ticket is still deduped (the blocker has not moved)"
+assert_equals "$(reads_for 80)" "1" "...at a cost of exactly one comment read — the dedupe, and nothing else"
+assert_equals "$(reads_for 84)" "0" "a candidate whose blocker is being worked is never read at all"
+assert_equals "$(reads_for 98)" "0" "...nor one whose blocker is merely queued for dispatch"
+assert_equals "$(reads_for 81)" "0" "and a BLOCKER's own comments are never read — the pass judges it from the snapshot"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"
