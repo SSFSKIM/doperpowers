@@ -1089,13 +1089,23 @@ with open(p, "w") as f:
     json.dump(s, f)
 PY
 }
-dep_worker() {  # <uuid-stem> <ticket> <status> — a bound worker in the registry
-    T_U="$1" T_TK="$2" T_ST="$3" python3 - <<'PY'
+dep_worker() {  # <uuid-stem> <ticket> <status> [board] [sweep-recoveries]
+    # A bound worker in the registry. `board` is the meta's board identity —
+    # "" leaves it UNSTAMPED, the legacy shape every drill above uses and the
+    # one meta_is_mine deliberately reads as the caller's own; a foreign value
+    # is how the cross-board number collision is drilled. `sweep-recoveries`
+    # is the RECOVER ladder's counter, which the STALL pass reads to tell a
+    # recovery that is still pending from one that has given up.
+    T_U="$1" T_TK="$2" T_ST="$3" T_BOARD="${4:-}" T_RECOV="${5:-}" python3 - <<'PY'
 import json, os
 u = "%s-0000-4000-8000-000000000000" % os.environ["T_U"]
 m = {"uuid": u, "current": u, "name": "%s-dep" % os.environ["T_TK"],
      "ticket": os.environ["T_TK"], "status": os.environ["T_ST"],
      "updated": "2026-07-18T00:00:00Z"}
+if os.environ.get("T_BOARD"):
+    m["board"] = os.environ["T_BOARD"]
+if os.environ.get("T_RECOV"):
+    m["sweep_recoveries"] = os.environ["T_RECOV"]
 with open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w") as f:
     json.dump(m, f)
 PY
@@ -1213,14 +1223,50 @@ out="$(run_sweep)"
 assert_equals "$(issue_labels 96)" "status:ready-for-implementer" "the ring is not re-reported through the next member down"
 assert_contains "$out" "[sweep] STALL: 0 acted" "one park per ring, per situation"
 
-# A ring with a member in flight is not yet a deadlock: that member can still
-# be finished by its worker, or resumed.
+# A ring with a member in flight is not yet a deadlock — that member can still
+# be finished by its worker, or resumed — so there is no CYCLE park here. But
+# the ring must not swallow the tickets either: #102 is in flight with nobody
+# bound to it and has been silent past the threshold, which is precisely the
+# STALL rule's stalled root (arkho #56 — an in-flight, unowned member silent
+# for a threshold is how a never-resumed member gets caught at all). So #101 is
+# reported against #102, and #103 is not, because its own blocker #101 has just
+# become a reported chain link.
 dep_seed 101 ready-for-implementer 102
 dep_seed 102 in-progress 103
 dep_seed 103 ready-for-implementer 101
 out="$(run_sweep)"
-assert_equals "$(issue_labels 101)" "status:ready-for-implementer" "a ring with an in-flight member is left alone"
-assert_equals "$(issue_labels 103)" "status:ready-for-implementer" "...every member of it"
+assert_contains "$(issue_labels 101)" "status:needs-human" "a ring member waiting on an unowned, silent in-flight blocker is still reported"
+assert_contains "$(issue_note 101)" "[dependency-stall]" "...as a stall and not a cycle — the ring still resolves if #102 is resumed"
+assert_contains "$(issue_note 101)" "#102, which is in-progress" "...naming the member that stopped moving"
+assert_equals "$(issue_labels 102)" "status:in-progress" "the in-flight member itself is never written"
+assert_equals "$(issue_labels 103)" "status:ready-for-implementer" "and the member behind the report is not parked — its blocker is now a chain link"
+
+# The guard on that, and the reason the fall-through is not a false-positive
+# machine: the same ring shape with a LIVE bound worker on the in-flight
+# member. Somebody is working it, so no member is anybody's problem yet.
+dep_seed 104 ready-for-implementer 105
+dep_seed 105 in-progress 106
+dep_seed 106 ready-for-implementer 104
+dep_worker aaaa0105 105 working
+out="$(run_sweep)"
+assert_equals "$(issue_labels 104)" "status:ready-for-implementer" "a ring whose in-flight member has a live worker is left alone"
+assert_equals "$(issue_labels 106)" "status:ready-for-implementer" "...every member of it"
+assert_contains "$out" "[sweep] STALL: 0 acted" "and that tick parks nothing at all"
+
+# The ring WALK names real edges only. A greedy forward walk strands itself on
+# a branched component: here it would take 110 -> 111 -> 112, dead-end (112's
+# only exit is the visited 111) and close the walk with 112 -> 110, an edge
+# nobody ever drew — sending the human who reads the note to cut nothing.
+dep_seed 110 ready-for-implementer 111
+dep_seed 111 ready-for-implementer 112 113
+dep_seed 112 ready-for-implementer 111
+dep_seed 113 ready-for-implementer 110
+out="$(run_sweep)"
+assert_contains "$(issue_labels 110)" "status:needs-human" "a branched ring still parks its lowest-numbered member, once"
+assert_contains "$(issue_note 110)" "[dependency-cycle] #110 -> #111 -> #113 -> #110" "the ring walk only ever names real edges"
+assert_not_contains "$(issue_note 110)" "#112 -> #110" "...never the fabricated link a greedy walk dead-ends into"
+assert_contains "$(issue_note 110)" "#112 (ready-for-implementer)" "and every member is still listed, on the walk or not"
+assert_contains "$out" "[sweep] STALL: 1 acted" "one park for the branched ring, not one per member"
 
 # Cutting an edge ends it: #97 stops waiting, so it is simply queued, and a
 # queued blocker is never a stall root.
@@ -1252,6 +1298,39 @@ assert_equals "$(reads_for 80)" "1" "...at a cost of exactly one comment read �
 assert_equals "$(reads_for 84)" "0" "a candidate whose blocker is being worked is never read at all"
 assert_equals "$(reads_for 98)" "0" "...nor one whose blocker is merely queued for dispatch"
 assert_equals "$(reads_for 81)" "0" "and a BLOCKER's own comments are never read — the pass judges it from the snapshot"
+
+# ---- whose worker it is, and whether anything is still coming -----------------
+# The registry is machine-global and a board is not, so the pass counts only
+# bindings stamped for THIS board: issue numbers collide across repos as a
+# matter of course. And a binding is still somebody's responsibility for as
+# long as the RECOVER ladder has a rung left — RECOVER backgrounds its resume
+# and returns within this same tick, leaving the meta idle until the resumed
+# process launches. Once the ladder is exhausted RECOVER parks the blocker
+# itself and stops trying, and from then on the blocker must be visible here:
+# a dead binding may not suppress a report forever.
+echo "board-sweep: STALL pass — whose worker, and is anything still coming"
+# a. recovery pending: RECOVER resumes #121 in this very tick, and the meta is
+#    still `idle` by the time the STALL pass reads it.
+dep_seed 120 ready-for-implementer 121
+dep_seed 121 in-progress
+dep_worker bbbb0121 121 idle "" 0
+# b. ladder exhausted: RECOVER gives up on #124 and parks it itself.
+dep_seed 123 ready-for-implementer 124
+dep_seed 124 in-progress
+dep_worker bbbb0124 124 idle "" 3
+# c. another board's #127 is not this board's #127.
+dep_seed 126 ready-for-implementer 127
+dep_seed 127 in-progress
+dep_worker bbbb0127 127 working "gh:other/repo"
+out="$(run_sweep)"
+assert_contains "$out" "RECOVER: #121 worker bbbb0121-0000-4000-8000-000000000000 finished without a board transition — resume attempt 1/3" "RECOVER backgrounds a resume for #121 in this tick"
+assert_equals "$(issue_labels 120)" "status:ready-for-implementer" "...so its blocker is still being worked, and the wait behind it is not reported"
+assert_contains "$out" "RECOVER: #124 worker bbbb0124-0000-4000-8000-000000000000 finished without a board transition — cap (3) exhausted, parking needs-human" "the ladder gives up on #124 and parks it"
+assert_contains "$(issue_labels 123)" "status:needs-human" "...and from then on nothing is coming, so the wait behind it IS reported"
+assert_contains "$(issue_note 123)" "#124, which is needs-human" "...naming the abandoned blocker"
+assert_contains "$(issue_labels 126)" "status:needs-human" "a worker bound to ANOTHER board's ticket of the same number suppresses nothing here"
+assert_contains "$(issue_note 126)" "#127, which is in-progress" "...the blocker reads as unworked, because that binding is not this board's"
+assert_equals "$(issue_labels 84)" "status:ready-for-implementer" "while an UNSTAMPED legacy meta still reads as this board's own, and does suppress"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
