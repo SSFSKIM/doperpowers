@@ -392,6 +392,20 @@ if cur in (B.UNTRACKED, B.CONFLICT):
 elif to not in B.LEGAL[cur]:
     B.die("illegal transition: %s → %s (#%s)" % (cur, to, tid))
 
+if cur == "in-progress" and to == "ready-for-implementer":
+    # The dependency yield (arkho #49) needs a dependency. Without one nothing
+    # stops the ticket being drawn straight back into the wall it just hit, and
+    # this edge is deliberately not convergence-counted, so no counter would
+    # ever end the loop. gh's own eligibility notion treats only `done` as
+    # landed (B.eligible) — match it rather than inventing wontfix handling here.
+    _unfinished = [b for b in n["blocked_by"]
+                   if (tickets.get(b, {}).get("state") or "") != "done"]
+    if not _unfinished:
+        B.die("not-blocked: %s → %s is the dependency yield — it needs a "
+              "blocked_by edge to an unfinished ticket. Cut one first "
+              "(board-edge.sh %s --block <blocker>), or park or escalate instead"
+              % (cur, to, tid))
+
 if (cur, to) in B.EDGE_NOTE_REQUIRED and not note:
     B.die("a note is required on the %s → %s edge" % (cur, to))
 
