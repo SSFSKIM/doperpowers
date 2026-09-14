@@ -3,7 +3,8 @@
 `scripts/board-sweep.sh` is the unattended tick: every ~5 minutes it
 recovers dead workers, cancels workers on closed tickets, dispatches
 Executor workers onto ELIGIBLE tickets (cap-bounded), attaches the review
-loop to open PRs, and relays fresh `needs-human` ticket comments to the
+loop to open PRs, reports a ticket whose dependency has stopped moving, and
+relays fresh `needs-human` ticket comments to the
 parked worker that asked. It is mechanical (no model calls) and idempotent —
 overlapping or repeated ticks are safe, and all state lives in GitHub and
 the daemon registry.
