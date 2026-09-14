@@ -1031,6 +1031,207 @@ assert_equals "$(comment_count 70 "[board-epic] reconcile:")" "1" \
 assert_contains "$(issue_labels 70)" "status:in-progress" "...and never returned a second time"
 unset MOCK_GH_COMMENT_PAGE
 
+# ---- STALL pass: a dependency wait is bounded (arkho #56, gh half) ------------
+# The board refuses to draw a ticket whose blocker is unfinished and does
+# nothing else about the wait. These drills pin the pass that reports it: what
+# fires, what must NEVER fire, and that a report is not repeated until the
+# situation it named changes. Every fixture below is seeded here rather than in
+# the shared seed, so the ticks above run against a board with no blocked-by
+# edges at all — which is also the proof that a board with nothing stranded
+# costs this pass nothing.
+echo "board-sweep: STALL pass"
+
+dep_seed() {  # <num> <state|CLOSED:reason> [blocker...]
+    T_N="$1" T_ST="$2" T_BLK="${*:3}" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+num, st = os.environ["T_N"], os.environ["T_ST"]
+closed = st.startswith("CLOSED:")
+s["issues"][num] = {
+    "number": int(num), "id": "ID_%s" % num, "title": "dep fixture " + num,
+    "body": "", "state": "CLOSED" if closed else "OPEN",
+    "stateReason": st.split(":", 1)[1] if closed else None,
+    "labels": [] if closed else ["status:" + st],
+    "assignees": [], "parent": None,
+    "blockedBy": [int(b) for b in os.environ["T_BLK"].split()],
+    "closesPRs": [], "xrefPRs": [], "comments": [],
+    "createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z",
+    "url": "https://github.com/test/repo/issues/%s" % num,
+}
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+dep_parent() {  # <child> <parent>
+    T_C="$1" T_P="$2" python3 - <<'PY'
+import json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+s["issues"][os.environ["T_C"]]["parent"] = int(os.environ["T_P"])
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+dep_updated() {  # <num> now|<iso> — the gh binding's activity clock
+    T_N="$1" T_AT="$2" python3 - <<'PY'
+import datetime, json, os
+p = os.environ["MOCK_GH_STATE"]
+with open(p) as f:
+    s = json.load(f)
+at = os.environ["T_AT"]
+if at == "now":
+    at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+s["issues"][os.environ["T_N"]]["updatedAt"] = at
+with open(p, "w") as f:
+    json.dump(s, f)
+PY
+}
+dep_worker() {  # <uuid-stem> <ticket> <status> — a bound worker in the registry
+    T_U="$1" T_TK="$2" T_ST="$3" python3 - <<'PY'
+import json, os
+u = "%s-0000-4000-8000-000000000000" % os.environ["T_U"]
+m = {"uuid": u, "current": u, "name": "%s-dep" % os.environ["T_TK"],
+     "ticket": os.environ["T_TK"], "status": os.environ["T_ST"],
+     "updated": "2026-07-18T00:00:00Z"}
+with open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w") as f:
+    json.dump(m, f)
+PY
+}
+# A real board script against the mock, run from the consumer repo (the board
+# scripts anchor _lib.sh on the cwd). A failure is reported into the captured
+# output instead of aborting the file under `set -e`: the assertion after every
+# call is what judges the effect, and letting one unmet precondition kill the
+# run hides every later drill — which is precisely the shape of a RED run, the
+# one where the drills most need to speak.
+board_do() {
+    local s="$1"; shift
+    (cd "$LOCAL_REPO" && "$BOARD_SCRIPTS/$s" "$@") 2>&1 \
+        || echo "board_do FAILED: $s $*"
+}
+
+# 1. a permanently unfinished blocker is reported, once.
+dep_seed 80 ready-for-implementer 81
+dep_seed 81 deferred
+# 2. ...and `wontfix` is such a blocker HERE, though it is terminal on the API
+#    board. B.eligible draws a ticket only when every blocker is `done`, so a
+#    wontfixed blocker strands its waiter permanently — reading TERMINAL would
+#    make the most durable gh stall the one this pass cannot see.
+dep_seed 82 ready-for-implementer 83
+dep_seed 83 CLOSED:NOT_PLANNED
+# 3. a blocker with a live bound worker is a normal wait, however old.
+dep_seed 84 ready-for-implementer 85
+dep_seed 85 in-progress
+dep_worker aaaa0085 85 working
+# 4. a chain reports once, nearest the stuck root.
+dep_seed 86 ready-for-implementer 87
+dep_seed 87 ready-for-implementer 88
+dep_seed 88 ready-for-implementer 89
+dep_seed 89 deferred
+# 5. an epic blocker whose CHILD is being worked is not stalled, though the
+#    epic's own row has been quiet the whole time (the subtree clause).
+dep_seed 90 ready-for-implementer 91
+dep_seed 91 in-progress
+dep_seed 92 in-progress
+dep_parent 92 91
+dep_worker aaaa0092 92 working
+# 6. a fresh wait onto an already-dead blocker is NOT reported today.
+dep_seed 93 ready-for-implementer 94
+dep_seed 94 deferred
+dep_updated 93 now
+# 7. a blocker that is merely QUEUED is the dispatch pass's business, not this
+#    one's: a cap-bounded lane can leave it sitting for days.
+dep_seed 98 ready-for-implementer 99
+dep_seed 99 ready-for-implementer
+
+out="$(run_sweep)"
+assert_contains "$(issue_labels 80)" "status:needs-human" "a waiting ticket whose blocker is shelved and silent is parked"
+assert_contains "$(issue_note 80)" "[dependency-stall] #80" "the park note carries the marker"
+assert_contains "$(issue_note 80)" "#81, which is deferred" "...and names the blocker and its state"
+assert_contains "$(last_comment 80)" "[board] needs-human: [dependency-stall]" "the park comment is board-authored and carries the marker"
+assert_contains "$out" "[sweep] STALL: #80: ready-for-implementer → needs-human (dependency-stall)" "the park is logged as a STALL action"
+assert_equals "$(issue_labels 81)" "status:deferred" "the blocker itself is never written"
+assert_contains "$(issue_labels 82)" "status:needs-human" "a wontfix blocker strands its waiter here, and IS reported"
+assert_contains "$(issue_note 82)" "#83, which is wontfix" "...and the note says so"
+assert_equals "$(issue_labels 84)" "status:ready-for-implementer" "a blocker with a live bound worker is a normal wait, however old"
+assert_equals "$(issue_labels 88)" "status:needs-human" "in a chain, the link nearest the stuck root is the one that fires"
+assert_equals "$(issue_labels 86)" "status:ready-for-implementer" "...and the links behind it are not parked"
+assert_equals "$(issue_labels 87)" "status:ready-for-implementer" "...either of them"
+assert_contains "$(issue_note 88)" "Also waiting behind #88: #86, #87" "the report names the chain instead of repeating itself"
+assert_equals "$(issue_labels 90)" "status:ready-for-implementer" "an epic blocker with an active child is being worked, though its own row is silent"
+assert_equals "$(issue_labels 93)" "status:ready-for-implementer" "a wait that started today is not reported today, whatever the blocker's age"
+assert_equals "$(issue_labels 98)" "status:ready-for-implementer" "a blocker that is merely queued for dispatch is never a stall root"
+assert_contains "$out" "[sweep] STALL: 3 acted" "the pass reports how many it parked"
+
+# idempotence: a parked ticket is no longer a candidate, and the chain behind
+# it now waits on a REPORTED link, which is never a root.
+out="$(run_sweep)"
+assert_contains "$out" "[sweep] STALL: 0 acted" "a second tick parks nothing further"
+assert_equals "$(issue_labels 87)" "status:ready-for-implementer" "a ticket waiting on an already-reported link stays put"
+
+# the wait clock: back-date #93's own wait and it becomes due.
+dep_updated 93 2026-07-18T00:00:00Z
+out="$(run_sweep)"
+assert_contains "$(issue_labels 93)" "status:needs-human" "once its own wait reaches the threshold too, the yield onto a dead blocker is reported"
+
+# the epic blocker's child stops being worked — now the epic IS the stuck root.
+dep_worker aaaa0092 92 retired
+out="$(run_sweep)"
+assert_contains "$(issue_labels 90)" "status:needs-human" "when nothing under the epic is being worked any more, the wait is reported"
+assert_contains "$(issue_note 90)" "#91, which is in-progress" "and the note names the epic, not the child"
+
+# A report is not repeated until the blocker MOVES. The human re-queues #80 by
+# hand (board-answer refuses an unbound park), which overwrites the note — the
+# dedupe has to live in the comment trail to survive that.
+board_do board-transition.sh 80 ready-for-implementer "re-queued by hand; leaving the edge in place" >/dev/null
+assert_contains "$(issue_labels 80)" "status:ready-for-implementer" "a human can put the ticket back in its queue"
+assert_not_contains "$(issue_note 80)" "dependency-stall" "...which overwrites the park note"
+out="$(run_sweep)"
+assert_equals "$(issue_labels 80)" "status:ready-for-implementer" "and the pass does not re-park it — the blocker has not moved"
+mock_comment 81 "still thinking about whether to revive this"
+out="$(run_sweep)"
+assert_contains "$(issue_labels 80)" "status:needs-human" "once the blocker moves and goes quiet again, the question is due again"
+assert_equals "$(comment_count 80 "[dependency-stall]")" "2" "and that is a second report, not a repeat of the first"
+
+# ---- the cycle: structural, no clock ------------------------------------------
+# A ring of blocked-by edges among unfinished tickets can never resolve itself:
+# no member can be claimed, and a run cannot cut an edge.
+echo "board-sweep: STALL pass — dependency cycles"
+dep_seed 95 ready-for-implementer 96
+dep_seed 96 ready-for-implementer 97
+dep_seed 97 ready-for-implementer 95
+out="$(run_sweep)"
+assert_contains "$(issue_labels 95)" "status:needs-human" "a committed ring parks exactly one member"
+assert_equals "$(issue_labels 96)" "status:ready-for-implementer" "...not the second"
+assert_equals "$(issue_labels 97)" "status:ready-for-implementer" "...and not the third"
+assert_contains "$(issue_note 95)" "[dependency-cycle] #95 -> #96 -> #97 -> #95" "the note walks the ring"
+assert_contains "$(issue_note 95)" "#96 (ready-for-implementer)" "...and lists every member with its state"
+assert_contains "$out" "(dependency-cycle)" "the park is logged as a cycle"
+out="$(run_sweep)"
+assert_equals "$(issue_labels 96)" "status:ready-for-implementer" "the ring is not re-reported through the next member down"
+assert_contains "$out" "[sweep] STALL: 0 acted" "one park per ring, per situation"
+
+# A ring with a member in flight is not yet a deadlock: that member can still
+# be finished by its worker, or resumed.
+dep_seed 101 ready-for-implementer 102
+dep_seed 102 in-progress 103
+dep_seed 103 ready-for-implementer 101
+out="$(run_sweep)"
+assert_equals "$(issue_labels 101)" "status:ready-for-implementer" "a ring with an in-flight member is left alone"
+assert_equals "$(issue_labels 103)" "status:ready-for-implementer" "...every member of it"
+
+# Cutting an edge ends it: #97 stops waiting, so it is simply queued, and a
+# queued blocker is never a stall root.
+board_do board-edge.sh 97 --unblock 95 >/dev/null
+out="$(run_sweep)"
+assert_equals "$(issue_labels 96)" "status:ready-for-implementer" "cutting one edge ends the ring, and nothing else is parked"
+assert_contains "$out" "[sweep] STALL: 0 acted" "a cut ring produces no further report"
+
+# The pass is guarded like every other: a failure in it never stops the tick.
+assert_contains "$out" "tick complete" "the tick still completes with the STALL pass in it"
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"

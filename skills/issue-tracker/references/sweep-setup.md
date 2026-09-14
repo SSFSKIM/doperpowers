@@ -101,6 +101,7 @@ actually run before trusting a cron arming.
 | `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
+| `SWEEP_STALL_DEPENDENCY_MINUTES` | 2880 (48h) | a BLOCKER unworked and silent this long parks the ticket waiting on it, `needs-human`, with the blocker and the chain in the note. The other half of the same doctrine as the API board's `DEPENDENCY_STALL_MS`; raise it on a board with a weekly human cadence. A dependency CYCLE is reported at once — it needs no clock |
 | `WORKER_ENGINE` | claude (all lanes) | overrides the lanes' default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts every worker on the clodex gateway |
 | `AUTO_MERGE_ENABLED` | false | Reviewer worker merges its confident verdicts (off = observation mode) |
 
