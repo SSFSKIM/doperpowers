@@ -55,7 +55,10 @@ five to ten minutes.
 Without `repo`, every stage runs in a fresh worktree at HEAD: reviewers read
 committed content, and nothing they run can touch the session's working tree.
 With `repo` set that isolation does not apply, so point it at an untouched
-checkout. The agents themselves only exclude the mutating tools.
+checkout. The agents themselves only exclude the mutating tools; every
+lane's prompt (and each registered reviewer's body) tells it that it is the
+review, so an instruction file that routes reviews through this skill does
+not make a lane start a second review inside the first.
 
 ## Result
 
