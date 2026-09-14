@@ -871,7 +871,14 @@ ERROR_RE = re.compile(r"""^(?:
     | login\ expired\b
     | not\ logged\ in\b
     | please\ run\ /login\b
-    | failed\ to\ (?:authenticate|refresh)\b
+    # Same rule as the limit alternations above, and for the same reason: bare
+    # `failed to authenticate` / `failed to refresh` open perfectly ordinary
+    # worker prose ("Failed to authenticate against the fixture's mock server,
+    # so the drill…"). The harness's own two renderings both continue into a
+    # specific object, so that object is what is matched: `Failed to
+    # authenticate: OAuth session expired …`, `Failed to refresh OAuth token: …`
+    | failed\ to\ authenticate:
+    | failed\ to\ refresh\ oauth\b
     | could\ not\ refresh\ your\ login\b
     | your\ organization\ has\ disabled\b
     | there'?s\ an\ issue\ with\ the\ selected\ model\b
@@ -992,8 +999,11 @@ try:
     # A reset further out than the ceiling is not something to wait for: the
     # lease would be renewed across the whole of it and the ticket held
     # silently for days. Fall back to the ordinary window — the ladder then
-    # runs out and the successor path's env-issue puts the outage in front of
-    # a human, which is the right destination for a multi-day one.
+    # runs out, and the TICKET's own cycle count (_stall_cycles) is what puts
+    # the outage in front of a human, which is the right destination for a
+    # multi-day one. Not phase 3's ladder: a resume that merely DELIVERS
+    # counts as success there and resets its counter, so a fault outliving its
+    # worker never accumulates a cycle on that side at all.
     if reset > now + ceiling:
         reset = 0
 

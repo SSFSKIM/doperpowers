@@ -74,6 +74,8 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/88/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/89/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/90/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/91/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/92/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/79/end","status":500,"once":true,
   "body":{"error":{"code":"internal","message":"boom"}}},
@@ -189,6 +191,22 @@ meta u-gate '{"uuid":"u-gate","current":"u-gate","status":"idle","run_id":87,
               "run_bearer":"tok-87"}'
 say u-gate "You've reached the review gate. Approval is needed."
 
+# THE SAME COUNTEREXAMPLE, ONE ALTERNATION OVER. `failed to (authenticate|
+# refresh)` opens ordinary worker prose just as readily as the limit openers
+# did. Both harness renderings continue into a specific object (`Failed to
+# authenticate: OAuth session expired …`, `Failed to refresh OAuth token: …`),
+# so that object is the discriminant.
+meta u-authprose '{"uuid":"u-authprose","current":"u-authprose","status":"idle","run_id":91,
+                   "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"56",
+                   "run_bearer":"tok-91"}'
+say u-authprose "Failed to authenticate against the fixture's mock server, so the drill asserts the refusal instead. Parked."
+
+# ...and the real rendering, which must still be caught.
+meta u-authreal '{"uuid":"u-authreal","current":"u-authreal","status":"idle","run_id":92,
+                  "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"57",
+                  "run_bearer":"tok-92"}'
+say u-authreal "Failed to authenticate: OAuth session expired and could not be refreshed"
+
 cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
 verb="\${1:-}"; shift || true
@@ -299,6 +317,9 @@ t  "and the exhausted-credits one"       "86"                            mfield 
 # ...and prose that merely OPENS like one does not.
 t  "a worker parked on a gate is not marked"    "<absent>"               mfield u-gate stall_run
 nt "and is never nudged"                 "WAKE uuid=u-gate"              cat "$WAKE"
+t  "nor is one reporting its own auth failure"  "<absent>"               mfield u-authprose stall_run
+nt "and it is never nudged either"       "WAKE uuid=u-authprose"         cat "$WAKE"
+t  "but the harness's own auth failure still is" "92"                    mfield u-authreal stall_run
 
 # =========================================================================
 # Tick 2 — nothing changed. The attempt window has NOT passed, so no second
