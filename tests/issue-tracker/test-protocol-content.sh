@@ -463,6 +463,12 @@ assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is
 assert_contains "$pexec" "a review loop owns them" "...and the whole-branch review is the brief's to assign (the board's review loop owns it)"
 assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
 assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
+# Review input and follow-up work are different channels: Residue is the list
+# the dispatching session registers tickets from, so an unfixed Minor routed
+# there becomes a ticket (or a fix made to avoid writing one).
+assert_contains "$pexec" '## Unresolved Review Findings`, each with where it is' "...and unfixed task-review findings ride their own PR-body section, with the reason each was left"
+assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
+assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

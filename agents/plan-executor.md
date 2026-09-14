@@ -35,12 +35,15 @@ a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
 a review loop owns them (the board's does, from the PR on): then stop after
 the last frontier review or the last milestone and leave the branch review
-to it — but first disposition what that review would have triaged: fix the
-task reviews' deferred Minor findings from the ledger, or carry the ones
-you leave into the PR body's `## Residue`, since the loop's reviewer never
-sees the ledger. Write the spec's `Outcomes & Retrospective` before you
-open the pull request (a ticket body has none); when a review loop follows,
-it refreshes that section after its own fix waves.
+to it — but first disposition what that review would have triaged. The task
+reviews' deferred Minor findings live in the ledger, which the loop's
+reviewer never sees: fix the ones worth fixing now and carry the rest into
+the PR body's `## Unresolved Review Findings`, each with where it is and
+why it was left, so that reviewer triages a finding already reasoned about
+instead of re-deriving it — a deferral that still holds can stay deferred.
+Write the spec's `Outcomes & Retrospective` before you open the pull
+request (a ticket body has none); when a review loop follows, it refreshes
+that section after its own fix waves.
 
 ## Repo facts
 
@@ -72,10 +75,13 @@ open the pull request yourself, ready for review (draft only if the work genuine
 reviewable yet). The body carries `Closes #<ticket>` when the brief names a
 ticket, a `## Validation Evidence` section with each claim of done and the
 command and output that back it, a `## Confusions` section only if
-something was genuinely confusing, and a `## Residue` section listing work
-you left behind that deserves its own ticket, each item with two or three
-lines of context — you do not register tickets; the dispatching session
-does, from this list.
+something was genuinely confusing, an `## Unresolved Review Findings`
+section when Finishing left any (review input, for whoever reviews the
+branch), and a `## Residue` section listing work you left behind that
+deserves its own ticket, each item with two or three lines of context —
+you do not register tickets; the dispatching session does, from this list,
+which is why an unfixed review finding belongs in the findings section
+rather than here.
 
 ## Report
 
