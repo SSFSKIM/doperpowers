@@ -958,6 +958,113 @@ _protocol_for_lane() {
   esac
 }
 
+# What "ahead" is measured against. origin/HEAD when the remote published a
+# default branch, then the conventional names — an adopter repo on `master`
+# would otherwise read every branch as level with nothing and rescue none of
+# them. Non-zero when the repo has no base ref at all, which is the one case
+# where "ahead" has no meaning and nothing should be pushed.
+_base_ref() {  # <dir>
+  local r
+  r="$(git -C "$1" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
+    && [ -n "$r" ] && { printf '%s\n' "$r"; return 0; }
+  for r in origin/main origin/master main master; do
+    git -C "$1" rev-parse --verify --quiet "$r^{commit}" >/dev/null 2>&1 || continue
+    printf '%s\n' "$r"; return 0
+  done
+  return 1
+}
+
+# THE PREDECESSOR'S COMMITS ARE NOT ALWAYS ON ORIGIN, and this ladder's whole
+# recovery premise is that they are. No worker protocol makes pushing a gate,
+# and a fresh successor is spawned into a NEW worktree branched from the base
+# ref — so committed-but-unpushed work is not merely unfetched, it is
+# unreachable from where the successor stands, and the successor redoes it from
+# the top (observed on arkho #17: four committed milestones, recovered by hand).
+# The tick can see what the successor cannot: the predecessor's worktree is on
+# THIS host and its meta names it. So the tick pushes that branch under its own
+# git identity — the toolkit already pushes bindings — and names the branch and
+# its head in the bootstrap. Uncommitted changes are NAMED and never committed:
+# what a half-finished tree means is the worker's judgment, and a dispatcher
+# that committed it would forge authorship on work nobody reviewed.
+#
+# FRESH-SPAWN ONLY. A resumed predecessor session is already sitting in that
+# worktree, so telling it about its own branch is noise — and pushing on its
+# behalf every recovery tick would spend a round trip to say nothing.
+#
+# The block goes to stdout and every word of narration to stderr: the caller
+# captures this function, so a log line on stdout would land inside a worker's
+# prompt.
+_predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or nothing
+  local meta="$DAEMON_HOME/$1.json" root name wtdir branch base ahead head
+  local via note="" dirty=""
+  [ -f "$meta" ] || return 0
+  root="$(_meta_field "$meta" cwd)"
+  name="$(_meta_field "$meta" worktree)"
+  # NO WORKTREE NAME, NOTHING TO RESCUE. The seat ran in a shared checkout,
+  # which has no private branch of its own — and pushing whatever that checkout
+  # happens to sit on is not the tick's business.
+  [ -n "$root" ] && [ -n "$name" ] || return 0
+  # The harness's own name-to-path rule (`sminos spawn --worktree`): the seat
+  # runs in <repo>/.claude/worktrees/<sanitized name>, on branch
+  # worktree-<sanitized name>. A re-filled seat records that path as its cwd
+  # already, so either shape resolves.
+  name="$(printf '%s' "$name" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+  wtdir="$root"
+  [ "$(basename "$root")" = "$name" ] || wtdir="$root/.claude/worktrees/$name"
+  [ -d "$wtdir" ] || return 0
+  # The branch is read off the checkout rather than rebuilt from the name: one
+  # derivation of the harness's sanitizing rule is enough, and a detached HEAD
+  # has no branch to push at all.
+  branch="$(git -C "$wtdir" symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 0
+  [ -n "$branch" ] || return 0
+  base="$(_base_ref "$wtdir")" || return 0
+  ahead="$(git -C "$wtdir" rev-list --count "$base..HEAD" 2>/dev/null)" || return 0
+  [ "${ahead:-0}" -gt 0 ] || return 0
+  head="$(git -C "$wtdir" rev-parse --short HEAD 2>/dev/null)" || return 0
+  [ -z "$(git -C "$wtdir" status --porcelain 2>/dev/null)" ] || dirty=1
+
+  # GIT_TERMINAL_PROMPT=0 because this tick holds the whole-tick lock while the
+  # push runs: a remote that wants a credential would block an unattended
+  # dispatcher forever rather than fail it. Never forced — a branch origin
+  # already holds at some other commit is a divergence for the successor to
+  # read, not for the tick to overwrite. git's own chatter goes to stderr with
+  # everything else this function says: on stdout it would land inside a
+  # worker's prompt.
+  if GIT_TERMINAL_PROMPT=0 git -C "$wtdir" push origin \
+       "refs/heads/$branch:refs/heads/$branch" >&2; then
+    via=origin
+    echo "resume: pushed the predecessor's branch $branch ($head, $ahead ahead of $base) to origin" >&2
+  else
+    # A LOCAL BRANCH IS STILL A RECOVERABLE ONE. The successor runs on this same
+    # host, and the predecessor's worktree is a repo it can fetch from directly,
+    # so an unreachable remote costs the convenience and not the work.
+    via="$wtdir"
+    note="
+The push to origin FAILED, so those commits exist only on this host — the fetch
+above reads the predecessor's worktree directly, which works because you run on
+the same machine."
+    echo "resume: could not push the predecessor's branch $branch; the successor is pointed at $wtdir instead" >&2
+  fi
+  [ -z "$dirty" ] || note="$note
+That worktree also holds UNCOMMITTED changes, which the tick did not touch.
+Inspect them (\`git -C $wtdir status\`) and decide for yourself whether any of
+it is worth salvaging."
+
+  cat <<EOF
+
+
+---- your predecessor's committed work — do NOT redo it ----
+Your predecessor left $ahead commit(s) on branch \`$branch\` (head $head) that
+are not in $base. You were spawned into a FRESH worktree at $base, so none of
+it is in your tree yet — and \`git checkout $branch\` will be refused, because
+that branch is still checked out in the predecessor's worktree ($wtdir). Take
+the commits onto your own branch instead, read them, and continue from where
+they stop:
+    git fetch $via $branch && git reset --hard FETCH_HEAD
+    git log $base..HEAD$note
+EOF
+}
+
 # One claim-journal entry, written whole. json.dump rather than printf: the
 # run id must land as a JSON number (or null), and BOTH dispatchers parse
 # every file in this shared directory — one they cannot read is reported and
@@ -1485,6 +1592,10 @@ $role.
 
 ---- assignment (from the successor claim) ----
 $(cat "$dir/body.md")"
+    # ...and where that work already stands. A fresh worktree at the base ref
+    # shows none of the predecessor's commits, so they are pushed and named
+    # here or they are silently redone.
+    [ -z "$C_SESS" ] || prompt="$prompt$(_predecessor_work "$C_SESS")"
     # The daemon NAME is journalled BEFORE the spawn, the dispatchers' rule: the
     # run reaches a registry meta only through board-bind at the very end of the
     # handover, so a crash anywhere in the spawn leaves a journal with a run no

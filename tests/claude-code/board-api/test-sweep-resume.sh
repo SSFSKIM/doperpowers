@@ -225,6 +225,12 @@ SPAWN_LOG="$TDIR/spawn.log"; : > "$SPAWN_LOG"
 # to observe persist-before-resume: after the fact every ordering looks the same.
 cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
+# THE REGISTRY IS THE ONE THE TICK IS RUNNING AGAINST, not the one this stub
+# was written beside. The real CLI files its records under \$DAEMON_HOME, and
+# the sweep hands every child its own — so a drill on a second registry (the
+# predecessor-work drills below run one apiece) must see the spawned meta land
+# where its bind will look for it.
+DHOME="\${DAEMON_HOME:-$DH}"
 verb="\${1:-}"; shift || true
 case "\$verb" in
 migrate) exit 0 ;;
@@ -235,7 +241,7 @@ sync)
   # Driven off the record the way the real verb is, so a status the resume path
   # writes — notably the status=error + pending_short an unresolved fork leaves
   # — is visible to the sweep's own liveness read.
-  python3 - "$DH/\$1.json" <<'PY'
+  python3 - "\$DHOME/\$1.json" <<'PY'
 import json, sys
 try:
     m = json.load(open(sys.argv[1]))
@@ -263,14 +269,14 @@ spawn)
   python3 -c 'import json, sys
 json.dump({"uuid": sys.argv[2], "current": sys.argv[2], "status": "working",
            "name": sys.argv[3]}, open(sys.argv[1], "w"))' \\
-    "$DH/$NEWUUID.json" "$NEWUUID" "\$name"
+    "\$DHOME/$NEWUUID.json" "$NEWUUID" "\$name"
   echo "seat spawned: \$name  [abc1234 / $NEWUUID]  group=test  status=working  (reply: sminos reply abc1234)"
   exit 0 ;;
 resume) ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
 if [ "\${1:-}" = "--wait" ]; then shift; fi
-cp "$DH/u-old.json" "$DH/meta-at-resume.json" 2>/dev/null || true
+cp "\$DHOME/u-old.json" "$DH/meta-at-resume.json" 2>/dev/null || true
 env | grep '^BOARD_' | sort > "$DH/resume-env.txt" || true
 { echo "RESUME uuid=\$1"
   echo "ARGV: \$*"
@@ -283,7 +289,7 @@ if [ -n "\${RESUME_PENDING_SHORT:-}" ]; then
   python3 -c 'import json, sys
 m = json.load(open(sys.argv[1]))
 m["status"] = "error"; m["pending_short"] = sys.argv[2]
-json.dump(m, open(sys.argv[1], "w"), indent=2)' "$DH/u-old.json" "\$RESUME_PENDING_SHORT"
+json.dump(m, open(sys.argv[1], "w"), indent=2)' "\$DHOME/u-old.json" "\$RESUME_PENDING_SHORT"
   exit 1
 fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
@@ -1422,6 +1428,149 @@ t  "the flat duplicate is dropped" "gone" \
    bash -c "[ -e '$SDH/board-claims/n-dup.json' ] && echo still-there || echo gone"
 t  "and the keyed record is left alone" "still-there" \
    bash -c "[ -e '$(claimdir "$SDH" "$RPORT")/n-dup.json' ] && echo still-there || echo gone"
+
+# =========================================================================
+# THE PREDECESSOR'S UNPUSHED COMMITS. Recovery's whole premise is that a
+# reclaimed worker left ORIGIN-VISIBLE artifacts, and nothing in any worker
+# protocol made that true: a fresh successor is spawned into a NEW worktree at
+# the base ref, so committed-but-unpushed work is not merely unfetched, it is
+# unreachable from where the successor stands, and it gets redone from the top
+# (arkho #17: four milestones, recovered by hand). The tick is the one party
+# that CAN see it — the predecessor's worktree is on this host and its meta
+# names it. Three shapes are drilled: ahead of the base (and dirty), level with
+# the base, and a push that cannot reach its remote.
+# =========================================================================
+unset SPAWN_MUST_FAIL RESUME_PENDING_SHORT
+export RESUME_MUST_FAIL=1
+
+gitx() {  # gitx <dir> <args…> — git with the identity a throwaway repo lacks
+  git -C "$1" -c user.email=tick@test -c user.name=tick -c commit.gpgsign=false \
+      "${@:2}"
+}
+# A predecessor as the dispatcher actually leaves one: a repo with an origin,
+# and a LINKED worktree under .claude/worktrees/<name> on branch
+# worktree-<name> — the harness's own layout, so the path derivation under test
+# is exercised rather than assumed.
+predrepo() {  # predrepo <worktree name> <commits ahead> — prints the repo root
+  local root wt i=0
+  root="$(mkrepo)"
+  git init -q --bare "$TDIR/origin-$1.git"
+  gitx "$root" remote add origin "$TDIR/origin-$1.git"
+  echo base > "$root/f"; gitx "$root" add f; gitx "$root" commit -qm base
+  gitx "$root" branch -M main
+  gitx "$root" push -q origin main
+  wt="$root/.claude/worktrees/$1"
+  gitx "$root" worktree add -q -b "worktree-$1" "$wt" main
+  while [ "$i" -lt "$2" ]; do
+    i=$((i + 1)); echo "m$i" > "$wt/m$i"
+    gitx "$wt" add "m$i"; gitx "$wt" commit -qm "milestone $i"
+  done
+  echo "$root"
+}
+predreg() {  # predreg <registry> <repo root> <worktree name>
+  mkdir -p "$1"
+  T_P="$1/u-old.json" T_CWD="$2" T_WT="$3" python3 - <<'PY'
+import json, os
+e = os.environ
+json.dump({"uuid": "u-old", "current": "u-old", "status": "working",
+           "run_id": 41, "fence": 3, "lane": "implementer", "role": "IMPLEMENT",
+           "bind_confirmed": True, "ticket": "12",
+           "cwd": e["T_CWD"], "worktree": e["T_WT"]}, open(e["T_P"], "w"))
+PY
+  chmod 600 "$1/u-old.json"
+}
+predfix() {  # predfix <fixtures file> <successor run id>
+  cat > "$1" <<JSON
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":$2,"ticketId":12,"fence":7,"bearer":"tok-w$2","predecessorRun":41,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"parentPin":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"POST","path":"/runs/$2/bind","status":200,"body":{"bound":true}}
+]
+JSON
+}
+
+# ---- ahead of the base, with a dirty tree beside the commits --------------
+PA_ROOT="$(predrepo 12-ahead 2)"; PA_WT="$PA_ROOT/.claude/worktrees/12-ahead"
+echo scratch > "$PA_WT/half-done"
+PA_HEAD="$(git -C "$PA_WT" rev-parse --short HEAD)"
+PAFIX="$TDIR/fix-pred-ahead.json"; predfix "$PAFIX" 70
+rboard "$PAFIX"
+PADH="$TDIR/dh-pred-ahead"; predreg "$PADH" "$PA_ROOT" 12-ahead
+: > "$SPAWN_LOG"
+OUTPA="$TDIR/pred-ahead.out"
+RSW "$PADH" > "$OUTPA" 2>&1 || true
+
+t  "the tick pushes the predecessor's branch to origin" "worktree-12-ahead" \
+   git -C "$TDIR/origin-12-ahead.git" branch --list
+t  "at the head the predecessor committed" "$PA_HEAD" \
+   git -C "$TDIR/origin-12-ahead.git" rev-parse --short worktree-12-ahead
+t  "the successor bootstrap names that branch" "worktree-12-ahead"  cat "$SPAWN_LOG"
+t  "and its head"                            "$PA_HEAD"             cat "$SPAWN_LOG"
+t  "and says not to redo it"                 "do NOT redo"          cat "$SPAWN_LOG"
+# `git checkout <branch>` is REFUSED while the predecessor's worktree holds it,
+# so a bootstrap that told the successor to check it out would hand it an error
+# instead of the work.
+t  "the successor is told how to take the commits onto its own branch" \
+   "git reset --hard FETCH_HEAD"                                    cat "$SPAWN_LOG"
+t  "uncommitted changes are named"           "UNCOMMITTED"          cat "$SPAWN_LOG"
+# Naming them is the whole contract: what a half-finished tree means is the
+# worker's judgment, and a dispatcher that committed it would forge authorship.
+dirty_still() { git -C "$PA_WT" status --porcelain; }
+t  "and left uncommitted — the tick commits nothing for a worker" \
+   "half-done"                                                      dirty_still
+
+# ---- level with the base: nothing to rescue, nothing to say --------------
+PL_ROOT="$(predrepo 12-level 0)"
+PLFIX="$TDIR/fix-pred-level.json"; predfix "$PLFIX" 71
+rboard "$PLFIX"
+PLDH="$TDIR/dh-pred-level"; predreg "$PLDH" "$PL_ROOT" 12-level
+: > "$SPAWN_LOG"
+OUTPL="$TDIR/pred-level.out"
+RSW "$PLDH" > "$OUTPL" 2>&1 || true
+
+t  "a fresh worker is still spawned"  "SPAWN name=12-successor"      cat "$SPAWN_LOG"
+nt "but a branch level with the base is not pushed" "worktree-12-level" \
+   git -C "$TDIR/origin-12-level.git" branch --list
+nt "and the bootstrap claims no predecessor work" "predecessor's committed" \
+   cat "$SPAWN_LOG"
+
+# ---- the push cannot reach its remote ------------------------------------
+# The successor runs on the SAME HOST, so an unreachable origin costs the
+# convenience of a fetch from origin, not the work: the local worktree is still
+# a repo it can fetch from directly.
+PF_ROOT="$(predrepo 12-nopush 2)"; PF_WT="$PF_ROOT/.claude/worktrees/12-nopush"
+PF_HEAD="$(git -C "$PF_WT" rev-parse --short HEAD)"
+gitx "$PF_ROOT" remote set-url origin "$TDIR/no-such-remote.git"
+PFFIX="$TDIR/fix-pred-nopush.json"; predfix "$PFFIX" 72
+rboard "$PFFIX"
+PFDH="$TDIR/dh-pred-nopush"; predreg "$PFDH" "$PF_ROOT" 12-nopush
+: > "$SPAWN_LOG"
+OUTPF="$TDIR/pred-nopush.out"
+RSW "$PFDH" > "$OUTPF" 2>&1 || true
+
+t  "a failed push still names the predecessor's branch" "worktree-12-nopush" \
+   cat "$SPAWN_LOG"
+t  "and says the push did not land"   "push to origin FAILED"        cat "$SPAWN_LOG"
+t  "and points at the local worktree instead" "$PF_WT"               cat "$SPAWN_LOG"
+t  "the tick reports the failure in its own log" "could not push"     cat "$OUTPF"
+# THE RECOMMENDED COMMAND, ACTUALLY RUN. Fetching from a LINKED WORKTREE path is
+# the entire fallback when the push cannot land, and being able to fetch from
+# one is not obvious — so the drill runs the command rather than asserting the
+# sentence that recommends it.
+PF_CONSUMER="$(mkrepo)"
+gitx "$PF_CONSUMER" commit -q --allow-empty -m other
+gitx "$PF_CONSUMER" fetch -q "$PF_WT" worktree-12-nopush || true
+fetched_head() { git -C "$PF_CONSUMER" rev-parse --short FETCH_HEAD 2>&1; }
+t  "and that fetch really does reach the predecessor's commits" \
+   "$PF_HEAD"                                                        fetched_head
+
+unset RESUME_MUST_FAIL
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting
