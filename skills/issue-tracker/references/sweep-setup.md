@@ -101,6 +101,9 @@ actually run before trusting a cron arming.
 | `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
+| `BOARD_STALL_ATTEMPTS` | 3 | *api binding.* Lifetime nudges per run for a worker whose turn died on a harness error (a 429, a hit usage limit, a 529). Spent, the tick stops renewing that run's lease — the server reclaims it and the resume phase's successor path takes over |
+| `BOARD_STALL_WINDOW_MIN` | 15 | *api binding.* Minutes to wait before the first nudge when the error states no reset time, and between nudges always |
+| `BOARD_STALL_MAX_WAIT_MIN` | 360 | *api binding.* Ceiling on a stated reset time the tick will WAIT for. A weekly limit resets days out; honouring it would renew the lease and hold the ticket silently for all of them, so past the ceiling the ordinary window applies and the outage reaches a human through the successor path's env-issue |
 | `WORKER_ENGINE` | claude (all lanes) | overrides the lanes' default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts every worker on the clodex gateway |
 | `AUTO_MERGE_ENABLED` | false | Reviewer worker merges its confident verdicts (off = observation mode) |
 
