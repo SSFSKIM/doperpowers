@@ -995,22 +995,26 @@ _base_ref() {  # <dir>
 # captures this function, so a log line on stdout would land inside a worker's
 # prompt.
 _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or nothing
-  local meta="$DAEMON_HOME/$1.json" root name wtdir branch base ahead head
+  # `wtname`, not `name`: the fresh-spawn caller holds the successor's SEAT name
+  # in `name`, and a local of that spelling here shadows it for the length of
+  # this call. Bash restores it on return so nothing breaks today — which is
+  # exactly what makes the collision worth not leaving in place.
+  local meta="$DAEMON_HOME/$1.json" root wtname wtdir branch base ahead head
   local via note="" dirty=""
   [ -f "$meta" ] || return 0
   root="$(_meta_field "$meta" cwd)"
-  name="$(_meta_field "$meta" worktree)"
+  wtname="$(_meta_field "$meta" worktree)"
   # NO WORKTREE NAME, NOTHING TO RESCUE. The seat ran in a shared checkout,
   # which has no private branch of its own — and pushing whatever that checkout
   # happens to sit on is not the tick's business.
-  [ -n "$root" ] && [ -n "$name" ] || return 0
+  [ -n "$root" ] && [ -n "$wtname" ] || return 0
   # The harness's own name-to-path rule (`sminos spawn --worktree`): the seat
   # runs in <repo>/.claude/worktrees/<sanitized name>, on branch
   # worktree-<sanitized name>. A re-filled seat records that path as its cwd
   # already, so either shape resolves.
-  name="$(printf '%s' "$name" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+  wtname="$(printf '%s' "$wtname" | sed 's/[^a-zA-Z0-9._-]/-/g')"
   wtdir="$root"
-  [ "$(basename "$root")" = "$name" ] || wtdir="$root/.claude/worktrees/$name"
+  [ "$(basename "$root")" = "$wtname" ] || wtdir="$root/.claude/worktrees/$wtname"
   [ -d "$wtdir" ] || return 0
   # The branch is read off the checkout rather than rebuilt from the name: one
   # derivation of the harness's sanitizing rule is enough, and a detached HEAD

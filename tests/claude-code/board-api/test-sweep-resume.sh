@@ -276,6 +276,10 @@ resume) ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
 if [ "\${1:-}" = "--wait" ]; then shift; fi
+# Read from the live registry, written to a FIXED sink. The source has to
+# follow \$DAEMON_HOME to observe the right meta; the destination deliberately
+# does not, because every *.json under a registry is read back as a seat meta
+# and a drill does not want its own artifact in its own scan.
 cp "\$DHOME/u-old.json" "$DH/meta-at-resume.json" 2>/dev/null || true
 env | grep '^BOARD_' | sort > "$DH/resume-env.txt" || true
 { echo "RESUME uuid=\$1"
