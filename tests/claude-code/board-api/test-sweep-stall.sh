@@ -55,7 +55,10 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/73/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/74/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/75/renew","status":200,"body":{"renewed":true}},
- {"method":"POST","path":"/runs/76/renew","status":200,"body":{"renewed":true}}
+ {"method":"POST","path":"/runs/76/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/78/renew","status":200,"body":{"renewed":true}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
@@ -329,6 +332,23 @@ expire_due u-stall
 O8="$TDIR/t8.out"; STALL "$O8" WAKE_MUST_FAIL=1
 t  "a failed nudge is reported as failed"       "the nudge of u-stall failed" cat "$O8"
 t  "and its attempt is spent"            "2"                             mfield u-stall stall_attempts
+
+# =========================================================================
+# THE REAL TICK REACHES IT. A phase that works when called by name and is
+# never reached by `all` is the whole feature silently missing in production —
+# the tick launchd runs is `_sweep_api.sh all`, nothing else. Driven with the
+# budget at zero so the dispatch phase (which claims and spawns) is gated out
+# and the empty relay/resume feeds return at once; marking a fresh meta needs
+# no budget, so it still proves the phase ran.
+# =========================================================================
+meta u-allcheck '{"uuid":"u-allcheck","current":"u-allcheck","status":"idle","run_id":78,
+                  "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"49",
+                  "run_bearer":"tok-78"}'
+say u-allcheck "API Error: 529 Overloaded. This is a server-side issue, usually temporary."
+OALL="$TDIR/all.out"
+SW env BOARD_SWEEP_TICK_BUDGET=0 "$SCRIPTS/_sweep_api.sh" all > "$OALL" 2>&1 || true
+t  "the whole-tick run reaches the stall phase" "#49 run 78"             cat "$OALL"
+t  "and stamps the meta it found"        "78"                            mfield u-allcheck stall_run
 
 # =========================================================================
 # The phase is addressable on its own, and named in the usage line.
