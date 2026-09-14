@@ -88,10 +88,11 @@ parks carry the quality machinery.
   session that dies unresumably must not take the pipeline's most
   expensive in-flight asset with it.
 - **Route the plan** — by doperpowers:brainstorming's step 4 criteria.
-  Well-scoped and delegable (big-but-atomic included): the spec carries
-  its own execution — Progress, Plan of Work, Concrete Steps, per
-  brainstorming's references/living-spec.md — and a zero-context
-  executor runs it sequentially. Large, novel, taste-heavy, or
+  Direct never applies here: your executor is a zero-context subagent,
+  so one unit (big-but-atomic included) always gets the spec that
+  carries its own execution — Progress, Plan of Work, Concrete Steps,
+  per brainstorming's references/living-spec.md — and that executor
+  runs it sequentially. Large, novel, taste-heavy, or
   high-stakes: the spec plus an execution plan through
   doperpowers:writing-plans.
 - **Name the verification** — it follows from the stakes, not the size.
