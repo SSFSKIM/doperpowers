@@ -1546,15 +1546,26 @@ touch "$PA_WT/f"
 PA_IDX="$(git -C "$PA_WT" rev-parse --path-format=absolute --git-path index)"
 python3 -c 'import os, sys; os.utime(sys.argv[1], (946684800, 946684800))' "$PA_IDX"
 PADH="$TDIR/dh-pred-ahead"; predreg "$PADH" "$PA_ROOT" 12-ahead
+# AN EXPLICIT REFSPEC IS NOT BY ITSELF A BOUND ON WHAT A PUSH PUBLISHES. With
+# `push.followTags` set — in the repo, or in the operator's global config,
+# which every tick on this host inherits — git carries annotated tags reachable
+# from the branch along with it. Those tags never passed the "the dispatcher
+# created this branch" guard the rest of this code takes such care over. Set
+# and unset around this one tick so the later drills push under plain config.
+gitx "$RREPO" config push.followTags true
+gitx "$PA_WT" tag -a v9.9.9-pred -m "a tag the dispatcher never vetted"
 : > "$SPAWN_LOG"
 OUTPA="$TDIR/pred-ahead.out"
 RSW "$PADH" > "$OUTPA" 2>&1 || true
 PA_IDX_MTIME="$(mtime "$PA_IDX")"
+gitx "$RREPO" config --unset push.followTags
 
 t  "the tick pushes the predecessor's branch to origin" "worktree-12-ahead" \
    git -C "$TDIR/origin-12-ahead.git" branch --list
 t  "at the head the predecessor committed" "$PA_HEAD" \
    git -C "$TDIR/origin-12-ahead.git" rev-parse --short worktree-12-ahead
+nt "and publishes nothing else — no tag rides along on push.followTags" \
+   "v9.9.9-pred"   git -C "$TDIR/origin-12-ahead.git" tag --list
 t  "the successor bootstrap names that branch" "worktree-12-ahead"  cat "$SPAWN_LOG"
 t  "and its head"                            "$PA_HEAD"             cat "$SPAWN_LOG"
 t  "and says not to redo it"                 "do NOT redo"          cat "$SPAWN_LOG"
