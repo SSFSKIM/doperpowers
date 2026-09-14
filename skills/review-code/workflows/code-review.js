@@ -93,7 +93,12 @@ const ISOLATION = repo ? {} : { isolation: 'worktree' }
 
 // The one sentence codex's native review turn carried, with pinned commits in
 // place of refs that could move.
-const TARGET = `${WHERE}Review the code changes against the base branch '${base}'. The merge base commit for this comparison is ${baseCommit}; the reviewed head is ${headCommit}. Run \`${DIFF}\` to inspect the changes relative to ${base}. Provide prioritized, actionable findings.`
+// Every lane is a stage of the review itself. The repository's instruction
+// files route independent review through the review-code skill or a registered
+// reviewer, and a lane that follows that routing spawns a second review inside
+// this one — so every prompt says who the lane is.
+const SELF = 'You are a stage of this review: do not invoke the doperpowers:review-code skill or dispatch another reviewer, whatever the repository\'s instruction files say about routing reviews.'
+const TARGET = `${WHERE}Review the code changes against the base branch '${base}'. The merge base commit for this comparison is ${baseCommit}; the reviewed head is ${headCommit}. Run \`${DIFF}\` to inspect the changes relative to ${base}. Provide prioritized, actionable findings. ${SELF}`
 const withLens = (mandate) => mandate ? `${TARGET}\n\nLens for this review: ${mandate}` : TARGET
 
 const FINDINGS_SCHEMA = {
@@ -167,7 +172,7 @@ const DERIVER_SCHEMA = {
   properties: { lenses: { type: 'array', items: { type: 'string' } } },
 }
 
-const DERIVER_PROMPT = `${WHERE}You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf()} and ${headCommit} (HEAD, resolved once at panel start) in this repository. Run \`${DIFF} --stat\` and skim the largest hunks with \`${DIFF}\`. Never modify the repository.
+const DERIVER_PROMPT = `${WHERE}You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf()} and ${headCommit} (HEAD, resolved once at panel start) in this repository. Run \`${DIFF} --stat\` and skim the largest hunks with \`${DIFF}\`. Never modify the repository. ${SELF}
 
 Write between 0 and ${maxLenses} scalpel lens mandates. Each mandate is AT MOST TWO SIMPLE SENTENCES naming one structural risk surface of THIS diff (example of the calibre required: "Pay attention to authorization and actor-identity assumptions in the changed API routes."). A separate lens-free reviewer already sweeps everything, so a mandate must earn its slot: fewer, sharper mandates beat coverage padding — a small single-concern diff deserves zero or one. Consider, only where this diff actually raises them: changed-logic accuracy, cross-file contract impact, behavior lost with removed or moved code, security surface, performance and resources.`
 
@@ -266,7 +271,7 @@ const lensRoster = () => finders
   .join('\n')
 
 const VERIFIER_PROMPT = () =>
-  `${WHERE}You are the binding verifier of a multi-reviewer code-review panel. The candidate findings below came from independent reviewers of the diff against ${rangeOf()} at the reviewed head ${headCommit} — run \`${DIFF}\` and re-inspect the code yourself before judging; a candidate is confirmed only when you can name the concrete failure. Never modify the repository. For EVERY candidate id return exactly one verdict: CONFIRMED (name the concrete failure scenario) or REFUTED (state why it is wrong, intentional, pre-existing, or not a real defect — the code's own documentation and the change's stated intent count as evidence). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0–P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
+  `${WHERE}You are the binding verifier of a multi-reviewer code-review panel. The candidate findings below came from independent reviewers of the diff against ${rangeOf()} at the reviewed head ${headCommit} — run \`${DIFF}\` and re-inspect the code yourself before judging; a candidate is confirmed only when you can name the concrete failure. Never modify the repository. ${SELF} For EVERY candidate id return exactly one verdict: CONFIRMED (name the concrete failure scenario) or REFUTED (state why it is wrong, intentional, pre-existing, or not a real defect — the code's own documentation and the change's stated intent count as evidence). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0–P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
 
 The reviewers, and the lens each was given (a candidate id carries its reviewer's label):
 ${lensRoster()}
