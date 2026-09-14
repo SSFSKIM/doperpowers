@@ -15,8 +15,11 @@
 #          server never confirmed a bind for is repaired here.
 #   STALL  a bound worker whose LAST TURN IS A HARNESS ERROR. The session is
 #          alive and its seat reads `idle`, so renewal keeps its lease fresh
-#          forever and no other phase owns it. Bounded nudges, then the lease
-#          is left to expire and the resume path takes over.
+#          forever and no other phase owns it. Bounded nudges, then phase 1
+#          ENDS the run and the resume path takes over. A TICKET whose ladder
+#          runs out over and over registers an env-issue and is SUPPRESSED: a
+#          harness fault that outlives its worker reaches a human instead of
+#          buying a fresh successor every hour forever.
 #   RELAY  answers the human has posted, from /answers/unrelayed, into the
 #          bound worker session. The ack is DELIVERY-GATED: it fires only when
 #          the sentinel is already in the transcript or a resume returned
@@ -49,7 +52,8 @@
 #                                delivery — both phases read the transcript.
 #   BOARD_STALL_ATTEMPTS         lifetime nudges per run for a worker whose
 #                                turn died on a harness error (3); spent, the
-#                                lease is left to expire
+#                                run is ended and the successor path takes
+#                                the ticket
 #   BOARD_STALL_WINDOW_MIN       minutes to wait before the first nudge when
 #                                the error states no reset time, and between
 #                                nudges always (15)
@@ -58,8 +62,19 @@
 #                                honouring it would renew the lease and hold
 #                                the ticket silently for all of them. Past the
 #                                ceiling the ordinary window applies, the
-#                                ladder runs out, and the successor path's
-#                                env-issue puts the outage in front of a human.
+#                                ladder runs out, and the escalation below
+#                                puts the outage in front of a human.
+#   BOARD_STALL_CYCLES           ladders ONE TICKET may run out before this
+#                                tick stops spending recovery on it (3). The
+#                                per-run ladder above resets on every
+#                                successor, so on its own it can never
+#                                accumulate — a fault that outlives its worker
+#                                (an expired login, a weekly limit) churns a
+#                                fresh successor every hour and tells nobody.
+#                                This counter survives successors and ends at
+#                                an env-issue plus a suppression, the same
+#                                destination the resume path's three failed
+#                                cycles reach.
 #   BOARD_SWEEP_TICK_BUDGET      seconds after which the serial phases stop
 #                                taking NEW items (900); the item in flight
 #                                always finishes. Lease safety across a long
@@ -375,6 +390,9 @@ STALL_WINDOW_MIN="${BOARD_STALL_WINDOW_MIN:-15}"
 case "$STALL_WINDOW_MIN" in ''|*[!0-9]*) STALL_WINDOW_MIN=15 ;; esac
 STALL_MAX_WAIT_MIN="${BOARD_STALL_MAX_WAIT_MIN:-360}"
 case "$STALL_MAX_WAIT_MIN" in ''|*[!0-9]*) STALL_MAX_WAIT_MIN=360 ;; esac
+# The TICKET-level rung of the same ladder (see _stall_cycles).
+STALL_CYCLE_CAP="${BOARD_STALL_CYCLES:-3}"
+case "$STALL_CYCLE_CAP" in ''|*[!0-9]*) STALL_CYCLE_CAP=3 ;; esac
 # Where _registry_metas parks its exit status. The status, never the rows: the
 # rows carry the run bearer, and that secret does not touch disk here.
 SCAN_RC="$SCRATCH/scan-rc"
@@ -469,6 +487,17 @@ _transcript_for_uuid() {
   cur="$(_meta_field "$DAEMON_HOME/$1.json" current)"
   [ -n "$cur" ] || cur="$1"
   find "$HOME/.claude/projects" -name "$cur.jsonl" 2>/dev/null | head -1
+}
+
+# A file's mtime in epoch seconds, both stat dialects — board-sweep.sh's
+# _mtime_epoch, which is where this file family already treats a transcript's
+# mtime as the clock a turn ENDED on. Nonzero exit when there is no answer at
+# all; callers read that as "no signal" rather than as a time.
+_mtime_epoch() {  # <path>
+  local e
+  e="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$e"
 }
 
 # DELIVERY PROOF READS DELIVERED PROMPTS, not the whole file. The transcript is
@@ -566,24 +595,58 @@ phase_renew() {
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
     [ -n "$run" ] || continue
-    # THE HARNESS-ERROR LADDER IS SPENT → STOP RENEWING. Phase 1b nudged this
-    # worker every attempt it had and the turn still ends on a harness error.
-    # Automation holds no transition authority on this binding, so the hand-off
-    # is exactly this: withhold the renewal, let the lease expire, and the
-    # server reclaims the run — after which /runs/needing-resume serves it and
-    # phase 3's successor path takes over with its own three-cycle ladder and
-    # its own env-issue escalation.
+    # THE HARNESS-ERROR LADDER IS SPENT → GIVE THE RUN UP. Phase 1b nudged
+    # this worker every attempt it had and the turn still ends on a harness
+    # error. Automation holds no transition authority on this binding, so the
+    # hand-off is exactly this: stop renewing and end the run, after which
+    # /runs/needing-resume serves it and phase 3's successor path takes over
+    # with its own three-cycle ladder and its own env-issue escalation.
     #
     # KEYED ON THE VERDICT, NOT ON THE ATTEMPT COUNT, and the difference is a
     # whole wasted nudge. The count is stamped BEFORE a nudge is issued, so the
     # moment the last one goes out the count already reads as spent — and this
-    # arm would withhold the lease from a worker that just recovered and is
+    # arm would take the run from a worker that just recovered and is
     # mid-turn. `stall_exhausted` is written only where phase 1b sees the other
     # half: the attempts are gone AND the seat is idle on a harness error
     # again. It carries the run id because the ladder is per run — a successor
     # claimed onto this same seat starts fresh and inherits no exhaustion.
     if [ -n "$sexhausted" ] && [ "$sexhausted" = "$run" ]; then
-      echo "run $run: harness-error ladder spent — lease left to expire so the successor path can take #$ticket"
+      # END IT, DO NOT MERELY STOP RENEWING. dp#58 words the hand-off as
+      # "leave the lease to expire", and that is one word short of safe: a run
+      # this phase never calls renew for never answers 409 run-ended, so
+      # _retire_run_locally never runs and the meta keeps its run id and its
+      # run bearer FOREVER — long past the server's own reclaim. Two live
+      # consequences, both of them the failure this ladder exists to end.
+      # Phase 2 still reads that meta as a delivery candidate and its
+      # post-renew run_id guard passes (nothing ever changed the field), so an
+      # answer is resumed into a reclaimed predecessor on revoked credentials
+      # and then ACKED — the human's answer is simply lost. And the
+      # dispatchers' local cap counts the meta's open run for good: one slot
+      # down per stalled worker, permanently (_retire_run_locally's own
+      # comment). _attempts already ends an undeliverable successor's run in
+      # exactly this shape, so the hand-off takes the same route — end the run,
+      # then retire it locally. A retired meta is runless, which drops it out
+      # of _registry_metas' default scan and therefore out of relay candidacy
+      # and out of the cap in one move.
+      if T_RUN="$run" _api_py - <<'PY'
+import os
+import _board_api as A
+try:
+    A.end_run(os.environ["T_RUN"], "abandoned")
+except A.RunEnded:
+    pass
+PY
+      then
+        echo "run $run: harness-error ladder spent — run ended so the successor path can take #$ticket"
+        _retire_run_locally "$path" "$run" \
+          || echo "run $run: ended, but the local lane could not be retired — it keeps a dispatch slot until the meta is repaired" >&2
+      else
+        # THE WITHHELD RENEWAL IS THE FALLBACK, not the plan. An end that
+        # cannot reach the server leaves the lease to expire exactly as dp#58
+        # described, which still reclaims the run — only slower — and the flag
+        # stands, so every later tick retries the end until one lands.
+        echo "run $run: harness-error ladder spent — ending the run failed; its lease is still withheld (it expires on its own) and the end is retried next tick" >&2
+      fi
       continue
     fi
     # A DEAD session's lease is left to expire: that expiry is the server's
@@ -656,8 +719,19 @@ _tick_renew() { phase_renew || true; }
 # The recovery is the gh tick's RECOVER ladder in the shape this binding
 # allows — bounded nudges, then hand the run to machinery that already exists.
 # gh mode ends its ladder by parking needs-human; automation holds no
-# transition authority here, so the terminal step is to STOP RENEWING, which is
+# transition authority here, so the terminal step is to END THE RUN, which is
 # this binding's way of saying "reclaim this". Phase 1 owns that half.
+#
+# TWO LADDERS, ONE PER SCALE. The nudge ladder below is PER RUN and every
+# successor resets it — right for a transient outage, useless against a
+# standing one. `sminos resume` reports success when it has merely DELIVERED a
+# prompt, so a successor whose very first turn dies on the same error looks
+# like a clean recovery: the ticket cycles hourly, forever, and no three failed
+# cycles ever accumulate anywhere. The second ladder counts EXHAUSTED LADDERS
+# PER TICKET (_stall_cycles), survives successors, and is cleared by exactly
+# one event — a worker answering as itself again. At BOARD_STALL_CYCLES it
+# reaches the destination the resume path's three failed cycles reach: an
+# env-issue registered as automation, and a suppression record.
 #
 # MECHANICAL, NO JUDGMENT. Every harness error is treated alike: a transient
 # 429 and a `Login expired` get the same nudges and the same hand-off. Telling
@@ -671,9 +745,18 @@ _tick_renew() { phase_renew || true; }
 # renderings that must NOT read as errors (a pending AskUserQuestion, the
 # harness-prompt marker). Only what follows the fixed separator is the turn:
 # the header block carries the seat's TASK line, which may quote anything.
-_stall_reply() {  # <uuid>
-  "$SMINOS_CLI" reply "$1" 2>/dev/null \
-    | awk 'f { print } /^--- latest reply ---$/ { f = 1 }'
+#
+# AND ITS EXIT STATUS IS HALF THE ANSWER. Piped straight into awk, the
+# pipeline's status was awk's — so a `sminos reply` that died printed an empty
+# string and SUCCEEDED, an empty string does not match ERROR_RE, and the step
+# therefore said `clear` and deleted a standing ladder. One intermittent hiccup
+# silently reset the cap. Absence of evidence is not evidence of recovery: the
+# read is staged through a file so the command's own status survives, and the
+# caller treats a failed or empty read as UNKNOWN rather than as prose.
+_stall_reply() {  # <uuid> — the turn on stdout; nonzero when the READ failed
+  local raw="$SCRATCH/stall-reply"
+  "$SMINOS_CLI" reply "$1" > "$raw" 2>/dev/null || return 1
+  awk 'f { print } /^--- latest reply ---$/ { f = 1 }' "$raw"
 }
 
 # The nudge. FIXED text: it says what happened, that the wait is over, and what
@@ -700,17 +783,30 @@ EOF
 #   stale      the meta no longer names this run (a renewal retired it mid-phase)
 #   mark       marker stamped; the first nudge is not due yet
 #   hold       the marker stands and the next nudge is not due yet
+#   blocked    the nudge is DUE and the caller has said it cannot issue one
+#              (no run bearer, or the tick budget is gone). NOTHING is written,
+#              so no attempt is spent on a nudge nobody attempts
 #   wake       attempt <attempts> is STAMPED — the caller owes the nudge
 #   exhausted  every attempt is gone and the turn is STILL a harness error:
-#              the hand-off is stamped and phase 1 withholds the lease from here
+#              the hand-off is stamped and phase 1 ends the run from here
 #   spent      the same, already stamped on an earlier tick (quiet)
 #
 # THE ATTEMPT IS STAMPED BEFORE THE NUDGE IS ISSUED, the direction gh mode's
 # _recover also takes. Stamping after would let a nudge that half-lands and
 # fails to report spin the ladder forever; stamping before costs at most one
 # spent attempt when the nudge itself fails, which is bounded and visible.
-_stall_step() {  # <meta path> <run> <reply text>
+#
+# STAMPED BEFORE — BUT ONLY WHERE A NUDGE IS ACTUALLY ATTEMPTED. That trade
+# buys safety against a delivery whose outcome is unknown; it buys nothing on
+# the two branches where the caller already knows it will not call `sminos
+# wake` at all. A meta that is repeatedly bearerless, or repeatedly reached
+# after the tick budget is gone, burned its whole ladder on nudges that never
+# existed and was handed off for it. Eligibility is therefore decided BEFORE
+# the increment and arrives as T_MAY_WAKE. Marking, clearing and the hand-off
+# stay unconditional — they are file writes, not deliveries.
+_stall_step() {  # <meta path> <run> <reply text> <may-wake 0|1> <turn-end epoch>
   T_PATH="$1" T_RUN="$2" T_REPLY="$3" T_DHOME="$DAEMON_HOME" \
+  T_MAY_WAKE="$4" T_TURN="${5:-}" \
   T_CAP="$STALL_CAP" T_WINDOW="$STALL_WINDOW_MIN" T_CEILING="$STALL_MAX_WAIT_MIN" \
   python3 - <<'PY'
 import fcntl, json, os, re, time
@@ -722,6 +818,22 @@ path, run = env["T_PATH"], env["T_RUN"]
 cap, window = int(env["T_CAP"]), int(env["T_WINDOW"]) * 60
 ceiling = int(env["T_CEILING"]) * 60
 now = int(time.time())
+may_wake = env.get("T_MAY_WAKE") == "1"
+# WHEN THE TURN ENDED, not when we looked. This phase exists for errors first
+# noticed HOURS after the turn died, and a prose reset states a wall clock with
+# no date — resolved against scan time, `resets 10:20pm` emitted yesterday and
+# read today at 19:00 becomes TODAY 22:20 (a needless 200-minute wait, under
+# the ceiling, so nothing catches it), and read at 22:30 rolls to TOMORROW and
+# falls back to the window instead of recognising a reset that has long passed.
+# The transcript's mtime is the turn-end clock this file family already uses
+# (board-sweep.sh's _activity_epoch). The parent transcript alone is enough
+# here: a turn that died before the model ever answered dispatched no
+# subagents, so no descendant stream can be newer than it. No transcript is no
+# signal — fall back to the current time, which is what was always there.
+try:
+    turn_now = int(env.get("T_TURN") or 0) or now
+except ValueError:
+    turn_now = now
 
 lines = [ln.strip() for ln in env["T_REPLY"].splitlines() if ln.strip()]
 first = lines[0] if lines else ""
@@ -747,7 +859,15 @@ def say(verdict, attempts="", err=""):
 ERROR_RE = re.compile(r"""^(?:
       api\ error\b
     | request\ rejected\b
-    | you'?(?:ve|re)\ (?:hit|reached|out\ of)\b
+    # THE LIMIT NOUN IS REQUIRED, NOT THE SENTENCE OPENER. `you've (hit|
+    # reached|out of)` alone matches perfectly ordinary worker prose — "You've
+    # reached the review gate. Approval is needed." — and such a worker was
+    # nudged with an unsolicited order to continue its protocol. These two
+    # alternations carry the harness's own renderings instead: `You've hit your
+    # session/weekly/monthly spend limit - resets ...`, `You've reached your
+    # Fable 5 limit. Run /usage-credits ...`, `You're out of usage credits. ...`
+    | you'?ve\ (?:hit|reached)\ your\ [^.\n]{0,40}?\blimits?\b
+    | you'?re\ out\ of\ (?:usage\ )?credits\b
     | login\ expired\b
     | not\ logged\ in\b
     | please\ run\ /login\b
@@ -798,7 +918,11 @@ def prose_reset(text):
         return 0
     hour = int(m.group("h")) % 12 + (12 if m.group("ap").lower() == "pm" else 0)
     minute = int(m.group("min") or 0)
-    local = datetime.now(tz)
+    # Anchored on the TURN's clock, not on this scan's (see turn_now). The
+    # ceiling check downstream stays measured from the real current time: how
+    # long WE are willing to wait is a different question from what the message
+    # meant.
+    local = datetime.fromtimestamp(turn_now, tz)
     if m.group("mon"):
         mon = MONTHS.get(m.group("mon")[:3].lower())
         if not mon:
@@ -905,6 +1029,11 @@ try:
         say("exhausted", attempts, first)
     if now < due:
         say("mark" if not marked else "hold", attempts, first)
+    if not may_wake:
+        # The nudge is due and the caller cannot issue it. Nothing is written:
+        # an attempt is spent on an attempted delivery, never on a branch that
+        # attempts nothing.
+        say("blocked", attempts, first)
     attempts += 1
     write({"stall_attempts": attempts, "stall_due": now + window})
     say("wake", attempts, first)
@@ -916,7 +1045,7 @@ PY
 
 phase_stall() {
   local uuid run bindc ticket bearer fence lane status sexhausted path
-  local reply verdict attempts err
+  local reply verdict attempts err may_wake turn_epoch transcript budget_said=""
   # shellcheck disable=SC2034  # the trailing names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
@@ -928,34 +1057,78 @@ phase_stall() {
     # taken from the row, which predates that write.
     [ "$(_liveness "$uuid")" = live ] || continue
     [ "$(_meta_field "$DAEMON_HOME/$uuid.json" status)" = idle ] || continue
-    reply="$(_stall_reply "$uuid")"
+    # A SUPPRESSED TICKET IS FROZEN, THIS LADDER INCLUDED. Suppression means
+    # "spend no more recovery here until a human clears the substrate", and the
+    # escalation below is one of the things that writes it — so a ladder that
+    # kept running would charge another cycle and re-escalate each time it ran
+    # out, and every re-escalation rewrites the suppression record with the
+    # state read seconds earlier in the same tick, after which _check_lift's
+    # "the ticket moved" trigger can never fire again. Same ruling the
+    # successor reconciliation already makes about a suppressed journal.
+    if [ -n "$ticket" ] && _suppressed "$ticket"; then
+      echo "stall: #$ticket — suppressed; the harness-error ladder stands untouched until the suppression lifts"
+      continue
+    fi
+    # A READ THAT FAILED IS NOT A TURN, and an empty one is not ordinary prose
+    # either. Read as prose, both CLEAR a standing ladder — the cap silently
+    # resets on one `sminos reply` hiccup. Nothing is touched; the next tick
+    # decides, with one line only when the command itself failed.
+    if ! reply="$(_stall_reply "$uuid")"; then
+      echo "stall: #$ticket run $run — the latest turn of $uuid could not be read; nothing is touched and the next tick decides" >&2
+      continue
+    fi
+    case "$reply" in *[![:space:]]*) ;; *) continue ;; esac
+    # ELIGIBILITY BEFORE THE INCREMENT (see _stall_step). Both gates are the
+    # caller's to know: the bearer is a column this loop already read, and the
+    # budget is this tick's own clock. The budget's one line is said once —
+    # marks and clears keep landing for the rest of the registry either way.
+    may_wake=1
+    if [ -z "$bearer" ]; then
+      may_wake=0
+    elif ! _budget_left; then
+      may_wake=0
+      [ -n "$budget_said" ] || {
+        echo "stall: tick budget exhausted — no further nudges this tick; markers and clears still land"
+        budget_said=1; }
+    fi
+    # The clock a prose reset is resolved against: when this turn ENDED.
+    turn_epoch=""
+    transcript="$(_transcript_for_uuid "$uuid")"
+    [ -z "$transcript" ] || turn_epoch="$(_mtime_epoch "$transcript" || true)"
     # `|| true` because a step that dies prints nothing and `read` then reports
     # EOF — which under errexit would abort the TICK over one unreadable meta.
     # The empty verdict is handled below instead, and the next tick retries.
     verdict=""; attempts=""; err=""
     IFS=$'\x1f' read -r verdict attempts err \
-      < <(_stall_step "$path" "$run" "$reply") || true
+      < <(_stall_step "$path" "$run" "$reply" "$may_wake" "$turn_epoch") || true
     case "$verdict" in
       mark)
         echo "stall: #$ticket run $run — the last turn of $uuid is a harness error (\"$err\"); marker stamped, the first nudge waits for the stated reset or ${STALL_WINDOW_MIN}m" ;;
       clear)
-        echo "stall: #$ticket run $run — $uuid answers as itself again; the harness-error ladder is cleared" ;;
+        echo "stall: #$ticket run $run — $uuid answers as itself again; the harness-error ladder is cleared"
+        # AND THE ONLY THING THAT CLEARS THE TICKET'S CYCLES. A worker
+        # answering as itself is the one event that says the substrate works;
+        # a successor merely being DELIVERED to says nothing, which is why
+        # _resume_one's `_attempts reset` deliberately does not reach here.
+        _stall_cycles "$ticket" clear ;;
       exhausted)
-        # Logged once, on the transition. The withheld renewal is phase 1's
-        # line to print, every tick until the server reclaims the run.
-        echo "stall: #$ticket run $run — $uuid still dies on a harness error after $attempts nudges; handing the run to the successor path (its lease is no longer renewed)" ;;
-      wake)
-        # The budget gate sits on the NUDGE, not on the scan: marking and
-        # clearing are two file operations, while a nudge whose seat holds no
-        # live socket falls through to a `sminos resume`, which stops a turn
-        # and launches a process.
-        _budget_left || { echo "stall: tick budget exhausted — the rest of the registry rides the next tick"; break; }
+        # Logged once, on the transition — and the TICKET's cycle is charged
+        # here for exactly that reason: `spent` is this same state seen again.
+        # Ending the run is phase 1's line to print.
+        echo "stall: #$ticket run $run — $uuid still dies on a harness error after $attempts nudges; handing the run to the successor path (phase 1 ends it so the ticket can be reclaimed)"
+        _stall_cycles "$ticket" bump || true ;;
+      blocked)
+        # Due, and not attempted — so nothing was written and no attempt is
+        # spent. The budget half already said its one line above; this is the
+        # other gate, and it says why the meta is stuck rather than nudged.
         # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay
         # refuses one: `sminos wake` falls through to a resume when no socket
         # answers, and a resume with an empty BOARD_RUN_TOKEN hands the worker
         # the configured human/automation credentials instead of its own fence.
         # Phase 1's bind repair is the route that gives such a meta its bearer.
-        [ -n "$bearer" ] || { echo "stall: #$ticket run $run — $uuid holds no run bearer; phase 1's bind repair owns it, not this nudge" >&2; continue; }
+        [ -n "$bearer" ] \
+          || echo "stall: #$ticket run $run — $uuid holds no run bearer; phase 1's bind repair owns it, not this nudge (no attempt is spent on it)" >&2 ;;
+      wake)
         _tick_renew
         # That renewal may have just ended this run (409 → _retire_run_locally
         # strips the meta), exactly as it can under the relay. Nudging on the
@@ -2074,8 +2247,8 @@ PY
 # parks a thrice-failed worker needs-human, this side registers an env-issue
 # (born needs-human server-side) and suppresses the ticket. The env-issue is
 # the signal; the suppression record is what stops the churn.
-_escalate() {  # <ticket>
-  local tid="$1" state eid
+_escalate() {  # <ticket> [resume|stall]
+  local tid="$1" kind="${2:-resume}" state eid
   state="$(T_TID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
@@ -2103,20 +2276,44 @@ PY
   # written and no second env-issue ever creatable. The duplicate answer names
   # the existing ticket, and that IS the escalation: it is read back out of the
   # refusal and the suppression is written from it.
-  eid="$(T_TID="$tid" _api_py - <<'PY'
+  eid="$(T_TID="$tid" T_KIND="$kind" _api_py - <<'PY'
 import io, os, sys, contextlib
 import _board_api as A
 tid = os.environ["T_TID"]
-payload = {"title": "stuck resume: ticket #%s cannot be revived" % tid,
-           "category": "env-issue",
-           "body": "Three recovery cycles failed for ticket #%s (successor "
-                   "claim, resume, or fresh spawn). "
-                   "The sweep has SUPPRESSED that ticket: phase 3 skips "
-                   "it and phase 4 releases any claim that yields it. "
-                   "Investigate the session/daemon substrate, then either "
-                   "move ticket #%s (any transition) or close this env-issue "
-                   "— either one lifts the suppression on the next tick."
-                   % (tid, tid)}
+# TWO FAULTS, ONE MECHANISM. The recovery below — the dedup-on-duplicate-title
+# retry, the empty-state deferral above, the shape of the suppression record —
+# is identical for both and must stay so, because _check_lift reads ONE record
+# shape and lifts it one way. Only the words a human reads differ, and they
+# have to be accurate: a harness that never lets a turn start is a different
+# thing to go and look at than a session that cannot be revived. The title is
+# also the dedup key, so each one is deterministic and distinct.
+# (No apostrophes in this heredoc: bash 3.2 rescans a body nested in $( ).)
+if os.environ.get("T_KIND") == "stall":
+    payload = {"title": "stuck harness error: ticket #%s never gets a turn in" % tid,
+               "category": "env-issue",
+               "body": "Every recovery cycle on ticket #%s ran out of "
+                       "harness-error nudges: every turn ended on a "
+                       "harness-level error (a usage limit, a 429/529, an "
+                       "expired login) rather than on anything the work did, "
+                       "and each successor met the same wall. "
+                       "The sweep has SUPPRESSED that ticket: phase 3 skips "
+                       "it and phase 4 releases any claim that yields it. "
+                       "Investigate the harness substrate (plan usage, login, "
+                       "model availability), then either "
+                       "move ticket #%s (any transition) or close this env-issue "
+                       "— either one lifts the suppression on the next tick."
+                       % (tid, tid)}
+else:
+    payload = {"title": "stuck resume: ticket #%s cannot be revived" % tid,
+               "category": "env-issue",
+               "body": "Three recovery cycles failed for ticket #%s (successor "
+                       "claim, resume, or fresh spawn). "
+                       "The sweep has SUPPRESSED that ticket: phase 3 skips "
+                       "it and phase 4 releases any claim that yields it. "
+                       "Investigate the session/daemon substrate, then either "
+                       "move ticket #%s (any transition) or close this env-issue "
+                       "— either one lifts the suppression on the next tick."
+                       % (tid, tid)}
 err = io.StringIO()
 try:
     with contextlib.redirect_stderr(err):
@@ -2152,9 +2349,47 @@ with open(os.path.join(env["T_DIR"], env["T_TID"] + ".json"), "w") as f:
     json.dump(rec, f, indent=1)
     f.write("\n")
 PY
-  rm -f "$SUPPRESS_DIR/.attempts-$tid"
-  [ -z "$SUPPRESS_LEGACY" ] || rm -f "$SUPPRESS_LEGACY/.attempts-$tid"
+  # The RESUME ladder is cleared with its own escalation, exactly as it always
+  # was. The stall ladder is not: it is cleared by one event only — a worker
+  # answering as itself again — and a suppressed ticket spends nothing on
+  # either ladder until the suppression lifts anyway.
+  if [ "$kind" = resume ]; then
+    rm -f "$SUPPRESS_DIR/.attempts-$tid"
+    [ -z "$SUPPRESS_LEGACY" ] || rm -f "$SUPPRESS_LEGACY/.attempts-$tid"
+  fi
   echo "escalated #$tid → env-issue #$eid (suppressed)"
+}
+
+# THE TICKET'S OWN LADDER — phase 1b's second rung, kept here beside the
+# machinery it ends in. _attempts counts failed RECOVERIES; this counts
+# EXHAUSTED NUDGE LADDERS. Two different failures, one destination, and the
+# same store, so a human clearing one ticket's state finds all of it in one
+# place.
+#
+# NO LEGACY HALF, deliberately. _attempts carries a count written before the
+# store was keyed because such counts exist on real hosts; nothing has ever
+# written a stall cycle into the flat store, so reading it would be dead text.
+_stall_cycles() {  # <ticket> bump|clear
+  local f="$SUPPRESS_DIR/.stall-cycles-$1" n
+  [ -n "$1" ] || return 0
+  if [ "$2" = clear ]; then rm -f "$f"; return 0; fi
+  mkdir -p "$SUPPRESS_DIR"
+  n="$(( $(cat "$f" 2>/dev/null || echo 0) + 1 ))"
+  echo "$n" > "$f"
+  if [ "$n" -lt "$STALL_CYCLE_CAP" ]; then
+    echo "stall: #$1 — harness-error cycle $n of $STALL_CYCLE_CAP"
+    return 0
+  fi
+  # Past the cap, not at it: an escalation that DEFERS (a board that cannot
+  # name the state it would freeze) leaves the counter standing, and a plain
+  # "cycle 4 of 3" reads as a broken counter rather than the pending
+  # escalation it actually is. Same distinction _attempts draws.
+  if [ "$n" -le "$STALL_CYCLE_CAP" ]; then
+    echo "stall: #$1 — harness-error cycle $n of $STALL_CYCLE_CAP; every worker this ticket has had ran out of nudges, so the substrate is the suspect"
+  else
+    echo "stall: #$1 — harness-error cycle $n; the $STALL_CYCLE_CAP-cycle ladder is done and the escalation is still pending (it defers until the board can name the state it would freeze)"
+  fi
+  _escalate "$1" stall
 }
 
 phase_resume() {

@@ -18,11 +18,18 @@
 # three lifetime attempts and the fourth is never issued; and recovery — the
 # seat idle again with ordinary prose — clears the ladder.
 #
-# THE HAND-OFF pins: once the ladder is spent, phase 1 WITHHOLDS the lease.
-# That is the whole terminal step on this binding, because automation holds no
-# transition authority: the lease expires, the server reclaims the run, and the
-# resume phase's successor path takes over with its own ladder and its own
-# env-issue escalation.
+# THE HAND-OFF pins: once the ladder is spent, phase 1 ENDS the run and retires
+# it locally. Merely withholding the lease is one word short — a run nothing
+# calls renew for never answers 409 run-ended, so the meta keeps its run id and
+# its run bearer forever, stays a relay delivery candidate on revoked
+# credentials, and holds a dispatch slot for good. A failed end falls back to
+# the withheld lease and is retried every tick until it lands.
+#
+# THE TICKET'S OWN LADDER pins the rung above that one: the per-run ladder
+# resets on every successor, so a harness fault that outlives its worker cycles
+# hourly and reaches nobody. Three exhausted ladders on one ticket register an
+# env-issue and suppress it, and only a worker answering as itself clears the
+# count.
 . "$(dirname "$0")/helpers.sh"
 
 free_port() { python3 -c 'import socket
@@ -57,6 +64,30 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/75/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/76/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/78/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/80/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/81/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/82/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/84/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/85/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/86/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/87/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/88/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/89/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/90/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/79/end","status":500,"once":true,
+  "body":{"error":{"code":"internal","message":"boom"}}},
+ {"method":"POST","path":"/runs/79/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/79/renew","status":200,"body":{"renewed":true}},
+ {"method":"GET","path":"/tickets/50","status":200,
+  "body":{"id":50,"state":"in-progress","priority":"P1","title":"the stalled one"}},
+ {"method":"POST","path":"/tickets","status":200,
+  "body":{"id":99,"state":"needs-human"}},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":50,"state":"in-progress","priority":"P1","title":"the stalled one"},
+                   {"id":99,"state":"needs-human","priority":null,
+                    "title":"stuck harness error: ticket #50 never gets a turn in"}],
+          "next":null,"as_of":1}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
 ]
@@ -131,6 +162,33 @@ meta u-gone '{"uuid":"u-gone","current":"u-gone","status":"idle","run_id":77,"fe
               "lane":"implementer","bind_confirmed":true,"ticket":"48","run_bearer":"tok-77"}'
 say u-gone "API Error: 529 Overloaded."
 
+# THE HARNESS'S ACTUAL USAGE-LIMIT RENDERINGS, verbatim from the live corpus.
+# None of them states a reset this tick can wait for, so each is MARKED and
+# none is nudged — what they pin is that the tightened pattern still sees them.
+meta u-weekly '{"uuid":"u-weekly","current":"u-weekly","status":"idle","run_id":84,
+                "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"52",
+                "run_bearer":"tok-84"}'
+say u-weekly "You've hit your weekly limit · resets Aug 26 at 1pm (Asia/Seoul) · progress saved"
+
+meta u-fable '{"uuid":"u-fable","current":"u-fable","status":"idle","run_id":85,
+               "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"53",
+               "run_bearer":"tok-85"}'
+say u-fable "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model."
+
+meta u-credits '{"uuid":"u-credits","current":"u-credits","status":"idle","run_id":86,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"54",
+                 "run_bearer":"tok-86"}'
+say u-credits "You're out of usage credits. Run /usage-credits to keep using Fable 5 or /model to switch models."
+
+# THE COUNTEREXAMPLE. `You've (hit|reached|out of)` as a bare sentence OPENER
+# is perfectly ordinary worker prose, and a worker parked on a gate was nudged
+# with an unsolicited order to continue its protocol. The limit noun is the
+# discriminant, not the opener.
+meta u-gate '{"uuid":"u-gate","current":"u-gate","status":"idle","run_id":87,
+              "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"55",
+              "run_bearer":"tok-87"}'
+say u-gate "You've reached the review gate. Approval is needed."
+
 cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
 verb="\${1:-}"; shift || true
@@ -152,6 +210,9 @@ print("live" if m.get("status") in ("working", "blocked") else "noop")
 PY
   exit 0 ;;
 reply)
+  # A read that DIES. The pipeline used to hide this status behind awk's, and
+  # an empty string reads as ordinary prose — which clears a standing ladder.
+  [ -z "\${REPLY_MUST_FAIL:-}" ] || exit 1
   # The real verb's shape: a header block, a fixed separator, then the turn.
   # The header carries the seat's TASK — which quotes an error here on purpose,
   # because only what follows the separator may decide this phase.
@@ -225,6 +286,19 @@ t  "and says so once"                    "marker stamped"                cat "$O
 nt "and is not nudged yet"               "WAKE uuid=u-window"            cat "$WAKE"
 t  "a bearerless meta is refused"        "holds no run bearer"           cat "$O1"
 nt "and is never nudged"                 "WAKE uuid=u-nobearer"          cat "$WAKE"
+# AN ATTEMPT IS SPENT WHERE A NUDGE IS ATTEMPTED, nowhere else. Stamping before
+# the nudge is right where delivery is genuinely tried and its outcome unknown;
+# this branch tries nothing, and a meta that is repeatedly bearerless burned its
+# whole ladder on nudges that never existed and was handed off for it.
+t  "and the refusal spends no attempt"   "0"                             mfield u-nobearer stall_attempts
+
+# The harness's real renderings still read as harness errors...
+t  "the weekly-limit rendering is a candidate"  "84"                     mfield u-weekly stall_run
+t  "so is the per-model limit"           "85"                            mfield u-fable stall_run
+t  "and the exhausted-credits one"       "86"                            mfield u-credits stall_run
+# ...and prose that merely OPENS like one does not.
+t  "a worker parked on a gate is not marked"    "<absent>"               mfield u-gate stall_run
+nt "and is never nudged"                 "WAKE uuid=u-gate"              cat "$WAKE"
 
 # =========================================================================
 # Tick 2 — nothing changed. The attempt window has NOT passed, so no second
@@ -291,6 +365,28 @@ nt "a spent ladder's lease is left to expire"   "/runs/71/renew"         cat "$F
 t  "and the tick says why"               "harness-error ladder spent"    cat "$ORENEW"
 t  "every other live run is still renewed"      '"path": "/runs/72/renew"' cat "$FIX.log"
 t  "including one still climbing the ladder"    '"path": "/runs/76/renew"' cat "$FIX.log"
+# AND THE RUN IS ENDED, not merely left to age out. A run nothing calls renew
+# for never answers 409 run-ended, so _retire_run_locally never runs: the meta
+# keeps its run id and its run bearer past the server's own reclaim, stays a
+# live relay delivery candidate on revoked credentials (its post-renew run_id
+# guard passes, because nothing ever changed the field), and holds a dispatch
+# slot in the local cap for good.
+t  "the spent run is ENDED"              '"path": "/runs/71/end"'        cat "$FIX.log"
+t  "as abandoned"                        '\"reason\": \"abandoned\"'    cat "$FIX.log"
+t  "and the meta stops naming it"        "<absent>"                      mfield u-stall run_id
+t  "its bearer going with it"            "<absent>"                      mfield u-stall run_bearer
+: > "$FIX.log"
+SW "$SCRIPTS/_sweep_api.sh" renew > /dev/null 2>&1 || true
+nt "a retired meta is out of the scan for good" "/runs/71/"              cat "$FIX.log"
+
+# The retire above is the point of the change, and it takes run 71 off this
+# meta. The recovery drill below is about the ladder's OTHER exit, so the seat
+# is re-planted as one that still speaks for its run — which is exactly the
+# shape a successor claimed onto this session has.
+python3 -c 'import json,sys
+p = sys.argv[1]; m = json.load(open(p))
+m.update({"run_id": 71, "fence": 1, "run_bearer": "tok-71", "bind_confirmed": True})
+json.dump(m, open(p, "w"))' "$DH/u-stall.json"
 
 # =========================================================================
 # Recovery — the seat answers as itself again. ONLY this clears the ladder:
@@ -332,6 +428,155 @@ expire_due u-stall
 O8="$TDIR/t8.out"; STALL "$O8" WAKE_MUST_FAIL=1
 t  "a failed nudge is reported as failed"       "the nudge of u-stall failed" cat "$O8"
 t  "and its attempt is spent"            "2"                             mfield u-stall stall_attempts
+
+# =========================================================================
+# AN EMPTY OR FAILED READ IS NOT RECOVERY. `sminos reply` piped straight into
+# awk handed back awk's exit status, so a read that DIED produced an empty
+# string that succeeded — and an empty string matches no error, which is the
+# `clear` verdict: one intermittent hiccup deleted a standing ladder and reset
+# the cap. Absence of evidence is not evidence of recovery.
+# =========================================================================
+O9="$TDIR/t9.out"; STALL "$O9" REPLY_MUST_FAIL=1
+t  "a failed read says so"               "could not be read"             cat "$O9"
+nt "and clears nothing"                  "ladder is cleared"             cat "$O9"
+t  "the marker still stands"             "71"                            mfield u-stall stall_run
+t  "and the ladder is not reset"         "2"                             mfield u-stall stall_attempts
+
+say u-stall ""
+O10="$TDIR/t10.out"; STALL "$O10"
+nt "an EMPTY turn clears nothing either" "ladder is cleared"             cat "$O10"
+t  "the marker still stands"             "71"                            mfield u-stall stall_run
+t  "and the ladder is still not reset"   "2"                             mfield u-stall stall_attempts
+nt "and an unreadable turn is not an event to log" "u-stall"             cat "$O10"
+say u-stall "API Error: Request rejected (429) · This account is out of plan usage until 2020-01-01T00:00:00Z."
+
+# =========================================================================
+# A PROSE RESET IS DATED BY THE TURN THAT DIED, not by the scan that found it.
+# This phase exists for errors first noticed hours later, and the usage-limit
+# renderings state a wall clock with no date: resolved against scan time, a
+# reset that passed long ago is pushed forward into today — a needless wait
+# that sits under the ceiling, so nothing catches it — or rolled into tomorrow
+# and abandoned for the window. The transcript's mtime is the turn-end clock.
+# =========================================================================
+mkdir -p "$TESTHOME/.claude/projects/proj"
+: > "$TESTHOME/.claude/projects/proj/u-prose.jsonl"
+python3 -c 'import os, sys, time
+t = int(time.time()) - 2 * 86400
+os.utime(sys.argv[1], (t, t))' "$TESTHOME/.claude/projects/proj/u-prose.jsonl"
+meta u-prose '{"uuid":"u-prose","current":"u-prose","status":"idle","run_id":88,
+               "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"56",
+               "run_bearer":"tok-88"}'
+say u-prose "You've hit your session limit · resets 11:00pm (UTC)"
+# The same message with NO transcript to date it: the scan clock is the
+# fallback, which is the behaviour that was always there.
+meta u-prose-nt '{"uuid":"u-prose-nt","current":"u-prose-nt","status":"idle","run_id":89,
+                  "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"57",
+                  "run_bearer":"tok-89"}'
+say u-prose-nt "You've hit your session limit · resets 11:00pm (UTC)"
+O11="$TDIR/t11.out"; STALL "$O11"
+t  "a reset dated by the dead turn has already passed" "nudged u-prose"  cat "$O11"
+t  "so the nudge goes out on the first sighting" "1"                     wakes_for u-prose
+t  "with no transcript the scan clock governs"  "0"                      mfield u-prose-nt stall_attempts
+nt "and that one only waits the window"  "WAKE uuid=u-prose-nt"          cat "$WAKE"
+
+# =========================================================================
+# THE BUDGET GATE SPENDS NOTHING EITHER. A tick past its budget attempts no
+# nudge at all, so a meta repeatedly reached there must not be charged for
+# one — while marking and clearing, being two file operations, still land.
+# =========================================================================
+meta u-budget '{"uuid":"u-budget","current":"u-budget","status":"idle","run_id":90,
+                "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"58",
+                "run_bearer":"tok-90"}'
+say u-budget "API Error: Request rejected (429) · This account is out of plan usage until 2020-01-01T00:00:00Z."
+O12="$TDIR/t12.out"; STALL "$O12" BOARD_SWEEP_TICK_BUDGET=0
+t  "a spent budget says so"              "tick budget exhausted"         cat "$O12"
+t  "and nudges nothing"                  "0"                             wakes_for u-budget
+t  "but the marker still lands"          "90"                            mfield u-budget stall_run
+t  "and no attempt is spent on it"       "0"                             mfield u-budget stall_attempts
+
+# =========================================================================
+# THE END IS THE PLAN; THE WITHHELD LEASE IS THE FALLBACK. An end that cannot
+# reach the server must not strand the meta either: the lease is still withheld
+# (it expires on its own), the flag stands, and the next tick retries the end
+# until one lands.
+# =========================================================================
+meta u-endfail '{"uuid":"u-endfail","current":"u-endfail","status":"idle","run_id":79,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"51",
+                 "run_bearer":"tok-79","stall_run":"79","stall_attempts":3,
+                 "stall_exhausted":"79","stall_error":"API Error: 529 Overloaded."}'
+: > "$FIX.log"
+OEF1="$TDIR/endfail1.out"
+SW "$SCRIPTS/_sweep_api.sh" renew > "$OEF1" 2>&1 || true
+t  "a failed end is reported"            "ending the run failed"         cat "$OEF1"
+nt "and the lease is withheld anyway"    "/runs/79/renew"                cat "$FIX.log"
+t  "the meta keeps its run until an end lands" "79"                      mfield u-endfail run_id
+: > "$FIX.log"
+OEF2="$TDIR/endfail2.out"
+SW "$SCRIPTS/_sweep_api.sh" renew > "$OEF2" 2>&1 || true
+t  "the next tick retries the end"       '"path": "/runs/79/end"'        cat "$FIX.log"
+t  "and this one lands"                  "run ended so the successor path" cat "$OEF2"
+t  "so the meta is retired at last"      "<absent>"                      mfield u-endfail run_id
+
+# =========================================================================
+# THE TICKET'S OWN LADDER. `sminos resume` reports success when it has merely
+# DELIVERED a prompt, so a successor whose very first turn dies on the same
+# harness error looks like a clean recovery: _resume_one resets the per-run
+# ladder, the ticket cycles hourly, and no three failed cycles ever accumulate
+# anywhere. A `Login expired` or a multi-day weekly limit churns forever and
+# reaches nobody. This count is per TICKET, survives successors, and ends where
+# the resume path's does — an env-issue plus a suppression record.
+# =========================================================================
+SUP="$(store_dir "$DH" board-suppress "$PORT")"
+cycles() { cat "$SUP/.stall-cycles-50" 2>/dev/null || echo "<absent>"; }
+# A successor is a fresh run on the same seat, which is exactly what re-keying
+# the marker onto a new run id is. Each plant is one ladder at its last rung.
+spend_ladder() {  # <run>
+  python3 -c 'import json, sys, time
+p, run = sys.argv[1], sys.argv[2]; m = json.load(open(p))
+m.update({"run_id": int(run), "stall_run": run, "stall_attempts": 3,
+          "stall_due": int(time.time()) - 1,
+          "stall_error": "Login expired - please run /login"})
+m.pop("stall_exhausted", None)
+json.dump(m, open(p, "w"))' "$DH/u-cycle.json" "$1"
+}
+meta u-cycle '{"uuid":"u-cycle","current":"u-cycle","status":"idle","run_id":80,
+               "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"50",
+               "run_bearer":"tok-80"}'
+say u-cycle "Login expired - please run /login"
+
+spend_ladder 80; OC1="$TDIR/c1.out"; STALL "$OC1"
+t  "a spent ladder charges the TICKET"   "harness-error cycle 1 of 3"    cat "$OC1"
+t  "and the count is on disk"            "1"                             cycles
+nt "one cycle escalates nothing"         "escalated #50"                 cat "$OC1"
+
+spend_ladder 81; OC2="$TDIR/c2.out"; STALL "$OC2"
+t  "a successor run does not reset it"   "harness-error cycle 2 of 3"    cat "$OC2"
+nt "and two still escalate nothing"      "escalated #50"                 cat "$OC2"
+
+spend_ladder 82; OC3="$TDIR/c3.out"; STALL "$OC3"
+t  "the third reaches a human"    "escalated #50 → env-issue #99 (suppressed)" cat "$OC3"
+t  "the env-issue names the harness"  "stuck harness error: ticket #50"  cat "$FIX.log"
+nt "not a stuck resume"               "stuck resume: ticket #50"         cat "$FIX.log"
+t  "the ticket is suppressed"            '"ticket": 50'                  cat "$SUP/50.json"
+t  "against the state it stuck in"       '"state": "in-progress"'        cat "$SUP/50.json"
+t  "and the count survives the escalation"  "3"                          cycles
+
+spend_ladder 82; OC4="$TDIR/c4.out"; STALL "$OC4"
+t  "a suppressed ticket spends no further cycle" \
+   "suppressed; the harness-error ladder stands untouched"               cat "$OC4"
+t  "so the count does not move"          "3"                             cycles
+nt "and nothing is escalated a second time" "escalated #50"              cat "$OC4"
+
+# Recovery is the ONE event that clears it — not a successor being delivered to.
+rm -f "$SUP/50.json"
+say u-cycle "Re-read the ticket and re-stated the gate verdict; the work stands where it was."
+OC5="$TDIR/c5.out"; STALL "$OC5"
+t  "a worker answering as itself clears the ticket's cycles" "ladder is cleared" cat "$OC5"
+t  "and the count is gone"               "<absent>"                      cycles
+
+# The bearerless meta rode every tick of this drill and never spent a rung.
+t  "a bearerless meta never climbs the ladder"  "0"                      mfield u-nobearer stall_attempts
+t  "and is never handed off for it"      "<absent>"                      mfield u-nobearer stall_exhausted
 
 # =========================================================================
 # THE REAL TICK REACHES IT. A phase that works when called by name and is
