@@ -1015,10 +1015,24 @@ _shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # expiry, not left to linger: a push still talking to a sick remote is exactly
 # the thing the bound exists to end, and leaving it running would hold the very
 # lock the kill is meant to release.
-_push_bounded() {  # <dir> <branch> — 0 only when the push actually landed
+#
+# THE WHOLE PROCESS GROUP DIES, NOT JUST `git`. git is rarely the process
+# actually holding the connection: an ssh push spawns `ssh`, an https push may
+# spawn a credential helper, and a `pre-push` hook spawns whatever it likes.
+# Kill the direct child alone and every one of those outlives the deadline —
+# still talking to the sick remote, still holding what the kill was meant to
+# release — while this function has already reported the push dead and the
+# caller has moved on. So the child is started in its OWN SESSION (making its
+# pid the group id) and the SIGNAL GOES TO THE GROUP.
+#
+# NON-ZERO MEANS "DID NOT CONFIRM", NOT "DID NOT LAND": a remote that accepts
+# the update and then stalls is killed here too, and from this side it is
+# indistinguishable from one that never took it. The caller's wording has to
+# stay inside that.
+_push_bounded() {  # <dir> <branch> — 0 only when the push CONFIRMED
   T_DIR="$1" T_REF="refs/heads/$2:refs/heads/$2" T_SECS="$BOARD_PUSH_TIMEOUT" \
   python3 - >&2 <<'PY'
-import os, subprocess, sys
+import os, signal, subprocess, sys
 env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 # `--no-follow-tags`: THE REFSPEC IS THE WHOLE AUTHORITY. An explicit refspec
 # is not by itself a bound on what the push publishes — with
@@ -1029,10 +1043,16 @@ env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
 # atomic a REJECTED branch update can leave them published while this
 # function reports failure. The flag says the refspec and nothing else.
 cmd = ["git", "-C", env["T_DIR"], "push", "--no-follow-tags", "origin", env["T_REF"]]
+child = subprocess.Popen(cmd, env=env, start_new_session=True)
 try:
-    sys.exit(subprocess.run(cmd, env=env, timeout=float(env["T_SECS"])).returncode)
+    sys.exit(child.wait(timeout=float(env["T_SECS"])))
 except subprocess.TimeoutExpired:
-    sys.stderr.write("push exceeded %ss and was killed\n" % env["T_SECS"])
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except OSError:
+        child.kill()  # the group is already gone; reap what is left
+    child.wait()
+    sys.stderr.write("push exceeded %ss and its process group was killed\n" % env["T_SECS"])
     sys.exit(1)
 PY
 }
@@ -1165,11 +1185,20 @@ not create, so nothing was pushed and those commits exist only on this host."
     # A LOCAL BRANCH IS STILL A RECOVERABLE ONE. The successor runs on this same
     # host, and the predecessor's worktree is a repo it can fetch from directly,
     # so an unreachable remote costs the convenience and not the work.
+    #
+    # AND THE NOTE CLAIMS ONLY WHAT THE TICK KNOWS. A non-zero _push_bounded is
+    # "did not confirm", not "did not land": a remote that takes the update and
+    # then stalls is killed on the deadline and reports exactly like one that
+    # refused it. Telling the successor "those commits exist only on this host"
+    # would be a statement about the remote that this side cannot make — and
+    # the recovery does not need it, because the local fetch works either way.
     via="$wtdir"
     note="
-The push to origin FAILED, so those commits exist only on this host — the fetch
-above reads the predecessor's worktree directly, which works because you run on
-the same machine."
+The push to origin did NOT CONFIRM — it either failed outright or was killed on
+this tick's deadline, possibly after the remote had already taken it. The tick
+cannot tell those apart, so it makes no claim about what origin holds. The fetch
+above reads the predecessor's worktree directly, which works either way because
+you run on the same machine."
     echo "resume: could not push the predecessor's branch $branch; the successor is pointed at $wtdir instead" >&2
   fi
   [ -z "$dirty" ] || note="$note

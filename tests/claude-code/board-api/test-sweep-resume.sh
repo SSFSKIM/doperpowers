@@ -1626,6 +1626,49 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
 
+# ---- a push that HANGS: the deadline has to reach what git spawned --------
+# git is rarely the process actually holding the connection. An ssh push spawns
+# `ssh`, an https push may spawn a credential helper, a pre-push hook spawns
+# whatever it likes — and killing the direct child leaves every one of them
+# running past the deadline, still talking to the sick remote, while the tick
+# has already reported the push dead and moved on. The hook here stands in for
+# all three: it backgrounds a grandchild, then sleeps well past the bound.
+PHFIX="$TDIR/fix-pred-hang.json"; predfix "$PHFIX" 76
+rboard "$PHFIX"
+PH_WT="$(predsetup 12-hang 2)"; PH_ROOT="$RREPO"
+# Installed AFTER predsetup: its own `push origin main` would hang on it too.
+cat > "$PH_ROOT/.git/hooks/pre-push" <<HOOK
+#!/bin/sh
+( while : ; do sleep 1; done ) &
+echo \$! > "$TDIR/hang-grandchild.pid"
+echo \$\$ > "$TDIR/hang-hook.pid"
+sleep 120
+HOOK
+chmod +x "$PH_ROOT/.git/hooks/pre-push"
+PHDH="$TDIR/dh-pred-hang"; predreg "$PHDH" "$PH_ROOT" 12-hang
+: > "$SPAWN_LOG"
+OUTPH="$TDIR/pred-hang.out"
+# 5s is the floor _sweep_api.sh clamps this to, so this is as cheap as a real
+# deadline drill gets.
+export BOARD_PUSH_TIMEOUT=5
+RSW "$PHDH" > "$OUTPH" 2>&1 || true
+unset BOARD_PUSH_TIMEOUT
+alive() { kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null && echo alive || echo gone; }
+
+t  "a hanging push is killed on the tick's deadline"  "process group was killed" \
+   cat "$OUTPH"
+t  "and the hook git spawned dies with it"            "gone" \
+   alive "$TDIR/hang-hook.pid"
+t  "and so does the grandchild that hook left behind" "gone" \
+   alive "$TDIR/hang-grandchild.pid"
+# A remote that TAKES the update and then stalls is killed here too, and from
+# this side reports exactly like one that refused it. The tick may not tell the
+# successor where those commits are; it only has to get it to them.
+nt "and the tick claims nothing about what origin holds" "exist only on this host" \
+   cat "$SPAWN_LOG"
+t  "while still handing over the commits"             "$(git -C "$PH_WT" rev-parse --short HEAD)" \
+   cat "$SPAWN_LOG"
+
 # ---- the push cannot reach its remote, from a path with a SPACE in it -----
 # The successor runs on the SAME HOST, so an unreachable origin costs the
 # convenience of a fetch from origin, not the work: the local worktree is still
@@ -1643,7 +1686,8 @@ RSW "$PFDH" > "$OUTPF" 2>&1 || true
 
 t  "a failed push still names the predecessor's branch" "worktree-12-nopush" \
    cat "$SPAWN_LOG"
-t  "and says the push did not land"   "push to origin FAILED"        cat "$SPAWN_LOG"
+t  "and says the push did not confirm" "push to origin did NOT CONFIRM" \
+   cat "$SPAWN_LOG"
 t  "and points at the local worktree instead" "$PF_WT"               cat "$SPAWN_LOG"
 t  "the tick reports the failure in its own log" "could not push"     cat "$OUTPF"
 # The path has a space, so an unquoted emission fetches the wrong thing (or
