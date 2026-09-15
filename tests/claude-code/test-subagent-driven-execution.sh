@@ -29,6 +29,7 @@ echo ""
 # "task text pasted into the prompt, not a brief file path" passed as "brief".
 # One leading word is tolerated so "a brief"/"the brief"/"brief" all count,
 # which is far short of reaching the losing option's own mention of it.
+PAT_SELF_REVIEW_REPLACES_NO='Self-review replaces external review:[^a-zA-Z<]*no'
 PAT_REQUIREMENTS_AS_BRIEF='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *brief'
 PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
 
@@ -51,6 +52,10 @@ check_answer_patterns() {
 echo "Pre-flight: answer-line assertion patterns..."
 
 check_answer_patterns <<'FIXTURES' || exit 1
+nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: yes, notionally
+nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: <yes or no>
+match|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: no
+match|PAT_SELF_REVIEW_REPLACES_NO|**Self-review replaces external review:** No
 match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path
 match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: brief file path
 match|PAT_REQUIREMENTS_AS_BRIEF|**Requirements reach the executor as:** a brief file path - the brief holds the full text of the task
@@ -117,7 +122,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "Self-review replaces external review:.*no" "Self-review does not replace external review"; then
+if assert_contains "$output" "$PAT_SELF_REVIEW_REPLACES_NO" "Self-review does not replace external review"; then
     : # pass
 else
     exit 1
