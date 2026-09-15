@@ -1626,6 +1626,52 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
 
+# ---- a RE-FILLED predecessor seat: worktree:"" with cwd already the tree ---
+# `sminos fill` re-fills a seat in place and passes an EMPTY worktree argument
+# on purpose — the seat's cwd is by then the worktree path, so the fresh session
+# needs no --worktree to land there. The record that leaves behind carries
+# worktree:"" while sitting in a perfectly ordinary ticket worktree, and a guard
+# that read the FIELD's presence as the answer skipped it entirely. It is also
+# the shape a recovery tick meets most often: by the time a seat is being
+# reclaimed it has usually been re-filled at least once.
+PRFIX="$TDIR/fix-pred-refill.json"; predfix "$PRFIX" 77
+rboard "$PRFIX"
+PR_WT="$(predsetup 12-refill 2)"
+echo scratch > "$PR_WT/half-done"
+PR_HEAD="$(git -C "$PR_WT" rev-parse --short HEAD)"
+PRDH="$TDIR/dh-pred-refill"; predreg "$PRDH" "$PR_WT" ""
+: > "$SPAWN_LOG"
+OUTPR="$TDIR/pred-refill.out"
+RSW "$PRDH" > "$OUTPR" 2>&1 || true
+
+t  "a re-filled seat's branch is rescued from its cwd alone" "worktree-12-refill" \
+   git -C "$TDIR/origin-12-refill.git" branch --list
+t  "at the head it committed"      "$PR_HEAD" \
+   git -C "$TDIR/origin-12-refill.git" rev-parse --short worktree-12-refill
+t  "and the bootstrap names it"    "$PR_HEAD"            cat "$SPAWN_LOG"
+t  "and names its uncommitted changes too" "UNCOMMITTED" cat "$SPAWN_LOG"
+
+# ---- …while a seat that really did run in a SHARED checkout rescues nothing
+# The old guard's other job, and it is a real one: whatever the main checkout
+# sits on belongs to everyone who works in it, and its uncommitted changes may
+# be the operator's own. Deciding that from the path rather than from the field
+# is what keeps it true once worktree:"" stops meaning "no worktree".
+PSFIX="$TDIR/fix-pred-shared.json"; predfix "$PSFIX" 78
+rboard "$PSFIX"
+predsetup 12-shared 0 > /dev/null; PS_ROOT="$RREPO"
+echo shared > "$PS_ROOT/m-shared"; gitx "$PS_ROOT" add m-shared
+gitx "$PS_ROOT" commit -qm "a commit on the checkout everyone shares"
+echo operator > "$PS_ROOT/operators-own-wip"
+PSDH="$TDIR/dh-pred-shared"; predreg "$PSDH" "$PS_ROOT" ""
+: > "$SPAWN_LOG"
+OUTPS="$TDIR/pred-shared.out"
+RSW "$PSDH" > "$OUTPS" 2>&1 || true
+
+t  "a fresh worker is still spawned"  "SPAWN name=12-successor"      cat "$SPAWN_LOG"
+t  "the tick refuses the repo's main checkout" \
+   "main checkout and not a worktree of its own"                     cat "$OUTPS"
+nt "and names none of it in the bootstrap" "---- your predecessor's" cat "$SPAWN_LOG"
+
 # ---- a push that HANGS: the deadline has to reach what git spawned --------
 # git is rarely the process actually holding the connection. An ssh push spawns
 # `ssh`, an https push may spawn a credential helper, a pre-push hook spawns
