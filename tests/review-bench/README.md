@@ -29,8 +29,10 @@ One case, one engine (from anywhere; scratch repos are ephemeral):
 
 Both engines review the identical committed `bench-change` branch
 against `main` in a materialized scratch repo. The codex engine runs
-through the loop's own `review-engine.sh` (env `CODEX_REVIEW_MODEL`,
-`CODEX_REVIEW_EFFORT` pass through; defaults match the live loop). The
+through `review-engine.sh` beside this README — the review loop's engine
+until it moved onto doperpowers:review-code's lane (2026-09-13), kept here
+as the codex baseline (env `CODEX_REVIEW_MODEL`, `CODEX_REVIEW_EFFORT` pass
+through). The
 argus engine ALWAYS runs through the headless invocation path (`claude
 -p` slash invocation, `--permission-mode auto` — the C1.G3 probe
 mechanism), because that is the context C4 deploys; benching argus

@@ -1,0 +1,6 @@
+{
+  "name": "to-human",
+  "version": "0.1.0",
+  "description": "Draws the transcript for a human who reads reports, not transcripts: an assistant message shows only its <to-human>, <essential> and <need-input> spans, each highlighted by kind, tool rows fold away, and a button on each message (or one above the prompt) unfolds the full working record.",
+  "author": { "name": "SSFSKIM" }
+}

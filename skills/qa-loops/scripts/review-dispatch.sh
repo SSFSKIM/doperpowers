@@ -41,8 +41,10 @@
 #   CLODEX_SETTINGS     gateway settings file for the codex route
 #                       (default ~/.claude/clodex-settings.json)
 #   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
-#   CODEX_REVIEW_MODEL  codex model for the review ENGINE (default gpt-6-astra)
-#   CODEX_REVIEW_EFFORT  codex reasoning effort for the review engine (default high)
+#   REVIEW_LEVEL        the review engine's level floor for this repo —
+#                       low|medium|high|xhigh|max (default medium, review-code's
+#                       own default). The worker takes the highest of this, the
+#                       rung the ticket's spec names, and the diff's size.
 #   REVIEW_PRIORITY_LABEL  opt-in sweep ordering hint (dp#64): PRs carrying
 #                       this label enumerate FIRST in --sweep (stable within
 #                       both groups), so a priority cohort cannot be starved
@@ -70,6 +72,8 @@
 #   SMINOS_CLI           sminos CLI launcher override (tests)
 #   DAEMON_HOME         sminos seat registry dir (default ~/.claude/sminos)
 #   BOARD_SCRIPTS       issue-tracker scripts dir override (tests)
+#   REVIEW_CODE_DIR     review-code skill dir the worker's engine runs from
+#                       (default: the sibling skill; override for tests)
 #   REVIEW_BIND_ATTEMPTS / REVIEW_BIND_DELAY
 #                       ticket-bind retries (defaults 3 attempts, 2s delay)
 #   REVIEW_ACK_POLLS / REVIEW_ACK_DELAY
@@ -247,9 +251,18 @@ case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;
 esac
-CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-6-astra}"
-CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-high}"
-REVIEW_ENGINE="$SCRIPT_DIR/review-engine.sh"
+# The review engine is doperpowers:review-code's lane, run by the worker from
+# its own session through the lane's workflow (one reviewer at low/medium/high,
+# the panel at xhigh/max). The dispatcher pins the lane's directory and the
+# level floor; an unknown floor is refused here, before any spawn.
+REVIEW_LEVEL="${REVIEW_LEVEL:-medium}"
+case "$REVIEW_LEVEL" in
+  low|medium|high|xhigh|max) ;;
+  *) echo "REVIEW_LEVEL must be one of low|medium|high|xhigh|max (got '$REVIEW_LEVEL')" >&2; exit 2 ;;
+esac
+# A path, not a probe: the sibling skill dir the way IMPLEMENT_PROTOCOL_FILE is
+# derived — the worker opens it, and a test tree may stand in for it.
+REVIEW_CODE_DIR="${REVIEW_CODE_DIR:-${SKILL_DIR%/*}/review-code}"
 
 # Newest registry entry for worker name <1> (review-pr-<n> or review-epic-<n>)
 # → "uuid|status|current|engine|pid|host|boot" (empty if none).
@@ -699,8 +712,8 @@ PY
     P_MANIFEST_REF="$BASE_REF" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "#$pr: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
@@ -741,7 +754,7 @@ _dispatch_epic_locked() {
   #   int_ref  — the epic's integration branch, where the worktree sits (the
   #              aggregate of the children's merged work).
   #   base_ref — what that branch integrates INTO, i.e. the repo default
-  #              branch. This is the ENGINE's --base: `merge-base(base,HEAD)
+  #              branch. This is the ENGINE's base: `merge-base(base,HEAD)
   #              ..HEAD` is the epic's aggregate diff. Binding BASE_REF to the
   #              integration branch itself (which the worktree is checked out
   #              at) made that range empty.
@@ -850,8 +863,8 @@ _dispatch_epic_locked() {
     P_MANIFEST_REF="$base_ref" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "$name: prompt render failed" >&2; rm -rf "$tmp" "$control_dir"; return 1; }
@@ -977,10 +990,11 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   dispatch_mark="$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)"
 
   # ONE worker harness, two model routes. The default "claude" engine is a
-  # plain Claude-model daemon. engine:codex opts a PR into the GATEWAY
-  # route: the same Claude-harness daemon pointed at the local gateway (GPT
-  # models) via --settings — the codex CLI survives only as the review
-  # engine inside the worker. The codex-CLI-as-worker species is retired.
+  # plain Claude-model seat. engine:codex opts a PR into the GATEWAY
+  # route: the same Claude-harness seat pointed at the local gateway (GPT
+  # models) via --settings. The review engine inside the worker is
+  # doperpowers:review-code's lane on either route; the codex-CLI-as-worker
+  # species is retired.
   if [ "$engine" = "codex" ]; then
     spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
       DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
@@ -1726,8 +1740,8 @@ PY
     P_MANIFEST_REF="$DEFAULT_BRANCH" \
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_CODEX_REVIEW_MODEL="$CODEX_REVIEW_MODEL" \
-    P_CODEX_REVIEW_EFFORT="$CODEX_REVIEW_EFFORT" P_REVIEW_ENGINE="$REVIEW_ENGINE" \
+    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
     || { echo "#$C_TICKET: prompt render failed — releasing run $C_RUN_ID" >&2

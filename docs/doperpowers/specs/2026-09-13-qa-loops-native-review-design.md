@@ -1,0 +1,185 @@
+# The board's review loop on the native review lane
+
+This spec is a living document: `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` are kept current as the work proceeds, per `skills/brainstorming/references/living-spec.md`. The work is one unit, so this spec carries its own execution (`Plan of Work`, `Concrete Steps`) instead of pointing at an execution plan.
+
+## Purpose
+
+The board's Reviewer worker (doperpowers:qa-loops) is the last place a codex process runs in this repo's review path. Its START ENGINE step shells out to `skills/qa-loops/scripts/review-engine.sh`, which drives the codex app-server through the doperpowers:codex-companion runtime, and the protocol says so outright: "there is no second engine; the reviewer is codex-only." Every other review — SDE's task reviews and final review, the one-unit spec's exit, plan-executor's finish, the Architect's plan review — already runs on doperpowers:review-code's native lane: the registered reviewer agents (`doperpowers:reviewer-low|medium|high`, GPT models through the local gateway) and its panel workflow. The lane's design (`2026-09-09-review-code-lane-design.md`) recorded this port as its first follow-on. A second consequence of the gap: the verification call a spec records ("branch review at reviewer-high") reaches the board's loop only as "fan out more codex runs", not as the rung it names.
+
+After this change the Reviewer worker runs the native lane itself, through the lane's workflow from its own session, at a level it derives from the spec's verification entry, the operator's floor, and the diff's size. Every reviewer works in a fresh worktree at the reviewed head. The codex script and its hermetic test move to the review bench, their only remaining consumer. Everything around the engine keeps its shape: the concurrent compliance audit, JOIN, the wave board, the round and wave caps, the `ENGINE-UNAVAILABLE` outage marker the sweep keys on, and the review trail.
+
+Seeing it work: `grep -n -E 'codex|review-engine|CODEX_REVIEW' skills/qa-loops/SKILL.md` prints nothing; `ls skills/qa-loops/scripts` lists only `review-dispatch.sh`; `tests/qa-loops/test-skill-entrypoint.sh`, `tests/qa-loops/test-review-dispatch.sh`, `tests/qa-loops/test-bootstrap-parity.sh`, and `tests/review-bench/test-review-engine.sh` pass; a rendered reviewer prompt binds `REVIEW_LEVEL` and `REVIEW_CODE_DIR` and no `CODEX_REVIEW_*`; a real background seat runs the workflow at level low and its result lands after the seat's turn yields.
+
+## Progress
+
+- [x] (2026-09-13 13:20Z) Milestone 1 — the protocol: START ENGINE rewritten on the native lane; Role, JOIN, RE-REVIEW, ESCALATE, the scale section, and REVIEW TRAIL reworded where they named codex runs or `--base`/`--out` files.
+- [x] (2026-09-13 13:35Z) Milestone 2 — dispatch and references: `review-dispatch.sh` bindings, the bootstrap template, the operation manual, wave-board.
+- [x] (2026-09-13 13:35Z) Milestone 3 — relocation: `review-engine.sh` and `test-review-engine.sh` to `tests/review-bench/`; `run-case.sh` and the bench README follow.
+- [x] (2026-09-13 13:35Z) Milestone 4 — consumers and history: the implement protocol's clause; Revision Notes on the three review design specs.
+- [x] (2026-09-13 14:05Z) Spec review (adversarial-reviewer, background): four findings, all applied — the engine runs through the workflow at every level so each reviewer has a fresh worktree; a reviewer that could not inspect is a failed sweep; a result that lands before the audit waits; a live smoke test in the production seat shape joins the acceptance.
+- [x] (2026-09-13 15:10Z) Milestone 5 — validation: the five suites and lint green (two pre-existing red assertions in the dispatcher suite re-anchored), the sweep in Acceptance 11 clean, the smoke in Acceptance 12 passed (result after 21 minutes, reviewer isolated), version 7.87.0 at the time, 7.93.0 as rebased onto main.
+- [x] (2026-09-13 15:15Z) Exit — branch review at `doperpowers:reviewer-high` (two findings, both applied by a fix wave: the explanation check scoped to single-reviewer levels; only the sweep's launch failure enters the outage path), retrospective written, PR opened.
+
+## Acceptance
+
+1. `skills/qa-loops/SKILL.md` START ENGINE names the lane as doperpowers:review-code's, run through its workflow at every level — one registered reviewer (`doperpowers:reviewer-low` / `-medium` / `-high`) at the single-reviewer levels, the panel at xhigh and max — with the call shape `Workflow({ scriptPath: "{{REVIEW_CODE_DIR}}/workflows/code-review.js", args: { level, base: "origin/{{BASE_REF}}", baseCommit, headCommit } })` and no `repo` argument (every reviewer in a fresh worktree at the reviewed head). It states the level rule — the highest of the rung the spec's verification entry names, the `{{REVIEW_LEVEL}}` binding, and review-code's size rule, ordered low < medium < high < xhigh < max, a risk-surface hit or whole-branch scale as the worker's reason to go one rung up, nothing lowering a rung the spec named, and no spec signal on a pre-spec or ticketless PR. It pins the range (`git merge-base origin/{{BASE_REF}} HEAD` and `HEAD`) into every call, keeps lensed extra calls at single-reviewer levels only (one to three, `lens: "<mandate>"`, diff-derived), saves each result to `<review-tmp>/findings-r<N>-<k>.json`, treats a hung run (45 minutes) or an `interrupted` verdict as a failed sweep, and at single-reviewer levels also a `correct` verdict from a reviewer that could not inspect the range, a failed sweep failing the round while a lensed call that fails or will not launch is only recorded, says a result that lands before the audit is written waits for it, and reads the `priority` field's P0 and P1 as the blocker classes. The words `codex`, `review-engine`, and `CODEX_REVIEW` do not appear in the file.
+2. The runtime placeholder set of `skills/qa-loops/SKILL.md` and the bootstrap placeholder set of `skills/qa-loops/references/review-worker-bootstrap.md` contain `{{REVIEW_LEVEL}}` and `{{REVIEW_CODE_DIR}}` and none of `{{REVIEW_ENGINE}}`, `{{CODEX_REVIEW_MODEL}}`, `{{CODEX_REVIEW_EFFORT}}`; `tests/qa-loops/test-skill-entrypoint.sh` asserts both exact sets and passes.
+3. `skills/qa-loops/scripts/review-dispatch.sh` defines no `CODEX_REVIEW_MODEL`, `CODEX_REVIEW_EFFORT`, or `REVIEW_ENGINE`; it resolves `REVIEW_LEVEL` from the environment (default `medium`, refusing any value outside `low|medium|high|xhigh|max` before any spawn) and `REVIEW_CODE_DIR` as the sibling `review-code` skill directory (a path derived like `IMPLEMENT_PROTOCOL_FILE`, overridable for tests, never probed), and renders both at all three render sites (PR, scale, API). Its `ENGINE-UNAVAILABLE` handling is unchanged. `tests/qa-loops/test-review-dispatch.sh` asserts a rendered prompt binds `REVIEW_LEVEL` and `REVIEW_CODE_DIR`, carries no `review-engine.sh` or `CODEX_REVIEW`, and that an invalid `REVIEW_LEVEL` refuses to dispatch; it passes.
+4. `skills/qa-loops/scripts/review-engine.sh` does not exist. `tests/review-bench/review-engine.sh` exists with the same contract, its companion path resolved as `$script_dir/../../skills/codex-companion`; `tests/review-bench/test-review-engine.sh` is the moved hermetic suite pointed at it and passes; `tests/review-bench/run-case.sh --engine codex` invokes the bench copy; the bench README says the codex baseline runs from the bench's own copy of the loop's former engine.
+5. `skills/qa-loops/references/operation-manual.md` describes the engine as review-code's lane run through its workflow (overview, pieces table, the "Review engine + worker audit" section), lists the local gateway that serves the reviewer agents' models as the prerequisite in place of the codex CLI, documents `REVIEW_LEVEL`, and keeps the outage cap and marker semantics. `tests/qa-loops/test-skill-entrypoint.sh` asserts the manual no longer names `review-engine.sh` or `codex login`.
+6. `skills/qa-loops/references/wave-board.md` says the worker saves the engine's findings into `<review-tmp>`; its fixer-boundary sentence ("You never: run the review engine or any review skill") is unchanged.
+7. `skills/issue-tracker/references/implement-worker-protocol.md` describes the Reviewer's loop as review-code's lane plus fix waves, not an external engine.
+8. Revision Notes: `2026-09-09-review-code-lane-design.md` records the follow-on as landed; `2026-07-08-pr-review-loop-design.md` records the engine swap; `2026-07-12-native-review-recovery-design.md` records that its "reviewer is codex-only" mandate was superseded by the human's direction of 2026-09-13.
+9. `tests/qa-loops/test-skill-entrypoint.sh`, `tests/qa-loops/test-review-dispatch.sh`, `tests/qa-loops/test-bootstrap-parity.sh`, `tests/review-bench/test-review-engine.sh`, `tests/issue-tracker/test-protocol-content.sh`, and `scripts/lint-shell.sh` pass (a failure that reproduces on `main` before this change is recorded, not owned).
+10. The version is bumped with `scripts/bump-version.sh` in the same PR, to the next version above main.
+11. `grep -rn -E 'review-engine|CODEX_REVIEW' skills agents scripts tests/qa-loops tests/issue-tracker tests/claude-code CLAUDE.md README.md docs/INSTALL-doperpowers.md` returns only the `assert_not_contains` lines in `tests/qa-loops/` that pin the names' absence; the bench directory and the dated design history are the only places the name survives in prose.
+12. Smoke, in the production shape: a seat spawned by `sminos spawn … --worktree` (a `claude --bg` session in a linked worktree, no stdin) runs the workflow at level low on a two-commit range with no `repo` argument, and after its turn yields the result object reaches a file with a verdict of `correct` or `incorrect` and a reviewer lane whose coverage status is `ok`. The outcome — including a failure — is recorded under Surprises & Discoveries.
+
+## Design
+
+**The engine is a role, not a binary.** qa-loops splits review three ways — the engine owns correctness of the whole range, fixers own edits, the worker owns audit, triage, grading, and the push chain. The port changes only who plays the engine: doperpowers:review-code's lane, run by the worker from its own session. The word "engine", the START ENGINE section name, and the `ENGINE-UNAVAILABLE` marker stay: the dispatcher's outage streak, the sweep's re-dispatch, the manual's cap table, and four test suites key on the marker, and the role is what they describe.
+
+**Why the worker runs the lane itself, not a script.** A Reviewer worker is a sminos seat — a main session — so it has the Workflow tool the lane's workflow needs (subagents lack it, probe-verified in the lane's design). A replacement script would have to run a headless `claude -p` around the workflow, and the bench found that a `-p` session cannot reliably wait on a background workflow. Running in-session is also the shape every other consumer of the lane uses.
+
+**Why the workflow at every level, not the Agent tool at the single-reviewer levels.** The spec review's first finding: a reviewer agent excludes the mutating tools but keeps Bash, and a worker launched with `--permission-mode auto` runs it in the worker's own shared checkout, so a reviewer's inspection command could write there while the compliance audit reads it — the codex engine had an enforced read-only sandbox, and the direct Agent dispatch would have dropped that boundary. The workflow gives every lane `isolation: 'worktree'` when no `repo` is passed: each reviewer works in a fresh worktree at HEAD, and the worker's checkout stays untouched. One call shape at every level also returns one structured result (`verdict`, `findings` with `priority`, `coverage`, `explanation`), which is what the failure rule below reads. Worktree isolation is not filesystem write enforcement — a reviewer can still write inside its own scratch worktree — but nothing it does there reaches the checkout the worker audits, fixes, and pushes from.
+
+**Level.** Three signals, take the highest: the rung the spec behind the pin names in its verification entry (the pinned file itself, or the plan's `Spec:` header — its Decision Log's "branch review at reviewer-<rung>", or a panel level); the `REVIEW_LEVEL` binding, the operator's floor for the repo (default medium, review-code's own default); and review-code's size rule (xhigh once the diff is panel-sized). A pre-spec ticket, a ticketless PR, and an epic without a spec contribute no first signal; the floor and the size rule decide. A risk-surface hit or whole-branch scale is the worker's reason to go one rung up. Nothing lowers a rung the spec named: the verification call was made from stakes by the author, before the work. This replaces the run-count knob (`CODEX_REVIEW_MODEL`/`EFFORT` plus 1–4 runs), which no longer maps onto anything.
+
+**Fan-out.** At a single-reviewer level the lens-free call is the required whole-range sweep; the worker may add one to three lensed calls (`lens: "<mandate>"`), the mandate derived from the diff and the risk-surface manifest, never from the ticket or spec. That keeps the bench-validated lens cell (a lens recovered an authz defect two plain runs missed). At panel levels the deriver owns the lenses and the verifier dedups; the worker adds none.
+
+**Findings.** Each call returns the workflow's result object; the worker writes it to `<review-tmp>/findings-r<N>-<k>.json` when it opens it, so the wave board's `source: native`, the trail's per-run record, and the tmp-cleanup rules are untouched. Findings carry `priority` P0–P3; P0 and P1 are the blocker classes the verdict sentence reads (the codex text said critical/high). Triage is still the worker's judgment.
+
+**Failure, fail-closed.** The codex engine had a fail-closed check for an observed production failure: codex exited 0 and rendered plausible findings while its sandbox had made every probe fail, and 22 runs read as clean. The native lane has no sandbox log to grep, so the check moves to the result: a sweep FAILED when its verdict is `interrupted` (the workflow's own signal for a lost reviewer, a lost sweep lane, or a lost verifier) or, at a single-reviewer level, when its verdict is `correct` on an `explanation` that names nothing the reviewer examined or says the reviewer could not inspect the range. The explanation check is scoped to single-reviewer levels because the panel's explanation is assembled by the workflow ("no confirmed findings"), not written by a reviewer — applying the check there would reject every clean panel; at panel levels a lost lane is already `interrupted`, and a panel finder that could not inspect yet returned an empty array is invisible to the worker until the workflow surfaces finder explanations (a review-code follow-on). The reviewer rubric already requires the verdict's sentences to be justified from what was actually examined, so the worker is reading a field the lane already fills. A hung run (45 minutes) is stopped and counted failed. A failed sweep fails the round; the fallback is unchanged: retry twice with a short backoff, then post the trail comment, touch no board state, and end with `ENGINE-UNAVAILABLE` on the last line. `needs-human` stays reserved for judgment. What this cannot catch is a reviewer whose tools failed and who wrote a fabricated justification anyway; no hermetic test covers model behavior, so the protocol carries the rule and the trail carries the evidence.
+
+**Audit before findings.** The codex engine wrote to a file the worker did not open until JOIN. A background Workflow's completion notification carries its result into the worker's context whenever it lands, so the file indirection no longer gives the ordering for free. The protocol keeps the concurrency (a recorded decision of the loop's design) and states the discipline: a result that lands while the audit is unwritten waits — the audit is the worker's independent judgment of the ticket and the PR, written before any result is opened. The direction that measurably mattered — no spec policy reaching the correctness reviewer — is fully preserved by the brief; the reverse direction now rests on ordering discipline rather than on a file boundary.
+
+**Bindings.** `REVIEW_ENGINE`, `CODEX_REVIEW_MODEL`, and `CODEX_REVIEW_EFFORT` leave the dispatcher, the bootstrap, and the skill. `REVIEW_LEVEL` (validated at dispatch) and `REVIEW_CODE_DIR` (the sibling skill directory, derived as a path the way `IMPLEMENT_PROTOCOL_FILE` is — never probed, so a test tree can stand in for it) replace them. The worker's own model route (`engine:claude` / `engine:codex` labels, the clodex gateway settings) is about the worker and is untouched.
+
+**The codex engine's new home.** `review-engine.sh` and its hermetic suite move to `tests/review-bench/`, where `run-case.sh --engine codex` is their only consumer: the bench's scored codex baselines remain re-runnable. The script's one edit is its companion path. codex-companion itself is untouched (human direction, 2026-09-09); deleting its panel is the lane design's own later follow-on.
+
+**What does not change.** ORIENT's anchor rules, the compliance audit and its classes, JOIN's ordering, triage bins, the wave board and fixer contract, the 4-wave and 5-round caps, the closing wave, ESCALATE's merge gate (its mechanical-conflict rule needs "one lens-free sweep", now one lens-free call at the review's level), the scale review (same lane; per-child ranges when the epic has no aggregate range, one call per range with that range's commits), AUTHORITY, and the trail's contents.
+
+## Plan of Work
+
+Milestone 1, the protocol. In `skills/qa-loops/SKILL.md`: the Role paragraph's "above all in START ENGINE's `--base origin/{{BASE_REF}}`" becomes the base every call names; ORIENT keeps "the engine may be running its own"; START ENGINE is rewritten per the Design (level, the one call shape, fan-out by `lens`, isolation, JOIN bound, findings files, the fail-closed sweep rule, the audit-first sentence, verdict sentence, fallback); JOIN's first sentence names background dispatches rather than engine tasks with `--out` files; RE-REVIEW's "rerun the engine … fresh --out files" becomes fresh findings files at the same level; ESCALATE's conflict rule says one lens-free call; the scale section's "whole-range codex runs" and "START ENGINE's `--base origin/{{BASE_REF}}`" become the lane and the call's base, with per-child ranges as explicit-range calls; AUTHORITY's "an engine outage stays ENGINE-UNAVAILABLE" stands; REVIEW TRAIL records the level and every dispatch.
+
+Milestone 2, dispatch and references. `review-dispatch.sh`: the env comment block (drop the two `CODEX_REVIEW_*` lines, add `REVIEW_LEVEL` and `REVIEW_CODE_DIR`); the binding block becomes `REVIEW_LEVEL` (validated) and `REVIEW_CODE_DIR` (a derived path); the three render sites pass `P_REVIEW_LEVEL` and `P_REVIEW_CODE_DIR`; the comment "the codex CLI survives only as the review engine inside the worker" is corrected. `review-worker-bootstrap.md`: the three binding lines become two. `operation-manual.md`: overview sentence, the `review-engine.sh` row becomes a doperpowers:review-code row, the "Review engine (pure correctness) + worker audit" section, setup step 8. `wave-board.md` line 12.
+
+Milestone 3, relocation. `git mv skills/qa-loops/scripts/review-engine.sh tests/review-bench/review-engine.sh`; edit its `companion=` line; `git mv tests/qa-loops/test-review-engine.sh tests/review-bench/test-review-engine.sh`; edit its `ENGINE=` line and header comment; `tests/review-bench/run-case.sh` codex branch path; `tests/review-bench/README.md` running paragraph.
+
+Milestone 4, consumers and history. `implement-worker-protocol.md`'s "(external engine + fix waves)". Revision Notes on the three specs named in Acceptance 8.
+
+Milestone 5, validation. `test-skill-entrypoint.sh`: the two placeholder lists; new assertions per Acceptance 1, 2, 5. `test-review-dispatch.sh`: the engine-binding assertions replaced per Acceptance 3, plus the invalid-level refusal. The smoke of Acceptance 12: a prompt file and a spawn script under `/tmp/smoke-review-lane/`, `sminos spawn smoke-review-lane … --worktree smoke-review-lane --model opus`, the result file polled. Run the suites in Acceptance 9, the sweep in Acceptance 11, `scripts/bump-version.sh minor`.
+
+## Concrete Steps
+
+Run from the worktree root.
+
+    git mv skills/qa-loops/scripts/review-engine.sh tests/review-bench/review-engine.sh
+    git mv tests/qa-loops/test-review-engine.sh tests/review-bench/test-review-engine.sh
+    ls skills/qa-loops/scripts                      # expect: review-dispatch.sh
+
+    tests/qa-loops/test-skill-entrypoint.sh
+    tests/qa-loops/test-bootstrap-parity.sh
+    tests/qa-loops/test-review-dispatch.sh
+    tests/review-bench/test-review-engine.sh
+    tests/issue-tracker/test-protocol-content.sh
+    scripts/lint-shell.sh
+
+    grep -rn -E 'review-engine|CODEX_REVIEW' skills agents scripts tests/qa-loops tests/issue-tracker tests/claude-code CLAUDE.md README.md docs/INSTALL-doperpowers.md
+    # expect no output
+
+    bash /tmp/smoke-review-lane/spawn.sh            # the smoke seat; result at /tmp/smoke-review-lane/{log,result.json}
+    skills/sminos/scripts/sminos retire smoke-review-lane
+
+    scripts/bump-version.sh 7.93.0                  # the script takes the version, not a bump kind
+
+## Decision Log
+
+- Decision: The Reviewer worker runs doperpowers:review-code's lane from its own session, through the lane's workflow, instead of a script that wraps the lane.
+  Rationale: A Reviewer worker is a main session and has the Workflow tool; a wrapper script would need a headless `claude -p` around the workflow, which the bench found cannot reliably wait on a background workflow. Every other consumer of the lane runs it in-session.
+  Rejected: a new `review-engine.sh` that shells to `claude -p`; keeping a script boundary "for testability" — the seam that remains testable is the dispatcher's bindings, and those are tested.
+  Date/Author: 2026-09-13
+
+- Decision: The workflow at every level — one reviewer at low/medium/high, the panel at xhigh/max — rather than direct Agent dispatch of the rung agents at the single-reviewer levels.
+  Rationale: The spec review found that a directly dispatched reviewer keeps Bash and would run in the worker's shared checkout, dropping the read-only boundary the codex sandbox enforced; the workflow isolates every lane in a fresh worktree when no `repo` is passed, and returns one structured result the failure rule can read. Reverses this spec's first draft, which dispatched the rung agents directly and isolated only the panel.
+  Rejected: the worker cutting scratch worktrees by hand and telling each agent to `cd` there — prose-enforced isolation, and a second call shape.
+  Date/Author: 2026-09-13
+
+- Decision: The review level is the highest of the spec's verification rung, the operator's `REVIEW_LEVEL` floor (default medium), and review-code's size rule; the worker may raise it one rung for a risk-surface hit or whole-branch scale and never lowers a rung the spec named.
+  Rationale: The verification call is the author's stakes call, made before the work; the operator's floor is the repo's; the size rule is the lane's own default. The old knob — a codex model and effort plus a 1–4 run count — maps onto none of these.
+  Rejected: carrying `CODEX_REVIEW_MODEL`/`EFFORT` over as a model override — review-code pins models per level on purpose ("you never choose them").
+  Date/Author: 2026-09-13
+
+- Decision: A sweep whose reviewer could not inspect the range is a failed sweep, read from the result's verdict and explanation, and routes through the existing outage path.
+  Rationale: The codex engine's fail-closed sandbox check answered an observed production failure (22 fabricated clean runs); the native lane has no sandbox log, so the check moves to the field the reviewer rubric already fills — the verdict's justification from what was examined. Without it an unavailable inspection could read as "no blockers" and satisfy the merge gate.
+  Rejected: trusting `coverage: ok` alone (the workflow marks a lane `ok` whenever it returns a findings array, empty included).
+  Addendum (branch review): the explanation check applies at single-reviewer levels only — the panel's explanation is workflow-generated and would fail it on every clean run; `interrupted` is the panel's failure signal. The fallback's outage path is entered by the sweep alone; a lensed call that will not launch is a recorded lensed failure.
+  Date/Author: 2026-09-13
+
+- Decision: The compliance audit stays concurrent with the engine; a result that lands before the audit is written waits, by protocol discipline.
+  Rationale: The codex path's file indirection gave the audit-before-findings order structurally; a background Workflow's completion notification carries its result into context when it lands, so the order now rests on the worker. Serializing (audit first, then dispatch) was rejected: the loop's design chose concurrency deliberately (its manual is tested not to say "before the engine runs"), and the direction that measurably weakened a review — spec policy reaching the correctness reviewer — is fully preserved by the brief.
+  Date/Author: 2026-09-13
+
+- Decision: "Engine" stays the name of the correctness-review role, START ENGINE stays the section name, and `ENGINE-UNAVAILABLE` stays the outage marker.
+  Rationale: The dispatcher's outage streak, the sweep's re-dispatch verdict, the manual's cap table, and the qa-loops suites all key on the marker; the role is unchanged, only its player. A rename would touch every one of them for no behavior.
+  Rejected: `REVIEW-UNAVAILABLE` and "START REVIEW".
+  Date/Author: 2026-09-13
+
+- Decision: Lensed fan-out survives at single-reviewer levels (one to three extra calls with `lens`); at panel levels the worker adds no lenses.
+  Rationale: The lens cell is bench-validated (`tests/review-bench/results/2026-07-28-pr752-lenscell/`); the workflow has the argument. The panel's deriver and verifier already own lenses and dedup.
+  Date/Author: 2026-09-13
+
+- Decision: `review-engine.sh` and its hermetic suite move to `tests/review-bench/`; codex-companion is untouched.
+  Rationale: The bench's `--engine codex` is the script's only consumer after the port, and its scored codex baselines are evidence the lane design cites. The lane design already schedules the codex panel's deletion as a later follow-on, after the native lane has carried real reviews; this port is what lets it carry them on the board.
+  Rejected: delete the script now (loses the re-runnable baseline); leave it in `skills/qa-loops/scripts` unused (a loaded skill carrying a dead path).
+  Date/Author: 2026-09-13
+
+- Decision: This reverses the 2026-07-12 mandate "the reviewer is codex-only" (`2026-07-12-native-review-recovery-design.md`).
+  Rationale: The human's direction of 2026-09-13 ("go ahead and do the qa loop porting"), after the lane design of 2026-09-09 moved every other review onto the native lane and recorded this port as its follow-on. The 2026-07-12 mandate answered a Claude-subagent fallback that reviewed on Claude models; the native lane reviews on the same GPT models through the gateway, so the cross-model second opinion that mandate protected is kept.
+  Date/Author: 2026-09-13 (human partner)
+
+- Decision: Verification for this work: one independent spec review by `doperpowers:adversarial-reviewer` in the background during execution; a live smoke of the workflow in a real background seat; branch review at `doperpowers:reviewer-high` (the loop is deployed and owns the merge path).
+  Date/Author: 2026-09-13
+
+## Surprises & Discoveries
+
+- Observation: The spec review's first finding overturned the draft's central mechanism. Direct Agent dispatch looked like the lighter shape, but the registered reviewer agents exclude only the mutating tools — Bash stays — and the worker runs under `--permission-mode auto`, so a reviewer's inspection command would have run unsandboxed in the worker's shared checkout. The workflow already carried the isolation (`isolation: 'worktree'` on every lane without `repo`), which made "workflow at every level" both safer and simpler.
+  Evidence: `agents/reviewer-medium.md:7` (`disallowedTools: Edit, Write, NotebookEdit, Agent`); `skills/review-code/workflows/code-review.js:89–92`.
+
+- Observation: The workflow's `coverage` marks a lane `ok` whenever it returns a findings array, empty included, so it cannot by itself tell "inspected and found nothing" from "could not inspect and said nothing". The failure rule reads the verdict's `explanation` instead.
+  Evidence: `skills/review-code/workflows/code-review.js:154–156`.
+
+- Observation: A background task's completion notification delivers the task's result inline. The audit-before-findings order the codex file boundary provided now depends on the worker's discipline, and the protocol says so.
+  Evidence: this session's own spec-review notification arrived as a `<task-notification>` carrying the full findings.
+
+- Observation: The dispatcher's "unrendered placeholder fails closed" test runs the script from a copied skill tree with no `review-code` sibling; a `cd`-probed `REVIEW_CODE_DIR` died there with the wrong error. Deriving the path as a string, the way `IMPLEMENT_PROTOCOL_FILE` is, is what the existing seams do.
+  Evidence: `tests/qa-loops/test-review-dispatch.sh:552`, first run's failure "cd: …/alt-skills/qa-loops/../review-code: No such file or directory".
+
+- Observation: Two assertions in `tests/qa-loops/test-review-dispatch.sh` ("pins the QAgent model to opus") were already red on `main` before this change: they anchored `' opus$'` on the mock spawn line, and the spawn line has carried `--role QAGENT --stamp …` after the model pin since the provenance stamp landed. Re-anchored on `--model opus( |$)` in this PR, since the suite is part of its acceptance.
+  Evidence: the suite run from the `main` checkout reports the same two failures and nothing else.
+
+- Observation: The production seat shape works end to end. A `claude --bg` seat spawned by `sminos spawn … --worktree smoke-review-lane` called the workflow at level low with no `repo` argument, ended its turn ("waiting for the completion notification — no polling"), and was re-invoked by that notification 21 minutes later; it wrote the result object and `SMOKE-DONE incorrect 2 ok`. The reviewer ran in `.claude/worktrees/wf_450cf310-da9-1` (`spawnedWithWorktree: true`), which the workflow removed afterwards; the seat's own checkout was untouched.
+  Evidence: `/tmp/smoke-review-lane/log`; the workflow journal's `result` record; the seat transcript (Workflow call 08:48:05Z, turn end 08:48:14Z, wake and file write 09:09:43–47Z).
+
+- Observation: The reviewer spent most of those 21 minutes running the repository's own test suites from its scratch worktree — the sminos suite, the issue-tracker suites, lint, then the board-api runners one by one — before reading PR evidence with `gh`. The codex engine's read-only sandbox would have failed those runs fast; the native reviewer can run them, and on this repo they are slow. The protocol's 45-minute bound is therefore a real ceiling on a large range, not a formality.
+  Evidence: `ps` over the run showed `test-board-sweep.sh`, `test-register-transition.sh`, `test-sweep-resume.sh`, `test-run-self-location.sh` under `wf_450cf310-da9-1` between 17:54 and 18:06 local; the result's explanation opens with "The sminos, board-protocol, dispatch, sweep, and Claude skill suites passed".
+
+- Observation: The smoke's range was wider than intended — the seat's worktree HEAD (`e9159b7b`, the checkout snapshot) against `main` covered #139, #141, and this spec — and the reviewer's two findings land on #138's files, not this PR's: `skills/issue-tracker/references/ticket-gate.md` still says "when the work is several units" (a unit count where the route should key the shape, the same class the #138 branch review fixed elsewhere), and `archive/execplan/SKILL.md`'s relative links did not move with the file. Both are recorded as residue for a direct follow-up.
+  Evidence: `/tmp/smoke-review-lane/result.json` findings `reviewer#1` (P2) and `reviewer#2` (P3).
+
+## Outcomes & Retrospective
+
+Achieved against the purpose: no codex process remains in the review path. The board's Reviewer worker runs doperpowers:review-code's workflow from its own session at every level, each reviewer in a fresh worktree; the level is derived from the ticket's spec, the operator's `REVIEW_LEVEL` floor, and the diff's size, so a spec's verification call now reaches the board's review as the rung it names; the fail-closed check reads the result; the outage marker, the audit, JOIN, the wave board, and the caps are unchanged. `review-engine.sh` and its suite live in the bench. Every acceptance item holds on the final tree, including the live smoke in the production seat shape.
+
+What remains: the two findings the smoke's reviewer raised on #138's files (ticket-gate's "several units" wording; the archived skill's relative links) — direct follow-ups; the review-code follow-on to surface panel finders' explanations so a finder that could not inspect is visible at panel levels; the reviewer agents' habit of running a repository's slow test suites, which the lane's prompt could temper when CI covers them; the codex panel's deletion, still the lane design's own follow-on; the smoke seat's worktree `.claude/worktrees/smoke-review-lane` (branch `worktree-smoke-review-lane`), left for the human to remove.
+
+Lessons. (1) The spec review earned its place again: its first finding replaced the port's central mechanism (direct Agent dispatch would have dropped the sandbox boundary the codex engine enforced; the workflow already carried the isolation). Reading the agent definition's tool list — Bash stays — was the whole argument. (2) A rule ported from one engine to another has to be checked against what the new engine actually emits: the "explanation names nothing examined" check was right for a reviewer's prose and wrong for the panel's generated summary, which the branch review caught by reproducing it against stub reviewers. (3) The smoke was worth its 21 minutes: it proved the `--bg` seat wakes on a Workflow completion, that the workflow's worktree isolation holds from a linked worktree, and it exposed the reviewer's test-running habit, which nothing hermetic could have shown. (4) Writing this change as a one-unit spec kept three review rounds and a smoke test resumable from the Progress list without re-reading the transcript.
+
+## Revision Notes
+
+- 2026-09-13: created from the human partner's direction to port the review loop onto the native lane, after the state-of-the-repo check that found qa-loops the last codex consumer in the review path.
+- 2026-09-13: revised after the independent spec review — the engine runs through the workflow at every level (isolation per reviewer), a reviewer that could not inspect is a failed sweep, a result that lands before the audit waits, the smoke in a real background seat joins the acceptance (12), `REVIEW_CODE_DIR` is a derived path rather than a probe; four Decision Log entries added or revised, four Surprises recorded.
+- 2026-09-13: revised after the high-rung branch review — the fail-closed explanation check is scoped to single-reviewer levels (the panel's explanation is workflow-generated; `interrupted` is its failure signal), and only the sweep's launch failure enters the outage path; two assertions added.
+- 2026-09-13: finished — the smoke in the production seat shape passed (Acceptance 12), its observations and the reviewer's two out-of-scope findings recorded under Surprises, Progress closed, retrospective written; PR opened against `board-seams`.
+- 2026-09-16 (rebased onto main after #141 merged, v7.93.0): the PR's base branch `board-seams` landed, so this branch was re-merged onto `main` and re-bumped above it. The branch already carried board-seams through its round-three head, so the only new content from that line is the PR body's `## Unresolved Review Findings` carrier, which TRIAGE gained as a self-contained paragraph — orthogonal to the engine section this spec rewrites. Main's dependency yield touches the implement protocol's park paragraph, not the review clause this spec edits there. Main's reviewer agents now block `Skill` as well as `Agent` in frontmatter: that constrains a reviewer agent, while START ENGINE calls the workflow from the Reviewer WORKER's own session, which is not one — the port's mechanism is unaffected, and the block reinforces the same no-recursion boundary the workflow already drew.

@@ -6,8 +6,9 @@ The inverse-symmetric counterpart of the execution loop: where a worker
 turns a ticket into a PR, a **Reviewer worker** turns a PR into a confident
 merge. Every non-draft PR opened in an adopting repo gets a fresh-context
 background seat (spawned through the sminos CLI) that runs TWO review tracks at
-once: the native Codex engine (the doperpowers:codex-companion runtime via
-review-engine.sh, in the background) reviews pure code correctness, while
+once: the review engine — doperpowers:review-code's lane, its rung agents or
+its panel dispatched by the worker in the background — reviews pure code
+correctness, while
 the worker itself audits
 executor protocol/spec compliance against the linked ticket. The worker
 never fixes anything: it triages the joined findings on its own judgment
@@ -27,7 +28,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 | piece | what |
 |---|---|
 | `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` seat (`sminos spawn`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
-| `scripts/review-engine.sh` | the ONE native-review invocation, pure correctness: `--base` + `--out`, env recipe only — no ticket/spec input of any kind. Drives the doperpowers:codex-companion runtime (per-run effort via its with-effort wrapper). The worker may run it 1–4× in parallel per round (its judgment, by diff scale); extra runs carry `CODEX_REVIEW_LENS` — a diff-derived structural focus mandate that routes the run through the `adversarial-review` verb as its focus text |
+| doperpowers:review-code | the review engine, pure correctness — no ticket/spec input of any kind. The worker runs it from its own session through the lane's workflow (`workflows/code-review.js`, pinned by the `REVIEW_CODE_DIR` binding) at a level it derives from the ticket's spec (its verification entry), the dispatcher's `REVIEW_LEVEL` floor, and the diff's size: one registered reviewer (`doperpowers:reviewer-low|medium|high`) at the single-reviewer levels, the multi-lens panel at xhigh/max; every reviewer works in a fresh worktree at the reviewed head. At a single-reviewer level the worker may add 1–3 lensed calls per round, each carrying a diff-derived structural focus mandate (`lens`) |
 | `SKILL.md` | the Review Worker Protocol — invoked by every Reviewer worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
 | `references/pr-review-dispatch.yml` | GH workflow template: PR events → self-hosted runner → dispatch script. No checkout, no token permissions |
@@ -129,23 +130,28 @@ produce evidence, the review side verifies the claims were real.
 ## Review engine (pure correctness) + worker audit (compliance)
 
 Review responsibility is split between two concurrent tracks with one owner
-each. The ENGINE — the native codex review run by
-`scripts/review-engine.sh` through the doperpowers:codex-companion runtime
-(plain run = the non-steerable `review` verb; lensed run = the
-`adversarial-review` verb with the lens as focus) — receives no ticket,
-spec, or policy input of
-any kind: coupling spec policy into the native reviewer measurably weakened
-its correctness review, so the interface is `--base` + `--out` plus the
-optional `CODEX_REVIEW_LENS` env — a structural focus mandate the worker
-derives from the diff itself (never from the ticket/spec) when it fans out
-to 2–4 parallel runs on a large diff; a bench-validated lens recovered a
-confirmed authz defect two plain runs had missed
-(`tests/review-bench/results/2026-07-28-pr752-lenscell/`). The worker
-starts the round's runs in the background, and each returns a compact
-structured verdict file; the PR diff never enters the worker's own
-context. A hung engine (no result within 45 minutes) is killed and treated
-as a failure; a failed lens-free sweep fails the round (it is the required
-whole-range review), while failed lensed runs are merely recorded.
+each. The ENGINE — doperpowers:review-code's lane, run through its workflow:
+one registered reviewer agent (`doperpowers:reviewer-low|medium|high`, GPT
+models through the local gateway) at the single-reviewer levels, the
+multi-lens panel at xhigh/max, every reviewer in a fresh worktree at the
+reviewed head — receives no ticket, spec, or policy input of any kind:
+coupling spec policy into the correctness reviewer measurably weakened its
+review, so a call carries the pinned range (merge base and head) and at
+most a lens — a
+structural focus mandate the worker derives from the diff itself (never from
+the ticket/spec) when it adds 1–3 lensed calls on a large diff; a
+bench-validated lens recovered a confirmed authz defect two plain runs had
+missed (`tests/review-bench/results/2026-07-28-pr752-lenscell/`). The level
+is the highest of the rung the ticket's spec names in its verification
+entry, the dispatcher's `REVIEW_LEVEL` floor, and review-code's size rule;
+the worker may go one rung up for a risk-surface hit and never below the
+spec's rung. The worker dispatches the round in the background and saves
+each result to a findings file as it opens it, after its own audit is
+written; the PR diff never enters the worker's own context. A hung run (no
+result within 45 minutes) is stopped and treated as a failure; a failed
+sweep — `interrupted`, or a `correct` verdict from a reviewer that could
+not inspect the range — fails the round (it is the required whole-range
+review), while failed lensed runs are merely recorded.
 
 The WORKER meanwhile audits executor protocol/spec compliance itself,
 read-only, and records the audit BEFORE reading engine output: the issue
@@ -159,11 +165,13 @@ PROTOCOL BLOCKER (authority gap → needs-human; parks confidence, not
 progress), SPEC FINDING (fix-required; waves with native blockers), and
 AUDIT NOTE (trail-only). The two streams JOIN before triage.
 
-There is NO second engine: on engine failure the worker retries twice, then
+There is NO second engine: when the lane is unavailable (the gateway
+refusing, agents dying before they report) the worker retries twice, then
 posts the trail comment, leaves the ticket in-review, and ends its turn
 with the `ENGINE-UNAVAILABLE` marker — the sweep re-dispatches on seeing it
 (capped; see the outage cap above). `needs-human` is never written for an
-infra outage. The review-trail comment names the engine that reviewed.
+infra outage. The review-trail comment names the level and every dispatch
+that reviewed.
 
 ## The orchestrator and fix waves
 
@@ -227,10 +235,13 @@ self-review bias: the entity that grades the fixes never wrote them.
    workflow env. Flip it to `true` only after the trail comments show the
    merge verdict judging as you'd want.
 7. Cron the sweep: `review-dispatch.sh --sweep` every ~30 min.
-8. The `codex` CLI installed and authed (`codex login`) on the runner
-    machine — it is the review engine inside every worker. The default
-    worker route is plain Claude models and needs nothing else; setting
-    `WORKER_ENGINE=codex` (env) or labeling `engine:codex` opts a
-    repo/PR onto the clodex gateway route instead, which additionally
-    needs the gateway settings (`~/.claude/clodex-settings.json`,
-    override via `CLODEX_SETTINGS`) and the local gateway running.
+8. The local gateway running on the runner machine — the review engine
+    inside every worker is doperpowers:review-code's lane, whose reviewer
+    agents are pinned to GPT models served through it (see that skill).
+    Set `REVIEW_LEVEL` in the dispatcher's environment to raise the level
+    floor for the repo (default medium). The default worker route is plain
+    Claude models and needs nothing else; setting `WORKER_ENGINE=codex`
+    (env) or labeling `engine:codex` opts a repo/PR onto the clodex gateway
+    route for the worker itself, which additionally needs the gateway
+    settings (`~/.claude/clodex-settings.json`, override via
+    `CLODEX_SETTINGS`).

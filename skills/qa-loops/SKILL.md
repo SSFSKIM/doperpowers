@@ -51,7 +51,7 @@ variant of this protocol you run:
   `{{BASE_REF}}`, `{{HEAD_REF}}` and `{{HEAD_SHA}}` appear — `{{BASE_REF}}` is
   the BRANCH NAME `baseRefName`, never `origin/` anything: this protocol adds
   the remote itself wherever it needs the tracking ref your fetch just moved —
-  above all in START ENGINE's `--base origin/{{BASE_REF}}`.
+  above all in the base every START ENGINE call names, `origin/{{BASE_REF}}`.
   The board carries no PR base, so
   dispatch cannot know it: a stacked PR onto an integration branch reviewed
   against the default branch is the whole stack, not this PR's work. Your
@@ -136,80 +136,115 @@ comment (its GitHub timestamp is the authorization time) — or, on a
 `plan: <path>@<sha>` ticket, the transition comment that MINTED the pin
 instead (`[board] ready-for-implementer:` for a handoff, `[board]
 in-progress: plan-execution:` for an Architect's build edge; when both
-exist, the later one carries the pin in force) — and any human answers
-posted while the ticket was parked. Until JOIN, stay read-only in
+exist, the later one carries the pin in force), and on a `plan: pre-spec`
+ticket an Architect built itself, its build-edge comment (`[board]
+in-progress: direct:`) — and any human answers posted while the ticket
+was parked. Whichever comment that is, it is the ANCHOR every
+timestamp rule below reads. Until JOIN, stay read-only in
 this shared worktree: no test runs, no builds — the engine may be running
 its own.
 
 ## START ENGINE
 
-REVIEW ENGINE — the native codex review engine (the
-doperpowers:codex-companion runtime, driven through {{REVIEW_ENGINE}}),
-run as a PURE correctness review: it receives no ticket or spec input of
-any kind.
-Ticket/spec compliance is YOUR audit, not the engine's. The engine call
-is a TOOL invocation, not a nested agent. Never add
---dangerously-bypass-approvals-and-sandbox / --yolo to anything.
+REVIEW ENGINE — doperpowers:review-code's lane, run from this session
+through its workflow, `{{REVIEW_CODE_DIR}}/workflows/code-review.js`:
+one registered reviewer agent (`doperpowers:reviewer-low` / `-medium` /
+`-high`, GPT models through the local gateway) at the single-reviewer
+levels, the multi-lens panel with its binding verifier at xhigh and max.
+It runs as a PURE correctness review: a call carries the pinned range
+and, at most, a diff-derived lens — no ticket or spec input of any kind.
+Ticket/spec compliance is YOUR audit, not the engine's. Every reviewer
+the workflow dispatches works in a fresh worktree at the reviewed head,
+so nothing it runs can touch this checkout — pass no `repo` argument.
+You are a main session, so the Workflow tool is yours; a fixer subagent
+never has it.
 
 1. Run `mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}.XXXXXX"`
    once. Treat the returned path as `<review-tmp>` for this invocation and
    remove that directory before ending the turn —
    EXCEPT a needs-human park: wave boards live there and the resumed
    turn reads them.
-2. Judge the diff shape and choose this round's engine-run count — most
-   PRs need exactly ONE run; a substantial diff may warrant 2–3 parallel
-   runs, whole-branch scale up to 4. From the worktree root, start each
-   run IN THE BACKGROUND (round N, run k uses findings-rN-k.txt; the
-   empty lens assignments are deliberate — they shield the plain run
-   from any inherited host value):
+2. Pin the range and pick the level. `mb=$(git merge-base
+   origin/{{BASE_REF}} HEAD)` and `head=$(git rev-parse HEAD)` go into
+   every call; `head` is the reviewed head the merge pins later. The
+   level is the highest of three signals, ordered low < medium < high <
+   xhigh < max:
+   - the rung the spec behind the pin names — open the pinned file (or
+     the plan's `Spec:` header) and read its Decision Log's verification
+     entry: "branch review at reviewer-<rung>", or a panel level. On the
+     board this loop IS that review. A ticket with no spec (a pre-spec
+     build, a ticketless PR) contributes nothing here;
+   - `{{REVIEW_LEVEL}}`, the operator's floor for this repo;
+   - review-code's size rule: xhigh once the diff is panel-sized (about
+     20+ files or a couple thousand changed lines).
+   A risk-surface hit (the manifest in your dispatch prompt marks
+   validated hot paths) or whole-branch scale is your reason to go one
+   rung up. Nothing lowers a rung the spec named: that call was made
+   from the work's stakes, before the work.
+3. Dispatch the round IN THE BACKGROUND and keep the task handles
+   (round N, run k lands in `<review-tmp>/findings-rN-k.json` at JOIN).
+   Every run is one call:
 
-   CODEX_REVIEW_MODEL={{CODEX_REVIEW_MODEL}} \
-   CODEX_REVIEW_EFFORT={{CODEX_REVIEW_EFFORT}} \
-   CODEX_REVIEW_LENS= CODEX_REVIEW_LENS_FILE= \
-     {{REVIEW_ENGINE}} --base origin/{{BASE_REF}} \
-     --out <review-tmp>/findings-r1-1.txt
+       Workflow({ scriptPath: "{{REVIEW_CODE_DIR}}/workflows/code-review.js",
+                  args: { level: "<level>", base: "origin/{{BASE_REF}}",
+                          baseCommit: "<mb>", headCommit: "<head>" } })
 
-   A single run takes no lens. When fanning out, keep one run lens-free
-   as the broad sweep and give each other run a LENS: a structural focus
-   mandate you derive from the diff itself (e.g. actor/authz assumptions
-   in the changed routes; ordering/atomicity of the new writes;
-   consumers of a changed field) — never ticket/spec content. The repo's
-   risk-surface manifest (in your dispatch prompt) marks validated hot
-   paths: a diff touching one is a strong lens candidate. Write each
-   mandate to `<review-tmp>/lens-<k>.txt` with your file-writing tool
-   and set `CODEX_REVIEW_LENS_FILE=<review-tmp>/lens-<k>.txt` on that
-   run's command — never inline the mandate text into a shell command
-   (it is generated prose; interpolation is an injection surface). A
-   lensed run narrows hard — a scalpel beside the sweep, not a second
-   sweep; it runs the engine's challenge-review rubric along the lens,
-   so its findings may question structure and assumptions, not only
-   defects — triage them with the same judgment. Use your harness's background execution for these commands and
-   keep the task handles. Leave them running and the findings unread —
-   the protocol's COMPLIANCE AUDIT runs while the engine reviews, and
-   its JOIN step is the only place engine output is read.
-3. At JOIN: wait for all of the round's background tasks. Bound the
-   wait — an engine task that has neither completed nor failed
-   45 minutes after start is hung: kill it. The lens-free sweep is the
-   round's required whole-range review: if IT failed, the round failed
-   (the fallback below owns retries and the outage path) — only lensed
-   runs' failures are tolerable. When the sweep succeeded, proceed on
-   the successful outputs and record any failed lensed runs in the
-   review trail.
-4. Read the findings file(s) — the round's findings are their union;
+   The lens-free call is the round's required whole-range sweep — most
+   PRs need exactly it. At a single-reviewer level, a substantial diff or
+   a risk-surface hit warrants one to three more calls, each adding
+   `lens: "<mandate>"` — a structural focus you derive from the diff
+   itself (actor/authz assumptions in the changed routes; ordering and
+   atomicity of the new writes; consumers of a changed field), two plain
+   sentences at most, never ticket/spec content. A lensed run narrows
+   hard — a scalpel beside the sweep, not a second sweep — and its
+   findings may question structure and assumptions, not only defects;
+   triage them with the same judgment. At xhigh and max the panel
+   derives its own lenses and runs its own verifier — add none.
+
+   Leave the runs going and their results unread — the protocol's
+   COMPLIANCE AUDIT runs while the engine reviews, and its JOIN step is
+   the only place engine output is read. A run that completes while your
+   audit is still unwritten waits: the audit is your independent judgment
+   of the ticket and the PR, so finish and write it before you open any
+   result.
+4. At JOIN: wait for all of the round's background tasks. Bound the
+   wait — a run that has neither completed nor failed 45 minutes after
+   dispatch is hung: stop it and count it failed. Save each result object
+   to its findings file as you open it; the wave board and the trail cite
+   those files. The sweep — the lens-free call — is the round's required
+   whole-range review, and it FAILED when its verdict is `interrupted`
+   (its `coverage` names the lane that died; at panel levels this is the
+   workflow's own signal for a lost sweep or verifier) or, at a
+   single-reviewer level, when its verdict is `correct` on an
+   `explanation` that names nothing the reviewer examined or says the
+   reviewer could not inspect the range — a reviewer whose tools failed
+   must never read as a clean review. The panel's explanation is
+   assembled by the workflow, not written by a reviewer: a clean panel
+   whose explanation notes that every finder returned zero findings is a
+   prompt to re-check the pinned range, not an outage. A failed sweep
+   fails the round (the fallback below owns retries and the outage
+   path); only lensed runs' failures are tolerable. When the sweep
+   succeeded, proceed on the successful results and record any failed
+   lensed runs in the review trail.
+5. Read the findings file(s) — the round's findings are their union;
    overlapping findings collapse into one triaged item (keep the
    highest-priority duplicate as the anchor).
    Correctness review of the whole range is the engine's job; your own
    reading serves the audit and the triage, not a second review.
 
-The verdict is YOURS, derived from the findings: approve when no
-critical/high finding remains unresolved; needs-attention otherwise. On
-RE-REVIEW rounds the same run-count judgment applies — after a small fix
-wave a single plain run is the norm — with fresh --out files, again in
-the background.
+The verdict is YOURS, derived from the findings: approve when no P0 or
+P1 finding remains unresolved (the `priority` field — P2 and P3 are the
+non-blocker classes); needs-attention otherwise. On RE-REVIEW rounds
+the same level and the same fan-out judgment apply — after a small fix
+wave the single lens-free call is the norm — with fresh findings files,
+again in the background.
 
-ENGINE FALLBACK — there is no second engine; the reviewer is codex-only.
-If the engine script fails (codex missing — rc 127, auth failure, or
-API errors), retry twice with a short backoff. Still failing:
+ENGINE FALLBACK — there is no second engine; the lane is the gateway's.
+If the sweep's call errors instead of returning a task, or the sweep
+fails as step 4 defines (the gateway refusing, a reviewer lost before it
+reports, a reviewer that could not inspect), retry it twice with a short
+backoff; a lensed call that will not launch is recorded as a failed
+lensed run and never ends the review. Still failing:
 - post the review-trail comment recording the outage ("engine
   unavailable: <error>");
 - touch NO board state — the ticket stays in-review. An infra outage is
@@ -244,7 +279,7 @@ sentinel adds nothing — the issue body is the plan). Audit the PR
 against the pinned plan plus the issue body together.
 
 Timestamp drift: compare the issue body's last-edited time against the
-`[gate] pass` timestamp. Edited after the gate → reconstruct the at-gate
+anchor's timestamp (ORIENT). Edited after it → reconstruct the at-anchor
 body from GitHub edit history (gh api graphql: Issue.userContentEdits) and
 audit against THAT; a material post-gate spec change the implementation
 never acknowledged is human-grade.
@@ -257,8 +292,12 @@ time is the transition comment that MINTED that pin: `[board] ready-for-implemen
 for a handoff, `[board] in-progress: plan-execution:` for an Architect
 that built the plan itself. When both exist the later one carries the pin
 in force. Every rule in this audit keyed to the gate timestamp reads that
-comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT and
-carries a real `[gate] pass` — anchor on it as usual.
+comment's timestamp instead. A `plan: pre-spec` ticket ran DIRECT: built
+by an Executor, it carries that Executor's `[gate] pass` — anchor on it as
+usual; built by an Architect whose build edge minted the sentinel, anchor
+on that comment (`[board] in-progress: direct:`) — the Architect's own
+`[gate] pass` is the architect-lane variant, taken before its design work,
+and the build edge is where it ruled the body sufficient to build.
 
 The audit answers four questions: was the issue substantively ready for
 the implemented scope (settled scope, requirements, acceptance, and
@@ -308,11 +347,11 @@ itself a finding.
 
 ## JOIN
 
-Wait for ALL of the round's background engine tasks per the engine
-block's bound; a failed lens-free sweep fails the round (the fallback
-block owns retries and the outage path — lensed-run failures alone do
-not). Read every successful run's compact findings file — the round's
-findings are their union — and your already-written audit together.
+Wait for ALL of the round's background engine dispatches per the engine
+block's bound; a failed sweep fails the round (the fallback block owns
+retries and the outage path — lensed-run failures alone do not). Read
+every successful run's findings file — the round's findings are their
+union — and your already-written audit together.
 From here on, command-backed evidence checks may run whenever nothing
 else holds the worktree — never while an engine round or a fixer wave
 is live.
@@ -363,6 +402,16 @@ substance and route.
   never refute from the finding text alone. The rebuttal comment on the
   PR cites the fixer's refuting evidence.
 
+A PR body's `## Unresolved Review Findings` section carries findings the
+build's own reviews raised and left unfixed; their record (the build's
+ledger) never reaches you, so that section is how they arrive. They are
+not new — triage them with the round's findings, with the stated deferral
+reason as evidence: a deferral that still holds is a LOG on that reason
+(already reasoned, so it needs no departure of yours), and stakes you read
+differently wave like anything else. The body's `## Residue` is a
+different list — work for another ticket, which the session that
+dispatched the build registers — not findings for you to route.
+
 ## FIX WAVES
 
 Zero WAVE items → skip to RE-REVIEW/ESCALATE. Otherwise open
@@ -380,9 +429,10 @@ this cap (RE-REVIEW).
 
 ## RE-REVIEW
 
-After a wave that fixed anything, rerun the engine — same run-count
-judgment (a single plain run is the norm after a small wave), fresh
---out files, in the background again; max 5 engine rounds total. The
+After a wave that fixed anything, rerun the engine — same level, same
+fan-out judgment (a single lens-free dispatch is the norm after a small
+wave), fresh findings files, in the background again; max 5 engine
+rounds total. The
 engine is stateless: it WILL re-flag findings you already routed. Match
 re-flags by file and substance against your tech-debt comments and wave
 dispositions (line numbers shift after fixes). A match against a LOGGED
@@ -404,6 +454,11 @@ re-wave → fall back (wave-board.md: reset the unpushed wave to its
 wave-base), merge the engine-reviewed head exactly as if no closing
 wave had run, and LOG the residue. Findings already LOGGED by
 stated-reason departure stay LOGGED — their deferral reason stands.
+A wave that changed behavior also left the spec's `Outcomes &
+Retrospective` stale — the executor wrote it before your review, and no
+one after you will revisit it — so it rides the closing wave as one more
+item: the fixer refreshes the section, you grade and push it like any
+other.
 Severity does not
 promote exit residue to a ticket — TOO BIG is the only ticket gate at
 exit, as everywhere.
@@ -451,8 +506,9 @@ lines verbatim (add/add unions) and no hunk requires choosing one
 side's logic or authoring new logic — resolve it yourself, checking
 the resolution against BOTH parents carries only that juxtaposition.
 The resolved tree must then pass the full verification gate AND one
-lens-free engine sweep — that sweep is what closes the provenance loop
-(the resolution is itself reviewed); if it cannot run, park as usual.
+lens-free engine dispatch at the review's level — that sweep is what
+closes the provenance loop (the resolution is itself reviewed); if it
+cannot run, park as usual.
 Record the resolution in the trail and treat the resolved head as the
 reviewed head below. The moment any hunk needs a semantic choice —
 two implementations of one thing, an invariant spanning both sides,
@@ -503,13 +559,15 @@ governs it unchanged, except that positioning the worktree at the
 integration ref — and resolving the base it ranges against — is yours to
 do, as your bootstrap ordered.
 Same engine machinery — whole-range
-codex runs, lenses derived from the cross-child contracts: your worktree
-sits at the epic's integration branch and START ENGINE's
-`--base origin/{{BASE_REF}}` reviews it against the branch it merges
-into. When your dispatch prompt instead says this epic has NO aggregate
-range (its integration branch was deleted as its children merged), the
-package's per-child base/head ranges ARE the ranges — run the engine over
-them. Different entry artifact and
+dispatches, the level rule's first signal read from the epic's own spec
+(its body, or the composite spec it cites), lenses derived from the
+cross-child contracts: your worktree sits at the epic's integration
+branch and every call's base, `origin/{{BASE_REF}}`, is the branch it
+merges into. When your dispatch prompt instead says this epic has NO
+aggregate range (its integration branch was deleted as its children
+merged), the package's per-child base/head ranges ARE the ranges — one
+call per range, its `baseCommit` and `headCommit` naming that range's
+commits explicitly. Different entry artifact and
 verdict set: there are no fix waves and no merge step (the children are
 already merged; there is no branch to fix). Verdicts: clean →
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} done "<summary>"
@@ -586,9 +644,10 @@ what the contract permits separately from what the evidence shows actually ran.
 
 ## REVIEW TRAIL
 
-The review-trail comment on the PR records: engine and rounds run — for
-a fan-out round, every run (its lens mandate verbatim, or lens-free) with
-the findings it contributed, written BEFORE `<review-tmp>` cleanup; the
+The review-trail comment on the PR records: the level and the rounds
+run — every dispatch (its agent or the panel; its lens mandate verbatim,
+or lens-free) with the findings it contributed, written BEFORE
+`<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its
 bin and a one-line disposition; each wave with its per-item board
 outcomes; deferred findings inline when the tech-debt issue is "none";

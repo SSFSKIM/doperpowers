@@ -49,12 +49,22 @@ EDGE_NOTE_REQUIRED = {
     ("ready-for-implementer", "ready-for-architect"),
     ("in-progress", "ready-for-architect"),
     ("in-review", "ready-for-architect"),
+    # The dependency yield (arkho #49): a worker that finds its ticket waiting
+    # on another one records the blocked-by edge and hands the ticket back to
+    # its own queue. The note names the blocker and any banked branch.
+    ("in-progress", "ready-for-implementer"),
 }
 # Convergence-counted escalation edges: a SECOND traversal of the same
 # edge on one ticket converts to a needs-human park (board-transition
 # enforces; count resets at the last [answers] comment).
+#
+# Derived by SUBTRACTION from the note-required set, so an edge added there
+# joins the count unless it is named here. The yield is: it returns a ticket
+# to its OWN lane rather than escalating, and counting it would park the
+# second dependency a ticket ever meets — the stall arkho #49 removes.
 CONVERGENCE_EDGES = EDGE_NOTE_REQUIRED - {("in-design", "ready-for-implementer"),
-                                          ("in-design", "in-progress")}
+                                          ("in-design", "in-progress"),
+                                          ("in-progress", "ready-for-implementer")}
 # Park-return targets (E1 transition 7): written into pre-park: meta at
 # needs-human park time; board-answer returns the ticket there. Always an
 # IN-FLIGHT state — returning to a dispatchable queue would race the sweep
@@ -98,8 +108,10 @@ LEGAL = {
                               "interactive-preferred", "wontfix", "deferred"},
     # in-design: the Architect's in-flight state. Exit = transition 2/3
     # (plan handoff / down-shortcircuit / decompose-epic), the build edge
-    # (in-progress, leaf only, real plan pin required — the Architect keeps
-    # the binding and executes through doperpowers:plan-executor), or a park.
+    # (in-progress, leaf only, --plan <path>@<sha>|pre-spec required — the
+    # Architect keeps the binding and builds: a real pin executes through
+    # doperpowers:plan-executor, `pre-spec` builds from the ticket body), or
+    # a park.
     # done / in-review: EPIC-ONLY (E2 recomposition verdicts — the scoped
     # terminal-authority exception; board-transition enforces the guard).
     "in-design":             {"ready-for-implementer", "in-progress",
@@ -109,7 +121,12 @@ LEGAL = {
     "ready-for-implementer": {"in-progress", "ready-for-architect",
                               "needs-info", "needs-human",
                               "interactive-preferred", "wontfix", "deferred"},
-    "in-progress":           {"ready-for-architect", "needs-info",
+    # ready-for-implementer: the dependency yield (arkho #49) — a worker
+    # blocked by another ticket cuts the blocked-by edge FIRST, then takes
+    # this edge to hand the ticket back to its own queue; refused below
+    # unless an unfinished blocker is on record.
+    "in-progress":           {"ready-for-architect", "ready-for-implementer",
+                              "needs-info",
                               "needs-human", "interactive-preferred",
                               "in-review", "done", "wontfix", "deferred"},
     "needs-info":            {"ready-for-architect", "ready-for-implementer",
