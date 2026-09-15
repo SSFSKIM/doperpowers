@@ -38,9 +38,15 @@ PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
 # replaces an alternation that enumerated verb/noun pairs and so turned the
 # verdict on vocabulary: it accepted "reads the code" but rejected "verify
 # against the actual diff" and "judge the implementation" — the wording
-# agents/task-reviewer.md itself uses. An answer that only restates the report
-# names no artifact at all, which is what keeps this from being too broad.
-PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|review\|judge\|look at\|against\|evaluate\).*\(code\|diff\|implementation\)\|actual \(code\|diff\|implementation\)\|code itself'
+# agents/task-reviewer.md itself uses.
+#
+# Two things keep it from swinging too far the other way. "review" is NOT an
+# engagement verb here: the prompt asks about the "reviewer's" attitude, so the
+# string is present in every answer regardless of correctness, and pairing a
+# guaranteed token with a near-certain artifact noun makes the assertion
+# always-true. And the verb must come BEFORE the noun — that ordering is what
+# rejects "signs off on the implementation report without checking".
+PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|judge\|look at\|against\|evaluate\).*\(code\|diff\|implementation\)\|actual \(code\|diff\|implementation\)\|code itself'
 
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
 # before spending live model time. Fields: want|pattern variable|answer line.
@@ -85,6 +91,8 @@ match|PAT_REVIEWER_READS_ARTIFACT|trust the diff and judge the implementation on
 match|PAT_REVIEWER_READS_ARTIFACT|Read the code, do not trust the report.
 match|PAT_REVIEWER_READS_ARTIFACT|Inspect the actual implementation.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|Accept the executor's report and approve if it claims success.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer trusts the executor's report of the code changes.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer signs off on the implementation report without checking.
 FIXTURES
 
 echo "  [PASS] Assertion patterns read the chosen option and the artifact, not stray letters"
