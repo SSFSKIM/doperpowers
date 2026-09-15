@@ -1083,7 +1083,7 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   # this call. Bash restores it on return so nothing breaks today — which is
   # exactly what makes the collision worth not leaving in place.
   local meta="$DAEMON_HOME/$1.json" root wtname wtdir branch want base ahead head
-  local govern mine own via note="" dirty=""
+  local govern mine own via note="" dirty="" onbr=""
   [ -f "$meta" ] || return 0
   root="$(_meta_field "$meta" cwd)"
   wtname="$(_meta_field "$meta" worktree)"
@@ -1163,15 +1163,24 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   # rather than a proof, while a live process may still be using that tree and
   # holding its index lock.
   [ -z "$(git -C "$wtdir" --no-optional-locks status --porcelain 2>/dev/null)" ] || dirty=1
-  # A repo with no resolvable base ref leaves `ahead` at 0 and falls to the
-  # branch below, which is why that block's wording says "no commits this tick
-  # could hand you" rather than "committed nothing": here the commits may well
-  # exist, and only the yardstick is missing.
+  # NO BASE REF IS UNKNOWN, NOT ZERO. A repo whose default branch is neither
+  # `main` nor `master` and which publishes no origin/HEAD resolves nothing
+  # here; leaving `ahead` at 0 then sent a CLEAN worktree full of real commits
+  # down the silent path and lost the rescue outright. The empty string carries
+  # the difference to the gate below: the tick cannot measure this tree, which
+  # is a reason to hand it over unmeasured, not a reason to say nothing.
+  #
+  # A zero measured against a base that DID resolve is a genuine zero: an empty
+  # `base..HEAD` means every commit HEAD holds is already reachable from the
+  # base, whichever of the candidates won.
   base="$(_base_ref "$wtdir")" || base=""
-  ahead=0
+  ahead=""
   [ -z "$base" ] || ahead="$(git -C "$wtdir" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
 
-  if [ "${ahead:-0}" -le 0 ]; then
+  head="$(git -C "$wtdir" rev-parse --short HEAD 2>/dev/null)" || return 0
+  [ -z "$branch" ] || onbr=" on branch \`$branch\`"
+
+  if [ -n "$base" ] && [ "$ahead" -le 0 ]; then
     # Nothing committed AND nothing uncommitted: the worktree holds no work, and
     # a block about it would be noise in every ordinary recovery.
     [ -n "$dirty" ] || return 0
@@ -1190,7 +1199,32 @@ EOF
     return 0
   fi
 
-  head="$(git -C "$wtdir" rev-parse --short HEAD 2>/dev/null)" || return 0
+  if [ -z "$base" ]; then
+    # UNMEASURABLE, SO HANDED OVER UNMEASURED. Nothing is pushed — with no base
+    # ref "ahead" has no meaning, and a tick that cannot say what would be
+    # published should not publish. Naming the tree costs nothing and is the
+    # only thing standing between this worker and redoing the whole ticket.
+    [ -z "$dirty" ] || note="
+That worktree also holds UNCOMMITTED changes, which the tick did not touch."
+    echo "resume: the predecessor worktree $wtdir has no base ref this tick could resolve, so it cannot measure what is there; nothing pushed, and the successor is pointed at the tree" >&2
+    cat <<EOF
+
+
+---- your predecessor's worktree — UNMEASURED, do NOT assume it is empty ----
+Your predecessor's worktree ($wtdir) is at $head$onbr. This repository has no
+base ref the tick could resolve — no origin/HEAD, no origin/main, no
+origin/master, no main, no master — so it has no yardstick to say how much of
+that is new work, and it published nothing, because it cannot tell what would
+be published. The absence of a number here is not a claim that there is
+nothing:
+    git -C $(_shq "$wtdir") status
+    git -C $(_shq "$wtdir") log --oneline -20
+That worktree is a linked worktree of the repository you are in, so whatever it
+holds is ALREADY in your object store — \`git show $head\` and \`git cherry-pick\`
+reach it with no fetch at all.$note
+EOF
+    return 0
+  fi
 
   if [ -z "$branch" ]; then
     # DETACHED, WITH REAL COMMITS ON IT. Nothing is published — there is no ref
