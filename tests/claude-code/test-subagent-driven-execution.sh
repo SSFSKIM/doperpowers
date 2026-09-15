@@ -48,6 +48,11 @@ PAT_EXECUTOR_READS_SPEC_YES='Executor must read the whole spec:[^a-zA-Z<]*yes'
 # rejects "signs off on the implementation report without checking".
 PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|judge\|look at\|against\|evaluate\).*\(code\|diff\|implementation\)\|actual \(code\|diff\|implementation\)\|code itself'
 
+# The isolation prerequisite has two names: the mechanism is a worktree, and the
+# skill's own pointer to it reads "an isolated checkout (isolated-workspace.md)".
+# A correct answer that quotes the pointer never says "worktree".
+PAT_ISOLATION_PREREQ='worktree\|isolated[ -]\(checkout\|workspace\)'
+
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
 # before spending live model time. Fields: want|pattern variable|answer line.
 check_answer_patterns() {
@@ -92,6 +97,11 @@ match|PAT_REVIEWER_READS_ARTIFACT|Inspect the actual implementation.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|Accept the executor's report and approve if it claims success.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer trusts the executor's report of the code changes.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer signs off on the implementation report without checking.
+match|PAT_ISOLATION_PREREQ|An isolated checkout, described in `skills/subagent-driven-execution/isolated-workspace.md`.
+match|PAT_ISOLATION_PREREQ|- Set up an isolated git worktree on its own branch
+match|PAT_ISOLATION_PREREQ|Create an isolated workspace before the first task.
+nomatch|PAT_ISOLATION_PREREQ|No prerequisites: start on the current branch.
+nomatch|PAT_ISOLATION_PREREQ|A spec written with execspec, with a Plan of Work.
 FIXTURES
 
 echo "  [PASS] Assertion patterns read the chosen option and the artifact, not stray letters"
@@ -239,7 +249,7 @@ echo "Test 8: Worktree requirement..."
 
 output=$(run_claude "What workflow skills are required before using subagent-driven-execution? List any prerequisites or required skills." "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "worktree" "Mentions worktree requirement"; then
+if assert_contains "$output" "$PAT_ISOLATION_PREREQ" "Mentions the isolated worktree requirement"; then
     : # pass
 else
     exit 1
