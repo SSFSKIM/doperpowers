@@ -3,7 +3,8 @@
 `scripts/board-sweep.sh` is the unattended tick: every ~5 minutes it
 recovers dead workers, cancels workers on closed tickets, dispatches
 Executor workers onto ELIGIBLE tickets (cap-bounded), attaches the review
-loop to open PRs, and relays fresh `needs-human` ticket comments to the
+loop to open PRs, reports a ticket whose dependency has stopped moving, and
+relays fresh `needs-human` ticket comments to the
 parked worker that asked. It is mechanical (no model calls) and idempotent —
 overlapping or repeated ticks are safe, and all state lives in GitHub and
 the daemon registry.
@@ -101,6 +102,7 @@ actually run before trusting a cron arming.
 | `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
+| `SWEEP_STALL_DEPENDENCY_MINUTES` | 2880 (48h) | a BLOCKER unworked and silent this long parks the ticket waiting on it, `needs-human`, with the blocker and the chain in the note. The other half of the same doctrine as the API board's `DEPENDENCY_STALL_MS`; raise it on a board with a weekly human cadence. A dependency CYCLE is reported at once — it needs no clock |
 | `BOARD_STALL_ATTEMPTS` | 3 | *api binding.* Lifetime nudges per run for a worker whose turn died on a harness error (a 429, a hit usage limit, a 529). Spent, the tick ENDS that run — the ticket returns to needing-resume and the resume phase's successor path takes over |
 | `BOARD_STALL_WINDOW_MIN` | 15 | *api binding.* Minutes to wait before the first nudge when the error states no reset time, and between nudges always |
 | `BOARD_STALL_MAX_WAIT_MIN` | 360 | *api binding.* Ceiling on a stated reset time the tick will WAIT for. A weekly limit resets days out; honouring it would renew the lease and hold the ticket silently for all of them, so past the ceiling the ordinary window applies, the ladder runs out, and the outage reaches a human through `BOARD_STALL_CYCLES` below |

@@ -131,9 +131,13 @@ on record — so a yield can never hand a ticket straight back into the
 same wall. It also ends the run, which is why the edge cannot wait until
 after it. The board re-surfaces the ticket when its blockers land — the
 unblock sweep in gh mode, the claim predicate on the API board —
-which no park state does. (`ready-for-architect` instead, by your
-judgment of the birth rule, when the work needs designing rather than
-waiting.)
+which no park state does, and it BOUNDS the wait when they never land: a
+blocker that goes unworked and silent past the dependency threshold, or a
+ring of blockers that can never resolve, parks the waiting ticket
+`needs-human` with the blocker and the chain in its note (the sweep's
+STALL pass in gh mode, the reconciler's on the API board).
+(`ready-for-architect` instead, by your judgment of the
+birth rule, when the work needs designing rather than waiting.)
 (`blocked` was retired in v8: its meaning was absorbed by `needs-human`;
 lint names any legacy label with the migration FIX.)
 

@@ -110,7 +110,11 @@ particular, waiting on other tickets is never a park state there —
 dependencies are edges: cut the `blocked-by` edge FIRST, then take the
 dependency yield back to `ready-for-implementer`. That order is not
 style — the yield ends your run, and it is refused `not-blocked` unless
-the edge is already on record.
+the edge is already on record. The wait is bounded, not endless: if the
+blocker stops moving — unworked and silent past the board's dependency
+threshold — or your ticket turns out to sit on a ring of blockers that can
+never resolve, the board parks it `needs-human` with a note naming the
+blocker and the chain behind it, so the question reaches a human without you.
 Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
 comment (what you read, what you learned, where the answers will land) —
 it prices the fresh-dispatch fallback cheaply while you are still
