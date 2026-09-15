@@ -1139,8 +1139,13 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   fi
 
   branch="$(git -C "$wtdir" symbolic-ref --quiet --short HEAD 2>/dev/null)" || branch=""
-  # A detached HEAD has no branch to push and no branch to name.
-  [ -n "$branch" ] || return 0
+  # A DETACHED HEAD IS AN ANSWER ABOUT PUBLICATION, NOT ABOUT DISCOVERY. There
+  # is no branch there to push — but returning here read that as "there is
+  # nothing worth mentioning", which is the very gap the dirty read below was
+  # moved up to close. A worker reclaimed mid-rebase, mid-merge or mid-bisect,
+  # or one that committed on a detached HEAD, had its commits, its worktree
+  # path and its in-progress state all go unnamed. The empty `branch` is
+  # carried down instead and handled where the work is already measured.
   want="worktree-$wtname"
 
   # THE DIRTY READ COMES BEFORE THE AHEAD GATE. A worker reclaimed before its
@@ -1186,6 +1191,35 @@ EOF
   fi
 
   head="$(git -C "$wtdir" rev-parse --short HEAD 2>/dev/null)" || return 0
+
+  if [ -z "$branch" ]; then
+    # DETACHED, WITH REAL COMMITS ON IT. Nothing is published — there is no ref
+    # to publish — but the successor is told exactly where the work is. It does
+    # not need a fetch to reach it either: the common-dir check above already
+    # established that this worktree and the one the successor is spawned into
+    # are linked worktrees of ONE repository, so every object here is already in
+    # the successor's own store and reachable by SHA.
+    [ -z "$dirty" ] || note="
+That worktree also holds UNCOMMITTED changes, which the tick did not touch.
+The \`status\` above shows them; decide for yourself what is worth keeping."
+    echo "resume: the predecessor worktree $wtdir has a DETACHED HEAD at $head ($ahead ahead of $base); nothing pushed, and the successor is pointed at the tree" >&2
+    cat <<EOF
+
+
+---- your predecessor's committed work — HEAD DETACHED, nothing published ----
+Your predecessor left $ahead commit(s) in its worktree ($wtdir) that are not in
+$base, but its HEAD is DETACHED at $head. There is no branch there for the tick
+to publish — an interrupted rebase, merge, cherry-pick or bisect is the usual
+way a worker ends up this way, so read the state before you read the diff:
+    git -C $(_shq "$wtdir") status
+    git -C $(_shq "$wtdir") log --oneline $(_shq "$base")..HEAD
+That worktree is a linked worktree of the repository you are in, so those
+commits are ALREADY in your object store — \`git show $head\` and
+\`git cherry-pick\` reach them with no fetch at all. Do NOT redo this work
+before you have looked at it.$note
+EOF
+    return 0
+  fi
 
   if [ "$branch" != "$want" ]; then
     # THE DISPATCHER'S OWN BRANCH, OR NO PUSH. HEAD is whatever the predecessor

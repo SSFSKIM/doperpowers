@@ -1626,6 +1626,37 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
 
+# ---- a DETACHED HEAD: no branch to publish, but plenty to discover -------
+# Publication eligibility and discovery are different questions, and returning
+# on a detached HEAD answered the second with the first: a worker reclaimed
+# mid-rebase, or one that committed with HEAD detached, had its commits, its
+# worktree path and its in-progress state all go unnamed — the same gap the
+# dirty read was moved above the ahead-gate to close.
+PDFIX="$TDIR/fix-pred-detached.json"; predfix "$PDFIX" 79
+rboard "$PDFIX"
+PD_WT="$(predsetup 12-detached 2)"; PD_ROOT="$RREPO"
+gitx "$PD_WT" checkout -q --detach
+echo m3 > "$PD_WT/m3"; gitx "$PD_WT" add m3
+gitx "$PD_WT" commit -qm "a milestone committed with HEAD detached"
+echo scratch > "$PD_WT/half-done"
+PD_HEAD="$(git -C "$PD_WT" rev-parse --short HEAD)"
+PDDH="$TDIR/dh-pred-detached"; predreg "$PDDH" "$PD_ROOT" 12-detached
+: > "$SPAWN_LOG"
+OUTPD="$TDIR/pred-detached.out"
+RSW "$PDDH" > "$OUTPD" 2>&1 || true
+
+t  "a detached HEAD is still named for the successor"  "HEAD DETACHED"  cat "$SPAWN_LOG"
+t  "with the commit it stopped at"       "$PD_HEAD"                    cat "$SPAWN_LOG"
+t  "and the worktree holding them"       "$PD_WT"                      cat "$SPAWN_LOG"
+t  "and its uncommitted changes"         "UNCOMMITTED"                 cat "$SPAWN_LOG"
+t  "and the tick says so in its own log" "has a DETACHED HEAD at $PD_HEAD" \
+   cat "$OUTPD"
+# Nothing to publish: there is no ref there for the tick to push.
+nt "but nothing reaches origin"          "worktree-12-detached" \
+   git -C "$TDIR/origin-12-detached.git" branch --list
+nt "and no fetch is suggested — the objects are already shared" "FETCH_HEAD" \
+   cat "$SPAWN_LOG"
+
 # ---- a RE-FILLED predecessor seat: worktree:"" with cwd already the tree ---
 # `sminos fill` re-fills a seat in place and passes an EMPTY worktree argument
 # on purpose — the seat's cwd is by then the worktree path, so the fresh session
