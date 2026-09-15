@@ -103,7 +103,7 @@ cd "$scratch"
 started="$(date +%s)"
 case "$engine" in
   codex)
-    "$bench_root/../../skills/qa-loops/scripts/review-engine.sh" \
+    "$bench_root/review-engine.sh" \
       --base main --out "$out"
     ;;
   argus)
