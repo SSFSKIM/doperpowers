@@ -200,3 +200,7 @@ Follow-ons: port qa-loops' `review-engine.sh` and START ENGINE protocol to
 this lane (the board loop still shells out to codex); delete the codex panel
 and its tests once this lane has carried real reviews; revisit xhigh's
 models with the human.
+
+## Revision Notes
+
+- 2026-09-13: the first follow-on landed — qa-loops' Reviewer worker dispatches this lane itself (the rung agents through the Agent tool, the panel through the Workflow tool) at a level derived from the ticket's spec, an operator floor, and the diff's size; `review-engine.sh` and its hermetic suite moved to `tests/review-bench/` as the codex baseline. Design: `2026-09-13-qa-loops-native-review-design.md`. The codex panel's deletion remains the open follow-on.

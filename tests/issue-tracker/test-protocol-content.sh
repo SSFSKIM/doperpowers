@@ -257,6 +257,18 @@ assert_contains "$arch" "Route the plan" "architect: routes the plan by brainsto
 assert_contains "$arch" "Name the verification" "architect: verification is its own call, made from stakes"
 assert_not_contains "$arch" "Track judgment" "architect: no track judgment (council no longer scales with artifact shape)"
 assert_contains "$arch" "carries its own execution" "architect: the build brief names the spec that carries its own execution"
+# Board seams (peer review of the fold): the review loop owns the whole-branch
+# review on the board, so the executor is told to stop before it; a small
+# ticket builds here from its body over the pre-spec build edge; the plan
+# route gets the human's design approval, the board form of brainstorming's gate.
+assert_contains "$arch" "review loop owns the whole-branch review" "architect: the brief hands the whole-branch review to the review loop (no double review)"
+assert_contains "$arch" 'in-progress "direct: pre-spec suffices as the plan"' "architect: a pre-spec ticket takes the build edge and is built here"
+# The reader-drawn boundary (PR #144) and the pre-spec build edge (PR #141) meet
+# here: interactive direct can be document-free, board DIRECT cannot — it runs
+# the self-contained ticket body as its document, so both clauses must coexist.
+assert_contains "$arch" "nothing here is document-free" "architect: board DIRECT is not document-free — the ticket body is its document"
+assert_not_contains "$arch" "Direct never applies here" "architect: the clause that contradicted the pre-spec build edge is gone"
+assert_contains "$arch" "approve the design at" "architect: the plan route parks for the human's design approval"
 assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
@@ -453,6 +465,15 @@ assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
 assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is a spec that carries its own execution, worked in order"
+assert_contains "$pexec" "a review loop owns them" "...and the whole-branch review is the brief's to assign (the board's review loop owns it)"
+assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
+assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
+# Review input and follow-up work are different channels: Residue is the list
+# the dispatching session registers tickets from, so an unfixed Minor routed
+# there becomes a ticket (or a fix made to avoid writing one).
+assert_contains "$pexec" '## Unresolved Review Findings`, each with where it is' "...and unfixed task-review findings ride their own PR-body section, with the reason each was left"
+assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
+assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
