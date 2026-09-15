@@ -1525,6 +1525,17 @@ run_emitted_fetch() {  # run_emitted_fetch <spawn log> <repo to run it in>
   ( cd "$2" && eval "$line" >/dev/null 2>&1 ) || true
   git -C "$2" rev-parse --short FETCH_HEAD 2>&1
 }
+# …AND THE SAME LINE WITH ITS DESTRUCTIVE TAIL LEFT ON. run_emitted_fetch strips
+# the `&& git reset --hard …` before executing, which is right for the drills
+# that only care where the fetch lands — and means the half of the emitted
+# command that can DESTROY a tree had never been run in a fixture at all.
+run_emitted_whole() {  # run_emitted_whole <spawn log> <repo to run it in>
+  local line
+  line="$(sed -n 's/^ *\(git fetch .* && git reset --hard .*\)$/\1/p' "$1" | head -1)"
+  [ -n "$line" ] || { echo "NO-COMMAND-EMITTED"; return 0; }
+  ( cd "$2" && eval "$line" >/dev/null 2>&1 ) || true
+  echo "ran: $line"
+}
 
 # ---- ahead of the base, with a dirty tree beside the commits --------------
 PAFIX="$TDIR/fix-pred-ahead.json"; predfix "$PAFIX" 70
@@ -1736,6 +1747,42 @@ t  "a fresh worker is still spawned"  "SPAWN name=12-successor"      cat "$SPAWN
 t  "the tick refuses the repo's main checkout" \
    "main checkout and not a worktree of its own"                     cat "$OUTPS"
 nt "and names none of it in the bootstrap" "---- your predecessor's" cat "$SPAWN_LOG"
+
+# ---- a SECOND reclaim: the predecessor's worktree IS the successor's ------
+# The successor seat name is deterministic ($tid-successor-$lane), `sminos
+# retire` never removes a worktree or a branch, and the harness REUSES an
+# existing .claude/worktrees/<name> rather than refusing it. So the second time
+# one ticket is reclaimed, the tree the tick is describing is the tree the
+# reader is standing in — and a block that says "you were spawned into a FRESH
+# worktree", "that branch is checked out elsewhere" and "git reset --hard" is
+# wrong on all three counts, the last one destructively.
+PCFIX="$TDIR/fix-pred-samewt.json"; predfix "$PCFIX" 81
+rboard "$PCFIX"
+PC_WT="$(predsetup 12-successor-implementer 2)"; PC_ROOT="$RREPO"
+# A TRACKED file modified in place: `reset --hard` reverts this, where it would
+# leave an untracked file alone — so this is what proves the destruction.
+echo "half a milestone, uncommitted" > "$PC_WT/m1"
+PC_HEAD="$(git -C "$PC_WT" rev-parse --short HEAD)"
+PCDH="$TDIR/dh-pred-samewt"; predreg "$PCDH" "$PC_ROOT" 12-successor-implementer
+: > "$SPAWN_LOG"
+OUTPC="$TDIR/pred-samewt.out"
+RSW "$PCDH" > "$OUTPC" 2>&1 || true
+
+t  "the tick sees that the successor lands in that very worktree" \
+   "lands in the predecessor's own worktree"                        cat "$OUTPC"
+t  "and the bootstrap says the work is already in the reader's tree" \
+   "ALREADY IN YOUR TREE"                                           cat "$SPAWN_LOG"
+t  "the commits are still named"     "$PC_HEAD"                     cat "$SPAWN_LOG"
+t  "and the uncommitted changes too" "UNCOMMITTED"                  cat "$SPAWN_LOG"
+# Durability off this host is still worth the round trip, whichever tree the
+# successor lands in.
+t  "and the branch still reaches origin" "worktree-12-successor-implementer" \
+   git -C "$TDIR/origin-12-successor-implementer.git" branch --list
+nt "but the reader is never told its tree is fresh" "FRESH worktree"  cat "$SPAWN_LOG"
+t  "and nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
+   run_emitted_whole "$SPAWN_LOG" "$PC_WT"
+t  "so the predecessor's uncommitted edits survive the bootstrap"  "m1" \
+   git -C "$PC_WT" diff --name-only
 
 # ---- a push that HANGS: the deadline has to reach what git spawned --------
 # git is rarely the process actually holding the connection. An ssh push spawns
