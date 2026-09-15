@@ -24,6 +24,12 @@ echo ""
 # read as "no". "<" is excluded from the run-up so a placeholder echoed back
 # from the prompt ("<yes or no>") is never read as a choice. Matching stays
 # case-insensitive: that is assert_contains's deliberate choice (test-helpers.sh).
+#
+# The same anchor decides which option a two-option answer picked: unanchored,
+# "task text pasted into the prompt, not a brief file path" passed as "brief".
+# One leading word is tolerated so "a brief"/"the brief"/"brief" all count,
+# which is far short of reaching the losing option's own mention of it.
+PAT_REQUIREMENTS_AS_BRIEF='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *brief'
 PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
 
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
@@ -45,6 +51,13 @@ check_answer_patterns() {
 echo "Pre-flight: answer-line assertion patterns..."
 
 check_answer_patterns <<'FIXTURES' || exit 1
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: brief file path
+match|PAT_REQUIREMENTS_AS_BRIEF|**Requirements reach the executor as:** a brief file path - the brief holds the full text of the task
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path (not the task text pasted into the prompt)
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt, not a brief file path
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
 nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes, but not directly
 nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes (it cannot be skipped)
 nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes - it has no brief
@@ -180,7 +193,7 @@ output=$(run_claude "In subagent-driven-execution, the controller dispatches a t
 Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
 Executor must read the plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "Requirements reach the executor as:.*brief" "Requirements handed over as a brief file"; then
+if assert_contains "$output" "$PAT_REQUIREMENTS_AS_BRIEF" "Requirements handed over as a brief file"; then
     : # pass
 else
     exit 1
