@@ -9,7 +9,7 @@ trusted push chain.
 ## The board file
 
 Path: `<review-tmp>/pr-<PR>-fix-wave-<k>.md` — the same dispatcher-session
-tmp directory the engine writes findings into. NEVER place the board (or
+tmp directory the worker saves the engine's findings into. NEVER place the board (or
 any wave state) inside the PR worktree: the PR head is untrusted content,
 and a symlink pre-created at a board path component would redirect your
 unattended write anywhere on this machine. `<review-tmp>` comes fresh from

@@ -107,8 +107,10 @@ discriminant — WHO UNPARKS IT — and the full state vocabulary are owned
 by doperpowers:issue-tracker, the board schema's single home: open that
 skill and classify the park against it before writing anything. In
 particular, waiting on other tickets is never a park state there —
-dependencies are edges, and the ticket goes back to
-`ready-for-implementer`.
+dependencies are edges: cut the `blocked-by` edge FIRST, then take the
+dependency yield back to `ready-for-implementer`. That order is not
+style — the yield ends your run, and it is refused `not-blocked` unless
+the edge is already on record.
 Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
 comment (what you read, what you learned, where the answers will land) —
 it prices the fresh-dispatch fallback cheaply while you are still
@@ -155,7 +157,7 @@ frequently, open the PR.
 
 Pre-PR self-review: one independent review pass before opening the PR (and fixing findings) is fine judgment — scale it to the change, and a small diff needs none: skip reviewing yourself and let the reviewer see it all. Do not run review-fix LOOPS: the loop  
 is the Reviewer worker's, and it attaches to every non-draft PR you open  
-(external engine + fix waves). Open the PR.
+(doperpowers:review-code's lane + fix waves). Open the PR.
 
 ## Mid-build Forks and Parks
 

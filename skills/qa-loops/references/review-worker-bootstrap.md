@@ -189,9 +189,8 @@ Runtime bindings (dispatcher-owned):
 - `AUTO_MERGE`: {{AUTO_MERGE}}
 - `BIND_READY_FILE`: {{BIND_READY_FILE}}
 - `IMPLEMENT_PROTOCOL_FILE`: {{IMPLEMENT_PROTOCOL_FILE}}
-- `REVIEW_ENGINE`: {{REVIEW_ENGINE}}
-- `CODEX_REVIEW_MODEL`: {{CODEX_REVIEW_MODEL}}
-- `CODEX_REVIEW_EFFORT`: {{CODEX_REVIEW_EFFORT}}
+- `REVIEW_LEVEL`: {{REVIEW_LEVEL}}
+- `REVIEW_CODE_DIR`: {{REVIEW_CODE_DIR}}
 
 - `MANIFEST_REF`: {{MANIFEST_REF}} (the ref the two snapshots below came from
   — the base for a PR or scale run; under `api`, where the base is not

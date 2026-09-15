@@ -89,8 +89,8 @@ depend on it.)
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
 | `ready-for-architect` | open + `status:ready-for-architect` | dispatchable to DESIGN: purpose + success criteria stated to the architect-lane bar (`references/ticket-gate.md` variant); the work needs design/plan authorship by an Architect (Fable route); on an EPIC this is the recomposition/reconciliation claim (Epics below) | — |
-| `in-design` | open + `status:in-design` | the Architect's in-flight design state — gate passed, grill/authoring underway; exits to `in-progress` (the build edge: plan pinned, the Architect executes it through its plan-executor subagent and stays bound — a build edge refused for a stated reason, a contested surface or an API board, hands off with the same pin instead), to `ready-for-implementer` (down-shortcircuit, decompose, or that refused-build handoff), or to a park (`pre-park:` returns here). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
-| `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → executor) | — |
+| `in-design` | open + `status:in-design` | the Architect's in-flight design state — gate passed, grill/authoring underway; exits to `in-progress` (the build edge: plan pinned — or the `pre-spec` sentinel for a ticket that turned out small, built from its own body — and the Architect executes it through its plan-executor subagent and stays bound; a build edge refused for a stated reason, a contested surface or an API board, hands off with the same pin instead), to `ready-for-implementer` (decompose, or a refused-build handoff carrying its pin or the sentinel), or to a park (`pre-park:` returns here). On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
+| `ready-for-implementer` | open + `status:ready-for-implementer` | dispatchable to EXECUTION: an Architect's plan attached (`plan:` pin), ruled pre-spec-sufficient by an Architect whose build edge was refused (`plan: pre-spec`), or plan-less DIRECT (the gate — `references/ticket-gate.md` — runs at dispatch); the DEFAULT birth state (unsure → executor) | — |
 | `in-progress` | open + `status:in-progress` | a bound session is building it — an Architect past the build edge, or an Executor past its gate (an executor-queued or `needs-info`-released epic is pulled here and stays while children run; the architect queue pulls to `in-design` instead, and the other three parks are never pulled) | optional |
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
@@ -118,11 +118,22 @@ and the Reviewer worker at a design-gap impasse; never by-passed into
 The board counts these escalation edges: a second traversal of the same
 edge on one ticket converts to `needs-human` mechanically.
 
-Waiting on other tickets is NOT a park: dependencies are edges — cut
-`blocked-by` and return the ticket to its lane queue
-(`ready-for-implementer`, or `ready-for-architect` by your judgment of
-the birth rule) (the note names any banked branch); the unblock sweep
-re-surfaces it the moment its blockers land, which no park state does.
+Waiting on other tickets is NOT a park: dependencies are edges. Two
+calls, and the ORDER is fixed —
+
+    board-edge.sh <n> --block <blocker>
+    board-transition.sh <n> ready-for-implementer "blocked by #<blocker>; WIP on <branch>" --branch <branch>
+
+The first records the dependency; a run bearer holds this one edge write
+(its own ticket, `--block` only). The second is the **dependency yield**,
+and it is refused `not-blocked` unless an unfinished blocker is already
+on record — so a yield can never hand a ticket straight back into the
+same wall. It also ends the run, which is why the edge cannot wait until
+after it. The board re-surfaces the ticket when its blockers land — the
+unblock sweep in gh mode, the claim predicate on the API board —
+which no park state does. (`ready-for-architect` instead, by your
+judgment of the birth rule, when the work needs designing rather than
+waiting.)
 (`blocked` was retired in v8: its meaning was absorbed by `needs-human`;
 lint names any legacy label with the migration FIX.)
 
@@ -245,7 +256,7 @@ binding (or the checkout's own repo), the board's repo key on the api binding
 | `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike`\|`env-issue` (Categories above owns their semantics — note an `env-issue` with no explicit `--state` is born `needs-human` and is REFUSED without `--note`); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-body.sh <n> --body-file F` | rewrite a ticket's statement of work (`F` may be `-` for stdin; an empty file is a legal edit — clearing it). Both bindings: the API route refuses `ticket-owned` while a run holds the ticket — the body IS the claim-time assignment, so an edit under an open run reaches nobody; enrichment for a BOUND park rides the park answer, never the body. The gh route is a meta-preserving read-modify-write — the trailing `board:meta` block is spliced back byte-for-byte, never parsed, which bare `gh issue edit` clobbers |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent). A ticket mid-turn under a live bound worker is fenced: only that worker's own session transitions it — retire the binding first, or overrule with `BOARD_OWNER_OVERRIDE="<why>"` |
-| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
+| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition. A run bearer holds `--block` on its own ticket and nothing else |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-surface.sh <n> --add NAME \| --remove NAME` | add/remove a `surface:*` label (see Surfaces below). `--add` validates against the registry; `--remove` never does — it is the cleanup for an orphaned label and the escape hatch for a false-positive match |
 | `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |

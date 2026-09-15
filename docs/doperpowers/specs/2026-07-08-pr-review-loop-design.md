@@ -694,3 +694,4 @@ Pending — written at finish.
   draft-PR bans, the dangerous-flag bans, the bootstrap's
   workspace-skill refusal, the Board Write Hard Gate, and register-time
   body authorship.
+- 2026-09-13: the review engine is doperpowers:review-code's lane — the Reviewer worker dispatches the registered reviewer agents or the panel workflow from its own session, at a level derived from the ticket's spec, an operator `REVIEW_LEVEL` floor, and the diff's size. `review-engine.sh` (codex) moved to `tests/review-bench/`. The engine's role, the concurrent audit, JOIN, the caps, and the `ENGINE-UNAVAILABLE` marker are unchanged. Design: `2026-09-13-qa-loops-native-review-design.md`.
