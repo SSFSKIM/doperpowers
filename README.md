@@ -10,7 +10,7 @@
    board ─▶ dispatch ─▶ build ─▶ review ─▶ merge     · the same method while you're away
 ```
 
-Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers sizes the work first. Every change starts with a grill that closes the design questions while you are present, then a design you approve. From there the shape follows the size: a change one agent can own gets a spec that carries its own execution and runs sequentially; a larger one gets an execution plan and a fresh subagent per task, reviewed at every boundary. How much independent review the work gets is a separate call, made from its stakes rather than its size. Either way the agent runs without stopping until it meets a decision the design did not cover, and that comes back to you.
+Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers sizes the work first. Every change starts with a grill that closes the design questions while you are present, then a design you approve. From there the shape follows the size and the reader: a change one agent builds in the session goes straight from the approved design to code; one whose document someone else will read — a zero-context executor, a later sitting — gets a spec that carries its own execution and runs sequentially; a larger one gets an execution plan and a fresh subagent per task, reviewed at every boundary. How much independent review the work gets is a separate call, made from its stakes rather than its size. Either way the agent runs without stopping until it meets a decision the design did not cover, and that comes back to you.
 
 Because every skill declares when it applies, you don't invoke any of this by hand. The agent checks for a relevant skill before it starts a task, and the right workflow just happens.
 
@@ -21,7 +21,7 @@ Because every skill declares when it applies, you don't invoke any of this by ha
 Every change enforces the same non-negotiables — design before code, tests before implementation, evidence before "done." What varies is the shape, and the shape follows the size.
 
 **One unit** — work one agent can reliably own.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a living design spec that carries its own plan of work and progress, then runs it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a design you approve — written up as a living spec that carries its own plan of work and progress when someone beyond the session will read it — then builds it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
 
 **Several units, or taste mid-flight** — work that needs more than one agent-ownable task, or your judgment while it is built.
 The same grill and spec, then the spec is broken into tasks an executor can own from one self-contained brief (`writing-plans`), and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
@@ -77,7 +77,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 
 **Keep it honest**
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
-- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work
+- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`; the qa-loops review engine still runs its runtime)
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 
 **Run it unattended**

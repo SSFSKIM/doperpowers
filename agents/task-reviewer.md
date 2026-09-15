@@ -1,10 +1,10 @@
 ---
 name: task-reviewer
-description: Dispatch this agent during subagent-driven-execution to review a task.
+description: Per-task reviewer for doperpowers:subagent-driven-execution only. Read-only.
 model: sol
 effort: high
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit, Agent
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
 ---
 
 You are reviewing one task's implementation: first whether it matches its

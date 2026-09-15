@@ -17,7 +17,7 @@ Seeing it work: `grep -n -E 'codex|review-engine|CODEX_REVIEW' skills/qa-loops/S
 - [x] (2026-09-13 13:35Z) Milestone 3 — relocation: `review-engine.sh` and `test-review-engine.sh` to `tests/review-bench/`; `run-case.sh` and the bench README follow.
 - [x] (2026-09-13 13:35Z) Milestone 4 — consumers and history: the implement protocol's clause; Revision Notes on the three review design specs.
 - [x] (2026-09-13 14:05Z) Spec review (adversarial-reviewer, background): four findings, all applied — the engine runs through the workflow at every level so each reviewer has a fresh worktree; a reviewer that could not inspect is a failed sweep; a result that lands before the audit waits; a live smoke test in the production seat shape joins the acceptance.
-- [x] (2026-09-13 15:10Z) Milestone 5 — validation: the five suites and lint green (two pre-existing red assertions in the dispatcher suite re-anchored), the sweep in Acceptance 11 clean, the smoke in Acceptance 12 passed (result after 21 minutes, reviewer isolated), version 7.87.0.
+- [x] (2026-09-13 15:10Z) Milestone 5 — validation: the five suites and lint green (two pre-existing red assertions in the dispatcher suite re-anchored), the sweep in Acceptance 11 clean, the smoke in Acceptance 12 passed (result after 21 minutes, reviewer isolated), version 7.87.0 at the time, 7.93.0 as rebased onto main.
 - [x] (2026-09-13 15:15Z) Exit — branch review at `doperpowers:reviewer-high` (two findings, both applied by a fix wave: the explanation check scoped to single-reviewer levels; only the sweep's launch failure enters the outage path), retrospective written, PR opened.
 
 ## Acceptance
@@ -31,7 +31,7 @@ Seeing it work: `grep -n -E 'codex|review-engine|CODEX_REVIEW' skills/qa-loops/S
 7. `skills/issue-tracker/references/implement-worker-protocol.md` describes the Reviewer's loop as review-code's lane plus fix waves, not an external engine.
 8. Revision Notes: `2026-09-09-review-code-lane-design.md` records the follow-on as landed; `2026-07-08-pr-review-loop-design.md` records the engine swap; `2026-07-12-native-review-recovery-design.md` records that its "reviewer is codex-only" mandate was superseded by the human's direction of 2026-09-13.
 9. `tests/qa-loops/test-skill-entrypoint.sh`, `tests/qa-loops/test-review-dispatch.sh`, `tests/qa-loops/test-bootstrap-parity.sh`, `tests/review-bench/test-review-engine.sh`, `tests/issue-tracker/test-protocol-content.sh`, and `scripts/lint-shell.sh` pass (a failure that reproduces on `main` before this change is recorded, not owned).
-10. The version is bumped with `scripts/bump-version.sh 7.87.0` in the same PR.
+10. The version is bumped with `scripts/bump-version.sh` in the same PR, to the next version above main.
 11. `grep -rn -E 'review-engine|CODEX_REVIEW' skills agents scripts tests/qa-loops tests/issue-tracker tests/claude-code CLAUDE.md README.md docs/INSTALL-doperpowers.md` returns only the `assert_not_contains` lines in `tests/qa-loops/` that pin the names' absence; the bench directory and the dated design history are the only places the name survives in prose.
 12. Smoke, in the production shape: a seat spawned by `sminos spawn … --worktree` (a `claude --bg` session in a linked worktree, no stdin) runs the workflow at level low on a two-commit range with no `repo` argument, and after its turn yields the result object reaches a file with a verdict of `correct` or `incorrect` and a reviewer lane whose coverage status is `ok`. The outcome — including a failure — is recorded under Surprises & Discoveries.
 
@@ -92,7 +92,7 @@ Run from the worktree root.
     bash /tmp/smoke-review-lane/spawn.sh            # the smoke seat; result at /tmp/smoke-review-lane/{log,result.json}
     skills/sminos/scripts/sminos retire smoke-review-lane
 
-    scripts/bump-version.sh 7.87.0                  # the script takes the version, not a bump kind
+    scripts/bump-version.sh 7.93.0                  # the script takes the version, not a bump kind
 
 ## Decision Log
 
@@ -182,3 +182,4 @@ Lessons. (1) The spec review earned its place again: its first finding replaced 
 - 2026-09-13: revised after the independent spec review — the engine runs through the workflow at every level (isolation per reviewer), a reviewer that could not inspect is a failed sweep, a result that lands before the audit waits, the smoke in a real background seat joins the acceptance (12), `REVIEW_CODE_DIR` is a derived path rather than a probe; four Decision Log entries added or revised, four Surprises recorded.
 - 2026-09-13: revised after the high-rung branch review — the fail-closed explanation check is scoped to single-reviewer levels (the panel's explanation is workflow-generated; `interrupted` is its failure signal), and only the sweep's launch failure enters the outage path; two assertions added.
 - 2026-09-13: finished — the smoke in the production seat shape passed (Acceptance 12), its observations and the reviewer's two out-of-scope findings recorded under Surprises, Progress closed, retrospective written; PR opened against `board-seams`.
+- 2026-09-16 (rebased onto main after #141 merged, v7.93.0): the PR's base branch `board-seams` landed, so this branch was re-merged onto `main` and re-bumped above it. The branch already carried board-seams through its round-three head, so the only new content from that line is the PR body's `## Unresolved Review Findings` carrier, which TRIAGE gained as a self-contained paragraph — orthogonal to the engine section this spec rewrites. Main's dependency yield touches the implement protocol's park paragraph, not the review clause this spec edits there. Main's reviewer agents now block `Skill` as well as `Agent` in frontmatter: that constrains a reviewer agent, while START ENGINE calls the workflow from the Reviewer WORKER's own session, which is not one — the port's mechanism is unaffected, and the block reinforces the same no-recursion boundary the workflow already drew.

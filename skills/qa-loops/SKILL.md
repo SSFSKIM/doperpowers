@@ -402,6 +402,16 @@ substance and route.
   never refute from the finding text alone. The rebuttal comment on the
   PR cites the fixer's refuting evidence.
 
+A PR body's `## Unresolved Review Findings` section carries findings the
+build's own reviews raised and left unfixed; their record (the build's
+ledger) never reaches you, so that section is how they arrive. They are
+not new — triage them with the round's findings, with the stated deferral
+reason as evidence: a deferral that still holds is a LOG on that reason
+(already reasoned, so it needs no departure of yours), and stakes you read
+differently wave like anything else. The body's `## Residue` is a
+different list — work for another ticket, which the session that
+dispatched the build registers — not findings for you to route.
+
 ## FIX WAVES
 
 Zero WAVE items → skip to RE-REVIEW/ESCALATE. Otherwise open

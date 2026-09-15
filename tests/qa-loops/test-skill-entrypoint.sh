@@ -150,6 +150,13 @@ assert_contains "$SKILL" "author its body at register time" "TOO BIG ticket body
 assert_not_contains "$SKILL" "then flesh out its pre-spec body" "the two-step register-then-fill wording is retired"
 assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to the trail"
 assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
+# The build's own reviews leave findings behind whose record (an SDE ledger)
+# never reaches this loop. They arrive in the PR body already reasoned about,
+# so the wave-everything default for NEW findings would re-open settled calls.
+assert_contains "$SKILL" '`## Unresolved Review Findings` section carries findings' "carried build-review findings reach TRIAGE through their own PR-body section"
+assert_contains "$SKILL" "not new — triage them with the round's findings" "carried findings are triaged with the round, not as new findings"
+assert_contains "$SKILL" "is a LOG on that reason" "a deferral that still holds LOGs on its stated reason, no fix wave"
+assert_contains "$SKILL" "not findings for you to route" "the PR body's Residue belongs to the session that registers it"
 
 echo "runtime skill — placeholder set:"
 # MANIFEST_REF is the API binding's addition: dispatch there cannot know the

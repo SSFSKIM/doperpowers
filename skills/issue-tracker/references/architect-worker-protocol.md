@@ -87,13 +87,17 @@ parks carry the quality machinery.
   PUSHED on the ticket branch, branch recorded via --branch. A parked
   session that dies unresumably must not take the pipeline's most
   expensive in-flight asset with it.
-- **Route the plan** — by doperpowers:brainstorming's step 4 criteria.
-  Well-scoped and delegable (big-but-atomic included): the spec carries
-  its own execution — Progress, Plan of Work, Concrete Steps, per
-  brainstorming's references/living-spec.md — and a zero-context
-  executor runs it sequentially. Large, novel, taste-heavy, or
-  high-stakes: the spec plus an execution plan through
-  doperpowers:writing-plans.
+- **Route the plan** — by doperpowers:brainstorming's step 4 criteria,
+  read against the board's reader: nothing here is document-free, since
+  your executor is always zero-context. What varies is which document
+  carries the work. A ticket body already self-contained enough for that
+  executor to build from IS that document — the down-shortcircuit below
+  runs it as the plan. One unit whose body is not (big-but-atomic
+  included) gets the spec that carries its own execution — Progress,
+  Plan of Work, Concrete Steps, per brainstorming's
+  references/living-spec.md — and that executor runs it sequentially.
+  Large, novel, taste-heavy, or high-stakes: the spec plus an execution
+  plan through doperpowers:writing-plans.
 - **Name the verification** — it follows from the stakes, not the size.
   One independent spec review by default; when the design is novel or
   the cost of being wrong is high, dispatch doperpowers:critique on the
@@ -118,8 +122,9 @@ parks carry the quality machinery.
   technical correction within the approved intent is logged and proceeds
   — the exceptions rule a live session applies with the human present.
   The other route's criteria exclude taste; it builds without asking.
-- **Down-shortcircuit** — the ticket turned out small; the pre-spec
-  suffices as the plan, and you build it here from the ticket body. Save
+- **Down-shortcircuit** — the pre-spec is self-contained enough for a
+  zero-context executor to build from, so it IS the plan and you build
+  it here from the ticket body. Save
   the body to a file in your worktree (the bootstrap named it under an API
   board; `gh issue view {{ISSUE_NUMBER}} --json body -q .body` otherwise),
   take the build edge with the sentinel as the pin —

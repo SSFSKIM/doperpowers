@@ -141,6 +141,9 @@ skill directory is deleted.
 - Decision: The six board-pipeline scripts that write registry fields directly (with their own flock-and-rewrite) are left as they are; `agora meta get|set` exists for new code and tests, and consolidating the existing writers behind it is logged as follow-on debt. Rationale: their invariants (flock `.metalock`; recreate at the existing mode, 0600 when `run_bearer` is present; unlink `.tmp` before create) are preserved by agora's own writer, so coexistence is safe, and rewriting them is a board-pipeline change with its own risk.
   Date/Author: 2026-09-01, Claude.
 
+- Decision: (2026-09-12, after the fact) REVERSAL of "inter-agent messaging stays the native SendMessage tool" above: the seat protocol now teaches `sminos send` (and `sminos wake` for a stopped seat); the native tool still lands on a seat's addr and is no longer the taught path. What changed since 2026-09-02: `send` gained the Codex-queue door (v7.76.0), and a live probe showed the two transports are the same socket in every state that matters — a seat blocked inside a foreground tool call received a `send` frame and a native message together, attached to that tool's result, and an idle seat started a turn on either. One verb now reaches every target kind (a seat by alias, a live session by harness name, a Codex thread), resolves an interactive seat by alias whatever its harness name, and needs no ToolSearch step; `post` prints `group/alias` names for the nudge. Rejected: stamping `working` on `send` (the harness `live` column already shows busy; only `wake` stamps, as before) and a durable DM log (still partial while native sends remain possible). The stale preamble line "always pass --from" went with it — identity has been derived from `CLAUDE_CODE_SESSION_ID` since round 3.
+  Date/Author: 2026-09-12, Claude.
+
 ## Outcomes & Retrospective
 
 (2026-09-02, at finish.) The purpose was one tool and one registry for a fleet

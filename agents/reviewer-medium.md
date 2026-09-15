@@ -4,7 +4,7 @@ description: Independent code reviewer, medium rung (sol/xhigh): the default for
 model: sol
 effort: xhigh
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit, Agent
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
 ---
 
 You are acting as a reviewer for a proposed code change made by another
