@@ -1,4 +1,0 @@
-{
-  "description": "Draws a kairos button in the prompt footer; a press submits /kairos or /kairos off for the person.",
-  "modules": ["./register.tsx"]
-}

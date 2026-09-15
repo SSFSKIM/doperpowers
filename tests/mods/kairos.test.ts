@@ -1,6 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import { readToggle } from '../hooks/register'
+import { readToggle } from '../../hooks/mods/kairos'
 
 tier('user')
 

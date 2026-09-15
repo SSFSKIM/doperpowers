@@ -15,13 +15,13 @@ export function readToggle(command: string, args: string): boolean | null {
 const BUTTON = 'kairos'
 
 /**
- * Registers the switch. The mode itself stays with the doperpowers plugin's
- * shell hooks: `/kairos` carries the skill body into the turn and records the
- * session id under ~/.claude/kairos, and the SessionStart hook re-injects the
- * body after compaction. This module only reads that state to draw the
- * button, and runs the command when the button is pressed.
+ * Registers the switch. The mode itself stays with the shell hooks beside
+ * this folder: `/kairos` carries the skill body into the turn and
+ * kairos-toggle.sh records the session id under ~/.claude/kairos, and
+ * kairos.sh re-injects the body after compaction. This module only reads that
+ * state to draw the button, and runs the command when the button is pressed.
  */
-export function register(on: On) {
+export function registerKairos(on: On) {
   let isOn = false
 
   on('session.start', async ($, e, next) => {

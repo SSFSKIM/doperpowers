@@ -1,6 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import { parse } from '../hooks/register'
+import { parse } from '../../hooks/mods/to-human'
 
 tier('user')
 

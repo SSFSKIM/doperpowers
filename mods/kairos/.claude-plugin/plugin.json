@@ -1,6 +1,0 @@
-{
-  "name": "kairos",
-  "version": "0.1.0",
-  "description": "A kairos switch in the prompt footer: one click turns proactive mode on or off, in place of typing /kairos.",
-  "author": { "name": "SSFSKIM" }
-}
