@@ -1517,7 +1517,7 @@ JSON
 # correctly. So these pull that exact line from the captured prompt and execute
 # it, which is also the only assertion that would notice a path with a space.
 emitted_fetch() {  # emitted_fetch <spawn log> — the `git fetch …` line, verbatim
-  sed -n 's/^ *\(git fetch .*\) && git reset --hard FETCH_HEAD$/\1/p' "$1" | head -1
+  sed -n 's/^ *\(git fetch .*\) && git reset --hard .*$/\1/p' "$1" | head -1
 }
 run_emitted_fetch() {  # run_emitted_fetch <spawn log> <repo to run it in>
   local line; line="$(emitted_fetch "$1")"
@@ -1584,7 +1584,7 @@ t  "and says not to redo it"                 "do NOT redo"          cat "$SPAWN_
 # so a bootstrap that told the successor to check it out would hand it an error
 # instead of the work.
 t  "the successor is told how to take the commits onto its own branch" \
-   "git reset --hard FETCH_HEAD"                                    cat "$SPAWN_LOG"
+   "git reset --hard $(git -C "$PA_WT" rev-parse HEAD)"             cat "$SPAWN_LOG"
 # The successor's own worktree is a worktree of this same repo, which is where
 # the emitted `git fetch origin …` has to work.
 PA_SUCC="$RREPO/.claude/worktrees/12-successor-check"
@@ -1636,6 +1636,39 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
    git -C "$TDIR/origin-12-uncommitted.git" branch --list
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
+
+# ---- the emitted recovery lands on the commit the TICK verified ----------
+# `git reset --hard FETCH_HEAD` lands on whatever the source's branch points at
+# when the successor runs the line, which is not what the tick measured and
+# published. Anything can move that branch in between, and `origin` resolves
+# through the FETCH url while the push went through the PUSH url — a divergent
+# remote.origin.pushurl makes them different repositories outright. A stale
+# branch then resets the successor onto the wrong tree in silence.
+PVFIX="$TDIR/fix-pred-pinned.json"; predfix "$PVFIX" 82
+rboard "$PVFIX"
+PV_WT="$(predsetup 12-pinned 2)"; PV_ROOT="$RREPO"
+PV_HEAD="$(git -C "$PV_WT" rev-parse --short HEAD)"
+PV_FULL="$(git -C "$PV_WT" rev-parse HEAD)"
+PVDH="$TDIR/dh-pred-pinned"; predreg "$PVDH" "$PV_ROOT" 12-pinned
+: > "$SPAWN_LOG"
+OUTPV="$TDIR/pred-pinned.out"
+RSW "$PVDH" > "$OUTPV" 2>&1 || true
+
+t  "the block pins the full sha, not the short form" "$PV_FULL"     cat "$SPAWN_LOG"
+# DRIFT, after the tick has spoken: the branch moves on origin before the
+# successor ever gets to run the line it was handed.
+echo drift > "$PV_WT/drifted"; gitx "$PV_WT" add drifted
+gitx "$PV_WT" commit -qm "a commit this tick never saw"
+gitx "$PV_WT" push -q origin worktree-12-pinned
+PV_DRIFT="$(git -C "$PV_WT" rev-parse --short HEAD)"
+PV_SUCC="$RREPO/.claude/worktrees/12-pinned-successor-check"
+gitx "$RREPO" worktree add -q -b pinned-successor-check "$PV_SUCC" main
+run_emitted_whole "$SPAWN_LOG" "$PV_SUCC" > /dev/null
+
+t  "and the emitted recovery lands on the commit the tick verified" "$PV_HEAD" \
+   git -C "$PV_SUCC" rev-parse --short HEAD
+nt "not on whatever the fetch happened to bring"  "$PV_DRIFT" \
+   git -C "$PV_SUCC" rev-parse --short HEAD
 
 # ---- a repo with NO BASE REF the tick can resolve -------------------------
 # An adopter on `trunk` that publishes no origin/HEAD resolves none of
