@@ -1095,7 +1095,7 @@ _predecessor_work() {  # <session uuid> <successor worktree name> — block or n
   # this call. Bash restores it on return so nothing breaks today — which is
   # exactly what makes the collision worth not leaving in place.
   local meta="$DAEMON_HOME/$1.json" root wtname wtdir branch want base ahead head
-  local govern mine own via note="" dirty="" onbr="" succdir samewt=""
+  local govern mine own via note="" dirty="" onbr="" succdir samewt="" headfull
   local reach dirtyreach
   [ -f "$meta" ] || return 0
   root="$(_meta_field "$meta" cwd)"
@@ -1206,6 +1206,10 @@ _predecessor_work() {  # <session uuid> <successor worktree name> — block or n
   [ -z "$base" ] || ahead="$(git -C "$wtdir" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
 
   head="$(git -C "$wtdir" rev-parse --short HEAD 2>/dev/null)" || return 0
+  # The full form is what the emitted recovery RESETS ONTO; the short one is for
+  # prose. A short sha is an abbreviation git may resolve ambiguously in a
+  # repository that has grown since, and the point of the pin is to be exact.
+  headfull="$(git -C "$wtdir" rev-parse HEAD 2>/dev/null)" || return 0
   [ -z "$branch" ] || onbr=" on branch \`$branch\`"
 
   # HOW THE READER REACHES THAT TREE — the one sentence every block below needs,
@@ -1365,6 +1369,14 @@ which no fetch will bring over. Inspect them and decide for yourself whether any
 of it is worth salvaging:
     git -C $(_shq "$wtdir") status"
 
+  # THE RESET PINS THE COMMIT THE TICK ACTUALLY VERIFIED, not whatever the fetch
+  # happens to bring. FETCH_HEAD is whatever the source's branch points at when
+  # the successor runs the line, which is not the same thing: anything can move
+  # that branch between the push and the read, and `via=origin` resolves through
+  # the FETCH url while _push_bounded published through the PUSH url, so a
+  # divergent `remote.origin.pushurl` makes the two different repositories
+  # outright. Reset onto $headfull and a source carrying something else fails
+  # loudly on an unknown object instead of silently installing a stale tree.
   cat <<EOF
 
 
@@ -1375,8 +1387,11 @@ it is in your tree yet — and checking that branch out will be refused, because
 it is still checked out in the predecessor's worktree ($wtdir). Take the
 commits onto your own branch instead, read them, and continue from where they
 stop:
-    git fetch $(_shq "$via") $(_shq "$branch") && git reset --hard FETCH_HEAD
+    git fetch $(_shq "$via") $(_shq "$branch") && git reset --hard $headfull
     git log $(_shq "$base")..HEAD
+The reset pins $head — the commit this tick verified — rather than whatever the
+fetch brings, so if that source has moved on or is not the repository the push
+reached, you land on an error instead of on somebody else's tree.
 $reach$note
 EOF
 }
