@@ -130,9 +130,36 @@ PY
 # and the successor claimed for that ticket inherits its lane from exactly this
 # meta. The slot is freed by the run id going away, not the lane — the
 # dispatchers count OPEN RUNS, which is what a cap is about.
-_retire_run_locally() {  # <meta path> <run id>
-  T_PATH="$1" T_RUN="$2" T_DHOME="$DAEMON_HOME" python3 - <<'PY'
-import fcntl, json, os
+_retire_run_locally() { _meta_edit_for_run "$1" "$2" retire; }
+
+# A run THIS BINDING may never speak for is not over — it is somebody else's.
+# The board answered a lifecycle call on it with `repo-mismatch`, which no later
+# call can change, so the refusal is recorded rather than met again: meta_is_mine
+# reads the mark and this binding's scans stop emitting the meta at all.
+#
+# Recorded UNDER THE REFUSED BINDING'S OWN KEY, because the meta is very likely
+# not the refused binding's to write off. A legacy meta reads as everyone's, so
+# the tick that meets the refusal is routinely a neighbour of the run's real
+# owner — and a machine-wide mark would take a LIVE run away from that owner:
+# no renewal, the lease expires, the board reclaims a worker still writing.
+# Per binding, each pays one refused call once and the owner keeps its reach.
+#
+# The run association deliberately STAYS. The strip above means "this run is
+# over"; this one does not — the session may still be working on its own board,
+# and taking its bearer would break writes it is entitled to make. Detaching
+# claims only what the refusal proved: not ours to act on.
+_detach_meta_locally() {  # <meta path> <run id> <binding pair> <code> <message>
+  _meta_edit_for_run "$1" "$2" detach "$3" "$4" "$5"
+}
+
+# One writer for both, because everything except WHICH FIELDS MOVE is the same
+# discipline: hold the registry metalock, refuse the write unless the meta still
+# names the run the server just answered about, and land it through a
+# tmp+replace that preserves the file's mode.
+_meta_edit_for_run() {  # <meta path> <run id> <retire|detach> [pair] [code] [message]
+  T_PATH="$1" T_RUN="$2" T_OP="$3" T_PAIR="${4:-}" T_CODE="${5:-}" T_MSG="${6:-}" \
+  T_DHOME="$DAEMON_HOME" python3 - <<'PY'
+import fcntl, json, os, time
 env = os.environ
 lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
 fcntl.flock(lock, fcntl.LOCK_EX)
@@ -140,21 +167,33 @@ try:
     path = env["T_PATH"]
     with open(path) as f:
         m = json.load(f)
-    # Only if the meta STILL names the run that ended. A successor persist can
-    # re-point this very meta at a fresh run between the renew and this write,
-    # and clearing that one would strand a live run nothing could speak for.
+    # Only if the meta STILL names the run the server answered about. A
+    # successor persist can re-point this very meta at a fresh run between that
+    # answer and this write, and editing that one would strand a live run
+    # nothing could speak for.
     if str(m.get("run_id") or "") != env["T_RUN"]:
         raise SystemExit(0)
-    for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
-        m.pop(k, None)
-    m["run_ended_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                    __import__("time").gmtime())
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if env["T_OP"] == "detach":
+        # MERGED, never replaced: a second binding meeting its own refusal on
+        # this run must not erase the first one's, or the two would detach each
+        # other in turn and neither would ever stop asking.
+        det = m.get("board_detached")
+        if not isinstance(det, dict):
+            det = {}
+        det[env["T_PAIR"]] = {"at": stamp, "code": env["T_CODE"],
+                              "message": env["T_MSG"]}
+        m["board_detached"] = det
+    else:
+        for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
+            m.pop(k, None)
+        m["run_ended_at"] = stamp
     mode = os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
     # Unlink first: os.open(..., mode) does NOT re-mode an existing inode, so a
     # leftover 0644 tmp from an earlier crash would be truncated and rewritten
-    # world-readable. (This writer removes the bearer rather than adding one,
-    # but the rule is the writer's, not the payload's.)
+    # world-readable. (Neither arm here writes a secret, but the rule belongs to
+    # the writer rather than to the payload it happens to be carrying.)
     try:
         os.unlink(tmp)
     except FileNotFoundError:
