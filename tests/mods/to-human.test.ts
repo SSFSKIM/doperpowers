@@ -24,6 +24,29 @@ describe('register', () => {
     expect(parsed.hasRecord).toBe(false)
   })
 
+  test('parse lifts a mark nested inside another into a span of its own', async () => {
+    const parsed = parse(
+      '<to-human>\nDone.\n\n<essential>\nTests fail.\n</essential>\nMore.\n</to-human>',
+    )
+
+    expect(parsed.spans).toEqual([
+      { kind: 'to-human', text: 'Done.', isOpen: false },
+      { kind: 'essential', text: 'Tests fail.', isOpen: false },
+      { kind: 'to-human', text: 'More.', isOpen: false },
+    ])
+    expect(parsed.hasRecord).toBe(false)
+  })
+
+  test('parse does not let an unclosed mark swallow the marks after it', async () => {
+    const parsed = parse('<to-human>Done.\n<essential>Tests fail.</essential>\n<need-input>Which')
+
+    expect(parsed.spans).toEqual([
+      { kind: 'to-human', text: 'Done.', isOpen: false },
+      { kind: 'essential', text: 'Tests fail.', isOpen: false },
+      { kind: 'need-input', text: 'Which', isOpen: true },
+    ])
+  })
+
   test('parse finds no spans in an unmarked message', async () => {
     const parsed = parse('Plain reply.')
 

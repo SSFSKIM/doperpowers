@@ -20,28 +20,76 @@ export type Parsed = {
   hasRecord: boolean
 }
 
-const TAG = /<(to-human|essential|need-input)>([\s\S]*?)(<\/\1>|$)/g
+const TAG = /<(\/?)(to-human|essential|need-input)>/g
 
 /**
  * Splits one assistant text block into its marked spans and notes whether a
- * working record surrounds them. An unclosed tag runs to the end of the text.
+ * working record surrounds them. Marks may nest (an `<essential>` inside a
+ * `<to-human>`): each contiguous run of text under one mark is a span of its
+ * own, in the order written. An unclosed mark runs to the end of the text.
  */
 export function parse(text: string): Parsed {
   const spans: Span[] = []
+  // One entry per open mark, innermost last; `span` is the entry's current
+  // run of text, or null once an inner mark has interrupted it.
+  const open: { kind: Kind; span: Span | null }[] = []
   let outside = ''
   let last = 0
 
-  for (const match of text.matchAll(TAG)) {
-    const [whole, kind, body, close] = match
-    const at = match.index ?? 0
-    outside += text.slice(last, at)
-    last = at + whole.length
-    spans.push({ kind: kind as Kind, text: (body ?? '').trim(), isOpen: close === '' })
+  const take = (piece: string) => {
+    const top = open[open.length - 1]
+    if (!top) {
+      outside += piece
+    } else if (top.span) {
+      top.span.text += piece
+    } else if (piece.trim() !== '') {
+      top.span = { kind: top.kind, text: piece, isOpen: true }
+      spans.push(top.span)
+    }
   }
 
-  outside += text.slice(last)
+  const close = (entry: { kind: Kind; span: Span | null }) => {
+    if (entry.span) {
+      entry.span.isOpen = false
+    }
+    entry.span = null
+  }
 
-  return { spans, hasRecord: outside.trim() !== '' }
+  for (const match of text.matchAll(TAG)) {
+    const [whole, slash, kind] = match
+    const at = match.index ?? 0
+    take(text.slice(last, at))
+    last = at + whole.length
+
+    if (slash === '') {
+      const top = open[open.length - 1]
+      if (top) {
+        close(top)
+      }
+      const span: Span = { kind: kind as Kind, text: '', isOpen: true }
+      spans.push(span)
+      open.push({ kind: kind as Kind, span })
+    } else {
+      const depth = open.map((entry) => entry.kind).lastIndexOf(kind as Kind)
+      if (depth === -1) {
+        continue // a stray closing tag: nothing to close
+      }
+      while (open.length > depth) {
+        close(open.pop()!)
+      }
+    }
+  }
+
+  take(text.slice(last))
+
+  for (const span of spans) {
+    span.text = span.text.trim()
+  }
+
+  return {
+    spans: spans.filter((span) => span.text !== '' || span.isOpen),
+    hasRecord: outside.trim() !== '',
+  }
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
