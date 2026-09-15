@@ -1,0 +1,22 @@
+{
+  "name": "markdown",
+  "version": "0.1.0",
+  "description": "Draws every assistant message with its own markdown typography: a measured column, spaced paragraphs, headings by weight and color, hanging bullets, wrapped tables, highlighted code and clickable links.",
+  "author": {
+    "name": "SSFSKIM"
+  },
+  "userConfig": {
+    "measure": {
+      "type": "number",
+      "description": "Widest column the text takes, in cells; narrower terminals use what they have.",
+      "default": 96,
+      "title": "Measure"
+    },
+    "accent": {
+      "type": "string",
+      "description": "Color of headings, bullets, rules and links: a name (cyan) or a hex value (#d97757).",
+      "default": "#d97757",
+      "title": "Accent color"
+    }
+  }
+}

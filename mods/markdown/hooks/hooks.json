@@ -1,0 +1,4 @@
+{
+  "description": "Markdown typography for assistant messages: the AssistantMessage site drawn from the plugin's own parse of the block",
+  "modules": ["./register.tsx"]
+}
