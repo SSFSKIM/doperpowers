@@ -1083,21 +1083,30 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   # this call. Bash restores it on return so nothing breaks today — which is
   # exactly what makes the collision worth not leaving in place.
   local meta="$DAEMON_HOME/$1.json" root wtname wtdir branch want base ahead head
-  local govern mine via note="" dirty=""
+  local govern mine own via note="" dirty=""
   [ -f "$meta" ] || return 0
   root="$(_meta_field "$meta" cwd)"
   wtname="$(_meta_field "$meta" worktree)"
-  # NO WORKTREE NAME, NOTHING TO RESCUE. The seat ran in a shared checkout,
-  # which has no private branch of its own — and pushing whatever that checkout
-  # happens to sit on is not the tick's business.
-  [ -n "$root" ] && [ -n "$wtname" ] || return 0
-  # The harness's own name-to-path rule (`sminos spawn --worktree`): the seat
-  # runs in <repo>/.claude/worktrees/<sanitized name>, on branch
-  # worktree-<sanitized name>. A re-filled seat records that path as its cwd
-  # already, so either shape resolves.
-  wtname="$(printf '%s' "$wtname" | sed 's/[^a-zA-Z0-9._-]/-/g')"
-  wtdir="$root"
-  [ "$(basename "$root")" = "$wtname" ] || wtdir="$root/.claude/worktrees/$wtname"
+  [ -n "$root" ] || return 0
+  # THE PATH IS THE ANSWER; THE `worktree` FIELD IS ONLY ONE WAY OF SPELLING IT.
+  # A seat spawned with `--worktree` records the name and a cwd the harness
+  # later rewrites to the worktree itself — so the name resolves through the
+  # harness's own rule (<repo>/.claude/worktrees/<sanitized name>, on branch
+  # worktree-<sanitized name>) or is already the tail of cwd. But `sminos fill`
+  # RE-FILLS a seat in place with an EMPTY worktree argument, on purpose: the
+  # seat's cwd is by then the worktree path, so the fresh session needs no
+  # `--worktree` to land there. That record carries `worktree: ""` while sitting
+  # in a perfectly ordinary ticket worktree, and a guard that read the field's
+  # presence as the answer skipped every re-filled predecessor — the single
+  # shape a recovery tick meets most often.
+  if [ -n "$wtname" ]; then
+    wtname="$(printf '%s' "$wtname" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+    wtdir="$root"
+    [ "$(basename "$root")" = "$wtname" ] || wtdir="$root/.claude/worktrees/$wtname"
+  else
+    wtdir="$root"
+    wtname="$(basename "$root" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+  fi
   [ -d "$wtdir" ] || return 0
 
   # THE META IS A CLAIM, NOT A PROOF. `cwd` is whatever the seat recorded, and a
@@ -1111,6 +1120,21 @@ _predecessor_work() {  # <session uuid> — a bootstrap block on stdout, or noth
   mine="$(_common_dir "$wtdir")" || return 0
   if [ "$govern" != "$mine" ]; then
     echo "resume: the predecessor meta points at $wtdir, which is not part of the repo this tick governs; nothing pushed and nothing named" >&2
+    return 0
+  fi
+
+  # A SHARED CHECKOUT HAS NO PRIVATE BRANCH, AND NOTHING HERE IS THE TICK'S TO
+  # RESCUE: whatever it happens to sit on belongs to everyone who works in it,
+  # and its uncommitted changes may be the operator's own. That used to be read
+  # off the `worktree` field being empty, which the re-fill case made untrue in
+  # both directions. Ask git: a LINKED worktree keeps its own git dir under the
+  # common dir, so the two paths differ; in the main checkout they are one and
+  # the same. Canonicalized for the same reason _common_dir is — on macOS a
+  # /var path and its /private/var realpath are two spellings of one directory.
+  own="$(git -C "$wtdir" rev-parse --path-format=absolute --git-dir 2>/dev/null)" || return 0
+  own="$(cd "$own" 2>/dev/null && pwd -P)" || return 0
+  if [ "$own" = "$mine" ]; then
+    echo "resume: the predecessor meta points at $wtdir, which is the repo's main checkout and not a worktree of its own; nothing pushed and nothing named" >&2
     return 0
   fi
 
