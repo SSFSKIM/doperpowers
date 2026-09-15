@@ -17,6 +17,64 @@ CLAUDE_PROMPT_TIMEOUT="${CLAUDE_PROMPT_TIMEOUT:-90}"
 echo "=== Test: subagent-driven-execution skill ==="
 echo ""
 
+# Answer-line patterns for the fixed-structure prompts below. Each anchors its
+# option to the START of the answer value, because grep matches the letters
+# anywhere: a bare ".*no" also fires on the "no" inside "not"/"cannot", so
+# "yes, but not directly" — the design error the assertion exists to catch —
+# read as "no". "<" is excluded from the run-up so a placeholder echoed back
+# from the prompt ("<yes or no>") is never read as a choice. Matching stays
+# case-insensitive: that is assert_contains's deliberate choice (test-helpers.sh).
+#
+# The same anchor decides which option a two-option answer picked: unanchored,
+# "task text pasted into the prompt, not a brief file path" passed as "brief".
+# One leading word is tolerated so "a brief"/"the brief"/"brief" all count,
+# which is far short of reaching the losing option's own mention of it.
+PAT_SELF_REVIEW_REPLACES_NO='Self-review replaces external review:[^a-zA-Z<]*no'
+PAT_REQUIREMENTS_AS_BRIEF='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *brief'
+PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
+
+# These patterns are the test, so pin their verdicts on the near-miss phrasings
+# before spending live model time. Fields: want|pattern variable|answer line.
+check_answer_patterns() {
+    local failures=0 want var line got
+    while IFS='|' read -r want var line; do
+        [ -n "$want" ] || continue
+        if printf '%s\n' "$line" | grep -qi "${!var}"; then got=match; else got=nomatch; fi
+        if [ "$got" != "$want" ]; then
+            printf '  [FAIL] answer-line pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
+                "$want" "$got" "${!var}" "$line"
+            failures=$((failures + 1))
+        fi
+    done
+    [ "$failures" -eq 0 ]
+}
+
+echo "Pre-flight: answer-line assertion patterns..."
+
+check_answer_patterns <<'FIXTURES' || exit 1
+nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: yes, notionally
+nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: <yes or no>
+match|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: no
+match|PAT_SELF_REVIEW_REPLACES_NO|**Self-review replaces external review:** No
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: brief file path
+match|PAT_REQUIREMENTS_AS_BRIEF|**Requirements reach the executor as:** a brief file path - the brief holds the full text of the task
+match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path (not the task text pasted into the prompt)
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt, not a brief file path
+nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes, but not directly
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes (it cannot be skipped)
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes - it has no brief
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: <yes or no>
+match|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: no
+match|PAT_EXECUTOR_READS_PLAN_NO|**Executor must read the plan file:** No
+FIXTURES
+
+echo "  [PASS] Answer-line patterns read the chosen option, not stray letters"
+echo ""
+
 # Test 1: Verify skill can be loaded
 echo "Test 1: Skill loading..."
 
@@ -64,7 +122,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "Self-review replaces external review:.*no" "Self-review does not replace external review"; then
+if assert_contains "$output" "$PAT_SELF_REVIEW_REPLACES_NO" "Self-review does not replace external review"; then
     : # pass
 else
     exit 1
@@ -129,20 +187,24 @@ fi
 
 echo ""
 
-# Test 7: Verify full task text is provided
+# Test 7: Verify requirements are handed over as a brief file
+# Both assertions anchor to their answer line: grep is line-based, so the
+# label and the chosen option must appear together. An unanchored
+# alternation here matched incidental prose ("the brief holds the full text
+# of the task") and passed without reading the answer at all.
 echo "Test 7: Task context provision..."
 
-output=$(run_claude "In subagent-driven-execution, how does the controller provide task information to the executor subagent? Answer using exactly this structure:
-Controller provides: <directly or by file>
-Executor must read plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
+output=$(run_claude "In subagent-driven-execution, the controller dispatches a task-executor subagent to do one task of the plan. Answer using exactly this structure, choosing one option per line:
+Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
+Executor must read the plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "provide.*directly\|full.*text\|paste\|include.*prompt" "Provides text directly"; then
+if assert_contains "$output" "$PAT_REQUIREMENTS_AS_BRIEF" "Requirements handed over as a brief file"; then
     : # pass
 else
     exit 1
 fi
 
-if assert_contains "$output" "Executor must read plan file:.*no" "Doesn't make subagent read file"; then
+if assert_contains "$output" "$PAT_EXECUTOR_READS_PLAN_NO" "Executor is not sent to the plan file"; then
     : # pass
 else
     exit 1
@@ -155,7 +217,7 @@ echo "Test 8: Worktree requirement..."
 
 output=$(run_claude "What workflow skills are required before using subagent-driven-execution? List any prerequisites or required skills." "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "using-git-worktrees\|worktree" "Mentions worktree requirement"; then
+if assert_contains "$output" "worktree" "Mentions worktree requirement"; then
     : # pass
 else
     exit 1
