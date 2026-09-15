@@ -33,6 +33,15 @@ PAT_SELF_REVIEW_REPLACES_NO='Self-review replaces external review:[^a-zA-Z<]*no'
 PAT_REQUIREMENTS_AS_BRIEF='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *brief'
 PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
 
+# Free-prose assertion: the reviewer engages with the artifact rather than the
+# executor's report. One engagement verb plus one artifact noun, in that order,
+# replaces an alternation that enumerated verb/noun pairs and so turned the
+# verdict on vocabulary: it accepted "reads the code" but rejected "verify
+# against the actual diff" and "judge the implementation" — the wording
+# agents/task-reviewer.md itself uses. An answer that only restates the report
+# names no artifact at all, which is what keeps this from being too broad.
+PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|review\|judge\|look at\|against\|evaluate\).*\(code\|diff\|implementation\)\|actual \(code\|diff\|implementation\)\|code itself'
+
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
 # before spending live model time. Fields: want|pattern variable|answer line.
 check_answer_patterns() {
@@ -41,7 +50,7 @@ check_answer_patterns() {
         [ -n "$want" ] || continue
         if printf '%s\n' "$line" | grep -qi "${!var}"; then got=match; else got=nomatch; fi
         if [ "$got" != "$want" ]; then
-            printf '  [FAIL] answer-line pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
+            printf '  [FAIL] assertion pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
                 "$want" "$got" "${!var}" "$line"
             failures=$((failures + 1))
         fi
@@ -49,7 +58,7 @@ check_answer_patterns() {
     [ "$failures" -eq 0 ]
 }
 
-echo "Pre-flight: answer-line assertion patterns..."
+echo "Pre-flight: assertion patterns..."
 
 check_answer_patterns <<'FIXTURES' || exit 1
 nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: yes, notionally
@@ -70,9 +79,15 @@ nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes
 nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: <yes or no>
 match|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: no
 match|PAT_EXECUTOR_READS_PLAN_NO|**Executor must read the plan file:** No
+match|PAT_REVIEWER_READS_ARTIFACT|Verify every implementation claim against the actual diff.
+match|PAT_REVIEWER_READS_ARTIFACT|Judge the code against the task brief and global constraints.
+match|PAT_REVIEWER_READS_ARTIFACT|trust the diff and judge the implementation on its merits
+match|PAT_REVIEWER_READS_ARTIFACT|Read the code, do not trust the report.
+match|PAT_REVIEWER_READS_ARTIFACT|Inspect the actual implementation.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|Accept the executor's report and approve if it claims success.
 FIXTURES
 
-echo "  [PASS] Answer-line patterns read the chosen option, not stray letters"
+echo "  [PASS] Assertion patterns read the chosen option and the artifact, not stray letters"
 echo ""
 
 # Test 1: Verify skill can be loaded
@@ -160,7 +175,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "read.*code\|inspect.*code\|verify.*code\|examin.*code\|look.*at.*code\|read.*diff\|inspect.*diff\|examin.*diff\|review.*diff\|check.*code\|against.*code\|code itself\|actual code\|actual implementation" "Reviewer reads code"; then
+if assert_contains "$output" "$PAT_REVIEWER_READS_ARTIFACT" "Reviewer reads the code or diff"; then
     : # pass
 else
     exit 1
