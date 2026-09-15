@@ -15,7 +15,9 @@
 # board-transition: an in-progress child pulls its new epic chain, and an
 # epic whose last active child leaves may return for recomposition.
 # In API mode the server enforces the same refusal set and this script only
-# relays it.
+# relays it. A run bearer holds exactly one of these ops there: --block on its
+# OWN ticket, to record a dependency it found mid-build (arkho#49). Everything
+# else on this script is a human's.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh

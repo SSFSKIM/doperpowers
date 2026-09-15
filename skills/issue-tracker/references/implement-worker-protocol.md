@@ -107,8 +107,10 @@ discriminant — WHO UNPARKS IT — and the full state vocabulary are owned
 by doperpowers:issue-tracker, the board schema's single home: open that
 skill and classify the park against it before writing anything. In
 particular, waiting on other tickets is never a park state there —
-dependencies are edges, and the ticket goes back to
-`ready-for-implementer`.
+dependencies are edges: cut the `blocked-by` edge FIRST, then take the
+dependency yield back to `ready-for-implementer`. That order is not
+style — the yield ends your run, and it is refused `not-blocked` unless
+the edge is already on record.
 Every park additionally carries a 3–6 line ORIENTATION SUMMARY in its
 comment (what you read, what you learned, where the answers will land) —
 it prices the fresh-dispatch fallback cheaply while you are still
