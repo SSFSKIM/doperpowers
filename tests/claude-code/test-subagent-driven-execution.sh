@@ -17,6 +17,46 @@ CLAUDE_PROMPT_TIMEOUT="${CLAUDE_PROMPT_TIMEOUT:-90}"
 echo "=== Test: subagent-driven-execution skill ==="
 echo ""
 
+# Answer-line patterns for the fixed-structure prompts below. Each anchors its
+# option to the START of the answer value, because grep matches the letters
+# anywhere: a bare ".*no" also fires on the "no" inside "not"/"cannot", so
+# "yes, but not directly" — the design error the assertion exists to catch —
+# read as "no". "<" is excluded from the run-up so a placeholder echoed back
+# from the prompt ("<yes or no>") is never read as a choice. Matching stays
+# case-insensitive: that is assert_contains's deliberate choice (test-helpers.sh).
+PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
+
+# These patterns are the test, so pin their verdicts on the near-miss phrasings
+# before spending live model time. Fields: want|pattern variable|answer line.
+check_answer_patterns() {
+    local failures=0 want var line got
+    while IFS='|' read -r want var line; do
+        [ -n "$want" ] || continue
+        if printf '%s\n' "$line" | grep -qi "${!var}"; then got=match; else got=nomatch; fi
+        if [ "$got" != "$want" ]; then
+            printf '  [FAIL] answer-line pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
+                "$want" "$got" "${!var}" "$line"
+            failures=$((failures + 1))
+        fi
+    done
+    [ "$failures" -eq 0 ]
+}
+
+echo "Pre-flight: answer-line assertion patterns..."
+
+check_answer_patterns <<'FIXTURES' || exit 1
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes, but not directly
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes (it cannot be skipped)
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes - it has no brief
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes
+nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: <yes or no>
+match|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: no
+match|PAT_EXECUTOR_READS_PLAN_NO|**Executor must read the plan file:** No
+FIXTURES
+
+echo "  [PASS] Answer-line patterns read the chosen option, not stray letters"
+echo ""
+
 # Test 1: Verify skill can be loaded
 echo "Test 1: Skill loading..."
 
@@ -146,7 +186,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "Executor must read the plan file:.*no" "Executor is not sent to the plan file"; then
+if assert_contains "$output" "$PAT_EXECUTOR_READS_PLAN_NO" "Executor is not sent to the plan file"; then
     : # pass
 else
     exit 1
