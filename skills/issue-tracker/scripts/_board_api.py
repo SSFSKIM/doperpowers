@@ -42,6 +42,26 @@ class ClaimObsolete(Exception):
         self.code = code
 
 
+class RepoMismatch(Exception):
+    """`403 repo-mismatch` where the caller named no repo and the OBJECT it
+    named turned out to be another's.
+
+    Routable only where that is a STANDING fact rather than a caller mistake —
+    the run-lifecycle routes (`renew`, `bind`, `end`), which name a run and no
+    repo, so the server resolves the repo through the run's TICKET and a scoped
+    credential is simply not entitled to it. Nothing a later call can do changes
+    that answer, so a caller that treats it as a transient failure retries it on
+    every tick forever. Elsewhere — a register, a claim — the same code IS a
+    caller mistake (this checkout naming a repo it may not file into) and stays
+    fatal.
+
+    Carries only the message: the board deliberately does not name the owning
+    repo (API.md § the run-lifecycle repo rule — "a caller that cannot act in it
+    is owed a refusal rather than a fact"), so `not mine` is the whole of what a
+    caller can learn. It is also all it needs to stop asking.
+    """
+
+
 def die(msg) -> NoReturn:
     # NoReturn, not decoration: callers treat `die` as terminal, so without it
     # a checker reads every `x = die(...) or x` path as reachable with x=None.
@@ -137,7 +157,27 @@ def meta_is_mine(meta, board, repo_key=""):
     unstamped meta would strand a live run with no renewal, no relay and no
     answer, while honouring one costs nothing on a machine whose only stamped
     metas belong to somebody. Every meta written from now on carries both.
+
+    `board_detached` is the third dimension, and the one the SERVER settles. It
+    maps a binding pair to the refusal that binding met: the board answered a
+    run-lifecycle call on this meta's run with `repo-mismatch`, so this run is
+    not that binding's to act on, whatever the two stamps above say. That is the
+    only repair available from such an answer — the board names the caller's own
+    scope and not the owning repo, so nobody can learn from it WHOSE the run is,
+    only that it is not theirs.
+
+    PER BINDING, not machine-wide, and the difference is the whole safety of the
+    mark. A legacy meta reads as EVERY binding's, so the binding that is refused
+    is routinely not the one that owns the run — detaching for all of them would
+    let any neighbour's tick strand the rightful owner's LIVE run: no renewal,
+    lease expires, the board reclaims a worker that is still writing. Recorded
+    per binding, each one is refused exactly once and then stops asking, and the
+    owner (which is never refused) keeps full reach. A re-fill drops the whole
+    map with the rest of the run binding: a RUN is detached, never a seat.
     """
+    det = meta.get("board_detached")
+    if isinstance(det, dict) and det.get(binding_pair(board, repo_key)):
+        return False
     mboard = str(meta.get("board") or "").strip()
     if mboard and board and mboard.rstrip("/") != str(board).rstrip("/"):
         return False
@@ -205,6 +245,17 @@ def binding_ident():
     return ("gh:" + name, "")
 
 
+def binding_pair(board, repo_key):
+    """The canonical spelling of a (board, repo) identity: "<board>|<repo>".
+
+    One string for the two dimensions that only settle a binding together — the
+    thing the store digest below hashes, and the key a meta's `board_detached`
+    map files a refusal under. Written once so a refusal recorded by a sweep and
+    the scan that later reads it can never spell the same binding differently.
+    """
+    return "%s|%s" % (board, repo_key)
+
+
 def binding_digest():
     """The 16 hex characters every per-board store under the registry root is
     filed by: sha256("<board>|<repo>").
@@ -215,8 +266,7 @@ def binding_digest():
     the identity alone — one service serves several repos, and two services
     could each serve a repo of the same name.
     """
-    board, repo_key = binding_ident()
-    return hashlib.sha256(("%s|%s" % (board, repo_key)).encode()).hexdigest()[:16]
+    return hashlib.sha256(binding_pair(*binding_ident()).encode()).hexdigest()[:16]
 
 
 def store_dir(name):
@@ -556,14 +606,15 @@ def _error(payload, status):
 
 
 def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
-            obsolete_codes=(), absent=()):
+            obsolete_codes=(), absent=(), mismatch=False):
     """One HTTP exchange. Dies with the contract's error identifier on
     refusal; raises RunEnded on 409 run-ended (callers route on it), and
     ClaimObsolete on any code the caller named in `obsolete_codes` — named
     per route rather than globally, because the same code is a routable
     outcome on one route and an ordinary refusal on another. `absent` names
     the codes whose whole meaning is "the row you asked for is not there",
-    which is an answer rather than a fault: those return None."""
+    which is an answer rather than a fault: those return None. `mismatch` is
+    that same per-route switch for `repo-mismatch` (see RepoMismatch)."""
     if retry is None:
         retry = method == "GET"
     data = json.dumps(body).encode() if body is not None else None
@@ -584,6 +635,8 @@ def request(method, path, body=None, principal="auto", ok=(200,), retry=None,
             code, message = _error(e.read().decode(), e.code)
             if code == "run-ended":
                 raise RunEnded(message) from None
+            if mismatch and code == "repo-mismatch":
+                raise RepoMismatch(message) from None
             if code in obsolete_codes:
                 raise ClaimObsolete(code, message) from None
             if code in absent:
@@ -648,7 +701,16 @@ def ack(answer_event_id):
 
 
 def renew(run_id):
-    return request("POST", "/runs/%s/renew" % int(run_id), {}, "automation")
+    # A renewal NAMES A RUN AND NO REPO, so the server resolves the repo through
+    # that run's ticket — and the daemon registry a tick derives its work-list
+    # from is machine-global, so it hands this binding runs it is not entitled
+    # to (a meta written before the repo stamp existed reads as everyone's).
+    # `repo-mismatch` is therefore an ordinary outcome of the scan here rather
+    # than a caller mistake, and it is permanent: routed, the tick records it
+    # once and stops asking; died on, it is one refused POST per run per tick,
+    # forever.
+    return request("POST", "/runs/%s/renew" % int(run_id), {}, "automation",
+                   mismatch=True)
 
 
 def bind(run_id, store_ns, project_key, session_id):

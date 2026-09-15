@@ -1561,9 +1561,15 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
         # read as dispatched — and the board client refuses a dispatched seat
         # whose bind never lands. A dispatched re-fill re-stamps it, so the drop
         # skips anything this launch supplies (meta_set removes AFTER it merges).
+        # `board_detached` goes with them for the same reason: it records that
+        # the board refused a lifecycle call on the PREDECESSOR's run, and a
+        # seat that outlived that refusal is not detached — it is unbound, and
+        # the next bind decides. Left behind, the stamp would hide the new
+        # occupant from every registry scan on the machine.
         drop = ("pending_short", "engine", "pid", "event_log", "run_id", "run_bearer", "fence",
                 "bind_confirmed", "nonce", "run_ended_at", "ticket", "board", "board_dispatch",
-                "closure_package", "retired_from", "relayed_comment", "sweep_recoveries")
+                "board_detached", "closure_package", "retired_from", "relayed_comment",
+                "sweep_recoveries")
         meta_set(rec_id, {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1,
                           "history": history[-10:]},
                  remove=tuple(k for k in drop if k not in launch))

@@ -111,6 +111,31 @@ t "board keys compare normalized"            "mine=True"  mine "{\"board\":\"$AP
 t "gh: a matching owner/name is ours"        "mine=True"  mine '{"board":"gh:o/r"}' gh:o/r
 t "gh: another repo is not"                  "mine=False" mine '{"board":"gh:o/other"}' gh:o/r
 t "gh: an unstamped meta is still ours"      "mine=True"  mine '{}' gh:o/r
+# DETACHED OUTRANKS BOTH STAMPS — it is the one dimension the SERVER settled.
+# A run-lifecycle call on this meta's run was refused `repo-mismatch`, so the
+# run is not that binding's whatever the stamps say, and no later call can
+# change it. The board names the CALLER's own scope rather than the owning repo
+# (verified against the service), so this is the only repair such an answer
+# admits.
+DET_B="{\"$API_B|testrepo\":{\"code\":\"repo-mismatch\"}}"
+t "the refused binding is detached"          "mine=False" \
+  mine "{\"board\":\"$API_B\",\"board_repo\":\"testrepo\",\"board_detached\":$DET_B}" \
+  "$API_B" testrepo
+# ...and NOBODY ELSE IS. This is the safety of the whole mark: a legacy meta
+# reads as every binding's, so the tick that meets the refusal is routinely a
+# neighbour of the run's real owner. Detached machine-wide, that neighbour would
+# strand a LIVE run — no renewal, lease expires, the board reclaims a worker
+# still writing. The owner is never refused, so it never appears in this map.
+t "a neighbour's refusal does not detach the owner" "mine=True" \
+  mine "{\"board_detached\":$DET_B}" "$API_B" otherrepo
+t "gh keys the same way, with its empty repo dimension" "mine=False" \
+  mine '{"board":"gh:o/r","board_detached":{"gh:o/r|":{"code":"repo-mismatch"}}}' gh:o/r
+# Only a refusal ON RECORD detaches. An absent, empty or malformed map is not
+# one, and reading it as one would strand a live run silently.
+t "an empty detach map detaches nothing"     "mine=True" \
+  mine "{\"board\":\"$API_B\",\"board_detached\":{}}" "$API_B" testrepo
+t "nor does a malformed one"                 "mine=True" \
+  mine "{\"board\":\"$API_B\",\"board_detached\":\"repo-mismatch\"}" "$API_B" testrepo
 
 
 t "claim returns dict + auth header sent" "41" \

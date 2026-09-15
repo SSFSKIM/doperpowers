@@ -161,6 +161,11 @@ mkdir -p "$DAEMON_HOME"
 # lock and the state it serializes can never disagree about which board they
 # belong to.
 _LOCK_KEY="$(_api_py -c 'import _board_api as A; print(A.binding_digest())')"
+# The same identity UNHASHED — what a refusal this tick meets is filed under on
+# the meta it met it on, and what meta_is_mine compares a record against. Read
+# from the one resolver so a mark this tick writes and the scan that reads it
+# back can never spell this binding two ways.
+_BINDING_PAIR="$(_api_py -c 'import _board_api as A; print(A.binding_pair(*A.binding_ident()))')"
 LOCK="$DAEMON_HOME/.sweep-api.$_LOCK_KEY.lock"
 # The lock NAMES ITS OWNER. Age alone was the whole steal rule, and age alone
 # is wrong in both directions: a legitimate tick can run for the better part of
@@ -485,12 +490,22 @@ PY
 #           every transcript read still lands on the OLD turn. Resuming again
 #           forks AGAIN: a fresh zombie turn every tick, each one possibly live
 #           on the same run.
-#   dead    the session is gone from the harness (`absent`), or its turn errored
-#           out. A dead session's lease is deliberately NOT renewed — letting it
-#           expire is how the server reclaims the run and hands the ticket to a
-#           successor, which IS the designed recovery. Renewing it instead
-#           immortalizes the failure: the ticket stays pinned to a worker that
-#           will never write again, forever.
+#   dead    the session is gone from the harness (`absent`), its turn errored
+#           out, or its seat was RETIRED. A dead session's lease is deliberately
+#           NOT renewed — letting it expire is how the server reclaims the run
+#           and hands the ticket to a successor, which IS the designed recovery.
+#           Renewing it instead immortalizes the failure: the ticket stays
+#           pinned to a worker that will never write again, forever.
+#
+# A RETIRED SEAT IS DEAD, and reading it as live is how `sminos retire` failed
+# to silence a run. `sminos sync` answers `noop` for ANY status outside
+# working/blocked/idle — it declines to reconcile a record it considers
+# finished — and `noop` was read here as "nothing changed, so still live". The
+# verdict now asks the record the same question sync asked: a status sync will
+# never move again is terminal, whatever word it happens to be (`retired`,
+# `stopped`, `gone`, `failed`). A meta carrying NO status at all stays live, by
+# the same legacy-is-ours rule the registry scans follow — an absent field is
+# an old writer, not a finished seat.
 #
 # pending_short is never cleared once written (a later successful resume only
 # re-stamps `current`/`status`), so the UNRESOLVED fork is the PAIR
@@ -511,8 +526,11 @@ try:
         m = json.load(f)
 except Exception:
     m = {}
-if m.get("status") == "error":
+status = str(m.get("status") or "")
+if status == "error":
     print("forked" if m.get("pending_short") else "dead")
+elif status and status not in ("working", "blocked", "idle"):
+    print("dead")   # retired / stopped / gone — sync will never move it again
 else:
     print("live")
 PY
@@ -550,6 +568,14 @@ except A.RunEnded as e:
     # running. The resume phase claims a successor for it.
     print("run %s: ended (%s) — resume path" % (os.environ["T_RUN"], e))
     sys.exit(3)
+except A.RepoMismatch as e:
+    # Not an error either, and above all not a RETRY: the run belongs to
+    # another repo on this service, which no later tick can change. Said
+    # exactly once, because the detach below takes the meta out of THIS
+    # binding's scans — the next tick has nothing left to say it about.
+    print("run %s: repo-mismatch (%s) — this binding may not renew it"
+          % (os.environ["T_RUN"], e))
+    sys.exit(4)
 PY
     case "$rc" in
       0)
@@ -572,6 +598,8 @@ PY
       esac ;;
       3) _retire_run_locally "$path" "$run" \
            || echo "run $run: ended, but the local lane could not be retired — it keeps a dispatch slot until the meta is repaired" >&2 ;;
+      4) _detach_meta_locally "$path" "$run" "$_BINDING_PAIR" repo-mismatch "renew refused: this run is not in this binding's repo" \
+           || echo "run $run: repo-mismatch, but the meta could not be detached — the refusal repeats next tick" >&2 ;;
       *) echo "run $run: renew failed — retried next tick" >&2 ;;
     esac
   done < <(_registry_metas)

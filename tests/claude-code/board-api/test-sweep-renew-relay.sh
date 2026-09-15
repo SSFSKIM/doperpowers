@@ -72,6 +72,8 @@ cat > "$FIX" <<'JSON'
   "body":{"error":{"code":"run-ended","message":"reaped"}}},
  {"method":"POST","path":"/runs/50/renew","status":409,
   "body":{"error":{"code":"run-ended","message":"reclaimed mid-tick"}}},
+ {"method":"POST","path":"/runs/60/renew","status":403,
+  "body":{"error":{"code":"repo-mismatch","message":"run 60 is not in this repo"}}},
  {"method":"POST","path":"/runs/41/bind","status":200,"body":{"bound":true}},
  {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
   "body":[{"answerEventId":118,"ticketId":12,"correlationId":"evt-101",
@@ -304,6 +306,88 @@ SW renew > "$TDIR/renew-nobearer.out" 2>&1 || true
 t  "a bearerless bind repair is refused"   "bind refused for run 41" cat "$TDIR/renew-nobearer.out"
 t  "and the tick reports the failed repair" "bind repair FAILED"     cat "$TDIR/renew-nobearer.out"
 nt "nothing is confirmed"                   '"bind_confirmed": true' cat "$DH/u-1.json"
+
+# =========================================================================
+# A REFUSAL A TICK CANNOT LEARN FROM IS PERMANENT NOISE. Two metas reached the
+# renew set on every tick forever, and neither renewal could ever succeed:
+#
+#   u-9   a LEGACY meta (no repo stamp, so every api binding on this machine
+#         reads it as its own) bound to a run that belongs to ANOTHER repo on
+#         the same service. The server answers `403 repo-mismatch` and
+#         deliberately does not name the owning repo — a caller that may not act
+#         in it is owed a refusal rather than a fact — so "not mine" is the
+#         whole of what a tick can learn, and it is enough to stop. Retried as
+#         an ordinary failure instead, it logged `renew failed — retried next
+#         tick` on every tick of every binding here (observed continuously
+#         2026-09-12 → 09-14).
+#   u-0  a seat its operator RETIRED. `sminos retire` stops the session and
+#         writes status=retired, and `sminos sync` answers `noop` for any status
+#         outside working/blocked/idle — which the liveness verdict read as
+#         "nothing to reconcile, so still live". Renewing a retired seat's lease
+#         immortalizes its ticket on a worker that will never write again, which
+#         is the very thing the dead-session rule above exists to prevent.
+# =========================================================================
+: > "$FIX.log"
+meta u-9 '{"uuid":"u-9","current":"u-9","status":"working","run_id":60,"fence":1,
+           "lane":"implementer","bind_confirmed":true,"ticket":"301","run_bearer":"tok-w9"}'
+meta u-0 '{"uuid":"u-0","current":"u-0","status":"retired","run_id":61,"fence":1,
+            "lane":"implementer","bind_confirmed":true,"ticket":"302","run_bearer":"tok-w10"}'
+OUT_RM="$TDIR/renew-mismatch.out"
+SW renew > "$OUT_RM" 2>&1 || true
+
+t  "a repo-mismatch refusal is named for what it is" "run 60: repo-mismatch" cat "$OUT_RM"
+nt "and never reported as a retryable failure"       "run 60: renew failed"  cat "$OUT_RM"
+detach_of() {  # detach_of <uuid> <repo key> — the mark THAT binding left, if any
+  T_KEY="api:http://127.0.0.1:$PORT|$2" python3 -c 'import json, os, sys
+d = (json.load(open(sys.argv[1])).get("board_detached") or {}).get(os.environ["T_KEY"]) or {}
+print("detached=%s code=%s" % (bool(d), d.get("code") or ""))' "$DH/$1.json"; }
+t  "the refused binding marks itself off"  "detached=True code=repo-mismatch"  detach_of u-9 testrepo
+# And NOBODY ELSE. The meta is legacy, so it reads as every binding's — the tick
+# that meets the refusal is routinely a neighbour of the run's real owner, and a
+# machine-wide mark would take a LIVE run away from that owner: no renewal, the
+# lease expires, the board reclaims a worker still writing.
+t  "and leaves every other binding's reach alone" "detached=False" detach_of u-9 otherrepo
+# The run association is deliberately NOT stripped. Unlike an ended run, a
+# detached one may still be held by a live worker on its own board, and taking
+# its bearer away would break that worker's own writes. Detaching says only
+# "no tick on this machine may speak for this run".
+t  "and the run association survives the detach"  "run=60"            slot_for u-9
+nt "a retired seat's lease is never renewed"      "/runs/61/renew"    cat "$FIX.log"
+
+# The SECOND tick is the whole point: a stamp nothing reads changes nothing.
+: > "$FIX.log"
+OUT_RM2="$TDIR/renew-mismatch2.out"
+SW renew > "$OUT_RM2" 2>&1 || true
+nt "the second tick issues no renew for the detached run" "/runs/60/renew" cat "$FIX.log"
+nt "nor for the retired seat"                     "/runs/61/renew"    cat "$FIX.log"
+nt "and reports neither of them again"            "run 60:"           cat "$OUT_RM2"
+t  "while the live runs are renewed exactly as before" '"path": "/runs/41/renew"' cat "$FIX.log"
+
+# ...and the NEIGHBOUR binding is still free to ask. It has to be: a legacy meta
+# reads as everyone's, so our refusal says nothing about whether the run is
+# theirs. It marks itself off when the board refuses it in turn — one refused
+# call per binding, once, and then the machine is quiet.
+SECOND_RM="$(mkrepo)"; mkdir -p "$SECOND_RM/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"otherrepo"}' "$PORT" \
+  > "$SECOND_RM/.doperpowers/board.json"
+SW_OTHER() {
+  ( cd "$SECOND_RM" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
+      "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+: > "$FIX.log"
+SW_OTHER renew > "$TDIR/renew-mismatch-other.out" 2>&1 || true
+t  "our mark never silences a neighbour" '"path": "/runs/60/renew"'   cat "$FIX.log"
+t  "which marks itself off on its own refusal" "detached=True code=repo-mismatch" \
+   detach_of u-9 otherrepo
+: > "$FIX.log"
+SW_OTHER renew > /dev/null 2>&1 || true
+nt "so its second tick is quiet as well"  "/runs/60/renew"            cat "$FIX.log"
+# The first binding's mark survived the second's write — two bindings detaching
+# each other in turn would leave neither of them ever stopping.
+t  "and neither mark erased the other"    "detached=True code=repo-mismatch" \
+   detach_of u-9 testrepo
+rm -f "$DH/u-9.json" "$DH/u-0.json"
 
 # =========================================================================
 # Phase 2 — relay
