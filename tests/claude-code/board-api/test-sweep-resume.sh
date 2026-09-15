@@ -1626,6 +1626,40 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
 
+# ---- a repo with NO BASE REF the tick can resolve -------------------------
+# An adopter on `trunk` that publishes no origin/HEAD resolves none of
+# _base_ref's candidates. Leaving `ahead` at 0 for that case sent a CLEAN
+# worktree full of real commits down the silent path: the rescue was lost
+# outright, and the successor redid the ticket. No yardstick is UNKNOWN, and
+# unknown still deserves a handover.
+PNFIX="$TDIR/fix-pred-nobase.json"; predfix "$PNFIX" 80
+rboard "$PNFIX"
+git init -q --bare "$TDIR/origin-12-nobase.git"
+gitx "$RREPO" remote add origin "$TDIR/origin-12-nobase.git"
+echo base > "$RREPO/f"; gitx "$RREPO" add -A; gitx "$RREPO" commit -qm base
+gitx "$RREPO" branch -M trunk
+gitx "$RREPO" push -q origin trunk
+PN_ROOT="$RREPO"; PN_WT="$RREPO/.claude/worktrees/12-nobase"
+gitx "$RREPO" worktree add -q -b worktree-12-nobase "$PN_WT" trunk
+echo m1 > "$PN_WT/m1"; gitx "$PN_WT" add m1
+gitx "$PN_WT" commit -qm "a real milestone nothing here can measure"
+PN_HEAD="$(git -C "$PN_WT" rev-parse --short HEAD)"
+PNDH="$TDIR/dh-pred-nobase"; predreg "$PNDH" "$PN_ROOT" 12-nobase
+: > "$SPAWN_LOG"
+OUTPN="$TDIR/pred-nobase.out"
+RSW "$PNDH" > "$OUTPN" 2>&1 || true
+
+t  "a clean worktree the tick cannot measure is still handed over" \
+   "UNMEASURED"                                                     cat "$SPAWN_LOG"
+t  "with the commit it stands at"    "$PN_HEAD"                     cat "$SPAWN_LOG"
+t  "and the branch it is on"         "worktree-12-nobase"           cat "$SPAWN_LOG"
+t  "and the tick says why in its own log" "no base ref this tick could resolve" \
+   cat "$OUTPN"
+# "ahead" has no meaning without a base, and a tick that cannot say what would
+# be published does not publish.
+nt "but nothing it could not measure is published" "worktree-12-nobase" \
+   git -C "$TDIR/origin-12-nobase.git" branch --list
+
 # ---- a DETACHED HEAD: no branch to publish, but plenty to discover -------
 # Publication eligibility and discovery are different questions, and returning
 # on a detached HEAD answered the second with the first: a worker reclaimed
