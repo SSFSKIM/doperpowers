@@ -1333,20 +1333,26 @@ out="$(run board-transition.sh "$be_t" in-progress "plan-execution: docs/plans/b
 assert_contains "$out" "#$be_t: in-design → in-progress" "a leaf Architect takes the build edge itself"
 assert_contains "$(state "s['issues']['$be_t']['body']")" "plan: docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" "the build edge records the plan pin"
 assert_contains "$(state "s['issues']['$be_t']['body']")" "branch: tick/build-edge" "...and the branch the sha is reachable from"
-# pre-spec is the DOWN-shortcircuit's sentinel: it names no revision, so a build
-# carrying it leaves the review loop nothing to audit against.
+# pre-spec on the build edge is a direct ticket the Architect builds from its
+# own body (the down-shortcircuit no longer hands off unless the edge is
+# refused): no revision to pin, but the branch is still required — a recovery
+# Executor runs DIRECT from the body on it.
 run board-register.sh "Build edge pre-spec probe" enhancement P1 --state ready-for-architect --body-file "$SPEC_BODY" >/dev/null
 be_ps_t="$(state "s['next']-1")"
 run board-transition.sh "$be_ps_t" in-design >/dev/null
-be_err="$(run board-transition.sh "$be_ps_t" in-progress "plan-execution: none" --branch tick/build-edge --plan pre-spec 2>&1 || true)"
-assert_contains "$be_err" "down-shortcircuit" "--plan pre-spec is refused on the build edge"
-assert_contains "$(state "s['issues']['$be_ps_t']['labels']")" "status:in-design" "the refused build wrote nothing"
+be_err="$(run board-transition.sh "$be_ps_t" in-progress "direct: pre-spec suffices as the plan" --plan pre-spec 2>&1 || true)"
+assert_contains "$be_err" "needs --branch" "--plan pre-spec on the build edge without a branch is refused"
+assert_contains "$(state "s['issues']['$be_ps_t']['labels']")" "status:in-design" "the refused pre-spec build wrote nothing"
 # ...and a build with no pin at all is an Architect skipping the artifact.
 be_err="$(run board-transition.sh "$be_ps_t" in-progress "plan-execution: none" --branch tick/build-edge 2>&1 || true)"
 assert_contains "$be_err" "needs --plan" "the build edge without a pin is refused"
 # The note carries the same words an Executor writes entering PLAN-EXECUTION.
 be_err="$(run board-transition.sh "$be_ps_t" in-progress --branch tick/build-edge --plan "docs/plans/b.md@0123456789abcdef0123456789abcdef01234567" 2>&1 || true)"
 assert_contains "$be_err" "a note is required on the in-design → in-progress edge" "the build edge is note-required"
+out="$(run board-transition.sh "$be_ps_t" in-progress "direct: pre-spec suffices as the plan" --branch tick/build-edge --plan pre-spec)"
+assert_contains "$out" "#$be_ps_t: in-design → in-progress" "a leaf Architect builds a pre-spec ticket itself"
+assert_contains "$(state "s['issues']['$be_ps_t']['body']")" "plan: pre-spec" "the build edge records the pre-spec sentinel"
+assert_contains "$(state "s['issues']['$be_ps_t']['body']")" "branch: tick/build-edge" "...and the branch the build lives on"
 # Epics recompose; they never build.
 run board-register.sh "Build edge epic" enhancement P1 --body-file "$SPEC_BODY" >/dev/null
 be_epic_t="$(state "s['next']-1")"
